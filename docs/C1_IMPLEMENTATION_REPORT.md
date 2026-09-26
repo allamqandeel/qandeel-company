@@ -51,9 +51,14 @@ engineering choice open, the choice is recorded:
 
 ## 4. Skills used
 
+G1 Skills gate. The installed Skills were inspected before implementation; the relevant ones are
+code/security review. No TypeScript-architecture, SQLite, test-design or failure-testing Skill is
+installed. UI, design, document, slides and data-visualization Skills were not invoked.
+
 | Skill | Concrete effect |
 |---|---|
-| *(to be completed in §22)* | |
+| `security-review` | The first invocation failed: this clone had no `origin/HEAD`. A local `git remote set-head origin main` fixed that, and the Skill then ran on the full branch diff. Its sub-agent traced every untrusted input (Work Item fields, artifact content and labels, manifests, checkpoints, workspace files) to SQL, paths, processes and logs, and reported **no high-confidence vulnerability** (§22). It complemented review lens C. |
+| `code-review` | Not invoked as a Skill. The task (§67) requires three separate independent read-only lenses with BLOCKER/MAJOR/MINOR/NIT severity. They ran as independent sub-agents against the exact head, each with a scratch copy for probes and mutation tests. |
 
 ## 5. Official research refresh
 
@@ -241,12 +246,18 @@ A second crash during recovery is proven safe.
 | Package | Files | Tests | Layers |
 |---|---:|---:|---|
 | bootstrap-contract | 1 | 5 | C0 toolchain |
-| domain | 2 | 21 | unit: state machine (exhaustive table check), IDs, clock, validation, retry, classification |
-| storage | 7 | 65 | real file-backed SQLite: adapter/WAL/busy, migrations, work items, queue/fencing, checkpoints, artifacts, backup, **multi-process** (4) |
-| runtime | 4 | 27 | unit, integration (end-to-end, concurrency cap, idle, graceful shutdown, cross-process wake, CLI), **fault matrix (8 process-kill scenarios)** |
+| domain | 2 | 22 | unit: state machine (exhaustive table check), review/dependency rules, IDs, clock, validation, retry, classification |
+| storage | 7 | 77 | real file-backed SQLite: adapter/WAL/busy, workspace, migrations, work items, queue, fencing (each check isolated), checkpoints, artifacts, backup; plus **multi-process** (5): claim race, cross-process fencing, contention, backup under a writer process, concurrent first open |
+| runtime | 5 | 31 | unit; integration (end to end, concurrency cap, idle, graceful shutdown, cross-process wake, CLI, robustness); **fault matrix (8 process-kill scenarios)** |
 
-All pass locally on Linux with Node 24.21.0 (`npm run ci`). A mutation check proved the fencing
-tests are not vacuous: disabling the token, owner and run checks fails the fencing proof.
+**Total: 135 tests.** All pass in `npm run ci` on Linux (Node 24.21.0), in the fresh clone (§21)
+and in CI on Windows and Ubuntu (§21).
+
+**Mutation checks** (non-vacuity):
+- My own check: disabling the fence checks fails the fencing proof.
+- Review lens B ran 13 mutations; 10 were caught.
+- The 3 survivors (checkpoint without `verifyFence`, token check alone, unfenced `putArtifact`)
+  now each have an isolating test.
 
 **Mandatory fault matrix (C1 §47).** Every row is automated.
 
@@ -278,7 +289,65 @@ harness passes (`C1 LOCAL ACCEPTANCE — PASS`, 6/6 steps).
 
 ## 22. Independent internal reviewers
 
-*(completed in the final revision.)*
+Three independent read-only reviewers ran against the exact green candidate head `f849785`. Each
+used a scratch copy for probes. The fixes landed in `38ab692` (lenses A and C), `9e3e9a5` (lens B)
+and `300c2d5` (a Windows path-canonicalization defect that CI exposed). The dispositions are recorded
+in DECISION_LOG D-C1-17 and D-C1-18. A fourth independent verifier then re-checked every disposition
+at the final head (below).
+
+**Reviewer A — authority / architecture conformance.**
+- Result: no BLOCKER. It found no scope leakage, no placeholders, and no change to the imported
+  authority; privacy Rules A, B and C hold.
+
+| # | Sev. | Finding | Disposition |
+|---|---|---|---|
+| M1 | MAJOR | Closing could record `ACHIEVED` without `OUTCOME_VERIFIED` (Stage 8 §34) | **Fixed.** Domain rule + DB trigger `work_items_success_needs_verification` + tests |
+| M2 | MAJOR | `WAITING_APPROVAL → READY` could fake an approval | **Fixed.** Not a manual target; its exit is refused in C1 (`APPROVAL_PATH_UNAVAILABLE`) + test |
+| M3 | MAJOR | R2 did not require review; self-review was possible (Stage 3 §2/§4) | **Fixed.** R2+ ⇒ review required. `REVIEWED`/`OUTCOME_VERIFIED` fail closed (`REVIEW_PATH_UNAVAILABLE`) until an enforced reviewer authority exists + tests |
+| M4 | MAJOR | A dependency was satisfied at `WAITING_REVIEW` | **Fixed** (conservative default: review-required work satisfies only once `REVIEWED`) + test. The authority is silent on this, so it is reported as a **Product gap**, not a conflict (D-C1-09) |
+| M5 | MAJOR | Cancel-wins overwrote a real completion | **Fixed.** The run is recorded `SUCCEEDED` with evidence; side-effecting classes go to reconciliation + tests. **Product Owner input requested** (D-C1-08) |
+| m1 | MINOR | Required evidence not enforced at completion | Documented. Judging evidence is review work (C2/C4) |
+| m2 | MINOR | Blocked ownership has no resolver or next action | Documented as deferred (C4) |
+| m3 | MINOR | "A lost hint is harmless" was overstated; the watcher could die silently | **Fixed.** Re-arm once; health reports `WAKE_WATCHER_UNAVAILABLE` → DEGRADED; docs corrected |
+| m4 | MINOR | Health model gaps (stuck work, overdue backup, circuit breakers) | Documented as not in C1 (C2/C6) |
+| m5 | MINOR | A supersession could cancel its own replacement | **Fixed.** A replacement inside the lineage is refused + test |
+| m6 | MINOR | Report placeholders | **Fixed** in this revision |
+| m7 | MINOR | Privileged local operations take an unauthenticated actor | Accepted for C1 (library/CLI only; Stage 12 §49 IPC authorization belongs to a later package); documented in §23 |
+| N | NIT | Diagram edge; the CLI defaulted the owner to the Founder; logger field allowlist | Diagram fixed. CLI owner is now explicit (`--owner`, default `owner:c1-cli-operator`). Allowlist: kept as call-site discipline plus scalar-only filtering |
+
+**Reviewer B — durability / concurrency / failure.**
+- Result: no data-integrity BLOCKER. Fencing, atomicity and recovery ordering hold; the fault matrix
+  and multi-process tests prove what they claim.
+- Mutations: 13 run, 10 caught.
+
+| # | Sev. | Finding | Disposition |
+|---|---|---|---|
+| 1 | MAJOR | A `CANCELLED` result or a `WAIT` into the past re-ran with no attempt limit (~300 runs/s) | **Fixed.** Unprompted `CANCELLED` and a malformed or past `WAIT` become bounded failures; storage refuses a bad `WAIT.until` + tests |
+| 2 | MAJOR | `STORAGE_BUSY` at settle lost a completed result (re-execution) | **Fixed.** Bounded settle retry while the lease keeps renewing + test with a real locker process |
+| 3 | MAJOR | Host sleep past the TTL fail-stopped the runtime silently (CLI exit 0) | **Fixed.** Token-conditional renewal (audited) when no takeover happened; a real takeover fail-stops loudly (`onFailStop`, CLI exit 1) + tests |
+| 4 | MAJOR | Concurrent first open failed in 10 of 10 trials | **Fixed.** Snapshot pre-check, re-check inside `BEGIN IMMEDIATE`, WAL switch retries busy + multi-process test (4 processes, 5 of 5 runs green) |
+| 5–11 | MINOR | Refused-acquire audit rolled back; `putArtifact` fenced outside its transaction; checkpoint/token/artifact fence tests missing; backup files not fsynced; Windows rename retry; artifact recovery edge cases | **All fixed**, with tests where testable |
+| 12 | MINOR | Wake watcher could die silently | Already fixed in `38ab692` |
+| — | NIT | Unfenced `claimNext` stays public at the storage level | Documented residual: the runtime always passes the fence, and recovery reclaims unfenced claims |
+
+**Reviewer C — security / integrity / attack surface.**
+- Result: no BLOCKER. No secrets, network surface, native code or SQL injection; no content leaks
+  into logs, events or audit; CI least-privilege.
+
+| # | Sev. | Finding | Disposition |
+|---|---|---|---|
+| MAJOR-1 | MAJOR | A workspace could sit inside a Git (or App) working tree; artifacts showed up as untracked files | **Fixed.** `openWorkspace` refuses any Git working tree (`inside-source-checkout`) + test |
+| MINOR-1 | MINOR | Public `CompanyStore.open({ migrations })` executed caller SQL | **Fixed.** Only released, pinned migrations; the fixture seam is internal + regression test |
+| MINOR-2 | MINOR | Backup not bound to `backup_records` or the expected schema | **Fixed.** Hash binding (CLI/runtime require the record) + schema fingerprint; tests for a replaced pair and a planted trigger |
+| MINOR-3 | MINOR | Artifact hashing inside the write lock | **Fixed.** Hash before `BEGIN`; size re-check inside |
+| MINOR-4 | MINOR | Restore target touched before validation; could be inside the live workspace | **Fixed.** Syntax validation first; canonical containment check (Windows 8.3-safe) + tests |
+| MINOR-5 | MINOR | Acceptance child mode bypassed the guards; cleanup removed a caller-supplied directory | **Fixed.** Child mode needs a harness-owned sandbox; caller-supplied directories are kept |
+| NIT 1–6 | NIT | Orphan scan followed links; wake file written through links; `create:false` created a DB; `trusted_schema` order; `child_process` unrestricted; `recordAudit` unvalidated, reads unbounded | **All fixed** |
+
+**`security-review` Skill:** no finding at confidence ≥ 8.
+
+**Disposition re-verification at the final head.** *(Filled in below once the independent verifier
+reports.)*
 
 ## 23. Known limitations / deferred scope
 
