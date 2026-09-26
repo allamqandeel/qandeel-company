@@ -34,6 +34,26 @@ describe('workspace', () => {
     assert.doesNotThrow(() => assertLocalPathSyntax('/var/tmp/company', 'linux'));
   });
 
+  test('refuses a workspace inside any Git working tree, and never creates a database when create=false', () => {
+    const root = tempRoot('ws-git');
+    try {
+      const repo = path.dirname(root);
+      mkdirSync(path.join(repo, '.git'));
+      assert.throws(() => openWorkspace(path.join(repo, 'nested', 'company')), (e) => isQandeelError(e, 'UNSAFE_WORKSPACE') && e.details.reason === 'inside-source-checkout');
+      const outside = tempRoot('ws-nodb');
+      try {
+        mkdirSync(outside, { recursive: true });
+        openWorkspace(outside);
+        assert.throws(() => openWorkspace(outside, { create: false }), (e) => isQandeelError(e, 'UNSAFE_WORKSPACE') && e.details.reason === 'missing-database');
+        assert.equal(existsSync(path.join(outside, 'state', 'company.sqlite3')), false);
+      } finally {
+        removeRoot(outside);
+      }
+    } finally {
+      removeRoot(root);
+    }
+  });
+
   test('refuses a symlinked workspace directory', () => {
     const root = tempRoot('ws-link');
     try {

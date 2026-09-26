@@ -7,16 +7,17 @@
  * database is never replaced. Encrypted off-device copies, generational retention, immutable
  * copies, device-loss promotion and production rollback are deferred to C6/L1.
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync, constants as fsConstants } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, constants as fsConstants } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { QandeelError, assertId, canonicalJson, newId, sha256Hex, type Clock, type Id, type Timestamp, systemClock } from '@qandeel-company/domain';
 
 import { appendAudit, ts } from './internal.js';
-import { CURRENT_SCHEMA_VERSION, RELEASED_MIGRATIONS, appliedMigrations, userVersion } from './migrations.js';
+import { CURRENT_SCHEMA_VERSION, RELEASED_MIGRATIONS, appliedMigrations, loadReleasedMigrations, migrate, userVersion } from './migrations.js';
 import { SqliteConnection } from './sqlite/connection.js';
 import { CompanyStore, DEFAULT_BUSY_TIMEOUT_MS, storeContext } from './store.js';
-import { containedPath, layoutFor, openWorkspace, DATABASE_FILE } from './workspace.js';
+import { assertLocalPathSyntax, containedPath, layoutFor, openWorkspace, DATABASE_FILE } from './workspace.js';
 
 export const BACKUP_FORMAT = 'qandeel-company-backup/1';
 const MANIFEST_FILE = 'manifest.json';
@@ -177,8 +178,53 @@ function readManifest(directory: string): BackupManifest {
  * read proof against the manifest. Optionally checks that referenced artifact objects exist and
  * hash correctly in `artifactObjectsDir`.
  */
-export function verifyBackup(directory: string, { liveDatabasePath, artifactObjectsDir }: { liveDatabasePath?: string; artifactObjectsDir?: string } = {}): BackupVerification {
+/** Canonical fingerprint of a database's user schema (tables, indexes, triggers, views). */
+function schemaFingerprint(db: SqliteConnection): string {
+  const rows = db.all<{ type: string; name: string; tbl_name: string; sql: string | null }>(
+    `SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`,
+  );
+  return sha256Hex(canonicalJson(rows.map((r) => ({ type: r.type, name: r.name, tbl_name: r.tbl_name, sql: r.sql ?? null }))));
+}
+
+const expectedFingerprints = new Map<number, string>();
+
+/** Fingerprint of the schema the released migrations produce at `version` (computed once, in a temp file). */
+function releasedSchemaFingerprint(version: number): string {
+  const cached = expectedFingerprints.get(version);
+  if (cached) return cached;
+  const dir = mkdtempSync(path.join(tmpdir(), 'qc-schema-'));
+  try {
+    const db = SqliteConnection.open({ path: path.join(dir, DATABASE_FILE), busyTimeoutMs: 1_000 });
+    try {
+      migrate(db, loadReleasedMigrations(version), { clock: systemClock, runtimeVersion: 'schema-probe' });
+      const fp = schemaFingerprint(db);
+      expectedFingerprints.set(version, fp);
+      return fp;
+    } finally {
+      db.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+}
+
+export interface ExpectedBackup {
+  /** From the live store's `backup_records`: binds the on-disk pair to what this Company recorded. */
+  readonly snapshotSha256: string;
+  readonly manifestSha256: string;
+}
+
+export function verifyBackup(
+  directory: string,
+  { liveDatabasePath, artifactObjectsDir, expected }: { liveDatabasePath?: string; artifactObjectsDir?: string; expected?: ExpectedBackup } = {},
+): BackupVerification {
   const manifest = readManifest(directory);
+  if (expected !== undefined) {
+    const manifestSha = fileSha256(path.join(directory, MANIFEST_FILE));
+    if (manifestSha !== expected.manifestSha256 || manifest.snapshot.sha256 !== expected.snapshotSha256) {
+      throw new QandeelError('BACKUP_INTEGRITY', 'backup does not match the record the live Company holds for it', { backupId: manifest.backupId });
+    }
+  }
   const snapshot = path.join(directory, DATABASE_FILE);
   if (!existsSync(snapshot)) throw new QandeelError('BACKUP_INTEGRITY', 'backup snapshot is missing', { backupId: manifest.backupId });
   if (liveDatabasePath !== undefined && path.resolve(snapshot) === path.resolve(liveDatabasePath)) {
@@ -201,6 +247,10 @@ export function verifyBackup(directory: string, { liveDatabasePath, artifactObje
     for (const a of applied) {
       const pin = RELEASED_MIGRATIONS[a.version - 1];
       if (!pin || pin.sha256 !== a.sha256) throw new QandeelError('BACKUP_INTEGRITY', 'snapshot migration history does not match this release', { backupId: manifest.backupId, version: a.version });
+    }
+    // No extra tables, triggers or views: the snapshot schema is exactly what the release produces.
+    if (schemaFingerprint(db) !== releasedSchemaFingerprint(version)) {
+      throw new QandeelError('BACKUP_INTEGRITY', 'snapshot schema differs from the released schema of its version', { backupId: manifest.backupId, version });
     }
     // Critical read proof: the snapshot's durable content matches what the manifest recorded.
     const counts = countsOf(db);
@@ -241,11 +291,21 @@ export interface IsolatedRestoreReport {
  * (Validate → Integrity → Restore isolated → Migration check → Dry start → Compare). Promotion
  * over a live Company is deliberately not implemented in C1.
  */
-export function restoreToIsolatedWorkspace(directory: string, targetRoot: string, { clock = systemClock, liveDatabasePath }: { clock?: Clock; liveDatabasePath?: string } = {}): IsolatedRestoreReport {
-  const verification = verifyBackup(directory, liveDatabasePath === undefined ? {} : { liveDatabasePath });
+export function restoreToIsolatedWorkspace(
+  directory: string,
+  targetRoot: string,
+  { clock = systemClock, liveDatabasePath, expected }: { clock?: Clock; liveDatabasePath?: string; expected?: ExpectedBackup } = {},
+): IsolatedRestoreReport {
+  // Validate the target's syntax before touching it (no network share is ever contacted).
+  assertLocalPathSyntax(targetRoot);
+  const verification = verifyBackup(directory, { ...(liveDatabasePath !== undefined ? { liveDatabasePath } : {}), ...(expected !== undefined ? { expected } : {}) });
   const target = layoutFor(path.resolve(targetRoot));
-  if (liveDatabasePath !== undefined && path.resolve(target.databasePath) === path.resolve(liveDatabasePath)) {
-    throw new QandeelError('UNSAFE_WORKSPACE', 'isolated restore target is the live database');
+  if (liveDatabasePath !== undefined) {
+    const liveRoot = path.resolve(path.dirname(path.dirname(liveDatabasePath)));
+    const rel = path.relative(liveRoot, target.root);
+    if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) {
+      throw new QandeelError('UNSAFE_WORKSPACE', 'isolated restore target must be outside the live workspace', { reason: 'inside-live-workspace' });
+    }
   }
   if (existsSync(target.root) && readdirSync(target.root).length > 0) {
     throw new QandeelError('UNSAFE_WORKSPACE', 'isolated restore target must be a new or empty directory', { reason: 'not-empty' });

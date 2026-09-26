@@ -38,8 +38,21 @@ export const TERMINAL_WORK_ITEM_STATES: ReadonlySet<WorkItemState> = new Set(['C
 /** States at or after executor completion. Cancellation no longer applies; supersession still does. */
 export const COMPLETED_FAMILY: ReadonlySet<WorkItemState> = new Set(['COMPLETED', 'WAITING_REVIEW', 'REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED']);
 
-/** A dependency on a Work Item is satisfied once the executor has completed it (see C1 schema doc). */
-export const DEPENDENCY_SATISFIED_STATES: ReadonlySet<WorkItemState> = COMPLETED_FAMILY;
+/**
+ * When a dependency is satisfied (D-C1-09; Stage 8 is silent — reported as a Product gap). The
+ * conservative default: work that requires review satisfies its dependents only once REVIEWED
+ * (Completed ≠ Reviewed); work that does not require review satisfies them once COMPLETED.
+ */
+export const REVIEWED_FAMILY: ReadonlySet<WorkItemState> = new Set(['REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED']);
+
+export function satisfiesDependents(item: { readonly state: WorkItemState; readonly reviewRequired: boolean }): boolean {
+  return item.reviewRequired ? REVIEWED_FAMILY.has(item.state) : COMPLETED_FAMILY.has(item.state);
+}
+
+/** Stage 3 §2 / §4: R2 and above are important actions that require independent review. */
+export function requiresReview(subject: { readonly reviewRequired: boolean; readonly riskLevel: RiskLevel }): boolean {
+  return subject.reviewRequired || subject.riskLevel === 'R2' || subject.riskLevel === 'R3' || subject.riskLevel === 'R4';
+}
 
 /** A dependency that ended without completion never satisfies its dependents. */
 export const DEPENDENCY_FAILED_STATES: ReadonlySet<WorkItemState> = new Set(['FAILED', 'CANCELLED', 'SUPERSEDED']);
@@ -140,6 +153,11 @@ export function assertTransition(subject: TransitionSubject, request: Transition
   }
   if (request.outcome !== undefined && request.outcome !== 'NOT_ASSESSED' && !['OUTCOME_VERIFIED', 'CLOSED'].includes(to)) {
     throw new QandeelError('INVALID_TRANSITION', 'an outcome is recorded only when verifying or closing', { from, to });
+  }
+  // Stage 8 §34: closing never converts activity into success. ACHIEVED is recorded only by
+  // outcome verification; closing may record NOT_ACHIEVED (or leave the outcome unassessed).
+  if (to === 'CLOSED' && request.outcome === 'ACHIEVED') {
+    throw new QandeelError('INVALID_TRANSITION', 'an ACHIEVED outcome is recorded only through OUTCOME_VERIFIED, never by closing', { from, to });
   }
 }
 

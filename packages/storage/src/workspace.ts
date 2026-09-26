@@ -117,6 +117,14 @@ export function openWorkspace(root: string, options: OpenWorkspaceOptions = {}):
       throw new QandeelError('UNSAFE_WORKSPACE', 'workspace is on a network filesystem; SQLite WAL requires a local filesystem', { reason: 'network-fs', fsType });
     }
   }
+  // Live Company state never lives inside a source checkout (this repository, the QANDEEL App's,
+  // or any other): one `git add -A` would otherwise commit Company content.
+  for (let dir = real; ; dir = path.dirname(dir)) {
+    if (existsSync(path.join(dir, '.git'))) {
+      throw new QandeelError('UNSAFE_WORKSPACE', 'workspace is inside a Git working tree; live Company state must stay outside source checkouts', { reason: 'inside-source-checkout' });
+    }
+    if (path.dirname(dir) === dir) break;
+  }
   const layout = layoutFor(real);
   for (const dir of [layout.stateDir, layout.artifactsDir, layout.objectsDir, layout.artifactTmpDir, layout.backupsDir, layout.runtimeDir]) {
     if (existsSync(dir)) {
@@ -129,6 +137,9 @@ export function openWorkspace(root: string, options: OpenWorkspaceOptions = {}):
     } else {
       throw new QandeelError('UNSAFE_WORKSPACE', 'workspace directory is missing', { reason: 'missing', dir: path.relative(real, dir) });
     }
+  }
+  if (!create && !existsSync(layout.databasePath)) {
+    throw new QandeelError('UNSAFE_WORKSPACE', 'workspace has no Company database', { reason: 'missing-database' });
   }
   if (existsSync(layout.databasePath) && lstatSync(layout.databasePath).isSymbolicLink()) {
     throw new QandeelError('UNSAFE_WORKSPACE', 'database file is a symbolic link', { reason: 'db-symlink' });

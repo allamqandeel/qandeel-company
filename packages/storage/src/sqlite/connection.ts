@@ -115,6 +115,9 @@ export class SqliteConnection {
     const fail = (what: string): never => {
       throw new QandeelError('SQLITE_CONFIGURATION', `SQLite startup invariant failed: ${what}`, { what });
     };
+    // Defense in depth first: schema-embedded functions are never trusted.
+    this.#db.exec('PRAGMA trusted_schema = OFF');
+    if (this.#pragma('PRAGMA trusted_schema') !== 0) fail('trusted_schema=OFF');
     if (!options.readOnly && !options.keepJournalMode) {
       const mode = this.#pragma('PRAGMA journal_mode = WAL');
       if (String(mode).toLowerCase() !== 'wal') fail('journal_mode=WAL');
@@ -130,7 +133,6 @@ export class SqliteConnection {
       this.#db.exec('PRAGMA writable_schema = OFF');
       fail('defensive mode');
     }
-    if (this.#pragma('PRAGMA trusted_schema') !== 0) this.#db.exec('PRAGMA trusted_schema = OFF');
   }
 
   get journalMode(): string {

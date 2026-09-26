@@ -37,7 +37,7 @@ export interface HealthSnapshot {
   readonly liveness: { readonly alive: boolean; readonly pid: number };
   readonly readiness: { readonly ready: boolean; readonly checks: ReadinessChecks };
   readonly components: {
-    readonly runtime: { readonly state: string; readonly instanceId: string | null; readonly uptimeMs: number; readonly activeRuns: number; readonly concurrency: number; readonly failure: string | null };
+    readonly runtime: { readonly state: string; readonly instanceId: string | null; readonly uptimeMs: number; readonly activeRuns: number; readonly concurrency: number; readonly failure: string | null; readonly wakeWatcher: string | null };
     readonly database: { readonly open: boolean; readonly journalMode: string | null; readonly schemaVersion: number | null };
     readonly migrations: { readonly current: number | null; readonly expected: number; readonly applied: readonly number[] };
     readonly supervisor: { readonly holderId: string | null; readonly fencingToken: number | null; readonly expiresAt: string | null; readonly live: boolean };
@@ -72,7 +72,7 @@ function classify(checksReady: boolean, alive: boolean, counts: HealthCounts | n
   }
   if (lowDisk) reasons.push('LOW_DISK');
   let status: HealthStatus = 'HEALTHY';
-  if (reasons.includes('EXPIRED_LEASES')) status = 'DEGRADED';
+  if (reasons.includes('EXPIRED_LEASES') || reasons.includes('WAKE_WATCHER_UNAVAILABLE')) status = 'DEGRADED';
   if (reasons.some((r) => ['DEAD_LETTERS_PRESENT', 'RECONCILIATION_REQUIRED', 'ARTIFACT_INTEGRITY', 'LOW_DISK'].includes(r))) status = 'ATTENTION';
   if (!alive || !checksReady || reasons.includes('WAL_NOT_ACTIVE') || reasons.includes('SCHEMA_MISMATCH')) status = 'CRITICAL';
   return { status, reasons };
@@ -81,7 +81,7 @@ function classify(checksReady: boolean, alive: boolean, counts: HealthCounts | n
 function snapshotFrom(
   store: CompanyStore | null,
   layout: WorkspaceLayout | null,
-  runtime: { state: string; instanceId: string | null; uptimeMs: number; activeRuns: number; concurrency: number; failure: string | null; recovery: Record<string, unknown> | null; ownsLease: boolean | null },
+  runtime: { state: string; instanceId: string | null; uptimeMs: number; activeRuns: number; concurrency: number; failure: string | null; recovery: Record<string, unknown> | null; ownsLease: boolean | null; wakeWatcher?: string },
   now: number,
 ): HealthSnapshot {
   const counts = store && !store.isClosed ? store.healthCounts() : null;
@@ -104,6 +104,7 @@ function snapshotFrom(
   const extra: string[] = [];
   if (counts && journalMode !== 'wal') extra.push('WAL_NOT_ACTIVE');
   if (counts && counts.schemaVersion !== CURRENT_SCHEMA_VERSION) extra.push('SCHEMA_MISMATCH');
+  if (runtime.wakeWatcher === 'UNAVAILABLE') extra.push('WAKE_WATCHER_UNAVAILABLE');
   const { status, reasons } = classify(ready, alive, counts, lowDisk, extra);
   return {
     status,
@@ -111,7 +112,7 @@ function snapshotFrom(
     liveness: { alive, pid: process.pid },
     readiness: { ready, checks },
     components: {
-      runtime: { state: runtime.state, instanceId: runtime.instanceId, uptimeMs: runtime.uptimeMs, activeRuns: runtime.activeRuns, concurrency: runtime.concurrency, failure: runtime.failure },
+      runtime: { state: runtime.state, instanceId: runtime.instanceId, uptimeMs: runtime.uptimeMs, activeRuns: runtime.activeRuns, concurrency: runtime.concurrency, failure: runtime.failure, wakeWatcher: runtime.wakeWatcher ?? null },
       database: { open: counts !== null, journalMode, schemaVersion: counts?.schemaVersion ?? null },
       migrations: { current: counts?.schemaVersion ?? null, expected: CURRENT_SCHEMA_VERSION, applied: counts?.appliedMigrations ?? [] },
       supervisor: { holderId: lease?.holderId ?? null, fencingToken: lease?.fencingToken ?? null, expiresAt: lease?.expiresAt ?? null, live: leaseLive },
@@ -155,6 +156,7 @@ export function runtimeHealth(runtime: CompanyRuntime): HealthSnapshot {
       failure: runtime.failure,
       recovery: runtime.recovery ?? null,
       ownsLease: lease !== null && lease.holderId === runtime.instanceId,
+      wakeWatcher: d.wakeWatcher,
     },
     Date.now(),
   );

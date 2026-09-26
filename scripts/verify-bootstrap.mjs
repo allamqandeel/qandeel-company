@@ -96,7 +96,7 @@ const ALLOWED_PACKAGES = ['bootstrap-contract', 'domain', 'storage', 'runtime'];
 const SQLITE_ADAPTER = 'packages/storage/src/sqlite/connection.ts';
 const SQLITE_IMPORT = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)['"](?:node:)?sqlite['"]/;
 // C1 runtime has no network surface and makes no provider calls.
-const NETWORK_MODULE = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?(?:http|https|http2|net|tls|dgram|dns|dns\/promises|undici)['"]|\bfetch\s*\(|\bnew\s+(?:WebSocket|XMLHttpRequest)\b/;
+const NETWORK_MODULE = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?(?:http|https|http2|net|tls|dgram|dns|dns\/promises|undici|child_process|worker_threads)['"]|\bfetch\s*\(|\bnew\s+(?:WebSocket|XMLHttpRequest)\b/;
 // Runtime dependencies of workspace packages: only sibling workspaces unless a change adds a
 // reviewed exception here (no ORM, provider SDK, queue server, framework or native addon).
 const ALLOWED_RUNTIME_DEPENDENCIES = [];
@@ -408,7 +408,7 @@ export const RULES = [
     check: ({ files, read }) =>
       files
         .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && NETWORK_MODULE.test(read(f) ?? ''))
-        .map((f) => `${f} opens a network path (C1 runtime code has no network surface)`),
+        .map((f) => `${f} opens a network path or spawns processes (C1 runtime code has neither)`),
   },
   {
     id: 'runtime-dependencies-allowlisted',
@@ -590,6 +590,7 @@ const VIOLATIONS = {
     { contents: { 'packages/runtime/src/server.ts': "import { createServer } from 'node:http';" } },
     { contents: { 'packages/storage/src/sync.ts': "const r = await fetch('https://example.invalid');" } },
     { contents: { 'packages/runtime/src/ipc.ts': "const net = await import('node:net');" } },
+    { contents: { 'packages/runtime/src/tool.ts': "import { execFile } from 'node:child_process';" } },
   ],
   'runtime-dependencies-allowlisted': [
     { contents: { 'packages/runtime/package.json': JSON.stringify({ private: true, dependencies: { openai: '4.0.0' } }) } },

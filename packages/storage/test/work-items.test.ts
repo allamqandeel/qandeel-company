@@ -106,22 +106,63 @@ describe('Work Item lifecycle and history', () => {
     }
   });
 
-  test('completed → waiting review → reviewed → outcome verified → closed are distinct recorded steps', () => {
+  test('review-required work waits for review, and C1 cannot fake one: REVIEWED fails closed (no reviewer authority)', () => {
     const h = harness();
     try {
       const id = executable(h.store, { reviewRequired: true });
       const claim = h.store.claimNext(claimOpts());
       assert.ok(claim);
       h.store.settle(claim.fence, { type: 'COMPLETED', evidence: { rows: 3 } }, { backoff });
-      assert.equal(h.store.getWorkItem(id).state, 'WAITING_REVIEW', 'review-required work waits for review; it is not "done"');
+      assert.equal(h.store.getWorkItem(id).state, 'WAITING_REVIEW', 'review-required work is not "done"');
       assert.throws(() => h.store.transitionWorkItem(id, { to: 'CLOSED', reasonCode: 'skip' }), (e) => isQandeelError(e, 'INVALID_TRANSITION'));
-      h.store.transitionWorkItem(id, { to: 'REVIEWED', reasonCode: 'review.passed', actorRef: 'reviewer:r-1' });
-      assert.throws(() => h.store.transitionWorkItem(id, { to: 'OUTCOME_VERIFIED', reasonCode: 'x' }), (e) => isQandeelError(e, 'INVALID_TRANSITION'));
-      h.store.transitionWorkItem(id, { to: 'OUTCOME_VERIFIED', reasonCode: 'outcome.verified', outcome: 'ACHIEVED' });
-      const closed = h.store.transitionWorkItem(id, { to: 'CLOSED', reasonCode: 'closed' });
-      assert.equal(closed.outcome, 'ACHIEVED');
-      assert.deepEqual(h.store.history(id).map((t) => t.toState), ['READY', 'IN_PROGRESS', 'COMPLETED', 'WAITING_REVIEW', 'REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED']);
-      assert.deepEqual(h.store.history(id).map((t) => t.version), [1, 2, 3, 4, 5, 6, 7]);
+      assert.throws(() => h.store.transitionWorkItem(id, { to: 'REVIEWED', reasonCode: 'self.review', actorRef: owner }), (e) => isQandeelError(e, 'REVIEW_PATH_UNAVAILABLE'));
+      assert.throws(() => h.store.transitionWorkItem(id, { to: 'OUTCOME_VERIFIED', reasonCode: 'x', outcome: 'ACHIEVED' }), (e) => isQandeelError(e, 'REVIEW_PATH_UNAVAILABLE'));
+      // Rework remains possible: the reviewer path returns work to execution.
+      assert.equal(h.store.transitionWorkItem(id, { to: 'READY', reasonCode: 'rework' }).state, 'READY');
+      assert.deepEqual(h.store.history(id).map((t) => t.toState), ['READY', 'IN_PROGRESS', 'COMPLETED', 'WAITING_REVIEW', 'READY']);
+    } finally {
+      h.close();
+    }
+  });
+
+  test('R2+ work always requires review (Stage 3 §2/§4); R1 does not unless asked', () => {
+    const h = harness();
+    try {
+      assert.equal(h.store.createWorkItem({ objective: 'x', ownerRef: owner, riskLevel: 'R2' }).workItem.reviewRequired, true);
+      assert.equal(h.store.createWorkItem({ objective: 'x', ownerRef: owner, riskLevel: 'R1' }).workItem.reviewRequired, false);
+    } finally {
+      h.close();
+    }
+  });
+
+  test('closing never records success: ACHIEVED only through OUTCOME_VERIFIED (code and database)', () => {
+    const h = harness();
+    try {
+      const id = executable(h.store);
+      const claim = h.store.claimNext(claimOpts());
+      assert.ok(claim);
+      h.store.settle(claim.fence, { type: 'COMPLETED' }, { backoff });
+      assert.throws(() => h.store.transitionWorkItem(id, { to: 'CLOSED', reasonCode: 'x', outcome: 'ACHIEVED' }), (e) => isQandeelError(e, 'INVALID_TRANSITION'));
+      const { db } = storeContext(h.store);
+      assert.throws(() => db.run(`UPDATE work_items SET state = 'CLOSED', outcome = 'ACHIEVED', version = version + 1 WHERE id = ?`, id), (e) => isQandeelError(e, 'STORAGE_INVARIANT'));
+      const closed = h.store.transitionWorkItem(id, { to: 'CLOSED', reasonCode: 'closed', outcome: 'NOT_ACHIEVED' });
+      assert.equal(closed.outcome, 'NOT_ACHIEVED', 'competent work whose outcome was not achieved is recorded honestly');
+      assert.deepEqual(h.store.history(id).map((t) => t.toState), ['READY', 'IN_PROGRESS', 'COMPLETED', 'CLOSED']);
+    } finally {
+      h.close();
+    }
+  });
+
+  test('no approval can be faked: WAITING_APPROVAL is not a manual target and cannot be exited toward execution', () => {
+    const h = harness();
+    try {
+      const plain = h.store.createWorkItem({ objective: 'x', ownerRef: owner }).workItem.id;
+      assert.throws(() => h.store.transitionWorkItem(plain, { to: 'WAITING_APPROVAL' as never, reasonCode: 'x' }), (e) => isQandeelError(e, 'INVALID_TRANSITION'));
+      const gated = h.store.createWorkItem({ objective: 'x', ownerRef: owner, approvalRequired: true, initialState: 'READY' }).workItem.id;
+      for (const to of ['READY', 'BLOCKED', 'CLOSED'] as const) {
+        assert.throws(() => h.store.transitionWorkItem(gated, { to, reasonCode: 'x', actorRef: 'owner:someone' }), (e) => isQandeelError(e, 'APPROVAL_PATH_UNAVAILABLE'), to);
+      }
+      assert.equal(h.store.requestCancellation(gated, { reasonCode: 'NOT_NEEDED' }).terminated[0], gated);
     } finally {
       h.close();
     }
@@ -183,6 +224,22 @@ describe('dependencies and lineage', () => {
       assert.equal(h.store.jobsFor(waiter.id).length, 1);
       assert.equal(h.store.getWorkItem(bystander.id).state, 'BLOCKED', 'no wake storm: unrelated work untouched');
       assert.ok(h.store.dependencies(waiter.id)[0]?.resolvedAt);
+    } finally {
+      h.close();
+    }
+  });
+
+  test('a review-required dependency satisfies dependents only once reviewed, not at completion', () => {
+    const h = harness();
+    try {
+      const dep = executable(h.store, { reviewRequired: true });
+      const waiter = h.store.createWorkItem({ objective: 'w', ownerRef: owner, initialState: 'READY', dependsOn: [dep] }).workItem.id;
+      const c = h.store.claimNext(claimOpts());
+      assert.ok(c);
+      const out = h.store.settle(c.fence, { type: 'COMPLETED' }, { backoff });
+      assert.deepEqual(out.unblocked, []);
+      assert.equal(h.store.getWorkItem(waiter).state, 'BLOCKED', 'Completed ≠ Reviewed: the dependent does not proceed');
+      assert.equal(h.store.dependencies(waiter)[0]?.resolvedAt, null);
     } finally {
       h.close();
     }
@@ -254,6 +311,9 @@ describe('dependencies and lineage', () => {
       assert.equal(o.supersededBy, replacement.id);
       assert.equal(h.store.getWorkItem(child.id).terminationReason, 'PARENT_SUPERSEDED');
       assert.equal(h.store.supersede(old.id, replacement.id, { reasonCode: 'AGAIN' }).alreadyTerminal[0], old.id, 'idempotent on terminal work');
+      const parent = h.store.createWorkItem({ objective: 'p', ownerRef: owner }).workItem;
+      const kid = h.store.createWorkItem({ objective: 'k', ownerRef: owner, parentId: parent.id }).workItem;
+      assert.throws(() => h.store.supersede(parent.id, kid.id, { reasonCode: 'SELF_DESCENDANT' }), (e) => isQandeelError(e, 'LINEAGE_INVALID'), 'a replacement inside the lineage would cancel itself');
     } finally {
       h.close();
     }

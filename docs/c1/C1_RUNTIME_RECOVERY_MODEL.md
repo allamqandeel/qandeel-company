@@ -47,8 +47,12 @@ shutdown.
 
 ## 3. Event-driven wake-up (no polling runtime)
 
-The durable queue is the source of truth. A wake is a coalesced hint that costs no model call, and
-losing one is harmless: startup recovery and the next-due timer rediscover all durable work.
+The durable queue is the source of truth. A wake is a coalesced hint that costs no model call.
+- **In-process:** a hint cannot be lost, because it is issued after every local commit.
+- **Cross-process:** a lost hint never loses work, since the job stays durable, but pickup waits for
+  the next pump (another commit, a slot release, the next-due timer) or a restart. The watcher is
+  re-armed once on error. If it is still down, health reports `WAKE_WATCHER_UNAVAILABLE`
+  (`DEGRADED`) instead of silently looking healthy (Stage 12 §45).
 
 **The dispatcher pump runs when:**
 1. a local transaction commits (submit, transition, wake, cancel, requeue, resolve);
@@ -95,7 +99,8 @@ runtime, not per Employee, and one process for the whole runtime, not per Employ
 | `PERMANENT_FAILURE` | `FAILED_PERMANENT` | `FAILED` | `FAILED`; dependents marked `DEPENDENCY_FAILED` |
 | `RECONCILIATION_REQUIRED` | `RECONCILIATION_REQUIRED` | `RECONCILIATION_HOLD` | `BLOCKED (RECONCILIATION_REQUIRED)` |
 | `CANCELLED` (ack, no durable intent) | `INTERRUPTED` (resume/retry disposition) | `QUEUED` now | `READY` (graceful park; not a failed attempt) |
-| *durable cancel/supersede intent present* | `CANCELLED` | `CANCELLED` | `CANCELLED`/`SUPERSEDED`, propagated to children |
+| *durable cancel/supersede intent present* | `CANCELLED`; or `SUCCEEDED` with its evidence if the processor genuinely completed (`failure_code = TERMINATION_REQUESTED`) | `CANCELLED` | `CANCELLED`/`SUPERSEDED`, propagated to children |
+| *intent present + `COMPLETED` from an `IDEMPOTENT`/`UNSAFE` processor* | `SUCCEEDED` (truthful) | `RECONCILIATION_HOLD` | `BLOCKED (RECONCILIATION_REQUIRED)`: a person decides which outcome stands |
 
 **Runtime-assigned failures:**
 - A processor exception becomes `RETRYABLE_FAILURE PROCESSOR_ERROR`.
@@ -133,9 +138,15 @@ runtime, not per Employee, and one process for the whole runtime, not per Employ
   - For running work, it records `termination_requested` and sets `cancel_requested` on the job.
     The runtime then aborts the local processor. A request made from another process is noticed at
     the next pump.
-- **Settlement always finalizes durable intent.** Durable intent wins over a later `COMPLETED` result.
-  If the lease expires instead, recovery finalizes the intent. The outcome is one terminal state, and
-  the terminal-row trigger forbids resurrection.
+- **Settlement always finalizes durable intent** (D-C1-08).
+  - Durable intent wins over a later `COMPLETED` result for the Work Item, but the run itself is
+    recorded truthfully: `SUCCEEDED`, with its evidence.
+  - Work that may have external effects is never silently resolved. It goes to reconciliation
+    instead. Resolving with `RETRY` then honours the termination, and `CONFIRMED_COMPLETED` keeps the
+    completion (a supersession still applies).
+  - If the lease expires instead, recovery finalizes the intent, unless the run is `UNSAFE`-class,
+    which goes to reconciliation.
+  - The outcome is one terminal state, and the terminal-row trigger forbids resurrection.
 - **Completed work cannot be cancelled** (`INVALID_TRANSITION`), but it can be superseded.
 - **Propagation** walks the lineage to children through a `PropagationPolicy`, an extension point for
   C4.
@@ -221,6 +232,10 @@ crash window:
 
 ## 12. Workspace, local-filesystem rule
 
+- **A workspace inside any Git working tree is refused** (`inside-source-checkout`). This protects
+  this repository, the QANDEEL App checkout and every other source tree from receiving live Company
+  state.
+
 - The workspace path is always supplied by the caller. No Founder path is built in, and the runtime
   never writes inside the source checkout.
 - **Rejected paths:**
@@ -264,6 +279,11 @@ The active database file is never copied directly.
 migrate, `quick_check`, compare counts. **The live database is never replaced.** Promotion is
 deliberately absent from C1.
 
+Verification is also bound to the live Company. The CLI and the runtime require that
+`backup_records` holds this backup's snapshot and manifest hashes. The snapshot's schema
+(tables, indexes, triggers) must equal the schema the released migrations produce for its version,
+so a planted trigger or view is refused.
+
 **Deferred to C6/L1 (Stage 15):**
 - encrypted off-device copies;
 - generational retention;
@@ -281,6 +301,14 @@ deliberately absent from C1.
   summary, artifacts, backup capability, and workspace free space (low-disk threshold 1 GiB).
 
 `inspectWorkspace` is read-only and runs from another process: it never migrates, recovers or claims.
+
+**Not in the C1 health model** (listed so they are not assumed):
+- a stuck-work age signal for long `WAITING`/`BLOCKED` work;
+- an overdue-backup signal, which needs the backup schedule (C6);
+- provider/tool circuit breakers (Stage 12 §13, C2).
+
+Present signals include expired leases, dead letters, reconciliation holds, artifact integrity,
+wake-watcher availability and low disk.
 
 **Integrity policy.** Startup runs `quick_check`. The full `integrity_check` runs on backup, backup
 verification and explicit verification (`store.integrityCheck()`, CLI `verify-backup`), never on

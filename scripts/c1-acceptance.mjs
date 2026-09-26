@@ -35,7 +35,13 @@ const { ArtifactStore, CompanyStore, CURRENT_SCHEMA_VERSION, createBackup, verif
 // ------------------------------------------------------------------------------------------------
 // Child mode: a runtime process that the parent kills without graceful shutdown.
 if (values['child-host']) {
-  const runtime = new CompanyRuntime({ workspace: values['child-host'], processors: DETERMINISTIC_PROCESSORS, supervisorTtlMs: 2_000, storageFault: (p) => p === 'checkpoint.afterCommit' && process.stdout.write('CHECKPOINT\n') });
+  // Internal mode: only ever <sandbox>/company of a sandbox this harness created (marker present).
+  const childSandbox = path.resolve(values['child-host']);
+  if (!existsSync(path.join(childSandbox, MARKER))) {
+    console.error(JSON.stringify({ ok: false, verdict: 'REFUSED', message: 'child mode runs only inside a harness-owned sandbox' }));
+    process.exit(2);
+  }
+  const runtime = new CompanyRuntime({ workspace: path.join(childSandbox, 'company'), processors: DETERMINISTIC_PROCESSORS, supervisorTtlMs: 2_000, storageFault: (p) => p === 'checkpoint.afterCommit' && process.stdout.write('CHECKPOINT\n') });
   await runtime.start();
   const { workItem } = runtime.submitWorkItem({ objective: 'acceptance crash probe', ownerRef: 'owner:founder', processorKind: 'c1.steps', processorInput: { steps: 8, stepMs: 200 }, initialState: 'READY' });
   process.stdout.write(`SUBMITTED ${workItem.id}\n`);
@@ -56,6 +62,7 @@ for (let dir = sandbox; ; dir = path.dirname(dir)) {
   if (path.dirname(dir) === dir) break;
 }
 if (existsSync(sandbox) && readdirSync(sandbox).length > 0) refuse('the acceptance directory must not exist or must be empty');
+const preExisting = existsSync(sandbox);
 mkdirSync(sandbox, { recursive: true });
 writeFileSync(path.join(sandbox, MARKER), 'created by the QANDEEL COMPANY C1 acceptance harness; safe to delete\n');
 
@@ -127,7 +134,7 @@ await step('work-item-lifecycle-and-claim', async () => {
 });
 
 await step('crash-restart-recovery', async () => {
-  const child = spawn(process.execPath, [SELF, '--child-host', company], { stdio: ['ignore', 'pipe', 'inherit'], shell: false, windowsHide: true });
+  const child = spawn(process.execPath, [SELF, '--child-host', sandbox], { stdio: ['ignore', 'pipe', 'inherit'], shell: false, windowsHide: true });
   let output = '';
   child.stdout.setEncoding('utf8').on('data', (d) => (output += d));
   const exited = new Promise((resolve) => child.on('exit', resolve));
@@ -203,8 +210,13 @@ await step('health-readiness', async () => {
 const verdict = failed ? 'C1 LOCAL ACCEPTANCE — FAIL' : 'C1 LOCAL ACCEPTANCE — PASS';
 console.log(JSON.stringify({ verdict, steps: results.length, node: process.versions.node, platform: process.platform, sandbox: values.keep ? sandbox : '(removed)', backup: values.keep ? backupDir : undefined }));
 
-if (!values.keep) {
-  // Delete only what this harness owns: the marker proves it created this directory.
-  if (existsSync(path.join(sandbox, MARKER))) rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+if (!values.keep && existsSync(path.join(sandbox, MARKER))) {
+  // Delete only what this harness created. A directory the caller supplied (empty) is kept; only
+  // the entries the harness wrote inside it are removed.
+  if (preExisting) {
+    for (const entry of [MARKER, 'company', 'restore-check']) rmSync(path.join(sandbox, entry), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } else {
+    rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
 }
 process.exit(failed ? 1 : 0);

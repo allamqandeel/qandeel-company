@@ -16,6 +16,7 @@ export {
   type BackupManifest,
   type BackupResult,
   type BackupVerification,
+  type ExpectedBackup,
   type IsolatedRestoreReport,
 } from './backup.js';
 export type { FaultHook, FaultPoint } from './internal.js';

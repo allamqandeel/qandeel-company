@@ -21,7 +21,7 @@
  * Paths are derived only from validated UUIDs and SHA-256 hex; a caller's label is display
  * metadata and never becomes a filesystem path.
  */
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import path from 'node:path';
 
 import { QandeelError, assertId, boundedText, isId, isSha256Hex, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
@@ -197,13 +197,20 @@ export class ArtifactStore {
 
   #promote(id: Id, reason: string): ArtifactRecord {
     const ctx = this.#ctx;
+    // Hash before taking the write lock: re-hashing a large object must never hold other writers
+    // past their busy timeout. Inside the transaction only the cheap size check is repeated.
+    const before = this.get(id);
+    const file = this.objectPath(before.sha256);
+    const object = hashFile(file);
+    if (!object || object.sha256 !== before.sha256 || object.size !== before.sizeBytes) {
+      throw new QandeelError('ARTIFACT_INTEGRITY', 'artifact object is absent or does not match its hash; not promoted', { artifactId: id });
+    }
     return ctx.db.immediate('promote artifact', () => {
       const row = ctx.db.get('SELECT * FROM artifacts WHERE id = ?', id);
       if (!row) throw new QandeelError('NOT_FOUND', 'artifact not found', { artifactId: id });
       const record = mapArtifact(row);
-      const object = hashFile(this.objectPath(record.sha256));
-      if (!object || object.sha256 !== record.sha256 || object.size !== record.sizeBytes) {
-        throw new QandeelError('ARTIFACT_INTEGRITY', 'artifact object is absent or does not match its hash; not promoted', { artifactId: id });
+      if (!existsSync(file) || statSync(file).size !== record.sizeBytes) {
+        throw new QandeelError('ARTIFACT_INTEGRITY', 'artifact object changed during promotion; not promoted', { artifactId: id });
       }
       const at = ts(ctx);
       ctx.db.run(`UPDATE artifacts SET state = 'READY', verified_at = ?, updated_at = ? WHERE id = ?`, at, at, id);
@@ -315,19 +322,19 @@ export class ArtifactStore {
     let seen = 0;
     for (const a of existsSync(this.#layout.objectsDir) ? readdirSync(this.#layout.objectsDir) : []) {
       const dirA = containedPath(this.#layout.objectsDir, a);
-      if (!/^[0-9a-f]{2}$/.test(a) || !statSync(dirA).isDirectory()) {
+      if (!/^[0-9a-f]{2}$/.test(a) || !lstatSync(dirA).isDirectory()) {
         report.unknownFiles++;
         continue;
       }
       for (const b of readdirSync(dirA)) {
         const dirB = containedPath(dirA, b);
-        if (!/^[0-9a-f]{2}$/.test(b) || !statSync(dirB).isDirectory()) {
+        if (!/^[0-9a-f]{2}$/.test(b) || !lstatSync(dirB).isDirectory()) {
           report.unknownFiles++;
           continue;
         }
         for (const name of readdirSync(dirB)) {
           if (++seen > limit) return report;
-          if (!isSha256Hex(name) || !name.startsWith(a + b)) {
+          if (!isSha256Hex(name) || !name.startsWith(a + b) || !lstatSync(containedPath(dirB, name)).isFile()) {
             report.unknownFiles++;
             continue;
           }

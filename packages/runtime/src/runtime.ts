@@ -106,6 +106,8 @@ export interface RuntimeDiagnostics {
   readonly maxObservedActive: number;
   readonly timerArmedFor: string | null;
   readonly wakeSignals: number;
+  /** Cross-process wake watcher state; a lost watcher is reported, never silently ignored. */
+  readonly wakeWatcher: 'ACTIVE' | 'DISABLED' | 'UNAVAILABLE';
 }
 
 export type EventHandler = (event: EventRecord) => void;
@@ -195,6 +197,7 @@ export class CompanyRuntime {
       store.updateInstance(this.instanceId, 'READY', { recovery: summary });
       store.recordAudit('runtime.ready', 'runtime', this.instanceId, 'OK', null, { supervisorToken: this.#fence.fencingToken, claimsRecovered: summary.claimsRecovered });
       if (this.#opts.watchWakeFile ?? true) this.#wake.watchWakeFile(store.workspace.wakeFile);
+      else this.#wake.disableWatcher();
       this.#state = 'READY';
       this.#log.info('runtime.ready', { instanceId: this.instanceId, supervisorToken: this.#fence.fencingToken, claimsRecovered: summary.claimsRecovered, dueJobs: summary.dueJobs });
       this.#pump();
@@ -392,7 +395,12 @@ export class CompanyRuntime {
   async backup(): Promise<{ backup: BackupResult; verification: BackupVerification }> {
     const store = this.#ready();
     const result = await createBackup(store, { runtimeVersion: RUNTIME_VERSION });
-    const verification = verifyBackup(result.directory, { liveDatabasePath: store.workspace.databasePath, artifactObjectsDir: store.workspace.objectsDir });
+    const expected = store.backupRecord(result.backupId);
+    const verification = verifyBackup(result.directory, {
+      liveDatabasePath: store.workspace.databasePath,
+      artifactObjectsDir: store.workspace.objectsDir,
+      ...(expected ? { expected } : {}),
+    });
     return { backup: result, verification };
   }
 
@@ -431,6 +439,7 @@ export class CompanyRuntime {
       maxObservedActive: this.#maxObservedActive,
       timerArmedFor: this.#timerFor,
       wakeSignals: this.#wake.signals,
+      wakeWatcher: this.#wake.watcherState,
     };
   }
 

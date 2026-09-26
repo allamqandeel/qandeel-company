@@ -6,10 +6,10 @@
 import {
   COMPLETED_FAMILY,
   DEPENDENCY_FAILED_STATES,
-  DEPENDENCY_SATISFIED_STATES,
   QandeelError,
   TERMINAL_WORK_ITEM_STATES,
   assertTransition,
+  satisfiesDependents,
   newId,
   toTimestamp,
   type Id,
@@ -185,8 +185,9 @@ export function reevaluateDependencyBlock(ctx: StoreContext, item: WorkItemRecor
   return item;
 }
 
-/** A dependency reached the completed family: resolve its edges and wake only affected dependents. */
+/** A dependency became satisfying (D-C1-09): resolve its edges and wake only affected dependents. */
 export function resolveDependents(ctx: StoreContext, completedId: Id, trace: TraceContext): Id[] {
+  if (!isSatisfied(getWorkItemRow(ctx, completedId))) return []; // e.g. completed but still awaiting review
   const dependents = ctx.db.all<{ work_item_id: string }>(
     'SELECT work_item_id FROM work_item_dependencies WHERE depends_on_id = ? AND resolved_at IS NULL ORDER BY work_item_id',
     completedId,
@@ -225,8 +226,9 @@ export function dependsTransitively(ctx: StoreContext, from: Id, target: Id): bo
   return row !== undefined;
 }
 
-export function isSatisfied(state: WorkItemState): boolean {
-  return DEPENDENCY_SATISFIED_STATES.has(state);
+/** D-C1-09: review-required work satisfies dependents only once REVIEWED; other work once COMPLETED. */
+export function isSatisfied(item: Pick<WorkItemRecord, 'state' | 'reviewRequired'>): boolean {
+  return satisfiesDependents(item);
 }
 
 // ---------------------------------------------------------------------------------------------

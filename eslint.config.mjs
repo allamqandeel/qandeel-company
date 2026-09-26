@@ -29,6 +29,7 @@ export default tseslint.config(
           paths: [
             { name: 'node:sqlite', message: 'Only packages/storage/src/sqlite/connection.ts may import node:sqlite.' },
             ...NETWORK_MODULES.map((name) => ({ name, message: 'C1 runtime code has no network surface.' })),
+            ...['child_process', 'node:child_process', 'worker_threads', 'node:worker_threads'].map((name) => ({ name, message: 'C1 runtime code executes no external tools or processes.' })),
           ],
         },
       ],

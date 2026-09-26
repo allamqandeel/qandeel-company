@@ -7,7 +7,7 @@
  *   init            --workspace <dir>                      create/validate the workspace, migrate
  *   start           --workspace <dir> [--concurrency <n>]  run the Runtime Supervisor until SIGINT/SIGTERM
  *   health          --workspace <dir>                      read-only health/readiness inspection
- *   submit          --workspace <dir> --kind <c1.noop|c1.steps> [--steps <n>] [--step-ms <n>] [--idempotency-key <k>]
+ *   submit          --workspace <dir> --kind <c1.noop|c1.steps> [--owner <kind:id>] [--steps <n>] [--step-ms <n>] [--idempotency-key <k>]
  *   cancel          --workspace <dir> --work-item <id> [--reason <CODE>]
  *   backup          --workspace <dir>                      online backup + isolated verification
  *   verify-backup   --workspace <dir> --backup <id>
@@ -62,6 +62,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       reason: { type: 'string' },
       backup: { type: 'string' },
       target: { type: 'string' },
+      owner: { type: 'string' },
     },
   });
   if (command === undefined || values.workspace === undefined) fail('USAGE', USAGE, 2);
@@ -106,7 +107,8 @@ export async function main(argv: readonly string[]): Promise<void> {
         const r = store.createWorkItem(
           {
             objective: `C1 deterministic ${kind} work`,
-            ownerRef: 'owner:founder',
+            // The accountable owner is explicit; the CLI never defaults it to the Founder.
+            ownerRef: values.owner ?? 'owner:c1-cli-operator',
             processorKind: kind,
             processorInput: { steps: positiveInt(values.steps, 'steps', 3, 10_000), stepMs: positiveInt(values['step-ms'], 'step-ms', 0, 60_000) },
             initialState: 'READY',
@@ -135,7 +137,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
       try {
         const r = await createBackup(store, { runtimeVersion: RUNTIME_VERSION });
-        const v = verifyBackup(r.directory, { liveDatabasePath: store.workspace.databasePath, artifactObjectsDir: store.workspace.objectsDir });
+        const v = verifyBackup(r.directory, { liveDatabasePath: store.workspace.databasePath, artifactObjectsDir: store.workspace.objectsDir, expected: { snapshotSha256: r.manifest.snapshot.sha256, manifestSha256: r.manifestSha256 } });
         out({ ok: true, command, backupId: r.backupId, schemaVersion: r.manifest.schemaVersion, snapshotSha256: r.manifest.snapshot.sha256, counts: r.manifest.counts, verified: v.ok });
       } finally {
         store.close();
@@ -146,8 +148,10 @@ export async function main(argv: readonly string[]): Promise<void> {
       const id = assertId(values.backup, 'backup');
       const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
       const { backupsDir, databasePath, objectsDir } = store.workspace;
+      const expected = store.backupRecord(id);
       store.close();
-      const v = verifyBackup(path.join(backupsDir, id), { liveDatabasePath: databasePath, artifactObjectsDir: objectsDir });
+      if (!expected) fail('BACKUP_INTEGRITY', 'this Company holds no record of that backup');
+      const v = verifyBackup(path.join(backupsDir, id), { liveDatabasePath: databasePath, artifactObjectsDir: objectsDir, expected });
       out({ command, ...v });
       return;
     }
@@ -156,8 +160,10 @@ export async function main(argv: readonly string[]): Promise<void> {
       if (values.target === undefined) fail('USAGE', '--target <new empty directory> is required', 2);
       const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
       const { backupsDir, databasePath } = store.workspace;
+      const expected = store.backupRecord(id);
       store.close();
-      const r = restoreToIsolatedWorkspace(path.join(backupsDir, id), path.resolve(values.target), { liveDatabasePath: databasePath });
+      if (!expected) fail('BACKUP_INTEGRITY', 'this Company holds no record of that backup');
+      const r = restoreToIsolatedWorkspace(path.join(backupsDir, id), path.resolve(values.target), { liveDatabasePath: databasePath, expected });
       out({ ok: true, command, backupId: r.backupId, schemaVersionAfter: r.schemaVersionAfter, quickCheck: r.quickCheck, counts: r.counts });
       return;
     }

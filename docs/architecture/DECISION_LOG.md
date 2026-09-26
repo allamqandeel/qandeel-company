@@ -292,8 +292,10 @@ not count. Backoff is deterministic, with no jitter, so tests and recovery are r
 ## D-C1-11 — Cross-process wake without a network or IPC service
 
 Another local process that commits work (for example the CLI) writes `<workspace>/runtime/wake.signal`.
-The runtime observes it with `fs.watch`, which is OS change notification, not polling. A lost hint is
-harmless: the queue is durable, and recovery and the next-due timer rediscover work. No HTTP server,
+The runtime observes it with `fs.watch`, which is OS change notification, not polling. A lost hint
+never loses work, because the queue is durable, but it can delay pickup until the next pump or a
+restart. The watcher is therefore re-armed once on error and otherwise reported by health
+(`WAKE_WATCHER_UNAVAILABLE` → `DEGRADED`). No HTTP server,
 socket or named pipe was added. The Founder UI IPC (Stage 12 §47–§50) belongs to a later package.
 
 ## D-C1-12 — Backup mechanics
@@ -351,3 +353,34 @@ TerminateProcess, so the same fault matrix runs on both CI operating systems.
 
 The Cloud platform mandated the branch `claude/dreamy-wozniak-nq3hr8`, and it was used instead of the
 preferred `feat/c1-company-foundation-durable-runtime`, as the task allows.
+
+## D-C1-17 — Internal review dispositions (fail-closed review, truthful runs, bindings)
+
+The internal review lenses A and C drove these changes:
+- **ACHIEVED only through OUTCOME_VERIFIED.** Closing can no longer record success (Stage 8 §34). This
+  is enforced in the domain and by a database trigger.
+- **No faked approval.** `WAITING_APPROVAL` is no longer a manual target, and in C1 it can be exited
+  only by cancellation or supersession.
+- **Review required at R2+ (Stage 3 §2/§4).** `REVIEWED` and `OUTCOME_VERIFIED` fail closed in C1
+  (`REVIEW_PATH_UNAVAILABLE`), because review independence must be enforced by authority and none
+  exists before the permission engine and Review Pool (C2/C4). This extends D-C1-07's fail-closed rule
+  from approval to review. It narrows what C1 can do and adds no Product behaviour.
+- **D-C1-08, amended.** A run that genuinely completed after termination was requested is recorded
+  `SUCCEEDED`, with its evidence. The Work Item still honours the earlier intent. Side-effecting
+  processors (`IDEMPOTENT`/`UNSAFE`) go to reconciliation instead of a silent choice.
+- **D-C1-09, amended.** Review-required work satisfies dependents only once `REVIEWED`; other work,
+  once `COMPLETED`.
+- **Workspaces inside a Git working tree are refused** by the product itself, not only by the
+  acceptance harness.
+- **No caller-supplied migrations.** `CompanyStore.open` accepts only the released, pinned migrations.
+  The fixture seam is a storage-internal, test-only function.
+- **Backup verification is bound to the live Company.** It checks the `backup_records` hashes and
+  requires the snapshot schema to equal the released schema of its version.
+- **Artifact promotion hashes content before taking the write lock.**
+- **Restore targets are validated before first touch** and must lie outside the live workspace.
+
+**Product Owner input requested (not conflicts; the authority is silent):**
+- **D-C1-08:** which outcome stands when a cancellation races a real completion.
+- **D-C1-09:** the point at which a dependency is satisfied.
+
+Both are implemented as the most conservative reading and change in one place each.

@@ -303,11 +303,31 @@ describe('cancellation races', () => {
       const out = h.store.requestCancellation(id, { reasonCode: 'FOUNDER_STOP' });
       assert.deepEqual(out.signalJobIds, [c.job.id]);
       assert.equal(h.store.getWorkItem(id).state, 'IN_PROGRESS', 'intent is durable; state finalizes when the worker stops');
-      const settled = h.store.settle(c.fence, { type: 'COMPLETED' }, { backoff });
+      const settled = h.store.settle(c.fence, { type: 'COMPLETED', evidence: { rows: 2 } }, { backoff });
       assert.equal(settled.workItemState, 'CANCELLED');
-      assert.equal(h.store.runsFor(c.job.id)[0]?.state, 'CANCELLED');
+      const [run] = h.store.runsFor(c.job.id);
+      assert.equal(run?.state, 'SUCCEEDED', 'the run is recorded truthfully: it did finish');
+      assert.equal(run?.failureCode, 'TERMINATION_REQUESTED');
       assert.equal(h.store.history(id).filter((t) => t.toState === 'COMPLETED').length, 0);
       assert.throws(() => h.store.settle(c.fence, { type: 'COMPLETED' }, { backoff }), (e) => isQandeelError(e, 'STALE_LEASE'));
+    } finally {
+      h.close();
+    }
+  });
+
+  test('termination intent + completion of UNSAFE-class work is never silently resolved: reconciliation hold', () => {
+    const h = harness();
+    try {
+      const id = executable(h.store, { processorKind: 'test.unsafe' });
+      const c = h.store.claimNext(claimOpts());
+      assert.ok(c);
+      h.store.requestCancellation(id, { reasonCode: 'STOP' });
+      const out = h.store.settle(c.fence, { type: 'COMPLETED' }, { backoff });
+      assert.equal(out.jobState, 'RECONCILIATION_HOLD');
+      assert.equal(h.store.getWorkItem(id).blockedReason, 'RECONCILIATION_REQUIRED');
+      assert.deepEqual(h.store.danglingTerminations(), [], 'recovery does not try to cancel held work');
+      const resolved = h.store.resolveReconciliation(c.job.id, 'RETRY', 'EFFECT_DID_NOT_HAPPEN', 'owner:founder');
+      assert.equal(resolved.workItemState, 'CANCELLED', 'retry after reconciliation honours the earlier termination intent');
     } finally {
       h.close();
     }

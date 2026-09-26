@@ -144,11 +144,11 @@ export function txMarkDispatched(ctx: StoreContext, ids: readonly Id[]): number 
 }
 
 export function eventsFor(ctx: StoreContext, aggregateId: Id): EventRecord[] {
-  return ctx.db.all('SELECT * FROM events WHERE aggregate_id = ? ORDER BY seq', aggregateId).map(mapEvent);
+  return ctx.db.all('SELECT * FROM events WHERE aggregate_id = ? ORDER BY seq LIMIT 1000', aggregateId).map(mapEvent);
 }
 
 export function auditFor(ctx: StoreContext, entityId: string): AuditRecord[] {
-  return ctx.db.all('SELECT * FROM audit_events WHERE entity_id = ? ORDER BY id', entityId).map(mapAudit);
+  return ctx.db.all('SELECT * FROM audit_events WHERE entity_id = ? ORDER BY id LIMIT 1000', entityId).map(mapAudit);
 }
 
 export function auditByAction(ctx: StoreContext, action: string, limit = 1000): AuditRecord[] {

@@ -5,7 +5,7 @@ import { describe, test } from 'node:test';
 import { ManualClock, isQandeelError } from '@qandeel-company/domain';
 
 import { CURRENT_SCHEMA_VERSION, CompanyStore, RELEASED_MIGRATIONS, loadReleasedMigrations, migrationChecksum, type Migration } from '../src/index.js';
-import { storeContext } from '../src/store.js';
+import { openStoreForTests, storeContext } from '../src/store.js';
 import { owner, removeRoot, tempRoot } from './helpers.js';
 
 const clock = new ManualClock();
@@ -50,7 +50,7 @@ describe('versioned migrations', () => {
       const base = loadReleasedMigrations();
       CompanyStore.open(root, { clock }).close();
       const broken = fixture(3, 'broken', 'CREATE TABLE half_done (x INTEGER) STRICT;\nINSERT INTO no_such_table VALUES (1);\n');
-      assert.throws(() => CompanyStore.open(root, { clock, migrations: [...base, broken] }), (e) => isQandeelError(e, 'MIGRATION_FAILED') && e.details.version === 3);
+      assert.throws(() => openStoreForTests(root, { clock, migrations: [...base, broken] }), (e) => isQandeelError(e, 'MIGRATION_FAILED') && e.details.version === 3);
       const again = CompanyStore.open(root, { clock });
       assert.equal(again.schemaVersion, 2);
       assert.ok(!tables(again).includes('half_done'), 'DDL of the failed migration was rolled back');
@@ -64,10 +64,10 @@ describe('versioned migrations', () => {
     const root = tempRoot('mig-throw');
     try {
       assert.throws(
-        () => CompanyStore.open(root, { clock, migrationFault: (v) => { if (v === 2) throw new Error('injected'); } }),
+        () => openStoreForTests(root, { clock, migrationFault: (v) => { if (v === 2) throw new Error('injected'); } }),
         (e) => isQandeelError(e, 'MIGRATION_FAILED'),
       );
-      const s = CompanyStore.open(root, { clock, migrations: loadReleasedMigrations(1) });
+      const s = openStoreForTests(root, { clock, migrations: loadReleasedMigrations(1) });
       assert.equal(s.schemaVersion, 1);
       assert.ok(!tables(s).includes('queue_jobs'));
       s.close();
@@ -80,11 +80,11 @@ describe('versioned migrations', () => {
     const root = tempRoot('mig-drift');
     try {
       const v1 = fixture(1, 'one', 'CREATE TABLE a (x INTEGER) STRICT;\n');
-      CompanyStore.open(root, { clock, migrations: [v1] }).close();
+      openStoreForTests(root, { clock, migrations: [v1] }).close();
       const edited = fixture(1, 'one', 'CREATE TABLE a (x INTEGER, y INTEGER) STRICT;\n');
-      assert.throws(() => CompanyStore.open(root, { clock, migrations: [edited] }), (e) => isQandeelError(e, 'MIGRATION_CHECKSUM_DRIFT'));
+      assert.throws(() => openStoreForTests(root, { clock, migrations: [edited] }), (e) => isQandeelError(e, 'MIGRATION_CHECKSUM_DRIFT'));
       // A text that does not match its own recorded checksum is refused before touching the DB.
-      assert.throws(() => CompanyStore.open(root, { clock, migrations: [{ ...v1, sql: `${v1.sql}-- x\n` }] }), (e) => isQandeelError(e, 'MIGRATION_CHECKSUM_DRIFT'));
+      assert.throws(() => openStoreForTests(root, { clock, migrations: [{ ...v1, sql: `${v1.sql}-- x\n` }] }), (e) => isQandeelError(e, 'MIGRATION_CHECKSUM_DRIFT'));
     } finally {
       removeRoot(root);
     }
@@ -93,7 +93,7 @@ describe('versioned migrations', () => {
   test('old schema → current schema preserves data (real released v1 → v2)', () => {
     const root = tempRoot('mig-upgrade');
     try {
-      const old = CompanyStore.open(root, { clock, migrations: loadReleasedMigrations(1) });
+      const old = openStoreForTests(root, { clock, migrations: loadReleasedMigrations(1) });
       assert.equal(old.schemaVersion, 1);
       const { workItem } = old.createWorkItem({ objective: 'created on schema v1', ownerRef: owner, initialState: 'READY' });
       old.close();
@@ -111,9 +111,23 @@ describe('versioned migrations', () => {
     const root = tempRoot('mig-future');
     try {
       CompanyStore.open(root, { clock }).close();
-      assert.throws(() => CompanyStore.open(root, { clock, migrations: loadReleasedMigrations(1) }), (e) => isQandeelError(e, 'SCHEMA_FROM_FUTURE'));
+      assert.throws(() => openStoreForTests(root, { clock, migrations: loadReleasedMigrations(1) }), (e) => isQandeelError(e, 'SCHEMA_FROM_FUTURE'));
       const s = CompanyStore.open(root, { clock });
       assert.equal(s.schemaVersion, 2);
+      s.close();
+    } finally {
+      removeRoot(root);
+    }
+  });
+
+  test('the public open() never executes caller-supplied migrations (no SQL surface)', () => {
+    const root = tempRoot('mig-public');
+    try {
+      const sql = 'CREATE TABLE smuggled (x INTEGER) STRICT;\n';
+      const smuggled = { version: 3, name: 'x', sql, sha256: migrationChecksum(sql) };
+      const s = CompanyStore.open(root, { clock, migrations: [...loadReleasedMigrations(), smuggled] } as never);
+      assert.equal(s.schemaVersion, CURRENT_SCHEMA_VERSION);
+      assert.ok(!tables(s).includes('smuggled'));
       s.close();
     } finally {
       removeRoot(root);

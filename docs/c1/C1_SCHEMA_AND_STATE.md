@@ -85,13 +85,13 @@ stateDiagram-v2
   WAITING --> READY
   BLOCKED --> READY
   BLOCKED --> COMPLETED : reconciliation confirmed only
-  WAITING_APPROVAL --> READY : (no approval path in C1)
+  WAITING_APPROVAL --> READY : approval engine (C2) — refused in C1
   COMPLETED --> WAITING_REVIEW
   COMPLETED --> REVIEWED
   COMPLETED --> CLOSED : only if review not required
   WAITING_REVIEW --> REVIEWED
   WAITING_REVIEW --> READY : rework
-  REVIEWED --> OUTCOME_VERIFIED : outcome ACHIEVED
+  REVIEWED --> OUTCOME_VERIFIED : outcome ACHIEVED (reviewer authority C2/C4 — refused in C1)
   REVIEWED --> CLOSED
   OUTCOME_VERIFIED --> CLOSED
   CLOSED --> [*]
@@ -105,6 +105,7 @@ Also allowed and omitted above for readability:
 - `SUPERSEDED` from `COMPLETED`, `WAITING_REVIEW` and `REVIEWED`.
 - `BLOCKED` and `WAITING` from `READY` and `ASSIGNED`.
 - `WAITING_APPROVAL` from `READY` and `IN_PROGRESS`.
+- `BLOCKED` from `WAITING`.
 - `FAILED` from `WAITING` and `BLOCKED`.
 
 Semantics that are preserved on purpose:
@@ -115,6 +116,15 @@ Semantics that are preserved on purpose:
 - **Optional states stay optional.** Work that does not require review closes from `COMPLETED`.
   Review-required work moves to `WAITING_REVIEW` automatically on completion and cannot close
   before `REVIEWED`. `OUTCOME_VERIFIED` requires an `ACHIEVED` outcome.
+- **Closing never records success (Stage 8 §34).** `ACHIEVED` is recorded only through
+  `OUTCOME_VERIFIED`. The domain rule and a database trigger (`work_items_success_needs_verification`)
+  both refuse `CLOSED`/`ACHIEVED` from any other state. A close may record `NOT_ACHIEVED` or leave the
+  outcome `NOT_ASSESSED`.
+- **Review is required at R2 and above (Stage 3 §2/§4)**, whatever the caller passes.
+- **Fail-closed review.** Independent review must be enforced by authority (Stage 3 §4), and no
+  reviewer authority exists until the Review Pool and permission engine (C2/C4). The manual API
+  therefore refuses `REVIEWED` and `OUTCOME_VERIFIED` (`REVIEW_PATH_UNAVAILABLE`). Review-required work
+  can wait in `WAITING_REVIEW` or return to rework, but C1 cannot make a record look reviewed.
 - **Cancellation applies before completion; supersession applies until closure.**
 - **Terminal states:** `CLOSED`, `FAILED`, `CANCELLED`, `SUPERSEDED`. A database trigger freezes
   terminal rows (no resurrection).
@@ -124,9 +134,11 @@ Semantics that are preserved on purpose:
   until C2.
 - **Who drives which transition.** The runtime alone moves work into and out of `IN_PROGRESS`, and
   alone sets `WAITING`, `COMPLETED` and `FAILED`. The manual API (`transitionWorkItem`) covers
-  `READY`, `ASSIGNED`, `BLOCKED`, `WAITING_APPROVAL`, `WAITING_REVIEW`, `REVIEWED`,
-  `OUTCOME_VERIFIED` and `CLOSED`. It refuses executing work (`LEASE_HELD`) and routes cancellation
-  and supersession to their own APIs, which propagate.
+  `READY`, `ASSIGNED`, `BLOCKED`, `WAITING_REVIEW` and `CLOSED`; `REVIEWED` and `OUTCOME_VERIFIED`
+  fail closed as above. It refuses executing work (`LEASE_HELD`), refuses any exit from
+  `WAITING_APPROVAL` except cancellation and supersession (`APPROVAL_PATH_UNAVAILABLE`), and routes
+  cancellation and supersession to their own APIs, which propagate. `WAITING_APPROVAL` is entered
+  only by the creation gate, so no record can appear approved.
 - **Actor references are opaque.** `owner_ref`, `actor_ref` and contributors are `<kind>:<id>`
   strings. C1 stores them verbatim and never claims they were authenticated or authorized.
 
@@ -135,9 +147,10 @@ Semantics that are preserved on purpose:
 - An edge is durable and never deleted. Self-edges are rejected by `CHECK` and in code
   (`DEPENDENCY_SELF`).
 - A cycle is detected with a recursive CTE inside the same write transaction (`DEPENDENCY_CYCLE`).
-- A dependency is **satisfied** once the dependency reaches the completed family (`COMPLETED`,
-  `WAITING_REVIEW`, `REVIEWED`, `OUTCOME_VERIFIED`, `CLOSED`). This is an engineering default
-  (D-C1-09): a later policy may require review first.
+- **When a dependency is satisfied** (D-C1-09). The authority is silent, so this is reported as a
+  Product gap. The conservative default applies: review-required work satisfies its dependents only
+  once `REVIEWED` (Completed ≠ Reviewed), and other work once `COMPLETED`. In C1, review-required
+  dependencies therefore keep their dependents blocked, because C1 records no review.
 - Work with unresolved dependencies is `BLOCKED`, with `blocked_reason = DEPENDENCY` and
   `blocker_ref = work_item:<id>`. If a dependency ends as `FAILED`, `CANCELLED` or `SUPERSEDED`, the
   reason becomes `DEPENDENCY_FAILED` and the work stays blocked; it is never auto-cancelled.
@@ -230,6 +243,12 @@ Semantics that are preserved on purpose:
 - **C2 governance.** Approval records and an approval engine, permission grants, budgets and cost
   events.
 - **Stage 9 communication.** Messages, threads and requests.
+- **Blocked ownership (Stage 8 §17).** C1 records the reason and the blocking reference
+  (`blocked_reason`, `blocker_ref`). The resolver and the next unblock action belong with owner and
+  escalation routing (C4).
+- **Required-evidence enforcement (Stage 8 §30).** `required_evidence_json` is stored, and processor
+  evidence is recorded on the run. Judging evidence completeness is review work (C2/C4); C1 does not
+  claim it.
 - **Later operational policy:**
   - recurring-responsibility schedules and overlap policy;
   - WIP limits per Employee or team (C1 has only the runtime-wide concurrency cap);

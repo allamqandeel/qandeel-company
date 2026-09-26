@@ -3,7 +3,7 @@
  * database handle or an "execute SQL" method. Each mutating method is one short `BEGIN IMMEDIATE`
  * transaction; nothing awaits while a write transaction is open.
  */
-import { QandeelError, isQandeelError, systemClock, type BackoffPolicy, type Clock, type Id, type JsonValue, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
+import { QandeelError, assertCode, isId, isQandeelError, systemClock, type BackoffPolicy, type Clock, type Id, type JsonValue, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
 
 import { appendAudit, getJobRow, getWorkItemRow, mapCheckpoint, mapJob, mapRun, mapWorkItem, ts, type FaultHook, type StoreContext } from './internal.js';
 import { CURRENT_SCHEMA_VERSION, appliedMigrations, loadReleasedMigrations, migrate, userVersion, type Migration, type MigrationFaultHook, type MigrationReport } from './migrations.js';
@@ -73,10 +73,10 @@ export interface OpenStoreOptions {
   /** Recorded with each migration and runtime instance. */
   readonly runtimeVersion?: string;
   readonly busyTimeoutMs?: number;
-  /** Test seam: a migration set other than the released one (fixtures, failure injection). */
-  readonly migrations?: readonly Migration[];
-  readonly migrationFault?: MigrationFaultHook;
-  /** Test seam: failure injection at named durability boundaries. */
+  /**
+   * Failure injection at named durability boundaries (tests only; production passes nothing). The
+   * hook can only observe or abort — it has no database access.
+   */
   readonly fault?: FaultHook;
   /** Create workspace directories if missing (default true). */
   readonly create?: boolean;
@@ -86,6 +86,18 @@ export interface OpenStoreOptions {
    */
   readonly migrationMode?: 'apply' | 'verify';
 }
+
+/**
+ * Storage-internal options: a migration set other than the released one. Only this package's own
+ * tests use them (via `openStoreForTests`, which the package entry point does not export), so no
+ * public API can make the store execute caller-supplied SQL.
+ */
+interface InternalOpenOptions extends OpenStoreOptions {
+  readonly migrations?: readonly Migration[];
+  readonly migrationFault?: MigrationFaultHook;
+}
+
+const OPEN_INTERNAL: unique symbol = Symbol('CompanyStore.openInternal');
 
 export const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
 
@@ -119,6 +131,19 @@ export class CompanyStore {
    * returned before its schema is current: readiness depends on this.
    */
   static open(workspaceRoot: string, options: OpenStoreOptions = {}): CompanyStore {
+    // Public entry: only the released, pinned migrations; unknown option keys carry no weight.
+    const { clock, runtimeVersion, busyTimeoutMs, fault, create, migrationMode } = options;
+    return CompanyStore[OPEN_INTERNAL](workspaceRoot, {
+      ...(clock ? { clock } : {}),
+      ...(runtimeVersion !== undefined ? { runtimeVersion } : {}),
+      ...(busyTimeoutMs !== undefined ? { busyTimeoutMs } : {}),
+      ...(fault ? { fault } : {}),
+      ...(create !== undefined ? { create } : {}),
+      ...(migrationMode ? { migrationMode } : {}),
+    });
+  }
+
+  static [OPEN_INTERNAL](workspaceRoot: string, options: InternalOpenOptions): CompanyStore {
     const workspace = openWorkspace(workspaceRoot, { create: options.create ?? true });
     const clock = options.clock ?? systemClock;
     const db = SqliteConnection.open({ path: workspace.databasePath, busyTimeoutMs: options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS });
@@ -371,7 +396,7 @@ export class CompanyStore {
       ctx.db
         .all<{ id: string }>(
           `SELECT w.id FROM work_items w WHERE w.termination_requested IS NOT NULL
-             AND NOT EXISTS (SELECT 1 FROM queue_jobs j WHERE j.work_item_id = w.id AND j.state = 'CLAIMED') LIMIT ?`,
+             AND NOT EXISTS (SELECT 1 FROM queue_jobs j WHERE j.work_item_id = w.id AND j.state IN ('CLAIMED', 'RECONCILIATION_HOLD')) LIMIT ?`,
           limit,
         )
         .map((r) => r.id as Id),
@@ -434,8 +459,8 @@ export class CompanyStore {
     return this.#write('mark dispatched', (ctx) => txMarkDispatched(ctx, ids));
   }
 
-  events(aggregateId: Id): EventRecord[] {
-    return this.#read((ctx) => eventsFor(ctx, aggregateId));
+  events(aggregateId: Id, limit = 1_000): EventRecord[] {
+    return this.#read((ctx) => eventsFor(ctx, aggregateId).slice(0, Math.max(1, limit)));
   }
 
   audit(entityId: string): AuditRecord[] {
@@ -447,6 +472,10 @@ export class CompanyStore {
   }
 
   recordAudit(action: string, entityType: string, entityId: string, outcome: 'OK' | 'REJECTED' | 'ERROR', reasonCode: string | null, details: Record<string, string | number | boolean | null> = {}): void {
+    assertCode(action, 'action');
+    assertCode(entityType, 'entityType');
+    if (!isId(entityId)) assertCode(entityId, 'entityId');
+    if (reasonCode !== null) assertCode(reasonCode, 'reasonCode');
     this.#write('record audit', (ctx) => appendAudit(ctx, action, entityType, entityId, {}, outcome, reasonCode, details));
   }
 
@@ -470,6 +499,14 @@ export class CompanyStore {
         schemaVersion: userVersion(ctx.db),
         appliedMigrations: appliedMigrations(ctx.db).map((m) => m.version),
       };
+    });
+  }
+
+  /** The live Company's own record of a backup (binds on-disk files to what was produced). */
+  backupRecord(backupId: Id): { snapshotSha256: string; manifestSha256: string } | null {
+    return this.#read((ctx) => {
+      const r = ctx.db.get<{ snapshot_sha256: string; manifest_sha256: string }>('SELECT snapshot_sha256, manifest_sha256 FROM backup_records WHERE id = ?', backupId);
+      return r ? { snapshotSha256: r.snapshot_sha256, manifestSha256: r.manifest_sha256 } : null;
     });
   }
 
@@ -517,3 +554,8 @@ export interface HealthCounts {
 
 export { CURRENT_SCHEMA_VERSION };
 export type { BackoffPolicy, Claim, ClaimOptions, SettleOptions, SettleOutcome, ReconciliationDecision };
+
+/** Storage tests only (not exported by the package): open with a fixture migration set. */
+export function openStoreForTests(workspaceRoot: string, options: InternalOpenOptions): CompanyStore {
+  return CompanyStore[OPEN_INTERNAL](workspaceRoot, options);
+}

@@ -29,7 +29,7 @@ import {
 
 import { appendAudit, appendEvent, getJobRow, getWorkItemRow, mapCheckpoint, mapJob, mapRun, ts, type StoreContext, type TraceContext } from './internal.js';
 import type { CheckpointRecord, Fence, JobRecord, RunRecord, SupervisorFence, WorkItemRecord } from './records.js';
-import { applyTransition, defaultPropagationPolicy, failDependents, futureTimestamp, newTerminationOutcome, resolveDependents, terminateNow, type TerminationOutcome } from './work-core.js';
+import { applyTransition, defaultPropagationPolicy, failDependents, updateItemMeta, futureTimestamp, newTerminationOutcome, resolveDependents, terminateNow, type TerminationOutcome } from './work-core.js';
 
 export const CHECKPOINT_MAX_BYTES = 65_536;
 export const EVIDENCE_MAX_BYTES = 4_096;
@@ -277,8 +277,11 @@ function setJob(
 }
 
 /** Finalizes durable cancellation/supersession intent for a job whose worker has stopped. */
-function finalizeTermination(ctx: StoreContext, job: JobRecord, runId: Id | null, trace: TraceContext): SettleOutcome {
-  if (runId) endRun(ctx, runId, 'CANCELLED', { failureCategory: 'CANCELLED', failureCode: 'TERMINATION_REQUESTED' });
+function finalizeTermination(ctx: StoreContext, job: JobRecord, runId: Id | null, trace: TraceContext, completedEvidence?: string): SettleOutcome {
+  // A run that genuinely finished is recorded truthfully (SUCCEEDED, with its evidence) even though
+  // the Work Item honours the termination intent recorded before it settled (D-C1-08).
+  if (runId && completedEvidence !== undefined) endRun(ctx, runId, 'SUCCEEDED', { resultJson: completedEvidence, failureCode: 'TERMINATION_REQUESTED' });
+  else if (runId) endRun(ctx, runId, 'CANCELLED', { failureCategory: 'CANCELLED', failureCode: 'TERMINATION_REQUESTED' });
   setJob(ctx, job, 'CANCELLED', { bumpToken: true });
   const item = getWorkItemRow(ctx, job.workItemId);
   const mode = item.terminationRequested ?? 'CANCELLED';
@@ -292,7 +295,7 @@ function finalizeTermination(ctx: StoreContext, job: JobRecord, runId: Id | null
     out,
     0,
   );
-  return { jobState: 'CANCELLED', runState: 'CANCELLED', workItemState: getWorkItemRow(ctx, job.workItemId).state, termination: out };
+  return { jobState: 'CANCELLED', runState: completedEvidence !== undefined ? 'SUCCEEDED' : 'CANCELLED', workItemState: getWorkItemRow(ctx, job.workItemId).state, termination: out };
 }
 
 export interface SettleOptions {
@@ -329,7 +332,19 @@ export function txSettle(ctx: StoreContext, fence: Fence, result: ProcessorResul
   const job = verifyFence(ctx, fence);
   const item = getWorkItemRow(ctx, job.workItemId);
   const trace: TraceContext = { correlationId: job.correlationId, causationId: fence.runId };
-  if (job.cancelRequested) return finalizeTermination(ctx, job, fence.runId, trace);
+  if (job.cancelRequested) {
+    if (result.type === 'COMPLETED') {
+      const run = mapRun(ctx.db.get('SELECT * FROM runs WHERE id = ?', fence.runId) ?? {});
+      if (run.sideEffects !== 'NONE') {
+        // The work happened, possibly with external effects, but termination was requested first:
+        // a person must reconcile which outcome stands. Never silently choose.
+        endRun(ctx, fence.runId, 'SUCCEEDED', { resultJson: evidenceJson, failureCode: 'TERMINATION_REQUESTED' });
+        return hold(ctx, job, item, trace, 'COMPLETED_AFTER_TERMINATION_REQUEST');
+      }
+      return finalizeTermination(ctx, job, fence.runId, trace, evidenceJson);
+    }
+    return finalizeTermination(ctx, job, fence.runId, trace);
+  }
 
   const at = ts(ctx);
   switch (result.type) {
@@ -418,12 +433,13 @@ export function txInterruptClaim(ctx: StoreContext, jobId: Id, reasonCode: strin
   const runRecord = run ? mapRun(run) : undefined;
   const trace: TraceContext = { correlationId: job.correlationId, causationId: job.currentRunId };
   appendAudit(ctx, 'job.lease_recovered', 'job', job.id, trace, 'OK', reasonCode, { previousOwner: job.leaseOwner, fencingToken: job.fencingToken });
-  if (job.cancelRequested) {
+  const hasCheckpoint = latestValidCheckpoint(ctx, job.id) !== null;
+  const disposition = classifyInterruptedRun(runRecord?.sideEffects ?? 'NONE', hasCheckpoint);
+  // Termination intent is finalized directly only when no uncertain external effect can exist.
+  if (job.cancelRequested && disposition !== 'RECONCILIATION_REQUIRED') {
     finalizeTermination(ctx, job, runRecord?.state === 'RUNNING' ? runRecord.id : null, trace);
     return { disposition: 'TERMINATED', jobState: 'CANCELLED' };
   }
-  const hasCheckpoint = latestValidCheckpoint(ctx, job.id) !== null;
-  const disposition = classifyInterruptedRun(runRecord?.sideEffects ?? 'NONE', hasCheckpoint);
   if (runRecord?.state === 'RUNNING') endRun(ctx, runRecord.id, 'INTERRUPTED', { failureCategory: 'INTERRUPTED', failureCode: reasonCode, disposition });
   const item = getWorkItemRow(ctx, job.workItemId);
   if (disposition === 'RECONCILIATION_REQUIRED') {
@@ -496,6 +512,10 @@ export function txResolveReconciliation(ctx: StoreContext, jobId: Id, decision: 
   const full: TraceContext = { ...trace, correlationId: job.correlationId };
   const item = getWorkItemRow(ctx, job.workItemId);
   appendAudit(ctx, 'job.reconciliation_resolved', 'job', job.id, full, 'OK', reasonCode, { decision });
+  if (decision === 'RETRY' && item.terminationRequested !== null) {
+    // The effect did not happen and termination was requested: honour the termination, do not retry.
+    return finalizeTermination(ctx, job, null, full);
+  }
   if (decision === 'RETRY') {
     setJob(ctx, job, 'QUEUED', { availableAt: ts(ctx), bumpToken: true });
     return { jobState: 'QUEUED', runState: 'RECONCILIATION_REQUIRED', workItemState: applyTransition(ctx, item, 'READY', { reasonCode: 'reconciliation.retry', trace: full }).state };
@@ -505,7 +525,17 @@ export function txResolveReconciliation(ctx: StoreContext, jobId: Id, decision: 
     let wi = applyTransition(ctx, item, 'COMPLETED', { reasonCode: 'reconciliation.confirmed_completed', trace: full });
     if (wi.reviewRequired) wi = applyTransition(ctx, wi, 'WAITING_REVIEW', { reasonCode: 'review.required', trace: full });
     const unblocked = resolveDependents(ctx, wi.id, full);
-    return { jobState: 'DONE', runState: 'RECONCILIATION_REQUIRED', workItemState: wi.state, unblocked };
+    if (wi.terminationRequested === 'SUPERSEDED' && wi.supersededBy) {
+      // Completed work can still be superseded; cancellation no longer applies to it.
+      const out = newTerminationOutcome();
+      terminateNow(ctx, wi, { mode: 'SUPERSEDED', reasonCode: wi.terminationReason ?? 'SUPERSEDED', trace: full, supersededBy: wi.supersededBy, policy: defaultPropagationPolicy }, out, 0);
+      return { jobState: 'DONE', runState: 'RECONCILIATION_REQUIRED', workItemState: getWorkItemRow(ctx, wi.id).state, unblocked, termination: out };
+    }
+    if (wi.terminationRequested !== null) {
+      updateItemMeta(ctx, wi, { terminationRequested: null, terminationReason: null });
+      appendAudit(ctx, 'work_item.termination_not_applicable', 'work_item', wi.id, full, 'OK', 'COMPLETED_BEFORE_TERMINATION', {});
+    }
+    return { jobState: 'DONE', runState: 'RECONCILIATION_REQUIRED', workItemState: getWorkItemRow(ctx, wi.id).state, unblocked };
   }
   setJob(ctx, job, 'FAILED', { bumpToken: true });
   const wi = applyTransition(ctx, item, 'FAILED', { reasonCode: 'reconciliation.failed', trace: full });

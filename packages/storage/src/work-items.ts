@@ -19,6 +19,7 @@ import {
   canonicalJson,
   initialState,
   isTimestamp,
+  requiresReview,
   newId,
   sha256Hex,
   type Id,
@@ -132,7 +133,8 @@ export function normalizeCreateInput(input: CreateWorkItemInput): NormalizedInpu
     riskLevel,
     completionCriteriaJson: boundedJson(input.completionCriteria ?? {}, 'completionCriteria', 8192),
     requiredEvidenceJson: boundedJson(input.requiredEvidence ?? [], 'requiredEvidence', 8192),
-    reviewRequired: input.reviewRequired === true,
+    // Stage 3 §2/§4: R2 and above always require independent review.
+    reviewRequired: requiresReview({ reviewRequired: input.reviewRequired === true, riskLevel }),
     approvalRequired: input.approvalRequired === true,
     processorKind: input.processorKind ?? null,
     processorInputJson: boundedJson(input.processorInput ?? null, 'processorInput', 16384),
@@ -180,7 +182,7 @@ export function txCreateWorkItem(ctx: StoreContext, input: CreateWorkItemInput, 
     correlationId = parent.correlationId;
   }
   const deps = n.dependsOn.map((d) => getWorkItemRow(ctx, d));
-  const unresolved = deps.filter((d) => !isSatisfied(d.state));
+  const unresolved = deps.filter((d) => !isSatisfied(d));
   const state = initialState(n.initialState, n, unresolved.length > 0);
   const blockedFailed = unresolved.some((d) => ['FAILED', 'CANCELLED', 'SUPERSEDED'].includes(d.state));
   const at = ts(ctx);
@@ -216,7 +218,7 @@ export function txCreateWorkItem(ctx: StoreContext, input: CreateWorkItemInput, 
     at,
   );
   for (const d of deps) {
-    ctx.db.run('INSERT INTO work_item_dependencies (work_item_id, depends_on_id, created_at, resolved_at) VALUES (?, ?, ?, ?)', id, d.id, at, isSatisfied(d.state) ? at : null);
+    ctx.db.run('INSERT INTO work_item_dependencies (work_item_id, depends_on_id, created_at, resolved_at) VALUES (?, ?, ?, ?)', id, d.id, at, isSatisfied(d) ? at : null);
   }
   const trace: TraceContext = { correlationId, actorRef };
   ctx.db.run(
@@ -238,8 +240,15 @@ export function txCreateWorkItem(ctx: StoreContext, input: CreateWorkItemInput, 
   return { workItem: created, replayed: false, enqueuedJobId: job?.id ?? null };
 }
 
-/** Manual (non-runtime) transitions. The runtime alone moves work into and out of execution. */
-const MANUAL_TARGETS: ReadonlySet<WorkItemState> = new Set(['READY', 'ASSIGNED', 'BLOCKED', 'WAITING_APPROVAL', 'WAITING_REVIEW', 'REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED']);
+/**
+ * Manual (non-runtime) transitions. The runtime alone moves work into and out of execution.
+ * WAITING_APPROVAL is entered only by the creation gate and is never exited toward execution in C1
+ * (no approval engine). REVIEWED — and so OUTCOME_VERIFIED — is refused in C1: independent review
+ * must be enforced by authority (Stage 3 §4), and no reviewer authority exists until the Review
+ * Pool / permission engine (C2/C4). Nothing here can make a record look reviewed or approved.
+ */
+const MANUAL_TARGETS: ReadonlySet<WorkItemState> = new Set(['READY', 'ASSIGNED', 'BLOCKED', 'WAITING_REVIEW', 'REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED']);
+const REVIEW_GATED: ReadonlySet<WorkItemState> = new Set(['REVIEWED', 'OUTCOME_VERIFIED']);
 const EXECUTABLE: ReadonlySet<WorkItemState> = new Set(['READY', 'ASSIGNED']);
 
 export interface TransitionInput {
@@ -259,6 +268,12 @@ export function txTransition(ctx: StoreContext, itemId: Id, input: TransitionInp
   const item = getWorkItemRow(ctx, itemId);
   if (!MANUAL_TARGETS.has(input.to)) {
     throw new QandeelError('INVALID_TRANSITION', `${input.to} is reached through the runtime or the cancel/supersede API, not a manual transition`, { from: item.state, to: input.to });
+  }
+  if (REVIEW_GATED.has(input.to)) {
+    throw new QandeelError('REVIEW_PATH_UNAVAILABLE', 'no enforced reviewer authority exists in C1; review outcomes cannot be recorded', { from: item.state, to: input.to });
+  }
+  if (item.state === 'WAITING_APPROVAL') {
+    throw new QandeelError('APPROVAL_PATH_UNAVAILABLE', 'work waiting for approval can only be cancelled or superseded in C1', { from: item.state, to: input.to });
   }
   const job = liveJobFor(ctx, item.id);
   if (item.state === 'IN_PROGRESS' || job?.state === 'CLAIMED') throw new QandeelError('LEASE_HELD', 'work is executing; the runtime owns it until the run settles', { workItemId: item.id });
@@ -302,11 +317,11 @@ export function txAddDependency(ctx: StoreContext, itemId: Id, dependsOnId: Id, 
   const existing = ctx.db.get('SELECT 1 AS present FROM work_item_dependencies WHERE work_item_id = ? AND depends_on_id = ?', itemId, dependsOnId);
   if (existing) return item;
   const at = ts(ctx);
-  ctx.db.run('INSERT INTO work_item_dependencies (work_item_id, depends_on_id, created_at, resolved_at) VALUES (?, ?, ?, ?)', itemId, dependsOnId, at, isSatisfied(dep.state) ? at : null);
+  ctx.db.run('INSERT INTO work_item_dependencies (work_item_id, depends_on_id, created_at, resolved_at) VALUES (?, ?, ?, ?)', itemId, dependsOnId, at, isSatisfied(dep) ? at : null);
   const trace: TraceContext = { correlationId: item.correlationId, actorRef: actor };
   appendEvent(ctx, 'work_item.dependency_added', 'work_item', item.id, trace, { dependsOnId });
   appendAudit(ctx, 'work_item.dependency_added', 'work_item', item.id, trace, 'OK', null, { dependsOnId });
-  if (isSatisfied(dep.state)) return getWorkItemRow(ctx, item.id);
+  if (isSatisfied(dep)) return getWorkItemRow(ctx, item.id);
   if (item.state === 'READY' || item.state === 'ASSIGNED') {
     withdrawJob(ctx, item, trace, 'dependency.added');
     const blocked = applyTransition(ctx, getWorkItemRow(ctx, item.id), 'BLOCKED', { reasonCode: 'dependency.added', trace, blockedReason: 'DEPENDENCY', blockerRef: `work_item:${dep.id}` });
@@ -338,6 +353,11 @@ export function txSupersede(ctx: StoreContext, itemId: Id, supersededById: Id, i
   const replacement = getWorkItemRow(ctx, supersededById);
   if (TERMINAL_WORK_ITEM_STATES.has(replacement.state) && replacement.state !== 'CLOSED') {
     throw new QandeelError('VALIDATION_FAILED', 'the replacement work item has itself ended without completion', { supersededById });
+  }
+  // The replacement must not be a descendant of the superseded work: propagation would cancel it.
+  for (let cursor: WorkItemRecord | null = replacement, hops = 0; cursor?.parentId && hops <= MAX_LINEAGE_DEPTH; hops++) {
+    if (cursor.parentId === item.id) throw new QandeelError('LINEAGE_INVALID', 'the replacement is a descendant of the work it supersedes', { workItemId: item.id, supersededById });
+    cursor = getWorkItemRow(ctx, cursor.parentId);
   }
   const out = newTerminationOutcome();
   requestTermination(

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, test } from 'node:test';
@@ -7,6 +8,7 @@ import { setImmediate as tick } from 'node:timers/promises';
 import { isQandeelError } from '@qandeel-company/domain';
 
 import { ArtifactStore, CompanyStore, createBackup, listBackups, restoreToIsolatedWorkspace, verifyBackup } from '../src/index.js';
+import { SqliteConnection } from '../src/sqlite/connection.js';
 import { backoff, claimOpts, executable, harness, owner, removeRoot, tempRoot } from './helpers.js';
 
 describe('online backup and isolated verification', () => {
@@ -69,6 +71,31 @@ describe('online backup and isolated verification', () => {
       bytes[bytes.length - 100] = (bytes[bytes.length - 100] ?? 0) ^ 0xff;
       writeFileSync(snap, bytes);
       assert.throws(() => verifyBackup(r2.directory), (e) => isQandeelError(e, 'BACKUP_INTEGRITY'));
+
+      // A replaced snapshot+manifest pair is detected against the live Company's own record.
+      const r4 = await createBackup(h.store);
+      const record = h.store.backupRecord(r4.backupId);
+      assert.ok(record);
+      assert.throws(() => verifyBackup(r4.directory, { expected: { ...record, manifestSha256: '0'.repeat(64) } }), (e) => isQandeelError(e, 'BACKUP_INTEGRITY'));
+      assert.equal(verifyBackup(r4.directory, { expected: record }).ok, true);
+
+      // A snapshot with an extra trigger (schema drift) is refused even when its hashes are re-signed.
+      const r5 = await createBackup(h.store);
+      const snap5 = path.join(r5.directory, 'company.sqlite3');
+      const raw = SqliteConnection.open({ path: snap5, busyTimeoutMs: 1_000, keepJournalMode: true });
+      raw.execScript('CREATE TRIGGER planted AFTER INSERT ON work_items BEGIN SELECT 1; END;');
+      raw.close();
+      const m5Path = path.join(r5.directory, 'manifest.json');
+      const m5 = JSON.parse(readFileSync(m5Path, 'utf8')) as { snapshot: { sha256: string } };
+      m5.snapshot.sha256 = createHash('sha256').update(readFileSync(snap5)).digest('hex');
+      writeFileSync(m5Path, JSON.stringify(m5));
+      assert.throws(() => verifyBackup(r5.directory), (e) => isQandeelError(e, 'BACKUP_INTEGRITY') && /schema/.test(e.message));
+
+      // The restore target must be outside the live workspace.
+      assert.throws(
+        () => restoreToIsolatedWorkspace(r4.directory, path.join(h.root, 'runtime', 'nested'), { liveDatabasePath: h.store.workspace.databasePath }),
+        (e) => isQandeelError(e, 'UNSAFE_WORKSPACE'),
+      );
 
       const r3 = await createBackup(h.store);
       writeFileSync(path.join(path.dirname(target), 'marker'), 'x');

@@ -65,6 +65,12 @@ CREATE TRIGGER work_items_terminal_frozen BEFORE UPDATE ON work_items
 WHEN OLD.state IN ('CLOSED', 'FAILED', 'CANCELLED', 'SUPERSEDED')
 BEGIN SELECT RAISE(ABORT, 'terminal work items are immutable'); END;
 
+-- Stage 8 §34: closing never converts activity into success. ACHIEVED is recorded only through
+-- OUTCOME_VERIFIED (CHECK above), and a close may carry it only from that state.
+CREATE TRIGGER work_items_success_needs_verification BEFORE UPDATE OF state ON work_items
+WHEN NEW.state = 'CLOSED' AND NEW.outcome = 'ACHIEVED' AND OLD.state <> 'OUTCOME_VERIFIED'
+BEGIN SELECT RAISE(ABORT, 'ACHIEVED outcomes are recorded only through OUTCOME_VERIFIED'); END;
+
 CREATE TRIGGER work_items_version_monotonic BEFORE UPDATE ON work_items
 WHEN NEW.version <> OLD.version + 1
 BEGIN SELECT RAISE(ABORT, 'work item version must increase by exactly one per update'); END;

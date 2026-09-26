@@ -36,7 +36,7 @@ export interface MigrationPin {
 
 /** Released migrations. Adding a migration = appending a pin; never edit an existing row. */
 export const RELEASED_MIGRATIONS: readonly MigrationPin[] = Object.freeze([
-  { version: 1, name: 'work_foundation', file: '0001_work_foundation.sql', sha256: '619fb12dd9d30674d962ae02b2c14f780b4089a3b58283c78135b120d5cf9deb' },
+  { version: 1, name: 'work_foundation', file: '0001_work_foundation.sql', sha256: '3022ed5ed626f9394cfa9a7e897d2ed4e7bcb9b94c8de7a9a4bde7c0c658436e' },
   { version: 2, name: 'queue_runs_artifacts', file: '0002_queue_runs_artifacts.sql', sha256: 'b3060a1ea7a3e57e8bf0f76a4edba437c9f1b8d2886ef97ff5ca2b6920b0a7c2' },
 ]);
 
