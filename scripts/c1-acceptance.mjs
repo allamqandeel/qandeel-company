@@ -180,9 +180,11 @@ await step('online-backup-and-isolated-verification', async () => {
     const live = readFileSync(store.workspace.databasePath);
     const backup = await createBackup(store);
     backupDir = backup.directory;
-    const verification = verifyBackup(backup.directory, { liveDatabasePath: store.workspace.databasePath, artifactObjectsDir: store.workspace.objectsDir });
+    const expected = store.backupRecord(backup.backupId);
+    check(expected, 'the live Company holds no record of its own backup');
+    const verification = verifyBackup(backup.directory, { liveDatabasePath: store.workspace.databasePath, artifactObjectsDir: store.workspace.objectsDir, expected });
     check(verification.integrity === 'ok' && verification.artifactObjectsChecked >= 1, 'backup verification');
-    const restored = restoreToIsolatedWorkspace(backup.directory, restoreTarget, { liveDatabasePath: store.workspace.databasePath });
+    const restored = restoreToIsolatedWorkspace(backup.directory, restoreTarget, { liveDatabasePath: store.workspace.databasePath, expected });
     check(restored.quickCheck === 'ok', 'isolated restore dry start');
     check(readFileSync(store.workspace.databasePath).length >= live.length, 'live database unexpectedly shrank');
     return { backupId: backup.backupId, schemaVersion: verification.schemaVersion, workItems: verification.counts.workItems };

@@ -184,6 +184,7 @@ describe('fencing: each check on its own (non-vacuity)', () => {
       h.store.interruptClaim(a.job.id, 'LEASE_EXPIRED');
       assert.throws(() => artifacts.put({ content: 'late', mediaType: 'text/plain', workItemId: id, runId: a.fence.runId, fence: a.fence }), (e) => isQandeelError(e, 'STALE_LEASE'));
       assert.deepEqual(h.store.healthCounts().artifacts, { READY: 1 });
+      assert.ok(h.store.auditByAction('fencing.rejected').some((a) => a.details.operation === 'artifact'), 'the stale attachment is audited');
     } finally {
       h.close();
     }

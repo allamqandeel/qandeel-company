@@ -247,10 +247,10 @@ A second crash during recovery is proven safe.
 |---|---:|---:|---|
 | bootstrap-contract | 1 | 5 | C0 toolchain |
 | domain | 2 | 22 | unit: state machine (exhaustive table check), review/dependency rules, IDs, clock, validation, retry, classification |
-| storage | 7 | 77 | real file-backed SQLite: adapter/WAL/busy, workspace, migrations, work items, queue, fencing (each check isolated), checkpoints, artifacts, backup; plus **multi-process** (5): claim race, cross-process fencing, contention, backup under a writer process, concurrent first open |
+| storage | 7 | 79 | real file-backed SQLite: adapter/WAL/busy, workspace, migrations, work items, queue, fencing (each check isolated), checkpoints, artifacts, backup; plus **multi-process** (5): claim race, cross-process fencing, contention, backup under a writer process, concurrent first open |
 | runtime | 5 | 31 | unit; integration (end to end, concurrency cap, idle, graceful shutdown, cross-process wake, CLI, robustness); **fault matrix (8 process-kill scenarios)** |
 
-**Total: 135 tests.** All pass in `npm run ci` on Linux (Node 24.21.0), in the fresh clone (§21)
+**Total: 137 tests.** All pass in `npm run ci` on Linux (Node 24.21.0), in the fresh clone (§21)
 and in CI on Windows and Ubuntu (§21).
 
 **Mutation checks** (non-vacuity):
@@ -285,7 +285,35 @@ harness passes (`C1 LOCAL ACCEPTANCE — PASS`, 6/6 steps).
 
 ## 21. Windows + Linux CI
 
-*(completed in the final revision: run IDs and results for the exact head.)*
+Workflow `CI`: a `windows-latest` + `ubuntu-latest` matrix. Each job runs these steps:
+- `npm ci`;
+- `npm run ci` (build, typecheck, lint, every test including multi-process and fault matrix,
+  verifier);
+- `npm run c1:acceptance`, with a disposable workspace in `runner.temp`.
+
+Node v24.21.0 and SQLite 3.53.4 were confirmed on both runners.
+
+| Head | Run | Windows | Ubuntu | Note |
+|---|---|---|---|---|
+| `f849785` (first candidate) | 36272324647 | success | success | reviewed head |
+| `38ab692` (A/C fixes) | 36273195427 | **failure** | success | Windows only: the restore-containment test, caused by an 8.3 short temp path (`RUNNER~1`) |
+| `9e3e9a5` (B fixes) | 36275920353 | **failure** | success | the same single assertion; every other test passed on Windows, including the fault matrix and robustness |
+| `300c2d5` (canonical-path fix) | — | — | — | superseded by the next push (concurrency cancel) |
+| `53fe787` | 36276227306 | **success** | **success** | first green head with every lens A/B/C fix |
+| final head | see PR | — | — | adds the D-C1-19 residual fixes and their tests (137 tests) |
+
+The final head adds the D-C1-19 residual fixes on top of `53fe787`. Its CI run and its fresh-clone
+proof are recorded in the PR description, so this file does not need a self-referencing commit. The Windows failures were real defects, found by CI: restore containment compared
+non-canonical paths. The fix and its test are in `300c2d5`. No test was skipped or weakened.
+
+**Fresh-clone proof** at `9e3e9a5`. Code identical to `53fe787` except for the Windows containment
+fix, which was re-proven by the Windows CI above.
+- **Setup:** a new `git clone` from GitHub, checkout of the exact SHA, then `npm ci` (0
+  vulnerabilities).
+- **`npm run ci`:** 5 + 22 + 76 + 31 tests green, and the verifier passes 28/28.
+- **`npm run c1:acceptance`:** `C1 LOCAL ACCEPTANCE — PASS`.
+- **Clean tree:** `git status` was empty afterwards, so no hidden Cloud-session file or untracked
+  runtime state is needed.
 
 ## 22. Independent internal reviewers
 
@@ -346,8 +374,23 @@ at the final head (below).
 
 **`security-review` Skill:** no finding at confidence ≥ 8.
 
-**Disposition re-verification at the final head.** *(Filled in below once the independent verifier
-reports.)*
+**Disposition re-verification.** A fourth, independent read-only verifier re-checked every A/B/C
+disposition at `300c2d5`.
+- **Result:** every disposition confirmed fixed (or documented, where so marked). No BLOCKER or MAJOR.
+- **Mutation checks:** removing the fence token check, the lease-expiry check or the in-transaction
+  artifact fence each fails a test.
+- **Residuals it raised**, all handled in the final code commit (DECISION_LOG D-C1-19):
+  - reopening already-released work through optional review → **refused** + test;
+  - a replacement that depends on the superseded item → **refused** (`DEPENDENCY_CYCLE`) + test;
+  - a run-linked artifact without that run's fence → **refused**; a stale fence is audited and its
+    staging file removed + test;
+  - a refused Git-tree open left directories behind → the check now runs **before** any directory
+    is created + test;
+  - the acceptance harness verified backups unbound → now bound to `backup_records`;
+  - migration 0001 revised in place before any merge → documented; immutable from the first merge on;
+  - library-level unbound `verifyBackup`, the `notifyRuntime` check-then-write window, and the
+    `backups/` directory entry fsync → **documented** (hint-only or legitimate uses; the CLI and
+    runtime always bind).
 
 ## 23. Known limitations / deferred scope
 

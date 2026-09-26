@@ -40,6 +40,7 @@ describe('workspace', () => {
       const repo = path.dirname(root);
       mkdirSync(path.join(repo, '.git'));
       assert.throws(() => openWorkspace(path.join(repo, 'nested', 'company')), (e) => isQandeelError(e, 'UNSAFE_WORKSPACE') && e.details.reason === 'inside-source-checkout');
+      assert.equal(existsSync(path.join(repo, 'nested')), false, 'a refused open creates nothing inside the checkout');
       const outside = tempRoot('ws-nodb');
       try {
         mkdirSync(outside, { recursive: true });

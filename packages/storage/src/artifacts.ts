@@ -24,7 +24,7 @@
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import path from 'node:path';
 
-import { QandeelError, assertId, boundedText, isId, isSha256Hex, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
+import { QandeelError, assertId, boundedText, isId, isQandeelError, isSha256Hex, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
 
 import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { verifyFence } from './queue.js';
@@ -162,6 +162,9 @@ export class ArtifactStore {
     const label = input.label === undefined ? null : boundedText(input.label, 'label', 200);
     const workItemId = input.workItemId === undefined ? null : assertId(input.workItemId, 'workItemId');
     const runId = input.runId === undefined ? null : assertId(input.runId, 'runId');
+    if (runId !== null && (input.fence === undefined || input.fence.runId !== runId)) {
+      throw new QandeelError('VALIDATION_FAILED', "a run-linked artifact must present that run's fence", { field: 'fence' });
+    }
     const id = newId();
     const sha256 = sha256Hex(content);
     const ctx = this.#ctx;
@@ -179,8 +182,9 @@ export class ArtifactStore {
 
     // 2. STAGED intent (fenced for workers)
     const fence = input.fence;
-    ctx.db.immediate('stage artifact', () => {
-      if (fence) verifyFence(ctx, fence);
+    try {
+      ctx.db.immediate('stage artifact', () => {
+        if (fence) verifyFence(ctx, fence);
       const correlationId = workItemId ? getWorkItemRow(ctx, workItemId).correlationId : null;
       const at = ts(ctx);
       ctx.db.run(
@@ -197,7 +201,16 @@ export class ArtifactStore {
         at,
         at,
       );
-    });
+      });
+    } catch (error) {
+      if (isQandeelError(error, 'STALE_LEASE') && fence) {
+        unlinkSync(temp); // the rejected worker's staging file is not kept
+        ctx.db.immediate('audit stale artifact', () =>
+          appendAudit(ctx, 'fencing.rejected', 'job', fence.jobId, {}, 'REJECTED', 'STALE_LEASE', { operation: 'artifact', workerId: fence.workerId, presentedToken: fence.fencingToken }),
+        );
+      }
+      throw error;
+    }
     ctx.fault('artifact.afterStage');
 
     // 3. content-addressed publish

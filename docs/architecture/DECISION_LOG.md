@@ -414,3 +414,30 @@ Both are implemented as the most conservative reading and change in one place ea
 - **Residual, documented.** `CompanyStore.claimNext` without a supervisor fence remains available to
   storage-level callers. The runtime always passes the fence, and startup recovery would reclaim
   unfenced claims.
+
+## D-C1-19 — Final disposition verification and residual fixes
+
+An independent verifier re-checked every lens A/B/C disposition at `300c2d5` and confirmed them fixed.
+Its mutation checks show that removing the token check, the expiry check or the in-transaction
+artifact fence each fails a test. Its residual findings were handled as follows:
+- **Reopening released work.** Work whose dependents already proceeded can no longer be reopened
+  through an optional review; follow-up work is opened instead.
+- **Replacement that depends on the old work.** It is refused (`DEPENDENCY_CYCLE`), because that
+  dependency could never resolve.
+- **Artifact fencing.** A run-linked artifact must present that run's fence. A stale attachment is
+  audited, and its staging file is removed.
+- **Refused Git-tree opens.** The check now runs before any directory is created, so a refused open
+  creates nothing.
+- **Acceptance backups.** The acceptance harness verifies and restores backups bound to the live
+  `backup_records`.
+- **Documented, not changed:**
+  - The library-level `verifyBackup` / `restoreToIsolatedWorkspace` keep `expected` and
+    `liveDatabasePath` optional (verifying a copied backup elsewhere is legitimate). The CLI and
+    runtime always bind them.
+  - `notifyRuntime` has a check-then-write window. The wake file is only a hint and carries no data.
+  - The `backups/` parent directory entry is not fsynced separately.
+- **Migration 0001 was revised in place, before C1 was ever merged or used on a real workspace.** It
+  gained `max_attempts` and the no-resurrection and success-needs-verification triggers, and its pin
+  was updated. From the first merge on, released migrations are immutable: a change is a new
+  numbered file (verifier rule `migrations-immutable`). A workspace created from an unmerged
+  intermediate commit is disposable test state.

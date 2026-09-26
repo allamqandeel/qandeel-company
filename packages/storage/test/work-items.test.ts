@@ -245,6 +245,21 @@ describe('dependencies and lineage', () => {
     }
   });
 
+  test('work whose dependents already proceeded cannot be reopened through an optional review', () => {
+    const h = harness();
+    try {
+      const dep = executable(h.store);
+      const waiter = h.store.createWorkItem({ objective: 'w', ownerRef: owner, processorKind: 'test.noop', initialState: 'READY', dependsOn: [dep] }).workItem.id;
+      const c = h.store.claimNext(claimOpts());
+      assert.ok(c);
+      h.store.settle(c.fence, { type: 'COMPLETED' }, { backoff });
+      assert.equal(h.store.getWorkItem(waiter).state, 'READY');
+      assert.throws(() => h.store.transitionWorkItem(dep, { to: 'WAITING_REVIEW', reasonCode: 'reopen' }), (e) => isQandeelError(e, 'INVALID_TRANSITION'));
+    } finally {
+      h.close();
+    }
+  });
+
   test('a dependency that ends without completion keeps dependents blocked with a visible reason', () => {
     const h = harness();
     try {
@@ -314,6 +329,9 @@ describe('dependencies and lineage', () => {
       const parent = h.store.createWorkItem({ objective: 'p', ownerRef: owner }).workItem;
       const kid = h.store.createWorkItem({ objective: 'k', ownerRef: owner, parentId: parent.id }).workItem;
       assert.throws(() => h.store.supersede(parent.id, kid.id, { reasonCode: 'SELF_DESCENDANT' }), (e) => isQandeelError(e, 'LINEAGE_INVALID'), 'a replacement inside the lineage would cancel itself');
+      const target = h.store.createWorkItem({ objective: 't', ownerRef: owner }).workItem;
+      const dependent = h.store.createWorkItem({ objective: 'd', ownerRef: owner, dependsOn: [target.id] }).workItem;
+      assert.throws(() => h.store.supersede(target.id, dependent.id, { reasonCode: 'DEPENDS_ON_OLD' }), (e) => isQandeelError(e, 'DEPENDENCY_CYCLE'), 'a replacement that depends on the old work could never proceed');
     } finally {
       h.close();
     }

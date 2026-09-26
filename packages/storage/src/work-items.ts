@@ -278,6 +278,12 @@ export function txTransition(ctx: StoreContext, itemId: Id, input: TransitionInp
   const job = liveJobFor(ctx, item.id);
   if (item.state === 'IN_PROGRESS' || job?.state === 'CLAIMED') throw new QandeelError('LEASE_HELD', 'work is executing; the runtime owns it until the run settles', { workItemId: item.id });
   if (job?.state === 'RECONCILIATION_HOLD') throw new QandeelError('INVALID_TRANSITION', 'resolve the pending reconciliation first', { workItemId: item.id });
+  if (input.to === 'WAITING_REVIEW' && !item.reviewRequired) {
+    // Optional review of work that needs none: refuse it once dependents already proceeded on the
+    // completed output, because a rework from review would silently invalidate what they used.
+    const released = ctx.db.get(`SELECT 1 AS released FROM work_item_dependencies WHERE depends_on_id = ? AND resolved_at IS NOT NULL LIMIT 1`, item.id);
+    if (released) throw new QandeelError('INVALID_TRANSITION', 'dependents already proceeded on this completed work; open follow-up work instead of reopening it', { workItemId: item.id });
+  }
   if (input.to === 'READY' || input.to === 'ASSIGNED') {
     if (job?.state === 'DEAD_LETTER') throw new QandeelError('INVALID_TRANSITION', 'dead-lettered work is released through the dead-letter requeue path', { workItemId: item.id, jobId: job.id });
     const deps = dependencyStatus(ctx, item.id);
@@ -353,6 +359,10 @@ export function txSupersede(ctx: StoreContext, itemId: Id, supersededById: Id, i
   const replacement = getWorkItemRow(ctx, supersededById);
   if (TERMINAL_WORK_ITEM_STATES.has(replacement.state) && replacement.state !== 'CLOSED') {
     throw new QandeelError('VALIDATION_FAILED', 'the replacement work item has itself ended without completion', { supersededById });
+  }
+  // The replacement must not depend on the work it supersedes: that dependency could never resolve.
+  if (dependsTransitively(ctx, replacement.id, item.id)) {
+    throw new QandeelError('DEPENDENCY_CYCLE', 'the replacement depends on the work it supersedes', { workItemId: item.id, supersededById });
   }
   // The replacement must not be a descendant of the superseded work: propagation would cancel it.
   for (let cursor: WorkItemRecord | null = replacement, hops = 0; cursor?.parentId && hops <= MAX_LINEAGE_DEPTH; hops++) {

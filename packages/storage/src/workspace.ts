@@ -91,6 +91,20 @@ function linuxMountFsType(target: string): string | undefined {
   return best?.type;
 }
 
+/**
+ * Live Company state never lives inside a source checkout (this repository, the QANDEEL App's, or
+ * any other): one `git add -A` would otherwise commit Company content. A `.git` file (worktree)
+ * counts too.
+ */
+function assertOutsideSourceCheckout(target: string): void {
+  for (let dir = target; ; dir = path.dirname(dir)) {
+    if (existsSync(path.join(dir, '.git'))) {
+      throw new QandeelError('UNSAFE_WORKSPACE', 'workspace is inside a Git working tree; live Company state must stay outside source checkouts', { reason: 'inside-source-checkout' });
+    }
+    if (path.dirname(dir) === dir) break;
+  }
+}
+
 export interface OpenWorkspaceOptions {
   /** Create missing directories (default true). */
   readonly create?: boolean;
@@ -105,6 +119,7 @@ export function openWorkspace(root: string, options: OpenWorkspaceOptions = {}):
   assertLocalPathSyntax(root);
   const create = options.create ?? true;
   const resolved = path.resolve(root);
+  assertOutsideSourceCheckout(canonicalPath(resolved)); // before anything is created
   if (!existsSync(resolved)) {
     if (!create) throw new QandeelError('UNSAFE_WORKSPACE', 'workspace does not exist', { reason: 'missing' });
     mkdirSync(resolved, { recursive: true });
@@ -117,14 +132,7 @@ export function openWorkspace(root: string, options: OpenWorkspaceOptions = {}):
       throw new QandeelError('UNSAFE_WORKSPACE', 'workspace is on a network filesystem; SQLite WAL requires a local filesystem', { reason: 'network-fs', fsType });
     }
   }
-  // Live Company state never lives inside a source checkout (this repository, the QANDEEL App's,
-  // or any other): one `git add -A` would otherwise commit Company content.
-  for (let dir = real; ; dir = path.dirname(dir)) {
-    if (existsSync(path.join(dir, '.git'))) {
-      throw new QandeelError('UNSAFE_WORKSPACE', 'workspace is inside a Git working tree; live Company state must stay outside source checkouts', { reason: 'inside-source-checkout' });
-    }
-    if (path.dirname(dir) === dir) break;
-  }
+  assertOutsideSourceCheckout(real);
   const layout = layoutFor(real);
   for (const dir of [layout.stateDir, layout.artifactsDir, layout.objectsDir, layout.artifactTmpDir, layout.backupsDir, layout.runtimeDir]) {
     if (existsSync(dir)) {

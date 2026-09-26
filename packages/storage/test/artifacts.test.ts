@@ -50,6 +50,15 @@ describe('Artifact Store', () => {
     }
   });
 
+  test('a run-linked artifact must present that run\'s fence', () => {
+    const h = harness();
+    try {
+      assert.throws(() => new ArtifactStore(h.store).put({ content: 'x', mediaType: 'text/plain', runId: '00000000-0000-4000-8000-000000000001' as never }), (e) => isQandeelError(e, 'VALIDATION_FAILED'));
+    } finally {
+      h.close();
+    }
+  });
+
   test('duplicate content is stored once and referenced by two READY rows', () => {
     const h = harness();
     try {
