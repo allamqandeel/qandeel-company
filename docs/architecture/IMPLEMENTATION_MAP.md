@@ -1,15 +1,17 @@
 # Implementation Map
 
-**Status:** CANONICAL sequencing — recorded at C0 (2026-09-26).
+**Status:** CANONICAL sequencing — recorded at C0 (2026-09-26); lifecycle updated at PRE-C1
+(2026-09-26).
 
 This is **sequencing, not evidence**. A stage listed here is not implemented until its own work
-package is merged to `main` with green CI and the required review.
+package is merged to `main` with green CI and the required review. The implementation packages
+below are not the Product / Architecture Stages 0–18 in `docs/authority/company-architecture/`.
 
 | Stage | Name | Mode | State |
 |---|---|---|---|
 | `L0` | Environment Readiness | Local | CLOSED / PASS |
-| `C0` | Repository Bootstrap | Local | Current task |
-| `C1` | Company Foundation & Durable Runtime | Cloud Mega-Task | Next |
+| `C0` | Repository Bootstrap | Local | CLOSED / PASS |
+| `C1` | Company Foundation & Durable Runtime | Cloud Mega-Task | NEXT — CLOUD MEGA-TASK |
 | `C2` | Employees + Models + Tools + Cost Governance | Cloud Mega-Task | Not started |
 | `C3` | Memory + Context + Skills + Academy | Cloud Mega-Task | Not started |
 | `R1` | Independent Core Review | Review | Not started |
@@ -21,6 +23,10 @@ package is merged to `main` with green CI and the required review.
 | `L1` | Local Integration & Acceptance | Local | Not started |
 | `P1` / `P2` / `P3` | Controlled Pilots | Local operation | Not started |
 | — | Strong v1 Closure | Evidence gate | Not started |
+
+**PRE-C1 Authority Sync & Import** ran between `C0` and `C1`. It prepared the repository for Cloud
+execution by importing the canonical authority, and it is not a Product / Architecture stage or an
+implementation package. Its record is `docs/PRE_C1_AUTHORITY_SYNC_CLOSURE.md`.
 
 ## Rules
 

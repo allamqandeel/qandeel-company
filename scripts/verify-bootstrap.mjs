@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// C0 repository-contract verifier.
+// Repository-contract verifier (C0; extended at PRE-C1 for the imported authority).
 //
 // Every run first proves that each rule can fail (self-test against synthetic
 // violations), then evaluates the real repository. Any failure exits non-zero.
@@ -7,6 +7,7 @@
 // that are not ignored (`git ls-files --cached --others --exclude-standard`).
 
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,7 +43,39 @@ const REQUIRED_DOCS = [
   'docs/architecture/DECISION_LOG.md',
   'docs/environment/L0_READINESS_DECISION.md',
   'docs/C0_REPOSITORY_BOOTSTRAP_CLOSURE.md',
+  'docs/authority/company-architecture/README.md',
+  'docs/authority/company-architecture/AUTHORITY_IMPORT_MANIFEST.md',
+  'docs/PRE_C1_AUTHORITY_SYNC_CLOSURE.md',
 ];
+
+// Imported canonical authority (PRE-C1). Files under AUTHORITY_DIR are exact byte
+// copies whose SHA-256 is recorded in the manifest's imported-files table.
+const AUTHORITY_DIR = 'docs/authority/company-architecture/';
+const AUTHORITY_INDEX = `${AUTHORITY_DIR}README.md`;
+const AUTHORITY_MANIFEST = `${AUTHORITY_DIR}AUTHORITY_IMPORT_MANIFEST.md`;
+const STAGE_16_MISSING = 'STAGE 16 SOURCE ARTIFACT — NOT FOUND IN LOCAL AUTHORITY SET';
+
+// Direct Product Owner privacy rules (baseline §5). Matched after removing Markdown
+// emphasis and collapsing whitespace, so line wrapping does not matter.
+const BASELINE = 'docs/authority/COMPANY_CANONICAL_BASELINE.md';
+const PRIVACY_RULES = [
+  'Operational telemetry is ALWAYS content-free.',
+  'APP-OPS-01 itself provides no path by which Company Operations receives private user content.',
+  'No routine or exceptional human review of private QANDEEL conversation content is authorized through Company Operations or safety-monitoring flows.',
+];
+// Active summary documents must not reintroduce the C0 wording that read as
+// "private content excluded by default, with unspecified exceptions".
+const PRIVACY_SUMMARY_DOCS = [BASELINE, 'docs/architecture/BOUNDARIES.md', 'docs/authority/IMPLEMENTATION_AUTHORITY_RULES.md', 'README.md', 'CLAUDE.md'];
+// The "by default" pattern checks only the two documents that state the boundary, so an unrelated
+// later sentence elsewhere (e.g. "content access is denied by default") stays legal.
+const PRIVACY_BOUNDARY_DOCS = [BASELINE, 'docs/architecture/BOUNDARIES.md'];
+const STALE_PRIVACY = [
+  { pattern: /unless separately authori[sz]ed/i, docs: PRIVACY_SUMMARY_DOCS },
+  { pattern: /\b(?:memory|analysis|transcripts?|audio|content|text)\b[^.]{0,40}\bby default\b/i, docs: PRIVACY_BOUNDARY_DOCS },
+];
+
+const IMPLEMENTATION_MAP = 'docs/architecture/IMPLEMENTATION_MAP.md';
+const C1_CLOSURE = /^docs\/C1_[^/]*CLOSURE[^/]*\.md$/i;
 
 // C1 owns the real package structure and extends this list in the same change
 // that adds a real package. A placeholder package is a verifier failure.
@@ -69,7 +102,26 @@ const stemAndExt = (name) => {
   return dot > 0 ? [name.slice(0, dot), name.slice(dot + 1)] : [name, ''];
 };
 
-/** @typedef {{ files: string[], read: (p: string) => string | undefined, dirs: (p: string) => string[], env: Record<string, string | undefined>, gitConfig: (key: string) => string | undefined }} Repo */
+const normalizeProse = (s) => (s ?? '').replace(/\*\*/g, '').replace(/\s+/g, ' ');
+
+/** Rows of the manifest's imported-files table: `| area | `path` | archive | inner | src sha | imported sha | class | copy | ...`. */
+function manifestRows(text) {
+  return (text ?? '').split('\n').flatMap((line) => {
+    if (!line.startsWith('|')) return [];
+    const cells = line.split('|').slice(1, -1).map((c) => c.trim().replace(/^`|`$/g, ''));
+    return cells.length >= 8 && cells[1].startsWith(AUTHORITY_DIR)
+      ? [{ path: cells[1], sourceSha256: cells[4], sha256: cells[5], classification: cells[6], copy: cells[7] }]
+      : [];
+  });
+}
+
+/** State column of an implementation-map row whose first cell is `id`. */
+function mapState(text, id) {
+  const row = (text ?? '').split('\n').find((line) => line.startsWith(`| \`${id}\` |`));
+  return row?.split('|').slice(1, -1).map((c) => c.trim())[3];
+}
+
+/** @typedef {{ files: string[], read: (p: string) => string | undefined, sha256: (p: string) => string | undefined, dirs: (p: string) => string[], env: Record<string, string | undefined>, gitConfig: (key: string) => string | undefined }} Repo */
 
 /** @type {{ id: string, check: (repo: Repo) => string[] }[]} */
 export const RULES = [
@@ -219,6 +271,79 @@ export const RULES = [
     },
   },
   {
+    id: 'authority-import-integrity',
+    // Every imported file is listed, present and hash-identical; nothing superseded or
+    // unclassified is presented as authority; a missing Stage stays explicitly missing.
+    check: ({ files, read, sha256 }) => {
+      const manifest = read(AUTHORITY_MANIFEST);
+      if (manifest === undefined) return [`missing ${AUTHORITY_MANIFEST}`];
+      const rows = manifestRows(manifest);
+      if (rows.length === 0) return [`${AUTHORITY_MANIFEST} lists no imported files`];
+      const problems = [];
+      const listed = new Set();
+      for (const { path: p, sourceSha256, sha256: recorded, classification, copy } of rows) {
+        if (listed.has(p)) problems.push(`${p} is listed twice`);
+        listed.add(p);
+        if (!/^[0-9a-f]{64}$/.test(recorded)) problems.push(`${p} has no valid imported SHA-256`);
+        else if (!files.includes(p)) problems.push(`${p} is listed but not present`);
+        else if (sha256(p) !== recorded) problems.push(`${p} does not match its recorded SHA-256`);
+        if (copy !== 'exact') problems.push(`${p} is not recorded as an exact copy`);
+        else if (sourceSha256 !== recorded) problems.push(`${p} is recorded as an exact copy but its source and imported SHA-256 differ`);
+        if (/SUPERSEDED|UNKNOWN/i.test(classification)) problems.push(`${p} is imported as ${classification}`);
+      }
+      for (const f of files.filter((f) => f.startsWith(AUTHORITY_DIR) && f !== AUTHORITY_INDEX && f !== AUTHORITY_MANIFEST)) {
+        if (!listed.has(f)) problems.push(`${f} is not listed in the manifest`);
+        if (!lower(f).endsWith('.md')) problems.push(`${f} is not Markdown`);
+      }
+      const stage16Imported = [...listed].some((p) => p.includes('/STAGE_16/'));
+      if (!stage16Imported && !(read(AUTHORITY_INDEX) ?? '').includes(STAGE_16_MISSING)) {
+        problems.push(`${AUTHORITY_INDEX} does not record "${STAGE_16_MISSING}"`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'no-archive-dumps',
+    check: ({ files }) =>
+      files.filter(
+        (f) =>
+          /\.(zip|7z|rar|tar|tgz|gz|bz2|xz|cab|iso)$/.test(base(f)) ||
+          (f.startsWith('docs/authority/') && !lower(f).endsWith('.md')),
+      ),
+  },
+  {
+    id: 'privacy-hard-boundaries',
+    check: ({ read }) => {
+      const baseline = normalizeProse(read(BASELINE));
+      const problems = PRIVACY_RULES.filter((r) => !baseline.includes(r)).map((r) => `${BASELINE} does not state "${r}"`);
+      for (const { pattern, docs } of STALE_PRIVACY) {
+        for (const doc of docs) {
+          const hit = normalizeProse(read(doc)).match(pattern);
+          if (hit) problems.push(`${doc} contains default-with-exception privacy wording: "${hit[0]}"`);
+        }
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'implementation-lifecycle-state',
+    // Stage-aware: C1 may be marked closed only in the change that adds its closure record.
+    check: ({ files, read }) => {
+      const map = read(IMPLEMENTATION_MAP);
+      const problems = [];
+      for (const id of ['L0', 'C0']) {
+        const state = mapState(map, id);
+        if (state !== 'CLOSED / PASS') problems.push(`${id} state is ${JSON.stringify(state)}, expected "CLOSED / PASS"`);
+      }
+      const c1 = mapState(map, 'C1');
+      if (c1 === undefined) problems.push('implementation map has no C1 row');
+      else if (/CLOSED|PASS|DONE|IMPLEMENTED|COMPLETE|MERGED/i.test(c1) && !files.some((f) => C1_CLOSURE.test(f))) {
+        problems.push(`C1 is marked ${JSON.stringify(c1)} but no docs/C1_*CLOSURE*.md record exists`);
+      }
+      return problems;
+    },
+  },
+  {
     id: 'local-core-longpaths',
     // A fresh CI checkout has no Founder-local config; the rule applies to local clones.
     check: ({ env, gitConfig }) =>
@@ -252,9 +377,25 @@ export function evaluate(repo) {
 // Self-test: a clean synthetic repository passes every rule, and a targeted
 // violation makes each rule fail. A rule that cannot fail is a verifier bug.
 
+const sha = (text) => createHash('sha256').update(text, 'utf8').digest('hex');
+const SYNTH_SOURCE = `${AUTHORITY_DIR}STAGE_01/QANDEEL_COMPANY_STAGE_1_COMPANY_CONSTITUTION_v1.md`;
+const SYNTH_SOURCE_TEXT = '# Stage 1\n\n**Status:** CLOSED / ACCEPTED  \n';
+const SYNTH_STAGE_16 = `${AUTHORITY_DIR}STAGE_16/STAGE_16_CANONICAL_CLOSURE_v1.md`;
+const manifestRow = (p, text, classification = 'CLOSED / FROZEN') =>
+  `| Stage | \`${p}\` | \`a.zip\` | \`a/x.md\` | \`${sha(text)}\` | \`${sha(text)}\` | ${classification} | exact | - | - |`;
+const synthManifest = (...rows) => ['# Manifest', '', '| Stage / area | Imported repo path | a | b | c | d | e | f | g | h |', '|---|---|---|---|---|---|---|---|---|---|', ...rows, ''].join('\n');
+const synthMap = (c0 = 'CLOSED / PASS', c1 = 'NEXT — CLOUD MEGA-TASK') =>
+  ['| Stage | Name | Mode | State |', '|---|---|---|---|', '| `L0` | Env | Local | CLOSED / PASS |', `| \`C0\` | Boot | Local | ${c0} |`, `| \`C1\` | Found | Cloud | ${c1} |`, ''].join('\n');
+const SYNTH_BASELINE = `## 5. Data and privacy\n\n- **Rule A — ${PRIVACY_RULES[0]}**\n- **Rule B — ${PRIVACY_RULES[1].replace('private user content', 'private user\n  content')}**\n- **Rule C — ${PRIVACY_RULES[2]}**\n\n## 2. Operating principles\n\n- Event-driven by default.\n`;
+
 function syntheticRepo(overrides = {}) {
   const baseContents = {
     ...Object.fromEntries([...REQUIRED_FILES, ...REQUIRED_DOCS].map((f) => [f, ''])),
+    [BASELINE]: SYNTH_BASELINE,
+    [IMPLEMENTATION_MAP]: synthMap(),
+    [AUTHORITY_INDEX]: `## Missing\n\n**${STAGE_16_MISSING}.**\n`,
+    [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT)),
+    [SYNTH_SOURCE]: SYNTH_SOURCE_TEXT,
     'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'] }),
     'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'node --test dist/test' } }),
     'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'packages/bootstrap-contract': {}, 'node_modules/tar': { version: '7.0.0' } } }),
@@ -271,6 +412,7 @@ function syntheticRepo(overrides = {}) {
   return {
     files,
     read: (p) => (files.includes(p) ? baseContents[p] : undefined),
+    sha256: (p) => (files.includes(p) ? sha(baseContents[p]) : undefined),
     dirs: (p) => (p === 'packages' ? (overrides.dirs ?? ['bootstrap-contract']) : []),
     env: overrides.env ?? {},
     gitConfig: (key) => (key === 'core.longpaths' ? longpaths : undefined),
@@ -295,20 +437,71 @@ const VIOLATIONS = {
   'workspace-tests-present': { remove: ['packages/bootstrap-contract/test/bootstrap-contract.test.ts'] },
   'no-placeholder-packages': { dirs: ['bootstrap-contract', 'employees'] },
   'gitattributes-explicit': { contents: { '.gitattributes': '*.png binary\n' } },
+  'authority-import-integrity': [
+    { contents: { [SYNTH_SOURCE]: `${SYNTH_SOURCE_TEXT}edited\n` } },
+    {
+      // Edited file whose imported-SHA cell was updated too: no longer an exact copy of its source.
+      contents: {
+        [SYNTH_SOURCE]: `${SYNTH_SOURCE_TEXT}edited\n`,
+        [AUTHORITY_MANIFEST]: synthManifest(
+          `| Stage | \`${SYNTH_SOURCE}\` | \`a.zip\` | \`a/x.md\` | \`${sha(SYNTH_SOURCE_TEXT)}\` | \`${sha(`${SYNTH_SOURCE_TEXT}edited\n`)}\` | CLOSED / FROZEN | exact | - | - |`,
+        ),
+      },
+    },
+    { contents: { [SYNTH_STAGE_16]: '# Stage 16 (reconstructed)\n' } },
+    { contents: { [AUTHORITY_INDEX]: '## Missing\n\nnone\n' } },
+    { contents: { [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT, 'SUPERSEDED')) } },
+    { contents: { [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT), manifestRow(`${AUTHORITY_DIR}STAGE_02/gone.md`, 'x')) } },
+    { remove: [AUTHORITY_MANIFEST] },
+  ],
+  'no-archive-dumps': [
+    { contents: { [`${AUTHORITY_DIR}QANDEEL_COMPANY_STAGE_1_CANONICAL_CLOSURE_v1.zip`]: '' } },
+    { contents: { 'docs/authority/scan.png': '' } },
+  ],
+  'privacy-hard-boundaries': [
+    { contents: { [BASELINE]: `${SYNTH_BASELINE}- QANDEEL COMPANY does not receive private transcripts, Memory or Analysis by default.\n` } },
+    { contents: { 'docs/architecture/BOUNDARIES.md': 'It carries no Memory unless separately\n  authorized Product authority says otherwise.\n' } },
+    { contents: { [BASELINE]: SYNTH_BASELINE.replace(PRIVACY_RULES[0], 'Operational telemetry is content-free by default.') } },
+  ],
+  'implementation-lifecycle-state': [
+    { contents: { [IMPLEMENTATION_MAP]: synthMap('Current task') } },
+    { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS') } },
+  ],
   'local-core-longpaths': { longpaths: undefined },
 };
+
+// Legitimate future states that each rule must accept (stage-awareness, not a frozen snapshot).
+const MUST_PASS = [
+  { id: 'implementation-lifecycle-state', scenario: { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS'), 'docs/C1_COMPANY_FOUNDATION_CLOSURE.md': '' } } },
+  {
+    id: 'authority-import-integrity',
+    scenario: {
+      contents: {
+        [SYNTH_STAGE_16]: '# Stage 16\n',
+        [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT), manifestRow(SYNTH_STAGE_16, '# Stage 16\n', 'FINAL CLOSURE RECORD')),
+        [AUTHORITY_INDEX]: '## Missing\n\nnone\n',
+      },
+    },
+  },
+];
 
 export function selfTest() {
   const failures = [];
   const clean = evaluate(syntheticRepo());
   for (const r of clean) if (r.violations.length) failures.push(`clean synthetic repo tripped ${r.id}: ${r.violations.join('; ')}`);
   for (const rule of RULES) {
-    const scenario = VIOLATIONS[rule.id];
-    if (!scenario) {
+    const scenarios = VIOLATIONS[rule.id];
+    if (!scenarios) {
       failures.push(`rule ${rule.id} has no violation scenario`);
       continue;
     }
-    if (rule.check(syntheticRepo(scenario)).length === 0) failures.push(`rule ${rule.id} did not fail on its violation scenario`);
+    [scenarios].flat().forEach((scenario, i) => {
+      if (rule.check(syntheticRepo(scenario)).length === 0) failures.push(`rule ${rule.id} did not fail on violation scenario ${i + 1}`);
+    });
+  }
+  for (const { id, scenario } of MUST_PASS) {
+    const violations = RULES.find((r) => r.id === id)?.check(syntheticRepo(scenario)) ?? [`no rule ${id}`];
+    if (violations.length) failures.push(`rule ${id} rejected a legitimate state: ${violations.join('; ')}`);
   }
   return failures;
 }
@@ -329,6 +522,11 @@ function realRepo() {
     read: (p) => {
       const full = path.join(ROOT, p);
       return existsSync(full) && statSync(full).isFile() ? readFileSync(full, 'utf8') : undefined;
+    },
+    // Hash the bytes on disk, not a decoded string, so any byte-level change is caught.
+    sha256: (p) => {
+      const full = path.join(ROOT, p);
+      return existsSync(full) && statSync(full).isFile() ? createHash('sha256').update(readFileSync(full)).digest('hex') : undefined;
     },
     dirs: (p) => {
       const full = path.join(ROOT, p);

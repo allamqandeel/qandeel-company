@@ -44,6 +44,16 @@ home of QANDEEL COMPANY. Results come home through GitHub branches / PRs and are
 
 ## App operations boundary
 
-Future APP-OPS (`APP-OPS-01`) is **governed telemetry / control integration**, not shared private
-conversation storage. It carries no private QANDEEL conversation text, audio, transcripts, Memory
-or Analysis unless separately authorized Product authority says otherwise.
+`APP-OPS-01` is the **governed future App ↔ Company operational boundary**. It is not shared
+private-conversation storage. Its App-side contract is still a candidate, and the Company side is
+not implemented (`C7`).
+
+Three separate rules apply (see `docs/authority/COMPANY_CANONICAL_BASELINE.md` §5):
+- **Operational telemetry is ALWAYS content-free.** It carries no private conversation text,
+  audio, transcripts, prompts, model-output content, Memory, Analysis or equivalent private
+  semantic payload, and it has no incident or safety-monitoring exception.
+- **APP-OPS-01 itself provides no path by which Company Operations receives private user content.**
+  A user-initiated support-sharing path would be outside APP-OPS-01 and needs separate, explicit
+  Product authority before it exists.
+- **No routine or exceptional human review of private QANDEEL conversation content** is authorized
+  through Company Operations or safety-monitoring flows.

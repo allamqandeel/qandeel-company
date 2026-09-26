@@ -1,8 +1,13 @@
 # QANDEEL COMPANY — Canonical Baseline
 
-**Status:** CANONICAL — recorded at C0 (2026-09-26) from Product Owner decisions already approved.
+**Status:** CANONICAL — recorded at C0 (2026-09-26) from Product Owner decisions already approved;
+reconciled at PRE-C1 Authority Sync & Import (2026-09-26).
 **Scope:** implementation-facing summary. It records foundations; it does not define schemas,
 algorithms or runtime designs. Those belong to C1 and later work packages.
+**Detailed authority:** the imported Stage 0–17 canonical closures in
+`docs/authority/company-architecture/` (start at its `README.md`). **This baseline summarizes them
+and does not replace them.** Where they hold detailed authority on a subject, implement from them,
+not from this summary.
 **Changes:** only by Founder / Product Owner decision (see `IMPLEMENTATION_AUTHORITY_RULES.md`).
 
 ## 1. Company identity
@@ -33,8 +38,18 @@ algorithms or runtime designs. Those belong to C1 and later work packages.
 The architecture includes Departments, Directors, Employees, delegated work, a Review Pool, the
 Founder Command Center, reporting, evaluation and learning, and recovery and resilience.
 
-This baseline names these parts; it does not specify them. Detailed models belong to C1+ and must
-follow the upstream Product authority (see `docs/architecture/DECISION_LOG.md`, D-C0-08).
+This baseline names these parts; it does not specify them. Their detailed authority is the imported
+stage set (`docs/authority/company-architecture/`):
+- Departments and Directors: Stage 10.
+- Employees: Stages 4–7.
+- Work and delegation: Stage 8.
+- Review Pool: Stage 11.
+- Runtime: Stages 12–13.
+- Security: Stage 14.
+- Recovery: Stage 15.
+- Reporting and learning: Stage 17.
+- Founder Command Center: the Stage 16 source artifact is **missing** from the local authority set;
+  see that directory's `README.md` §5.
 
 ## 4. Founder experience
 
@@ -45,22 +60,40 @@ follow the upstream Product authority (see `docs/architecture/DECISION_LOG.md`, 
 
 ## 5. Data and privacy
 
-- QANDEEL COMPANY does **not** receive private QANDEEL conversation text, audio, transcripts,
-  Memory or Analysis by default.
-- There is **no** routine or exceptional human review of private QANDEEL conversation content as
-  part of Company operations or safety monitoring.
-- Future APP-OPS operational data is telemetry and operational state only, unless separately
-  authorized Product authority establishes otherwise.
+The Product Owner decided these three rules directly; they were restated at PRE-C1. They are
+separate rules. None is an exception to another, and none is weakened by a default or an
+unspecified exception.
+
+- **Rule A — Operational telemetry is ALWAYS content-free.** Operational telemetry contains no
+  private conversation text, audio, transcripts, prompts, model-output content, Memory content,
+  Analysis content or equivalent private semantic payload. There is no incident or
+  safety-monitoring exception.
+- **Rule B — APP-OPS-01 itself provides no path by which Company Operations receives private user
+  content.** A future path in which a user deliberately chooses to share selected private content
+  for support would be **outside** APP-OPS-01. No such path exists now; it would need separate,
+  explicit Product authority before it could exist.
+- **Rule C — No routine or exceptional human review of private QANDEEL conversation content is
+  authorized through Company Operations or safety-monitoring flows.**
+
+This baseline defines no moderation or replacement safety mechanism, and it does not amend QANDEEL
+App authority.
 
 ## 6. App separation
 
 - The QANDEEL App and QANDEEL COMPANY are separate repositories, runtimes and data boundaries.
-- `APP-OPS-01` is a future governed integration contract. C0 does not implement it.
+- `APP-OPS-01` is the governed future App ↔ Company operational boundary.
+  - Its App-side contract is still a **candidate** in the App's Product track (not frozen on
+    2026-09-26).
+  - The Company side is implemented later (`C7` in the implementation map). **No Company runtime
+    integration exists yet.**
+  - Whatever APP-OPS-01 finally specifies, operational telemetry stays content-free (Rule A), and the
+    Company and the App stay separate.
 
 ## 7. Strong v1 closure
 
-- The architecture is implementation-ready.
-- Implementation begins after C0.
+- The architecture is implementation-ready. Its Stage 0–15 and Stage 17 closures are in the
+  repository; the Stage 16 source artifact is missing (see §3).
+- Implementation begins after C0, starting with C1.
 - Strong v1 final closure requires **real controlled Pilot evidence**.
 - Do not claim Strong v1 = 100% merely because code or tests exist.
 
