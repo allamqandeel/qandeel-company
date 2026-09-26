@@ -1,8 +1,8 @@
 # C1 — Schema and State Model
 
 **Status:** C1 implementation candidate — describes the code on this branch. Not a closure record.
-**Schema version:** 2 (`packages/storage/migrations/0001_work_foundation.sql`,
-`0002_queue_runs_artifacts.sql`). **Store:** SQLite (built-in `node:sqlite`, SQLite 3.53.x in Node
+**Schema version:** 3 (`packages/storage/migrations/0001_work_foundation.sql`,
+`0002_queue_runs_artifacts.sql`, `0003_runtime_wake_generation.sql`). **Store:** SQLite (built-in `node:sqlite`, SQLite 3.53.x in Node
 24.21) in WAL mode, one file: `<workspace>/state/company.sqlite3`.
 
 ## 1. Conventions that hold for every table
@@ -54,6 +54,7 @@ erDiagram
 | `audit_events` | content-minimized audit trail | details ≤ 1 KiB of short scalars; append-only |
 | `runtime_instances` | one row per runtime process start: pid, versions, state, supervisor token, recovery summary | no delete |
 | `runtime_leases` | singleton `supervisor` lease: holder, fencing token, expiry | a change of holder must raise the token (trigger); no delete |
+| `runtime_wake` | durable wake generation (migration 3, D-C1-23): one row, one counter | `id = 1` only; the generation only increases (trigger); no delete; advanced by `queue_jobs` triggers in the same transaction as a job becoming `QUEUED`, its due time moving, or `cancel_requested` changing |
 | `artifacts` | artifact metadata; content lives in the object store | SHA-256 hex check; identity/hash/size immutable (trigger); state `STAGED/READY/MISSING/CORRUPT/ABANDONED`; no delete |
 | `backup_records` | backups produced from this store | append-only |
 
@@ -147,10 +148,11 @@ Semantics that are preserved on purpose:
 - An edge is durable and never deleted. Self-edges are rejected by `CHECK` and in code
   (`DEPENDENCY_SELF`).
 - A cycle is detected with a recursive CTE inside the same write transaction (`DEPENDENCY_CYCLE`).
-- **When a dependency is satisfied** (D-C1-09). The authority is silent, so this is reported as a
-  Product gap. The conservative default applies: review-required work satisfies its dependents only
-  once `REVIEWED` (Completed ≠ Reviewed), and other work once `COMPLETED`. In C1, review-required
-  dependencies therefore keep their dependents blocked, because C1 records no review.
+- **When a dependency is satisfied** — D-C1-09 / D-C1-21, **Product Owner approved, C1 canonical**.
+  Work that does not require review satisfies its dependents at `COMPLETED`, or later in the
+  completed family. Work that requires review, including R2+ risk policy, satisfies them only at
+  `REVIEWED` or later (Completed ≠ Reviewed). There is no separate `OUTCOME_VERIFIED` gating mode.
+  C1 has no review authority, so review-required dependencies keep their dependents blocked in C1.
 - Work with unresolved dependencies is `BLOCKED`, with `blocked_reason = DEPENDENCY` and
   `blocker_ref = work_item:<id>`. If a dependency ends as `FAILED`, `CANCELLED` or `SUPERSEDED`, the
   reason becomes `DEPENDENCY_FAILED` and the work stays blocked; it is never auto-cancelled.

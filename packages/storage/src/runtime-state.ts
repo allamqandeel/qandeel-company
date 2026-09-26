@@ -71,6 +71,14 @@ export function txRenewSupervisor(ctx: StoreContext, fence: SupervisorFence, ttl
   return expires;
 }
 
+/**
+ * The durable wake generation (migration 0003, D-C1-23): advanced by triggers in the same
+ * transaction as any queue change that can make work newly actionable. Monotonic.
+ */
+export function readWakeGeneration(ctx: StoreContext): number {
+  return Number(ctx.db.get<{ generation: number }>('SELECT generation FROM runtime_wake WHERE id = 1')?.generation ?? 0);
+}
+
 export function txReleaseSupervisor(ctx: StoreContext, fence: SupervisorFence): boolean {
   const at = ts(ctx);
   const changed = ctx.db.run(`UPDATE runtime_leases SET expires_at = ?, renewed_at = ? WHERE name = 'supervisor' AND holder_id = ? AND fencing_token = ? AND expires_at > ?`, at, at, fence.holderId, fence.fencingToken, at).changes;

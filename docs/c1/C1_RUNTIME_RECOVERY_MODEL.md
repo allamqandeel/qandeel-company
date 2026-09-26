@@ -42,6 +42,12 @@ shutdown.
     to `FAILED` and the database is closed. Its workers' late writes are fenced anyway.
 - **Every claim transaction re-checks** that this supervisor's lease is current. A stale supervisor
   cannot claim work, even for a moment.
+- **Only the supervisor can claim** (D-C1-22). The supervisor fence is mandatory in the claim
+  contract and is verified in every claim transaction; a missing or malformed fence is refused.
+  Claims, the lease, worker writes and claim recovery live behind
+  `@qandeel-company/storage/runtime-authority`, which only `packages/runtime` may import (ESLint +
+  verifier). The ordinary storage API has no claim. `CompanyRuntime` exposes only a frozen read-only
+  `view`, never its mutable store.
 - **Takeover.** A new supervisor takes over only after expiry, and takeover increments the lease
   token.
 - **Host sleep.** Renewal is **token-conditional**: it succeeds while the lease row still names this
@@ -55,22 +61,36 @@ shutdown.
 
 The durable queue is the source of truth. A wake is a coalesced hint that costs no model call.
 - **In-process:** a hint cannot be lost, because it is issued after every local commit.
-- **Cross-process:** a lost hint never loses work, since the job stays durable, but pickup waits for
-  the next pump (another commit, a slot release, the next-due timer) or a restart. The watcher is
-  re-armed once on error. If it is still down, health reports `WAKE_WATCHER_UNAVAILABLE`
-  (`DEGRADED`) instead of silently looking healthy (Stage 12 §45).
+- **Cross-process:** the wake file watched through `fs.watch` is only the **low-latency hint**. Node
+  documents `fs.watch` as not 100% consistent across platforms and unreliable on network file
+  systems, so its delivery is never relied on.
+- **Lost-hint truth (D-C1-23):** the durable wake generation (`runtime_wake`, migration 3) is
+  advanced by triggers in the same transaction as any queue change that makes work actionable. Every
+  pump records the generation it started from. The supervisor heartbeat reads the generation on
+  every beat (inside its renewal transaction, or through a non-blocking WAL read when the writer is
+  busy) and signals one coalesced pump if it moved. A missed, dropped or never-written hint therefore
+  delays pickup by **at most one heartbeat interval — `max(100 ms, supervisorTtlMs / 3)`, 10 s at the
+  default 30 s TTL** — plus timer scheduling slack, while a worker slot is free (at capacity, the next
+  slot release pumps anyway). This is an infrastructure bound, not a Product SLA.
+- The watcher is re-armed once on error. If it is still down, health reports
+  `WAKE_WATCHER_UNAVAILABLE` (`DEGRADED`) instead of silently looking healthy (Stage 12 §45);
+  discovery then runs at heartbeat latency.
 
 **The dispatcher pump runs when:**
 1. a local transaction commits (submit, transition, wake, cancel, requeue, resolve);
 2. another process writes `<workspace>/runtime/wake.signal`, observed with `fs.watch`, which is OS
    change notification (inotify / ReadDirectoryChangesW), not polling;
-3. a worker slot frees;
-4. the **single** scheduler timer fires, armed for the earliest of the next due `QUEUED` job
+3. the supervisor heartbeat observes that the durable wake generation moved since the last pump (the
+   lost-hint reconciliation; it never scans or claims by itself);
+4. a worker slot frees;
+5. the **single** scheduler timer fires, armed for the earliest of the next due `QUEUED` job
    (retry/backoff/timed wait) and the next lease expiry.
 
-**When nothing is due, no timer is armed**, and the idle runtime issues **zero SQL statements** (proved
-by `idle runtime` in `packages/runtime/test/integration/runtime.test.ts`). Deterministic lease
-heartbeats are the only periodic activity: the supervisor's, plus one per active run, bounded by the
+**When nothing is due, no timer is armed**, and between heartbeats the idle runtime issues **zero SQL
+statements** (proved by `idle runtime` in `packages/runtime/test/integration/runtime.test.ts`). Each
+supervisor heartbeat is one short renewal transaction that also reads the wake generation (a
+handful of statements; `lost-wake.test.ts` bounds it), and it pumps only when the generation moved.
+Deterministic lease heartbeats are the only periodic activity: the supervisor's, plus one per active run, bounded by the
 concurrency cap. They never scan the queue and never call a model. There is one timer per
 runtime, not per Employee, and one process for the whole runtime, not per Employee.
 
@@ -152,12 +172,15 @@ therefore not lost to transient write contention, and the processor is not re-ex
   - For running work, it records `termination_requested` and sets `cancel_requested` on the job.
     The runtime then aborts the local processor. A request made from another process is noticed at
     the next pump.
-- **Settlement always finalizes durable intent** (D-C1-08).
+- **Settlement always finalizes durable intent** — D-C1-08 / D-C1-20, **Product Owner approved, C1
+  canonical**: first durable canonical ordering governs future state; factual history is never
+  falsified.
   - Durable intent wins over a later `COMPLETED` result for the Work Item, but the run itself is
     recorded truthfully: `SUCCEEDED`, with its evidence.
   - Work that may have external effects is never silently resolved. It goes to reconciliation
-    instead. Resolving with `RETRY` then honours the termination, and `CONFIRMED_COMPLETED` keeps the
-    completion (a supersession still applies).
+    instead. Because the termination was durably first, the Work Item honours it on **every**
+    reconciliation decision (D-C1-20); the decision itself stays audited and `CONFIRMED_COMPLETED`
+    leaves the job `DONE`. Without termination intent the decisions keep their meaning.
   - If the lease expires instead, recovery finalizes the intent, unless the run is `UNSAFE`-class,
     which goes to reconciliation.
   - The outcome is one terminal state, and the terminal-row trigger forbids resurrection.

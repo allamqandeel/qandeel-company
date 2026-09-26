@@ -3,7 +3,7 @@
  * database handle or an "execute SQL" method. Each mutating method is one short `BEGIN IMMEDIATE`
  * transaction; nothing awaits while a write transaction is open.
  */
-import { QandeelError, assertCode, isId, isQandeelError, systemClock, type BackoffPolicy, type Clock, type Id, type JsonValue, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
+import { QandeelError, assertCode, isId, isQandeelError, systemClock, type BackoffPolicy, type Clock, type Id, type Timestamp } from '@qandeel-company/domain';
 
 import { appendAudit, getJobRow, getWorkItemRow, mapCheckpoint, mapJob, mapRun, mapWorkItem, ts, type FaultHook, type StoreContext } from './internal.js';
 import { CURRENT_SCHEMA_VERSION, appliedMigrations, loadReleasedMigrations, migrate, userVersion, type Migration, type MigrationFaultHook, type MigrationReport } from './migrations.js';
@@ -12,23 +12,14 @@ import {
   foreignClaims,
   latestValidCheckpoint,
   nextDueAt,
-  prepareCheckpoint,
-  txCheckpoint,
-  txClaimJob,
-  txClaimNext,
-  txInterruptClaim,
-  txRenewLease,
   txRequeueDeadLetter,
   txResolveReconciliation,
-  txSettle,
   txWake,
   type Claim,
-  type ClaimOptions,
   type ReconciliationDecision,
-  type SettleOptions,
   type SettleOutcome,
 } from './queue.js';
-import type { AuditRecord, CheckpointRecord, EventRecord, Fence, JobRecord, RunRecord, SupervisorFence, TransitionRecord, WorkItemRecord } from './records.js';
+import type { AuditRecord, CheckpointRecord, EventRecord, JobRecord, RunRecord, TransitionRecord, WorkItemRecord } from './records.js';
 import {
   auditByAction,
   auditFor,
@@ -36,14 +27,8 @@ import {
   pendingEvents,
   readInstance,
   readSupervisorLease,
-  txAbandonStaleInstances,
-  txAcquireSupervisor,
+  readWakeGeneration,
   txMarkDispatched,
-  txRegisterInstance,
-  txReleaseSupervisor,
-  txRenewSupervisor,
-  txUpdateInstance,
-  type InstanceState,
   type RuntimeInstanceRecord,
   type SupervisorLease,
 } from './runtime-state.js';
@@ -200,29 +185,6 @@ export class CompanyStore {
     if (this.#closed) throw new QandeelError('RUNTIME_STOPPING', 'store is closed');
   }
 
-  /** Fenced write: a STALE_LEASE rejection is itself audited (in its own transaction). */
-  #fenced<T>(operation: string, fence: Fence, fn: (ctx: StoreContext) => T): T {
-    try {
-      return this.#write(operation, fn);
-    } catch (error) {
-      if (isQandeelError(error, 'STALE_LEASE')) {
-        try {
-          this.#write('audit stale lease', (ctx) =>
-            appendAudit(ctx, 'fencing.rejected', 'job', fence.jobId, {}, 'REJECTED', 'STALE_LEASE', {
-              operation,
-              workerId: fence.workerId,
-              presentedToken: fence.fencingToken,
-              currentToken: (error.details.currentToken as number | null) ?? null,
-            }),
-          );
-        } catch {
-          // Auditing a rejection must never mask the rejection itself.
-        }
-      }
-      throw error;
-    }
-  }
-
   // --- Work Items -------------------------------------------------------------------------------
 
   createWorkItem(input: CreateWorkItemInput, options: CreateOptions = {}): CreateResult {
@@ -287,33 +249,6 @@ export class CompanyStore {
 
   // --- Queue, runs, leases ----------------------------------------------------------------------
 
-  claimNext(options: ClaimOptions): Claim | null {
-    return this.#write('claim next job', (ctx) => txClaimNext(ctx, options));
-  }
-
-  claimJob(jobId: Id, options: ClaimOptions): Claim | null {
-    return this.#write('claim job', (ctx) => txClaimJob(ctx, jobId, options));
-  }
-
-  renewLease(fence: Fence, leaseMs: number): Timestamp {
-    return this.#fenced('renew lease', fence, (ctx) => txRenewLease(ctx, fence, leaseMs));
-  }
-
-  checkpoint(fence: Fence, kind: string, state: JsonValue, kindVersion: number, leaseMs: number): number {
-    const prepared = prepareCheckpoint(kind, state, kindVersion);
-    const seq = this.#fenced('checkpoint', fence, (ctx) => txCheckpoint(ctx, fence, prepared, leaseMs));
-    this.#ctx.fault('checkpoint.afterCommit');
-    return seq;
-  }
-
-  settle(fence: Fence, result: ProcessorResult, options: SettleOptions): SettleOutcome {
-    return this.#fenced('settle', fence, (ctx) => txSettle(ctx, fence, result, options));
-  }
-
-  interruptClaim(jobId: Id, reasonCode: string): ReturnType<typeof txInterruptClaim> {
-    return this.#write('interrupt claim', (ctx) => txInterruptClaim(ctx, jobId, reasonCode));
-  }
-
   expiredClaims(limit = 100): Id[] {
     return this.#read((ctx) => expiredClaims(ctx, limit));
   }
@@ -376,20 +311,6 @@ export class CompanyStore {
     );
   }
 
-  /** Closes RUNNING runs whose job no longer points at them (defensive recovery; normally none). */
-  interruptOrphanRun(runId: Id): boolean {
-    return this.#write('interrupt orphan run', (ctx) => {
-      const changed = ctx.db.run(
-        `UPDATE runs SET state = 'INTERRUPTED', ended_at = ?, failure_category = 'INTERRUPTED', failure_code = 'ORPHAN_RUN', recovery_disposition = 'SAFE_TO_RETRY'
-          WHERE id = ? AND state = 'RUNNING' AND NOT EXISTS (SELECT 1 FROM queue_jobs j WHERE j.current_run_id = runs.id AND j.state = 'CLAIMED')`,
-        ts(ctx),
-        runId,
-      ).changes;
-      if (changed) appendAudit(ctx, 'run.orphan_interrupted', 'run', runId, {}, 'OK', 'ORPHAN_RUN', {});
-      return changed === 1;
-    });
-  }
-
   /** Durable termination intent whose job is no longer running: finalize it (recovery). */
   danglingTerminations(limit = 100): Id[] {
     return this.#read((ctx) =>
@@ -403,61 +324,15 @@ export class CompanyStore {
     );
   }
 
-  settleDanglingTermination(workItemId: Id): TerminationOutcome {
-    return this.#write('settle dangling termination', (ctx) => {
-      const item = getWorkItemRow(ctx, workItemId);
-      const mode = item.terminationRequested;
-      if (mode === null) return { terminated: [], requested: [], signalJobIds: [], retained: [], alreadyTerminal: [item.id] };
-      return mode === 'SUPERSEDED' && item.supersededBy
-        ? txSupersede(ctx, item.id, item.supersededBy, { reasonCode: item.terminationReason ?? 'SUPERSEDED' })
-        : txRequestCancellation(ctx, item.id, { reasonCode: item.terminationReason ?? 'CANCELLED' });
-    });
-  }
-
   // --- Supervisor and runtime instances ---------------------------------------------------------
-
-  acquireSupervisor(holderId: Id, ttlMs: number): SupervisorFence {
-    try {
-      return this.#write('acquire supervisor', (ctx) => txAcquireSupervisor(ctx, holderId, ttlMs));
-    } catch (error) {
-      if (isQandeelError(error, 'LEASE_HELD')) {
-        try {
-          this.#write('audit acquire refused', (ctx) =>
-            appendAudit(ctx, 'supervisor.acquire_refused', 'runtime', holderId, {}, 'REJECTED', 'LEASE_HELD', {
-              holder: String(error.details.holderId ?? ''),
-              expiresAt: String(error.details.expiresAt ?? ''),
-            }),
-          );
-        } catch {
-          // Auditing a rejection must never mask the rejection itself.
-        }
-      }
-      throw error;
-    }
-  }
-
-  renewSupervisor(fence: SupervisorFence, ttlMs: number): Timestamp {
-    return this.#write('renew supervisor', (ctx) => txRenewSupervisor(ctx, fence, ttlMs));
-  }
-
-  releaseSupervisor(fence: SupervisorFence): boolean {
-    return this.#write('release supervisor', (ctx) => txReleaseSupervisor(ctx, fence));
-  }
 
   supervisorLease(): SupervisorLease | null {
     return this.#read((ctx) => readSupervisorLease(ctx));
   }
 
-  registerInstance(id: Id, pid: number, runtimeVersion: string): void {
-    this.#write('register instance', (ctx) => txRegisterInstance(ctx, id, pid, runtimeVersion, userVersion(ctx.db)));
-  }
-
-  updateInstance(id: Id, state: InstanceState, fields: { supervisorToken?: number; recovery?: Record<string, number | string | boolean | null> } = {}): void {
-    this.#write('update instance', (ctx) => txUpdateInstance(ctx, id, state, fields));
-  }
-
-  abandonStaleInstances(currentId: Id): number {
-    return this.#write('abandon stale instances', (ctx) => txAbandonStaleInstances(ctx, currentId));
+  /** Durable wake generation (D-C1-23): changes whenever work may have become actionable. */
+  wakeGeneration(): number {
+    return this.#read((ctx) => readWakeGeneration(ctx));
   }
 
   instance(id: Id): RuntimeInstanceRecord | null {
@@ -544,6 +419,45 @@ export class CompanyStore {
     return this.#ctx.db.all('PRAGMA foreign_key_check').length;
   }
 
+  /**
+   * A frozen, read-only inspection capability over this store (D-C1-22). It carries bound read
+   * methods only: no write, no claim, no connection and no path back to the store itself. The
+   * runtime hands this — never its mutable store — to status tooling and tests.
+   */
+  readView(): CompanyReadView {
+    const view = {
+      getWorkItem: (id: Id) => this.getWorkItem(id),
+      listWorkItems: (filter?: { state?: WorkItemRecord['state']; limit?: number }) => this.listWorkItems(filter),
+      history: (id: Id) => this.history(id),
+      lineage: (rootId: Id) => this.lineage(rootId),
+      dependencies: (id: Id) => this.dependencies(id),
+      getJob: (id: Id) => this.getJob(id),
+      jobsFor: (workItemId: Id) => this.jobsFor(workItemId),
+      runsFor: (jobId: Id) => this.runsFor(jobId),
+      runsForWorkItem: (workItemId: Id) => this.runsForWorkItem(workItemId),
+      checkpoints: (jobId: Id) => this.checkpoints(jobId),
+      latestCheckpoint: (jobId: Id) => this.latestCheckpoint(jobId),
+      events: (aggregateId: Id, limit?: number) => this.events(aggregateId, limit),
+      audit: (entityId: string) => this.audit(entityId),
+      auditByAction: (action: string, limit?: number) => this.auditByAction(action, limit),
+      healthCounts: () => this.healthCounts(),
+      supervisorLease: () => this.supervisorLease(),
+      instance: (id: Id) => this.instance(id),
+      wakeGeneration: () => this.wakeGeneration(),
+      backupRecord: (backupId: Id) => this.backupRecord(backupId),
+      integrityCheck: () => this.integrityCheck(),
+    };
+    const live = (get: () => unknown): PropertyDescriptor => ({ get, enumerable: true });
+    Object.defineProperties(view, {
+      workspace: live(() => this.workspace),
+      schemaVersion: live(() => this.schemaVersion),
+      journalMode: live(() => this.journalMode),
+      stats: live(() => this.stats),
+      isClosed: live(() => this.isClosed),
+    });
+    return Object.freeze(view) as unknown as CompanyReadView;
+  }
+
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
@@ -553,6 +467,35 @@ export class CompanyStore {
   get isClosed(): boolean {
     return this.#closed;
   }
+}
+
+/** Read-only inspection capability (see `CompanyStore.readView`). */
+export interface CompanyReadView {
+  readonly workspace: WorkspaceLayout;
+  readonly schemaVersion: number;
+  readonly journalMode: string;
+  readonly stats: Readonly<{ statements: number; writeTransactions: number }>;
+  readonly isClosed: boolean;
+  getWorkItem(id: Id): WorkItemRecord;
+  listWorkItems(filter?: { state?: WorkItemRecord['state']; limit?: number }): WorkItemRecord[];
+  history(id: Id): TransitionRecord[];
+  lineage(rootId: Id): WorkItemRecord[];
+  dependencies(id: Id): { dependsOnId: Id; resolvedAt: Timestamp | null }[];
+  getJob(id: Id): JobRecord;
+  jobsFor(workItemId: Id): JobRecord[];
+  runsFor(jobId: Id): RunRecord[];
+  runsForWorkItem(workItemId: Id): RunRecord[];
+  checkpoints(jobId: Id): CheckpointRecord[];
+  latestCheckpoint(jobId: Id): CheckpointRecord | null;
+  events(aggregateId: Id, limit?: number): EventRecord[];
+  audit(entityId: string): AuditRecord[];
+  auditByAction(action: string, limit?: number): AuditRecord[];
+  healthCounts(): HealthCounts;
+  supervisorLease(): SupervisorLease | null;
+  instance(id: Id): RuntimeInstanceRecord | null;
+  wakeGeneration(): number;
+  backupRecord(backupId: Id): { snapshotSha256: string; manifestSha256: string } | null;
+  integrityCheck(): string;
 }
 
 export interface HealthCounts {
@@ -569,7 +512,7 @@ export interface HealthCounts {
 }
 
 export { CURRENT_SCHEMA_VERSION };
-export type { BackoffPolicy, Claim, ClaimOptions, SettleOptions, SettleOutcome, ReconciliationDecision };
+export type { BackoffPolicy, Claim, SettleOutcome, ReconciliationDecision };
 
 /** Storage tests only (not exported by the package): open with a fixture migration set. */
 export function openStoreForTests(workspaceRoot: string, options: InternalOpenOptions): CompanyStore {

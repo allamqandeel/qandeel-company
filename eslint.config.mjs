@@ -37,6 +37,44 @@ export default tseslint.config(
     },
   },
   {
+    // D-C1-22: runtime authority (claims, supervisor lease, worker writes) is importable by the
+    // runtime package only, and no package reaches into another package's internals by path.
+    files: ['packages/**/*.ts', 'scripts/**/*.mjs'],
+    // The verifier itself imports the subpath and probes a deep import to prove it is refused.
+    ignores: ['packages/runtime/**', 'packages/storage/**', 'scripts/verify-bootstrap.mjs'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "ImportDeclaration[source.value=/^@qandeel-company\\/storage\\//], ImportExpression[source.value=/^@qandeel-company\\/storage\\//]",
+          message: 'Only @qandeel-company/runtime may import @qandeel-company/storage/runtime-authority (D-C1-22); use the ordinary @qandeel-company/storage API.',
+        },
+        {
+          selector: 'ImportDeclaration[source.value=/\\/storage\\/(src|dist)\\//], ImportExpression[source.value=/\\/storage\\/(src|dist)\\//]',
+          message: 'Do not import storage internals by path (D-C1-22).',
+        },
+      ],
+    },
+  },
+  {
+    // The runtime may import the runtime-authority subpath, but no other storage subpath, and its
+    // production code never imports storage internals by path.
+    files: ['packages/runtime/src/**/*.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "ImportDeclaration[source.value=/^@qandeel-company\\/storage\\/(?!runtime-authority$)/], ImportExpression[source.value=/^@qandeel-company\\/storage\\/(?!runtime-authority$)/]",
+          message: 'The only storage subpath the runtime may import is @qandeel-company/storage/runtime-authority.',
+        },
+        {
+          selector: 'ImportDeclaration[source.value=/\\/storage\\/(src|dist)\\//], ImportExpression[source.value=/\\/storage\\/(src|dist)\\//]',
+          message: 'Do not import storage internals by path (D-C1-22).',
+        },
+      ],
+    },
+  },
+  {
     files: ['**/*.mjs'],
     languageOptions: {
       globals: { console: 'readonly', process: 'readonly', URL: 'readonly' },

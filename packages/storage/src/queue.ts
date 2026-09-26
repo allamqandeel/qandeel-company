@@ -15,6 +15,7 @@ import {
   boundedJson,
   classifyInterruptedRun,
   decideRetry,
+  isId,
   isQandeelError,
   isTimestamp,
   newId,
@@ -30,7 +31,7 @@ import {
 
 import { appendAudit, appendEvent, getJobRow, getWorkItemRow, mapCheckpoint, mapJob, mapRun, ts, type StoreContext, type TraceContext } from './internal.js';
 import type { CheckpointRecord, Fence, JobRecord, RunRecord, SupervisorFence, WorkItemRecord } from './records.js';
-import { applyTransition, defaultPropagationPolicy, failDependents, updateItemMeta, futureTimestamp, newTerminationOutcome, resolveDependents, terminateNow, type TerminationOutcome } from './work-core.js';
+import { applyTransition, defaultPropagationPolicy, failDependents, futureTimestamp, newTerminationOutcome, resolveDependents, terminateNow, type TerminationOutcome } from './work-core.js';
 
 export const CHECKPOINT_MAX_BYTES = 65_536;
 export const EVIDENCE_MAX_BYTES = 4_096;
@@ -48,8 +49,11 @@ export interface ClaimOptions {
   readonly leaseMs: number;
   /** Processor kinds this claimant can run, with their declared side-effect class. */
   readonly kinds: ReadonlyMap<string, SideEffectClass>;
-  /** When present, the claim commits only while this supervisor lease is current. */
-  readonly supervisor?: SupervisorFence;
+  /**
+   * Mandatory (D-C1-22): the claim commits only while this Runtime Supervisor lease is current —
+   * verified inside the claim transaction. There is no unfenced claim.
+   */
+  readonly supervisor: SupervisorFence;
 }
 
 export type SettleOutcome = {
@@ -71,14 +75,25 @@ function assertWorkerId(workerId: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9:._-]{0,63}$/.test(workerId)) throw new QandeelError('VALIDATION_FAILED', 'worker id must be a short identifier');
 }
 
-export function verifySupervisor(ctx: StoreContext, fence: SupervisorFence): void {
+/**
+ * Throws SUPERVISOR_NOT_AUTHORITATIVE unless `fence` names the current, unexpired Runtime
+ * Supervisor lease. A missing or malformed fence (e.g. from untyped JavaScript) fails the same way:
+ * absence of authority is never treated as a valid low-level claim.
+ */
+export function verifySupervisor(ctx: StoreContext, fence: SupervisorFence | undefined): void {
+  const f = fence as Partial<SupervisorFence> | null | undefined;
+  const holderId = typeof f === 'object' && f !== null ? f.holderId : undefined;
+  const token = typeof f === 'object' && f !== null ? f.fencingToken : undefined;
+  if (!isId(holderId) || typeof token !== 'number' || !Number.isSafeInteger(token) || token < 1) {
+    throw new QandeelError('SUPERVISOR_NOT_AUTHORITATIVE', 'a current Runtime Supervisor fence is required; refusing to claim work', { reason: 'MISSING_FENCE' });
+  }
   const row = ctx.db.get(
     `SELECT 1 AS ok FROM runtime_leases WHERE name = 'supervisor' AND holder_id = ? AND fencing_token = ? AND expires_at > ?`,
-    fence.holderId,
-    fence.fencingToken,
+    holderId,
+    token,
     ts(ctx),
   );
-  if (!row) throw new QandeelError('SUPERVISOR_NOT_AUTHORITATIVE', 'supervisor lease is not current; refusing to claim work', { holderId: fence.holderId, fencingToken: fence.fencingToken });
+  if (!row) throw new QandeelError('SUPERVISOR_NOT_AUTHORITATIVE', 'supervisor lease is not current; refusing to claim work', { holderId, fencingToken: token });
 }
 
 /** Throws STALE_LEASE unless `fence` still owns an unexpired claim on its job. */
@@ -174,7 +189,7 @@ function claimRow(ctx: StoreContext, job: JobRecord, opts: ClaimOptions): Claim 
 export function txClaimNext(ctx: StoreContext, opts: ClaimOptions): Claim | null {
   assertLeaseMs(opts.leaseMs);
   assertWorkerId(opts.workerId);
-  if (opts.supervisor) verifySupervisor(ctx, opts.supervisor);
+  verifySupervisor(ctx, opts.supervisor);
   const row = ctx.db.get(
     `SELECT * FROM queue_jobs
       WHERE state = 'QUEUED' AND available_at <= ? AND processor_kind IN (SELECT value FROM json_each(?))
@@ -188,7 +203,7 @@ export function txClaimNext(ctx: StoreContext, opts: ClaimOptions): Claim | null
 export function txClaimJob(ctx: StoreContext, jobId: Id, opts: ClaimOptions): Claim | null {
   assertLeaseMs(opts.leaseMs);
   assertWorkerId(opts.workerId);
-  if (opts.supervisor) verifySupervisor(ctx, opts.supervisor);
+  verifySupervisor(ctx, opts.supervisor);
   const row = ctx.db.get(`SELECT * FROM queue_jobs WHERE id = ? AND state = 'QUEUED' AND available_at <= ?`, jobId, ts(ctx));
   return row ? claimRow(ctx, mapJob(row), opts) : null;
 }
@@ -277,13 +292,18 @@ function setJob(
   );
 }
 
-/** Finalizes durable cancellation/supersession intent for a job whose worker has stopped. */
-function finalizeTermination(ctx: StoreContext, job: JobRecord, runId: Id | null, trace: TraceContext, completedEvidence?: string): SettleOutcome {
-  // A run that genuinely finished is recorded truthfully (SUCCEEDED, with its evidence) even though
-  // the Work Item honours the termination intent recorded before it settled (D-C1-08).
+/**
+ * Finalizes durable cancellation/supersession intent for a job whose worker has stopped.
+ *
+ * D-C1-08 (Product Owner approved): the first durable canonical ordering governs the Work Item —
+ * termination intent recorded before completion settles is honoured and the item never
+ * resurrects — while factual history is never falsified: a run that genuinely finished is recorded
+ * as SUCCEEDED with its evidence, and a confirmed external effect keeps its job DONE.
+ */
+function finalizeTermination(ctx: StoreContext, job: JobRecord, runId: Id | null, trace: TraceContext, completedEvidence?: string, jobState: 'CANCELLED' | 'DONE' = 'CANCELLED'): SettleOutcome {
   if (runId && completedEvidence !== undefined) endRun(ctx, runId, 'SUCCEEDED', { resultJson: completedEvidence, failureCode: 'TERMINATION_REQUESTED' });
   else if (runId) endRun(ctx, runId, 'CANCELLED', { failureCategory: 'CANCELLED', failureCode: 'TERMINATION_REQUESTED' });
-  setJob(ctx, job, 'CANCELLED', { bumpToken: true });
+  setJob(ctx, job, jobState, { bumpToken: true });
   const item = getWorkItemRow(ctx, job.workItemId);
   const mode = item.terminationRequested ?? 'CANCELLED';
   const out = newTerminationOutcome();
@@ -296,7 +316,7 @@ function finalizeTermination(ctx: StoreContext, job: JobRecord, runId: Id | null
     out,
     0,
   );
-  return { jobState: 'CANCELLED', runState: completedEvidence !== undefined ? 'SUCCEEDED' : 'CANCELLED', workItemState: getWorkItemRow(ctx, job.workItemId).state, termination: out };
+  return { jobState, runState: completedEvidence !== undefined ? 'SUCCEEDED' : 'CANCELLED', workItemState: getWorkItemRow(ctx, job.workItemId).state, termination: out };
 }
 
 export interface SettleOptions {
@@ -510,6 +530,11 @@ export type ReconciliationDecision = 'RETRY' | 'CONFIRMED_COMPLETED' | 'FAILED';
 /**
  * Explicit resolution of an uncertain side effect, after the operator has checked external
  * reality. C1 records the (opaque, unauthenticated) actor reference; authorization is C2's.
+ *
+ * D-C1-08: when cancellation/supersession intent was durably recorded before this resolution —
+ * i.e. before any canonical completion — the Work Item honours that intent whatever the decision;
+ * the decision itself (including "the effect did happen") stays on record in the audit trail, the
+ * held run keeps its RECONCILIATION_REQUIRED record, and a confirmed effect leaves the job DONE.
  */
 export function txResolveReconciliation(ctx: StoreContext, jobId: Id, decision: ReconciliationDecision, reasonCode: string, trace: Omit<TraceContext, 'correlationId'>): SettleOutcome {
   const job = getJobRow(ctx, jobId);
@@ -517,9 +542,10 @@ export function txResolveReconciliation(ctx: StoreContext, jobId: Id, decision: 
   const full: TraceContext = { ...trace, correlationId: job.correlationId };
   const item = getWorkItemRow(ctx, job.workItemId);
   appendAudit(ctx, 'job.reconciliation_resolved', 'job', job.id, full, 'OK', reasonCode, { decision });
-  if (decision === 'RETRY' && item.terminationRequested !== null) {
-    // The effect did not happen and termination was requested: honour the termination, do not retry.
-    return finalizeTermination(ctx, job, null, full);
+  if (item.terminationRequested !== null) {
+    appendAudit(ctx, 'work_item.termination_honoured', 'work_item', item.id, full, 'OK', 'TERMINATION_REQUESTED_FIRST', { decision, mode: item.terminationRequested });
+    const out = finalizeTermination(ctx, job, null, full, undefined, decision === 'CONFIRMED_COMPLETED' ? 'DONE' : 'CANCELLED');
+    return { ...out, runState: 'RECONCILIATION_REQUIRED' };
   }
   if (decision === 'RETRY') {
     setJob(ctx, job, 'QUEUED', { availableAt: ts(ctx), bumpToken: true });
@@ -530,17 +556,7 @@ export function txResolveReconciliation(ctx: StoreContext, jobId: Id, decision: 
     let wi = applyTransition(ctx, item, 'COMPLETED', { reasonCode: 'reconciliation.confirmed_completed', trace: full });
     if (wi.reviewRequired) wi = applyTransition(ctx, wi, 'WAITING_REVIEW', { reasonCode: 'review.required', trace: full });
     const unblocked = resolveDependents(ctx, wi.id, full);
-    if (wi.terminationRequested === 'SUPERSEDED' && wi.supersededBy) {
-      // Completed work can still be superseded; cancellation no longer applies to it.
-      const out = newTerminationOutcome();
-      terminateNow(ctx, wi, { mode: 'SUPERSEDED', reasonCode: wi.terminationReason ?? 'SUPERSEDED', trace: full, supersededBy: wi.supersededBy, policy: defaultPropagationPolicy }, out, 0);
-      return { jobState: 'DONE', runState: 'RECONCILIATION_REQUIRED', workItemState: getWorkItemRow(ctx, wi.id).state, unblocked, termination: out };
-    }
-    if (wi.terminationRequested !== null) {
-      updateItemMeta(ctx, wi, { terminationRequested: null, terminationReason: null });
-      appendAudit(ctx, 'work_item.termination_not_applicable', 'work_item', wi.id, full, 'OK', 'COMPLETED_BEFORE_TERMINATION', {});
-    }
-    return { jobState: 'DONE', runState: 'RECONCILIATION_REQUIRED', workItemState: getWorkItemRow(ctx, wi.id).state, unblocked };
+    return { jobState: 'DONE', runState: 'RECONCILIATION_REQUIRED', workItemState: wi.state, unblocked };
   }
   setJob(ctx, job, 'FAILED', { bumpToken: true });
   const wi = applyTransition(ctx, item, 'FAILED', { reasonCode: 'reconciliation.failed', trace: full });

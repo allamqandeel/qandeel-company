@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 import { ManualClock, toTimestamp, type Processor } from '@qandeel-company/domain';
 import { CompanyStore } from '@qandeel-company/storage';
+import { acquireSupervisor } from '@qandeel-company/storage/runtime-authority';
 
 import { eventually, owner, removeRoot, runtimeFor, tempRoot } from '../helpers.js';
 import { spawnScript } from '../process-harness.js';
@@ -25,11 +26,11 @@ describe('runtime robustness', () => {
       await runtime.start();
       const a = runtime.submitWorkItem({ objective: 'quits', ownerRef: owner, processorKind: 'test.quitter', maxAttempts: 3, initialState: 'READY' }).workItem;
       const b = runtime.submitWorkItem({ objective: 'waits for the past', ownerRef: owner, processorKind: 'test.past-waiter', maxAttempts: 3, initialState: 'READY' }).workItem;
-      await eventually(() => runtime.store.jobsFor(a.id)[0]?.state === 'DEAD_LETTER' && runtime.store.jobsFor(b.id)[0]?.state === 'DEAD_LETTER', 10_000, 'both dead-lettered');
+      await eventually(() => runtime.view.jobsFor(a.id)[0]?.state === 'DEAD_LETTER' && runtime.view.jobsFor(b.id)[0]?.state === 'DEAD_LETTER', 10_000, 'both dead-lettered');
       await sleep(300);
       assert.equal(runs, 6, 'exactly maxAttempts runs each, then nothing');
-      assert.deepEqual(runtime.store.runsForWorkItem(a.id).map((r) => r.failureCode), ['PROCESSOR_STOPPED_UNPROMPTED', 'PROCESSOR_STOPPED_UNPROMPTED', 'PROCESSOR_STOPPED_UNPROMPTED']);
-      assert.deepEqual(runtime.store.runsForWorkItem(b.id).map((r) => r.failureCode), ['INVALID_WAIT', 'INVALID_WAIT', 'INVALID_WAIT']);
+      assert.deepEqual(runtime.view.runsForWorkItem(a.id).map((r) => r.failureCode), ['PROCESSOR_STOPPED_UNPROMPTED', 'PROCESSOR_STOPPED_UNPROMPTED', 'PROCESSOR_STOPPED_UNPROMPTED']);
+      assert.deepEqual(runtime.view.runsForWorkItem(b.id).map((r) => r.failureCode), ['INVALID_WAIT', 'INVALID_WAIT', 'INVALID_WAIT']);
     } finally {
       await runtime.stop();
       removeRoot(root);
@@ -54,16 +55,16 @@ describe('runtime robustness', () => {
     try {
       await runtime.start();
       const w = runtime.submitWorkItem({ objective: 'contended settle', ownerRef: owner, processorKind: 'test.gated', initialState: 'READY' }).workItem;
-      await eventually(() => runtime.store.jobsFor(w.id)[0]?.state === 'CLAIMED', 5_000, 'claimed');
+      await eventually(() => runtime.view.jobsFor(w.id)[0]?.state === 'CLAIMED', 5_000, 'claimed');
       // Another process holds the write lock for 1.2 s — six times the runtime's busy timeout.
-      const locker = spawnScript(fileURLToPath(new URL('../../../../storage/dist/test/fixtures/locker.js', import.meta.url)), [runtime.store.workspace.databasePath, '1200']);
+      const locker = spawnScript(fileURLToPath(new URL('../../../../storage/dist/test/fixtures/locker.js', import.meta.url)), [runtime.view.workspace.databasePath, '1200']);
       await locker.waitFor((l) => l === 'LOCKED');
       release();
       await locker.exited();
-      await eventually(() => runtime.store.getWorkItem(w.id).state === 'COMPLETED', 10_000, 'completed after contention');
+      await eventually(() => runtime.view.getWorkItem(w.id).state === 'COMPLETED', 10_000, 'completed after contention');
       assert.equal(executions, 1, 'the processor ran once');
-      assert.deepEqual(runtime.store.runsForWorkItem(w.id).map((r) => r.state), ['SUCCEEDED']);
-      assert.equal(runtime.store.jobsFor(w.id)[0]?.attemptCount, 0);
+      assert.deepEqual(runtime.view.runsForWorkItem(w.id).map((r) => r.state), ['SUCCEEDED']);
+      assert.equal(runtime.view.jobsFor(w.id)[0]?.attemptCount, 0);
     } finally {
       await runtime.stop();
       removeRoot(root);
@@ -77,10 +78,10 @@ describe('runtime robustness', () => {
     try {
       await runtime.start();
       clock.advance(5_000); // the laptop slept
-      await eventually(() => runtime.store.auditByAction('supervisor.renewed_after_expiry').length > 0, 5_000, 'renewed after expiry');
+      await eventually(() => runtime.view.auditByAction('supervisor.renewed_after_expiry').length > 0, 5_000, 'renewed after expiry');
       assert.equal(runtime.state, 'READY');
       const w = runtime.submitWorkItem({ objective: 'after sleep', ownerRef: owner, processorKind: 'c1.noop', initialState: 'READY' }).workItem;
-      await eventually(() => runtime.store.getWorkItem(w.id).state === 'COMPLETED', 5_000, 'still working');
+      await eventually(() => runtime.view.getWorkItem(w.id).state === 'COMPLETED', 5_000, 'still working');
     } finally {
       await runtime.stop();
       removeRoot(root);
@@ -96,7 +97,7 @@ describe('runtime robustness', () => {
       await runtime.start();
       clock.advance(5_000);
       const other = CompanyStore.open(root, { clock });
-      other.acquireSupervisor('00000000-0000-4000-8000-00000000000b' as never, 60_000); // takeover after expiry
+      acquireSupervisor(other, '00000000-0000-4000-8000-00000000000b' as never, 60_000); // takeover after expiry
       other.close();
       await eventually(() => runtime.state === 'FAILED', 5_000, 'fail-stop');
       assert.deepEqual(failures, ['SUPERVISOR_NOT_AUTHORITATIVE']);

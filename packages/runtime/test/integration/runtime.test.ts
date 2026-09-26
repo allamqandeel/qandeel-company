@@ -35,8 +35,8 @@ describe('runtime lifecycle, end to end', () => {
       assert.equal(health.status, 'HEALTHY');
 
       const { workItem } = runtime.submitWorkItem({ objective: 'produce the report', ownerRef: owner, processorKind: 'test.report', initialState: 'READY' });
-      await eventually(() => runtime.store.getWorkItem(workItem.id).state === 'COMPLETED', 10_000, 'completion');
-      const store = runtime.store;
+      await eventually(() => runtime.view.getWorkItem(workItem.id).state === 'COMPLETED', 10_000, 'completion');
+      const store = runtime.view;
       const [job] = store.jobsFor(workItem.id);
       assert.ok(job);
       assert.equal(job.state, 'DONE');
@@ -54,7 +54,7 @@ describe('runtime lifecycle, end to end', () => {
         for (const e of store.events(aggregate)) assert.equal(e.correlationId, workItem.correlationId, e.type);
       }
       await eventually(() => seen.includes('run.checkpointed') && seen.includes('artifact.ready'), 5_000, 'event dispatch');
-      assert.equal(store.pendingEvents().length, 0, 'every durable event was dispatched');
+      assert.equal(store.healthCounts().pendingEvents, 0, 'every durable event was dispatched');
     } finally {
       await runtime.stop();
       removeRoot(root);
@@ -69,23 +69,23 @@ describe('runtime lifecycle, end to end', () => {
       const a = runtime.submitWorkItem({ objective: 'a', ownerRef: owner, processorKind: 'c1.steps', processorInput: { steps: 2, stepMs: 20 }, initialState: 'READY' }).workItem;
       const b = runtime.submitWorkItem({ objective: 'b', ownerRef: owner, processorKind: 'c1.noop', initialState: 'READY', dependsOn: [a.id] }).workItem;
       assert.equal(b.state, 'BLOCKED');
-      await eventually(() => runtime.store.getWorkItem(b.id).state === 'COMPLETED', 10_000, 'dependent completes after unblock');
+      await eventually(() => runtime.view.getWorkItem(b.id).state === 'COMPLETED', 10_000, 'dependent completes after unblock');
 
       const w = runtime.submitWorkItem({ objective: 'wait', ownerRef: owner, processorKind: 'c1.steps', processorInput: { steps: 1, waitFirst: true }, initialState: 'READY' }).workItem;
-      await eventually(() => runtime.store.getWorkItem(w.id).state === 'WAITING', 5_000, 'waiting');
+      await eventually(() => runtime.view.getWorkItem(w.id).state === 'WAITING', 5_000, 'waiting');
       await sleep(200);
-      assert.equal(runtime.store.getWorkItem(w.id).state, 'WAITING', 'waiting is a state: nothing re-runs it');
+      assert.equal(runtime.view.getWorkItem(w.id).state, 'WAITING', 'waiting is a state: nothing re-runs it');
       assert.equal(runtime.wake(w.id, 'INPUT_ARRIVED'), true);
-      await eventually(() => runtime.store.getWorkItem(w.id).state === 'COMPLETED', 5_000, 'resumed after wake');
+      await eventually(() => runtime.view.getWorkItem(w.id).state === 'COMPLETED', 5_000, 'resumed after wake');
 
       const f = runtime.submitWorkItem({ objective: 'flaky', ownerRef: owner, processorKind: 'c1.steps', processorInput: { failUntilAttempt: 99 }, maxAttempts: 3, initialState: 'READY' }).workItem;
-      await eventually(() => runtime.store.jobsFor(f.id)[0]?.state === 'DEAD_LETTER', 10_000, 'dead-letter');
-      assert.deepEqual(runtime.store.runsForWorkItem(f.id).map((r) => r.state), ['FAILED_RETRYABLE', 'FAILED_RETRYABLE', 'FAILED_RETRYABLE']);
+      await eventually(() => runtime.view.jobsFor(f.id)[0]?.state === 'DEAD_LETTER', 10_000, 'dead-letter');
+      assert.deepEqual(runtime.view.runsForWorkItem(f.id).map((r) => r.state), ['FAILED_RETRYABLE', 'FAILED_RETRYABLE', 'FAILED_RETRYABLE']);
       assert.equal(runtimeHealth(runtime).status, 'ATTENTION');
       assert.ok(runtimeHealth(runtime).reasons.includes('DEAD_LETTERS_PRESENT'));
 
       const p = runtime.submitWorkItem({ objective: 'bad input', ownerRef: owner, processorKind: 'c1.steps', processorInput: { permanentFailure: true }, initialState: 'READY' }).workItem;
-      await eventually(() => runtime.store.getWorkItem(p.id).state === 'FAILED', 5_000, 'permanent failure');
+      await eventually(() => runtime.view.getWorkItem(p.id).state === 'FAILED', 5_000, 'permanent failure');
     } finally {
       await runtime.stop();
       removeRoot(root);
@@ -99,13 +99,13 @@ describe('runtime lifecycle, end to end', () => {
       await runtime.start();
       const parent = runtime.submitWorkItem({ objective: 'long', ownerRef: owner, processorKind: 'c1.steps', processorInput: { steps: 100, stepMs: 50 }, initialState: 'READY' }).workItem;
       const child = runtime.submitWorkItem({ objective: 'child', ownerRef: owner, parentId: parent.id }).workItem;
-      await eventually(() => runtime.store.checkpoints(runtime.store.jobsFor(parent.id)[0]?.id as Id).length >= 2, 10_000, 'progress');
+      await eventually(() => runtime.view.checkpoints(runtime.view.jobsFor(parent.id)[0]?.id as Id).length >= 2, 10_000, 'progress');
       const out = runtime.cancel(parent.id, { reasonCode: 'FOUNDER_STOP', actorRef: 'owner:founder' });
       assert.equal(out.requested.length, 1);
-      await eventually(() => runtime.store.getWorkItem(parent.id).state === 'CANCELLED', 5_000, 'cancelled');
-      assert.equal(runtime.store.getWorkItem(child.id).state, 'CANCELLED');
-      assert.deepEqual(runtime.store.runsForWorkItem(parent.id).map((r) => r.state), ['CANCELLED']);
-      assert.equal(runtime.store.history(parent.id).filter((t) => t.toState === 'COMPLETED').length, 0);
+      await eventually(() => runtime.view.getWorkItem(parent.id).state === 'CANCELLED', 5_000, 'cancelled');
+      assert.equal(runtime.view.getWorkItem(child.id).state, 'CANCELLED');
+      assert.deepEqual(runtime.view.runsForWorkItem(parent.id).map((r) => r.state), ['CANCELLED']);
+      assert.equal(runtime.view.history(parent.id).filter((t) => t.toState === 'COMPLETED').length, 0);
     } finally {
       await runtime.stop();
       removeRoot(root);
@@ -119,7 +119,7 @@ describe('runtime lifecycle, end to end', () => {
     try {
       await runtime.start();
       const ids = Array.from({ length: 12 }, (_, i) => runtime.submitWorkItem({ objective: `job ${i}`, ownerRef: owner, processorKind: 'test.probe', initialState: 'READY' }).workItem.id);
-      await eventually(() => ids.every((id) => runtime.store.getWorkItem(id).state === 'COMPLETED'), 20_000, 'all complete');
+      await eventually(() => ids.every((id) => runtime.view.getWorkItem(id).state === 'COMPLETED'), 20_000, 'all complete');
       assert.equal(probe.runs, 12);
       assert.ok(probe.maxActive <= 3, `observed ${probe.maxActive}`);
       assert.equal(probe.maxActive, 3, 'the cap was actually reached (non-vacuous)');
@@ -142,12 +142,12 @@ describe('runtime lifecycle, end to end', () => {
     try {
       await runtime.start();
       const done = runtime.submitWorkItem({ objective: 'one', ownerRef: owner, processorKind: 'c1.noop', initialState: 'READY' }).workItem;
-      await eventually(() => runtime.store.getWorkItem(done.id).state === 'COMPLETED', 5_000, 'completion');
+      await eventually(() => runtime.view.getWorkItem(done.id).state === 'COMPLETED', 5_000, 'completion');
       await sleep(100);
-      const before = { statements: runtime.store.stats.statements, ...runtime.diagnostics() };
+      const before = { statements: runtime.view.stats.statements, ...runtime.diagnostics() };
       assert.equal(before.timerArmedFor, null, 'nothing due: no scheduler timer armed');
       await sleep(1_500);
-      const after = { statements: runtime.store.stats.statements, ...runtime.diagnostics() };
+      const after = { statements: runtime.view.stats.statements, ...runtime.diagnostics() };
       assert.equal(after.statements, before.statements, 'zero SQL statements while idle');
       assert.equal(after.pumps, before.pumps, 'the dispatcher did not spin');
       assert.equal(after.claimsAttempted, before.claimsAttempted);
@@ -165,8 +165,8 @@ describe('runtime lifecycle, end to end', () => {
     try {
       await runtime.start();
       const w = runtime.submitWorkItem({ objective: 'retry soon', ownerRef: owner, processorKind: 'c1.steps', processorInput: { failUntilAttempt: 2 }, initialState: 'READY' }).workItem;
-      await eventually(() => runtime.store.getWorkItem(w.id).state === 'COMPLETED', 5_000, 'retried by timer');
-      const runs = runtime.store.runsForWorkItem(w.id);
+      await eventually(() => runtime.view.getWorkItem(w.id).state === 'COMPLETED', 5_000, 'retried by timer');
+      const runs = runtime.view.runsForWorkItem(w.id);
       assert.deepEqual(runs.map((r) => r.state), ['FAILED_RETRYABLE', 'SUCCEEDED']);
       assert.ok(runtime.diagnostics().pumps < 50, `pumps ${runtime.diagnostics().pumps}: event/timer driven`);
     } finally {
@@ -183,8 +183,8 @@ describe('runtime lifecycle, end to end', () => {
       await first.start();
       const w = first.submitWorkItem({ objective: 'long', ownerRef: owner, processorKind: 'c1.steps', processorInput: { steps: 8, stepMs: 60 }, initialState: 'READY' }).workItem;
       const jobId = await eventually(() => {
-        const j = first.store.jobsFor(w.id)[0];
-        return j && first.store.checkpoints(j.id).length >= 2 ? j.id : undefined;
+        const j = first.view.jobsFor(w.id)[0];
+        return j && first.view.checkpoints(j.id).length >= 2 ? j.id : undefined;
       }, 10_000, 'progress');
       const instanceId = first.instanceId;
       await first.stop();
@@ -199,10 +199,10 @@ describe('runtime lifecycle, end to end', () => {
       const started = Date.now();
       await second.start();
       assert.ok(Date.now() - started < 5_000, 'no wait for a 60 s lease: it was released');
-      await eventually(() => second.store.getWorkItem(w.id).state === 'COMPLETED', 10_000, 'resumed');
-      const evidence = second.store.runsFor(jobId).map((r) => r.state);
+      await eventually(() => second.view.getWorkItem(w.id).state === 'COMPLETED', 10_000, 'resumed');
+      const evidence = second.view.runsFor(jobId).map((r) => r.state);
       assert.deepEqual(evidence, ['INTERRUPTED', 'SUCCEEDED']);
-      const steps = second.store.checkpoints(jobId).map((c) => (c.state as { step: number }).step);
+      const steps = second.view.checkpoints(jobId).map((c) => (c.state as { step: number }).step);
       assert.deepEqual(steps, [...new Set(steps)].sort((x, y) => x - y), 'no step was repeated after resume');
     } finally {
       await first.stop();
@@ -227,6 +227,31 @@ describe('runtime lifecycle, end to end', () => {
     }
   });
 
+  test('no mutable store escape: the runtime hands out a frozen read-only view, never its CompanyStore (D-C1-22)', async () => {
+    const root = tempRoot('view');
+    const runtime = runtimeFor(root);
+    try {
+      assert.equal('store' in runtime, false, 'CompanyRuntime has no store accessor');
+      assert.throws(() => runtime.view, (e) => isQandeelError(e, 'RUNTIME_NOT_READY'));
+      await runtime.start();
+      const view = runtime.view;
+      assert.ok(Object.isFrozen(view));
+      assert.equal(view instanceof CompanyStore, false);
+      for (const name of ['createWorkItem', 'transitionWorkItem', 'requestCancellation', 'supersede', 'addDependency', 'wake', 'requeueDeadLetter', 'resolveReconciliation', 'recordAudit', 'markDispatched', 'close', 'readView', 'claimNext', 'claimJob', 'settle', 'checkpoint', 'acquireSupervisor']) {
+        assert.equal(name in view, false, `the view offers no ${name}`);
+      }
+      for (const value of Object.values(view)) assert.equal(value instanceof CompanyStore, false, 'no property leads back to the store');
+      assert.throws(() => Object.assign(view, { createWorkItem: () => undefined }), TypeError);
+      const w = runtime.submitWorkItem({ objective: 'through the runtime', ownerRef: owner, processorKind: 'c1.noop', initialState: 'READY' }).workItem;
+      await eventually(() => view.getWorkItem(w.id).state === 'COMPLETED', 5_000, 'completion observed through the view');
+      assert.equal(view.schemaVersion, 3);
+    } finally {
+      await runtime.stop();
+      removeRoot(root);
+    }
+    assert.throws(() => runtime.view, (e) => isQandeelError(e, 'RUNTIME_NOT_READY'), 'no view once stopped');
+  });
+
   test('cross-process wake: another process commits work and hints through the wake file', async () => {
     const root = tempRoot('xwake');
     const runtime = runtimeFor(root);
@@ -236,7 +261,7 @@ describe('runtime lifecycle, end to end', () => {
       const w = other.createWorkItem({ objective: 'from another process', ownerRef: owner, processorKind: 'c1.noop', initialState: 'READY' }).workItem;
       other.close();
       notifyRuntime(root);
-      await eventually(() => runtime.store.getWorkItem(w.id).state === 'COMPLETED', 5_000, 'picked up via wake file');
+      await eventually(() => runtime.view.getWorkItem(w.id).state === 'COMPLETED', 5_000, 'picked up via wake file');
     } finally {
       await runtime.stop();
       removeRoot(root);
@@ -253,7 +278,7 @@ describe('runtime lifecycle, end to end', () => {
       assert.equal(snapshot.components.runtime.state, 'READY');
       assert.equal(snapshot.readiness.checks.wal, true);
       const w = runtime.submitWorkItem({ objective: 'unsafe', ownerRef: owner, processorKind: 'test.unsafe', initialState: 'READY' }).workItem;
-      await eventually(() => runtime.store.jobsFor(w.id)[0]?.state === 'CLAIMED', 5_000, 'claimed');
+      await eventually(() => runtime.view.jobsFor(w.id)[0]?.state === 'CLAIMED', 5_000, 'claimed');
       await runtime.stop(); // processor acknowledges at a safe point: parked, not held
       const after = inspectWorkspace(root);
       assert.equal(after.components.runtime.state, 'NOT_RUNNING');

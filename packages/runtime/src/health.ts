@@ -13,7 +13,7 @@
  */
 import { accessSync, constants as fsConstants } from 'node:fs';
 
-import { CompanyStore, CURRENT_SCHEMA_VERSION, workspaceFreeBytes, type HealthCounts, type WorkspaceLayout } from '@qandeel-company/storage';
+import { CompanyStore, CURRENT_SCHEMA_VERSION, workspaceFreeBytes, type CompanyReadView, type HealthCounts, type WorkspaceLayout } from '@qandeel-company/storage';
 
 import type { CompanyRuntime } from './runtime.js';
 
@@ -79,7 +79,7 @@ function classify(checksReady: boolean, alive: boolean, counts: HealthCounts | n
 }
 
 function snapshotFrom(
-  store: CompanyStore | null,
+  store: CompanyReadView | null,
   layout: WorkspaceLayout | null,
   runtime: { state: string; instanceId: string | null; uptimeMs: number; activeRuns: number; concurrency: number; failure: string | null; recovery: Record<string, unknown> | null; ownsLease: boolean | null; wakeWatcher?: string },
   now: number,
@@ -136,9 +136,9 @@ function snapshotFrom(
 
 /** Health of a runtime in this process. */
 export function runtimeHealth(runtime: CompanyRuntime): HealthSnapshot {
-  let store: CompanyStore | null;
+  let store: CompanyReadView | null;
   try {
-    store = runtime.store;
+    store = runtime.view;
   } catch {
     store = null;
   }

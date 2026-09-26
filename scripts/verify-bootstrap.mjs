@@ -120,6 +120,19 @@ const C1_PROOF_TESTS = [
   'packages/runtime/test/faults/fault-matrix.test.ts',
 ];
 const C1_REPORT = 'docs/C1_IMPLEMENTATION_REPORT.md';
+// D-C1-22: runtime authority (claims, supervisor lease, worker writes) lives behind one subpath
+// that only the runtime package may import; nothing reaches into another package's internals.
+const STORAGE_PKG = 'packages/storage/package.json';
+const STORAGE_EXPORTS = ['.', './runtime-authority'];
+const AUTHORITY_SUBPATH = '@qandeel-company/storage/runtime-authority';
+const STORAGE_SUBPATH_IMPORT = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)['"]@qandeel-company\/storage\/([^'"]+)['"]/g;
+const STORAGE_INTERNALS_IMPORT = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)['"][^'"]*\/storage\/(?:src|dist)\/[^'"]*['"]/;
+const AUTHORITY_METHODS = ['claimNext', 'claimJob', 'acquireSupervisor', 'renewSupervisor', 'releaseSupervisor', 'settle', 'checkpoint', 'renewLease', 'interruptClaim'];
+// D-C1-20..23: the remediation proofs CI must keep executing (found by marker, not by file name).
+const C1_PROOF_MARKERS = ['C1-PROOF: supervisor-claim-authority', 'C1-PROOF: lost-wake-reconciliation', 'C1-PROOF: product-decisions-d-c1-08-09'];
+const MUTATION_CHECK = 'scripts/c1-mutation-check.mjs';
+const pkgOf = (f) => f.split('/')[1];
+const isTestPath = (f) => /^packages\/[^/]+\/test\//.test(f);
 
 const NODE_ENGINE = /^>=24\.\d+\.\d+ <25(\.0\.0)?$/;
 
@@ -439,6 +452,81 @@ export const RULES = [
     },
   },
   {
+    id: 'runtime-authority-confined',
+    // Only @qandeel-company/runtime may import the runtime-authority subpath; no code outside the
+    // storage package reaches into storage internals; the storage exports map stays closed.
+    check: ({ files, read }) => {
+      const problems = [];
+      for (const f of files.filter((x) => isCode(x) && pkgOf(x) !== 'storage')) {
+        const text = read(f) ?? '';
+        for (const m of text.matchAll(STORAGE_SUBPATH_IMPORT)) {
+          const allowed = m[1] === 'runtime-authority' && f.startsWith('packages/runtime/');
+          if (!allowed) problems.push(`${f} imports @qandeel-company/storage/${m[1]} (only packages/runtime may import ${AUTHORITY_SUBPATH})`);
+        }
+        if (!(pkgOf(f) === 'runtime' && isTestPath(f)) && STORAGE_INTERNALS_IMPORT.test(text)) problems.push(`${f} imports storage internals by path`);
+      }
+      const manifest = json(read(STORAGE_PKG));
+      if (manifest) {
+        const keys = Object.keys(manifest.exports ?? {});
+        if (keys.length !== STORAGE_EXPORTS.length || keys.some((k) => !STORAGE_EXPORTS.includes(k))) problems.push(`${STORAGE_PKG} exports ${JSON.stringify(keys)}; only ${JSON.stringify(STORAGE_EXPORTS)} are allowed`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'supervisor-claim-fence-mandatory',
+    // The claim contract requires the Runtime Supervisor fence; the ordinary storage API has no
+    // claim, supervisor or worker-write method and does not re-export the authority module.
+    check: ({ files, read }) => {
+      const problems = [];
+      const storageSrc = files.filter((f) => f.startsWith('packages/storage/src/') && isCode(f));
+      const declaring = storageSrc.filter((f) => /\binterface\s+ClaimOptions\b/.test(read(f) ?? ''));
+      if (storageSrc.length && declaring.length === 0) problems.push('no ClaimOptions contract found in packages/storage/src');
+      for (const f of declaring) {
+        const body = (read(f) ?? '').split(/\binterface\s+ClaimOptions\b/)[1]?.split('\n}')[0] ?? '';
+        if (!/\breadonly\s+supervisor\s*:\s*SupervisorFence\b/.test(body)) problems.push(`${f}: ClaimOptions.supervisor must be a required SupervisorFence`);
+        if (/\bsupervisor\s*\?\s*:/.test(body) || /supervisor\s*:\s*SupervisorFence\s*\|\s*(?:undefined|null)/.test(body)) problems.push(`${f}: ClaimOptions.supervisor is optional`);
+      }
+      for (const f of storageSrc) {
+        const text = read(f) ?? '';
+        if (/\bclass\s+CompanyStore\b/.test(text)) {
+          for (const name of AUTHORITY_METHODS) if (new RegExp(`^\\s+(?:public\\s+)?${name}\\s*\\(`, 'm').test(text)) problems.push(`${f}: CompanyStore offers ${name}() on the ordinary API`);
+        }
+      }
+      const index = read('packages/storage/src/index.ts');
+      if (index !== undefined && /runtime-authority/.test(index.replace(/^\s*\/\/.*$/gm, ''))) problems.push('packages/storage/src/index.ts re-exports the runtime-authority module');
+      return problems;
+    },
+  },
+  {
+    id: 'no-runtime-store-escape',
+    // No package outside storage returns or publicly holds a mutable CompanyStore (read-only views only).
+    check: ({ files, read }) =>
+      files
+        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && pkgOf(f) !== 'storage')
+        .flatMap((f) => {
+          const text = read(f) ?? '';
+          const escapes = [
+            /^\s*(?:public\s+|static\s+)*get\s+[A-Za-z_$][\w$]*\s*\(\s*\)\s*:[^{;]*\bCompanyStore\b/m,
+            /^\s*(?:public\s+|static\s+|async\s+)*[A-Za-z_$][\w$]*\s*\([^)]*\)\s*:[^{;=]*\bCompanyStore\b[^{;=]*\{/m,
+            /^\s*export\s+(?:async\s+)?function\s+[A-Za-z_$][\w$]*\s*\([^)]*\)\s*:[^{;]*\bCompanyStore\b/m,
+            /^\s*(?:public\s+|readonly\s+|static\s+)+[A-Za-z_$][\w$]*\s*[?!]?\s*:[^;=]*\bCompanyStore\b/m,
+          ];
+          return escapes.some((re) => re.test(text)) ? [`${f} exposes a mutable CompanyStore (hand out CompanyReadView instead)`] : [];
+        }),
+  },
+  {
+    id: 'c1-remediation-proofs-present',
+    check: ({ files, read }) => {
+      const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
+      const problems = C1_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
+      if (!files.includes(MUTATION_CHECK)) problems.push(`missing ${MUTATION_CHECK}`);
+      const ci = json(read('package.json'))?.scripts?.ci ?? '';
+      if (!/\bc1:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c1:mutation');
+      return problems;
+    },
+  },
+  {
     id: 'c1-proof-tests-present',
     check: ({ files }) => C1_PROOF_TESTS.filter((f) => !files.includes(f)).map((f) => `missing C1 proof test ${f}`),
   },
@@ -489,6 +577,23 @@ const SYNTH_SQL = 'CREATE TABLE t (x INTEGER) STRICT;\n';
 const synthRegistry = (sql = SYNTH_SQL) => `export const RELEASED_MIGRATIONS = [\n  { version: 1, name: 'one', file: '0001_one.sql', sha256: '${migrationSha(sql)}' },\n];\n`;
 const SYNTH_BASELINE = `## 5. Data and privacy\n\n- **Rule A — ${PRIVACY_RULES[0]}**\n- **Rule B — ${PRIVACY_RULES[1].replace('private user content', 'private user\n  content')}**\n- **Rule C — ${PRIVACY_RULES[2]}**\n\n## 2. Operating principles\n\n- Event-driven by default.\n`;
 
+const SYNTH_QUEUE = "export interface ClaimOptions {\n  readonly workerId: string;\n  readonly supervisor: SupervisorFence;\n}\n";
+const SYNTH_STORE = 'export class CompanyStore {\n  static open(root: string): CompanyStore {\n    return new CompanyStore();\n  }\n  wake(id: string): boolean {\n    return true;\n  }\n  readView(): CompanyReadView {\n    return view;\n  }\n}\n';
+const SYNTH_RUNTIME = [
+  "import { CompanyStore, type CompanyReadView } from '@qandeel-company/storage';",
+  "import { claimNext } from '@qandeel-company/storage/runtime-authority';",
+  'export class CompanyRuntime {',
+  '  #store: CompanyStore | undefined;',
+  '  #ready(): CompanyStore {',
+  '    return this.#store as CompanyStore;',
+  '  }',
+  '  get view(): CompanyReadView {',
+  '    return this.#ready().readView();',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
 function syntheticRepo(overrides = {}) {
   const baseContents = {
     ...Object.fromEntries([...REQUIRED_FILES, ...REQUIRED_DOCS].map((f) => [f, ''])),
@@ -497,7 +602,7 @@ function syntheticRepo(overrides = {}) {
     [AUTHORITY_INDEX]: `## Missing\n\n**${STAGE_16_MISSING}.**\n`,
     [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT)),
     [SYNTH_SOURCE]: SYNTH_SOURCE_TEXT,
-    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'] }),
+    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation' } }),
     'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'node --test dist/test' } }),
     'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'packages/bootstrap-contract': {}, 'node_modules/tar': { version: '7.0.0' } } }),
     '.gitattributes': '* text=auto eol=lf\n*.sh text eol=lf\n*.ps1 text eol=crlf\n*.png binary\n',
@@ -511,6 +616,15 @@ function syntheticRepo(overrides = {}) {
     [MIGRATIONS_REGISTRY]: synthRegistry(),
     [`${MIGRATIONS_DIR}0001_one.sql`]: SYNTH_SQL,
     'packages/runtime/package.json': JSON.stringify({ private: true, dependencies: { '@qandeel-company/storage': '0.1.0' } }),
+    [STORAGE_PKG]: JSON.stringify({ private: true, exports: { '.': {}, './runtime-authority': {} } }),
+    'packages/storage/src/queue.ts': SYNTH_QUEUE,
+    'packages/storage/src/store.ts': SYNTH_STORE,
+    'packages/storage/src/index.ts': "// Claims are not exported here; see the runtime-authority subpath.\nexport { CompanyStore } from './store.js';\n",
+    'packages/runtime/src/runtime.ts': SYNTH_RUNTIME,
+    'packages/runtime/test/integration/lost-wake.test.ts': `// ${C1_PROOF_MARKERS[1]}\n`,
+    'packages/storage/test/supervisor-authority.test.ts': `// ${C1_PROOF_MARKERS[0]}\n`,
+    'packages/storage/test/product-decisions.test.ts': `// ${C1_PROOF_MARKERS[2]}\n`,
+    [MUTATION_CHECK]: '',
     // Legitimate code that mentions the words without opening a network path must stay clean.
     'packages/runtime/src/wake.ts': "// no fetch here; a 'net' income is not a socket\nexport const prefetched = 1;",
     'packages/storage/test/labels.test.ts': "const root = tempRoot('sqlite');",
@@ -602,12 +716,52 @@ const VIOLATIONS = {
     { contents: { [`${MIGRATIONS_DIR}0002_two.sql`]: 'CREATE TABLE u (x INTEGER) STRICT;\n' } },
     { remove: [`${MIGRATIONS_DIR}0001_one.sql`], contents: { [`${MIGRATIONS_DIR}0003_other.sql`]: SYNTH_SQL } },
   ],
+  'runtime-authority-confined': [
+    { contents: { 'packages/employees/src/worker.ts': "import { claimNext } from '@qandeel-company/storage/runtime-authority';" } },
+    { contents: { 'packages/runtime/src/sneaky.ts': "import { txClaimNext } from '@qandeel-company/storage/dist/src/queue.js';" } },
+    { contents: { 'packages/domain/src/x.ts': "const q = await import('../../storage/src/queue.js');" } },
+    { contents: { 'scripts/drive.mjs': "import { settle } from '@qandeel-company/storage/runtime-authority';" } },
+    { contents: { [STORAGE_PKG]: JSON.stringify({ private: true, exports: { '.': {}, './runtime-authority': {}, './*': {} } }) } },
+  ],
+  'supervisor-claim-fence-mandatory': [
+    { contents: { 'packages/storage/src/queue.ts': SYNTH_QUEUE.replace('readonly supervisor: SupervisorFence', 'readonly supervisor?: SupervisorFence') } },
+    { contents: { 'packages/storage/src/queue.ts': SYNTH_QUEUE.replace('readonly supervisor: SupervisorFence', 'readonly supervisor: SupervisorFence | undefined') } },
+    { contents: { 'packages/storage/src/queue.ts': SYNTH_QUEUE.replace('  readonly supervisor: SupervisorFence;\n', '') } },
+    { contents: { 'packages/storage/src/store.ts': SYNTH_STORE.replace('  wake(id: string)', '  claimNext(options: ClaimOptions): Claim | null {\n    return null;\n  }\n  wake(id: string)') } },
+    { contents: { 'packages/storage/src/index.ts': "export * from './runtime-authority.js';\n" } },
+  ],
+  'no-runtime-store-escape': [
+    { contents: { 'packages/runtime/src/runtime.ts': SYNTH_RUNTIME.replace('  get view(): CompanyReadView {', '  get store(): CompanyStore {\n    return this.#ready();\n  }\n  get view(): CompanyReadView {') } },
+    { contents: { 'packages/runtime/src/runtime.ts': SYNTH_RUNTIME.replace('  #store: CompanyStore | undefined;', '  readonly store: CompanyStore;') } },
+    { contents: { 'packages/runtime/src/runtime.ts': SYNTH_RUNTIME.replace('  #ready(): CompanyStore {', '  unsafeStore(): CompanyStore {') } },
+    { contents: { 'packages/c2-approvals/src/open.ts': 'export function companyStore(root: string): CompanyStore {\n  return CompanyStore.open(root);\n}\n' } },
+  ],
+  'c1-remediation-proofs-present': [
+    { remove: ['packages/runtime/test/integration/lost-wake.test.ts'] },
+    { contents: { 'packages/storage/test/supervisor-authority.test.ts': '// no marker\n' } },
+    { remove: ['packages/storage/test/product-decisions.test.ts'] },
+    { remove: [MUTATION_CHECK] },
+    { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test' } }) } },
+  ],
   'c1-proof-tests-present': { remove: ['packages/runtime/test/faults/fault-matrix.test.ts'] },
   'local-core-longpaths': { longpaths: undefined },
 };
 
 // Legitimate future states that each rule must accept (stage-awareness, not a frozen snapshot).
 const MUST_PASS = [
+  // The proofs may be renamed or moved: the marker is what counts.
+  {
+    id: 'c1-remediation-proofs-present',
+    scenario: {
+      remove: ['packages/runtime/test/integration/lost-wake.test.ts'],
+      contents: { 'packages/runtime/test/wake/missed-hints.test.ts': `// ${C1_PROOF_MARKERS[1]}\n` },
+    },
+  },
+  // ClaimOptions may move to another storage module; runtime tests may spawn storage fixtures by path.
+  { id: 'supervisor-claim-fence-mandatory', scenario: { remove: ['packages/storage/src/queue.ts'], contents: { 'packages/storage/src/claims.ts': SYNTH_QUEUE } } },
+  { id: 'runtime-authority-confined', scenario: { contents: { 'packages/runtime/test/x.test.ts': "import { claimNext } from '@qandeel-company/storage/runtime-authority';\nconst f = new URL('../../storage/dist/test/fixtures/locker.js', import.meta.url);" } } },
+  // Private members and read-only views are legitimate; so is a storage-typed parameter.
+  { id: 'no-runtime-store-escape', scenario: { contents: { 'packages/runtime/src/recovery.ts': 'export function runRecovery(store: CompanyStore, fence: SupervisorFence): Summary {\n  return summarize(store);\n}\n' } } },
   { id: 'implementation-lifecycle-state', scenario: { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS'), 'docs/C1_COMPANY_FOUNDATION_CLOSURE.md': '' } } },
   // C1 as an implementation candidate, explicitly not closed, with an honest report.
   { id: 'implementation-lifecycle-state', scenario: { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'IMPLEMENTATION CANDIDATE / IN INDEPENDENT REVIEW — NOT CLOSED'), [C1_REPORT]: '# Report\n\nC1 is NOT CLOSED.\n' } } },
@@ -708,8 +862,15 @@ async function workspaceResolution() {
   for (const leaked of ['SqliteConnection', 'storeContext', 'migrate', 'translateError']) {
     if (leaked in storage) problems.push(`@qandeel-company/storage exports ${leaked}: the SQLite adapter must stay internal`);
   }
+  for (const leaked of AUTHORITY_METHODS) {
+    if (leaked in storage) problems.push(`@qandeel-company/storage exports ${leaked}: runtime authority must stay behind ${AUTHORITY_SUBPATH}`);
+    if (leaked in storage.CompanyStore.prototype) problems.push(`CompanyStore offers ${leaked}() on the ordinary API`);
+  }
+  const authority = await import(AUTHORITY_SUBPATH);
+  if (typeof authority.claimNext !== 'function') problems.push(`${AUTHORITY_SUBPATH} does not resolve to the runtime-authority module`);
   const runtime = await import('@qandeel-company/runtime');
   if (typeof runtime.CompanyRuntime !== 'function') problems.push('@qandeel-company/runtime does not export CompanyRuntime');
+  if ('store' in runtime.CompanyRuntime.prototype) problems.push('CompanyRuntime exposes a store accessor (only the read-only view is allowed)');
   try {
     await import('@qandeel-company/storage/dist/src/sqlite/connection.js');
     problems.push('deep import of the SQLite adapter is possible; the exports map must forbid it');

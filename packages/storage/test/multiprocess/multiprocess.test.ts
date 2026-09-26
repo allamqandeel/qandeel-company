@@ -4,27 +4,34 @@ import path from 'node:path';
 import { describe, test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { ExponentialBackoff, assertId, isQandeelError } from '@qandeel-company/domain';
+import { ExponentialBackoff, assertId, isQandeelError, newId } from '@qandeel-company/domain';
 
 import { CompanyStore, createBackup, verifyBackup } from '../../src/index.js';
-import { KINDS, owner, removeRoot, tempRoot } from '../helpers.js';
+import { KINDS, TEST_SUPERVISOR_TTL_MS, owner, removeRoot, tempRoot } from '../helpers.js';
 import { fixture, spawnScript } from '../process-harness.js';
+import { acquireSupervisor, claimNext, interruptClaim, settle } from '../../src/runtime-authority.js';
 
 describe('multi-process proofs (independent OS processes, independent SQLite connections)', () => {
-  test('atomic claim: six processes race for one job — exactly one winner, one run, one lease', async () => {
+  test('atomic claim: six processes race for one job — exactly one winner, one run, one lease; stale supervisors never win', async () => {
     const root = tempRoot('mp-claim');
     const store = CompanyStore.open(root);
     try {
+      const supervisor = acquireSupervisor(store, newId(), TEST_SUPERVISOR_TTL_MS);
       const { workItem } = store.createWorkItem({ objective: 'contended', ownerRef: owner, processorKind: 'test.noop', initialState: 'READY' });
       const jobId = store.jobsFor(workItem.id)[0]?.id;
       assert.ok(jobId);
       const startAt = Date.now() + 1_500;
-      const children = Array.from({ length: 6 }, (_, i) => spawnScript(fixture('claimer'), [root, jobId, `proc-${i}`, String(startAt)]));
+      // Four processes present the current supervisor fence; two present a stale token (a replaced supervisor).
+      const children = Array.from({ length: 6 }, (_, i) =>
+        spawnScript(fixture('claimer'), [root, jobId, `proc-${i}`, String(startAt), supervisor.holderId, String(i < 4 ? supervisor.fencingToken : supervisor.fencingToken + 7)]),
+      );
       const results = await Promise.all(children.map(async (c) => JSON.parse(await c.waitFor((l) => l.startsWith('{'))) as { workerId: string; claimed: boolean; error?: string }));
       await Promise.all(children.map((c) => c.exited()));
       const winners = results.filter((r) => r.claimed);
       assert.equal(winners.length, 1, `exactly one winner: ${JSON.stringify(results)}`);
-      assert.ok(results.filter((r) => !r.claimed).every((r) => r.error === undefined), 'losers get a deterministic "not claimed", not an error');
+      assert.ok(['proc-0', 'proc-1', 'proc-2', 'proc-3'].includes(winners[0]?.workerId ?? ''), 'only a current-supervisor claimant can win');
+      assert.deepEqual(results.filter((r) => r.workerId === 'proc-4' || r.workerId === 'proc-5').map((r) => r.error), ['SUPERVISOR_NOT_AUTHORITATIVE', 'SUPERVISOR_NOT_AUTHORITATIVE']);
+      assert.ok(results.filter((r) => !r.claimed && ['proc-0', 'proc-1', 'proc-2', 'proc-3'].includes(r.workerId)).every((r) => r.error === undefined), 'losers get a deterministic "not claimed", not an error');
       const runs = store.runsFor(jobId);
       assert.equal(runs.length, 1);
       assert.equal(runs[0]?.workerId, winners[0]?.workerId);
@@ -45,8 +52,8 @@ describe('multi-process proofs (independent OS processes, independent SQLite con
       const children = Array.from({ length: 4 }, () => spawnScript(fixture('opener'), [root, String(startAt)]));
       const results = await Promise.all(children.map(async (c) => JSON.parse(await c.waitFor((l) => l.startsWith('{'))) as { ok: boolean; schemaVersion?: number; applied?: number[]; code?: string }));
       await Promise.all(children.map((c) => c.exited()));
-      assert.ok(results.every((r) => r.ok && r.schemaVersion === 2), JSON.stringify(results));
-      assert.deepEqual(results.flatMap((r) => r.applied ?? []).sort(), [1, 2], 'each migration applied exactly once across all processes');
+      assert.ok(results.every((r) => r.ok && r.schemaVersion === 3), JSON.stringify(results));
+      assert.deepEqual(results.flatMap((r) => r.applied ?? []).sort(), [1, 2, 3], 'each migration applied exactly once across all processes');
     } finally {
       removeRoot(root);
     }
@@ -56,16 +63,17 @@ describe('multi-process proofs (independent OS processes, independent SQLite con
     const root = tempRoot('mp-fence');
     const store = CompanyStore.open(root);
     try {
+      const supervisor = acquireSupervisor(store, newId(), TEST_SUPERVISOR_TTL_MS);
       const { workItem } = store.createWorkItem({ objective: 'fenced', ownerRef: owner, processorKind: 'test.noop', initialState: 'READY' });
       const go = path.join(path.dirname(root), 'go');
-      const a = spawnScript(fixture('stale-worker'), [root, '400', go]);
+      const a = spawnScript(fixture('stale-worker'), [root, '400', go, supervisor.holderId, String(supervisor.fencingToken)]);
       const claimLine = JSON.parse(await a.waitFor((l) => l.includes('"claim"'))) as { ok: boolean; jobId: string; token: number };
       assert.equal(claimLine.ok, true);
       await sleep(600); // A's lease expires while A is stalled
       const expired = store.expiredClaims();
       assert.deepEqual(expired, [claimLine.jobId]);
-      store.interruptClaim(assertId(claimLine.jobId, 'jobId'), 'LEASE_EXPIRED');
-      const b = store.claimNext({ workerId: 'worker-B', leaseMs: 60_000, kinds: KINDS });
+      interruptClaim(store, supervisor, assertId(claimLine.jobId, 'jobId'), 'LEASE_EXPIRED');
+      const b = claimNext(store, { workerId: 'worker-B', leaseMs: 60_000, kinds: KINDS, supervisor });
       assert.ok(b);
       assert.ok(b.fence.fencingToken > claimLine.token);
       writeFileSync(go, 'go'); // wake A late
@@ -78,7 +86,7 @@ describe('multi-process proofs (independent OS processes, independent SQLite con
       ]);
       assert.equal(store.getJob(b.job.id).leaseOwner, 'worker-B');
       assert.equal(store.checkpoints(b.job.id).length, 0);
-      store.settle(b.fence, { type: 'COMPLETED' }, { backoff: new ExponentialBackoff() });
+      settle(store, b.fence, { type: 'COMPLETED' }, { backoff: new ExponentialBackoff() });
       assert.equal(store.getWorkItem(workItem.id).state, 'COMPLETED');
       assert.equal(store.history(workItem.id).filter((t) => t.toState === 'COMPLETED').length, 1);
       assert.equal(store.auditByAction('fencing.rejected').length, 2);

@@ -8,7 +8,8 @@
  * cap and priority order).
  */
 import type { Id } from '@qandeel-company/domain';
-import type { ArtifactStore, CompanyStore } from '@qandeel-company/storage';
+import type { ArtifactStore, CompanyStore, SupervisorFence } from '@qandeel-company/storage';
+import { abandonStaleInstances, interruptClaim, interruptOrphanRun, settleDanglingTermination } from '@qandeel-company/storage/runtime-authority';
 
 export interface RecoverySummary {
   [key: string]: number | string | boolean | null;
@@ -39,13 +40,14 @@ const MAX_BATCHES = 1_000;
 
 export type RecoveryFaultHook = (point: 'recovery.afterClaims') => void;
 
-export function runRecovery(store: CompanyStore, artifacts: ArtifactStore, { instanceId, fault }: { instanceId: Id; fault?: RecoveryFaultHook }): RecoverySummary {
+/** Every recovery write presents the supervisor fence this runtime holds (D-C1-22). */
+export function runRecovery(store: CompanyStore, artifacts: ArtifactStore, { instanceId, supervisor, fault }: { instanceId: Id; supervisor: SupervisorFence; fault?: RecoveryFaultHook }): RecoverySummary {
   const quick = store.quickCheck();
   if (quick !== 'ok') throw Object.assign(new Error('database failed quick_check at startup'), { code: 'STORAGE_INVARIANT' });
 
   const summary: RecoverySummary = {
     quickCheck: quick,
-    staleInstancesAbandoned: store.abandonStaleInstances(instanceId),
+    staleInstancesAbandoned: abandonStaleInstances(store, supervisor, instanceId),
     claimsRecovered: 0,
     resumed: 0,
     retried: 0,
@@ -73,7 +75,7 @@ export function runRecovery(store: CompanyStore, artifacts: ArtifactStore, { ins
     const claims = store.foreignClaims(ownPrefix, BATCH);
     if (claims.length === 0) break;
     for (const jobId of claims) {
-      const r = store.interruptClaim(jobId, 'SUPERVISOR_RESTART');
+      const r = interruptClaim(store, supervisor, jobId, 'SUPERVISOR_RESTART');
       if (!r) continue;
       summary.claimsRecovered++;
       if (r.disposition === 'TERMINATED') summary.terminationsFinalized++;
@@ -89,7 +91,7 @@ export function runRecovery(store: CompanyStore, artifacts: ArtifactStore, { ins
   for (let i = 0; i < MAX_BATCHES; i++) {
     const runs = store.runningRunsWithoutClaim(BATCH);
     if (runs.length === 0) break;
-    for (const runId of runs) if (store.interruptOrphanRun(runId)) summary.orphanRunsClosed++;
+    for (const runId of runs) if (interruptOrphanRun(store, supervisor, runId)) summary.orphanRunsClosed++;
   }
 
   // 3. Durable cancellation/supersession intent not yet settled.
@@ -97,7 +99,7 @@ export function runRecovery(store: CompanyStore, artifacts: ArtifactStore, { ins
     const pending = store.danglingTerminations(BATCH);
     if (pending.length === 0) break;
     for (const id of pending) {
-      store.settleDanglingTermination(id);
+      settleDanglingTermination(store, supervisor, id);
       summary.danglingTerminationsSettled++;
     }
   }

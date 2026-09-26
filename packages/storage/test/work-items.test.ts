@@ -4,7 +4,8 @@ import { describe, test } from 'node:test';
 import { isQandeelError, type Id } from '@qandeel-company/domain';
 
 import { storeContext } from '../src/store.js';
-import { backoff, claimOpts, executable, harness, owner } from './helpers.js';
+import { backoff, executable, harness, owner } from './helpers.js';
+import { claimNext, settle } from '../src/runtime-authority.js';
 
 describe('Work Item creation', () => {
   test('stores Stage 8 fields durably with opaque references and an initial history row', () => {
@@ -110,9 +111,9 @@ describe('Work Item lifecycle and history', () => {
     const h = harness();
     try {
       const id = executable(h.store, { reviewRequired: true });
-      const claim = h.store.claimNext(claimOpts());
+      const claim = claimNext(h.store, h.claimOpts());
       assert.ok(claim);
-      h.store.settle(claim.fence, { type: 'COMPLETED', evidence: { rows: 3 } }, { backoff });
+      settle(h.store, claim.fence, { type: 'COMPLETED', evidence: { rows: 3 } }, { backoff });
       assert.equal(h.store.getWorkItem(id).state, 'WAITING_REVIEW', 'review-required work is not "done"');
       assert.throws(() => h.store.transitionWorkItem(id, { to: 'CLOSED', reasonCode: 'skip' }), (e) => isQandeelError(e, 'INVALID_TRANSITION'));
       assert.throws(() => h.store.transitionWorkItem(id, { to: 'REVIEWED', reasonCode: 'self.review', actorRef: owner }), (e) => isQandeelError(e, 'REVIEW_PATH_UNAVAILABLE'));
@@ -139,9 +140,9 @@ describe('Work Item lifecycle and history', () => {
     const h = harness();
     try {
       const id = executable(h.store);
-      const claim = h.store.claimNext(claimOpts());
+      const claim = claimNext(h.store, h.claimOpts());
       assert.ok(claim);
-      h.store.settle(claim.fence, { type: 'COMPLETED' }, { backoff });
+      settle(h.store, claim.fence, { type: 'COMPLETED' }, { backoff });
       assert.throws(() => h.store.transitionWorkItem(id, { to: 'CLOSED', reasonCode: 'x', outcome: 'ACHIEVED' }), (e) => isQandeelError(e, 'INVALID_TRANSITION'));
       const { db } = storeContext(h.store);
       assert.throws(() => db.run(`UPDATE work_items SET state = 'CLOSED', outcome = 'ACHIEVED', version = version + 1 WHERE id = ?`, id), (e) => isQandeelError(e, 'STORAGE_INVARIANT'));
@@ -216,9 +217,9 @@ describe('dependencies and lineage', () => {
       assert.equal(waiter.blockedReason, 'DEPENDENCY');
       assert.equal(waiter.blockerRef, `work_item:${dep}`);
       assert.equal(h.store.jobsFor(waiter.id).length, 0, 'blocked work is not queued');
-      const claim = h.store.claimNext(claimOpts());
+      const claim = claimNext(h.store, h.claimOpts());
       assert.equal(claim?.workItem.id, dep);
-      const outcome = h.store.settle(claim.fence, { type: 'COMPLETED' }, { backoff });
+      const outcome = settle(h.store, claim.fence, { type: 'COMPLETED' }, { backoff });
       assert.deepEqual(outcome.unblocked, [waiter.id]);
       assert.equal(h.store.getWorkItem(waiter.id).state, 'READY');
       assert.equal(h.store.jobsFor(waiter.id).length, 1);
@@ -234,9 +235,9 @@ describe('dependencies and lineage', () => {
     try {
       const dep = executable(h.store, { reviewRequired: true });
       const waiter = h.store.createWorkItem({ objective: 'w', ownerRef: owner, initialState: 'READY', dependsOn: [dep] }).workItem.id;
-      const c = h.store.claimNext(claimOpts());
+      const c = claimNext(h.store, h.claimOpts());
       assert.ok(c);
-      const out = h.store.settle(c.fence, { type: 'COMPLETED' }, { backoff });
+      const out = settle(h.store, c.fence, { type: 'COMPLETED' }, { backoff });
       assert.deepEqual(out.unblocked, []);
       assert.equal(h.store.getWorkItem(waiter).state, 'BLOCKED', 'Completed ≠ Reviewed: the dependent does not proceed');
       assert.equal(h.store.dependencies(waiter)[0]?.resolvedAt, null);
@@ -250,9 +251,9 @@ describe('dependencies and lineage', () => {
     try {
       const dep = executable(h.store);
       const waiter = h.store.createWorkItem({ objective: 'w', ownerRef: owner, processorKind: 'test.noop', initialState: 'READY', dependsOn: [dep] }).workItem.id;
-      const c = h.store.claimNext(claimOpts());
+      const c = claimNext(h.store, h.claimOpts());
       assert.ok(c);
-      h.store.settle(c.fence, { type: 'COMPLETED' }, { backoff });
+      settle(h.store, c.fence, { type: 'COMPLETED' }, { backoff });
       assert.equal(h.store.getWorkItem(waiter).state, 'READY');
       assert.throws(() => h.store.transitionWorkItem(dep, { to: 'WAITING_REVIEW', reasonCode: 'reopen' }), (e) => isQandeelError(e, 'INVALID_TRANSITION'));
     } finally {
@@ -282,7 +283,7 @@ describe('dependencies and lineage', () => {
       h.store.addDependency(a, b);
       assert.equal(h.store.getWorkItem(a).state, 'BLOCKED');
       assert.deepEqual(h.store.jobsFor(a).map((j) => j.state), ['CANCELLED']);
-      assert.equal(h.store.claimNext(claimOpts()), null);
+      assert.equal(claimNext(h.store, h.claimOpts()), null);
     } finally {
       h.close();
     }

@@ -39,9 +39,10 @@ export const TERMINAL_WORK_ITEM_STATES: ReadonlySet<WorkItemState> = new Set(['C
 export const COMPLETED_FAMILY: ReadonlySet<WorkItemState> = new Set(['COMPLETED', 'WAITING_REVIEW', 'REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED']);
 
 /**
- * When a dependency is satisfied (D-C1-09; Stage 8 is silent — reported as a Product gap). The
- * conservative default: work that requires review satisfies its dependents only once REVIEWED
- * (Completed ≠ Reviewed); work that does not require review satisfies them once COMPLETED.
+ * When a dependency is satisfied — D-C1-09 / D-C1-21, Product Owner approved, C1 canonical: work
+ * that requires review (including R2+ risk policy) satisfies its dependents only at REVIEWED or
+ * later (Completed ≠ Reviewed); work that does not require review satisfies them at COMPLETED or
+ * later in the completed family. There is no separate OUTCOME_VERIFIED gating mode.
  */
 export const REVIEWED_FAMILY: ReadonlySet<WorkItemState> = new Set(['REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED']);
 

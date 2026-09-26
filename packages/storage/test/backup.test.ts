@@ -7,9 +7,10 @@ import { setImmediate as tick } from 'node:timers/promises';
 
 import { isQandeelError } from '@qandeel-company/domain';
 
-import { ArtifactStore, CompanyStore, createBackup, listBackups, restoreToIsolatedWorkspace, verifyBackup } from '../src/index.js';
+import { ArtifactStore, CURRENT_SCHEMA_VERSION, CompanyStore, createBackup, listBackups, restoreToIsolatedWorkspace, verifyBackup } from '../src/index.js';
 import { SqliteConnection } from '../src/sqlite/connection.js';
-import { backoff, claimOpts, executable, harness, owner, removeRoot, tempRoot } from './helpers.js';
+import { backoff, executable, harness, owner, removeRoot, tempRoot } from './helpers.js';
+import { checkpoint, claimNext, settle } from '../src/runtime-authority.js';
 
 describe('online backup and isolated verification', () => {
   test('backup produces a self-contained verified snapshot + manifest; verification and isolated restore pass', async () => {
@@ -17,17 +18,17 @@ describe('online backup and isolated verification', () => {
     const restoreRoot = tempRoot('restore');
     try {
       const id = executable(h.store);
-      const claim = h.store.claimNext(claimOpts());
+      const claim = claimNext(h.store, h.claimOpts());
       assert.ok(claim);
-      h.store.checkpoint(claim.fence, 'step', { step: 1 }, 1, 10_000);
-      h.store.settle(claim.fence, { type: 'COMPLETED' }, { backoff });
+      checkpoint(h.store, claim.fence, 'step', { step: 1 }, 1, 10_000);
+      settle(h.store, claim.fence, { type: 'COMPLETED' }, { backoff });
       const artifacts = new ArtifactStore(h.store);
       artifacts.put({ content: 'evidence', mediaType: 'text/plain', workItemId: id });
 
       const result = await createBackup(h.store, { runtimeVersion: '0.1.0-test' });
       assert.deepEqual(readdirSync(result.directory).sort(), ['company.sqlite3', 'manifest.json'], 'no -wal/-shm: the snapshot is one file');
       const m = result.manifest;
-      assert.equal(m.schemaVersion, 2);
+      assert.equal(m.schemaVersion, CURRENT_SCHEMA_VERSION);
       assert.equal(m.integrity, 'ok');
       assert.equal(m.runtimeVersion, '0.1.0-test');
       assert.equal(m.counts.workItems, 1);

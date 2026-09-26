@@ -11,6 +11,16 @@
  * The only periodic activities are deterministic lease heartbeats (supervisor; and per active run,
  * bounded by the concurrency cap) — they never call a model and never scan the queue.
  *
+ * Lost-wake reconciliation (D-C1-23): the fs.watch wake file is only a low-latency hint and its
+ * delivery is not guaranteed. The durable wake generation (advanced in the same transaction as
+ * any queue change that makes work actionable) is the truth: the supervisor heartbeat reads it on
+ * every beat and pumps when it moved since the last pump. A missed hint therefore delays pickup
+ * by at most one heartbeat interval (supervisorTtlMs / 3), never indefinitely.
+ *
+ * Authority (D-C1-22): only this Runtime Supervisor claims work — through the runtime-only
+ * storage subpath, presenting its supervisor fence — and it never hands out its mutable store;
+ * callers get the read-only `view`.
+ *
  * Correctness never depends on graceful shutdown: hard termination is handled by lease expiry,
  * fencing and startup recovery.
  */
@@ -52,7 +62,20 @@ import {
   type TerminationOutcome,
   type TransitionInput,
   type WorkItemRecord,
+  type CompanyReadView,
 } from '@qandeel-company/storage';
+import {
+  acquireSupervisor,
+  checkpoint,
+  claimNext,
+  interruptClaim,
+  registerInstance,
+  releaseSupervisor,
+  renewLease,
+  renewSupervisor,
+  settle,
+  updateInstance,
+} from '@qandeel-company/storage/runtime-authority';
 
 import { ProcessorRegistry } from './deterministic-processors.js';
 import { Logger, errorCode, silentLogger } from './logger.js';
@@ -64,7 +87,7 @@ export const RUNTIME_VERSION = '0.1.0';
 export type RuntimeState = 'CREATED' | 'STARTING' | 'RECOVERING' | 'READY' | 'STOPPING' | 'STOPPED' | 'FAILED';
 
 /** Named runtime durability boundaries for failure-injection tests (production passes nothing). */
-export type RuntimeFaultPoint = 'submit.afterCommit' | 'claim.afterCommit' | 'recovery.afterClaims';
+export type RuntimeFaultPoint = 'submit.afterCommit' | 'claim.afterCommit' | 'recovery.afterClaims' | 'wake.fileHint';
 
 export interface RuntimeOptions {
   readonly workspace: string;
@@ -85,6 +108,10 @@ export interface RuntimeOptions {
   readonly logger?: Logger;
   /** Watch the workspace wake file for cross-process hints (default true). */
   readonly watchWakeFile?: boolean;
+  /**
+   * Failure injection (tests only). Throwing aborts at the named point; throwing at
+   * `wake.fileHint` drops that fs.watch hint (lost-wake proof).
+   */
   readonly fault?: (point: RuntimeFaultPoint) => void;
   /**
    * Called once when the runtime fail-stops (e.g. supervisor authority taken over). A host (the
@@ -115,6 +142,18 @@ export interface RuntimeDiagnostics {
   readonly wakeSignals: number;
   /** Cross-process wake watcher state; a lost watcher is reported, never silently ignored. */
   readonly wakeWatcher: 'ACTIVE' | 'DISABLED' | 'UNAVAILABLE';
+  /** Wake-file hints delivered by fs.watch (the low-latency path). */
+  readonly wakeFileHints: number;
+  /** Wake-file hints deliberately dropped (failure injection only). */
+  readonly wakeFileHintsDropped: number;
+  /** Supervisor heartbeats that observed the durable wake generation (lost-wake reconciliation). */
+  readonly heartbeats: number;
+  /** Pumps started because the heartbeat saw the durable wake generation move (a missed hint). */
+  readonly reconciliationWakes: number;
+  /** The durable wake generation the last pump started from. */
+  readonly observedWakeGeneration: number | null;
+  /** Maximum delay, after a commit, before the heartbeat discovers work whose hint was lost. */
+  readonly lostWakeBoundMs: number;
 }
 
 export type EventHandler = (event: EventRecord) => void;
@@ -141,6 +180,7 @@ export class CompanyRuntime {
 
   #state: RuntimeState = 'CREATED';
   #store: CompanyStore | undefined;
+  #view: CompanyReadView | undefined;
   #artifacts: ArtifactStore | undefined;
   #fence: SupervisorFence | undefined;
   #heartbeat: NodeJS.Timeout | undefined;
@@ -155,6 +195,10 @@ export class CompanyRuntime {
   #claimsAttempted = 0;
   #maxObservedActive = 0;
   #failure: string | null = null;
+  #heartbeatMs = 0;
+  #heartbeats = 0;
+  #reconciliationWakes = 0;
+  #observedGeneration: number | null = null;
 
   constructor(options: RuntimeOptions) {
     this.#opts = options;
@@ -165,7 +209,8 @@ export class CompanyRuntime {
     this.#concurrency = clampInt(options.concurrency, 2, 1, 64);
     this.#supervisorTtlMs = clampInt(options.supervisorTtlMs, 30_000, 300, 600_000);
     this.#jobLeaseMs = clampInt(options.jobLeaseMs, 60_000, 300, 3_600_000);
-    this.#wake = new WakeSignal(() => this.#pump());
+    this.#wake = new WakeSignal(() => this.#pump(), options.fault ? () => options.fault?.('wake.fileHint') : undefined);
+    this.#heartbeatMs = Math.max(100, Math.floor(this.#supervisorTtlMs / 3));
   }
 
   // --- lifecycle --------------------------------------------------------------------------------
@@ -187,21 +232,22 @@ export class CompanyRuntime {
       });
       this.#store = store;
       this.#artifacts = new ArtifactStore(store);
-      store.registerInstance(this.instanceId, process.pid, RUNTIME_VERSION);
+      registerInstance(store, this.instanceId, process.pid, RUNTIME_VERSION);
       this.#log.info('runtime.starting', { instanceId: this.instanceId, schemaVersion: store.schemaVersion, migrationsApplied: store.migration.applied.length });
 
       this.#fence = await this.#acquireSupervisor(store);
-      store.updateInstance(this.instanceId, 'RECOVERING', { supervisorToken: this.#fence.fencingToken });
+      updateInstance(store, this.instanceId, 'RECOVERING', { supervisorToken: this.#fence.fencingToken });
       this.#state = 'RECOVERING';
       this.#startHeartbeat();
 
       const summary = runRecovery(store, this.#artifacts, {
         instanceId: this.instanceId,
+        supervisor: this.#fence,
         ...(this.#opts.fault ? { fault: (p) => this.#opts.fault?.(p) } : {}),
       });
       this.#recovery = summary;
       this.#dispatchEvents();
-      store.updateInstance(this.instanceId, 'READY', { recovery: summary });
+      updateInstance(store, this.instanceId, 'READY', { recovery: summary });
       store.recordAudit('runtime.ready', 'runtime', this.instanceId, 'OK', null, { supervisorToken: this.#fence.fencingToken, claimsRecovered: summary.claimsRecovered });
       if (this.#opts.watchWakeFile ?? true) this.#wake.watchWakeFile(store.workspace.wakeFile);
       else this.#wake.disableWatcher();
@@ -221,7 +267,7 @@ export class CompanyRuntime {
     const deadline = this.#clock.nowMs() + (this.#opts.acquireTimeoutMs ?? this.#supervisorTtlMs + 5_000);
     for (let attempt = 0; attempt < 1_000; attempt++) {
       try {
-        return store.acquireSupervisor(this.instanceId, this.#supervisorTtlMs);
+        return acquireSupervisor(store, this.instanceId, this.#supervisorTtlMs);
       } catch (error) {
         if (!isQandeelError(error, 'LEASE_HELD') && !isQandeelError(error, 'STORAGE_BUSY')) throw error;
         const expiresAt = typeof error.details.expiresAt === 'string' ? Date.parse(error.details.expiresAt) : this.#clock.nowMs() + 250;
@@ -234,18 +280,43 @@ export class CompanyRuntime {
     throw new QandeelError('LEASE_HELD', 'supervisor lease could not be acquired');
   }
 
+  /**
+   * The supervisor heartbeat: renews authority and — in the same transaction — reads the durable
+   * wake generation (lost-wake reconciliation, D-C1-23). It is the existing infrastructure cycle,
+   * not a queue poll: it never scans or claims; it only pumps when the generation moved.
+   */
   #startHeartbeat(): void {
-    const interval = Math.max(100, Math.floor(this.#supervisorTtlMs / 3));
     this.#heartbeat = setInterval(() => {
-      if (!this.#store || !this.#fence) return;
+      const store = this.#store;
+      if (!store || !this.#fence) return;
+      let generation: number;
       try {
-        this.#store.renewSupervisor(this.#fence, this.#supervisorTtlMs);
+        generation = renewSupervisor(store, this.#fence, this.#supervisorTtlMs).wakeGeneration;
       } catch (error) {
-        if (isQandeelError(error, 'STORAGE_BUSY')) return; // TTL leaves two more beats of margin
-        this.#log.error('runtime.supervisor_authority_lost', { instanceId: this.instanceId, code: errorCode(error) });
-        this.#failStop(errorCode(error));
+        if (!isQandeelError(error, 'STORAGE_BUSY')) {
+          this.#log.error('runtime.supervisor_authority_lost', { instanceId: this.instanceId, code: errorCode(error) });
+          this.#failStop(errorCode(error));
+          return;
+        }
+        // The TTL leaves two more beats of margin for the renewal. A WAL read never waits on the
+        // writer, so reconciliation still observes the generation on this beat.
+        try {
+          generation = store.wakeGeneration();
+        } catch {
+          return;
+        }
       }
-    }, interval);
+      this.#heartbeats++;
+      this.#reconcileWake(generation);
+    }, this.#heartbeatMs);
+  }
+
+  /** A generation the last pump did not start from means a wake hint may have been lost: pump. */
+  #reconcileWake(generation: number): void {
+    if (this.#state !== 'READY' || generation === this.#observedGeneration) return;
+    this.#reconciliationWakes++;
+    this.#log.info('runtime.wake_reconciled', { instanceId: this.instanceId, wakeGeneration: generation, observedWakeGeneration: this.#observedGeneration });
+    this.#wake.signal();
   }
 
   /** Lost authority or an unrecoverable storage failure: stop writing, abort everything. */
@@ -274,7 +345,7 @@ export class CompanyRuntime {
     this.#wake.close();
     if (this.#store && !this.#store.isClosed) {
       try {
-        this.#store.updateInstance(this.instanceId, state);
+        updateInstance(this.#store, this.instanceId, state);
       } catch {
         // Best effort: the instance is marked ABANDONED by the next supervisor's recovery.
       }
@@ -297,7 +368,7 @@ export class CompanyRuntime {
     this.#timer = undefined;
     this.#timerFor = null;
     this.#wake.close();
-    store.updateInstance(this.instanceId, 'STOPPING');
+    updateInstance(store, this.instanceId, 'STOPPING');
     this.#log.info('runtime.stopping', { instanceId: this.instanceId, activeRuns: this.#active.size });
     for (const run of this.#active.values()) {
       run.reason = 'SHUTDOWN';
@@ -314,13 +385,13 @@ export class CompanyRuntime {
       // Did not settle within the grace period: fence and classify it now (as recovery would).
       run.fenced = true;
       try {
-        store.interruptClaim(run.claim.fence.jobId, 'SHUTDOWN_TIMEOUT');
+        if (this.#fence) interruptClaim(store, this.#fence, run.claim.fence.jobId, 'SHUTDOWN_TIMEOUT');
       } catch (error) {
         this.#log.warn('runtime.shutdown_interrupt_failed', { jobId: run.claim.fence.jobId, code: errorCode(error) });
       }
     }
     this.#dispatchEvents();
-    if (this.#fence) store.releaseSupervisor(this.#fence);
+    if (this.#fence) releaseSupervisor(store, this.#fence);
     this.#log.info('runtime.stopped', { instanceId: this.instanceId });
     this.#teardown('STOPPED');
   }
@@ -393,10 +464,14 @@ export class CompanyRuntime {
     return out;
   }
 
-  /** Read access for status tooling and tests. Returns the store only while the runtime runs. */
-  get store(): CompanyStore {
+  /**
+   * Read-only inspection for status tooling and tests (D-C1-22). The runtime never hands out its
+   * mutable store: the view has read methods only and no path back to the store.
+   */
+  get view(): CompanyReadView {
     if (!this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
-    return this.#store;
+    this.#view ??= this.#store.readView();
+    return this.#view;
   }
 
   get artifacts(): ArtifactStore {
@@ -452,6 +527,12 @@ export class CompanyRuntime {
       timerArmedFor: this.#timerFor,
       wakeSignals: this.#wake.signals,
       wakeWatcher: this.#wake.watcherState,
+      wakeFileHints: this.#wake.fileHints,
+      wakeFileHintsDropped: this.#wake.fileHintsDropped,
+      heartbeats: this.#heartbeats,
+      reconciliationWakes: this.#reconciliationWakes,
+      observedWakeGeneration: this.#observedGeneration,
+      lostWakeBoundMs: this.#heartbeatMs,
     };
   }
 
@@ -480,15 +561,18 @@ export class CompanyRuntime {
     try {
       do {
         this.#pumpAgain = false;
+        // Read before scanning: a commit after this read moves the generation past it, so the next
+        // heartbeat pumps again. Nothing committed can be missed between two pumps.
+        this.#observedGeneration = store.wakeGeneration();
         this.#dispatchEvents();
         this.#noticeCrossProcessCancellation(store);
         for (const jobId of store.expiredClaims(this.#concurrency)) {
           if (this.#active.has(jobId)) this.#active.get(jobId)?.controller.abort();
-          store.interruptClaim(jobId, 'LEASE_EXPIRED');
+          interruptClaim(store, this.#fence, jobId, 'LEASE_EXPIRED');
         }
         while (this.#active.size < this.#concurrency && this.#state === 'READY') {
           this.#claimsAttempted++;
-          const claim = store.claimNext({ workerId: `${this.instanceId}:${++this.#workerSeq}`, leaseMs: this.#jobLeaseMs, kinds: this.#registry.sideEffects, supervisor: this.#fence });
+          const claim = claimNext(store, { workerId: `${this.instanceId}:${++this.#workerSeq}`, leaseMs: this.#jobLeaseMs, kinds: this.#registry.sideEffects, supervisor: this.#fence });
           if (!claim) break;
           this.#opts.fault?.('claim.afterCommit');
           this.#startRun(claim);
@@ -500,7 +584,7 @@ export class CompanyRuntime {
         // The lease may merely have expired (host sleep). Renewal is token-conditional: it succeeds
         // only if no other supervisor took over; then the pump simply runs again.
         try {
-          store.renewSupervisor(this.#fence, this.#supervisorTtlMs);
+          renewSupervisor(store, this.#fence, this.#supervisorTtlMs);
           this.#armRetryTimer();
         } catch (renewError) {
           if (isQandeelError(renewError, 'STORAGE_BUSY')) {
@@ -593,7 +677,7 @@ export class CompanyRuntime {
     const renew = setInterval(() => {
       if (run.fenced || run.settled) return;
       try {
-        store.renewLease(claim.fence, leaseMs);
+        renewLease(store, claim.fence, leaseMs);
       } catch (error) {
         if (isQandeelError(error, 'STORAGE_BUSY')) return;
         run.fenced = true;
@@ -623,7 +707,7 @@ export class CompanyRuntime {
       checkpoint: async (kind, state, kindVersion = 1) => {
         if (run.fenced || run.settled) throw new QandeelError('STALE_LEASE', 'this run no longer owns its job', { jobId: claim.fence.jobId });
         try {
-          store.checkpoint(claim.fence, kind, state, kindVersion, leaseMs);
+          checkpoint(store, claim.fence, kind, state, kindVersion, leaseMs);
         } catch (error) {
           if (isQandeelError(error, 'STALE_LEASE')) {
             run.fenced = true;
@@ -686,7 +770,7 @@ export class CompanyRuntime {
     try {
       for (let attempt = 0; ; attempt++) {
         try {
-          const outcome = store.settle(claim.fence, result, { backoff: this.#backoff, ...(run.reason === 'TIMEOUT' ? { failureCategory: 'TIMEOUT' as const } : {}) });
+          const outcome = settle(store, claim.fence, result, { backoff: this.#backoff, ...(run.reason === 'TIMEOUT' ? { failureCategory: 'TIMEOUT' as const } : {}) });
           this.#log.info('run.settled', { jobId: claim.fence.jobId, runId: claim.fence.runId, result: result.type, jobState: outcome.jobState, workItemState: outcome.workItemState });
           break;
         } catch (error) {

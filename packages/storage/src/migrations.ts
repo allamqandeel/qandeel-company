@@ -38,6 +38,7 @@ export interface MigrationPin {
 export const RELEASED_MIGRATIONS: readonly MigrationPin[] = Object.freeze([
   { version: 1, name: 'work_foundation', file: '0001_work_foundation.sql', sha256: '3022ed5ed626f9394cfa9a7e897d2ed4e7bcb9b94c8de7a9a4bde7c0c658436e' },
   { version: 2, name: 'queue_runs_artifacts', file: '0002_queue_runs_artifacts.sql', sha256: 'b3060a1ea7a3e57e8bf0f76a4edba437c9f1b8d2886ef97ff5ca2b6920b0a7c2' },
+  { version: 3, name: 'runtime_wake_generation', file: '0003_runtime_wake_generation.sql', sha256: 'f47cf341f677585d762672929bdf2f41eeb4bf7440463b68846bac0c777762e4' },
 ]);
 
 export const CURRENT_SCHEMA_VERSION = RELEASED_MIGRATIONS.length;

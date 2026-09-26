@@ -270,12 +270,17 @@ stored in `WAITING_APPROVAL` and can never be released for execution in C1
 
 ## D-C1-08 — Cancellation race rule
 
+> **Superseded by D-C1-20** (Product Owner approved, C1 canonical). Kept as the historical record.
+
 Durable termination intent (cancel or supersede) recorded **before** a run settles always wins. The
 settlement finalizes it, even when the processor reported `COMPLETED`. Completion committed first
 makes a later cancellation fail deterministically (`INVALID_TRANSITION`); supersession is still
 allowed. A terminal-row trigger forbids resurrection.
 
 ## D-C1-09 — When a dependency is satisfied
+
+> **Superseded by D-C1-17 (amendment) and then D-C1-21** (Product Owner approved, C1 canonical).
+> The rule below (satisfied at `COMPLETED` for all work) is historical only.
 
 A dependency is satisfied when the dependency enters the completed family (`COMPLETED` or later).
 Stage 8 defines no stricter rule. A later policy (C4) may require review first; this choice lives in
@@ -290,6 +295,9 @@ A retryable failure and an **interrupted** attempt (crash or lease loss) both co
 not count. Backoff is deterministic, with no jitter, so tests and recovery are reproducible.
 
 ## D-C1-11 — Cross-process wake without a network or IPC service
+
+> **Amended by D-C1-23.** The wake file is only the low-latency hint; a lost hint is now recovered
+> within one supervisor heartbeat through the durable wake generation.
 
 Another local process that commits work (for example the CLI) writes `<workspace>/runtime/wake.signal`.
 The runtime observes it with `fs.watch`, which is OS change notification, not polling. A lost hint
@@ -379,11 +387,9 @@ The internal review lenses A and C drove these changes:
 - **Artifact promotion hashes content before taking the write lock.**
 - **Restore targets are validated before first touch** and must lie outside the live workspace.
 
-**Product Owner input requested (not conflicts; the authority is silent):**
-- **D-C1-08:** which outcome stands when a cancellation races a real completion.
-- **D-C1-09:** the point at which a dependency is satisfied.
-
-Both are implemented as the most conservative reading and change in one place each.
+**Product decisions (historical note, now closed):** at the time of this review, D-C1-08 and
+D-C1-09 were open Product questions. The Product Owner has since **approved** both rules; see
+D-C1-20 and D-C1-21. Nothing about them remains open.
 
 ## D-C1-18 — Internal review dispositions (lens B: durability, concurrency, failure)
 
@@ -441,3 +447,138 @@ artifact fence each fails a test. Its residual findings were handled as follows:
   was updated. From the first merge on, released migrations are immutable: a change is a new
   numbered file (verifier rule `migrations-immutable`). A workspace created from an unmerged
   intermediate commit is disposable test state.
+
+## D-C1-20 — Product Owner closure: cancellation vs completion (D-C1-08)
+
+**Status: PRODUCT OWNER APPROVED / C1 CANONICAL** (2026-09-27, C1 final remediation). It supersedes
+the open status of D-C1-08.
+
+**Rule.** Durable ordering governs the Work Item state, while factual Run history stays truthful.
+First durable canonical ordering governs future state; factual history is never falsified.
+- **Termination intent committed first** (cancel or supersede, before completion settles):
+  - The Work Item honours it and cannot be resurrected (the terminal-row trigger forbids it).
+  - A run that genuinely finished is recorded as `SUCCEEDED` with its evidence (failure code
+    `TERMINATION_REQUESTED`). The Work Item gets no `COMPLETED` transition.
+- **Ambiguous external effect** (`IDEMPOTENT`/`UNSAFE` class, or a crash of `UNSAFE` work):
+  - Cancel or complete is never chosen silently. The job enters `RECONCILIATION_HOLD` and the item
+    `BLOCKED (RECONCILIATION_REQUIRED)`, with the run evidence preserved.
+  - An explicit reconciliation decision then resolves it. The termination was durably first, so
+    the Work Item honours it on **every** decision.
+  - The decision itself stays on record. `CONFIRMED_COMPLETED` is audited, and it leaves the job
+    `DONE` because its work did happen.
+- **Completion committed first:** a later cancellation is refused (`INVALID_TRANSITION`) and
+  rewrites nothing. Supersession of completed work remains a separate, legitimate later event.
+- **No timestamp priority:** there is no rule outside durable commit order.
+
+**Code alignment.** One path was changed. `resolveReconciliation(CONFIRMED_COMPLETED | FAILED)`
+previously let the decision override an earlier termination intent (`COMPLETED` or `FAILED`). It now
+honours the intent, as the approved rule requires. Tests:
+`packages/storage/test/product-decisions.test.ts` (marker `C1-PROOF: product-decisions-d-c1-08-09`).
+
+## D-C1-21 — Product Owner closure: dependency satisfaction (D-C1-09)
+
+**Status: PRODUCT OWNER APPROVED / C1 CANONICAL** (2026-09-27). It supersedes the open status of
+D-C1-09.
+
+**Rule.** Completed ≠ Reviewed.
+- **Work that does not require review** satisfies its dependents at `COMPLETED`, or at any later
+  state in the completed family.
+- **Work that requires review** satisfies them only at `REVIEWED` or later (`OUTCOME_VERIFIED`,
+  `CLOSED`). This includes work whose risk policy makes review mandatory (R2+).
+- **Failure family:** `FAILED`, `CANCELLED` and `SUPERSEDED` never release dependents. They stay
+  `BLOCKED (DEPENDENCY_FAILED)`.
+- **Not added:** a per-dependency `OUTCOME_VERIFIED` gating mode. `OUTCOME_VERIFIED` remains a
+  distinct canonical state.
+
+**Code.** It already matched the rule (`satisfiesDependents`, one predicate), so only the comments
+changed. C1 still cannot reach `REVIEWED` through any public path (`REVIEW_PATH_UNAVAILABLE`, the
+fail-closed review gate). The regression test therefore commits `REVIEWED` through the internal
+transition primitive, as the future C2 review authority will, and shows that the dependent is
+released in that same transaction.
+
+## D-C1-22 — Runtime Supervisor claim authority enforced structurally (finding F1)
+
+**Finding.** Three things together meant that later Company code could claim or drive work outside
+the Runtime Supervisor:
+- `ClaimOptions.supervisor` was optional;
+- `CompanyStore.claimNext` and `claimJob` were on the ordinary API;
+- `CompanyRuntime.store` returned the mutable store.
+
+**Decision.**
+- **Mandatory fence:** `ClaimOptions.supervisor: SupervisorFence` is required.
+  - `verifySupervisor` runs unconditionally inside every claim transaction (`claimNext`,
+    `claimJob`).
+  - It rejects a missing or malformed fence (untyped callers) as well as a wrong holder, wrong
+    token, expired lease or replaced supervisor (`SUPERVISOR_NOT_AUTHORITATIVE`).
+  - Recovery writes that take a claim away (`interruptClaim`, `interruptOrphanRun`,
+    `settleDanglingTermination`, `abandonStaleInstances`) also verify the supervisor fence.
+- **Authority behind one subpath:** claims, the supervisor lease, worker writes (`renewLease`,
+  `checkpoint`, `settle`) and instance bookkeeping moved off `CompanyStore`. They now live in
+  `@qandeel-company/storage/runtime-authority`.
+  - The ordinary `@qandeel-company/storage` entry point exposes none of them.
+  - The exports map admits exactly `.` and `./runtime-authority`; every deep import is refused.
+- **Only the runtime:** only `packages/runtime` may import that subpath. This is enforced by:
+  - ESLint `no-restricted-syntax`;
+  - verifier rules `runtime-authority-confined`, `supervisor-claim-fence-mandatory` and
+    `no-runtime-store-escape`, each with negative self-tests and legitimate must-pass states;
+  - the live resolution check in `workspace-resolution`.
+- **No mutable store escape:** `CompanyRuntime.store` was removed. Callers get `runtime.view`, a
+  frozen `CompanyReadView` that holds bound read methods only and has no path back to the store.
+  Health uses the same view.
+- **Tests:**
+  - Storage tests acquire a real supervisor lease (the harness), and no unfenced test seam exists.
+  - Multi-process fixtures present the parent's real fence.
+  - The claim race now includes processes that present a stale supervisor token; they never win.
+- **Proofs:**
+  - `packages/storage/test/supervisor-authority.test.ts` (marker
+    `C1-PROOF: supervisor-claim-authority`);
+  - the `runtime.test.ts` "no mutable store escape" test;
+  - `scripts/c1-mutation-check.mjs`, which removes the claim and recovery supervisor verification
+    and requires the proofs to fail. It runs in `npm run ci`.
+- **Unchanged:** worker (job) fencing is still an independent guard.
+
+## D-C1-23 — Bounded lost-wake reconciliation (finding F2)
+
+**Finding.** `fs.watch` was the only cross-process wake. If its notification was lost, an idle
+`READY` runtime could leave committed runnable work undiscovered indefinitely.
+
+**Research** (Node 24 official docs, read 2026-09-26):
+- `fs.watch` "is not 100% consistent across platforms, and is unavailable on some systems".
+- It can be "unreliable, and in some cases impossible" on network file systems and in containers.
+- Its `filename` argument is "not always guaranteed".
+- Timers carry "no guarantees about the exact timing".
+
+So `fs.watch` cannot be the sole correctness mechanism.
+
+**Decision.**
+- **Event-driven first; no new loop.**
+  - Migration `0003_runtime_wake_generation` (new file; 0001 and 0002 untouched) adds a single-row,
+    monotonic `runtime_wake.generation`.
+  - Triggers advance it **in the same transaction** as every queue change that can make work
+    actionable: a job inserted `QUEUED`, a job becoming `QUEUED` or its due time moving, or
+    `cancel_requested` changing. This holds whichever process or code path commits it.
+- **Fast path unchanged:** the in-process `WakeSignal` and the `fs.watch` wake-file hint.
+- **Reconciliation on the existing heartbeat:**
+  - The existing Supervisor heartbeat reads the generation in its renewal transaction. If renewal
+    is busy, it reads it through a non-blocking WAL read.
+  - Every pump records the generation it started from, read before scanning.
+  - If the heartbeat sees a different generation, it signals one coalesced pump. Otherwise it does
+    nothing: no scan, no claim, no model call.
+- **Bound:** a missed hint is discovered within **one heartbeat interval** = `max(100 ms,
+  supervisorTtlMs / 3)`.
+  - That is **10 s at the default 30 s TTL**, plus timer scheduling slack.
+  - It applies while the runtime has a free worker slot. At capacity, the next slot release pumps
+    anyway.
+  - It is an infrastructure bound, not a Product SLA.
+- **Health:** a failed watcher stays visible (`WAKE_WATCHER_UNAVAILABLE` → `DEGRADED`). Discovery
+  then runs at heartbeat latency.
+- **Proof:** `packages/runtime/test/integration/lost-wake.test.ts` (marker
+  `C1-PROOF: lost-wake-reconciliation`).
+  - A real second OS process commits the work and writes the wake file.
+  - The runtime's active watcher delivers the notification, and it is deliberately dropped.
+  - No `wake()` or `pump()` is called and no other job or timer exists.
+  - The work is claimed within 500 ms + 1.5 s margin (TTL 1.5 s), and the idle runtime then shows
+    zero pumps and zero claims, with a bounded number of statements per heartbeat.
+  - The same holds with no watcher at all, and for a cross-process cancellation of running work.
+  - The mutation check removes the reconciliation (the `d57b51f` behaviour) and requires the proof
+    to fail.

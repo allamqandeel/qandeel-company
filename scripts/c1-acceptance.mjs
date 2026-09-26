@@ -120,12 +120,12 @@ await step('work-item-lifecycle-and-claim', async () => {
     const { workItem } = runtime.submitWorkItem({ objective: 'acceptance lifecycle', ownerRef: 'owner:founder', processorKind: 'c1.steps', processorInput: { steps: 3, stepMs: 10 }, initialState: 'READY' }, { idempotencyKey: 'acceptance-1' });
     const replay = runtime.submitWorkItem({ objective: 'acceptance lifecycle', ownerRef: 'owner:founder', processorKind: 'c1.steps', processorInput: { steps: 3, stepMs: 10 }, initialState: 'READY' }, { idempotencyKey: 'acceptance-1' });
     check(replay.replayed && replay.workItem.id === workItem.id, 'idempotent replay failed');
-    await waitFor(() => runtime.store.getWorkItem(workItem.id).state === 'COMPLETED', 20_000, 'lifecycle completion');
+    await waitFor(() => runtime.view.getWorkItem(workItem.id).state === 'COMPLETED', 20_000, 'lifecycle completion');
     lifecycleItem = workItem.id;
-    const history = runtime.store.history(workItem.id).map((t) => t.toState);
+    const history = runtime.view.history(workItem.id).map((t) => t.toState);
     check(JSON.stringify(history) === JSON.stringify(['READY', 'IN_PROGRESS', 'COMPLETED']), `unexpected history ${history}`);
-    const [job] = runtime.store.jobsFor(workItem.id);
-    check(job.fencingToken === 1 && runtime.store.runsFor(job.id).length === 1, 'claim/run bookkeeping');
+    const [job] = runtime.view.jobsFor(workItem.id);
+    check(job.fencingToken === 1 && runtime.view.runsFor(job.id).length === 1, 'claim/run bookkeeping');
     runtime.transitionWorkItem(workItem.id, { to: 'CLOSED', reasonCode: 'acceptance.closed' });
     return { workItemId: workItem.id, history: history.join('>') };
   } finally {
@@ -147,11 +147,11 @@ await step('crash-restart-recovery', async () => {
   const recovery = await runtime.start();
   try {
     check(recovery.claimsRecovered === 1 && recovery.resumed === 1, `recovery summary ${JSON.stringify(recovery)}`);
-    await waitFor(() => runtime.store.getWorkItem(workItemId).state === 'COMPLETED', 30_000, 'resumed completion');
-    const runs = runtime.store.runsForWorkItem(workItemId).map((r) => r.state);
+    await waitFor(() => runtime.view.getWorkItem(workItemId).state === 'COMPLETED', 30_000, 'resumed completion');
+    const runs = runtime.view.runsForWorkItem(workItemId).map((r) => r.state);
     check(JSON.stringify(runs) === JSON.stringify(['INTERRUPTED', 'SUCCEEDED']), `runs ${runs}`);
-    check(runtime.store.history(workItemId).filter((t) => t.toState === 'COMPLETED').length === 1, 'duplicate completion');
-    check(runtime.store.integrityCheck() === 'ok', 'integrity_check failed after crash');
+    check(runtime.view.history(workItemId).filter((t) => t.toState === 'COMPLETED').length === 1, 'duplicate completion');
+    check(runtime.view.integrityCheck() === 'ok', 'integrity_check failed after crash');
     return { workItemId, runs: runs.join('>'), claimsRecovered: recovery.claimsRecovered };
   } finally {
     await runtime.stop();

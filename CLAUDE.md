@@ -52,6 +52,14 @@
   third-party runtime dependencies unless allowlisted with a reviewed reason.
 - Logs, events and audit rows carry IDs, states and codes only, never payload content (Rule A).
 - Approval-gated or R3/R4 work fails closed until the C2 approval engine exists.
+- Only the Runtime Supervisor acquires executable work (D-C1-22). Claims, the supervisor lease and
+  worker writes live behind `@qandeel-company/storage/runtime-authority`, which only
+  `packages/runtime` may import. The supervisor fence is mandatory in every claim. Never add a claim
+  to the ordinary storage API, and never expose the runtime's mutable `CompanyStore` (use the
+  read-only `view`).
+- `fs.watch` is only a wake hint (D-C1-23). Any new transaction that makes work actionable must
+  advance the durable wake generation in the same transaction (the `queue_jobs` triggers do this
+  for queue changes). Never add a queue-polling loop to compensate.
 
 ## Before your final response
 - Run `npm ci` and `npm run ci`; all must pass. Do not claim a check passed unless it ran.

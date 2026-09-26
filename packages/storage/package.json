@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
+    },
+    "./runtime-authority": {
+      "types": "./dist/src/runtime-authority.d.ts",
+      "default": "./dist/src/runtime-authority.js"
     }
   },
   "engines": {
