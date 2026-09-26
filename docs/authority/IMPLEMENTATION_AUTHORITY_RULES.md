@@ -27,6 +27,11 @@
 9. **No merge solely because the implementing agent says its work is correct.** Merge requires
    green canonical CI and the review the work package names.
 10. **C1+ work is sized as substantial work packages**, not tiny token-wasting Cloud tasks.
+11. **Detailed imported authority governs within its scope** (added at PRE-C1). When
+    `docs/authority/company-architecture/` holds detailed canonical authority for a subject, do not
+    implement from the short C0 summary alone. Imported sources are never edited to fit an
+    implementation. If an imported source and a later direct Product Owner decision conflict,
+    record `AUTHORITY CONFLICT — PRODUCT OWNER REVIEW REQUIRED` and do not choose silently.
 
 ## Protected `main` intent
 

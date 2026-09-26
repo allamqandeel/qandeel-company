@@ -6,24 +6,40 @@ governed and auditable.
 
 > **Separate from the QANDEEL App.** The App is a different repository, product, runtime and data
 > boundary. Nothing here imports, reads or writes the App. Future integration happens only through
-> the governed `APP-OPS-01` contract (not implemented).
+> the governed `APP-OPS-01` boundary. It is not implemented, and operational telemetry is always
+> content-free.
 
 ## Current state
 
-**C0 — repository bootstrap.** There is **no Company business runtime yet**: no work items,
-queues, employees, Directors, model routing, tools, memory or Founder Command Center. The only
-package, `@qandeel-company/bootstrap-contract`, proves the toolchain (compile, workspace
-resolution, tests, Node 24 runtime). The next stage is
-**C1 — Company Foundation & Durable Runtime** (see `docs/architecture/IMPLEMENTATION_MAP.md`).
+| Step | State |
+|---|---|
+| `L0` Environment Readiness | CLOSED / PASS |
+| `C0` Repository Bootstrap | CLOSED / PASS |
+| PRE-C1 Authority Sync & Import | Complete once its PR merges. Documentation / authority only |
+| `C1` Company Foundation & Durable Runtime | **NEXT** — a Claude Cloud mega-task; not started |
+
+There is **no Company business runtime yet**: no work items, queues, employees, Directors, model
+routing, tools, memory or Founder Command Center. The only package,
+`@qandeel-company/bootstrap-contract`, proves the toolchain (compile, workspace resolution, tests,
+Node 24 runtime).
+
+**Cloud sessions work from this repository's authority, not from hidden local context.** The
+detailed Stage 0–17 authority that used to exist only on the Founder's machine is now in
+`docs/authority/company-architecture/`. The one exception is the Stage 16 source artifact, which is
+missing and recorded as missing.
 
 ## Authority — read before changing anything
 
-1. `docs/authority/COMPANY_CANONICAL_BASELINE.md` — what the Company is and must remain.
-2. `docs/authority/IMPLEMENTATION_AUTHORITY_RULES.md` — who decides what; how work is merged.
-3. `docs/architecture/IMPLEMENTATION_MAP.md` — stage sequencing (not evidence of implementation).
-4. `docs/architecture/BOUNDARIES.md` — boundaries that code must not cross.
-5. `docs/architecture/DECISION_LOG.md` — engineering decisions and why.
-6. `docs/environment/L0_READINESS_DECISION.md` — Founder-host constraints.
+1. `docs/authority/COMPANY_CANONICAL_BASELINE.md` — what the Company is and must remain (summary).
+2. `docs/authority/company-architecture/README.md` — the index to the detailed canonical Stage
+   authority, with provenance in `AUTHORITY_IMPORT_MANIFEST.md`. Where it holds detail, it governs
+   over the summary.
+3. `docs/authority/IMPLEMENTATION_AUTHORITY_RULES.md` — who decides what; how work is merged.
+4. `docs/architecture/IMPLEMENTATION_MAP.md` — work-package sequencing (not evidence of
+   implementation).
+5. `docs/architecture/BOUNDARIES.md` — boundaries that code must not cross.
+6. `docs/architecture/DECISION_LOG.md` — engineering decisions and why.
+7. `docs/environment/L0_READINESS_DECISION.md` — Founder-host constraints.
 
 ## Development model
 
@@ -61,7 +77,12 @@ to `main` and every PR targeting `main`. The verifier first proves that each of 
 then checks the repository: required files and docs, private packages, bounded Node 24 engine, npm
 workspaces and lockfile, no tracked `.env` / secret / `node_modules` / SQLite / native-binary files,
 no App-repository dependency, no `tar` usage, no APP-OPS implementation, no placeholder packages,
-explicit `.gitattributes`, and (locally) `core.longpaths=true`.
+explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
+- the imported authority: every manifest hash, no unlisted or non-Markdown file, and the missing
+  Stage 16 recorded;
+- that no archives are present;
+- that the baseline carries the privacy rules and no stale default-with-exception wording;
+- the lifecycle state (`C0` closed; `C1` not claimed as implemented without a closure record).
 
 ## Windows notes (Founder host)
 

@@ -96,3 +96,73 @@ needs in the C1 task package. See `docs/C0_REPOSITORY_BOOTSTRAP_CLOSURE.md` §14
 Intent: from C1 on, changes reach `main` only through PRs with green CI; the owner keeps
 break-glass administration. Enforcement status on GitHub is recorded in
 `docs/C0_REPOSITORY_BOOTSTRAP_CLOSURE.md` §10.
+
+## D-PRE-C1-01 — Detailed Stage authority imported for Cloud self-containment
+
+Resolves the consequence recorded in D-C0-08, which is otherwise unchanged. The canonical Company
+Stage 0–15 and Stage 17 authority, and the latest living founding set, were imported into
+`docs/authority/company-architecture/` so that a Cloud executor works from the repository alone.
+- **Provenance.** Source archives, entry paths, SHA-256 hashes and classifications are in
+  `AUTHORITY_IMPORT_MANIFEST.md`.
+- **Exact copies.** All 42 files are exact byte copies, and `npm run verify` re-checks their hashes.
+- **What was left out.** Superseded running-document versions, byte-identical duplicates and the
+  pre-Stage-0 draft package were classified and not imported.
+- **Stage 16.** STAGE 16 SOURCE ARTIFACT — NOT FOUND IN LOCAL AUTHORITY SET. No architecture was
+  invented to fill the gap. Stage 16 scope maps to `C5`, not `C1`.
+- **Conflicts.** No blocking authority conflict was found. The non-blocking observations are
+  recorded in the index (`README.md` §6).
+- **Effect.** After this change merges, C1 and later work may rely on the imported canonical
+  authority. Where it holds detail, it governs over the C0 summary
+  (`IMPLEMENTATION_AUTHORITY_RULES.md` rule 11).
+
+## D-PRE-C1-02 — Direct Product Owner privacy clarification (Product Owner)
+
+The Product Owner's direct privacy decision supersedes the broader C0 summary wording in
+`COMPANY_CANONICAL_BASELINE.md` §5 and `BOUNDARIES.md`. That wording allowed a default with an
+unspecified exception. It now reads as three distinct rules:
+- **(A)** Operational telemetry is ALWAYS content-free, with no incident or safety-monitoring
+  exception.
+- **(B)** APP-OPS-01 itself provides no path by which Company Operations receives private user
+  content. Any user-initiated support sharing is outside APP-OPS-01, is not established, and needs
+  separate explicit Product authority.
+- **(C)** No routine or exceptional human review of private QANDEEL conversation content is
+  authorized through Company Operations or safety-monitoring flows.
+
+The imported Company authority was checked and contains no conflicting human-review, moderation or
+content-path assumption (index §7).
+
+This change defines no moderation or replacement safety mechanism. It also leaves the QANDEEL App's
+own authority untouched, including the App's CW2-08: bringing App-side documents in line is App
+Product-track work outside this repository.
+
+## D-PRE-C1-03 — Lifecycle and APP-OPS state corrected
+
+The implementation map now reads:
+- `L0` — CLOSED / PASS;
+- `C0` — CLOSED / PASS;
+- `C1` — NEXT — CLOUD MEGA-TASK.
+
+PRE-C1 is recorded as preparation for Cloud execution, not as a Product / Architecture stage.
+
+`APP-OPS-01` is described as a governed future boundary. Its App-side contract is a candidate on
+2026-09-26; App PR `allamqandeel/qandeel#278` is open and not merged. There is no Company-side
+integration.
+
+## D-PRE-C1-04 — Verifier extended, stage-aware
+
+`scripts/verify-bootstrap.mjs` gains four rules:
+- `authority-import-integrity`. Every manifest row resolves to a file, and every hash matches. No
+  imported row is `SUPERSEDED` or `UNKNOWN`, and every file in the directory is listed. Only Markdown
+  is allowed. The Stage 16 "not found" statement must remain until a Stage 16 source is imported
+  with a manifest row.
+- `no-archive-dumps`. No archives anywhere, and nothing but Markdown under `docs/authority/`.
+- `privacy-hard-boundaries`. The baseline carries Rules A–C, and the active summary documents do
+  not carry the old wording that allowed a default with an unspecified exception.
+- `implementation-lifecycle-state`. `L0` and `C0` are `CLOSED / PASS`, `C0` is not the current task,
+  and `C1` may not be marked closed or implemented unless a `docs/C1_*CLOSURE*.md` record exists.
+
+The package allowlist (`ALLOWED_PACKAGES`) is already stage-aware: the change that adds a real
+package extends it. It is kept, so PRE-C1 cannot add a package and C1 is not blocked.
+
+Imported sources keep their Markdown hard line breaks. `.gitattributes` turns Git's whitespace
+checks off for the imported source directories only.

@@ -15,6 +15,12 @@
 *.cmd   text eol=crlf
 *.bat   text eol=crlf
 
+# Imported canonical authority: exact byte copies of the Founder-local sources
+# (see docs/authority/company-architecture/AUTHORITY_IMPORT_MANIFEST.md). Their
+# Markdown hard line breaks (two trailing spaces) are content, so Git's
+# whitespace checks are off for these files only. They stay LF (rule above).
+docs/authority/company-architecture/*/*.md -whitespace
+
 # Binary content: never normalized, never diffed as text.
 *.png   binary
 *.jpg   binary
