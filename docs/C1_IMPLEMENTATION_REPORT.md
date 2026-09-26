@@ -4,8 +4,148 @@
 C1 is NOT CLOSED.** C1 closes only after independent review, Founder-host local acceptance,
 exact-head CI and merge approval. **C2 is not started.**
 
-**Status:** `C1 — CLOUD IMPLEMENTATION CANDIDATE — READY FOR INDEPENDENT + FOUNDER-HOST REVIEW`
-(see §21–§22 for the evidence behind it).
+**Status:** `C1 — REMEDIATED CLOUD IMPLEMENTATION CANDIDATE — READY FOR FOUNDER-HOST + FINAL
+INDEPENDENT REVIEW` (the final remediation is in §0; §1–§25 describe the original candidate, updated
+where the remediation changed them). **FOUNDER-HOST VALIDATION REQUIRED. NOT APPROVED FOR MERGE.**
+
+## 0. Final remediation (2026-09-27)
+
+A focused remediation pass on the existing Draft PR, after the Founder/independent review of
+`d57b51f`. It is not a new stage and not a new C1 build.
+
+**Truth gate.** It was verified before any edit:
+- PR #2 was open, Draft, unmerged and `clean`;
+- its head was exactly `d57b51f48873254bdd7697aaf252f0faf8bfa711`, with no later commits;
+- `main` and the base were `deef86c`;
+- CI run 36276844256 on that head was green on Windows and Ubuntu;
+- the working tree was clean.
+
+**Product closures (Product Owner approved, C1 canonical).**
+- **D-C1-08 → D-C1-20.** Durable ordering governs the Work Item state; factual Run history is
+  never falsified.
+  - Termination intent committed first is honoured, with no resurrection. A run that genuinely
+    finished stays `SUCCEEDED` with its evidence.
+  - Ambiguous external effects stay `RECONCILIATION_REQUIRED`.
+  - Completion committed first makes a later cancellation refused, and it rewrites nothing.
+  - **One code path changed:** a reconciliation decision under earlier termination intent now
+    honours the intent (it previously let `CONFIRMED_COMPLETED`/`FAILED` override it). The decision
+    stays audited, and a confirmed effect leaves the job `DONE`.
+- **D-C1-09 → D-C1-21.** Review-free work satisfies dependents at `COMPLETED` or later.
+  Review-required work (including R2+) satisfies them only at `REVIEWED` or later; Completed ≠
+  Reviewed. No `OUTCOME_VERIFIED` gating mode was added. The code already matched; only comments
+  changed.
+- **Tests:** `packages/storage/test/product-decisions.test.ts`, 14 tests covering:
+  - cancel-first; supersede-first; completion-first;
+  - ambiguous effect with each reconciliation decision; crash of `UNSAFE` work under termination
+    intent; stale worker;
+  - the predicate over all 15 states; no-review release; review-required and R2 release at
+    `REVIEWED` only;
+  - the `FAILED`/`CANCELLED`/`SUPERSEDED` failure family.
+
+**F1 — Runtime Supervisor authority bypass (D-C1-22).**
+- **Previous bypass:**
+  - `ClaimOptions.supervisor` was optional;
+  - `CompanyStore.claimNext`/`claimJob` were on the ordinary API;
+  - `CompanyRuntime.store` returned the mutable store.
+- **Structural fix:**
+  - `supervisor: SupervisorFence` is required, and `verifySupervisor` runs unconditionally inside
+    each claim transaction. A missing or malformed fence is refused (`SUPERVISOR_NOT_AUTHORITATIVE`).
+  - Claims, the supervisor lease, worker writes (`renewLease`, `checkpoint`, `settle`), claim
+    recovery (which also verifies the supervisor fence) and instance bookkeeping moved to
+    `@qandeel-company/storage/runtime-authority`.
+  - The ordinary entry point exposes none of them; the exports map admits only `.` and
+    `./runtime-authority`.
+  - `CompanyRuntime.store` was removed and replaced by `runtime.view`, a frozen read-only
+    `CompanyReadView`.
+- **Guards:**
+  - ESLint `no-restricted-syntax`: only `packages/runtime` may import the subpath, and no package
+    imports storage internals by path.
+  - Verifier rules `runtime-authority-confined`, `supervisor-claim-fence-mandatory` and
+    `no-runtime-store-escape`, each with negative self-tests and must-pass states, plus live checks
+    in `workspace-resolution`.
+- **Tests:**
+  - `supervisor-authority.test.ts` (7), covering:
+    - no public claim;
+    - exports map;
+    - missing, malformed, expired, wrong-token, wrong-holder and replaced fences, each rejected with
+      nothing written;
+    - the current supervisor claiming through both APIs;
+    - recovery writes needing the fence;
+    - worker fencing still independent.
+  - The `runtime.test.ts` "no mutable store escape" test.
+  - The multi-process race now includes stale-supervisor processes, which never win.
+  - Storage tests acquire a real supervisor lease: there is no unfenced seam.
+- **Mutation test:** `scripts/c1-mutation-check.mjs` runs in `npm run ci`. It removes the claim-time
+  and the recovery-time supervisor verification from the compiled output, and the proofs fail both
+  times (**caught**).
+
+**F2 — Lost cross-process wake (D-C1-23).**
+- **Previous failure mode:** `fs.watch` was the only cross-process wake. A lost notification left
+  an idle `READY` runtime with committed runnable work undiscovered indefinitely.
+- **Architecture:** event-driven first.
+  - **Durable wake truth:** migration `0003_runtime_wake_generation.sql` adds a single-row monotonic
+    `runtime_wake.generation`. Triggers advance it in the **same transaction** as any queue change
+    that can make work actionable (a job inserted or becoming `QUEUED`, its due time moving, or
+    `cancel_requested` changing).
+  - **Primary fast path (unchanged):** the in-process `WakeSignal` plus the `fs.watch` wake-file
+    hint.
+  - **Bounded fallback:**
+    - The **existing** supervisor heartbeat reads the generation in its renewal transaction (or
+      through a non-blocking WAL read if the writer is busy).
+    - Each pump records the generation it started from, read before scanning.
+    - A moved generation triggers one coalesced pump. There is no new loop and no queue polling.
+- **Exact bound:** one heartbeat interval = `max(100 ms, supervisorTtlMs / 3)`, **10 s at the
+  default TTL**.
+  - Timer scheduling slack comes on top, because Node timers carry no exact-timing guarantee.
+  - It applies while a worker slot is free; at capacity, the next slot release pumps anyway.
+  - It is an infrastructure bound, not a Product SLA.
+- **Dropped-notification test** (`lost-wake.test.ts`):
+  - A second OS process commits work and writes the wake file. The runtime's **active** watcher
+    delivers the notification, and it is **deliberately dropped** (fault point `wake.fileHint`).
+  - The runtime is `READY` and idle: no active run, no timer.
+  - There is no `wake()`/`pump()` call and no other job or timer.
+  - **Result:** the work is claimed and completed within the 500 ms bound + 1.5 s margin (Linux run:
+    410 ms, with 2 real fs.watch hints dropped).
+  - **Idle afterwards:** zero pumps and zero claims over 4 heartbeats, 3 SQL statements per
+    heartbeat, zero `fetch`/model/provider calls.
+  - **Variants:** with no watcher at all, and a cross-process **cancellation** of running work whose
+    hint was dropped.
+  - The mutation check removes the reconciliation (the `d57b51f` behaviour), and the proof fails
+    (**caught**).
+- **Research (Node 24 official docs, read 2026-09-26):**
+  - `fs.watch` "is not 100% consistent across platforms, and is unavailable on some systems".
+  - It can be "unreliable, and in some cases impossible" on network file systems and in
+    containers.
+  - `filename` is "not always guaranteed".
+  - Timers: "no guarantees about the exact timing".
+  - **Answer:** `fs.watch` cannot be the sole correctness mechanism for cross-process wake. It is
+    now documented as a hint only.
+
+**Schema.**
+- Version **3**. Migration `0003_runtime_wake_generation.sql` is pinned
+  (`f47cf341…762e4`); 0001 and 0002 are unchanged.
+- **Proven:**
+  - real v2 → v3 upgrade, keeping data and a queued job;
+  - the generation starts at 0 and advances;
+  - its trigger guards (no decrease, no delete, no second row);
+  - concurrent first open by 4 processes, each migration applied once;
+  - checksum drift refused;
+  - a v1 and a **v2** runtime refuse the v3 database (`SCHEMA_FROM_FUTURE`).
+
+**Validation** (at the remediation code head, Linux, Node 24.21.0):
+- **`npm ci`:** 0 vulnerabilities.
+- **`npm run ci`:** green, with **163 tests** (5 + 22 + 101 + 35), mutation check 3/3 caught, and
+  verifier **32/32** (31 self-tested rules + workspace resolution).
+- **`c1:acceptance`:** PASS 6/6, schema 3.
+- **`git diff --check`:** clean.
+- **Recorded in the PR description** (to avoid a self-referencing commit): exact-head CI on
+  Windows and Ubuntu, and the fresh-clone proof.
+
+**Boundaries.**
+- No model or provider calls.
+- No C2 work: no approval, review, permission or budget engine; no Employees.
+- No APP-OPS, no App dependency, no secrets, no network code.
+- C1 is **NOT CLOSED**; the PR is **NOT MERGED**; C2 is **NOT STARTED**.
 
 ## 1. Baseline SHA
 
@@ -43,10 +183,10 @@ Read in full before design:
 
 Stage 16 is missing and was not reconstructed; it is not needed for C1.
 
-**No `AUTHORITY CONFLICT — PRODUCT OWNER REVIEW REQUIRED` was found.** Where the authority left an
-engineering choice open, the choice is recorded:
-- dependency satisfaction point — D-C1-09;
-- cancel-vs-complete race rule — D-C1-08;
+**No `AUTHORITY CONFLICT — PRODUCT OWNER REVIEW REQUIRED` was found.** Where the authority left a
+choice open, it is recorded:
+- dependency satisfaction point — D-C1-09, now **Product Owner approved** as D-C1-21;
+- cancel-vs-complete race rule — D-C1-08, now **Product Owner approved** as D-C1-20;
 - fail-closed approval — D-C1-07.
 
 ## 4. Skills used
@@ -106,10 +246,13 @@ library is used. D-C1-02 to D-C1-04 record the reasoning.
 
 ## 8. Schema / migrations
 
-- **Schema version 2.** The files are `0001_work_foundation.sql` (work items, dependencies,
-  transitions, idempotency, events, audit, runtime instances, leases) and
-  `0002_queue_runs_artifacts.sql` (queue, runs, checkpoints, artifacts, backup records).
-- **Tables:** 14 plus `schema_migrations`, all STRICT, with foreign keys `ON DELETE RESTRICT`,
+- **Schema version 3.** The files are:
+  - `0001_work_foundation.sql` (work items, dependencies, transitions, idempotency, events, audit,
+    runtime instances, leases);
+  - `0002_queue_runs_artifacts.sql` (queue, runs, checkpoints, artifacts, backup records);
+  - `0003_runtime_wake_generation.sql` (durable wake generation, D-C1-23; added by the final
+    remediation).
+- **Tables:** 15 plus `schema_migrations`, all STRICT, with foreign keys `ON DELETE RESTRICT`,
   `CHECK`s, partial unique indexes and history-protecting triggers (see
   `docs/c1/C1_SCHEMA_AND_STATE.md`).
 - **Migrations:** each is pinned by SHA-256 and runs in its own transaction.
@@ -147,7 +290,8 @@ library is used. D-C1-02 to D-C1-04 record the reasoning.
 - **Durable queue** with deterministic ordering (persisted priority, due time, creation, ID).
 - **Atomic claim** by one `BEGIN IMMEDIATE` conditional update.
 - **Per-job fencing token** checked on every worker write.
-- **Supervisor lease** with its own token, re-checked inside every claim.
+- **Supervisor lease** with its own token, re-checked inside every claim. The fence is mandatory,
+  and claims are reachable only through the runtime-only `runtime-authority` subpath (D-C1-22).
 - **Proofs:**
   - the in-process A/B fencing sequence;
   - six **processes** racing for one job, with exactly one winner;
@@ -156,8 +300,15 @@ library is used. D-C1-02 to D-C1-04 record the reasoning.
 
 ## 12. Event-driven wake-up
 
-- **Wake sources:** an in-process coalesced signal after each commit; a cross-process wake file
-  watched with `fs.watch`; one next-due timer; slot release. There is no polling loop.
+- **Wake sources:**
+  - an in-process coalesced signal after each commit;
+  - a cross-process wake file watched with `fs.watch` (a **hint only**);
+  - the supervisor heartbeat's durable wake-generation check, which recovers lost hints within one
+    heartbeat interval (D-C1-23);
+  - one next-due timer;
+  - slot release.
+
+  There is no polling loop.
 - **Idle proof:** zero SQL statements, zero pumps and zero `fetch` calls over an idle window, with no
   scheduler timer armed.
 
@@ -247,10 +398,10 @@ A second crash during recovery is proven safe.
 |---|---:|---:|---|
 | bootstrap-contract | 1 | 5 | C0 toolchain |
 | domain | 2 | 22 | unit: state machine (exhaustive table check), review/dependency rules, IDs, clock, validation, retry, classification |
-| storage | 7 | 79 | real file-backed SQLite: adapter/WAL/busy, workspace, migrations, work items, queue, fencing (each check isolated), checkpoints, artifacts, backup; plus **multi-process** (5): claim race, cross-process fencing, contention, backup under a writer process, concurrent first open |
-| runtime | 5 | 31 | unit; integration (end to end, concurrency cap, idle, graceful shutdown, cross-process wake, CLI, robustness); **fault matrix (8 process-kill scenarios)** |
+| storage | 9 | 101 | real file-backed SQLite (incl. Supervisor claim authority and the D-C1-08/09 matrices): adapter/WAL/busy, workspace, migrations, work items, queue, fencing (each check isolated), checkpoints, artifacts, backup; plus **multi-process** (5): claim race, cross-process fencing, contention, backup under a writer process, concurrent first open |
+| runtime | 6 | 35 | unit; integration (end to end, concurrency cap, idle, graceful shutdown, cross-process wake, **lost-wake reconciliation with the fs.watch hint dropped**, no store escape, CLI, robustness); **fault matrix (8 process-kill scenarios)** |
 
-**Total: 137 tests.** All pass in `npm run ci` on Linux (Node 24.21.0), in the fresh clone (§21)
+**Total: 163 tests** (137 before the final remediation). All pass in `npm run ci` on Linux (Node 24.21.0), in the fresh clone (§21)
 and in CI on Windows and Ubuntu (§21).
 
 **Mutation checks** (non-vacuity):
@@ -300,10 +451,11 @@ Node v24.21.0 and SQLite 3.53.4 were confirmed on both runners.
 | `9e3e9a5` (B fixes) | 36275920353 | **failure** | success | the same single assertion; every other test passed on Windows, including the fault matrix and robustness |
 | `300c2d5` (canonical-path fix) | — | — | — | superseded by the next push (concurrency cancel) |
 | `53fe787` | 36276227306 | **success** | **success** | first green head with every lens A/B/C fix |
-| final head | see PR | — | — | adds the D-C1-19 residual fixes and their tests (137 tests) |
+| `d57b51f` | 36276844256 | success | success | D-C1-19 residual fixes (137 tests); the head the independent review examined |
+| remediation head | see PR | — | — | final remediation (§0): F1, F2, D-C1-20/21 (163 tests) |
 
-The final head adds the D-C1-19 residual fixes on top of `53fe787`. Its CI run and its fresh-clone
-proof are recorded in the PR description, so this file does not need a self-referencing commit. The Windows failures were real defects, found by CI: restore containment compared
+The remediation head's CI run and its fresh-clone proof are recorded in the PR description, so this
+file does not need a self-referencing commit. The Windows failures were real defects, found by CI: restore containment compared
 non-canonical paths. The fix and its test are in `300c2d5`. No test was skipped or weakened.
 
 **Clone configuration.** A clone must carry the repository-local `core.longpaths=true` that the C0
@@ -336,8 +488,8 @@ at the final head (below).
 | M1 | MAJOR | Closing could record `ACHIEVED` without `OUTCOME_VERIFIED` (Stage 8 §34) | **Fixed.** Domain rule + DB trigger `work_items_success_needs_verification` + tests |
 | M2 | MAJOR | `WAITING_APPROVAL → READY` could fake an approval | **Fixed.** Not a manual target; its exit is refused in C1 (`APPROVAL_PATH_UNAVAILABLE`) + test |
 | M3 | MAJOR | R2 did not require review; self-review was possible (Stage 3 §2/§4) | **Fixed.** R2+ ⇒ review required. `REVIEWED`/`OUTCOME_VERIFIED` fail closed (`REVIEW_PATH_UNAVAILABLE`) until an enforced reviewer authority exists + tests |
-| M4 | MAJOR | A dependency was satisfied at `WAITING_REVIEW` | **Fixed** (conservative default: review-required work satisfies only once `REVIEWED`) + test. The authority is silent on this, so it is reported as a **Product gap**, not a conflict (D-C1-09) |
-| M5 | MAJOR | Cancel-wins overwrote a real completion | **Fixed.** The run is recorded `SUCCEEDED` with evidence; side-effecting classes go to reconciliation + tests. **Product Owner input requested** (D-C1-08) |
+| M4 | MAJOR | A dependency was satisfied at `WAITING_REVIEW` | **Fixed.** Review-required work satisfies only once `REVIEWED` + test. Now **Product Owner approved** (D-C1-21) |
+| M5 | MAJOR | Cancel-wins overwrote a real completion | **Fixed.** The run is recorded `SUCCEEDED` with evidence; side-effecting classes go to reconciliation + tests. Now **Product Owner approved** (D-C1-20) |
 | m1 | MINOR | Required evidence not enforced at completion | Documented. Judging evidence is review work (C2/C4) |
 | m2 | MINOR | Blocked ownership has no resolver or next action | Documented as deferred (C4) |
 | m3 | MINOR | "A lost hint is harmless" was overstated; the watcher could die silently | **Fixed.** Re-arm once; health reports `WAKE_WATCHER_UNAVAILABLE` → DEGRADED; docs corrected |
@@ -360,7 +512,7 @@ at the final head (below).
 | 4 | MAJOR | Concurrent first open failed in 10 of 10 trials | **Fixed.** Snapshot pre-check, re-check inside `BEGIN IMMEDIATE`, WAL switch retries busy + multi-process test (4 processes, 5 of 5 runs green) |
 | 5–11 | MINOR | Refused-acquire audit rolled back; `putArtifact` fenced outside its transaction; checkpoint/token/artifact fence tests missing; backup files not fsynced; Windows rename retry; artifact recovery edge cases | **All fixed**, with tests where testable |
 | 12 | MINOR | Wake watcher could die silently | Already fixed in `38ab692` |
-| — | NIT | Unfenced `claimNext` stays public at the storage level | Documented residual: the runtime always passes the fence, and recovery reclaims unfenced claims |
+| — | NIT | Unfenced `claimNext` stays public at the storage level | Originally documented as a residual. Independent review later raised it as **F1 (MAJOR)**; it is **fixed structurally** in the final remediation (§0, D-C1-22) |
 
 **Reviewer C — security / integrity / attack surface.**
 - Result: no BLOCKER. No secrets, network surface, native code or SQL injection; no content leaks
@@ -401,8 +553,8 @@ disposition at `300c2d5`.
 - **Mapped network drives.** Windows mapped drives are not detectable without native code;
   unsupported, documented (D-C1-13).
 - **Approval.** Approval-gated work can be recorded but not executed until C2 (by design, D-C1-07).
-- **Dependency satisfaction.** A dependency is satisfied at `COMPLETED`; review-gated satisfaction is
-  a later policy (D-C1-09).
+- **Dependency satisfaction.** Product Owner approved rule (D-C1-21). C1 has no review authority, so
+  review-required dependencies stay blocked in C1 until C2 provides one.
 - **Backup and resilience.** No encrypted off-device backup, retention, immutable copy, promotion or
   maintenance/rollback lifecycle (C6/L1, Stage 15).
 - **IPC and authorization.** No UI IPC or runtime authorization context. C1 exposes a library and a
@@ -430,4 +582,5 @@ Also required:
 
 ## 25. Exact next gate
 
-`INDEPENDENT REVIEW + FOUNDER-HOST LOCAL ACCEPTANCE`. C1 is **not** closed by this report.
+`FOUNDER-HOST LOCAL ACCEPTANCE + FINAL INDEPENDENT REVIEW`. C1 is **not** closed by this report.
+PR #2 stays Draft and unmerged; C2 is not started.
