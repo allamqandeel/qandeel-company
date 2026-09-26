@@ -552,7 +552,8 @@ the Runtime Supervisor:
   - ESLint also refuses re-exports of the subpath and `createRequire`, and the verifier refuses
     `createRequire` in package sources and checks that `runRecovery` stays unexported.
   - Storage multi-process fixtures adopt their parent's fence through a storage-internal test-only
-    function, which neither entry point exports.
+    function, which neither entry point exports. It refuses to run outside the Node test runner
+    (`NODE_TEST_CONTEXT`); this was added as defence in depth after R1's re-verification.
 
 ## D-C1-23 — Bounded lost-wake reconciliation (finding F2)
 

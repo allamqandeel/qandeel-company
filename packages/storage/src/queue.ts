@@ -97,6 +97,11 @@ export function issueSupervisorFence(fence: SupervisorFence): SupervisorFence {
  * verifier forbids importing storage internals from outside the storage package.
  */
 export function adoptSupervisorFenceForStorageTests(fence: SupervisorFence): SupervisorFence {
+  // Defense in depth (review R1): outside the Node test runner (which sets NODE_TEST_CONTEXT for
+  // every test process and the fixtures they spawn) this seam refuses to mint a fence.
+  if (process.env.NODE_TEST_CONTEXT === undefined) {
+    throw new QandeelError('SUPERVISOR_NOT_AUTHORITATIVE', 'the storage test fence seam only works under the Node test runner', { reason: 'TEST_SEAM_OUTSIDE_TESTS' });
+  }
   return issueSupervisorFence(fence);
 }
 

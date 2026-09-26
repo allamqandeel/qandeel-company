@@ -6,6 +6,7 @@
  * the fence inside the claim transaction. Worker (job) fencing stays an independent guard.
  */
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { describe, test } from 'node:test';
 
 import { isQandeelError, newId, type Id } from '@qandeel-company/domain';
@@ -82,6 +83,14 @@ describe('Runtime Supervisor claim authority', () => {
     } finally {
       h.close();
     }
+  });
+
+  test('the multi-process fixture seam cannot mint a fence outside the test runner', () => {
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', `import(${JSON.stringify(new URL('../src/queue.js', import.meta.url).href)}).then((q) => { try { q.adoptSupervisorFenceForStorageTests({ holderId: '00000000-0000-4000-8000-000000000001', fencingToken: 1 }); console.log('MINTED'); } catch (e) { console.log(e.code); } })`], {
+      encoding: 'utf8',
+      env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'NODE_TEST_CONTEXT')),
+    });
+    assert.equal(r.stdout.trim(), 'SUPERVISOR_NOT_AUTHORITATIVE', r.stderr);
   });
 
   test('an expired supervisor fence is refused; wrong token and wrong holder are refused; nothing written', () => {

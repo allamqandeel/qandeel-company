@@ -64,7 +64,7 @@ A focused remediation pass on the existing Draft PR, after the Founder/independe
     `no-runtime-store-escape`, each with negative self-tests and must-pass states, plus live checks
     in `workspace-resolution`.
 - **Tests:**
-  - `supervisor-authority.test.ts` (8), covering:
+  - `supervisor-authority.test.ts` (9), covering:
     - no public claim;
     - a fence rebuilt from the public lease read is refused (unforgeable fences, after review R1);
     - exports map;
@@ -138,7 +138,7 @@ A focused remediation pass on the existing Draft PR, after the Founder/independe
 
 **Validation** (at the remediation code head, Linux, Node 24.21.0):
 - **`npm ci`:** 0 vulnerabilities.
-- **`npm run ci`:** green, with **164 tests** (5 + 22 + 102 + 35), mutation check 3/3 caught, and
+- **`npm run ci`:** green, with **165 tests** (5 + 22 + 103 + 35), mutation check 3/3 caught, and
   verifier **32/32** (31 self-tested rules + workspace resolution).
 - **`c1:acceptance`:** PASS 6/6, schema 3.
 - **`git diff --check`:** clean.
@@ -158,6 +158,12 @@ A focused remediation pass on the existing Draft PR, after the Founder/independe
 | R2 | 3 | NIT | `committedAtMs` was taken after the commit | **Fixed.** Taken before the commit (conservative) |
 | R2 | 4 | NIT | No assertion that fs.watch delivered the dropped hint (`wakeFileHintsDropped >= 1`) | **Kept as a diagnostic, not an assertion.** fs.watch delivery is exactly what is not guaranteed; the proof asserts that no hint reached the dispatcher |
 
+- **R1 re-verification at `e80c65f`:** MAJOR 1 and MINORs 2–3 and NIT 4 **confirmed fixed** (its
+  proof of concept is now refused with `UNISSUED_FENCE`; the live claim and instance were untouched).
+  One new **MINOR**: the storage multi-process fixture seam ships in `dist/src/queue.js` and could
+  mint a fence if someone imports that file by path. This is the same class as the existing path
+  import of `storeContext`, and static checks already forbid such path imports. **Fixed** as defence
+  in depth: the seam refuses to run outside the Node test runner (`NODE_TEST_CONTEXT`), with a test.
 - **R1 verified** D-C1-08 and D-C1-09 exactly as approved, found no stale Product-gap wording, no
   C2 leakage and privacy Rules A/B/C intact.
 - **R2 verified** the following, and found no BLOCKER or MAJOR:
@@ -425,10 +431,10 @@ A second crash during recovery is proven safe.
 |---|---:|---:|---|
 | bootstrap-contract | 1 | 5 | C0 toolchain |
 | domain | 2 | 22 | unit: state machine (exhaustive table check), review/dependency rules, IDs, clock, validation, retry, classification |
-| storage | 9 | 102 | real file-backed SQLite (incl. Supervisor claim authority and the D-C1-08/09 matrices): adapter/WAL/busy, workspace, migrations, work items, queue, fencing (each check isolated), checkpoints, artifacts, backup; plus **multi-process** (5): claim race, cross-process fencing, contention, backup under a writer process, concurrent first open |
+| storage | 9 | 103 | real file-backed SQLite (incl. Supervisor claim authority and the D-C1-08/09 matrices): adapter/WAL/busy, workspace, migrations, work items, queue, fencing (each check isolated), checkpoints, artifacts, backup; plus **multi-process** (5): claim race, cross-process fencing, contention, backup under a writer process, concurrent first open |
 | runtime | 6 | 35 | unit; integration (end to end, concurrency cap, idle, graceful shutdown, cross-process wake, **lost-wake reconciliation with the fs.watch hint dropped**, no store escape, CLI, robustness); **fault matrix (8 process-kill scenarios)** |
 
-**Total: 164 tests** (137 before the final remediation). All pass in `npm run ci` on Linux (Node 24.21.0), in the fresh clone (§21)
+**Total: 165 tests** (137 before the final remediation). All pass in `npm run ci` on Linux (Node 24.21.0), in the fresh clone (§21)
 and in CI on Windows and Ubuntu (§21).
 
 **Mutation checks** (non-vacuity):
@@ -479,7 +485,7 @@ Node v24.21.0 and SQLite 3.53.4 were confirmed on both runners.
 | `300c2d5` (canonical-path fix) | — | — | — | superseded by the next push (concurrency cancel) |
 | `53fe787` | 36276227306 | **success** | **success** | first green head with every lens A/B/C fix |
 | `d57b51f` | 36276844256 | success | success | D-C1-19 residual fixes (137 tests); the head the independent review examined |
-| remediation head | see PR | — | — | final remediation (§0): F1, F2, D-C1-20/21 and the R1/R2 fixes (164 tests) |
+| remediation head | see PR | — | — | final remediation (§0): F1, F2, D-C1-20/21 and the R1/R2 fixes (165 tests) |
 
 The remediation head's CI run and its fresh-clone proof are recorded in the PR description, so this
 file does not need a self-referencing commit. The Windows failures were real defects, found by CI: restore containment compared
