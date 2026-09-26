@@ -66,7 +66,13 @@ const PRIVACY_RULES = [
 // Active summary documents must not reintroduce the C0 wording that read as
 // "private content excluded by default, with unspecified exceptions".
 const PRIVACY_SUMMARY_DOCS = [BASELINE, 'docs/architecture/BOUNDARIES.md', 'docs/authority/IMPLEMENTATION_AUTHORITY_RULES.md', 'README.md', 'CLAUDE.md'];
-const STALE_PRIVACY = [/unless separately authori[sz]ed/i, /\b(?:memory|analysis|transcripts?|audio|content|text)\b[^.]{0,40}\bby default\b/i];
+// The "by default" pattern checks only the two documents that state the boundary, so an unrelated
+// later sentence elsewhere (e.g. "content access is denied by default") stays legal.
+const PRIVACY_BOUNDARY_DOCS = [BASELINE, 'docs/architecture/BOUNDARIES.md'];
+const STALE_PRIVACY = [
+  { pattern: /unless separately authori[sz]ed/i, docs: PRIVACY_SUMMARY_DOCS },
+  { pattern: /\b(?:memory|analysis|transcripts?|audio|content|text)\b[^.]{0,40}\bby default\b/i, docs: PRIVACY_BOUNDARY_DOCS },
+];
 
 const IMPLEMENTATION_MAP = 'docs/architecture/IMPLEMENTATION_MAP.md';
 const C1_CLOSURE = /^docs\/C1_[^/]*CLOSURE[^/]*\.md$/i;
@@ -98,12 +104,14 @@ const stemAndExt = (name) => {
 
 const normalizeProse = (s) => (s ?? '').replace(/\*\*/g, '').replace(/\s+/g, ' ');
 
-/** Rows of the manifest's imported-files table: `| area | `path` | archive | inner | src sha | imported sha | class | ...`. */
+/** Rows of the manifest's imported-files table: `| area | `path` | archive | inner | src sha | imported sha | class | copy | ...`. */
 function manifestRows(text) {
   return (text ?? '').split('\n').flatMap((line) => {
     if (!line.startsWith('|')) return [];
     const cells = line.split('|').slice(1, -1).map((c) => c.trim().replace(/^`|`$/g, ''));
-    return cells.length >= 7 && cells[1].startsWith(AUTHORITY_DIR) ? [{ path: cells[1], sha256: cells[5], classification: cells[6] }] : [];
+    return cells.length >= 8 && cells[1].startsWith(AUTHORITY_DIR)
+      ? [{ path: cells[1], sourceSha256: cells[4], sha256: cells[5], classification: cells[6], copy: cells[7] }]
+      : [];
   });
 }
 
@@ -273,12 +281,14 @@ export const RULES = [
       if (rows.length === 0) return [`${AUTHORITY_MANIFEST} lists no imported files`];
       const problems = [];
       const listed = new Set();
-      for (const { path: p, sha256: recorded, classification } of rows) {
+      for (const { path: p, sourceSha256, sha256: recorded, classification, copy } of rows) {
         if (listed.has(p)) problems.push(`${p} is listed twice`);
         listed.add(p);
         if (!/^[0-9a-f]{64}$/.test(recorded)) problems.push(`${p} has no valid imported SHA-256`);
         else if (!files.includes(p)) problems.push(`${p} is listed but not present`);
         else if (sha256(p) !== recorded) problems.push(`${p} does not match its recorded SHA-256`);
+        if (copy !== 'exact') problems.push(`${p} is not recorded as an exact copy`);
+        else if (sourceSha256 !== recorded) problems.push(`${p} is recorded as an exact copy but its source and imported SHA-256 differ`);
         if (/SUPERSEDED|UNKNOWN/i.test(classification)) problems.push(`${p} is imported as ${classification}`);
       }
       for (const f of files.filter((f) => f.startsWith(AUTHORITY_DIR) && f !== AUTHORITY_INDEX && f !== AUTHORITY_MANIFEST)) {
@@ -306,10 +316,9 @@ export const RULES = [
     check: ({ read }) => {
       const baseline = normalizeProse(read(BASELINE));
       const problems = PRIVACY_RULES.filter((r) => !baseline.includes(r)).map((r) => `${BASELINE} does not state "${r}"`);
-      for (const doc of PRIVACY_SUMMARY_DOCS) {
-        const text = normalizeProse(read(doc));
-        for (const stale of STALE_PRIVACY) {
-          const hit = text.match(stale);
+      for (const { pattern, docs } of STALE_PRIVACY) {
+        for (const doc of docs) {
+          const hit = normalizeProse(read(doc)).match(pattern);
           if (hit) problems.push(`${doc} contains default-with-exception privacy wording: "${hit[0]}"`);
         }
       }
@@ -430,6 +439,15 @@ const VIOLATIONS = {
   'gitattributes-explicit': { contents: { '.gitattributes': '*.png binary\n' } },
   'authority-import-integrity': [
     { contents: { [SYNTH_SOURCE]: `${SYNTH_SOURCE_TEXT}edited\n` } },
+    {
+      // Edited file whose imported-SHA cell was updated too: no longer an exact copy of its source.
+      contents: {
+        [SYNTH_SOURCE]: `${SYNTH_SOURCE_TEXT}edited\n`,
+        [AUTHORITY_MANIFEST]: synthManifest(
+          `| Stage | \`${SYNTH_SOURCE}\` | \`a.zip\` | \`a/x.md\` | \`${sha(SYNTH_SOURCE_TEXT)}\` | \`${sha(`${SYNTH_SOURCE_TEXT}edited\n`)}\` | CLOSED / FROZEN | exact | - | - |`,
+        ),
+      },
+    },
     { contents: { [SYNTH_STAGE_16]: '# Stage 16 (reconstructed)\n' } },
     { contents: { [AUTHORITY_INDEX]: '## Missing\n\nnone\n' } },
     { contents: { [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT, 'SUPERSEDED')) } },

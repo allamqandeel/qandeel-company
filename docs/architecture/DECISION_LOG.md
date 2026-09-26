@@ -144,14 +144,16 @@ The implementation map now reads:
 
 PRE-C1 is recorded as preparation for Cloud execution, not as a Product / Architecture stage.
 
-`APP-OPS-01` is described as a governed future boundary. Its App-side contract is a candidate on
-2026-09-26; App PR `allamqandeel/qandeel#278` is open and not merged. There is no Company-side
-integration.
+`APP-OPS-01` is described as a governed future boundary. On 2026-09-26 its App-side document
+(`docs/p4/APP_OPS_01_COMPANY_OPERATIONS_CONTRACT_CANDIDATE.md`, merged to App `main` through
+`allamqandeel/qandeel#278`) carries the status `PRODUCT / ARCHITECTURE CONTRACT CANDIDATE — NOT
+FROZEN`. There is no Company-side integration.
 
 ## D-PRE-C1-04 — Verifier extended, stage-aware
 
 `scripts/verify-bootstrap.mjs` gains four rules:
-- `authority-import-integrity`. Every manifest row resolves to a file, and every hash matches. No
+- `authority-import-integrity`. Every manifest row resolves to a file, and every hash matches. Each
+  row is an `exact` copy whose source and imported SHA-256 are equal. No
   imported row is `SUPERSEDED` or `UNKNOWN`, and every file in the directory is listed. Only Markdown
   is allowed. The Stage 16 "not found" statement must remain until a Stage 16 source is imported
   with a manifest row.
@@ -164,5 +166,6 @@ integration.
 The package allowlist (`ALLOWED_PACKAGES`) is already stage-aware: the change that adds a real
 package extends it. It is kept, so PRE-C1 cannot add a package and C1 is not blocked.
 
-Imported sources keep their Markdown hard line breaks. `.gitattributes` turns Git's whitespace
-checks off for the imported source directories only.
+Imported sources keep their Markdown hard line breaks and their exact bytes. For the imported source
+directories only, `.gitattributes` turns off Git's whitespace checks and line-ending normalization
+(`-text -whitespace`).

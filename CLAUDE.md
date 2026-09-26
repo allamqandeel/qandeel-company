@@ -21,10 +21,13 @@
 - Never assume a Product decision that is not in the authority documents or your Task Contract.
   Report the gap instead. The Stage 16 (Founder Command Center) source artifact is missing: do
   not reconstruct it.
-- Privacy is absolute (baseline §5):
-  - operational telemetry is always content-free;
-  - APP-OPS-01 provides no private-content path;
-  - no human review of private QANDEEL conversation content.
+- Privacy is absolute. `docs/authority/COMPANY_CANONICAL_BASELINE.md` §5 holds the exact wording,
+  which governs:
+  - **Rule A.** Operational telemetry is ALWAYS content-free.
+  - **Rule B.** APP-OPS-01 itself provides no path by which Company Operations receives private
+    user content.
+  - **Rule C.** No routine or exceptional human review of private QANDEEL conversation content is
+    authorized through Company Operations or safety-monitoring flows.
 - QANDEEL COMPANY is not the QANDEEL App. Never import, reference or write the App repository.
 - Preserve Windows compatibility: the product runs on the Founder's Windows host. Paths, line
   endings, file names (including Arabic) and process handling must work there.

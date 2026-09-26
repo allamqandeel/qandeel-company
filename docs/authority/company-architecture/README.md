@@ -35,8 +35,8 @@ local archives. They were imported so that a Cloud executor can work from the re
 
 | Directory | Contents | Classification |
 |---|---|---|
-| `FOUNDING/` | `…FOUNDING_CONSTITUTION_v0.1.md`, the living constitution. §3 holds the non-negotiable principles; §17–28 name each Stage 1–12 document as the "Detailed canonical authority" | CANONICAL / FINAL (latest of 14 versions) |
-| `FOUNDING/` | `…STRONG_V1_MASTER_PLAN_v0.1.md`: roadmap, weights, gates and the Strong v1 Definition of Done (§8) | CANONICAL / FINAL (latest of 14 versions), with the limits in §6 below |
+| `FOUNDING/` | `…FOUNDING_CONSTITUTION_v0.1.md`, the living constitution. §3 holds the non-negotiable principles; §17–28 name each Stage 1–12 document as the "Detailed canonical authority" | CANONICAL / FINAL in the task's taxonomy: the latest of 14 versions. Its own status is `LIVING / VERSIONED`, and it says it is not a final closed constitution; later stage closures govern their scope |
+| `FOUNDING/` | `…STRONG_V1_MASTER_PLAN_v0.1.md`: roadmap, weights, gates and the Strong v1 Definition of Done (§8) | CANONICAL / FINAL in the task's taxonomy: the latest of 14 versions. Its own status is `ACTIVE PLANNING / EDITABLE`; its Stage 13–17 plans and §9 status are superseded by the later closures (§6 below) |
 | `FOUNDING/` | `…CHANGE_LOG_v0.1.md` (CHG-000..017), `…CHECKPOINT_REGISTER_v0.1.md` (QC-000..017) | EVIDENCE ONLY — history as of Stage 12 |
 | `STAGE_00/` … `STAGE_12/` | the stage's canonical document, plus its closure record | CLOSED / FROZEN + FINAL CLOSURE RECORD |
 | `STAGE_13/`, `STAGE_14/`, `STAGE_15/`, `STAGE_17/` | `STAGE_NN_CANONICAL_CLOSURE_v1.md`, `DNN_DECISION_REGISTER.md`, `DNN_DOWNSTREAM_HANDOFF.md` | FINAL CLOSURE RECORD + CLOSED / FROZEN |
@@ -97,6 +97,11 @@ what it is:
   conversational management and approval flow".
 - **Nothing more.** No later canonical source explicitly restates a Stage 16 decision.
 
+A pointer for the Product Owner, not a reconstruction: the Stage 15 closure names Stage 16 as its
+"Next planned stage", and the Stage 17 handoff (`D17_DOWNSTREAM_HANDOFF.md`) asks Stage 18 to prove "the
+Stage 0–17 contracts". Together these suggest a Stage 16 closure was produced and its artifact is
+missing locally, rather than that Stage 16 was skipped. Only the Product Owner can confirm this.
+
 Stage 16 scope maps to implementation package `C5`. It is **not** needed for `C1`. Before `C5`, the
 Product Owner must supply the Stage 16 authority or decide how `C5` proceeds without it.
 
@@ -113,7 +118,7 @@ Product Owner must supply the Stage 16 authority or decide how `C5` proceeds wit
 | # | Observation | Reading |
 |---|---|---|
 | O1 | The Master Plan names gates `E16`, `E17` and `F18`. The Stage 17 closure calls its gate `D17`. | Naming only; it is the same stage. |
-| O2 | Master Plan §3 plans Stage 13 as provider adapters ("GPT / Claude / Codex adapter"). The Stage 13 closure decides on provider-independent routing, and D13-D.10 makes no agent framework canonical. | The later closure governs its scope. |
+| O2 | Master Plan §3 plans Stage 13 with provider adapter sub-stages (13.2 GPT adapter, 13.3 Claude adapter, 13.4 Codex/coding adapter). The Stage 13 closure decides on provider-independent routing, and D13-D.10 makes no agent framework canonical. | The later closure governs its scope. |
 | O3 | The Master Plan (§9), the change log and the checkpoint register stop at Stage 12 (73%). The standalone closures record 77% / 81% / 85% for Stages 13 / 14 / 15, and Stage 17 closed. | The Stage 12-era status lines are historical. |
 | O4 | `STAGE_00/…PRODUCT_DEFINITION_v0.1.md` is titled "Working Record v0.1" but carries `Status: CLOSED / ACCEPTED`. | The closed status governs. |
 | O5 | `COMPANY_CANONICAL_BASELINE.md` §4 says "voice-forward". The imported set does not mention voice. | That is a direct Product Owner decision in the C0 contract. It is compatible, since no source excludes voice. |
@@ -121,9 +126,10 @@ Product Owner must supply the Stage 16 authority or decide how `C5` proceeds wit
 ## 7. Privacy rules checked against this set
 
 The Product Owner's direct privacy decisions are recorded in `COMPANY_CANONICAL_BASELINE.md` §5 as
-Rules A, B and C. **Rule A:** operational telemetry is always content-free. **Rule B:** APP-OPS-01
-itself provides no path by which Company Operations receives private user content. **Rule C:** no
-routine or exceptional human review of private QANDEEL conversation content is authorized.
+Rules A, B and C; that section's wording governs. **Rule A:** Operational telemetry is ALWAYS
+content-free. **Rule B:** APP-OPS-01 itself provides no path by which Company Operations receives
+private user content. **Rule C:** No routine or exceptional human review of private QANDEEL
+conversation content is authorized through Company Operations or safety-monitoring flows.
 
 The imported set was searched for content paths, telemetry, human review and moderation. The result
 is **no conflict**:
@@ -136,6 +142,10 @@ is **no conflict**:
 - **Stage 12 §46, Stage 13 D13-D.9 and Stage 14 D14-B.8 / D14-E.3.** They require redaction,
   exclude raw chain-of-thought from traces and keep sensitive payloads out of logs. Rule A is
   stricter for operational telemetry, and both hold together.
+- **Stage 5 §8 and Stage 10 §10–11.** "customer/user context" retrieval, "Customer Intelligence /
+  Support", and "ratings/review monitoring" (public store reviews) are the places most likely to
+  press on Rule B later. None of them creates a private-content path or assumes human review of
+  App conversation content.
 
 ## 8. Relation to the other authority documents
 

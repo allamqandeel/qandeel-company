@@ -17,8 +17,10 @@ check before any work:
 ## 2. Branch / PR
 
 - Branch `docs/pre-c1-authority-sync-import`, created from the exact baseline.
-- Draft PR: *PR_PLACEHOLDER*, titled "docs: import Company authority for C1 cloud execution".
-  **Not merged.**
+- Draft PR: https://github.com/allamqandeel/qandeel-company/pull/1, titled "docs: import Company
+  authority for C1 cloud execution". **Not merged.**
+- Commits: `0b1a6906492d4c45b7b4a7f536f4221c8f2b432b` (the import), then one follow-up commit
+  with the review fixes and this record's final sections. The PR head is that follow-up commit.
 
 ## 3. Local authority search scope
 
@@ -42,8 +44,9 @@ detail.
 | Per-stage documents, Stages 0–12, in their own stage package | 26 | CLOSED / FROZEN + FINAL CLOSURE RECORD — imported |
 | The same per-stage documents repeated in later cumulative bundles | 156 | byte-identical duplicates (verified per file) — not imported |
 | Running documents, Stage 12 version (constitution, master plan, change log, register) | 4 | CANONICAL / FINAL (constitution, master plan) and EVIDENCE ONLY (log, register) — imported |
-| Running documents, earlier versions (S00–S11) and all bundle READMEs | 66 | SUPERSEDED, or EVIDENCE ONLY for the S12 README — not imported |
+| Running documents, earlier versions (S00–S11), and the S00–S12 bundle READMEs | 61 | SUPERSEDED, or EVIDENCE ONLY for the S12 README — not imported |
 | Stage 13, 14, 15 and 17 standalone packages | 12 | FINAL CLOSURE RECORD + CLOSED / FROZEN — imported |
+| **Total** | **264** | 42 imported + 66 not-imported manifest rows (the 5 FOUNDATION entries plus these 61) + 156 duplicates |
 
 No artifact needed `UNKNOWN — REQUIRES REVIEW`. Choices never relied on file timestamps.
 
@@ -113,9 +116,10 @@ rules (DECISION_LOG D-PRE-C1-02):
 - **C.** No routine or exceptional human review of private QANDEEL conversation content is
   authorized through Company Operations or safety-monitoring flows.
 
-APP-OPS-01 is now described as the governed future boundary, still a candidate on the App side
-(App PR `allamqandeel/qandeel#278` is open and unmerged). It is not implemented in the Company
-(`C7`). The App's CW2-08 was not amended, and no moderation mechanism was invented.
+APP-OPS-01 is now described as the governed future boundary. It is still a candidate on the App
+side: the App-side document, merged to App `main` through `allamqandeel/qandeel#278`, has the status
+`PRODUCT / ARCHITECTURE CONTRACT CANDIDATE — NOT FROZEN`. It is not implemented in the Company
+(`C7`). This task did not amend the App's CW2-08 and did not invent a moderation mechanism.
 
 ## 11. README / CLAUDE reading-path correction
 
@@ -146,20 +150,82 @@ rules are stage-aware:
 - a future Stage 16 import with a manifest row is accepted.
 
 The package allowlist was kept: it is already stage-aware, because the change that adds a real
-package extends it (D-PRE-C1-04). `.gitattributes` exempts only the imported source directories
-from Git whitespace checks, which preserves their Markdown hard line breaks.
+package extends it (D-PRE-C1-04). `.gitattributes` exempts only the imported source directories from Git
+whitespace checks and line-ending normalization (`-text -whitespace`). This preserves their
+Markdown hard line breaks and their exact bytes.
 
 ## 13. Validation
 
-*VALIDATION_PLACEHOLDER*
+All run on the Founder host (Windows, Node 24, GitHub Desktop's bundled Git) unless marked CI.
+- `npm ci`: 0 vulnerabilities, no package or lockfile change.
+- `npm run ci` (build, typecheck, lint, test, verify): exit 0. Tests 5/5. Verifier 23/23 rules on
+  70 files; its self-test proves each of the 22 file rules can fail and that the legitimate future
+  states (C1 closed with its record, a properly listed Stage 16 import) pass. Re-run after the
+  review fixes: same result.
+- `git diff --check`: clean.
+- **Fresh clone** of the branch at `0b1a6906`: `npm ci`, then verify 23/23.
+- **Hashes:** an independent PowerShell SHA-256 recomputation of all 42 manifest rows found 0
+  mismatches. The reviewer separately recomputed all 42 from the ZIP entry streams: 0 mismatches.
+- **Planted violations** in a disposable clone, each failing its intended rule, with the clone
+  restored clean afterwards:
+  - one changed byte in an imported file;
+  - one appended space;
+  - an invented `STAGE_16/` file;
+  - a force-added `.zip`;
+  - stale "by default" privacy wording;
+  - a weakened Rule A;
+  - `C0` set back to "Current task";
+  - `C1` marked closed without a closure record.
+
+  `C1` marked closed *with* a `docs/C1_*CLOSURE*.md` record passed.
+- **CI** on `0b1a6906`: run 36265218131, success on `ubuntu-latest` and `windows-latest`. CI on
+  the follow-up head is reported in the PR.
 
 ## 14. Independent review result
 
-*REVIEW_PLACEHOLDER*
+An independent, read-only review agent reviewed `0b1a6906` against `08c74175`. **Verdict: PASS
+WITH FIXES, no blocker.**
+
+What it verified:
+- all 42 hashes, from the ZIP entry streams;
+- all 18 archive hashes;
+- the 264-entry accounting;
+- the Stage 16 handling;
+- every cited stage reference;
+- a privacy sweep of the whole imported set;
+- the lifecycle;
+- the anti-scope (no package, lockfile or runtime change; no secrets);
+- the verifier (read and run).
+
+Findings and disposition:
+
+| # | Severity | Finding | Disposition |
+|---|---|---|---|
+| 1 | Major | D-PRE-C1-03 and §10 called App PR #278 open; it merged as `576b010` | Fixed: both now say merged; APP-OPS-01 is still a candidate, not frozen |
+| 2 | Minor | §4 table double-counted the 5 FOUNDATION entries (269, not 264) | Fixed: 61, with a total row |
+| 3 | Minor | "CANONICAL / FINAL" overstates the founding documents' own status | Fixed in the index §3: each row states its own status (`LIVING / VERSIONED`; `ACTIVE PLANNING / EDITABLE`) and that later closures govern. The manifest label is kept (the task's taxonomy); its Notes already disclose this |
+| 4 | Minor | The verifier checked only the imported-SHA cell, so an edit plus a matching cell edit passed | Fixed: each row must be `exact` with source SHA = imported SHA; a new self-test scenario proves it |
+| 5 | Minor | Index §5 omitted evidence that a Stage 16 closure once existed | Fixed: a pointer for the Product Owner, explicitly not a reconstruction |
+| 6 | Nit | O2 quoted non-verbatim text | Fixed: exact sub-stage names |
+| 7 | Nit | Index §7 and `CLAUDE.md` shortened Rules B and C | Fixed: both quote the exact rules and defer to baseline §5 |
+| 8 | Nit | The "by default" pattern could reject a legitimate later sentence | Fixed: scoped to the baseline and `BOUNDARIES.md` |
+| 9 | Nit | Imported files could still be line-ending normalized | Fixed: `-text` on the imported source directories; no blob changed |
+| 10 | Nit | The privacy sweep could list Stage 5 §8 and Stage 10 §10–11 | Fixed: listed, no conflict |
 
 ## 15. App repo unchanged proof
 
-*APP_PLACEHOLDER*
+**This task made no change to the App repository.** Every command it ran there was read-only: status,
+log, `rev-parse`, reflog, and reading the APP-OPS-01 candidate's status line. It did not check out,
+fetch, commit, stage or write.
+
+At the start of this task the App repository was clean on `42b0bc5`. During the task its state was
+changed by **another actor**, and the App's own reflog shows this:
+- App PR #278 merged to `main` as `576b010` (22:02 +0300);
+- at 22:10 a checkout moved to `docs/p4-b-cw2-08-no-human-review-amendment`;
+- at 22:15 commit `3e4cf2a` was made there ("docs: amend CW2-08 human-review authority").
+
+That is App Product-track work. This task neither caused nor touched it, did not amend CW2-08, and
+imported no App document.
 
 ## 16. Cloud access status
 

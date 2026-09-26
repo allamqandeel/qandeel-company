@@ -18,8 +18,9 @@
 # Imported canonical authority: exact byte copies of the Founder-local sources
 # (see docs/authority/company-architecture/AUTHORITY_IMPORT_MANIFEST.md). Their
 # Markdown hard line breaks (two trailing spaces) are content, so Git's
-# whitespace checks are off for these files only. They stay LF (rule above).
-docs/authority/company-architecture/*/*.md -whitespace
+# whitespace checks are off for these files only. Git also never normalizes
+# their line endings (-text): the bytes stored are the source bytes (all LF).
+docs/authority/company-architecture/*/*.md -text -whitespace
 
 # Binary content: never normalized, never diffed as text.
 *.png   binary
