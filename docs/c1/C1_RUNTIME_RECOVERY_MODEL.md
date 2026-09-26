@@ -71,7 +71,10 @@ The durable queue is the source of truth. A wake is a coalesced hint that costs 
   busy) and signals one coalesced pump if it moved. A missed, dropped or never-written hint therefore
   delays pickup by **at most one heartbeat interval — `max(100 ms, supervisorTtlMs / 3)`, 10 s at the
   default 30 s TTL** — plus timer scheduling slack, while a worker slot is free (at capacity, the next
-  slot release pumps anyway). This is an infrastructure bound, not a Product SLA.
+  slot release pumps anyway). Under writer contention a beat can wait up to the busy timeout (5 s
+  default) before its WAL-read fallback; a beat that still cannot read is counted
+  (`heartbeatsSkipped`) and adds one interval. Repeated pump errors back off exponentially
+  (250 ms → 30 s). This is an infrastructure bound, not a Product SLA.
 - The watcher is re-armed once on error. If it is still down, health reports
   `WAKE_WATCHER_UNAVAILABLE` (`DEGRADED`) instead of silently looking healthy (Stage 12 §45);
   discovery then runs at heartbeat latency.

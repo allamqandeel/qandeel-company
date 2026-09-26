@@ -64,8 +64,9 @@ A focused remediation pass on the existing Draft PR, after the Founder/independe
     `no-runtime-store-escape`, each with negative self-tests and must-pass states, plus live checks
     in `workspace-resolution`.
 - **Tests:**
-  - `supervisor-authority.test.ts` (7), covering:
+  - `supervisor-authority.test.ts` (8), covering:
     - no public claim;
+    - a fence rebuilt from the public lease read is refused (unforgeable fences, after review R1);
     - exports map;
     - missing, malformed, expired, wrong-token, wrong-holder and replaced fences, each rejected with
       nothing written;
@@ -98,6 +99,9 @@ A focused remediation pass on the existing Draft PR, after the Founder/independe
   default TTL**.
   - Timer scheduling slack comes on top, because Node timers carry no exact-timing guarantee.
   - It applies while a worker slot is free; at capacity, the next slot release pumps anyway.
+  - Under writer contention, one beat can wait up to the busy timeout (5 s by default) and then
+    reads through WAL. A beat that still cannot read is counted (`heartbeatsSkipped`) and adds one
+    interval.
   - It is an infrastructure bound, not a Product SLA.
 - **Dropped-notification test** (`lost-wake.test.ts`):
   - A second OS process commits work and writes the wake file. The runtime's **active** watcher
@@ -134,12 +138,35 @@ A focused remediation pass on the existing Draft PR, after the Founder/independe
 
 **Validation** (at the remediation code head, Linux, Node 24.21.0):
 - **`npm ci`:** 0 vulnerabilities.
-- **`npm run ci`:** green, with **163 tests** (5 + 22 + 101 + 35), mutation check 3/3 caught, and
+- **`npm run ci`:** green, with **164 tests** (5 + 22 + 102 + 35), mutation check 3/3 caught, and
   verifier **32/32** (31 self-tested rules + workspace resolution).
 - **`c1:acceptance`:** PASS 6/6, schema 3.
 - **`git diff --check`:** clean.
 - **Recorded in the PR description** (to avoid a self-referencing commit): exact-head CI on
   Windows and Ubuntu, and the fresh-clone proof.
+
+**Focused independent reviews** (read-only, against the remediation head `5c517ba`).
+
+| Reviewer | # | Sev. | Finding | Disposition |
+|---|---|---|---|---|
+| R1 authority / API | 1 | **MAJOR** | The supervisor fence could be rebuilt from the public lease read, and the then-public `runRecovery` let any caller interrupt the live Supervisor's claims (no work acquired, but the recovery half of D-C1-22 was bypassable) | **Fixed** in `7a0461c`. Fences are unforgeable: only a frozen fence issued by `acquireSupervisor` in this process is accepted. `runRecovery` is unexported (live verifier check). A forgery test covers claims and recovery |
+| R1 | 2 | MINOR | `runtime.artifacts.recover()` was an unfenced recovery write | **Fixed.** `runtime.artifacts` is a frozen read-only view (`get`, `listForWorkItem`, `read`) + test |
+| R1 | 3 | MINOR | ESLint missed re-exports; nothing flagged `createRequire` | **Fixed.** Export selectors and a `createRequire` ban (ESLint + verifier, with self-test scenarios) |
+| R1 | 4 | NIT | Comment named the wrong ESLint rule; job `CANCELLED` vs `DONE` under termination was undocumented | **Fixed.** Comment corrected; the difference is documented in D-C1-20 |
+| R2 wake / durability | 1 | MINOR | The bound assumed no writer contention | **Fixed.** Bound qualified in the docs; skipped beats counted (`heartbeatsSkipped`) |
+| R2 | 2 | MINOR | A persistent pump error retried at a fixed 4 Hz (existed before) | **Fixed.** Exponential backoff 250 ms → 30 s, with `consecutivePumpErrors` in diagnostics |
+| R2 | 3 | NIT | `committedAtMs` was taken after the commit | **Fixed.** Taken before the commit (conservative) |
+| R2 | 4 | NIT | No assertion that fs.watch delivered the dropped hint (`wakeFileHintsDropped >= 1`) | **Kept as a diagnostic, not an assertion.** fs.watch delivery is exactly what is not guaranteed; the proof asserts that no hint reached the dispatcher |
+
+- **R1 verified** D-C1-08 and D-C1-09 exactly as approved, found no stale Product-gap wording, no
+  C2 leakage and privacy Rules A/B/C intact.
+- **R2 verified** the following, and found no BLOCKER or MAJOR:
+  - a mutation-by-mutation probe found **zero** actionable transitions that fail to advance the
+    generation;
+  - the read-before-scan ordering holds, with no duplicate claims;
+  - the migration and backup fingerprints are correct;
+  - the lost-wake test passed 8/8 including under CPU load (discovery 292–406 ms);
+  - the mutation check reproduces the `d57b51f` failure.
 
 **Boundaries.**
 - No model or provider calls.
@@ -398,10 +425,10 @@ A second crash during recovery is proven safe.
 |---|---:|---:|---|
 | bootstrap-contract | 1 | 5 | C0 toolchain |
 | domain | 2 | 22 | unit: state machine (exhaustive table check), review/dependency rules, IDs, clock, validation, retry, classification |
-| storage | 9 | 101 | real file-backed SQLite (incl. Supervisor claim authority and the D-C1-08/09 matrices): adapter/WAL/busy, workspace, migrations, work items, queue, fencing (each check isolated), checkpoints, artifacts, backup; plus **multi-process** (5): claim race, cross-process fencing, contention, backup under a writer process, concurrent first open |
+| storage | 9 | 102 | real file-backed SQLite (incl. Supervisor claim authority and the D-C1-08/09 matrices): adapter/WAL/busy, workspace, migrations, work items, queue, fencing (each check isolated), checkpoints, artifacts, backup; plus **multi-process** (5): claim race, cross-process fencing, contention, backup under a writer process, concurrent first open |
 | runtime | 6 | 35 | unit; integration (end to end, concurrency cap, idle, graceful shutdown, cross-process wake, **lost-wake reconciliation with the fs.watch hint dropped**, no store escape, CLI, robustness); **fault matrix (8 process-kill scenarios)** |
 
-**Total: 163 tests** (137 before the final remediation). All pass in `npm run ci` on Linux (Node 24.21.0), in the fresh clone (§21)
+**Total: 164 tests** (137 before the final remediation). All pass in `npm run ci` on Linux (Node 24.21.0), in the fresh clone (§21)
 and in CI on Windows and Ubuntu (§21).
 
 **Mutation checks** (non-vacuity):
@@ -452,7 +479,7 @@ Node v24.21.0 and SQLite 3.53.4 were confirmed on both runners.
 | `300c2d5` (canonical-path fix) | — | — | — | superseded by the next push (concurrency cancel) |
 | `53fe787` | 36276227306 | **success** | **success** | first green head with every lens A/B/C fix |
 | `d57b51f` | 36276844256 | success | success | D-C1-19 residual fixes (137 tests); the head the independent review examined |
-| remediation head | see PR | — | — | final remediation (§0): F1, F2, D-C1-20/21 (163 tests) |
+| remediation head | see PR | — | — | final remediation (§0): F1, F2, D-C1-20/21 and the R1/R2 fixes (164 tests) |
 
 The remediation head's CI run and its fresh-clone proof are recorded in the PR description, so this
 file does not need a self-referencing commit. The Windows failures were real defects, found by CI: restore containment compared

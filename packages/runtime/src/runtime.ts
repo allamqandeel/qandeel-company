@@ -148,6 +148,10 @@ export interface RuntimeDiagnostics {
   readonly wakeFileHintsDropped: number;
   /** Supervisor heartbeats that observed the durable wake generation (lost-wake reconciliation). */
   readonly heartbeats: number;
+  /** Heartbeats that could not observe the generation (sustained contention); each adds one interval. */
+  readonly heartbeatsSkipped: number;
+  /** Consecutive failed pumps (retried with exponential backoff, 250 ms → 30 s). */
+  readonly consecutivePumpErrors: number;
   /** Pumps started because the heartbeat saw the durable wake generation move (a missed hint). */
   readonly reconciliationWakes: number;
   /** The durable wake generation the last pump started from. */
@@ -205,6 +209,8 @@ export class CompanyRuntime {
   #failure: string | null = null;
   #heartbeatMs = 0;
   #heartbeats = 0;
+  #heartbeatsSkipped = 0;
+  #pumpErrors = 0;
   #reconciliationWakes = 0;
   #observedGeneration: number | null = null;
 
@@ -311,6 +317,7 @@ export class CompanyRuntime {
         try {
           generation = store.wakeGeneration();
         } catch {
+          this.#heartbeatsSkipped++; // counted: each skipped beat extends the lost-wake bound by one interval
           return;
         }
       }
@@ -548,6 +555,8 @@ export class CompanyRuntime {
       wakeFileHints: this.#wake.fileHints,
       wakeFileHintsDropped: this.#wake.fileHintsDropped,
       heartbeats: this.#heartbeats,
+      heartbeatsSkipped: this.#heartbeatsSkipped,
+      consecutivePumpErrors: this.#pumpErrors,
       reconciliationWakes: this.#reconciliationWakes,
       observedWakeGeneration: this.#observedGeneration,
       lostWakeBoundMs: this.#heartbeatMs,
@@ -596,6 +605,7 @@ export class CompanyRuntime {
           this.#startRun(claim);
         }
       } while (this.#pumpAgain && this.#state === 'READY');
+      this.#pumpErrors = 0;
       this.#armTimer(store);
     } catch (error) {
       if (isQandeelError(error, 'SUPERVISOR_NOT_AUTHORITATIVE')) {
@@ -613,8 +623,10 @@ export class CompanyRuntime {
           }
         }
       } else {
-        this.#log.warn('runtime.pump_error', { code: errorCode(error) });
-        this.#armRetryTimer();
+        // A persistent error must not become a fixed-rate loop: back off exponentially (250 ms → 30 s).
+        this.#pumpErrors++;
+        this.#log.warn('runtime.pump_error', { code: errorCode(error), consecutive: this.#pumpErrors });
+        this.#armRetryTimer(Math.min(30_000, 250 * 2 ** Math.min(this.#pumpErrors - 1, 7)));
       }
     } finally {
       this.#pumping = false;
@@ -645,10 +657,10 @@ export class CompanyRuntime {
     this.#timer = setTimeout(() => this.#pump(), delay > 0 ? Math.min(delay, 2_147_000_000) : 1_000);
   }
 
-  #armRetryTimer(): void {
+  #armRetryTimer(delayMs = 250): void {
     clearTimeout(this.#timer);
     this.#timerFor = 'retry';
-    this.#timer = setTimeout(() => this.#pump(), 250);
+    this.#timer = setTimeout(() => this.#pump(), delayMs);
   }
 
   #dispatchEvents(): void {

@@ -586,6 +586,10 @@ So `fs.watch` cannot be the sole correctness mechanism.
   - That is **10 s at the default 30 s TTL**, plus timer scheduling slack.
   - It applies while the runtime has a free worker slot. At capacity, the next slot release pumps
     anyway.
+  - Under writer contention (review R2), one beat can wait up to the busy timeout (5 s by default)
+    before falling back to a non-blocking WAL read. A beat that still cannot read is counted
+    (`heartbeatsSkipped`) and adds one interval.
+  - Repeated pump errors back off exponentially (250 ms → 30 s) instead of retrying at a fixed rate.
   - It is an infrastructure bound, not a Product SLA.
 - **Health:** a failed watcher stays visible (`WAKE_WATCHER_UNAVAILABLE` → `DEGRADED`). Discovery
   then runs at heartbeat latency.
