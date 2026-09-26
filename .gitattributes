@@ -1,0 +1,38 @@
+# Explicit text normalization: text is stored with LF in Git and checked out
+# with LF on every platform, including Windows (Node, TypeScript, ESLint and
+# Git itself all handle LF there). Content is UTF-8 and is never re-encoded.
+* text=auto eol=lf
+
+# Files that must keep LF regardless of platform.
+*.sh    text eol=lf
+
+# Windows-native script formats keep CRLF so cmd.exe and Windows PowerShell 5.1
+# read them predictably. PowerShell files must also be UTF-8 *with* BOM
+# (see .editorconfig); a BOM-less .ps1 is read as ANSI by PowerShell 5.1.
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.psd1  text eol=crlf
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+
+# Binary content: never normalized, never diffed as text.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+*.7z    binary
+*.gz    binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.mp3   binary
+*.mp4   binary
+*.wav   binary
+*.sqlite  binary
+*.sqlite3 binary
+*.db    binary

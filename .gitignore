@@ -1,0 +1,78 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+/build/
+/out/
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Local logs
+/logs/
+*.log
+npm-debug.log*
+
+# Root-level local directories. Anchored with a leading / so that source folders of the
+# same name inside packages (e.g. packages/x/src/state/) are never hidden from Git.
+# Runtime state (the live Company runtime never writes inside the repo)
+/runtime/
+/state/
+/.state/
+/var/
+
+# Temporary directories and files
+/tmp/
+/temp/
+/.tmp/
+*.tmp
+
+# Environment files. A safe, intentionally committed example may be added later.
+.env
+.env.*
+!.env.example
+
+# Local SQLite databases, WAL and shared-memory files, journals
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*-wal
+*-shm
+
+# Local backup artifacts
+/backups/
+*.bak
+*.backup
+*.zip
+*.7z
+
+# Secrets and credential material (never commit; see docs/architecture/BOUNDARIES.md)
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+.git-credentials
+.netrc
+*.kdbx
+
+# Editor / OS local state
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local Claude Code state (project-shared settings may be committed deliberately)
+.claude/settings.local.json

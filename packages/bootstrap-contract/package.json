@@ -1,0 +1,23 @@
+{
+  "name": "@qandeel-company/bootstrap-contract",
+  "version": "0.0.0",
+  "private": true,
+  "description": "C0 toolchain proof: neutral bootstrap metadata and a deterministic runtime check. Not Company runtime.",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=24.11.0 <25.0.0"
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test \"dist/test/**/*.test.js\""
+  }
+}
