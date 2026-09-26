@@ -10,12 +10,13 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { ExponentialBackoff, assertId } from '@qandeel-company/domain';
 
 import { CompanyStore } from '../../src/index.js';
+import { adoptSupervisorFenceForStorageTests } from '../../src/queue.js';
 import { KINDS } from '../helpers.js';
 import { checkpoint, claimNext, settle } from '../../src/runtime-authority.js';
 
 const [root, leaseMs, goFile, holderId, token] = process.argv.slice(2);
 const store = CompanyStore.open(String(root), { busyTimeoutMs: 10_000 });
-const claim = claimNext(store, { workerId: 'worker-A', leaseMs: Number(leaseMs), kinds: KINDS, supervisor: { holderId: assertId(holderId, 'holderId'), fencingToken: Number(token) } });
+const claim = claimNext(store, { workerId: 'worker-A', leaseMs: Number(leaseMs), kinds: KINDS, supervisor: adoptSupervisorFenceForStorageTests({ holderId: assertId(holderId, 'holderId'), fencingToken: Number(token) }) });
 if (!claim) {
   process.stdout.write(`${JSON.stringify({ step: 'claim', ok: false })}\n`);
   process.exit(1);

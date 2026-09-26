@@ -46,12 +46,16 @@ export default tseslint.config(
       'no-restricted-syntax': [
         'error',
         {
-          selector: "ImportDeclaration[source.value=/^@qandeel-company\\/storage\\//], ImportExpression[source.value=/^@qandeel-company\\/storage\\//]",
+          selector: ":matches(ImportDeclaration, ImportExpression, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/^@qandeel-company\\/storage\\//]",
           message: 'Only @qandeel-company/runtime may import @qandeel-company/storage/runtime-authority (D-C1-22); use the ordinary @qandeel-company/storage API.',
         },
         {
-          selector: 'ImportDeclaration[source.value=/\\/storage\\/(src|dist)\\//], ImportExpression[source.value=/\\/storage\\/(src|dist)\\//]',
+          selector: ':matches(ImportDeclaration, ImportExpression, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/\\/storage\\/(src|dist)\\//]',
           message: 'Do not import storage internals by path (D-C1-22).',
+        },
+        {
+          selector: "CallExpression[callee.name='createRequire'], MemberExpression[property.name='createRequire']",
+          message: 'createRequire can bypass the import boundary checks; use static ESM imports (D-C1-22).',
         },
       ],
     },
@@ -64,12 +68,16 @@ export default tseslint.config(
       'no-restricted-syntax': [
         'error',
         {
-          selector: "ImportDeclaration[source.value=/^@qandeel-company\\/storage\\/(?!runtime-authority$)/], ImportExpression[source.value=/^@qandeel-company\\/storage\\/(?!runtime-authority$)/]",
+          selector: ":matches(ImportDeclaration, ImportExpression, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/^@qandeel-company\\/storage\\/(?!runtime-authority$)/]",
           message: 'The only storage subpath the runtime may import is @qandeel-company/storage/runtime-authority.',
         },
         {
-          selector: 'ImportDeclaration[source.value=/\\/storage\\/(src|dist)\\//], ImportExpression[source.value=/\\/storage\\/(src|dist)\\//]',
+          selector: ':matches(ImportDeclaration, ImportExpression, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/\\/storage\\/(src|dist)\\//]',
           message: 'Do not import storage internals by path (D-C1-22).',
+        },
+        {
+          selector: "CallExpression[callee.name='createRequire'], MemberExpression[property.name='createRequire']",
+          message: 'createRequire can bypass the import boundary checks; use static ESM imports (D-C1-22).',
         },
       ],
     },

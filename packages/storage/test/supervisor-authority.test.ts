@@ -63,6 +63,27 @@ describe('Runtime Supervisor claim authority', () => {
     }
   });
 
+  test('a fence rebuilt from the publicly readable lease is a forgery and is refused (claims and recovery)', () => {
+    const h = harness();
+    try {
+      const id = executable(h.store);
+      const lease = h.store.supervisorLease();
+      assert.ok(lease);
+      const forged = { holderId: lease.holderId, fencingToken: lease.fencingToken };
+      assert.deepEqual(forged, { ...h.supervisor }, 'identical values to the real, current fence');
+      assert.throws(() => claimNext(h.store, { workerId: 'w', leaseMs: 10_000, kinds: KINDS, supervisor: forged }), notAuthoritative);
+      assertUnclaimed(h.store, id);
+      const c = claimNext(h.store, h.claimOpts('w', 500));
+      assert.ok(c);
+      h.clock.advance(500);
+      assert.throws(() => interruptClaim(h.store, forged, c.job.id, 'LEASE_EXPIRED'), notAuthoritative);
+      assert.equal(h.store.getJob(c.job.id).state, 'CLAIMED', 'a forged fence cannot take a claim away');
+      assert.ok(Object.isFrozen(h.supervisor), 'an issued fence cannot be retargeted');
+    } finally {
+      h.close();
+    }
+  });
+
   test('an expired supervisor fence is refused; wrong token and wrong holder are refused; nothing written', () => {
     const h = harness();
     try {

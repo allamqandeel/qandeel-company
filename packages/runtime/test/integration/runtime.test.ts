@@ -242,6 +242,11 @@ describe('runtime lifecycle, end to end', () => {
       }
       for (const value of Object.values(view)) assert.equal(value instanceof CompanyStore, false, 'no property leads back to the store');
       assert.throws(() => Object.assign(view, { createWorkItem: () => undefined }), TypeError);
+      // Artifacts: read-only too; writing and recovery stay with the runtime.
+      assert.ok(Object.isFrozen(runtime.artifacts));
+      for (const name of ['put', 'recover', 'verifyAll']) assert.equal(name in runtime.artifacts, false, `runtime.artifacts offers no ${name}`);
+      // Recovery (which takes claims away) is not part of the public runtime API.
+      assert.equal('runRecovery' in (await import('../../src/index.js')), false);
       const w = runtime.submitWorkItem({ objective: 'through the runtime', ownerRef: owner, processorKind: 'c1.noop', initialState: 'READY' }).workItem;
       await eventually(() => view.getWorkItem(w.id).state === 'COMPLETED', 5_000, 'completion observed through the view');
       assert.equal(view.schemaVersion, 3);

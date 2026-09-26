@@ -76,6 +76,31 @@ function assertWorkerId(workerId: string): void {
 }
 
 /**
+ * Supervisor fences issued in this process by `acquireSupervisor` (runtime-authority). The lease's
+ * holder and token are readable through public status reads, so a fence rebuilt from them is a
+ * forgery: only a fence object this module issued is accepted (D-C1-22). Module-private; the
+ * package exports neither the set nor a way to add to it.
+ */
+const ISSUED_FENCES = new WeakSet<object>();
+
+/** Registers a freshly acquired lease as an issued fence (runtime-authority only). */
+export function issueSupervisorFence(fence: SupervisorFence): SupervisorFence {
+  const issued = Object.freeze({ holderId: fence.holderId, fencingToken: fence.fencingToken });
+  ISSUED_FENCES.add(issued);
+  return issued;
+}
+
+/**
+ * Storage multi-process test fixtures only: a child process adopts the fence its parent acquired
+ * (passed on argv), standing in for "a worker of that supervisor". Not exported by the package
+ * entry point or the runtime-authority subpath; the exports map forbids deep imports and the
+ * verifier forbids importing storage internals from outside the storage package.
+ */
+export function adoptSupervisorFenceForStorageTests(fence: SupervisorFence): SupervisorFence {
+  return issueSupervisorFence(fence);
+}
+
+/**
  * Throws SUPERVISOR_NOT_AUTHORITATIVE unless `fence` names the current, unexpired Runtime
  * Supervisor lease. A missing or malformed fence (e.g. from untyped JavaScript) fails the same way:
  * absence of authority is never treated as a valid low-level claim.
@@ -86,6 +111,9 @@ export function verifySupervisor(ctx: StoreContext, fence: SupervisorFence | und
   const token = typeof f === 'object' && f !== null ? f.fencingToken : undefined;
   if (!isId(holderId) || typeof token !== 'number' || !Number.isSafeInteger(token) || token < 1) {
     throw new QandeelError('SUPERVISOR_NOT_AUTHORITATIVE', 'a current Runtime Supervisor fence is required; refusing to claim work', { reason: 'MISSING_FENCE' });
+  }
+  if (!ISSUED_FENCES.has(fence as object)) {
+    throw new QandeelError('SUPERVISOR_NOT_AUTHORITATIVE', 'this fence was not issued by acquiring the supervisor lease; refusing', { reason: 'UNISSUED_FENCE' });
   }
   const row = ctx.db.get(
     `SELECT 1 AS ok FROM runtime_leases WHERE name = 'supervisor' AND holder_id = ? AND fencing_token = ? AND expires_at > ?`,

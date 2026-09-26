@@ -3,19 +3,21 @@
  * worker (fenced) writes, claim recovery and runtime-instance bookkeeping.
  *
  * Exported ONLY through the `@qandeel-company/storage/runtime-authority` subpath, which only
- * `@qandeel-company/runtime` may import (ESLint `no-restricted-imports` + verifier rule
+ * `@qandeel-company/runtime` may import (ESLint `no-restricted-syntax` + verifier rule
  * `runtime-authority-confined`). The ordinary `@qandeel-company/storage` entry point exposes no
  * claim, no supervisor acquisition and no worker write, so a future package cannot acquire
  * executable work outside the Runtime Supervisor.
  *
  * Every claim presents the current Runtime Supervisor fence (mandatory, verified inside the claim
- * transaction). Every worker write presents its job fence. Recovery writes that take a claim away
+ * transaction). A fence is accepted only if `acquireSupervisor` issued it in this process: a fence
+ * rebuilt from the publicly readable lease row is refused. Every worker write presents its job fence. Recovery writes that take a claim away
  * from a worker also present the supervisor fence.
  */
 import { isQandeelError, type Id, type JsonValue, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
 
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import {
+  issueSupervisorFence,
   prepareCheckpoint,
   txCheckpoint,
   txClaimJob,
@@ -81,7 +83,7 @@ function fenced<T>(store: CompanyStore, operation: string, fence: Fence, fn: (ct
 
 export function acquireSupervisor(store: CompanyStore, holderId: Id, ttlMs: number): SupervisorFence {
   try {
-    return write(store, 'acquire supervisor', (ctx) => txAcquireSupervisor(ctx, holderId, ttlMs));
+    return issueSupervisorFence(write(store, 'acquire supervisor', (ctx) => txAcquireSupervisor(ctx, holderId, ttlMs)));
   } catch (error) {
     if (isQandeelError(error, 'LEASE_HELD')) {
       try {

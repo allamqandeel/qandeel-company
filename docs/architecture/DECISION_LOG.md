@@ -470,6 +470,12 @@ First durable canonical ordering governs future state; factual history is never 
   rewrites nothing. Supersession of completed work remains a separate, legitimate later event.
 - **No timestamp priority:** there is no rule outside durable commit order.
 
+**Job state vs run truth.** When a `NONE`-class run finishes after termination was requested, its
+job ends `CANCELLED` and its run `SUCCEEDED`. Nothing external happened, and the job's outcome is
+the termination. When reconciliation **confirms an external effect** under termination intent, the
+job ends `DONE`, because the effect is a fact in the world that must stay visible. In both cases the
+Work Item honours the termination.
+
 **Code alignment.** One path was changed. `resolveReconciliation(CONFIRMED_COMPLETED | FAILED)`
 previously let the decision override an earlier termination intent (`COMPLETED` or `FAILED`). It now
 honours the intent, as the approved rule requires. Tests:
@@ -536,6 +542,17 @@ the Runtime Supervisor:
   - `scripts/c1-mutation-check.mjs`, which removes the claim and recovery supervisor verification
     and requires the proofs to fail. It runs in `npm run ci`.
 - **Unchanged:** worker (job) fencing is still an independent guard.
+- **Hardened after focused review R1** (MAJOR): the lease's holder and token are publicly readable
+  (health), so a fence rebuilt from them could have driven recovery writes through the then-public
+  `runRecovery`.
+  - Fences are now **unforgeable**. Only a frozen fence object issued by `acquireSupervisor` in
+    this process is accepted (a module-private registry, checked before the database check).
+  - `runRecovery` is no longer exported.
+  - `runtime.artifacts` is a frozen read-only view, with no `put`, `recover` or `verifyAll`.
+  - ESLint also refuses re-exports of the subpath and `createRequire`, and the verifier refuses
+    `createRequire` in package sources and checks that `runRecovery` stays unexported.
+  - Storage multi-process fixtures adopt their parent's fence through a storage-internal test-only
+    function, which neither entry point exports.
 
 ## D-C1-23 — Bounded lost-wake reconciliation (finding F2)
 

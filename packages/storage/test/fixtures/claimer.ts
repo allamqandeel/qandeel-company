@@ -8,11 +8,12 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { assertId } from '@qandeel-company/domain';
 
 import { CompanyStore } from '../../src/index.js';
+import { adoptSupervisorFenceForStorageTests } from '../../src/queue.js';
 import { KINDS } from '../helpers.js';
 import { claimJob } from '../../src/runtime-authority.js';
 
 const [root, jobId, workerId, startAt, holderId, token] = process.argv.slice(2);
-const supervisor = { holderId: assertId(holderId, 'holderId'), fencingToken: Number(token) };
+const supervisor = adoptSupervisorFenceForStorageTests({ holderId: assertId(holderId, 'holderId'), fencingToken: Number(token) });
 const store = CompanyStore.open(String(root), { busyTimeoutMs: 10_000 });
 const wait = Number(startAt) - Date.now();
 if (wait > 0) await sleep(wait);

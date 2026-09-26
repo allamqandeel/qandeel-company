@@ -464,6 +464,7 @@ export const RULES = [
           if (!allowed) problems.push(`${f} imports @qandeel-company/storage/${m[1]} (only packages/runtime may import ${AUTHORITY_SUBPATH})`);
         }
         if (!(pkgOf(f) === 'runtime' && isTestPath(f)) && STORAGE_INTERNALS_IMPORT.test(text)) problems.push(`${f} imports storage internals by path`);
+        if (/^packages\/[^/]+\/src\//.test(f) && /\bcreateRequire\b/.test(text)) problems.push(`${f} uses createRequire, which bypasses the static import boundary`);
       }
       const manifest = json(read(STORAGE_PKG));
       if (manifest) {
@@ -722,6 +723,8 @@ const VIOLATIONS = {
     { contents: { 'packages/domain/src/x.ts': "const q = await import('../../storage/src/queue.js');" } },
     { contents: { 'scripts/drive.mjs': "import { settle } from '@qandeel-company/storage/runtime-authority';" } },
     { contents: { [STORAGE_PKG]: JSON.stringify({ private: true, exports: { '.': {}, './runtime-authority': {}, './*': {} } }) } },
+    { contents: { 'packages/employees/src/reexport.ts': "export { claimNext } from '@qandeel-company/storage/runtime-authority';" } },
+    { contents: { 'packages/employees/src/req.ts': "import { createRequire } from 'node:module';\nconst r = createRequire(import.meta.url);" } },
   ],
   'supervisor-claim-fence-mandatory': [
     { contents: { 'packages/storage/src/queue.ts': SYNTH_QUEUE.replace('readonly supervisor: SupervisorFence', 'readonly supervisor?: SupervisorFence') } },
@@ -871,6 +874,7 @@ async function workspaceResolution() {
   const runtime = await import('@qandeel-company/runtime');
   if (typeof runtime.CompanyRuntime !== 'function') problems.push('@qandeel-company/runtime does not export CompanyRuntime');
   if ('store' in runtime.CompanyRuntime.prototype) problems.push('CompanyRuntime exposes a store accessor (only the read-only view is allowed)');
+  if ('runRecovery' in runtime) problems.push('@qandeel-company/runtime exports runRecovery: recovery writes belong to the Runtime Supervisor alone');
   try {
     await import('@qandeel-company/storage/dist/src/sqlite/connection.js');
     problems.push('deep import of the SQLite adapter is possible; the exports map must forbid it');

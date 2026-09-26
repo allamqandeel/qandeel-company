@@ -158,6 +158,13 @@ export interface RuntimeDiagnostics {
 
 export type EventHandler = (event: EventRecord) => void;
 
+/** Read-only artifact inspection handed out by the runtime. */
+export interface ArtifactReadView {
+  get(id: Id): ArtifactRecord;
+  listForWorkItem(workItemId: Id): ArtifactRecord[];
+  read(id: Id): Buffer;
+}
+
 const clampInt = (v: number | undefined, d: number, min: number, max: number): number => {
   const n = v ?? d;
   if (!Number.isInteger(n) || n < min || n > max) throw new QandeelError('VALIDATION_FAILED', `runtime option out of range [${min}, ${max}]`);
@@ -181,6 +188,7 @@ export class CompanyRuntime {
   #state: RuntimeState = 'CREATED';
   #store: CompanyStore | undefined;
   #view: CompanyReadView | undefined;
+  #artifactView: ArtifactReadView | undefined;
   #artifacts: ArtifactStore | undefined;
   #fence: SupervisorFence | undefined;
   #heartbeat: NodeJS.Timeout | undefined;
@@ -474,9 +482,19 @@ export class CompanyRuntime {
     return this.#view;
   }
 
-  get artifacts(): ArtifactStore {
-    if (!this.#artifacts || !this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
-    return this.#artifacts;
+  /**
+   * Read-only artifact inspection (D-C1-22). Writing (processor `putArtifact`, fenced) and artifact
+   * recovery belong to the runtime itself, so the mutable ArtifactStore is never handed out.
+   */
+  get artifacts(): ArtifactReadView {
+    const artifacts = this.#artifacts;
+    if (!artifacts || !this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
+    this.#artifactView ??= Object.freeze({
+      get: (id: Id) => artifacts.get(id),
+      listForWorkItem: (workItemId: Id) => artifacts.listForWorkItem(workItemId),
+      read: (id: Id) => artifacts.read(id),
+    });
+    return this.#artifactView;
   }
 
   async backup(): Promise<{ backup: BackupResult; verification: BackupVerification }> {
@@ -799,6 +817,7 @@ export class CompanyRuntime {
     const run = this.#active.get(claimJobId);
     if (!run || run.fenced || run.settled) throw new QandeelError('STALE_LEASE', 'no active run owns this job', { jobId: claimJobId });
     // The fence is verified inside the same transactions that stage and promote the artifact.
-    return this.artifacts.put({ content, mediaType, workItemId: run.claim.workItem.id, runId: run.claim.fence.runId, fence: run.claim.fence, ...(label !== undefined ? { label } : {}) });
+    if (!this.#artifacts || !this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
+    return this.#artifacts.put({ content, mediaType, workItemId: run.claim.workItem.id, runId: run.claim.fence.runId, fence: run.claim.fence, ...(label !== undefined ? { label } : {}) });
   }
 }
