@@ -306,6 +306,10 @@ The final head adds the D-C1-19 residual fixes on top of `53fe787`. Its CI run a
 proof are recorded in the PR description, so this file does not need a self-referencing commit. The Windows failures were real defects, found by CI: restore containment compared
 non-canonical paths. The fix and its test are in `300c2d5`. No test was skipped or weakened.
 
+**Clone configuration.** A clone must carry the repository-local `core.longpaths=true` that the C0
+rule `local-core-longpaths` requires; use the README clone command. A plain `git clone` fails that
+one rule by design.
+
 **Fresh-clone proof** at `9e3e9a5`. Code identical to `53fe787` except for the Windows containment
 fix, which was re-proven by the Windows CI above.
 - **Setup:** a new `git clone` from GitHub, checkout of the exact SHA, then `npm ci` (0
@@ -412,6 +416,9 @@ disposition at `300c2d5`.
 **FOUNDER-HOST VALIDATION REQUIRED.** On the Windows host, in a fresh clone of the exact PR head:
 
 ```bash
+git clone -c core.longpaths=true -c core.quotepath=false https://github.com/allamqandeel/qandeel-company.git
+cd qandeel-company
+git checkout <exact PR head SHA>
 npm ci
 npm run ci
 npm run c1:acceptance -- --workspace "<new empty directory outside any Git checkout>"
