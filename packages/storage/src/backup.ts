@@ -7,7 +7,7 @@
  * database is never replaced. Encrypted off-device copies, generational retention, immutable
  * copies, device-loss promotion and production rollback are deferred to C6/L1.
  */
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, constants as fsConstants } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, fsyncSync, openSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, constants as fsConstants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -71,6 +71,16 @@ function artifactEntries(db: SqliteConnection): { id: Id; sha256: string; sizeBy
     .map((r) => ({ id: r.id as Id, sha256: r.sha256, sizeBytes: Number(r.size_bytes) }));
 }
 
+function fsyncPath(target: string, kind: 'file' | 'dir' = 'file'): void {
+  // Windows FlushFileBuffers needs a writable handle for files; directories are synced on POSIX only.
+  const fd = openSync(target, kind === 'file' ? 'r+' : 'r');
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function fileSha256(file: string): string {
   return sha256Hex(readFileSync(file));
 }
@@ -131,6 +141,9 @@ export async function createBackup(store: CompanyStore, { runtimeVersion = '0.1.
   writeFileSync(manifestTmp, manifestText, { flag: 'wx' });
   renameSync(manifestTmp, containedPath(directory, MANIFEST_FILE));
   const manifestSha256 = sha256Hex(manifestText);
+  // Make the backup durable before the live store records it as 'ok' (synchronous=FULL there).
+  for (const file of [snapshot, containedPath(directory, MANIFEST_FILE)]) fsyncPath(file);
+  if (process.platform !== 'win32') fsyncPath(directory, 'dir');
 
   ctx.db.immediate('record backup', () => {
     ctx.db.run(

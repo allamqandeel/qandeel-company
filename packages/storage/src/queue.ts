@@ -16,6 +16,7 @@ import {
   classifyInterruptedRun,
   decideRetry,
   isQandeelError,
+  isTimestamp,
   newId,
   sha256Hex,
   type BackoffPolicy,
@@ -81,7 +82,7 @@ export function verifySupervisor(ctx: StoreContext, fence: SupervisorFence): voi
 }
 
 /** Throws STALE_LEASE unless `fence` still owns an unexpired claim on its job. */
-function verifyFence(ctx: StoreContext, fence: Fence): JobRecord {
+export function verifyFence(ctx: StoreContext, fence: Fence): JobRecord {
   const row = ctx.db.get('SELECT * FROM queue_jobs WHERE id = ?', fence.jobId);
   const job = row ? mapJob(row) : undefined;
   const at = ts(ctx);
@@ -310,6 +311,7 @@ function validateResult(result: ProcessorResult): { evidenceJson: string } {
       return { evidenceJson: result.evidence === undefined ? '{}' : boundedJson(result.evidence, 'result.evidence', EVIDENCE_MAX_BYTES) };
     case 'WAIT':
       assertCode(result.reasonCode, 'result.reasonCode');
+      if (result.until !== undefined && !isTimestamp(result.until)) throw new QandeelError('VALIDATION_FAILED', 'WAIT.until must be a canonical UTC timestamp', { field: 'result.until' });
       return { evidenceJson: '{}' };
     case 'RETRYABLE_FAILURE':
     case 'PERMANENT_FAILURE':
@@ -359,6 +361,9 @@ export function txSettle(ctx: StoreContext, fence: Fence, result: ProcessorResul
       return { jobState: 'DONE', runState: 'SUCCEEDED', workItemState: wi.state, unblocked };
     }
     case 'WAIT': {
+      // A timed wait must lie in the future; "wait until the past" would re-run immediately and
+      // could loop without consuming any attempt budget.
+      if (result.until !== undefined && result.until <= at) throw new QandeelError('VALIDATION_FAILED', 'WAIT.until must be in the future', { field: 'result.until' });
       endRun(ctx, fence.runId, 'PARKED', { disposition: 'SAFE_TO_RESUME', failureCode: result.reasonCode });
       if (result.until !== undefined) setJob(ctx, job, 'QUEUED', { availableAt: result.until, waitReason: result.reasonCode });
       else setJob(ctx, job, 'WAITING', { waitReason: result.reasonCode });

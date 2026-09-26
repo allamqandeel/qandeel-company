@@ -116,8 +116,8 @@ export function migrate(
   { clock, runtimeVersion, readOnlyCheck = false, beforeCommit }: { clock: Clock; runtimeVersion: string; readOnlyCheck?: boolean; beforeCommit?: MigrationFaultHook },
 ): MigrationReport {
   assertOrdered(migrations);
-  const applied = appliedMigrations(connection);
-  const fromVersion = userVersion(connection);
+  // One read snapshot: a concurrent opener may commit a migration between two separate reads.
+  const { applied, fromVersion } = connection.snapshot(() => ({ applied: appliedMigrations(connection), fromVersion: userVersion(connection) }));
   const known = migrations.length;
 
   if (fromVersion > known || applied.some((a) => a.version > known)) {
@@ -139,8 +139,13 @@ export function migrate(
   }
   const done: number[] = [];
   for (const m of pending) {
+    let appliedHere = false;
     try {
       connection.immediate(`migration ${m.version}`, () => {
+        // Another process may have applied this migration since the check above (concurrent first
+        // open). Re-read inside the write transaction and skip what is already durable.
+        if (userVersion(connection) >= m.version) return;
+        appliedHere = true;
         connection.execScript(BOOTSTRAP);
         connection.execScript(m.sql);
         connection.run(
@@ -156,9 +161,15 @@ export function migrate(
         beforeCommit?.(m.version);
       });
     } catch (error) {
+      if (error instanceof QandeelError && error.code === 'STORAGE_BUSY') throw error;
       throw new QandeelError('MIGRATION_FAILED', `migration ${m.version} failed and was rolled back`, { version: m.version }, { cause: error });
     }
-    done.push(m.version);
+    if (appliedHere) done.push(m.version);
   }
-  return { fromVersion, toVersion: fromVersion + done.length, applied: done };
+  // Whatever another process applied concurrently must still match this release exactly.
+  for (const a of appliedMigrations(connection)) {
+    const m = migrations[a.version - 1];
+    if (m === undefined || m.sha256 !== a.sha256) throw new QandeelError('MIGRATION_CHECKSUM_DRIFT', `applied migration ${a.version} does not match this release`, { version: a.version });
+  }
+  return { fromVersion, toVersion: userVersion(connection), applied: done };
 }

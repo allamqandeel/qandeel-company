@@ -116,6 +116,7 @@ const C1_PROOF_TESTS = [
   'packages/runtime/test/unit/runtime-units.test.ts',
   'packages/runtime/test/integration/runtime.test.ts',
   'packages/runtime/test/integration/cli.test.ts',
+  'packages/runtime/test/integration/robustness.test.ts',
   'packages/runtime/test/faults/fault-matrix.test.ts',
 ];
 const C1_REPORT = 'docs/C1_IMPLEMENTATION_REPORT.md';

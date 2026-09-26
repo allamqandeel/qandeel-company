@@ -38,6 +38,20 @@ describe('multi-process proofs (independent OS processes, independent SQLite con
     }
   });
 
+  test('concurrent first open: several processes create and migrate one fresh workspace; all succeed, applied once', async () => {
+    const root = tempRoot('mp-open');
+    try {
+      const startAt = Date.now() + 1_500;
+      const children = Array.from({ length: 4 }, () => spawnScript(fixture('opener'), [root, String(startAt)]));
+      const results = await Promise.all(children.map(async (c) => JSON.parse(await c.waitFor((l) => l.startsWith('{'))) as { ok: boolean; schemaVersion?: number; applied?: number[]; code?: string }));
+      await Promise.all(children.map((c) => c.exited()));
+      assert.ok(results.every((r) => r.ok && r.schemaVersion === 2), JSON.stringify(results));
+      assert.deepEqual(results.flatMap((r) => r.applied ?? []).sort(), [1, 2], 'each migration applied exactly once across all processes');
+    } finally {
+      removeRoot(root);
+    }
+  });
+
   test('stale-worker fencing across processes: late worker A is rejected; worker B stays authoritative', async () => {
     const root = tempRoot('mp-fence');
     const store = CompanyStore.open(root);

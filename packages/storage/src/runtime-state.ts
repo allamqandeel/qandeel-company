@@ -38,7 +38,7 @@ export function txAcquireSupervisor(ctx: StoreContext, holderId: Id, ttlMs: numb
     return { holderId, fencingToken: 1 };
   }
   if (current.holderId !== holderId && current.expiresAt > at) {
-    appendAudit(ctx, 'supervisor.acquire_refused', 'runtime', holderId, {}, 'REJECTED', 'LEASE_HELD', { holder: current.holderId, expiresAt: current.expiresAt });
+    // The refusal is audited by the caller in its own transaction (this one rolls back).
     throw new QandeelError('LEASE_HELD', 'another runtime supervisor holds a live lease', { holderId: current.holderId, expiresAt: current.expiresAt });
   }
   const token = current.fencingToken + 1;
@@ -51,15 +51,23 @@ export function txAcquireSupervisor(ctx: StoreContext, holderId: Id, ttlMs: numb
 export function txRenewSupervisor(ctx: StoreContext, fence: SupervisorFence, ttlMs: number): Timestamp {
   const at = ts(ctx);
   const expires = toTimestamp(ctx.clock.nowMs() + ttlMs);
+  // Token-conditional: the lease is renewed while the row still names this holder and token.
+  // After a host sleep the lease may have expired; if no other supervisor took over meanwhile
+  // (holder and token unchanged — a takeover always bumps the token), authority is unbroken and
+  // the renewal is safe. Worker claims that expired during the sleep are still fenced by their own
+  // job leases and recovered by the dispatcher.
+  const current = readSupervisorLease(ctx);
   const changed = ctx.db.run(
-    `UPDATE runtime_leases SET renewed_at = ?, expires_at = ? WHERE name = 'supervisor' AND holder_id = ? AND fencing_token = ? AND expires_at > ?`,
+    `UPDATE runtime_leases SET renewed_at = ?, expires_at = ? WHERE name = 'supervisor' AND holder_id = ? AND fencing_token = ?`,
     at,
     expires,
     fence.holderId,
     fence.fencingToken,
-    at,
   ).changes;
-  if (changed !== 1) throw new QandeelError('SUPERVISOR_NOT_AUTHORITATIVE', 'supervisor lease was lost', { holderId: fence.holderId, fencingToken: fence.fencingToken });
+  if (changed !== 1) throw new QandeelError('SUPERVISOR_NOT_AUTHORITATIVE', 'supervisor lease was taken over', { holderId: fence.holderId, fencingToken: fence.fencingToken });
+  if (current && current.expiresAt <= at) {
+    appendAudit(ctx, 'supervisor.renewed_after_expiry', 'runtime', fence.holderId, {}, 'OK', 'NO_TAKEOVER', { fencingToken: fence.fencingToken, expiredAt: current.expiresAt });
+  }
   return expires;
 }
 

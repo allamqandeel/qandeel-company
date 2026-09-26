@@ -44,6 +44,12 @@ shutdown.
   cannot claim work, even for a moment.
 - **Takeover.** A new supervisor takes over only after expiry, and takeover increments the lease
   token.
+- **Host sleep.** Renewal is **token-conditional**: it succeeds while the lease row still names this
+  holder and token, even after the lease expired during a laptop sleep, because a takeover would
+  have changed the token. The renewal is audited (`supervisor.renewed_after_expiry`). Worker claims
+  that expired during the sleep are fenced and recovered as usual.
+- **Takeover is loud.** Only a real takeover fail-stops the old runtime. It then calls `onFailStop`,
+  and the CLI exits with code 1, so the runtime never silently disappears.
 
 ## 3. Event-driven wake-up (no polling runtime)
 
@@ -102,7 +108,15 @@ runtime, not per Employee, and one process for the whole runtime, not per Employ
 | *durable cancel/supersede intent present* | `CANCELLED`; or `SUCCEEDED` with its evidence if the processor genuinely completed (`failure_code = TERMINATION_REQUESTED`) | `CANCELLED` | `CANCELLED`/`SUPERSEDED`, propagated to children |
 | *intent present + `COMPLETED` from an `IDEMPOTENT`/`UNSAFE` processor* | `SUCCEEDED` (truthful) | `RECONCILIATION_HOLD` | `BLOCKED (RECONCILIATION_REQUIRED)`: a person decides which outcome stands |
 
+**Settle under contention.** A settle that meets `STORAGE_BUSY` is retried with bounded backoff (up
+to 10 attempts) while the run's lease heartbeat keeps the claim alive. A completed result is
+therefore not lost to transient write contention, and the processor is not re-executed.
+
 **Runtime-assigned failures:**
+- A processor that reports `CANCELLED` although the runtime never asked it to stop becomes
+  `RETRYABLE_FAILURE PROCESSOR_STOPPED_UNPROMPTED`. A `WAIT` whose `until` is malformed or in the
+  past becomes `RETRYABLE_FAILURE INVALID_WAIT`, and storage refuses such a `WAIT` too. Both are
+  bounded by `maxAttempts`, so a processor defect cannot loop for free.
 - A processor exception becomes `RETRYABLE_FAILURE PROCESSOR_ERROR`.
 - A timeout becomes `RETRYABLE_FAILURE RUN_TIMEOUT`.
 - For an `UNSAFE`-class processor, both become `RECONCILIATION_REQUIRED` instead.

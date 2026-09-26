@@ -101,7 +101,7 @@ export class SqliteConnection {
       connection.#verify(options);
     } catch (error) {
       db.close();
-      throw error;
+      throw translateError(error, 'open');
     }
     return connection;
   }
@@ -119,7 +119,19 @@ export class SqliteConnection {
     this.#db.exec('PRAGMA trusted_schema = OFF');
     if (this.#pragma('PRAGMA trusted_schema') !== 0) fail('trusted_schema=OFF');
     if (!options.readOnly && !options.keepJournalMode) {
-      const mode = this.#pragma('PRAGMA journal_mode = WAL');
+      // Switching a fresh file to WAL briefly needs an exclusive lock; a concurrent opener can get
+      // SQLITE_BUSY without the busy handler. Retry within the same bounded busy timeout.
+      const deadline = Date.now() + options.busyTimeoutMs;
+      let mode: SqlValue | undefined;
+      for (;;) {
+        try {
+          mode = this.#pragma('PRAGMA journal_mode = WAL');
+          break;
+        } catch (error) {
+          if (!isBusyError(error) || Date.now() >= deadline) throw translateError(error, 'open (journal_mode=WAL)');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+        }
+      }
       if (String(mode).toLowerCase() !== 'wal') fail('journal_mode=WAL');
     }
     if (!options.readOnly) {

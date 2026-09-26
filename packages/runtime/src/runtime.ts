@@ -20,6 +20,7 @@ import {
   ExponentialBackoff,
   QandeelError,
   isQandeelError,
+  isTimestamp,
   newId,
   systemClock,
   type BackoffPolicy,
@@ -85,6 +86,12 @@ export interface RuntimeOptions {
   /** Watch the workspace wake file for cross-process hints (default true). */
   readonly watchWakeFile?: boolean;
   readonly fault?: (point: RuntimeFaultPoint) => void;
+  /**
+   * Called once when the runtime fail-stops (e.g. supervisor authority taken over). A host (the
+   * CLI) uses it to exit non-zero so a service wrapper or the operator notices; the runtime never
+   * silently disappears.
+   */
+  readonly onFailStop?: (code: string) => void;
   readonly storageFault?: FaultHook;
 }
 
@@ -251,6 +258,11 @@ export class CompanyRuntime {
       run.controller.abort();
     }
     this.#teardown('FAILED');
+    try {
+      this.#opts.onFailStop?.(code);
+    } catch {
+      // A host callback never changes the fail-stop itself.
+    }
   }
 
   #teardown(state: 'STOPPED' | 'FAILED'): void {
@@ -485,8 +497,19 @@ export class CompanyRuntime {
       this.#armTimer(store);
     } catch (error) {
       if (isQandeelError(error, 'SUPERVISOR_NOT_AUTHORITATIVE')) {
-        this.#log.error('runtime.supervisor_authority_lost', { instanceId: this.instanceId });
-        this.#failStop('SUPERVISOR_NOT_AUTHORITATIVE');
+        // The lease may merely have expired (host sleep). Renewal is token-conditional: it succeeds
+        // only if no other supervisor took over; then the pump simply runs again.
+        try {
+          store.renewSupervisor(this.#fence, this.#supervisorTtlMs);
+          this.#armRetryTimer();
+        } catch (renewError) {
+          if (isQandeelError(renewError, 'STORAGE_BUSY')) {
+            this.#armRetryTimer();
+          } else {
+            this.#log.error('runtime.supervisor_authority_lost', { instanceId: this.instanceId });
+            this.#failStop('SUPERVISOR_NOT_AUTHORITATIVE');
+          }
+        }
       } else {
         this.#log.warn('runtime.pump_error', { code: errorCode(error) });
         this.#armRetryTimer();
@@ -637,22 +660,47 @@ export class CompanyRuntime {
       result = isQandeelError(error, 'STALE_LEASE') ? { type: 'CANCELLED' } : processor.sideEffects === 'UNSAFE' ? { type: 'RECONCILIATION_REQUIRED', code: 'PROCESSOR_ERROR' } : { type: 'RETRYABLE_FAILURE', code: 'PROCESSOR_ERROR' };
       this.#log.warn('run.processor_error', { jobId: claim.fence.jobId, runId: claim.fence.runId, code: errorCode(error) });
     } finally {
-      clearInterval(renew);
       clearTimeout(timeout);
     }
 
+    // Without a runtime-initiated stop (cancel, shutdown, timeout, lost lease), a processor that
+    // reports CANCELLED stopped on its own: that is a failed attempt, never a free re-queue (a free
+    // re-queue could loop without consuming any retry budget).
+    if (result.type === 'CANCELLED' && run.reason === null) {
+      result = processor.sideEffects === 'UNSAFE' ? { type: 'RECONCILIATION_REQUIRED', code: 'PROCESSOR_STOPPED_UNPROMPTED' } : { type: 'RETRYABLE_FAILURE', code: 'PROCESSOR_STOPPED_UNPROMPTED' };
+    }
+    // A timed wait must name a future canonical instant; anything else is a processor defect.
+    if (result.type === 'WAIT' && result.until !== undefined && !(isTimestamp(result.until) && Date.parse(result.until) > this.#clock.nowMs())) {
+      result = { type: 'RETRYABLE_FAILURE', code: 'INVALID_WAIT' };
+    }
     if (run.reason === 'TIMEOUT') result = processor.sideEffects === 'UNSAFE' ? { type: 'RECONCILIATION_REQUIRED', code: 'RUN_TIMEOUT' } : { type: 'RETRYABLE_FAILURE', code: 'RUN_TIMEOUT' };
     if (run.fenced || run.reason === 'LEASE_LOST' || store.isClosed) {
+      clearInterval(renew);
       this.#log.warn('run.fenced', { jobId: claim.fence.jobId, runId: claim.fence.runId, fencingToken: claim.fence.fencingToken });
       run.settled = true;
       return;
     }
+    // A completed result must not be lost to transient write contention: settle is retried with a
+    // bounded backoff while the lease heartbeat keeps the claim alive. Only a fenced (stale) or
+    // non-transient failure gives up; the claim then expires and recovery classifies it.
     try {
-      const outcome = store.settle(claim.fence, result, { backoff: this.#backoff, ...(run.reason === 'TIMEOUT' ? { failureCategory: 'TIMEOUT' as const } : {}) });
-      this.#log.info('run.settled', { jobId: claim.fence.jobId, runId: claim.fence.runId, result: result.type, jobState: outcome.jobState, workItemState: outcome.workItemState });
-    } catch (error) {
-      this.#log.warn(isQandeelError(error, 'STALE_LEASE') ? 'run.fenced' : 'run.settle_failed', { jobId: claim.fence.jobId, runId: claim.fence.runId, code: errorCode(error) });
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const outcome = store.settle(claim.fence, result, { backoff: this.#backoff, ...(run.reason === 'TIMEOUT' ? { failureCategory: 'TIMEOUT' as const } : {}) });
+          this.#log.info('run.settled', { jobId: claim.fence.jobId, runId: claim.fence.runId, result: result.type, jobState: outcome.jobState, workItemState: outcome.workItemState });
+          break;
+        } catch (error) {
+          if (isQandeelError(error, 'STORAGE_BUSY') && attempt < 10 && !run.fenced && !store.isClosed) {
+            this.#log.warn('run.settle_retry', { jobId: claim.fence.jobId, attempt: attempt + 1 });
+            await sleep(Math.min(2_000, 50 * 2 ** attempt));
+            continue;
+          }
+          this.#log.warn(isQandeelError(error, 'STALE_LEASE') ? 'run.fenced' : 'run.settle_failed', { jobId: claim.fence.jobId, runId: claim.fence.runId, code: errorCode(error) });
+          break;
+        }
+      }
     } finally {
+      clearInterval(renew);
       run.settled = true;
     }
   }
@@ -666,7 +714,7 @@ export class CompanyRuntime {
   putRunArtifact(claimJobId: Id, content: Uint8Array | string, mediaType: string, label?: string): ArtifactRecord {
     const run = this.#active.get(claimJobId);
     if (!run || run.fenced || run.settled) throw new QandeelError('STALE_LEASE', 'no active run owns this job', { jobId: claimJobId });
-    this.store.renewLease(run.claim.fence, this.#jobLeaseMs);
-    return this.artifacts.put({ content, mediaType, workItemId: run.claim.workItem.id, runId: run.claim.fence.runId, ...(label !== undefined ? { label } : {}) });
+    // The fence is verified inside the same transactions that stage and promote the artifact.
+    return this.artifacts.put({ content, mediaType, workItemId: run.claim.workItem.id, runId: run.claim.fence.runId, fence: run.claim.fence, ...(label !== undefined ? { label } : {}) });
   }
 }

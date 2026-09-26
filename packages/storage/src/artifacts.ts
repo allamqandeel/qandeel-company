@@ -27,6 +27,8 @@ import path from 'node:path';
 import { QandeelError, assertId, boundedText, isId, isSha256Hex, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
 
 import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from './internal.js';
+import { verifyFence } from './queue.js';
+import type { Fence } from './records.js';
 import { storeContext, type CompanyStore } from './store.js';
 import { containedPath, type WorkspaceLayout } from './workspace.js';
 
@@ -51,6 +53,11 @@ export interface PutArtifactInput {
   readonly label?: string;
   readonly workItemId?: Id;
   readonly runId?: Id;
+  /**
+   * The writing worker's fence. When present it is verified inside the same transaction that
+   * stages the artifact and again when it is promoted, so a replaced worker cannot attach one.
+   */
+  readonly fence?: Fence;
 }
 
 export const ARTIFACT_MAX_BYTES = 256 * 1024 * 1024;
@@ -80,6 +87,23 @@ function fsyncDir(dir: string): void {
     fsyncSync(fd);
   } finally {
     closeSync(fd);
+  }
+}
+
+/**
+ * Windows can refuse a rename briefly (EPERM/EBUSY/EACCES) while another process — an antivirus
+ * scanner, a concurrent reader — holds the file. Retry a few times with a short, bounded wait.
+ */
+function renameWithRetry(from: string, to: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (attempt >= 8 || !(code === 'EPERM' || code === 'EBUSY' || code === 'EACCES')) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (attempt + 1));
+    }
   }
 }
 
@@ -153,8 +177,10 @@ export class ArtifactStore {
     }
     ctx.fault('artifact.afterTempWrite');
 
-    // 2. STAGED intent
+    // 2. STAGED intent (fenced for workers)
+    const fence = input.fence;
     ctx.db.immediate('stage artifact', () => {
+      if (fence) verifyFence(ctx, fence);
       const correlationId = workItemId ? getWorkItemRow(ctx, workItemId).correlationId : null;
       const at = ts(ctx);
       ctx.db.run(
@@ -179,7 +205,7 @@ export class ArtifactStore {
     ctx.fault('artifact.afterRename');
 
     // 4. READY only after the object exists
-    return this.#promote(id, 'artifact.put');
+    return this.#promote(id, 'artifact.put', fence);
   }
 
   /** Moves a verified temp file into the object store (deduplicating identical content). */
@@ -191,11 +217,11 @@ export class ArtifactStore {
       unlinkSync(temp); // identical content already stored: one object, many metadata rows
       return;
     }
-    renameSync(temp, target); // replaces a corrupt object of the same name, if any
+    renameWithRetry(temp, target); // replaces a corrupt object of the same name, if any
     fsyncDir(path.dirname(target));
   }
 
-  #promote(id: Id, reason: string): ArtifactRecord {
+  #promote(id: Id, reason: string, fence?: Fence): ArtifactRecord {
     const ctx = this.#ctx;
     // Hash before taking the write lock: re-hashing a large object must never hold other writers
     // past their busy timeout. Inside the transaction only the cheap size check is repeated.
@@ -206,6 +232,7 @@ export class ArtifactStore {
       throw new QandeelError('ARTIFACT_INTEGRITY', 'artifact object is absent or does not match its hash; not promoted', { artifactId: id });
     }
     return ctx.db.immediate('promote artifact', () => {
+      if (fence) verifyFence(ctx, fence);
       const row = ctx.db.get('SELECT * FROM artifacts WHERE id = ?', id);
       if (!row) throw new QandeelError('NOT_FOUND', 'artifact not found', { artifactId: id });
       const record = mapArtifact(row);
@@ -305,6 +332,7 @@ export class ArtifactStore {
         report.unknownFiles++;
         continue;
       }
+      if (ctx.db.get(`SELECT 1 AS staged FROM artifacts WHERE id = ? AND state = 'STAGED'`, match[1] as string)) continue; // handled by a later pass
       unlinkSync(containedPath(this.#layout.artifactTmpDir, name));
       report.tempFilesRemoved++;
     }
@@ -341,8 +369,9 @@ export class ArtifactStore {
           const referenced = ctx.db.get('SELECT 1 AS present FROM artifacts WHERE sha256 = ? LIMIT 1', name);
           if (referenced) continue;
           mkdirSync(this.quarantineDir, { recursive: true });
-          renameSync(containedPath(dirB, name), containedPath(this.quarantineDir, `${name}.${Date.now()}.orphan`));
+          // Audit first: a crash between audit and move is repaired by the next pass.
           ctx.db.immediate('audit orphan', () => appendAudit(ctx, 'artifact.orphan_quarantined', 'artifact', name.slice(0, 64), {}, 'OK', 'ORPHAN_OBJECT', {}));
+          renameWithRetry(containedPath(dirB, name), containedPath(this.quarantineDir, `${name}.${Date.now()}.orphan`));
           report.orphansQuarantined++;
         }
       }

@@ -384,3 +384,33 @@ The internal review lenses A and C drove these changes:
 - **D-C1-09:** the point at which a dependency is satisfied.
 
 Both are implemented as the most conservative reading and change in one place each.
+
+## D-C1-18 — Internal review dispositions (lens B: durability, concurrency, failure)
+
+- **Free-loop defects.** A processor that stops unprompted, or waits until the past, is a bounded
+  failure (`PROCESSOR_STOPPED_UNPROMPTED`, `INVALID_WAIT`). Storage refuses a malformed or past
+  `WAIT.until`.
+- **Busy settle.** Settle retries `STORAGE_BUSY` with bounded backoff while the lease keeps renewing,
+  so completed work is never re-executed because of contention.
+- **Supervisor renewal is token-conditional.** A host sleep past the TTL without a takeover keeps
+  authority, and the renewal is audited. A real takeover fail-stops loudly: `onFailStop`, and the CLI
+  exits 1.
+- **Concurrent first open.**
+  - The migrator reads `user_version` and `schema_migrations` in one snapshot, re-checks inside
+    each `BEGIN IMMEDIATE`, and skips what another process already applied.
+  - The switch to WAL retries busy within the busy bound.
+  - The test is multi-process: four opening processes, each migration applied once.
+- **Fenced artifacts.** Artifact staging and promotion verify the worker's fence inside their own
+  transactions.
+- **Durable audits of rejections.** A refused supervisor acquisition is audited in a separate
+  transaction.
+- **Backup durability.** Snapshot and manifest files, and the directory on POSIX, are fsynced before
+  `backup_records` commits `ok`.
+- **Windows renames.** Artifact publish and quarantine retry transient `EPERM`/`EBUSY`/`EACCES`.
+- **Artifact recovery.** Recovery never deletes a temp file whose row is still `STAGED`, and it
+  audits an orphan before moving it.
+- **Non-vacuity tests** now isolate each fence check: expired lease without a reclaim, an old token
+  with the right run and owner, and a stale artifact attachment.
+- **Residual, documented.** `CompanyStore.claimNext` without a supervisor fence remains available to
+  storage-level callers. The runtime always passes the fence, and startup recovery would reclaim
+  unfenced claims.

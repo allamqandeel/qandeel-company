@@ -417,7 +417,23 @@ export class CompanyStore {
   // --- Supervisor and runtime instances ---------------------------------------------------------
 
   acquireSupervisor(holderId: Id, ttlMs: number): SupervisorFence {
-    return this.#write('acquire supervisor', (ctx) => txAcquireSupervisor(ctx, holderId, ttlMs));
+    try {
+      return this.#write('acquire supervisor', (ctx) => txAcquireSupervisor(ctx, holderId, ttlMs));
+    } catch (error) {
+      if (isQandeelError(error, 'LEASE_HELD')) {
+        try {
+          this.#write('audit acquire refused', (ctx) =>
+            appendAudit(ctx, 'supervisor.acquire_refused', 'runtime', holderId, {}, 'REJECTED', 'LEASE_HELD', {
+              holder: String(error.details.holderId ?? ''),
+              expiresAt: String(error.details.expiresAt ?? ''),
+            }),
+          );
+        } catch {
+          // Auditing a rejection must never mask the rejection itself.
+        }
+      }
+      throw error;
+    }
   }
 
   renewSupervisor(fence: SupervisorFence, ttlMs: number): Timestamp {

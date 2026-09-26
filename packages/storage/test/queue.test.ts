@@ -3,7 +3,7 @@ import { describe, test } from 'node:test';
 
 import { isQandeelError, newId, toTimestamp } from '@qandeel-company/domain';
 
-import { CompanyStore } from '../src/index.js';
+import { ArtifactStore, CompanyStore } from '../src/index.js';
 import { storeContext } from '../src/store.js';
 import { KINDS, backoff, claimOpts, executable, harness, owner } from './helpers.js';
 
@@ -141,6 +141,55 @@ describe('lease fencing (HARD C1 acceptance condition)', () => {
   });
 });
 
+describe('fencing: each check on its own (non-vacuity)', () => {
+  test('an expired lease rejects checkpoints even before anyone reclaims the job', () => {
+    const h = harness();
+    try {
+      executable(h.store);
+      const a = h.store.claimNext(claimOpts('A', 500));
+      assert.ok(a);
+      h.clock.advance(500);
+      assert.throws(() => h.store.checkpoint(a.fence, 'step', { step: 1 }, 1, 500), (e) => isQandeelError(e, 'STALE_LEASE'));
+      assert.equal(h.store.checkpoints(a.job.id).length, 0);
+    } finally {
+      h.close();
+    }
+  });
+
+  test('a fence with the right run and owner but an old token is rejected', () => {
+    const h = harness();
+    try {
+      executable(h.store);
+      const a = h.store.claimNext(claimOpts('A'));
+      assert.ok(a);
+      const forged = { ...a.fence, fencingToken: a.fence.fencingToken - 1 };
+      assert.throws(() => h.store.checkpoint(forged, 'step', { step: 1 }, 1, 10_000), (e) => isQandeelError(e, 'STALE_LEASE'));
+      assert.throws(() => h.store.settle(forged, { type: 'COMPLETED' }, { backoff }), (e) => isQandeelError(e, 'STALE_LEASE'));
+      const wrongOwner = { ...a.fence, workerId: 'B' };
+      assert.throws(() => h.store.renewLease(wrongOwner, 10_000), (e) => isQandeelError(e, 'STALE_LEASE'));
+    } finally {
+      h.close();
+    }
+  });
+
+  test('a stale worker cannot attach an artifact: the fence is checked inside the staging transaction', () => {
+    const h = harness();
+    try {
+      const id = executable(h.store);
+      const a = h.store.claimNext(claimOpts('A', 500));
+      assert.ok(a);
+      const artifacts = new ArtifactStore(h.store);
+      assert.equal(artifacts.put({ content: 'fresh', mediaType: 'text/plain', workItemId: id, runId: a.fence.runId, fence: a.fence }).state, 'READY');
+      h.clock.advance(500);
+      h.store.interruptClaim(a.job.id, 'LEASE_EXPIRED');
+      assert.throws(() => artifacts.put({ content: 'late', mediaType: 'text/plain', workItemId: id, runId: a.fence.runId, fence: a.fence }), (e) => isQandeelError(e, 'STALE_LEASE'));
+      assert.deepEqual(h.store.healthCounts().artifacts, { READY: 1 });
+    } finally {
+      h.close();
+    }
+  });
+});
+
 describe('checkpoints', () => {
   test('are monotonic, checksummed, retained, and a tampered checkpoint is never trusted', () => {
     const h = harness();
@@ -234,6 +283,13 @@ describe('waiting is a state, not a loop', () => {
       assert.equal(h.store.nextDueAt(['test.noop']), null, 'nothing to schedule while waiting for an event');
       h.clock.advance(86_400_000);
       assert.equal(h.store.claimNext(claimOpts()), null);
+      assert.equal(h.store.wake(id, 'INPUT_ARRIVED'), true);
+      const again = h.store.claimNext(claimOpts());
+      assert.ok(again);
+      // A timed wait in the past, or a malformed one, is refused (it could otherwise loop for free).
+      assert.throws(() => h.store.settle(again.fence, { type: 'WAIT', reasonCode: 'X', until: toTimestamp(h.clock.nowMs() - 1) }, { backoff }), (e) => isQandeelError(e, 'VALIDATION_FAILED'));
+      assert.throws(() => h.store.settle(again.fence, { type: 'WAIT', reasonCode: 'X', until: 'soon' as never }, { backoff }), (e) => isQandeelError(e, 'VALIDATION_FAILED'));
+      h.store.settle(again.fence, { type: 'WAIT', reasonCode: 'AWAITING_INPUT' }, { backoff });
       assert.equal(h.store.wake(id, 'INPUT_ARRIVED'), true);
       const resumed = h.store.claimNext(claimOpts());
       assert.ok(resumed);
@@ -372,11 +428,16 @@ describe('supervisor lease', () => {
       const b = newId();
       const fa = h.store.acquireSupervisor(a, 1_000);
       assert.throws(() => h.store.acquireSupervisor(b, 1_000), (e) => isQandeelError(e, 'LEASE_HELD'));
+      assert.equal(h.store.auditByAction('supervisor.acquire_refused').length, 1, 'the refusal is audited durably');
       h.store.renewSupervisor(fa, 1_000);
       executable(h.store);
       h.clock.advance(1_001);
-      assert.throws(() => h.store.renewSupervisor(fa, 1_000), (e) => isQandeelError(e, 'SUPERVISOR_NOT_AUTHORITATIVE'));
+      // Host sleep: the lease expired but nobody took over (holder and token unchanged) → renewable.
+      h.store.renewSupervisor(fa, 1_000);
+      assert.equal(h.store.auditByAction('supervisor.renewed_after_expiry').length, 1);
+      h.clock.advance(1_001);
       const fb = h.store.acquireSupervisor(b, 1_000);
+      assert.throws(() => h.store.renewSupervisor(fa, 1_000), (e) => isQandeelError(e, 'SUPERVISOR_NOT_AUTHORITATIVE'), 'after a takeover the old supervisor is fenced');
       assert.equal(fb.fencingToken, fa.fencingToken + 1);
       assert.throws(() => h.store.claimNext({ ...claimOpts(), supervisor: fa }), (e) => isQandeelError(e, 'SUPERVISOR_NOT_AUTHORITATIVE'));
       assert.ok(h.store.claimNext({ ...claimOpts(), supervisor: fb }));

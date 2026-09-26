@@ -81,6 +81,10 @@ export async function main(argv: readonly string[]): Promise<void> {
         processors: DETERMINISTIC_PROCESSORS,
         concurrency: positiveInt(values.concurrency, 'concurrency', 2, 64) || 1,
         logger: new Logger(jsonLinesSink((line) => process.stdout.write(line))),
+        onFailStop: (code) => {
+          process.stderr.write(`${JSON.stringify({ ok: false, code, message: 'runtime fail-stopped; restart it to recover' })}\n`);
+          process.exit(1);
+        },
       });
       let stopping = false;
       const stop = (): void => {
