@@ -39,6 +39,20 @@
 - New packages are real subsystems, never placeholders; add them to `ALLOWED_PACKAGES` in
   `scripts/verify-bootstrap.mjs` in the same change.
 
+## C1 runtime invariants (preserve them; details in `docs/c1/`)
+- `node:sqlite` is imported only by `packages/storage/src/sqlite/connection.ts`. Never export a
+  connection or an "execute SQL" function from `@qandeel-company/storage`.
+- Every mutation is one short synchronous `BEGIN IMMEDIATE` transaction. State, history, outbox event
+  and audit row commit together. Never `await` inside a transaction.
+- Released migrations are immutable: add a new numbered file and pin its SHA-256 in
+  `RELEASED_MIGRATIONS`. Never edit an applied one.
+- Every worker write presents its fence (job ID, run ID, worker ID, fencing token). Never add a write
+  path that bypasses fencing.
+- No hard deletes of durable history. No polling loops. No network code in runtime packages. No
+  third-party runtime dependencies unless allowlisted with a reviewed reason.
+- Logs, events and audit rows carry IDs, states and codes only, never payload content (Rule A).
+- Approval-gated or R3/R4 work fails closed until the C2 approval engine exists.
+
 ## Before your final response
 - Run `npm ci` and `npm run ci`; all must pass. Do not claim a check passed unless it ran.
 - Report the Skills you actually used and their concrete effect.

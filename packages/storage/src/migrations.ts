@@ -1,0 +1,164 @@
+/**
+ * Explicit, ordered, checksummed schema migrations (Stage 12 §37, Stage 15 D15-D).
+ *
+ * - Migration files are immutable. Each has a version, a name and a SHA-256 of its text (line
+ *   endings normalized to LF, so a Windows checkout cannot cause false drift).
+ * - The release pins every checksum in `RELEASED_MIGRATIONS`; a file that no longer matches its
+ *   pin is refused before anything touches the database.
+ * - Each migration runs in its own `BEGIN IMMEDIATE` transaction together with its
+ *   `schema_migrations` row and `PRAGMA user_version`; a failure rolls back to the prior coherent
+ *   version.
+ * - Startup refuses an applied migration whose checksum changed (drift), an applied version the
+ *   release does not know, and a `user_version` ahead of the release (future schema). Nothing is
+ *   ever downgraded automatically.
+ * - The very first database creation goes through the same path (0001 creates the schema).
+ */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+import { QandeelError, type Clock, now, sha256Hex } from '@qandeel-company/domain';
+
+import type { SqliteConnection } from './sqlite/connection.js';
+
+export interface Migration {
+  readonly version: number;
+  readonly name: string;
+  readonly sql: string;
+  readonly sha256: string;
+}
+
+export interface MigrationPin {
+  readonly version: number;
+  readonly name: string;
+  readonly file: string;
+  readonly sha256: string;
+}
+
+/** Released migrations. Adding a migration = appending a pin; never edit an existing row. */
+export const RELEASED_MIGRATIONS: readonly MigrationPin[] = Object.freeze([
+  { version: 1, name: 'work_foundation', file: '0001_work_foundation.sql', sha256: '619fb12dd9d30674d962ae02b2c14f780b4089a3b58283c78135b120d5cf9deb' },
+  { version: 2, name: 'queue_runs_artifacts', file: '0002_queue_runs_artifacts.sql', sha256: 'b3060a1ea7a3e57e8bf0f76a4edba437c9f1b8d2886ef97ff5ca2b6920b0a7c2' },
+]);
+
+export const CURRENT_SCHEMA_VERSION = RELEASED_MIGRATIONS.length;
+
+const MIGRATIONS_DIR = new URL('../../migrations/', import.meta.url);
+
+export function migrationChecksum(sql: string): string {
+  return sha256Hex(sql.replace(/\r\n/g, '\n'));
+}
+
+/** Loads the released migration files and verifies each against its pin. */
+export function loadReleasedMigrations(upTo: number = CURRENT_SCHEMA_VERSION): Migration[] {
+  return RELEASED_MIGRATIONS.filter((p) => p.version <= upTo).map((pin) => {
+    const sql = readFileSync(fileURLToPath(new URL(pin.file, MIGRATIONS_DIR)), 'utf8');
+    const sha256 = migrationChecksum(sql);
+    if (sha256 !== pin.sha256) {
+      throw new QandeelError('MIGRATION_CHECKSUM_DRIFT', `released migration ${pin.file} does not match its pinned checksum`, { version: pin.version });
+    }
+    return { version: pin.version, name: pin.name, sql, sha256 };
+  });
+}
+
+function assertOrdered(migrations: readonly Migration[]): void {
+  migrations.forEach((m, i) => {
+    if (m.version !== i + 1) throw new QandeelError('STORAGE_INVARIANT', 'migrations must be numbered 1..N without gaps', { version: m.version });
+    if (migrationChecksum(m.sql) !== m.sha256) throw new QandeelError('MIGRATION_CHECKSUM_DRIFT', 'migration text does not match its checksum', { version: m.version });
+  });
+}
+
+const BOOTSTRAP = `CREATE TABLE IF NOT EXISTS schema_migrations (
+  version          INTEGER NOT NULL PRIMARY KEY CHECK (version >= 1),
+  name             TEXT    NOT NULL,
+  sha256           TEXT    NOT NULL CHECK (length(sha256) = 64),
+  runtime_version  TEXT    NOT NULL,
+  applied_at       TEXT    NOT NULL
+) STRICT`;
+
+export interface AppliedMigration {
+  readonly version: number;
+  readonly name: string;
+  readonly sha256: string;
+  readonly runtimeVersion: string;
+  readonly appliedAt: string;
+}
+
+export function appliedMigrations(connection: SqliteConnection): AppliedMigration[] {
+  const exists = connection.get(`SELECT 1 AS present FROM sqlite_schema WHERE type = 'table' AND name = 'schema_migrations'`);
+  if (!exists) return [];
+  return connection
+    .all<{ version: number; name: string; sha256: string; runtime_version: string; applied_at: string }>(
+      'SELECT version, name, sha256, runtime_version, applied_at FROM schema_migrations ORDER BY version',
+    )
+    .map((r) => ({ version: r.version, name: r.name, sha256: r.sha256, runtimeVersion: r.runtime_version, appliedAt: r.applied_at }));
+}
+
+export function userVersion(connection: SqliteConnection): number {
+  return Number(connection.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0);
+}
+
+export interface MigrationReport {
+  readonly fromVersion: number;
+  readonly toVersion: number;
+  readonly applied: readonly number[];
+}
+
+/** Hook for failure-injection tests; production passes nothing. */
+export type MigrationFaultHook = (version: number) => void;
+
+/**
+ * Brings the schema to `migrations.length`, or refuses to continue. Never downgrades.
+ * `readOnlyCheck` validates without applying (used when opening backup snapshots).
+ */
+export function migrate(
+  connection: SqliteConnection,
+  migrations: readonly Migration[],
+  { clock, runtimeVersion, readOnlyCheck = false, beforeCommit }: { clock: Clock; runtimeVersion: string; readOnlyCheck?: boolean; beforeCommit?: MigrationFaultHook },
+): MigrationReport {
+  assertOrdered(migrations);
+  const applied = appliedMigrations(connection);
+  const fromVersion = userVersion(connection);
+  const known = migrations.length;
+
+  if (fromVersion > known || applied.some((a) => a.version > known)) {
+    throw new QandeelError('SCHEMA_FROM_FUTURE', 'database schema is newer than this runtime; refusing to run (no automatic downgrade)', { databaseVersion: Math.max(fromVersion, ...applied.map((a) => a.version)), runtimeVersion: known });
+  }
+  if (applied.length !== fromVersion || applied.some((a, i) => a.version !== i + 1)) {
+    throw new QandeelError('STORAGE_INVARIANT', 'schema_migrations and user_version disagree; database is not coherent', { userVersion: fromVersion, appliedCount: applied.length });
+  }
+  for (const a of applied) {
+    const m = migrations[a.version - 1];
+    if (m === undefined || m.sha256 !== a.sha256 || m.name !== a.name) {
+      throw new QandeelError('MIGRATION_CHECKSUM_DRIFT', `applied migration ${a.version} no longer matches its source; refusing to start`, { version: a.version });
+    }
+  }
+  const pending = migrations.slice(fromVersion);
+  if (readOnlyCheck) {
+    if (pending.length) throw new QandeelError('SCHEMA_NOT_READY', 'database is behind this runtime', { databaseVersion: fromVersion, runtimeVersion: known });
+    return { fromVersion, toVersion: fromVersion, applied: [] };
+  }
+  const done: number[] = [];
+  for (const m of pending) {
+    try {
+      connection.immediate(`migration ${m.version}`, () => {
+        connection.execScript(BOOTSTRAP);
+        connection.execScript(m.sql);
+        connection.run(
+          'INSERT INTO schema_migrations (version, name, sha256, runtime_version, applied_at) VALUES (?, ?, ?, ?, ?)',
+          m.version,
+          m.name,
+          m.sha256,
+          runtimeVersion,
+          now(clock),
+        );
+        // PRAGMA user_version is transactional; the value is a validated integer, not input.
+        connection.execScript(`PRAGMA user_version = ${Math.trunc(m.version)}`);
+        beforeCommit?.(m.version);
+      });
+    } catch (error) {
+      throw new QandeelError('MIGRATION_FAILED', `migration ${m.version} failed and was rolled back`, { version: m.version }, { cause: error });
+    }
+    done.push(m.version);
+  }
+  return { fromVersion, toVersion: fromVersion + done.length, applied: done };
+}

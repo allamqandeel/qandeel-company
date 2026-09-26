@@ -1,7 +1,8 @@
 # Implementation Map
 
 **Status:** CANONICAL sequencing — recorded at C0 (2026-09-26); lifecycle updated at PRE-C1
-(2026-09-26).
+(2026-09-26) and on the C1 branch (implementation candidate; C1 closes only after independent review,
+Founder-host local acceptance, exact-head CI and merge approval).
 
 This is **sequencing, not evidence**. A stage listed here is not implemented until its own work
 package is merged to `main` with green CI and the required review. The implementation packages
@@ -11,7 +12,7 @@ below are not the Product / Architecture Stages 0–18 in `docs/authority/compan
 |---|---|---|---|
 | `L0` | Environment Readiness | Local | CLOSED / PASS |
 | `C0` | Repository Bootstrap | Local | CLOSED / PASS |
-| `C1` | Company Foundation & Durable Runtime | Cloud Mega-Task | NEXT — CLOUD MEGA-TASK |
+| `C1` | Company Foundation & Durable Runtime | Cloud Mega-Task | IMPLEMENTATION CANDIDATE / IN INDEPENDENT REVIEW — NOT CLOSED |
 | `C2` | Employees + Models + Tools + Cost Governance | Cloud Mega-Task | Not started |
 | `C3` | Memory + Context + Skills + Academy | Cloud Mega-Task | Not started |
 | `R1` | Independent Core Review | Review | Not started |

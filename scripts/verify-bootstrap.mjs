@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Repository-contract verifier (C0; extended at PRE-C1 for the imported authority).
+// Repository-contract verifier (C0; extended at PRE-C1 for the imported authority and at C1 for the
+// durable runtime packages).
 //
 // Every run first proves that each rule can fail (self-test against synthetic
 // violations), then evaluates the real repository. Any failure exits non-zero.
@@ -33,6 +34,13 @@ const REQUIRED_FILES = [
   'packages/bootstrap-contract/tsconfig.json',
   'packages/bootstrap-contract/src/index.ts',
   'packages/bootstrap-contract/test/bootstrap-contract.test.ts',
+  'scripts/run-node-tests.mjs',
+  'scripts/c1-acceptance.mjs',
+  'packages/domain/package.json',
+  'packages/storage/package.json',
+  'packages/runtime/package.json',
+  'packages/storage/src/migrations.ts',
+  'packages/storage/src/sqlite/connection.ts',
 ];
 
 const REQUIRED_DOCS = [
@@ -46,6 +54,9 @@ const REQUIRED_DOCS = [
   'docs/authority/company-architecture/README.md',
   'docs/authority/company-architecture/AUTHORITY_IMPORT_MANIFEST.md',
   'docs/PRE_C1_AUTHORITY_SYNC_CLOSURE.md',
+  'docs/c1/C1_SCHEMA_AND_STATE.md',
+  'docs/c1/C1_RUNTIME_RECOVERY_MODEL.md',
+  'docs/C1_IMPLEMENTATION_REPORT.md',
 ];
 
 // Imported canonical authority (PRE-C1). Files under AUTHORITY_DIR are exact byte
@@ -77,9 +88,37 @@ const STALE_PRIVACY = [
 const IMPLEMENTATION_MAP = 'docs/architecture/IMPLEMENTATION_MAP.md';
 const C1_CLOSURE = /^docs\/C1_[^/]*CLOSURE[^/]*\.md$/i;
 
-// C1 owns the real package structure and extends this list in the same change
-// that adds a real package. A placeholder package is a verifier failure.
-const ALLOWED_PACKAGES = ['bootstrap-contract'];
+// The change that adds a real package extends this list in the same change. A placeholder
+// package is a verifier failure. C1 added domain, storage and runtime.
+const ALLOWED_PACKAGES = ['bootstrap-contract', 'domain', 'storage', 'runtime'];
+
+// C1 persistence boundary: `node:sqlite` (a Release Candidate API) is imported by exactly one module.
+const SQLITE_ADAPTER = 'packages/storage/src/sqlite/connection.ts';
+const SQLITE_IMPORT = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)['"](?:node:)?sqlite['"]/;
+// C1 runtime has no network surface and makes no provider calls.
+const NETWORK_MODULE = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?(?:http|https|http2|net|tls|dgram|dns|dns\/promises|undici)['"]|\bfetch\s*\(|\bnew\s+(?:WebSocket|XMLHttpRequest)\b/;
+// Runtime dependencies of workspace packages: only sibling workspaces unless a change adds a
+// reviewed exception here (no ORM, provider SDK, queue server, framework or native addon).
+const ALLOWED_RUNTIME_DEPENDENCIES = [];
+const MIGRATIONS_DIR = 'packages/storage/migrations/';
+const MIGRATIONS_REGISTRY = 'packages/storage/src/migrations.ts';
+// Non-vacuity contract: the C1 proofs CI must execute. Removing one of these is a verifier failure.
+const C1_PROOF_TESTS = [
+  'packages/domain/test/work-item-state.test.ts',
+  'packages/domain/test/kernel.test.ts',
+  'packages/storage/test/sqlite-and-workspace.test.ts',
+  'packages/storage/test/migrations.test.ts',
+  'packages/storage/test/work-items.test.ts',
+  'packages/storage/test/queue.test.ts',
+  'packages/storage/test/artifacts.test.ts',
+  'packages/storage/test/backup.test.ts',
+  'packages/storage/test/multiprocess/multiprocess.test.ts',
+  'packages/runtime/test/unit/runtime-units.test.ts',
+  'packages/runtime/test/integration/runtime.test.ts',
+  'packages/runtime/test/integration/cli.test.ts',
+  'packages/runtime/test/faults/fault-matrix.test.ts',
+];
+const C1_REPORT = 'docs/C1_IMPLEMENTATION_REPORT.md';
 
 const NODE_ENGINE = /^>=24\.\d+\.\d+ <25(\.0\.0)?$/;
 
@@ -89,6 +128,12 @@ const NODE_ENGINE = /^>=24\.\d+\.\d+ <25(\.0\.0)?$/;
 const CONTENT_EXTENSIONS = /\.(?:[cm]?[jt]s|json|ya?ml|ps1|psm1|cmd|bat|sh)$/i;
 const SELF = 'scripts/verify-bootstrap.mjs';
 const scanned = (f) => CONTENT_EXTENSIONS.test(f) && f !== SELF && base(f) !== 'package-lock.json';
+const CODE = /\.(?:[cm]?[jt]s)$/i;
+const isCode = (f) => CODE.test(f) && f !== SELF && !f.endsWith('.d.ts');
+
+/** A C1 lifecycle claim with the explicit denial "NOT CLOSED" removed first. */
+const closedClaim = (text) => /\b(?:CLOSED|PASS|DONE|IMPLEMENTED|COMPLETE|MERGED)\b/i.test((text ?? '').replace(/\bNOT\s+CLOSED\b/gi, ''));
+const migrationSha = (text) => createHash('sha256').update((text ?? '').replace(/\r\n/g, '\n'), 'utf8').digest('hex');
 
 // Data-like files named as secrets. Code such as `secret-store.ts` or `design-tokens.css` is allowed.
 const SECRET_STEM = /^\.?(secrets?|credentials?|token|access[-_]?tokens?|auth[-_]?tokens?|api[-_]?keys?)([._-](local|dev|prod|production))?$/;
@@ -239,12 +284,13 @@ export const RULES = [
   {
     id: 'workspace-tests-present',
     // `node --test <glob>` exits 0 when the glob matches nothing, so the verifier
-    // requires every workspace to track tests and to run them with node:test.
+    // requires every workspace to track tests and to run them with node:test — directly, or
+    // through scripts/run-node-tests.mjs, which additionally refuses zero/skipped/todo tests.
     check: ({ files, read }) =>
       (json(read('package.json'))?.workspaces ?? []).flatMap((w) => {
         const problems = [];
         if (!files.some((f) => f.startsWith(`${w}/test/`) && f.endsWith('.test.ts'))) problems.push(`workspace ${w} tracks no test/**/*.test.ts file`);
-        if (!/node --test\b/.test(json(read(`${w}/package.json`))?.scripts?.test ?? '')) problems.push(`workspace ${w} "test" script does not run node --test`);
+        if (!/node --test\b|node \.\.\/\.\.\/scripts\/run-node-tests\.mjs\b/.test(json(read(`${w}/package.json`))?.scripts?.test ?? '')) problems.push(`workspace ${w} "test" script does not run node --test`);
         return problems;
       }),
   },
@@ -327,7 +373,8 @@ export const RULES = [
   },
   {
     id: 'implementation-lifecycle-state',
-    // Stage-aware: C1 may be marked closed only in the change that adds its closure record.
+    // Stage-aware: C1 may be an implementation candidate without a closure record, but it may be
+    // marked closed only in the change that adds that record; C2 may start only after C1 closes.
     check: ({ files, read }) => {
       const map = read(IMPLEMENTATION_MAP);
       const problems = [];
@@ -335,13 +382,64 @@ export const RULES = [
         const state = mapState(map, id);
         if (state !== 'CLOSED / PASS') problems.push(`${id} state is ${JSON.stringify(state)}, expected "CLOSED / PASS"`);
       }
+      const c1Closed = files.some((f) => C1_CLOSURE.test(f));
       const c1 = mapState(map, 'C1');
       if (c1 === undefined) problems.push('implementation map has no C1 row');
-      else if (/CLOSED|PASS|DONE|IMPLEMENTED|COMPLETE|MERGED/i.test(c1) && !files.some((f) => C1_CLOSURE.test(f))) {
-        problems.push(`C1 is marked ${JSON.stringify(c1)} but no docs/C1_*CLOSURE*.md record exists`);
+      else if (closedClaim(c1) && !c1Closed) problems.push(`C1 is marked ${JSON.stringify(c1)} but no docs/C1_*CLOSURE*.md record exists`);
+      const c2 = mapState(map, 'C2');
+      if (c2 === undefined) problems.push('implementation map has no C2 row');
+      else if (c2 !== 'Not started' && !c1Closed) problems.push(`C2 is ${JSON.stringify(c2)} before C1 has a closure record`);
+      const report = read(C1_REPORT);
+      if (report !== undefined && !c1Closed && /\bC1\s*(?:—|-|:|is)?\s*CLOSED\b/i.test(report.replace(/\bNOT\s+CLOSED\b/gi, ''))) {
+        problems.push(`${C1_REPORT} claims C1 is closed without a closure record`);
       }
       return problems;
     },
+  },
+  {
+    id: 'sqlite-confined-to-storage',
+    check: ({ files, read }) =>
+      files
+        .filter((f) => isCode(f) && f !== SQLITE_ADAPTER && SQLITE_IMPORT.test(read(f) ?? ''))
+        .map((f) => `${f} imports node:sqlite; only ${SQLITE_ADAPTER} may`),
+  },
+  {
+    id: 'no-network-in-runtime-code',
+    check: ({ files, read }) =>
+      files
+        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && NETWORK_MODULE.test(read(f) ?? ''))
+        .map((f) => `${f} opens a network path (C1 runtime code has no network surface)`),
+  },
+  {
+    id: 'runtime-dependencies-allowlisted',
+    check: ({ files, read }) =>
+      allManifests({ files, read }).flatMap(([f, m]) => {
+        const deps = Object.keys({ ...m.dependencies, ...m.optionalDependencies, ...m.peerDependencies });
+        if (f === 'package.json') return deps.map((d) => `root package.json declares runtime dependency ${d} (devDependencies only)`);
+        return deps.filter((d) => !d.startsWith('@qandeel-company/') && !ALLOWED_RUNTIME_DEPENDENCIES.includes(d)).map((d) => `${f} depends on ${d}, which is not an allowlisted runtime dependency`);
+      }),
+  },
+  {
+    id: 'migrations-immutable',
+    // Every migration file is pinned by SHA-256 in the registry and every pin has its file.
+    check: ({ files, read }) => {
+      const sqlFiles = files.filter((f) => f.startsWith(MIGRATIONS_DIR) && f.endsWith('.sql'));
+      if (sqlFiles.length === 0) return [];
+      const registry = read(MIGRATIONS_REGISTRY) ?? '';
+      const pins = [...registry.matchAll(/file:\s*'([^']+\.sql)',\s*sha256:\s*'([0-9a-f]{64})'/g)].map((m) => ({ file: `${MIGRATIONS_DIR}${m[1]}`, sha256: m[2] }));
+      const problems = [];
+      for (const f of sqlFiles) {
+        const pin = pins.find((p) => p.file === f);
+        if (!pin) problems.push(`${f} is not pinned in ${MIGRATIONS_REGISTRY}`);
+        else if (pin.sha256 !== migrationSha(read(f))) problems.push(`${f} does not match its pinned SHA-256 (released migrations are immutable)`);
+      }
+      for (const p of pins) if (!files.includes(p.file)) problems.push(`${p.file} is pinned but missing`);
+      return problems;
+    },
+  },
+  {
+    id: 'c1-proof-tests-present',
+    check: ({ files }) => C1_PROOF_TESTS.filter((f) => !files.includes(f)).map((f) => `missing C1 proof test ${f}`),
   },
   {
     id: 'local-core-longpaths',
@@ -384,8 +482,10 @@ const SYNTH_STAGE_16 = `${AUTHORITY_DIR}STAGE_16/STAGE_16_CANONICAL_CLOSURE_v1.m
 const manifestRow = (p, text, classification = 'CLOSED / FROZEN') =>
   `| Stage | \`${p}\` | \`a.zip\` | \`a/x.md\` | \`${sha(text)}\` | \`${sha(text)}\` | ${classification} | exact | - | - |`;
 const synthManifest = (...rows) => ['# Manifest', '', '| Stage / area | Imported repo path | a | b | c | d | e | f | g | h |', '|---|---|---|---|---|---|---|---|---|---|', ...rows, ''].join('\n');
-const synthMap = (c0 = 'CLOSED / PASS', c1 = 'NEXT — CLOUD MEGA-TASK') =>
-  ['| Stage | Name | Mode | State |', '|---|---|---|---|', '| `L0` | Env | Local | CLOSED / PASS |', `| \`C0\` | Boot | Local | ${c0} |`, `| \`C1\` | Found | Cloud | ${c1} |`, ''].join('\n');
+const synthMap = (c0 = 'CLOSED / PASS', c1 = 'NEXT — CLOUD MEGA-TASK', c2 = 'Not started') =>
+  ['| Stage | Name | Mode | State |', '|---|---|---|---|', '| `L0` | Env | Local | CLOSED / PASS |', `| \`C0\` | Boot | Local | ${c0} |`, `| \`C1\` | Found | Cloud | ${c1} |`, `| \`C2\` | Emp | Cloud | ${c2} |`, ''].join('\n');
+const SYNTH_SQL = 'CREATE TABLE t (x INTEGER) STRICT;\n';
+const synthRegistry = (sql = SYNTH_SQL) => `export const RELEASED_MIGRATIONS = [\n  { version: 1, name: 'one', file: '0001_one.sql', sha256: '${migrationSha(sql)}' },\n];\n`;
 const SYNTH_BASELINE = `## 5. Data and privacy\n\n- **Rule A — ${PRIVACY_RULES[0]}**\n- **Rule B — ${PRIVACY_RULES[1].replace('private user content', 'private user\n  content')}**\n- **Rule C — ${PRIVACY_RULES[2]}**\n\n## 2. Operating principles\n\n- Event-driven by default.\n`;
 
 function syntheticRepo(overrides = {}) {
@@ -405,6 +505,14 @@ function syntheticRepo(overrides = {}) {
     'packages/bootstrap-contract/src/secret-store.ts': 'export {};',
     'packages/bootstrap-contract/src/design-tokens.css': '',
     'packages/bootstrap-contract/src/whatsapp-ops.ts': 'export const whatsappOps = 1;',
+    ...Object.fromEntries(C1_PROOF_TESTS.map((f) => [f, ''])),
+    [SQLITE_ADAPTER]: "import { DatabaseSync } from 'node:sqlite';",
+    [MIGRATIONS_REGISTRY]: synthRegistry(),
+    [`${MIGRATIONS_DIR}0001_one.sql`]: SYNTH_SQL,
+    'packages/runtime/package.json': JSON.stringify({ private: true, dependencies: { '@qandeel-company/storage': '0.1.0' } }),
+    // Legitimate code that mentions the words without opening a network path must stay clean.
+    'packages/runtime/src/wake.ts': "// no fetch here; a 'net' income is not a socket\nexport const prefetched = 1;",
+    'packages/storage/test/labels.test.ts': "const root = tempRoot('sqlite');",
     ...overrides.contents,
   };
   const files = Object.keys(baseContents).filter((f) => !(overrides.remove ?? []).includes(f));
@@ -434,8 +542,11 @@ const VIOLATIONS = {
   'no-app-repo-dependency': { contents: { 'scripts/sync.mjs': "const app = 'E:/QANDEEL/QANDEEL PROJECT';" } },
   'no-tar-exe-backup': { contents: { 'scripts/backup.ps1': 'tar.exe -cf backup.tar data' } },
   'no-app-ops-implementation': { contents: { 'packages/bootstrap-contract/src/app-ops.ts': 'export {};' } },
-  'workspace-tests-present': { remove: ['packages/bootstrap-contract/test/bootstrap-contract.test.ts'] },
-  'no-placeholder-packages': { dirs: ['bootstrap-contract', 'employees'] },
+  'workspace-tests-present': [
+    { remove: ['packages/bootstrap-contract/test/bootstrap-contract.test.ts'] },
+    { contents: { 'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'echo skipped' } }) } },
+  ],
+  'no-placeholder-packages': [{ dirs: ['bootstrap-contract', 'employees'] }, { dirs: ['bootstrap-contract', 'domain', 'storage', 'runtime', 'model-router'] }],
   'gitattributes-explicit': { contents: { '.gitattributes': '*.png binary\n' } },
   'authority-import-integrity': [
     { contents: { [SYNTH_SOURCE]: `${SYNTH_SOURCE_TEXT}edited\n` } },
@@ -466,13 +577,53 @@ const VIOLATIONS = {
   'implementation-lifecycle-state': [
     { contents: { [IMPLEMENTATION_MAP]: synthMap('Current task') } },
     { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS') } },
+    { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'IMPLEMENTATION CANDIDATE — CLOSED') } },
+    { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'IMPLEMENTATION CANDIDATE — NOT CLOSED', 'IN PROGRESS') } },
+    { contents: { [C1_REPORT]: '# Report\n\nC1 — CLOSED.\n' } },
   ],
+  'sqlite-confined-to-storage': [
+    { contents: { 'packages/runtime/src/shortcut.ts': "import { DatabaseSync } from 'node:sqlite';" } },
+    { contents: { 'packages/domain/src/x.js': "const s = require('node:sqlite');" } },
+    { contents: { 'packages/runtime/src/y.ts': "const s = await import('node:sqlite');" } },
+  ],
+  'no-network-in-runtime-code': [
+    { contents: { 'packages/runtime/src/server.ts': "import { createServer } from 'node:http';" } },
+    { contents: { 'packages/storage/src/sync.ts': "const r = await fetch('https://example.invalid');" } },
+    { contents: { 'packages/runtime/src/ipc.ts': "const net = await import('node:net');" } },
+  ],
+  'runtime-dependencies-allowlisted': [
+    { contents: { 'packages/runtime/package.json': JSON.stringify({ private: true, dependencies: { openai: '4.0.0' } }) } },
+    { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], dependencies: { 'better-sqlite3': '11.0.0' } }) } },
+  ],
+  'migrations-immutable': [
+    { contents: { [`${MIGRATIONS_DIR}0001_one.sql`]: 'CREATE TABLE t (x INTEGER, y INTEGER) STRICT;\n' } },
+    { contents: { [`${MIGRATIONS_DIR}0002_two.sql`]: 'CREATE TABLE u (x INTEGER) STRICT;\n' } },
+    { remove: [`${MIGRATIONS_DIR}0001_one.sql`], contents: { [`${MIGRATIONS_DIR}0003_other.sql`]: SYNTH_SQL } },
+  ],
+  'c1-proof-tests-present': { remove: ['packages/runtime/test/faults/fault-matrix.test.ts'] },
   'local-core-longpaths': { longpaths: undefined },
 };
 
 // Legitimate future states that each rule must accept (stage-awareness, not a frozen snapshot).
 const MUST_PASS = [
   { id: 'implementation-lifecycle-state', scenario: { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS'), 'docs/C1_COMPANY_FOUNDATION_CLOSURE.md': '' } } },
+  // C1 as an implementation candidate, explicitly not closed, with an honest report.
+  { id: 'implementation-lifecycle-state', scenario: { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'IMPLEMENTATION CANDIDATE / IN INDEPENDENT REVIEW — NOT CLOSED'), [C1_REPORT]: '# Report\n\nC1 is NOT CLOSED.\n' } } },
+  // After C1 closes, C2 may start and its own package may be added in the same change.
+  { id: 'implementation-lifecycle-state', scenario: { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'IN PROGRESS'), 'docs/C1_CLOSURE.md': '' } } },
+  // A future migration appended with its pin is accepted.
+  {
+    id: 'migrations-immutable',
+    scenario: {
+      contents: {
+        [`${MIGRATIONS_DIR}0002_two.sql`]: 'CREATE TABLE u (x INTEGER) STRICT;\n',
+        [MIGRATIONS_REGISTRY]: `${synthRegistry()}// later\nconst next = { version: 2, name: 'two', file: '0002_two.sql', sha256: '${migrationSha('CREATE TABLE u (x INTEGER) STRICT;\n')}' };\n`,
+      },
+    },
+  },
+  { id: 'workspace-tests-present', scenario: { contents: { 'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'npm run build && node ../../scripts/run-node-tests.mjs' } }) } } },
+  // Windows checkouts with CRLF do not trip the migration pin.
+  { id: 'migrations-immutable', scenario: { contents: { [`${MIGRATIONS_DIR}0001_one.sql`]: SYNTH_SQL.replace(/\n/g, '\r\n') } } },
   {
     id: 'authority-import-integrity',
     scenario: {
@@ -550,6 +701,19 @@ async function workspaceResolution() {
   const problems = [];
   if (mod.BOOTSTRAP_METADATA?.stage !== 'C0') problems.push('bootstrap metadata stage is not C0');
   if (result.status !== 'ok') problems.push(`runtime check failed: ${JSON.stringify(result)}`);
+  // C1 packages resolve by name, and the storage entry point exposes no SQL surface.
+  const storage = await import('@qandeel-company/storage');
+  for (const leaked of ['SqliteConnection', 'storeContext', 'migrate', 'translateError']) {
+    if (leaked in storage) problems.push(`@qandeel-company/storage exports ${leaked}: the SQLite adapter must stay internal`);
+  }
+  const runtime = await import('@qandeel-company/runtime');
+  if (typeof runtime.CompanyRuntime !== 'function') problems.push('@qandeel-company/runtime does not export CompanyRuntime');
+  try {
+    await import('@qandeel-company/storage/dist/src/sqlite/connection.js');
+    problems.push('deep import of the SQLite adapter is possible; the exports map must forbid it');
+  } catch {
+    // expected: ERR_PACKAGE_PATH_NOT_EXPORTED
+  }
   return problems;
 }
 
@@ -573,7 +737,7 @@ async function main() {
   try {
     resolutionProblems = await workspaceResolution();
   } catch (error) {
-    resolutionProblems = [`cannot import @qandeel-company/bootstrap-contract (run "npm run build" first): ${error.message}`];
+    resolutionProblems = [`cannot import the workspace packages (run "npm run build" first): ${error.message}`];
   }
   results.push({ id: 'workspace-resolution', violations: resolutionProblems });
 

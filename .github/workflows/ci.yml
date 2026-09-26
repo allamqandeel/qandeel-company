@@ -18,12 +18,13 @@ jobs:
   ci:
     name: ci (${{ matrix.os }})
     # Windows is the Founder's operating platform; Linux is the Claude Cloud build platform.
+    # Every C1 proof (unit, real-SQLite, multi-process, fault-injection, acceptance) runs on both.
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,9 +41,13 @@ jobs:
         run: |
           node --version
           npm --version
+          node -e "const {DatabaseSync}=require('node:sqlite');const d=new DatabaseSync(':memory:');console.log('sqlite', d.prepare('select sqlite_version() v').get().v)"
 
       - name: Clean install
         run: npm ci
 
-      - name: Full C0 check (build, typecheck, lint, test, verify)
+      - name: Full check (build, typecheck, lint, all C1 tests incl. multi-process + fault matrix, verify)
         run: npm run ci
+
+      - name: C1 local acceptance (disposable workspace outside the checkout)
+        run: npm run c1:acceptance -- --workspace "${{ runner.temp }}/c1-acceptance"

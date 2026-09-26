@@ -169,3 +169,185 @@ package extends it. It is kept, so PRE-C1 cannot add a package and C1 is not blo
 Imported sources keep their Markdown hard line breaks and their exact bytes. For the imported source
 directories only, `.gitattributes` turns off Git's whitespace checks and line-ending normalization
 (`-text -whitespace`).
+
+## D-C1-01 — C1 package shape
+
+Three real packages, dependency order `domain → storage → runtime`:
+- **`domain`** holds pure contracts: IDs, clock, state machines, retry, the processor contract and
+  the event envelope. It has no I/O.
+- **`storage`** holds the workspace, the SQLite adapter, migrations, repositories, the Artifact Store
+  and backup.
+- **`runtime`** holds the supervisor, dispatcher, recovery, wake, health and CLI.
+
+`bootstrap-contract` is kept unchanged as the C0 toolchain record. No package was created for a later
+subsystem. `ALLOWED_PACKAGES` was extended in the same change.
+
+## D-C1-02 — Node floor raised to 24.12.0
+
+C1 sets `defensive: true` explicitly on every connection. That constructor option and
+`enableDefensive()` were added in Node **v24.12.0**; defensive mode became the default in v24.14.0.
+The `engines` floor is therefore `>=24.12.0 <25.0.0` in the root and in every C1 package. The Founder
+host runs 24.19.0, and CI and Cloud run 24.21.0. The other `node:sqlite` APIs C1 uses are all older:
+- the `timeout` option (v24.0.0);
+- `isTransaction` (v24.0.0);
+- `backup()` (v23.8.0);
+- `allowExtension` / `enableForeignKeyConstraints`.
+
+## D-C1-03 — `node:sqlite` behind one adapter
+
+`node:sqlite` is a **Release Candidate** API (Stability 1.2 since v24.15.0). Its `DatabaseSync`
+operations are synchronous.
+- **One importer.** `packages/storage/src/sqlite/connection.ts` is the only module that imports it,
+  enforced three ways:
+  - the ESLint `no-restricted-imports` rule;
+  - the verifier rule `sqlite-confined-to-storage`;
+  - the `exports` map, which forbids deep imports.
+- **No SQL leaves storage.** The storage entry point exports Company operations only: no connection,
+  no `storeContext` and no "execute SQL" method. The verifier's `workspace-resolution` step checks
+  this at run time.
+- **No third-party SQLite library** was added.
+
+## D-C1-04 — SQLite durability and locking settings
+
+The settings:
+- `journal_mode=WAL`, read back as `wal`;
+- `synchronous=FULL`;
+- foreign keys on;
+- defensive on, proven by probe: `writable_schema` cannot be switched on;
+- `allowExtension:false`, which cannot be re-enabled later;
+- `enableDoubleQuotedStringLiterals:false`;
+- `trusted_schema` off;
+- a bounded busy timeout: 5 s by default, 0–60 s allowed.
+
+Rationale:
+- **`synchronous=FULL`.** In WAL mode, `NORMAL` keeps the database consistent, but the most recently
+  committed transactions can roll back after a power loss or OS crash. `FULL` syncs the WAL on every
+  commit, so a transaction the runtime has relied on stays durable. Strong v1 prefers durability over
+  write throughput.
+- **`wal_autocheckpoint` stays at the SQLite default** (1000 pages): C1 produced no evidence against it.
+- **Write transactions are `BEGIN IMMEDIATE`**, which takes the write lock up front. A claimant
+  therefore never upgrades from a read snapshot into a busy error mid-transaction. Contention fails
+  within the busy timeout (`STORAGE_BUSY`) rather than hanging.
+- **No lock-free or exactly-once claim.** WAL still admits one writer at a time, and nothing claims
+  otherwise.
+
+## D-C1-05 — Official-source refresh (2026-09-26) and one Cloud gap
+
+**Node.** Read `https://nodejs.org/download/release/latest-v24.x/docs/api/sqlite.md` (v24.21.0) on
+2026-09-26. Confirmed:
+- the module status is Release Candidate;
+- `DatabaseSync` is synchronous;
+- foreign keys, `allowExtension` (default false), `defensive` (v24.12.0), `timeout` (v24.0.0);
+- `backup()` wraps `sqlite3_backup_*`. Mutations from another connection restart a paged backup;
+  mutations from the same connection are included.
+
+**SQLite.** `sqlite.org` (`wal.html`, `lang_transaction.html`, `backup.html`, `pragma.html`) was
+**denied by the Cloud session's network egress policy**. The fallbacks were:
+- SQLite's own API text in `sqlite3.h` 3.53.4, vendored in Node v24.21.0
+  (`deps/sqlite/sqlite3.h`), for the online backup restart semantics, `SQLITE_DBCONFIG_DEFENSIVE` and
+  the busy handler;
+- empirical probes on the bundled SQLite 3.53.4: WAL readers see committed state during a write
+  transaction, busy failure at the timeout, the defensive probe, extension refusal, backup plus a
+  rollback-journal snapshot.
+
+The WAL same-host / no-network-filesystem rule, `BEGIN IMMEDIATE` semantics, `synchronous` behaviour
+in WAL and the checkpoint default are recorded from prior knowledge of those pages. They were **not
+re-fetched**, and they match the task's stated facts. **Founder-host follow-up:** re-read the four
+`sqlite.org` pages and confirm D-C1-04. No hard incompatibility with the approved baseline was found.
+
+## D-C1-06 — One persisted time format
+
+Timestamps are fixed-width ISO-8601 UTC with milliseconds, and a `GLOB` `CHECK` enforces it. Text
+order equals time order, so leases and due times compare as `TEXT`. Tests use an injected
+`ManualClock`, and lease/backoff unit tests never sleep.
+
+## D-C1-07 — Fail-closed approval gate
+
+Stage 1 §1 says sensitive actions fail closed when the approval path cannot decide, and Stage 3 §3
+says R3 requires Founder approval. Work with `approvalRequired`, or at risk R3 or R4, is therefore
+stored in `WAITING_APPROVAL` and can never be released for execution in C1
+(`APPROVAL_PATH_UNAVAILABLE`). This invents no approval mechanism: C2 owns the approval engine.
+
+## D-C1-08 — Cancellation race rule
+
+Durable termination intent (cancel or supersede) recorded **before** a run settles always wins. The
+settlement finalizes it, even when the processor reported `COMPLETED`. Completion committed first
+makes a later cancellation fail deterministically (`INVALID_TRANSITION`); supersession is still
+allowed. A terminal-row trigger forbids resurrection.
+
+## D-C1-09 — When a dependency is satisfied
+
+A dependency is satisfied when the dependency enters the completed family (`COMPLETED` or later).
+Stage 8 defines no stricter rule. A later policy (C4) may require review first; this choice lives in
+one constant (`DEPENDENCY_SATISFIED_STATES`). Dependencies that end as `FAILED`, `CANCELLED` or
+`SUPERSEDED` leave dependents `BLOCKED (DEPENDENCY_FAILED)`. They are not auto-cancelled: escalation
+policy is C4's.
+
+## D-C1-10 — Attempt accounting
+
+A retryable failure and an **interrupted** attempt (crash or lease loss) both count toward
+`maxAttempts`, which bounds crash loops (Stage 15 D15-C.6). Waiting and a graceful shutdown park do
+not count. Backoff is deterministic, with no jitter, so tests and recovery are reproducible.
+
+## D-C1-11 — Cross-process wake without a network or IPC service
+
+Another local process that commits work (for example the CLI) writes `<workspace>/runtime/wake.signal`.
+The runtime observes it with `fs.watch`, which is OS change notification, not polling. A lost hint is
+harmless: the queue is durable, and recovery and the next-due timer rediscover work. No HTTP server,
+socket or named pipe was added. The Founder UI IPC (Stage 12 §47–§50) belongs to a later package.
+
+## D-C1-12 — Backup mechanics
+
+`backup()` runs from a dedicated connection with a very large page batch, so the copy is one step. A
+paged backup would restart whenever another connection writes (sqlite3.h), and a busy writer could
+then starve it. The snapshot is then switched to the rollback journal (`journal_mode=DELETE`) so it is
+one self-contained file, followed by the full `integrity_check` and `foreign_key_check` and a manifest
+with SHA-256. Verification opens the snapshot read-only and never touches the live file. Restore goes
+only to a new, empty workspace, with a dry start. No backup uses `tar`, and none copies the active
+database file.
+
+## D-C1-13 — Local-filesystem enforcement limits
+
+Rejected everywhere: relative paths, UNC paths, device-namespace paths and symlinked workspace
+directories. On Linux, network mounts are also rejected (`/proc/self/mountinfo`). Windows mapped
+network drives cannot be detected without native code (Smart App Control forbids native addons) and
+are **documented as unsupported** for the canonical WAL database.
+
+## D-C1-14 — Verifier evolution
+
+New rules, each with negative self-tests and, where brittleness is possible, must-pass future states:
+- `sqlite-confined-to-storage`;
+- `no-network-in-runtime-code`;
+- `runtime-dependencies-allowlisted`: only `@qandeel-company/*` unless a reviewed exception is
+  listed;
+- `migrations-immutable`: every migration file pinned by SHA-256, with CRLF tolerated;
+- `c1-proof-tests-present`: the non-vacuity contract.
+
+Changed rules:
+- `implementation-lifecycle-state`:
+  - C1 may read "… — NOT CLOSED" without a closure record;
+  - "CLOSED" without the record still fails;
+  - C2 may start only after a C1 closure record exists;
+  - the C1 report may not claim closure.
+- `workspace-tests-present` accepts the stricter runner.
+- `no-placeholder-packages` also rejects a C2-style package that was not approved.
+
+A future package is added by extending `ALLOWED_PACKAGES` in its own change. Every guard from C0 and
+PRE-C1 is kept.
+
+## D-C1-15 — Test runner refuses vacuous passes
+
+`scripts/run-node-tests.mjs`:
+- runs exactly the tracked `test/**/*.test.ts` files, compiled;
+- fails if a compiled file is missing;
+- fails if fewer tests ran than there are files;
+- fails on any failure, and on any skipped, todo or cancelled test.
+
+Concurrency is 1, for deterministic multi-process timing. Multi-process and fault tests use child
+processes of the same signed `node` with argument arrays (no shell). On Windows, SIGKILL maps to
+TerminateProcess, so the same fault matrix runs on both CI operating systems.
+
+## D-C1-16 — Branch
+
+The Cloud platform mandated the branch `claude/dreamy-wozniak-nq3hr8`, and it was used instead of the
+preferred `feat/c1-company-foundation-durable-runtime`, as the task allows.

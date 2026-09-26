@@ -1,0 +1,519 @@
+/**
+ * CompanyStore — the storage API the runtime depends on. It exposes Company operations, never a
+ * database handle or an "execute SQL" method. Each mutating method is one short `BEGIN IMMEDIATE`
+ * transaction; nothing awaits while a write transaction is open.
+ */
+import { QandeelError, isQandeelError, systemClock, type BackoffPolicy, type Clock, type Id, type JsonValue, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
+
+import { appendAudit, getJobRow, getWorkItemRow, mapCheckpoint, mapJob, mapRun, mapWorkItem, ts, type FaultHook, type StoreContext } from './internal.js';
+import { CURRENT_SCHEMA_VERSION, appliedMigrations, loadReleasedMigrations, migrate, userVersion, type Migration, type MigrationFaultHook, type MigrationReport } from './migrations.js';
+import {
+  expiredClaims,
+  foreignClaims,
+  latestValidCheckpoint,
+  nextDueAt,
+  prepareCheckpoint,
+  txCheckpoint,
+  txClaimJob,
+  txClaimNext,
+  txInterruptClaim,
+  txRenewLease,
+  txRequeueDeadLetter,
+  txResolveReconciliation,
+  txSettle,
+  txWake,
+  type Claim,
+  type ClaimOptions,
+  type ReconciliationDecision,
+  type SettleOptions,
+  type SettleOutcome,
+} from './queue.js';
+import type { AuditRecord, CheckpointRecord, EventRecord, Fence, JobRecord, RunRecord, SupervisorFence, TransitionRecord, WorkItemRecord } from './records.js';
+import {
+  auditByAction,
+  auditFor,
+  eventsFor,
+  pendingEvents,
+  readInstance,
+  readSupervisorLease,
+  txAbandonStaleInstances,
+  txAcquireSupervisor,
+  txMarkDispatched,
+  txRegisterInstance,
+  txReleaseSupervisor,
+  txRenewSupervisor,
+  txUpdateInstance,
+  type InstanceState,
+  type RuntimeInstanceRecord,
+  type SupervisorLease,
+} from './runtime-state.js';
+import { SqliteConnection } from './sqlite/connection.js';
+import { openWorkspace, type WorkspaceLayout } from './workspace.js';
+import {
+  dependencies,
+  history,
+  lineage,
+  txAddDependency,
+  txCreateWorkItem,
+  txRequestCancellation,
+  txSupersede,
+  txTransition,
+  type CreateOptions,
+  type CreateResult,
+  type CreateWorkItemInput,
+  type TerminationInput,
+  type TransitionInput,
+} from './work-items.js';
+import type { TerminationOutcome } from './work-core.js';
+
+export const STORAGE_VERSION = '0.1.0';
+
+export interface OpenStoreOptions {
+  readonly clock?: Clock;
+  /** Recorded with each migration and runtime instance. */
+  readonly runtimeVersion?: string;
+  readonly busyTimeoutMs?: number;
+  /** Test seam: a migration set other than the released one (fixtures, failure injection). */
+  readonly migrations?: readonly Migration[];
+  readonly migrationFault?: MigrationFaultHook;
+  /** Test seam: failure injection at named durability boundaries. */
+  readonly fault?: FaultHook;
+  /** Create workspace directories if missing (default true). */
+  readonly create?: boolean;
+  /**
+   * `apply` (default) brings the schema current. `verify` refuses to change the schema — used by
+   * inspection tools so they never migrate underneath a live runtime.
+   */
+  readonly migrationMode?: 'apply' | 'verify';
+}
+
+export const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
+
+const noFault: FaultHook = () => undefined;
+
+// Storage-internal access for sibling modules (artifacts, backup). The package entry point does
+// not export `storeContext`, and the `exports` map forbids deep imports, so the connection never
+// leaves @qandeel-company/storage.
+const INTERNALS = new WeakMap<CompanyStore, StoreContext>();
+
+export function storeContext(store: CompanyStore): StoreContext {
+  const ctx = INTERNALS.get(store);
+  if (!ctx || store.isClosed) throw new QandeelError('RUNTIME_STOPPING', 'store is closed');
+  return ctx;
+}
+
+export class CompanyStore {
+  readonly workspace: WorkspaceLayout;
+  readonly migration: MigrationReport;
+  readonly #ctx: StoreContext;
+  #closed = false;
+
+  private constructor(workspace: WorkspaceLayout, ctx: StoreContext, migration: MigrationReport) {
+    this.workspace = workspace;
+    this.#ctx = ctx;
+    this.migration = migration;
+  }
+
+  /**
+   * Validates the workspace, opens the WAL database and completes migrations. A store is never
+   * returned before its schema is current: readiness depends on this.
+   */
+  static open(workspaceRoot: string, options: OpenStoreOptions = {}): CompanyStore {
+    const workspace = openWorkspace(workspaceRoot, { create: options.create ?? true });
+    const clock = options.clock ?? systemClock;
+    const db = SqliteConnection.open({ path: workspace.databasePath, busyTimeoutMs: options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS });
+    try {
+      const migrations = options.migrations ?? loadReleasedMigrations();
+      const report = migrate(db, migrations, {
+        clock,
+        runtimeVersion: options.runtimeVersion ?? STORAGE_VERSION,
+        readOnlyCheck: options.migrationMode === 'verify',
+        ...(options.migrationFault ? { beforeCommit: options.migrationFault } : {}),
+      });
+      const ctx: StoreContext = { db, clock, fault: options.fault ?? noFault };
+      const store = new CompanyStore(workspace, ctx, report);
+      INTERNALS.set(store, ctx);
+      return store;
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+  }
+
+  get clock(): Clock {
+    return this.#ctx.clock;
+  }
+
+  /** Statement counters (idle-runtime proof). */
+  get stats(): Readonly<{ statements: number; writeTransactions: number }> {
+    return this.#ctx.db.stats;
+  }
+
+  get schemaVersion(): number {
+    return userVersion(this.#ctx.db);
+  }
+
+  get journalMode(): string {
+    return this.#ctx.db.journalMode;
+  }
+
+  now(): Timestamp {
+    return ts(this.#ctx);
+  }
+
+  #write<T>(operation: string, fn: (ctx: StoreContext) => T): T {
+    this.#assertOpen();
+    return this.#ctx.db.immediate(operation, () => fn(this.#ctx));
+  }
+
+  #read<T>(fn: (ctx: StoreContext) => T): T {
+    this.#assertOpen();
+    return this.#ctx.db.snapshot(() => fn(this.#ctx));
+  }
+
+  #assertOpen(): void {
+    if (this.#closed) throw new QandeelError('RUNTIME_STOPPING', 'store is closed');
+  }
+
+  /** Fenced write: a STALE_LEASE rejection is itself audited (in its own transaction). */
+  #fenced<T>(operation: string, fence: Fence, fn: (ctx: StoreContext) => T): T {
+    try {
+      return this.#write(operation, fn);
+    } catch (error) {
+      if (isQandeelError(error, 'STALE_LEASE')) {
+        try {
+          this.#write('audit stale lease', (ctx) =>
+            appendAudit(ctx, 'fencing.rejected', 'job', fence.jobId, {}, 'REJECTED', 'STALE_LEASE', {
+              operation,
+              workerId: fence.workerId,
+              presentedToken: fence.fencingToken,
+              currentToken: (error.details.currentToken as number | null) ?? null,
+            }),
+          );
+        } catch {
+          // Auditing a rejection must never mask the rejection itself.
+        }
+      }
+      throw error;
+    }
+  }
+
+  // --- Work Items -------------------------------------------------------------------------------
+
+  createWorkItem(input: CreateWorkItemInput, options: CreateOptions = {}): CreateResult {
+    try {
+      return this.#write('create work item', (ctx) => txCreateWorkItem(ctx, input, options));
+    } catch (error) {
+      // The rejected transaction rolled back; the rejection itself is audited separately.
+      if (isQandeelError(error, 'IDEMPOTENCY_CONFLICT') || isQandeelError(error, 'DEDUPE_CONFLICT')) {
+        const existing = String(error.details.existing ?? '');
+        try {
+          this.#write('audit conflict', (ctx) => appendAudit(ctx, error.code === 'IDEMPOTENCY_CONFLICT' ? 'idempotency.conflict' : 'dedupe.conflict', 'work_item', existing, {}, 'REJECTED', error.code, {}));
+        } catch {
+          // Auditing a rejection must never mask the rejection itself.
+        }
+      }
+      throw error;
+    }
+  }
+
+  transitionWorkItem(id: Id, input: TransitionInput): WorkItemRecord {
+    return this.#write('transition work item', (ctx) => txTransition(ctx, id, input));
+  }
+
+  addDependency(id: Id, dependsOnId: Id, actorRef?: string): WorkItemRecord {
+    return this.#write('add dependency', (ctx) => txAddDependency(ctx, id, dependsOnId, actorRef));
+  }
+
+  requestCancellation(id: Id, input: TerminationInput): TerminationOutcome {
+    return this.#write('request cancellation', (ctx) => txRequestCancellation(ctx, id, input));
+  }
+
+  supersede(id: Id, supersededById: Id, input: TerminationInput): TerminationOutcome {
+    return this.#write('supersede', (ctx) => txSupersede(ctx, id, supersededById, input));
+  }
+
+  getWorkItem(id: Id): WorkItemRecord {
+    return this.#read((ctx) => getWorkItemRow(ctx, id));
+  }
+
+  /** Work Items, oldest first, optionally filtered by state (bounded page). */
+  listWorkItems({ state, limit = 100 }: { state?: WorkItemRecord['state']; limit?: number } = {}): WorkItemRecord[] {
+    const n = Math.max(1, Math.min(1_000, Math.trunc(limit)));
+    return this.#read((ctx) =>
+      (state === undefined
+        ? ctx.db.all('SELECT * FROM work_items ORDER BY created_at, id LIMIT ?', n)
+        : ctx.db.all('SELECT * FROM work_items WHERE state = ? ORDER BY created_at, id LIMIT ?', state, n)
+      ).map(mapWorkItem),
+    );
+  }
+
+  history(id: Id): TransitionRecord[] {
+    return this.#read((ctx) => history(ctx, id));
+  }
+
+  lineage(rootId: Id): WorkItemRecord[] {
+    return this.#read((ctx) => lineage(ctx, rootId));
+  }
+
+  dependencies(id: Id): { dependsOnId: Id; resolvedAt: Timestamp | null }[] {
+    return this.#read((ctx) => dependencies(ctx, id));
+  }
+
+  // --- Queue, runs, leases ----------------------------------------------------------------------
+
+  claimNext(options: ClaimOptions): Claim | null {
+    return this.#write('claim next job', (ctx) => txClaimNext(ctx, options));
+  }
+
+  claimJob(jobId: Id, options: ClaimOptions): Claim | null {
+    return this.#write('claim job', (ctx) => txClaimJob(ctx, jobId, options));
+  }
+
+  renewLease(fence: Fence, leaseMs: number): Timestamp {
+    return this.#fenced('renew lease', fence, (ctx) => txRenewLease(ctx, fence, leaseMs));
+  }
+
+  checkpoint(fence: Fence, kind: string, state: JsonValue, kindVersion: number, leaseMs: number): number {
+    const prepared = prepareCheckpoint(kind, state, kindVersion);
+    const seq = this.#fenced('checkpoint', fence, (ctx) => txCheckpoint(ctx, fence, prepared, leaseMs));
+    this.#ctx.fault('checkpoint.afterCommit');
+    return seq;
+  }
+
+  settle(fence: Fence, result: ProcessorResult, options: SettleOptions): SettleOutcome {
+    return this.#fenced('settle', fence, (ctx) => txSettle(ctx, fence, result, options));
+  }
+
+  interruptClaim(jobId: Id, reasonCode: string): ReturnType<typeof txInterruptClaim> {
+    return this.#write('interrupt claim', (ctx) => txInterruptClaim(ctx, jobId, reasonCode));
+  }
+
+  expiredClaims(limit = 100): Id[] {
+    return this.#read((ctx) => expiredClaims(ctx, limit));
+  }
+
+  foreignClaims(ownerPrefix: string, limit = 100): Id[] {
+    return this.#read((ctx) => foreignClaims(ctx, ownerPrefix, limit));
+  }
+
+  wake(workItemId: Id, reasonCode: string, actorRef?: string): boolean {
+    return this.#write('wake', (ctx) => {
+      const item = getWorkItemRow(ctx, workItemId);
+      return txWake(ctx, workItemId, reasonCode, { correlationId: item.correlationId, actorRef: actorRef ?? null });
+    });
+  }
+
+  requeueDeadLetter(jobId: Id, reasonCode: string, actorRef?: string): JobRecord {
+    return this.#write('requeue dead letter', (ctx) => txRequeueDeadLetter(ctx, jobId, reasonCode, { actorRef: actorRef ?? null }));
+  }
+
+  resolveReconciliation(jobId: Id, decision: ReconciliationDecision, reasonCode: string, actorRef?: string): SettleOutcome {
+    return this.#write('resolve reconciliation', (ctx) => txResolveReconciliation(ctx, jobId, decision, reasonCode, { actorRef: actorRef ?? null }));
+  }
+
+  nextDueAt(kinds: readonly string[]): Timestamp | null {
+    return this.#read((ctx) => nextDueAt(ctx, kinds));
+  }
+
+  getJob(id: Id): JobRecord {
+    return this.#read((ctx) => getJobRow(ctx, id));
+  }
+
+  jobsFor(workItemId: Id): JobRecord[] {
+    return this.#read((ctx) => ctx.db.all('SELECT * FROM queue_jobs WHERE work_item_id = ? ORDER BY created_at, id', workItemId).map(mapJob));
+  }
+
+  runsFor(jobId: Id): RunRecord[] {
+    return this.#read((ctx) => ctx.db.all('SELECT * FROM runs WHERE job_id = ? ORDER BY run_seq', jobId).map(mapRun));
+  }
+
+  runsForWorkItem(workItemId: Id): RunRecord[] {
+    return this.#read((ctx) => ctx.db.all('SELECT * FROM runs WHERE work_item_id = ? ORDER BY started_at, run_seq', workItemId).map(mapRun));
+  }
+
+  checkpoints(jobId: Id): CheckpointRecord[] {
+    return this.#read((ctx) => ctx.db.all('SELECT * FROM run_checkpoints WHERE job_id = ? ORDER BY id', jobId).map(mapCheckpoint));
+  }
+
+  latestCheckpoint(jobId: Id): CheckpointRecord | null {
+    return this.#read((ctx) => latestValidCheckpoint(ctx, jobId));
+  }
+
+  runningRunsWithoutClaim(limit = 100): Id[] {
+    return this.#read((ctx) =>
+      ctx.db
+        .all<{ id: string }>(
+          `SELECT r.id FROM runs r JOIN queue_jobs j ON j.id = r.job_id WHERE r.state = 'RUNNING' AND (j.state <> 'CLAIMED' OR j.current_run_id <> r.id) LIMIT ?`,
+          limit,
+        )
+        .map((r) => r.id as Id),
+    );
+  }
+
+  /** Closes RUNNING runs whose job no longer points at them (defensive recovery; normally none). */
+  interruptOrphanRun(runId: Id): boolean {
+    return this.#write('interrupt orphan run', (ctx) => {
+      const changed = ctx.db.run(
+        `UPDATE runs SET state = 'INTERRUPTED', ended_at = ?, failure_category = 'INTERRUPTED', failure_code = 'ORPHAN_RUN', recovery_disposition = 'SAFE_TO_RETRY'
+          WHERE id = ? AND state = 'RUNNING' AND NOT EXISTS (SELECT 1 FROM queue_jobs j WHERE j.current_run_id = runs.id AND j.state = 'CLAIMED')`,
+        ts(ctx),
+        runId,
+      ).changes;
+      if (changed) appendAudit(ctx, 'run.orphan_interrupted', 'run', runId, {}, 'OK', 'ORPHAN_RUN', {});
+      return changed === 1;
+    });
+  }
+
+  /** Durable termination intent whose job is no longer running: finalize it (recovery). */
+  danglingTerminations(limit = 100): Id[] {
+    return this.#read((ctx) =>
+      ctx.db
+        .all<{ id: string }>(
+          `SELECT w.id FROM work_items w WHERE w.termination_requested IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM queue_jobs j WHERE j.work_item_id = w.id AND j.state = 'CLAIMED') LIMIT ?`,
+          limit,
+        )
+        .map((r) => r.id as Id),
+    );
+  }
+
+  settleDanglingTermination(workItemId: Id): TerminationOutcome {
+    return this.#write('settle dangling termination', (ctx) => {
+      const item = getWorkItemRow(ctx, workItemId);
+      const mode = item.terminationRequested;
+      if (mode === null) return { terminated: [], requested: [], signalJobIds: [], retained: [], alreadyTerminal: [item.id] };
+      return mode === 'SUPERSEDED' && item.supersededBy
+        ? txSupersede(ctx, item.id, item.supersededBy, { reasonCode: item.terminationReason ?? 'SUPERSEDED' })
+        : txRequestCancellation(ctx, item.id, { reasonCode: item.terminationReason ?? 'CANCELLED' });
+    });
+  }
+
+  // --- Supervisor and runtime instances ---------------------------------------------------------
+
+  acquireSupervisor(holderId: Id, ttlMs: number): SupervisorFence {
+    return this.#write('acquire supervisor', (ctx) => txAcquireSupervisor(ctx, holderId, ttlMs));
+  }
+
+  renewSupervisor(fence: SupervisorFence, ttlMs: number): Timestamp {
+    return this.#write('renew supervisor', (ctx) => txRenewSupervisor(ctx, fence, ttlMs));
+  }
+
+  releaseSupervisor(fence: SupervisorFence): boolean {
+    return this.#write('release supervisor', (ctx) => txReleaseSupervisor(ctx, fence));
+  }
+
+  supervisorLease(): SupervisorLease | null {
+    return this.#read((ctx) => readSupervisorLease(ctx));
+  }
+
+  registerInstance(id: Id, pid: number, runtimeVersion: string): void {
+    this.#write('register instance', (ctx) => txRegisterInstance(ctx, id, pid, runtimeVersion, userVersion(ctx.db)));
+  }
+
+  updateInstance(id: Id, state: InstanceState, fields: { supervisorToken?: number; recovery?: Record<string, number | string | boolean | null> } = {}): void {
+    this.#write('update instance', (ctx) => txUpdateInstance(ctx, id, state, fields));
+  }
+
+  abandonStaleInstances(currentId: Id): number {
+    return this.#write('abandon stale instances', (ctx) => txAbandonStaleInstances(ctx, currentId));
+  }
+
+  instance(id: Id): RuntimeInstanceRecord | null {
+    return this.#read((ctx) => readInstance(ctx, id));
+  }
+
+  // --- Outbox and audit -------------------------------------------------------------------------
+
+  pendingEvents(limit = 500): EventRecord[] {
+    return this.#read((ctx) => pendingEvents(ctx, limit));
+  }
+
+  markDispatched(ids: readonly Id[]): number {
+    if (ids.length === 0) return 0;
+    return this.#write('mark dispatched', (ctx) => txMarkDispatched(ctx, ids));
+  }
+
+  events(aggregateId: Id): EventRecord[] {
+    return this.#read((ctx) => eventsFor(ctx, aggregateId));
+  }
+
+  audit(entityId: string): AuditRecord[] {
+    return this.#read((ctx) => auditFor(ctx, entityId));
+  }
+
+  auditByAction(action: string, limit?: number): AuditRecord[] {
+    return this.#read((ctx) => auditByAction(ctx, action, limit));
+  }
+
+  recordAudit(action: string, entityType: string, entityId: string, outcome: 'OK' | 'REJECTED' | 'ERROR', reasonCode: string | null, details: Record<string, string | number | boolean | null> = {}): void {
+    this.#write('record audit', (ctx) => appendAudit(ctx, action, entityType, entityId, {}, outcome, reasonCode, details));
+  }
+
+  // --- Health (lightweight, deterministic; no full integrity scan) ------------------------------
+
+  healthCounts(): HealthCounts {
+    return this.#read((ctx) => {
+      const byState = (sql: string): Record<string, number> =>
+        Object.fromEntries(ctx.db.all<{ state: string; n: number }>(sql).map((r) => [r.state, Number(r.n)]));
+      const at = ts(ctx);
+      const lastBackup = ctx.db.get<{ id: string; created_at: string; integrity_result: string }>('SELECT id, created_at, integrity_result FROM backup_records ORDER BY created_at DESC LIMIT 1');
+      return {
+        workItems: byState('SELECT state, COUNT(*) AS n FROM work_items GROUP BY state'),
+        jobs: byState('SELECT state, COUNT(*) AS n FROM queue_jobs GROUP BY state'),
+        runs: byState('SELECT state, COUNT(*) AS n FROM runs GROUP BY state'),
+        artifacts: byState('SELECT state, COUNT(*) AS n FROM artifacts GROUP BY state'),
+        dueJobs: Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM queue_jobs WHERE state = 'QUEUED' AND available_at <= ?`, at)?.n ?? 0),
+        expiredLeases: Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM queue_jobs WHERE state = 'CLAIMED' AND lease_expires_at <= ?`, at)?.n ?? 0),
+        pendingEvents: Number(ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM events WHERE dispatched_at IS NULL')?.n ?? 0),
+        lastBackup: lastBackup ? { id: lastBackup.id as Id, createdAt: lastBackup.created_at as Timestamp, integrity: lastBackup.integrity_result } : null,
+        schemaVersion: userVersion(ctx.db),
+        appliedMigrations: appliedMigrations(ctx.db).map((m) => m.version),
+      };
+    });
+  }
+
+  /** Bounded startup check (SQLite `quick_check`); the full `integrity_check` runs on backups. */
+  quickCheck(): string {
+    this.#assertOpen();
+    const rows = this.#ctx.db.all<{ quick_check: string }>('PRAGMA quick_check(10)');
+    return rows.map((r) => r.quick_check).join('; ');
+  }
+
+  /** Full `PRAGMA integrity_check`: expensive; explicit verification and tests only. */
+  integrityCheck(): string {
+    this.#assertOpen();
+    return this.#ctx.db.integrityCheck().join('; ');
+  }
+
+  foreignKeyViolations(): number {
+    this.#assertOpen();
+    return this.#ctx.db.all('PRAGMA foreign_key_check').length;
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#ctx.db.close();
+  }
+
+  get isClosed(): boolean {
+    return this.#closed;
+  }
+}
+
+export interface HealthCounts {
+  readonly workItems: Record<string, number>;
+  readonly jobs: Record<string, number>;
+  readonly runs: Record<string, number>;
+  readonly artifacts: Record<string, number>;
+  readonly dueJobs: number;
+  readonly expiredLeases: number;
+  readonly pendingEvents: number;
+  readonly lastBackup: { id: Id; createdAt: Timestamp; integrity: string } | null;
+  readonly schemaVersion: number;
+  readonly appliedMigrations: readonly number[];
+}
+
+export { CURRENT_SCHEMA_VERSION };
+export type { BackoffPolicy, Claim, ClaimOptions, SettleOptions, SettleOutcome, ReconciliationDecision };
