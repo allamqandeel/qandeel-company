@@ -17,7 +17,7 @@ import { appendAudit, ts } from './internal.js';
 import { CURRENT_SCHEMA_VERSION, RELEASED_MIGRATIONS, appliedMigrations, loadReleasedMigrations, migrate, userVersion } from './migrations.js';
 import { SqliteConnection } from './sqlite/connection.js';
 import { CompanyStore, DEFAULT_BUSY_TIMEOUT_MS, storeContext } from './store.js';
-import { assertLocalPathSyntax, containedPath, layoutFor, openWorkspace, DATABASE_FILE } from './workspace.js';
+import { assertLocalPathSyntax, containedPath, isWithin, layoutFor, openWorkspace, DATABASE_FILE } from './workspace.js';
 
 export const BACKUP_FORMAT = 'qandeel-company-backup/1';
 const MANIFEST_FILE = 'manifest.json';
@@ -240,7 +240,7 @@ export function verifyBackup(
   }
   const snapshot = path.join(directory, DATABASE_FILE);
   if (!existsSync(snapshot)) throw new QandeelError('BACKUP_INTEGRITY', 'backup snapshot is missing', { backupId: manifest.backupId });
-  if (liveDatabasePath !== undefined && path.resolve(snapshot) === path.resolve(liveDatabasePath)) {
+  if (liveDatabasePath !== undefined && isWithin(liveDatabasePath, snapshot)) {
     throw new QandeelError('BACKUP_INTEGRITY', 'refusing to verify the live database as a backup');
   }
   const sha = fileSha256(snapshot);
@@ -313,12 +313,8 @@ export function restoreToIsolatedWorkspace(
   assertLocalPathSyntax(targetRoot);
   const verification = verifyBackup(directory, { ...(liveDatabasePath !== undefined ? { liveDatabasePath } : {}), ...(expected !== undefined ? { expected } : {}) });
   const target = layoutFor(path.resolve(targetRoot));
-  if (liveDatabasePath !== undefined) {
-    const liveRoot = path.resolve(path.dirname(path.dirname(liveDatabasePath)));
-    const rel = path.relative(liveRoot, target.root);
-    if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) {
-      throw new QandeelError('UNSAFE_WORKSPACE', 'isolated restore target must be outside the live workspace', { reason: 'inside-live-workspace' });
-    }
+  if (liveDatabasePath !== undefined && isWithin(path.dirname(path.dirname(liveDatabasePath)), target.root)) {
+    throw new QandeelError('UNSAFE_WORKSPACE', 'isolated restore target must be outside the live workspace', { reason: 'inside-live-workspace' });
   }
   if (existsSync(target.root) && readdirSync(target.root).length > 0) {
     throw new QandeelError('UNSAFE_WORKSPACE', 'isolated restore target must be a new or empty directory', { reason: 'not-empty' });

@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readdirSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, realpathSync, symlinkSync } from 'node:fs';
 import path from 'node:path';
 import { describe, test } from 'node:test';
 
 import { isQandeelError } from '@qandeel-company/domain';
 
 import { SqliteConnection } from '../src/sqlite/connection.js';
-import { assertLocalPathSyntax, openWorkspace } from '../src/workspace.js';
+import { assertLocalPathSyntax, canonicalPath, isWithin, openWorkspace } from '../src/workspace.js';
 import { removeRoot, tempRoot } from './helpers.js';
 
 describe('workspace', () => {
@@ -49,6 +49,21 @@ describe('workspace', () => {
       } finally {
         removeRoot(outside);
       }
+    } finally {
+      removeRoot(root);
+    }
+  });
+
+  test('path containment compares canonical paths (aliases such as junctions or 8.3 short names)', () => {
+    const root = tempRoot('ws-alias');
+    try {
+      const real = path.join(path.dirname(root), 'real');
+      mkdirSync(path.join(real, 'live'), { recursive: true });
+      const alias = path.join(path.dirname(root), 'alias');
+      symlinkSync(real, alias, 'junction');
+      assert.equal(isWithin(path.join(real, 'live'), path.join(alias, 'live', 'not-yet', 'created')), true);
+      assert.equal(isWithin(path.join(real, 'live'), path.join(alias, 'elsewhere')), false);
+      assert.equal(canonicalPath(path.join(alias, 'live', 'x')), path.join(realpathSync.native(real), 'live', 'x'));
     } finally {
       removeRoot(root);
     }

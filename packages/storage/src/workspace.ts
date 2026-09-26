@@ -147,6 +147,31 @@ export function openWorkspace(root: string, options: OpenWorkspaceOptions = {}):
   return layout;
 }
 
+/**
+ * Canonical real path of `target` even if it does not exist yet: the deepest existing ancestor is
+ * resolved with the OS (which also expands Windows 8.3 short names such as `RUNNER~1`) and the
+ * remaining segments are appended. Path containment checks must compare canonical paths.
+ */
+export function canonicalPath(target: string): string {
+  const resolved = path.resolve(target);
+  const rest: string[] = [];
+  let cursor = resolved;
+  while (!existsSync(cursor)) {
+    const parent = path.dirname(cursor);
+    if (parent === cursor) return resolved;
+    rest.unshift(path.basename(cursor));
+    cursor = parent;
+  }
+  return path.join(realpathSync.native(cursor), ...rest);
+}
+
+/** True if `child` is `parent` or lies inside it (canonical paths; case-insensitive on Windows). */
+export function isWithin(parent: string, child: string): boolean {
+  const norm = (p: string): string => (process.platform === 'win32' ? canonicalPath(p).toLowerCase() : canonicalPath(p));
+  const rel = path.relative(norm(parent), norm(child));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
 /** Free space of the workspace volume, for health reporting. */
 export function workspaceFreeBytes(layout: WorkspaceLayout): number | undefined {
   try {
