@@ -1,5 +1,5 @@
 /**
- * C3 Founder Decision closure proofs (D-C3-18 .. D-C3-21): loss of the current-role certification ends
+ * C3 Founder Decision closure proofs (D-C3-18 .. D-C3-24): loss of the current-role certification ends
  * ordinary duty (ACTIVE → RETRAINING) while REVIEW_DUE does not; Founder Calibration gates Activation,
  * not certification; an EXTENDed probation needs new evidence; the Unlicense needs a recorded review.
  * C3-PROOF: founder-decisions
@@ -178,6 +178,47 @@ describe('D-C3-18: losing the current-role certification ends ordinary duty', ()
       a.decideActivation(s.founder, req?.id as string, { decision: 'APPROVE', reasonCode: 'founder.approved' });
       assert.equal(s.gov.getEmployee(employee.id).state, 'ACTIVE');
       assert.ok(claimFor(h, workItem(h, s, employee)).begun.ok);
+    });
+  });
+});
+
+describe('D-C3-24: ACTIVE role reassignment requires a valid target-role certification', () => {
+  test('the role assignment is recorded, but an ACTIVE Employee without a VALID target-role certification moves atomically to RETRAINING', () => {
+    withSeed((h, s) => {
+      const { employee, certificationId } = activeCertified(h, s);
+      const beforeHistory = s.gov.employeeHistory(employee.id);
+      const moved = s.gov.reassignEmployee(s.founder, employee.id, { roleRef: 'role:growth-director', reasonCode: 'founder.role_change' });
+      assert.deepEqual([moved.id, moved.ref, moved.roleRef, moved.state], [employee.id, employee.ref, 'role:growth-director', 'RETRAINING'], 'same Employee identity, new role recorded, ordinary duty stopped');
+      assert.equal(AcademyStore.for(h.store).certifications(employee.id).find((cert) => cert.id === certificationId)?.status, 'VALID', 'the previous-role certification remains truthful history');
+      const afterHistory = s.gov.employeeHistory(employee.id);
+      assert.equal(afterHistory.length, beforeHistory.length + 2, 'the atomic write records assignment then lifecycle');
+      assert.deepEqual(afterHistory.slice(-2).map((x) => [x.changeKind, x.fromState, x.toState, x.reasonCode]), [
+        ['ASSIGNMENT', 'role:analyst', 'role:growth-director', 'founder.role_change'],
+        ['LIFECYCLE', 'ACTIVE', 'RETRAINING', 'ROLE_REASSIGNMENT_REQUIRES_CERTIFICATION'],
+      ]);
+      const begun = claimFor(h, workItem(h, s, moved)).begun;
+      assert.ok(!begun.ok && begun.code === 'EMPLOYEE_NOT_ELIGIBLE' && begun.state === 'RETRAINING', 'the new role cannot execute ordinary duty');
+    });
+  });
+
+  test('returning to a role whose prior certification is still VALID does not demote the Employee merely because the role reference changed', () => {
+    withSeed((h, s) => {
+      const { employee, certificationId: analystCertificationId } = activeCertified(h, s);
+      assert.equal(s.gov.reassignEmployee(s.founder, employee.id, { roleRef: 'role:growth-director', reasonCode: 'founder.role_change' }).state, 'RETRAINING');
+
+      const growthWorld = academyWorld(h, s, 'role:growth-director');
+      const growthEmployee = s.gov.getEmployee(employee.id);
+      const growth = certify(h, s, growthEmployee, growthWorld);
+      s.gov.transitionEmployee(s.founder, employee.id, { to: 'PROBATION', reasonCode: 'recertified' });
+      const academy = AcademyStore.for(h.store);
+      const request = academy.activationRequests(employee.id).find((ar) => ar.enrollmentId === growth.enrollmentId);
+      academy.decideActivation(s.founder, request?.id as string, { decision: 'APPROVE', reasonCode: 'founder.approved' });
+      assert.deepEqual([s.gov.getEmployee(employee.id).roleRef, s.gov.getEmployee(employee.id).state], ['role:growth-director', 'ACTIVE']);
+
+      assert.equal(academy.certifications(employee.id).find((cert) => cert.id === analystCertificationId)?.status, 'VALID');
+      const returned = s.gov.reassignEmployee(s.founder, employee.id, { roleRef: 'role:analyst', reasonCode: 'founder.return_role' });
+      assert.deepEqual([returned.roleRef, returned.state], ['role:analyst', 'ACTIVE'], 'a still-valid target-role certification avoids unnecessary retraining');
+      assert.ok(claimFor(h, workItem(h, s, returned)).begun.ok, 'ordinary duty remains available');
     });
   });
 });
