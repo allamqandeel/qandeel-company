@@ -22,4 +22,4 @@ The **C1 gate is satisfied**. **PR #2 is still unmerged** until Founder merge ap
     settings were changed.
 - **Evidence:** `docs/C1_IMPLEMENTATION_REPORT.md` (§0A, §0, §24) and decisions D-C1-01 to D-C1-24 in
   `docs/architecture/DECISION_LOG.md`.
-- **Open follow-up:** the Founder-host re-read of the `sqlite.org` pages (D-C1-05, D-C1-24).
+- **Official-source follow-up:** completed during Founder-host re-validation; the required `sqlite.org` pages and Node 24 `node:sqlite` documentation were reachable and reviewed successfully.
