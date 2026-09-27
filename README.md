@@ -26,17 +26,32 @@ governed and auditable.
 - an Artifact Store, online backup with isolated verification, and health/readiness;
 - an engineering CLI.
 
-It has **no AI subsystem**: no Employees, Directors, models, providers, prompts, tools, permissions,
-budgets, Memory, Skills, Academy, Review Pool, Founder Command Center or APP-OPS. It makes **zero
-model/provider calls**, and its only processors are deterministic test processors. Details:
-`docs/c1/C1_SCHEMA_AND_STATE.md`, `docs/c1/C1_RUNTIME_RECOVERY_MODEL.md`,
-`docs/C1_IMPLEMENTATION_REPORT.md`.
+C1 itself has no AI subsystem. Details: `docs/c1/C1_SCHEMA_AND_STATE.md`,
+`docs/c1/C1_RUNTIME_RECOVERY_MODEL.md`, `docs/C1_IMPLEMENTATION_REPORT.md`.
+
+**C2 (in progress, implementation candidate) adds the governed execution layer.** It covers:
+- persistent Employees: identity, lifecycle and history, independent of every model, provider,
+  session, run and process;
+- a provider-neutral model catalog and Router Policy: `E0..E4`, qualification lifecycle, hard
+  privacy / qualification / hold gates before cost, bounded retry ≠ fallback ≠ escalation;
+- `D0..D4` data egress;
+- R0–R4 authority with default deny and scoped, durable Founder approvals;
+- a Tool Registry with a governed Tool Executor;
+- hierarchical hard token / cost budgets with worst-case reservation before every call.
+
+All of this runs inside the C1 durable runtime. C2 chooses **no commercial provider**: its only
+provider and tools are deterministic fakes, so CI makes no network or paid call and uses no
+credential. Details: `docs/C2_IMPLEMENTATION_REPORT.md`, decisions D-C2-01 to D-C2-11.
+
+Still out of scope: Memory / Skills / Academy (C3), Directors / Review Pool (C4), the Founder
+Command Center (C5), reporting / learning (C6), APP-OPS (C7) and any QANDEEL App integration.
 
 | Package | Role |
 |---|---|
 | `@qandeel-company/domain` | Pure contracts: IDs, UTC clock, state machines, retry policy, processor contract |
+| `@qandeel-company/governance` | C2 pure policy kernel: Employee lifecycle, R0–R4 authority, `E0..E4` / `D0..D4`, Router Policy, checked economics, provider / tool contracts, typed proposals |
 | `@qandeel-company/storage` | Workspace, SQLite/WAL adapter (the only `node:sqlite` user), migrations, repositories, Artifact Store, backup |
-| `@qandeel-company/runtime` | Runtime Supervisor, bounded worker pool, recovery, health, CLI |
+| `@qandeel-company/runtime` | Runtime Supervisor, bounded worker pool, recovery, health, CLI; C2 governed Model Runtime, Tool Executor, `c2.employee-task` loop, deterministic fakes |
 | `@qandeel-company/bootstrap-contract` | C0 toolchain proof (unchanged) |
 
 **The runtime workspace is separate from Git.** Live Company state
@@ -90,8 +105,10 @@ npm run ci
 | `npm run c1:integration` | Multi-process storage proofs + runtime integration tests (after a build) |
 | `npm run c1:faults` | The process-kill fault matrix (after a build) |
 | `npm run c1:acceptance -- --workspace <dir>` | C1 local acceptance in a disposable directory (below) |
+| `npm run c2:mutation` | Removes 13 C2 authority / budget / tool / routing gates from the build; their proof tests must fail (after a build) |
+| `npm run c2:acceptance -- --workspace <dir>` | C2 local acceptance in a disposable directory (below) |
 | `npm run verify` | Repository-contract verifier (`scripts/verify-bootstrap.mjs`) |
-| `npm run ci` | build → typecheck → lint → test → verify; the same command CI runs |
+| `npm run ci` | build → typecheck → lint → test → C1 + C2 mutation checks → verify; the same command CI runs |
 
 ### C1 local acceptance (Founder host)
 
@@ -110,6 +127,24 @@ npm run c1:acceptance -- --workspace "D:\QANDEEL-C1-ACCEPTANCE\run-1"
   created. Pass `--keep` to keep it.
 - **What it needs:** no credentials, no provider keys, no network.
 
+### C2 local acceptance (Founder host)
+
+```bash
+npm run c2:acceptance -- --workspace "D:\QANDEEL-C2-ACCEPTANCE\run-1"
+```
+
+- **What it proves:**
+  - the Founder principal, a department and an Employee's lifecycle to `ACTIVE`;
+  - the model catalog, Router Policy, tools, grants and budgets;
+  - zero provider calls while idle;
+  - a governed run with a permitted R1 tool;
+  - a D4 context never reaching a lower-ceiling tool;
+  - an R3 tool parked for Founder approval and then executed exactly once;
+  - a hard budget refusal before any provider call;
+  - coherent accounting, health and the read-only CLI.
+- **Result and cleanup:** it prints `C2 LOCAL ACCEPTANCE — PASS` and deletes only what it created.
+- **What it needs:** no credentials, no provider keys, no network.
+
 ### Engineering CLI
 
 After `npm run build`: `node packages/runtime/dist/src/cli.js <command> --workspace <dir>`.
@@ -125,13 +160,17 @@ After `npm run build`: `node packages/runtime/dist/src/cli.js <command> --worksp
 | `verify-backup --backup <id>` | Verifies a backup in isolation |
 | `restore-check --backup <id> --target <empty dir>` | Isolated restore dry start |
 | `verify-artifacts` | Re-hashes every artifact object |
+| `register-founder` | Registers the single Founder principal (C2) |
+| `governance` | Read-only C2 governance health: employees, holds, budgets, approvals, reconciliation |
+| `approvals` | Lists pending approvals (IDs, risk, action codes; no content) |
+| `approve` / `reject --approval <id> --actor <founder:ref>` | Decides an approval. The actor must be the registered Founder principal; authenticating the human is C5 |
 
 The CLI installs no service, creates no scheduled task and opens no network port.
 
 ## Validation
 
-CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm run ci` and the C1 local acceptance on Windows and
-Linux for every push to `main` and every PR targeting `main`. The verifier first proves that each of its rules can fail,
+CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm run ci` and the C1 and C2 local acceptances on
+Windows and Linux for every push to `main` and every PR targeting `main`. The verifier first proves that each of its rules can fail,
 then checks the repository: required files and docs, private packages, bounded Node 24 engine, npm
 workspaces and lockfile, no tracked `.env` / secret / `node_modules` / SQLite / native-binary files,
 no App-repository dependency, no `tar` usage, no APP-OPS implementation, no placeholder packages,
@@ -140,11 +179,22 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
   Stage 16 recorded;
 - that no archives are present;
 - that the baseline carries the privacy rules and no stale default-with-exception wording;
-- the lifecycle state (`C0` closed; `C1` not claimed closed without a closure record; `C2` not started
-  before C1 closes);
+- the lifecycle state:
+  - `C0` closed;
+  - `C1` and `C2` not claimed closed without a closure record;
+  - `C2` not started before C1 closes, and `C3` not before C2 closes;
 - the C1 boundaries: `node:sqlite` only in the storage adapter, no network code in runtime packages,
   no third-party runtime dependencies, released migrations pinned by SHA-256, and the C1 proof tests
-  present.
+  present;
+- the C2 boundaries:
+  - provider adapters called only by the governed Model Runtime;
+  - tool drivers invoked only by the Tool Executor;
+  - budget / reservation / usage writes only in the storage governance modules, behind fenced
+    functions;
+  - no plaintext secrets or secret-shaped columns;
+  - C1 migrations frozen by content;
+  - no C3–C7 tables or packages;
+  - the C2 proofs and the mutation check present.
 
 ## Windows notes (Founder host)
 
