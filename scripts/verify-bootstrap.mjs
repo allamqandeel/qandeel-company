@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Repository-contract verifier (C0; extended at PRE-C1 for the imported authority and at C1 for the
-// durable runtime packages).
+// Repository-contract verifier (C0; extended at PRE-C1 for the imported authority, at C1 for the
+// durable runtime packages and at C2 for governed model / tool / budget boundaries).
 //
 // Every run first proves that each rule can fail (self-test against synthetic
 // violations), then evaluates the real repository. Any failure exits non-zero.
@@ -41,6 +41,8 @@ const REQUIRED_FILES = [
   'packages/runtime/package.json',
   'packages/storage/src/migrations.ts',
   'packages/storage/src/sqlite/connection.ts',
+  'packages/governance/package.json',
+  'scripts/c2-acceptance.mjs',
 ];
 
 const REQUIRED_DOCS = [
@@ -57,6 +59,7 @@ const REQUIRED_DOCS = [
   'docs/c1/C1_SCHEMA_AND_STATE.md',
   'docs/c1/C1_RUNTIME_RECOVERY_MODEL.md',
   'docs/C1_IMPLEMENTATION_REPORT.md',
+  'docs/C2_IMPLEMENTATION_REPORT.md',
 ];
 
 // Imported canonical authority (PRE-C1). Files under AUTHORITY_DIR are exact byte
@@ -90,7 +93,7 @@ const C1_CLOSURE = /^docs\/C1_[^/]*CLOSURE[^/]*\.md$/i;
 
 // The change that adds a real package extends this list in the same change. A placeholder
 // package is a verifier failure. C1 added domain, storage and runtime.
-const ALLOWED_PACKAGES = ['bootstrap-contract', 'domain', 'storage', 'runtime'];
+const ALLOWED_PACKAGES = ['bootstrap-contract', 'domain', 'governance', 'storage', 'runtime'];
 
 // C1 persistence boundary: `node:sqlite` (a Release Candidate API) is imported by exactly one module.
 const SQLITE_ADAPTER = 'packages/storage/src/sqlite/connection.ts';
@@ -131,6 +134,41 @@ const AUTHORITY_METHODS = ['claimNext', 'claimJob', 'acquireSupervisor', 'renewS
 // D-C1-20..23: the remediation proofs CI must keep executing (found by marker, not by file name).
 const C1_PROOF_MARKERS = ['C1-PROOF: supervisor-claim-authority', 'C1-PROOF: lost-wake-reconciliation', 'C1-PROOF: product-decisions-d-c1-08-09', 'C1-PROOF: backup-finalization-contention'];
 const MUTATION_CHECK = 'scripts/c1-mutation-check.mjs';
+
+// --- C2 boundaries ------------------------------------------------------------------------------
+const C2_CLOSURE = /^docs\/C2_[^/]*CLOSURE[^/]*\.md$/i;
+const C2_REPORT = 'docs/C2_IMPLEMENTATION_REPORT.md';
+// The only production module that calls a provider adapter, and the only one that invokes a tool driver.
+const MODEL_RUNTIME = 'packages/runtime/src/c2/model-runtime.ts';
+const TOOL_EXECUTOR = 'packages/runtime/src/c2/tool-executor.ts';
+const ADAPTER_CALL = /\.generate\s*\(/;
+const DRIVER_CALL = /\.invoke\s*\(/;
+// Budget / reservation / usage writes live in the storage governance modules only, and the runtime
+// reaches them only through fenced runtime-authority functions.
+const BUDGET_WRITERS = ['packages/storage/src/governance-core.ts', 'packages/storage/src/governed-writes.ts', 'packages/storage/src/governance.ts'];
+const BUDGET_WRITE = /\b(?:UPDATE|INSERT\s+INTO|DELETE\s+FROM|REPLACE\s+INTO)\s+(?:budgets|budget_reservations|usage_records)\b/i;
+const FENCED_BUDGET_FUNCTIONS = ['reserveBudget', 'settleReservation', 'releaseReservation', 'holdReservation', 'recordToolIntent', 'recordToolResult'];
+// Plaintext secret material: key formats and private-key blocks (code, config, SQL, tests).
+const SECRET_LITERALS = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\bsk-(?:live|proj|ant|test)?-?[A-Za-z0-9_]{20,}/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bgh[pousr]_[A-Za-z0-9]{30,}/,
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/,
+  /\bAIza[0-9A-Za-z_-]{35}\b/,
+];
+const SECRET_COLUMN = /(?:^|[(,])\s*"?(\w*(?:password|passwd|secret|api_?key|private_?key|access_?token|refresh_?token|bearer)\w*)"?\s+(?:TEXT|BLOB|ANY)\b/im;
+// Released C1 migrations are frozen by content, independently of the registry pins.
+const C1_FROZEN_MIGRATIONS = [
+  { file: '0001_work_foundation.sql', sha256: '3022ed5ed626f9394cfa9a7e897d2ed4e7bcb9b94c8de7a9a4bde7c0c658436e' },
+  { file: '0002_queue_runs_artifacts.sql', sha256: 'b3060a1ea7a3e57e8bf0f76a4edba437c9f1b8d2886ef97ff5ca2b6920b0a7c2' },
+  { file: '0003_runtime_wake_generation.sql', sha256: 'f47cf341f677585d762672929bdf2f41eeb4bf7440463b68846bac0c777762e4' },
+];
+// C3 / C4 / C5 / C7 subsystems must not appear as C2 schema or packages.
+const LATER_SCOPE_TABLE = /\bCREATE\s+(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(\w*(?:memor|skill|academ|certif|curricul|review_pool|reviewer|director|delegation|founder_ui|command_center)\w*)/i;
+const LATER_SCOPE_PACKAGE = /^(?:memory|knowledge|skills?|academy|certification|review-pool|reviews?|directors?|delegation|organization|command-center|founder-ui|app-ops)$/;
+const C2_PROOF_MARKERS = ['C2-PROOF: governance-kernel', 'C2-PROOF: storage-governance', 'C2-PROOF: concurrent-reservations', 'C2-PROOF: governed-runtime', 'C2-PROOF: governed-crash-recovery'];
+const C2_MUTATION_CHECK = 'scripts/c2-mutation-check.mjs';
 const pkgOf = (f) => f.split('/')[1];
 const isTestPath = (f) => /^packages\/[^/]+\/test\//.test(f);
 
@@ -532,6 +570,106 @@ export const RULES = [
     check: ({ files }) => C1_PROOF_TESTS.filter((f) => !files.includes(f)).map((f) => `missing C1 proof test ${f}`),
   },
   {
+    id: 'model-calls-confined',
+    // Provider adapters are called only by the governed Model Runtime (budget, authority, routing).
+    check: ({ files, read }) =>
+      files
+        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && f !== MODEL_RUNTIME && ADAPTER_CALL.test(read(f) ?? ''))
+        .map((f) => `${f} calls a provider adapter (.generate); only ${MODEL_RUNTIME} may`),
+  },
+  {
+    id: 'tool-drivers-confined',
+    // Tool drivers are invoked only by the governed Tool Executor (authority path first).
+    check: ({ files, read }) =>
+      files
+        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && f !== TOOL_EXECUTOR && DRIVER_CALL.test(read(f) ?? ''))
+        .map((f) => `${f} invokes a tool driver (.invoke); only ${TOOL_EXECUTOR} may`),
+  },
+  {
+    id: 'budget-mutation-scoped',
+    // Budget, reservation and usage rows change only inside the storage governance modules; the
+    // runtime's reservation / settlement / tool-intent writes take a job Fence; neither ordinary
+    // storage entry point re-exports them.
+    check: ({ files, read }) => {
+      const problems = files
+        .filter((f) => isCode(f) && !BUDGET_WRITERS.includes(f) && BUDGET_WRITE.test(read(f) ?? ''))
+        .map((f) => `${f} writes budget / reservation / usage rows outside ${BUDGET_WRITERS.join(', ')}`);
+      const authority = read('packages/storage/src/runtime-authority.ts');
+      if (authority !== undefined) {
+        for (const name of FENCED_BUDGET_FUNCTIONS) {
+          const sig = new RegExp(`export\\s+function\\s+${name}\\s*\\(\\s*store:\\s*CompanyStore\\s*,\\s*fence:\\s*Fence\\b`);
+          if (!sig.test(authority)) problems.push(`runtime-authority ${name}() must take (store: CompanyStore, fence: Fence, …)`);
+        }
+      }
+      const index = (read('packages/storage/src/index.ts') ?? '').replace(/^\s*\/\/.*$/gm, '');
+      if (/governed-writes/.test(index)) problems.push('packages/storage/src/index.ts re-exports the fenced governed writes');
+      for (const f of files.filter((x) => x.startsWith('packages/storage/src/') && isCode(x))) {
+        const text = read(f) ?? '';
+        if (/\bclass\s+(?:CompanyStore|GovernanceStore)\b/.test(text)) {
+          for (const name of FENCED_BUDGET_FUNCTIONS) if (new RegExp(`^\\s+(?:public\\s+)?${name}\\s*\\(`, 'm').test(text)) problems.push(`${f}: an ordinary store offers ${name}()`);
+        }
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'no-plaintext-secrets',
+    // No secret value in code, config, SQL or fixtures; no schema column is shaped to hold one.
+    check: ({ files, read }) => [
+      ...files.filter((f) => (scanned(f) || f.endsWith('.sql')) && SECRET_LITERALS.some((re) => re.test(read(f) ?? ''))).map((f) => `${f} contains a plaintext secret-looking value`),
+      ...files.filter((f) => f.startsWith(MIGRATIONS_DIR) && f.endsWith('.sql') && SECRET_COLUMN.test(read(f) ?? '')).map((f) => `${f} declares a column shaped to hold a secret (store a vault reference instead)`),
+    ],
+  },
+  {
+    id: 'c1-migrations-frozen',
+    // C1 migrations 0001–0003 are frozen by content: editing one and re-pinning it is still refused.
+    check: ({ files, read }) =>
+      C1_FROZEN_MIGRATIONS.flatMap(({ file, sha256 }) => {
+        const f = `${MIGRATIONS_DIR}${file}`;
+        if (!files.includes(f)) return [`released C1 migration ${f} is missing`];
+        return migrationSha(read(f)) === sha256 ? [] : [`released C1 migration ${f} was edited (C1 migrations are immutable)`];
+      }),
+  },
+  {
+    id: 'no-later-scope-leakage',
+    // C2 does not implement Memory / Skills / Academy (C3), Review Pool / Directors / delegation (C4),
+    // Founder UI (C5) or APP-OPS (C7): no such tables, views or packages.
+    check: ({ files, read, dirs }) => [
+      ...files.filter((f) => f.startsWith(MIGRATIONS_DIR) && f.endsWith('.sql')).flatMap((f) => {
+        const m = (read(f) ?? '').match(LATER_SCOPE_TABLE);
+        return m ? [`${f} creates ${m[1]}, which belongs to a later work package`] : [];
+      }),
+      ...[...new Set([...files.filter((f) => f.startsWith('packages/')).map((f) => f.split('/')[1]), ...dirs('packages')])].filter((p) => p && LATER_SCOPE_PACKAGE.test(p)).map((p) => `packages/${p} belongs to a later work package`),
+    ],
+  },
+  {
+    id: 'c2-proofs-present',
+    check: ({ files, read }) => {
+      const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
+      const problems = C2_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
+      if (!files.includes(C2_MUTATION_CHECK)) problems.push(`missing ${C2_MUTATION_CHECK}`);
+      const ci = json(read('package.json'))?.scripts?.ci ?? '';
+      if (!/\bc2:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c2:mutation');
+      return problems;
+    },
+  },
+  {
+    id: 'c2-not-claimed-closed',
+    // C2 may be an implementation candidate; it is closed only in the change that adds its record.
+    check: ({ files, read }) => {
+      const c2Closed = files.some((f) => C2_CLOSURE.test(f));
+      if (c2Closed) return [];
+      const problems = [];
+      const c2 = mapState(read(IMPLEMENTATION_MAP), 'C2');
+      if (c2 !== undefined && /\bCLOSED\b/i.test(c2.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`C2 is marked ${JSON.stringify(c2)} but no docs/C2_*CLOSURE*.md record exists`);
+      const report = read(C2_REPORT);
+      if (report !== undefined && /\bC2\s*(?:—|-|:|is)?\s*CLOSED\b/i.test(report.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`${C2_REPORT} claims C2 is closed without a closure record`);
+      const c3 = mapState(read(IMPLEMENTATION_MAP), 'C3');
+      if (c3 !== undefined && c3 !== 'Not started' && !c2Closed) problems.push(`C3 is ${JSON.stringify(c3)} before C2 has a closure record`);
+      return problems;
+    },
+  },
+  {
     id: 'local-core-longpaths',
     // A fresh CI checkout has no Founder-local config; the rule applies to local clones.
     check: ({ env, gitConfig }) =>
@@ -575,7 +713,21 @@ const synthManifest = (...rows) => ['# Manifest', '', '| Stage / area | Imported
 const synthMap = (c0 = 'CLOSED / PASS', c1 = 'NEXT — CLOUD MEGA-TASK', c2 = 'Not started') =>
   ['| Stage | Name | Mode | State |', '|---|---|---|---|', '| `L0` | Env | Local | CLOSED / PASS |', `| \`C0\` | Boot | Local | ${c0} |`, `| \`C1\` | Found | Cloud | ${c1} |`, `| \`C2\` | Emp | Cloud | ${c2} |`, ''].join('\n');
 const SYNTH_SQL = 'CREATE TABLE t (x INTEGER) STRICT;\n';
-const synthRegistry = (sql = SYNTH_SQL) => `export const RELEASED_MIGRATIONS = [\n  { version: 1, name: 'one', file: '0001_one.sql', sha256: '${migrationSha(sql)}' },\n];\n`;
+// The real, frozen C1 migration texts (read from this checkout) so the synthetic repository is clean.
+const C1_MIGRATION_TEXT = Object.fromEntries(C1_FROZEN_MIGRATIONS.map(({ file }) => [file, readFileSync(path.join(ROOT, MIGRATIONS_DIR, file), 'utf8')]));
+const c1Pins = () => C1_FROZEN_MIGRATIONS.map(({ file }, i) => `  { version: ${i + 2}, name: 'c1-${i}', file: '${file}', sha256: '${migrationSha(C1_MIGRATION_TEXT[file])}' },\n`).join('');
+const SYNTH_C2_SQL = 'CREATE TABLE employees (id TEXT, credential_ref TEXT) STRICT;\n';
+const synthRegistry = (sql = SYNTH_SQL) =>
+  `export const RELEASED_MIGRATIONS = [\n  { version: 1, name: 'one', file: '0001_one.sql', sha256: '${migrationSha(sql)}' },\n${c1Pins()}  { version: 5, name: 'c2', file: '0004_c2.sql', sha256: '${migrationSha(SYNTH_C2_SQL)}' },\n];\n`;
+const SYNTH_AUTHORITY = [
+  'export function reserveBudget(store: CompanyStore, fence: Fence, input: ReserveInput): ReserveResult {}',
+  'export function settleReservation(store: CompanyStore, fence: Fence, id: Id, usage: SettleUsage): Id {}',
+  'export function releaseReservation(store: CompanyStore, fence: Fence, id: Id, reason: string): void {}',
+  'export function holdReservation(store: CompanyStore, fence: Fence, id: Id, reason: string): void {}',
+  'export function recordToolIntent(store: CompanyStore, fence: Fence, input: ToolIntentInput): ToolIntent {}',
+  'export function recordToolResult(store: CompanyStore, fence: Fence, id: Id, outcome: ToolDriverOutcome): string {}',
+  '',
+].join('\n');
 const SYNTH_BASELINE = `## 5. Data and privacy\n\n- **Rule A — ${PRIVACY_RULES[0]}**\n- **Rule B — ${PRIVACY_RULES[1].replace('private user content', 'private user\n  content')}**\n- **Rule C — ${PRIVACY_RULES[2]}**\n\n## 2. Operating principles\n\n- Event-driven by default.\n`;
 
 const SYNTH_QUEUE = "export interface ClaimOptions {\n  readonly workerId: string;\n  readonly supervisor: SupervisorFence;\n}\n";
@@ -603,7 +755,7 @@ function syntheticRepo(overrides = {}) {
     [AUTHORITY_INDEX]: `## Missing\n\n**${STAGE_16_MISSING}.**\n`,
     [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT)),
     [SYNTH_SOURCE]: SYNTH_SOURCE_TEXT,
-    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation' } }),
+    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation' } }),
     'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'node --test dist/test' } }),
     'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'packages/bootstrap-contract': {}, 'node_modules/tar': { version: '7.0.0' } } }),
     '.gitattributes': '* text=auto eol=lf\n*.sh text eol=lf\n*.ps1 text eol=crlf\n*.png binary\n',
@@ -630,6 +782,17 @@ function syntheticRepo(overrides = {}) {
     // Legitimate code that mentions the words without opening a network path must stay clean.
     'packages/runtime/src/wake.ts': "// no fetch here; a 'net' income is not a socket\nexport const prefetched = 1;",
     'packages/storage/test/labels.test.ts': "const root = tempRoot('sqlite');",
+    ...Object.fromEntries(C1_FROZEN_MIGRATIONS.map(({ file }) => [`${MIGRATIONS_DIR}${file}`, C1_MIGRATION_TEXT[file]])),
+    'packages/storage/src/runtime-authority.ts': SYNTH_AUTHORITY,
+    [MODEL_RUNTIME]: 'const r = await adapter.generate(request, signal);',
+    [TOOL_EXECUTOR]: 'const r = await driver.invoke(input, signal);',
+    'packages/storage/src/governed-writes.ts': "ctx.db.run('UPDATE budgets SET reserved_money = ? WHERE id = ?', a, b);",
+    // Legitimate code that mentions the words: an interface declaration, a vault reference, a CREATE of a C2 table.
+    'packages/governance/src/providers.ts': 'export interface ProviderAdapter {\n  generate(request: ProviderRequest, signal: AbortSignal): Promise<ProviderResponse>;\n}\n',
+    'packages/storage/src/credentials.ts': "const credentialRef = 'vault:publisher-token';",
+    [`${MIGRATIONS_DIR}0004_c2.sql`]: SYNTH_C2_SQL,
+    'packages/runtime/test/c2/proofs.test.ts': C2_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
+    [C2_MUTATION_CHECK]: '',
     ...overrides.contents,
   };
   const files = Object.keys(baseContents).filter((f) => !(overrides.remove ?? []).includes(f));
@@ -749,6 +912,51 @@ const VIOLATIONS = {
     { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test' } }) } },
   ],
   'c1-proof-tests-present': { remove: ['packages/runtime/test/faults/fault-matrix.test.ts'] },
+  'model-calls-confined': [
+    { contents: { 'packages/runtime/src/c2/employee-task.ts': 'const out = await adapter.generate(req, signal);' } },
+    { contents: { 'packages/storage/src/sneaky.ts': 'provider.generate ({ messages });' } },
+  ],
+  'tool-drivers-confined': [
+    { contents: { 'packages/runtime/src/c2/model-runtime.ts': 'await driver.invoke(input, signal);' } },
+    { contents: { 'packages/runtime/src/c2/employee-task.ts': "drivers.get('x')?.invoke(input, s);" } },
+  ],
+  'budget-mutation-scoped': [
+    { contents: { 'packages/runtime/src/cheat.ts': "db.run('UPDATE budgets SET cap_money = 1e15');" } },
+    { contents: { 'packages/storage/src/store.ts': 'const q = `INSERT INTO usage_records (id) VALUES (?)`;' } },
+    { contents: { 'packages/storage/src/runtime-authority.ts': SYNTH_AUTHORITY.replace('reserveBudget(store: CompanyStore, fence: Fence,', 'reserveBudget(store: CompanyStore,') } },
+    { contents: { 'packages/storage/src/index.ts': "export { txReserve } from './governed-writes.js';\n" } },
+    { contents: { 'packages/storage/src/governance.ts': 'export class GovernanceStore {\n  reserveBudget(input: ReserveInput): void {}\n}\n' } },
+  ],
+  'no-plaintext-secrets': [
+    { contents: { 'packages/runtime/src/provider.ts': "const key = 'sk-proj-abcdefghijklmnopqrstuvwxyz123456';" } },
+    { contents: { 'packages/runtime/test/c2/seed.ts': "const pem = '-----BEGIN RSA PRIVATE KEY-----';" } },
+    { contents: { [`${MIGRATIONS_DIR}0004_c2.sql`]: 'CREATE TABLE providers (id TEXT, api_key TEXT) STRICT;\n' } },
+    { contents: { 'config/ci.yml': 'token: ghp_abcdefghijklmnopqrstuvwxyz0123456789' } },
+  ],
+  'c1-migrations-frozen': [
+    // Edited AND re-pinned: migrations-immutable alone would accept this.
+    {
+      contents: {
+        [`${MIGRATIONS_DIR}0002_queue_runs_artifacts.sql`]: `${C1_MIGRATION_TEXT['0002_queue_runs_artifacts.sql']}-- edited\n`,
+      },
+    },
+    { remove: [`${MIGRATIONS_DIR}0003_runtime_wake_generation.sql`] },
+  ],
+  'no-later-scope-leakage': [
+    { contents: { [`${MIGRATIONS_DIR}0004_c2.sql`]: 'CREATE TABLE skill_passports (id TEXT) STRICT;\n' } },
+    { contents: { [`${MIGRATIONS_DIR}0004_c2.sql`]: 'CREATE TABLE IF NOT EXISTS review_pool_members (id TEXT) STRICT;\n' } },
+    { dirs: ['bootstrap-contract', 'academy'] },
+  ],
+  'c2-proofs-present': [
+    { contents: { 'packages/runtime/test/c2/proofs.test.ts': '// markers removed\n' } },
+    { remove: [C2_MUTATION_CHECK] },
+    { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation' } }) } },
+  ],
+  'c2-not-claimed-closed': [
+    { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS') } },
+    { contents: { [C2_REPORT]: '# Report\n\nC2 — CLOSED.\n' } },
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap('CLOSED / PASS', 'CLOSED / PASS', 'IN PROGRESS')}| \`C3\` | Mem | Cloud | IN PROGRESS |\n` } },
+  ],
   'local-core-longpaths': { longpaths: undefined },
 };
 
@@ -783,6 +991,13 @@ const MUST_PASS = [
     },
   },
   { id: 'workspace-tests-present', scenario: { contents: { 'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'npm run build && node ../../scripts/run-node-tests.mjs' } }) } } },
+  // A C2 candidate that is explicitly not closed; C2 closed together with its record.
+  { id: 'c2-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / MERGED / CANONICAL', 'IN PROGRESS — implementation candidate, not closed'), [C2_REPORT]: '# Report\n\nC2 is NOT CLOSED.\n' } } },
+  { id: 'c2-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS'), 'docs/C2_CLOSURE_RECORD.md': '' } } },
+  // CRLF checkouts of the frozen C1 migrations are the same content.
+  { id: 'c1-migrations-frozen', scenario: { contents: { [`${MIGRATIONS_DIR}0001_work_foundation.sql`]: C1_MIGRATION_TEXT['0001_work_foundation.sql'].replace(/\n/g, '\r\n') } } },
+  // Tests may call adapters and drivers directly (fakes); only production src is confined.
+  { id: 'model-calls-confined', scenario: { contents: { 'packages/runtime/test/c2/fake.test.ts': 'await provider.generate(req, signal); await driver.invoke(x, s);' } } },
   // Windows checkouts with CRLF do not trip the migration pin.
   { id: 'migrations-immutable', scenario: { contents: { [`${MIGRATIONS_DIR}0001_one.sql`]: SYNTH_SQL.replace(/\n/g, '\r\n') } } },
   {

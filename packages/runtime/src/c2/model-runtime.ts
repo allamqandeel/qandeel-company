@@ -59,7 +59,7 @@ export class GovernedModelRuntime {
     return [...this.#adapters.keys()];
   }
 
-  async invoke(store: CompanyStore, fence: Fence, run: GovernedRunContext, req: ModelCallRequest, signal: AbortSignal): Promise<ModelCallOutcome> {
+  async call(store: CompanyStore, fence: Fence, run: GovernedRunContext, req: ModelCallRequest, signal: AbortSignal): Promise<ModelCallOutcome> {
     const auth = authorizeModelCall(store, fence, { taskClass: req.taskClass, dataClass: run.dataClass });
     if (!auth.ok) return { kind: 'DENIED', code: auth.code };
     const governance = GovernanceStore.for(store);

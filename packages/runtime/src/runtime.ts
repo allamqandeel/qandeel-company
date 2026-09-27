@@ -903,7 +903,7 @@ export class CompanyRuntime {
     const run = begun.context;
     const services: GovernedRunServices = Object.freeze({
       context: run,
-      invokeModel: (request: ModelCallRequest) => this.#models.invoke(store, claim.fence, run, request, signal),
+      invokeModel: (request: ModelCallRequest) => this.#models.call(store, claim.fence, run, request, signal),
       executeTool: (request: ToolRequest, step: number) => this.#tools.execute(store, claim.fence, run, request, step, signal),
     });
     return processor.runGoverned(context, services);
