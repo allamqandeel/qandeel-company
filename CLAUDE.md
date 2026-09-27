@@ -39,6 +39,32 @@
 - New packages are real subsystems, never placeholders; add them to `ALLOWED_PACKAGES` in
   `scripts/verify-bootstrap.mjs` in the same change.
 
+## C1 runtime invariants (preserve them; details in `docs/c1/`)
+- `node:sqlite` is imported only by `packages/storage/src/sqlite/connection.ts`. Never export a
+  connection or an "execute SQL" function from `@qandeel-company/storage`.
+- Every mutation is one short synchronous `BEGIN IMMEDIATE` transaction. State, history, outbox event
+  and audit row commit together. Never `await` inside a transaction.
+- Released migrations are immutable: add a new numbered file and pin its SHA-256 in
+  `RELEASED_MIGRATIONS`. Never edit an applied one.
+- Every worker write presents its fence (job ID, run ID, worker ID, fencing token). Never add a write
+  path that bypasses fencing.
+- No hard deletes of durable history. No polling loops. No network code in runtime packages. No
+  third-party runtime dependencies unless allowlisted with a reviewed reason.
+- Logs, events and audit rows carry IDs, states and codes only, never payload content (Rule A).
+- Approval-gated or R3/R4 work fails closed until the C2 approval engine exists.
+- Only the Runtime Supervisor acquires executable work (D-C1-22). Claims, the supervisor lease and
+  worker writes live behind `@qandeel-company/storage/runtime-authority`, which only
+  `packages/runtime` may import. The supervisor fence is mandatory in every claim. Never add a claim
+  to the ordinary storage API, and never expose the runtime's mutable `CompanyStore` (use the
+  read-only `view`).
+- `fs.watch` is only a wake hint (D-C1-23). Any new transaction that makes work actionable must
+  advance the durable wake generation in the same transaction (the `queue_jobs` triggers do this
+  for queue changes). Never add a queue-polling loop to compensate.
+- A backup is canonical only once `backup_records` holds it (D-C1-24). Only the small final record
+  transaction is retried (bounded, delays outside any transaction); never raise the global busy
+  timeout to hide contention, never `INSERT OR REPLACE` a backup record, and discover backups
+  through the records, not the directory listing.
+
 ## Before your final response
 - Run `npm ci` and `npm run ci`; all must pass. Do not claim a check passed unless it ran.
 - Report the Skills you actually used and their concrete effect.

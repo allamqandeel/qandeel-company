@@ -5,6 +5,8 @@
 
 # Files that must keep LF regardless of platform.
 *.sh    text eol=lf
+# Released schema migrations are checksummed (the runtime also normalizes CRLF before hashing).
+*.sql   text eol=lf
 
 # Windows-native script formats keep CRLF so cmd.exe and Windows PowerShell 5.1
 # read them predictably. PowerShell files must also be UTF-8 *with* BOM

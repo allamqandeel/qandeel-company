@@ -1,0 +1,32 @@
+{
+  "name": "@qandeel-company/runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "C1 durable Company runtime: Runtime Supervisor, bounded worker pool, event-driven wake-up, startup recovery, health/readiness and the engineering CLI. Zero model/provider calls.",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=24.12.0 <25.0.0"
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node ../../scripts/run-node-tests.mjs",
+    "test:integration": "node ../../scripts/run-node-tests.mjs integration",
+    "test:faults": "node ../../scripts/run-node-tests.mjs faults"
+  },
+  "dependencies": {
+    "@qandeel-company/domain": "0.1.0",
+    "@qandeel-company/storage": "0.1.0"
+  },
+  "bin": {
+    "qandeel-company": "./dist/src/cli.js"
+  }
+}

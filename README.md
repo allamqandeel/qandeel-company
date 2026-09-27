@@ -15,18 +15,38 @@ governed and auditable.
 |---|---|
 | `L0` Environment Readiness | CLOSED / PASS |
 | `C0` Repository Bootstrap | CLOSED / PASS |
-| PRE-C1 Authority Sync & Import | Complete once its PR merges. Documentation / authority only |
-| `C1` Company Foundation & Durable Runtime | **NEXT** — a Claude Cloud mega-task; not started |
+| PRE-C1 Authority Sync & Import | Complete (merged). Documentation / authority only |
+| `C1` Company Foundation & Durable Runtime | **Implementation candidate, in independent review — NOT CLOSED** |
+| `C2` Employees + Models + Tools + Cost Governance | Not started |
 
-There is **no Company business runtime yet**: no work items, queues, employees, Directors, model
-routing, tools, memory or Founder Command Center. The only package,
-`@qandeel-company/bootstrap-contract`, proves the toolchain (compile, workspace resolution, tests,
-Node 24 runtime).
+**C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
+- Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
+  and bounded retry/dead-letter;
+- event-driven wake-up, startup recovery and graceful shutdown;
+- an Artifact Store, online backup with isolated verification, and health/readiness;
+- an engineering CLI.
+
+It has **no AI subsystem**: no Employees, Directors, models, providers, prompts, tools, permissions,
+budgets, Memory, Skills, Academy, Review Pool, Founder Command Center or APP-OPS. It makes **zero
+model/provider calls**, and its only processors are deterministic test processors. Details:
+`docs/c1/C1_SCHEMA_AND_STATE.md`, `docs/c1/C1_RUNTIME_RECOVERY_MODEL.md`,
+`docs/C1_IMPLEMENTATION_REPORT.md`.
+
+| Package | Role |
+|---|---|
+| `@qandeel-company/domain` | Pure contracts: IDs, UTC clock, state machines, retry policy, processor contract |
+| `@qandeel-company/storage` | Workspace, SQLite/WAL adapter (the only `node:sqlite` user), migrations, repositories, Artifact Store, backup |
+| `@qandeel-company/runtime` | Runtime Supervisor, bounded worker pool, recovery, health, CLI |
+| `@qandeel-company/bootstrap-contract` | C0 toolchain proof (unchanged) |
+
+**The runtime workspace is separate from Git.** Live Company state
+(`state/company.sqlite3`, `artifacts/`, `backups/`, `runtime/`) lives in a workspace directory that
+you pass with `--workspace`. It is never inside this checkout and never on a network/mapped drive.
+No Founder path is built into the code.
 
 **Cloud sessions work from this repository's authority, not from hidden local context.** The
-detailed Stage 0–17 authority that used to exist only on the Founder's machine is now in
-`docs/authority/company-architecture/`. The one exception is the Stage 16 source artifact, which is
-missing and recorded as missing.
+detailed Stage 0–17 authority is in `docs/authority/company-architecture/`. The one exception is the
+Stage 16 source artifact, which is missing and recorded as missing.
 
 ## Authority — read before changing anything
 
@@ -66,14 +86,52 @@ npm run ci
 | `npm run build` | Compiles every workspace with `tsc` into its `dist/` |
 | `npm run typecheck` | Type-checks every workspace without emitting |
 | `npm run lint` | ESLint over the repository, zero warnings allowed |
-| `npm test` | Builds and runs each workspace's `node:test` suite |
+| `npm test` | Builds and runs every workspace's `node:test` suite. It includes real-SQLite, multi-process and fault-injection tests, and refuses zero, skipped or todo tests |
+| `npm run c1:integration` | Multi-process storage proofs + runtime integration tests (after a build) |
+| `npm run c1:faults` | The process-kill fault matrix (after a build) |
+| `npm run c1:acceptance -- --workspace <dir>` | C1 local acceptance in a disposable directory (below) |
 | `npm run verify` | Repository-contract verifier (`scripts/verify-bootstrap.mjs`) |
 | `npm run ci` | build → typecheck → lint → test → verify; the same command CI runs |
 
+### C1 local acceptance (Founder host)
+
+```bash
+npm ci
+npm run ci
+npm run c1:acceptance -- --workspace "D:\QANDEEL-C1-ACCEPTANCE\run-1"
+```
+
+- **Choose a directory.** Pick any new or empty directory that is outside every Git checkout; the
+  path above is only an example.
+- **What it proves:** workspace creation, WAL, migrations, the Work Item lifecycle, the atomic claim,
+  crash/restart recovery (a real child process is killed), artifact hashing, online backup, isolated
+  verification and restore dry start, and health/readiness.
+- **Result and cleanup:** it prints `C1 LOCAL ACCEPTANCE — PASS`, then deletes only the directory it
+  created. Pass `--keep` to keep it.
+- **What it needs:** no credentials, no provider keys, no network.
+
+### Engineering CLI
+
+After `npm run build`: `node packages/runtime/dist/src/cli.js <command> --workspace <dir>`.
+
+| Command | What it does |
+|---|---|
+| `init` | Creates and validates the workspace and runs the migrations |
+| `start` | Runs the Runtime Supervisor until Ctrl+C |
+| `health` | Read-only inspection |
+| `submit --kind c1.steps` | Submits deterministic work |
+| `cancel --work-item <id>` | Cancels a Work Item |
+| `backup` | Online backup |
+| `verify-backup --backup <id>` | Verifies a backup in isolation |
+| `restore-check --backup <id> --target <empty dir>` | Isolated restore dry start |
+| `verify-artifacts` | Re-hashes every artifact object |
+
+The CLI installs no service, creates no scheduled task and opens no network port.
+
 ## Validation
 
-CI (`.github/workflows/ci.yml`) runs `npm ci` and `npm run ci` on Windows and Linux for every push
-to `main` and every PR targeting `main`. The verifier first proves that each of its rules can fail,
+CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm run ci` and the C1 local acceptance on Windows and
+Linux for every push to `main` and every PR targeting `main`. The verifier first proves that each of its rules can fail,
 then checks the repository: required files and docs, private packages, bounded Node 24 engine, npm
 workspaces and lockfile, no tracked `.env` / secret / `node_modules` / SQLite / native-binary files,
 no App-repository dependency, no `tar` usage, no APP-OPS implementation, no placeholder packages,
@@ -82,7 +140,11 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
   Stage 16 recorded;
 - that no archives are present;
 - that the baseline carries the privacy rules and no stale default-with-exception wording;
-- the lifecycle state (`C0` closed; `C1` not claimed as implemented without a closure record).
+- the lifecycle state (`C0` closed; `C1` not claimed closed without a closure record; `C2` not started
+  before C1 closes);
+- the C1 boundaries: `node:sqlite` only in the storage adapter, no network code in runtime packages,
+  no third-party runtime dependencies, released migrations pinned by SHA-256, and the C1 proof tests
+  present.
 
 ## Windows notes (Founder host)
 

@@ -2,14 +2,17 @@
   "name": "qandeel-company",
   "version": "0.0.0",
   "private": true,
-  "description": "QANDEEL COMPANY - bespoke local-first AI company that operates the QANDEEL product/business. C0 bootstrap baseline only.",
+  "description": "QANDEEL COMPANY - bespoke local-first AI company that operates the QANDEEL product/business. C1 durable runtime foundation (implementation candidate).",
   "license": "SEE LICENSE IN LICENSE.md",
   "type": "module",
   "workspaces": [
-    "packages/bootstrap-contract"
+    "packages/bootstrap-contract",
+    "packages/domain",
+    "packages/storage",
+    "packages/runtime"
   ],
   "engines": {
-    "node": ">=24.11.0 <25.0.0",
+    "node": ">=24.12.0 <25.0.0",
     "npm": ">=11.6.0 <12.0.0"
   },
   "scripts": {
@@ -18,7 +21,11 @@
     "lint": "eslint --max-warnings=0 .",
     "test": "npm run test --workspaces",
     "verify": "node scripts/verify-bootstrap.mjs",
-    "ci": "npm run build && npm run typecheck && npm run lint && npm run test && npm run verify"
+    "c1:integration": "npm run test:multiprocess --workspace @qandeel-company/storage && npm run test:integration --workspace @qandeel-company/runtime",
+    "c1:faults": "npm run test:faults --workspace @qandeel-company/runtime",
+    "c1:acceptance": "node scripts/c1-acceptance.mjs",
+    "c1:mutation": "node scripts/c1-mutation-check.mjs",
+    "ci": "npm run build && npm run typecheck && npm run lint && npm run test && npm run c1:mutation && npm run verify"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
