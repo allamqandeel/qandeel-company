@@ -13,6 +13,14 @@
  *   verify-backup   --workspace <dir> --backup <id>
  *   restore-check   --workspace <dir> --backup <id> --target <new empty dir>
  *   verify-artifacts --workspace <dir>                     re-hash every artifact object
+ *
+ * C2 read-only commands (content-free counts / IDs / codes):
+ *   governance      --workspace <dir>                      governance health
+ *   approvals       --workspace <dir>                      pending approvals (IDs, risk, action codes)
+ *
+ * There is deliberately no Founder write command (no register-founder, approve or reject): a
+ * Founder reference typed on a command line is not authentication. Founder authority arrives with
+ * the authenticated Founder surface (C5); until then R3 work stays WAITING_APPROVAL (D-C2-13).
  */
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
@@ -20,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { assertCode, assertId, isQandeelError } from '@qandeel-company/domain';
-import { ArtifactStore, CompanyStore, createBackup, restoreToIsolatedWorkspace, verifyBackup } from '@qandeel-company/storage';
+import { ArtifactStore, CompanyStore, GovernanceStore, createBackup, restoreToIsolatedWorkspace, verifyBackup } from '@qandeel-company/storage';
 
 import { DETERMINISTIC_PROCESSORS } from './deterministic-processors.js';
 import { inspectWorkspace, runtimeHealth } from './health.js';
@@ -28,7 +36,7 @@ import { Logger, jsonLinesSink } from './logger.js';
 import { CompanyRuntime, RUNTIME_VERSION } from './runtime.js';
 import { notifyRuntime } from './wake.js';
 
-const USAGE = 'usage: qandeel-company <init|start|health|submit|cancel|backup|verify-backup|restore-check|verify-artifacts> --workspace <dir> [options]';
+const USAGE = 'usage: qandeel-company <init|start|health|submit|cancel|backup|verify-backup|restore-check|verify-artifacts|governance|approvals> --workspace <dir> [options]';
 
 function out(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -175,6 +183,25 @@ export async function main(argv: readonly string[]): Promise<void> {
       const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
       try {
         out({ ok: true, command, ...new ArtifactStore(store).verifyAll() });
+      } finally {
+        store.close();
+      }
+      return;
+    }
+    case 'governance': {
+      const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
+      try {
+        out({ ok: true, command, ...GovernanceStore.for(store).healthCounts() });
+      } finally {
+        store.close();
+      }
+      return;
+    }
+    case 'approvals': {
+      const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
+      try {
+        const pending = GovernanceStore.for(store).listApprovals('PENDING').map((a) => ({ approvalId: a.id, risk: a.risk, action: a.action, workItemId: a.workItemId, subjectRef: a.subjectRef, requestedAt: a.createdAt }));
+        out({ ok: true, command, pending });
       } finally {
         store.close();
       }

@@ -13,6 +13,13 @@
     "./runtime-authority": {
       "types": "./dist/src/runtime-authority.d.ts",
       "default": "./dist/src/runtime-authority.js"
+    },
+    "./testing": {
+      "qandeel-test": {
+        "types": "./dist/src/testing/founder-seam.d.ts",
+        "default": "./dist/src/testing/founder-seam.js"
+      },
+      "default": null
     }
   },
   "engines": {
@@ -26,7 +33,8 @@
     "test:multiprocess": "node ../../scripts/run-node-tests.mjs multiprocess"
   },
   "dependencies": {
-    "@qandeel-company/domain": "0.1.0"
+    "@qandeel-company/domain": "0.1.0",
+    "@qandeel-company/governance": "0.2.0"
   },
   "files": [
     "dist",

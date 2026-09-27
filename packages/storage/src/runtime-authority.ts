@@ -14,6 +14,7 @@
  * from a worker also present the supervisor fence.
  */
 import { isQandeelError, type Id, type JsonValue, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
+import type { DataClass, ProviderFailureClass } from '@qandeel-company/governance';
 
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import {
@@ -42,6 +43,27 @@ import {
   txUpdateInstance,
   type InstanceState,
 } from './runtime-state.js';
+import type { SettleUsage } from './governance-core.js';
+import {
+  txAuthorizeModelCall,
+  txBeginGovernedRun,
+  txDeploymentOutcome,
+  txHold,
+  txRecoverGovernedOrphans,
+  txRelease,
+  txReserve,
+  txSettle as txSettleReservation,
+  txToolIntent,
+  txToolResult,
+  type AuthorizeResult,
+  type BeginResult,
+  type GovernedRecoverySummary,
+  type ReserveInput,
+  type ReserveResult,
+  type ToolDriverOutcome,
+  type ToolIntent,
+  type ToolIntentInput,
+} from './governed-writes.js';
 import { userVersion } from './migrations.js';
 import { storeContext, type CompanyStore } from './store.js';
 import { txRequestCancellation, txSupersede } from './work-items.js';
@@ -194,5 +216,61 @@ export function abandonStaleInstances(store: CompanyStore, supervisor: Superviso
   return write(store, 'abandon stale instances', (ctx) => {
     verifySupervisor(ctx, supervisor);
     return txAbandonStaleInstances(ctx, currentId);
+  });
+}
+
+// --- C2 governed execution writes (job fence mandatory; runtime only) -----------------------------
+
+export type { BeginResult, GovernedRecoverySummary, GovernedRunContext, ReserveInput, ReserveResult, ToolDriverOutcome, ToolIntent, ToolIntentInput, AuthorizeResult } from './governed-writes.js';
+export type { SettleUsage } from './governance-core.js';
+
+/** Binds the run to its eligible Employee (and Department). */
+export function beginGovernedRun(store: CompanyStore, fence: Fence): BeginResult {
+  return fenced(store, 'begin governed run', fence, (ctx) => txBeginGovernedRun(ctx, fence));
+}
+
+export function authorizeModelCall(store: CompanyStore, fence: Fence, input: { taskClass: string; dataClass: DataClass }): AuthorizeResult {
+  return fenced(store, 'authorize model call', fence, (ctx) => txAuthorizeModelCall(ctx, fence, input));
+}
+
+/** Worst-case reservation before a call; committed before the call is made. */
+export function reserveBudget(store: CompanyStore, fence: Fence, input: ReserveInput): ReserveResult {
+  const r = fenced(store, 'reserve budget', fence, (ctx) => txReserve(ctx, fence, input));
+  if (r.ok) storeContext(store).fault('reservation.afterCommit');
+  return r;
+}
+
+export function settleReservation(store: CompanyStore, fence: Fence, reservationId: Id, usage: SettleUsage): Id | null {
+  return write(store, 'settle reservation', (ctx) => txSettleReservation(ctx, fence, reservationId, usage));
+}
+
+export function releaseReservation(store: CompanyStore, fence: Fence, reservationId: Id, reasonCode: string): void {
+  write(store, 'release reservation', (ctx) => txRelease(ctx, fence, reservationId, reasonCode));
+}
+
+export function holdReservation(store: CompanyStore, fence: Fence, reservationId: Id, reasonCode: string): void {
+  write(store, 'hold reservation', (ctx) => txHold(ctx, fence, reservationId, reasonCode));
+}
+
+export function recordDeploymentOutcome(store: CompanyStore, fence: Fence, deploymentId: Id, failure: ProviderFailureClass | null): void {
+  write(store, 'deployment outcome', (ctx) => txDeploymentOutcome(ctx, fence, deploymentId, failure));
+}
+
+/** Durable tool intent after the complete authority path; committed before any driver call. */
+export function recordToolIntent(store: CompanyStore, fence: Fence, input: ToolIntentInput): ToolIntent {
+  const intent = fenced(store, 'tool intent', fence, (ctx) => txToolIntent(ctx, fence, input));
+  if (intent.kind === 'EXECUTE') storeContext(store).fault('toolIntent.afterCommit');
+  return intent;
+}
+
+export function recordToolResult(store: CompanyStore, fence: Fence, invocationId: Id, outcome: ToolDriverOutcome): string {
+  return write(store, 'tool result', (ctx) => txToolResult(ctx, fence, invocationId, outcome));
+}
+
+/** Recovery (supervisor fence mandatory): classify governed work of runs that are no longer running. */
+export function recoverGovernedOrphans(store: CompanyStore, supervisor: SupervisorFence, limit = 100): GovernedRecoverySummary {
+  return write(store, 'recover governed orphans', (ctx) => {
+    verifySupervisor(ctx, supervisor);
+    return txRecoverGovernedOrphans(ctx, limit);
   });
 }

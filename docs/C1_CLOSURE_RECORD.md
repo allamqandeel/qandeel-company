@@ -1,9 +1,10 @@
 # C1 — Company Foundation & Durable Runtime — Closure Record
 
-> **C1 — CLOSED / READY FOR MERGE**
+> **C1 — CLOSED / MERGED / CANONICAL** (closed as READY FOR MERGE on 2026-09-27; merged as `419ee4f`)
 
-The **C1 gate is satisfied**. **PR #2 is still unmerged** until Founder merge approval.
-**C2 is not started.**
+The **C1 gate is satisfied**. **Lifecycle update (2026-09-27, at C2 start):** PR #2 was merged into
+`main` as `419ee4f10d6d2fc48ee90cf20e0ad24b28dfc002`; C1 is **CLOSED / MERGED / CANONICAL**. C2 is
+active (see `docs/architecture/IMPLEMENTATION_MAP.md`).
 
 - **Repository / PR:** `allamqandeel/qandeel-company`, PR #2 (branch
   `claude/dreamy-wozniak-nq3hr8`, base `main` at `deef86c`).

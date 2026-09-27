@@ -9,7 +9,7 @@
  */
 import type { Id } from '@qandeel-company/domain';
 import type { ArtifactStore, CompanyStore, SupervisorFence } from '@qandeel-company/storage';
-import { abandonStaleInstances, interruptClaim, interruptOrphanRun, settleDanglingTermination } from '@qandeel-company/storage/runtime-authority';
+import { abandonStaleInstances, interruptClaim, interruptOrphanRun, recoverGovernedOrphans, settleDanglingTermination } from '@qandeel-company/storage/runtime-authority';
 
 export interface RecoverySummary {
   [key: string]: number | string | boolean | null;
@@ -33,6 +33,10 @@ export interface RecoverySummary {
   artifactsMissing: number;
   artifactOrphansQuarantined: number;
   artifactUnknownFiles: number;
+  governedReservationsHeld: number;
+  governedReservationsReleased: number;
+  governedInvocationsRetryable: number;
+  governedInvocationsHeld: number;
 }
 
 const BATCH = 100;
@@ -66,6 +70,10 @@ export function runRecovery(store: CompanyStore, artifacts: ArtifactStore, { ins
     artifactsMissing: 0,
     artifactOrphansQuarantined: 0,
     artifactUnknownFiles: 0,
+    governedReservationsHeld: 0,
+    governedReservationsReleased: 0,
+    governedInvocationsRetryable: 0,
+    governedInvocationsHeld: 0,
   };
 
   // 1. Claims left by any previous supervisor (expired or not: this supervisor holds the lease, so
@@ -102,6 +110,18 @@ export function runRecovery(store: CompanyStore, artifacts: ArtifactStore, { ins
       settleDanglingTermination(store, supervisor, id);
       summary.danglingTerminationsSettled++;
     }
+  }
+
+  // 3b. C2 governed work of runs that are no longer running: model-call reservations whose outcome
+  //     is unknown are held for reconciliation (never silently released or re-spent); tool intents
+  //     become retryable under the same idempotency key, or reconciliation-required when UNSAFE.
+  for (let i = 0; i < MAX_BATCHES; i++) {
+    const g = recoverGovernedOrphans(store, supervisor, BATCH);
+    summary.governedReservationsHeld += g.reservationsHeld;
+    summary.governedReservationsReleased += g.reservationsReleased;
+    summary.governedInvocationsRetryable += g.invocationsRetryable;
+    summary.governedInvocationsHeld += g.invocationsHeld;
+    if (g.reservationsHeld + g.reservationsReleased + g.invocationsRetryable + g.invocationsHeld === 0) break;
   }
 
   // 4. Cross-store artifact boundary.

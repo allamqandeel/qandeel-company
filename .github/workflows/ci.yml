@@ -18,13 +18,13 @@ jobs:
   ci:
     name: ci (${{ matrix.os }})
     # Windows is the Founder's operating platform; Linux is the Claude Cloud build platform.
-    # Every C1 proof (unit, real-SQLite, multi-process, fault-injection, acceptance) runs on both.
+    # Every C1 and C2 proof (unit, real-SQLite, multi-process, fault-injection, mutation, acceptance) runs on both.
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,8 +46,11 @@ jobs:
       - name: Clean install
         run: npm ci
 
-      - name: Full check (build, typecheck, lint, all C1 tests incl. multi-process + fault matrix, verify)
+      - name: Full check (build, typecheck, lint, all C1 + C2 tests incl. multi-process + fault matrices, C1 + C2 mutation checks, verify)
         run: npm run ci
 
       - name: C1 local acceptance (disposable workspace outside the checkout)
         run: npm run c1:acceptance -- --workspace "${{ runner.temp }}/c1-acceptance"
+
+      - name: C2 local acceptance (disposable workspace; deterministic fake provider, no network, no credentials)
+        run: npm run c2:acceptance -- --workspace "${{ runner.temp }}/c2-acceptance"

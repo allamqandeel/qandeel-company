@@ -696,3 +696,316 @@ Exact-head GitHub CI (Windows and Ubuntu) did not expose it.
   from the parent's retry delay; the helper validates its policy; `runtime.backup()` fails closed
   without a record; on POSIX the backups directory is fsynced after the new entry.
 - **Founder-host re-validation of the new exact SHA is still required.**
+
+## D-C2-01 — C2 package shape
+
+**Decision.** C2 adds one new package, `@qandeel-company/governance`: the pure, deterministic C2
+policy kernel with no I/O. It covers Employee lifecycle and identity validation, the R0–R4
+authority decision, approval scope fingerprints, the reasoning (`E0..E4`) and data (`D0..D4`)
+classes, the Router Policy, checked economics, the provider-adapter and tool-driver contracts,
+the failure taxonomy and typed model proposals.
+- **Persistence** stays in `@qandeel-company/storage`. `node:sqlite` stays in one adapter, and SQL
+  stays storage-internal.
+  - `GovernanceStore` covers Founder-authority administration and reads.
+  - Fenced execution writes sit behind the existing `runtime-authority` subpath.
+- **Execution** stays in `@qandeel-company/runtime`, under the Runtime Supervisor.
+  - The governed Model Runtime is the only provider-adapter caller.
+  - The Tool Executor is the only tool-driver caller.
+  - `c2.employee-task` is the runtime-owned loop.
+- `governance` is added to `ALLOWED_PACKAGES` in the same change. No third-party runtime
+  dependency is added.
+
+## D-C2-02 — Provider neutrality: no commercial provider in C2
+
+**Decision.** C2 implements the complete provider-neutral adapter contract (`ProviderAdapter`), the
+usage/cost normalization and the failure taxonomy, plus a deterministic fake provider and fake tool
+drivers. **No real provider adapter is implemented**, so no provider API was researched and none is
+claimed.
+- CI makes no network call and no paid call.
+- No credential exists anywhere.
+- An adapter receives no credential through the request. A real adapter would obtain its
+  credential privately from the host vault in its own constructor (D14-A.4, D14-D.5).
+- Choosing and qualifying a real provider is a later decision with its own research.
+
+## D-C2-03 — Migration 0004 and the approval binding on Work Items
+
+**Decision.** All C2 state is in one new released migration,
+`0004_c2_governance.sql`, pinned by SHA-256. Migrations 0001–0003 are unchanged and are now also
+frozen by content in the verifier (`c1-migrations-frozen`), so editing one and re-pinning it is
+refused.
+- The C1 fail-closed approval gate gets its real authority path.
+  `work_items.approval_id` (added by `ALTER TABLE`) binds a Work Item to the Founder-approved
+  `work_item.execute` approval that released it.
+- Defense in depth, three layers:
+  - the domain `assertTransition` releases approval-gated work only with a bound approval;
+  - trigger `work_items_approval_gate` refuses the release unless the bound approval is
+    `APPROVED`/`CONSUMED`, decided by a `founder:` principal and scoped to this Work Item;
+  - trigger `work_items_approval_gate_insert` refuses creating such work released.
+- **R4 work is never released**, even with an approval: `FOUNDER_ONLY`.
+- Without an approval, the C1 error code (`APPROVAL_PATH_UNAVAILABLE`) and C1 tests are unchanged.
+- **C1 tests adapted, not weakened.** Four C1 tests hard-coded "current schema = 3" and now track
+  the current version. The v2→v3 upgrade test pins its migration set to v3.
+
+## D-C2-04 — Founder principal; Founder-only administration in Strong-v1 C2
+
+**Decision.**
+- **Principals** (`principals`) keep Human (Founder) identity ≠ Employee ≠ Runtime principal
+  (D14-A.2). Exactly one active Founder principal (`founder:<uuid>`) can be registered.
+- **Founder-only acts.** Grants, approvals (R3), budget creation and cap changes, qualification,
+  egress approval, holds, activation and reconciliation are Founder authority in C2 (Stage 3 §3/§6).
+- **Refusals.** An employee acting on its own subject is refused as `SELF_ESCALATION_REFUSED`; any
+  other non-Founder is refused as `FOUNDER_ONLY`. Refusals are audited.
+- **C4 owns delegation.** Director / manager delegation ("managers may allocate within an
+  approved departmental budget") is not implemented.
+- **Honest limit.** C2 records who the Founder is. Authenticating the human at a Founder surface
+  (local IPC with caller identity, Stage 12 §48–49) is C5. Model output can never reach these
+  entry points: no proposal type exists for them. **Superseded in part by D-C2-13:** a Founder
+  reference is not authentication, so production C2 has no Founder write surface at all.
+
+## D-C2-05 — Employee activation and execution eligibility
+
+**Decision.**
+- **Only `ACTIVE` executes.** `SHADOW`/`PROBATION` execution is Academy-controlled (C3) and is not
+  granted here.
+- **No activation before certification (D-C2-13).** Activation (`SHADOW` / `PROBATION → ACTIVE`)
+  fails closed in C2: certification is C3's, and no Founder attestation or opaque reference
+  substitutes for it. The CHECK that refuses an `ACTIVE` row without evidence references stays;
+  only the test seam writes one, labelled `test-seam:<id>`.
+- **Certificate kinds are reserved.** Review finding: `academy:`, `certification:` and `cert:`
+  refs are refused, because only the C3 Academy may issue them.
+- **Retirement** revokes grants and retires the employee principal. The Employee stays in history.
+- **Lifting a suspension** goes through `RETRAINING`, never straight back to `ACTIVE`.
+- **Names:** one Egyptian two-part human-style name per employee, distinct from every other
+  employee's (`name_origin = 'EG'` is recorded, not inferred).
+- **Surface to the Product Owner.** The transition table, including `RETRAINING → SHADOW/PROBATION`
+  and `SUSPENDED → RETRAINING`, is an engineering reading of Stage 4 §8. The Product Owner may
+  refine it.
+
+## D-C2-06 — Budget accounting model
+
+**Decision.**
+- **Units.** Money is integer micro-units of one Company currency, set on the Company budget; price
+  cards must use it. Tokens are integer quantities.
+- **Ceilings.** Every amount is ≤ 10^15 micro-units (tokens ≤ 10^12), so sums stay exact in
+  JavaScript numbers.
+- **No SQL arithmetic.** SQLite turns an overflowing integer expression into a REAL (probed on
+  3.53.4). All accounting sums are therefore computed with checked JS arithmetic and stored as
+  integers.
+- **The hierarchy is structural.** Each budget's parent is immutable. A child cap never exceeds
+  its parent. `CHECK (reserved + spent ≤ cap + overrun)` guards every row.
+- **Reservation is atomic across the chain.** One `BEGIN IMMEDIATE` transaction checks every level
+  (Run → Work Item → Employee → Department → Company) and reserves at all of them, or at none.
+- **Run budgets** are derived by the runtime at the first reservation of a run:
+  `min(run cap or Work Item cap, Work Item cap)`.
+- **Settlement.** Settlement charges the economic cost (≥ billed for METERED) and the tokens, and
+  releases the whole reservation. **Overrun** (provider usage beyond enforced bounds) is recorded
+  truthfully per level, flagged in usage and health, and never hidden.
+- **Overhead.** Retry, fallback and escalation attempts are separate reservations with their own
+  `attempt_kind`. They are bounded per run by the Router Policy's overhead ceiling, escalation depth
+  and call ceiling.
+- **Budget exhaustion** parks work (`WAIT BUDGET_EXHAUSTED`, token-free). A Founder cap increase
+  wakes only the Work Items under that budget.
+
+## D-C2-07 — Crash semantics of reservations and tool intents
+
+**Decision.** For runs that are no longer `RUNNING`, recovery classifies what they left behind:
+- A model-call reservation may already have been sent and billed. It becomes
+  `RECONCILIATION_REQUIRED` and **stays reserved**. The Founder reconciles it: `CHARGE` the
+  provider-reported usage, or `RELEASE`.
+- A tool intent without a result:
+  - `NONE` / `IDEMPOTENT` actions become `RETRYABLE` under the same idempotency key, and their
+    reservation is released;
+  - `UNSAFE` actions become `RECONCILIATION_REQUIRED` with the reservation held.
+- **Idempotency keys** are derived by the runtime from the Work Item and the checkpointed step
+  (`wi:<workItem>:s<step>`), never from model output. The planned tool request is checkpointed
+  before its side effect, so a resumed run presents the same key and the same arguments.
+- **Late but truthful writes.** Settlement and tool results are accepted from the same worker (same
+  run and fencing token) even after lease expiry. Recording what really happened is history, not
+  new authority. New reservations and intents require a live fence.
+
+## D-C2-08 — Governed processor contract and containment
+
+**Decision.**
+- **Governed processors.** A `GovernedProcessor` receives `GovernedRunServices` (`invokeModel`,
+  `executeTool`) bound to its claim's fence. It never receives the store, an adapter or a driver.
+  The runtime binds the run to an eligible Employee (`run_attributions`) before calling it.
+- **Side-effect class.** `c2.employee-task` declares `IDEMPOTENT`: external effects happen only
+  through keyed tools, and tool-level reconciliation handles `UNSAFE` actions.
+- **Automatic pause.** Three authority / bypass signals inside one run pause the Employee
+  (`PAUSED`, `AUTO_PAUSE_AUTHORITY_DENIALS`, audited). This is deterministic containment (Stage 3
+  §9, D14-E.5): it only reduces autonomy.
+  - The signals are `NO_GRANT`, `FOUNDER_ONLY`, `EGRESS_DENIED` and `IDEMPOTENCY_CONFLICT`.
+  - An unknown tool, invalid arguments or a Founder rejection are ordinary failures (review
+    finding). They are audited as `tool.refused` and never counted.
+- **R2 is not a violation.** An R2 request parks the work (`AWAITING_INDEPENDENT_REVIEW`) until the
+  Review Pool exists (C4), and does not count as a denial.
+
+## D-C2-09 — Events and audit for C2
+
+**Decision.** The C1 `events.aggregate_type` CHECK fixes the aggregates. Changing it would mean
+rebuilding a released table. C2 therefore:
+- emits execution events on existing aggregates: `run.attributed`, `run.usage_settled` and
+  `run.tool_invocation` on `run`; `work_item.approval_requested` and `work_item.approved` on
+  `work_item`;
+- records governance changes in dedicated append-only history tables (`employee_history`,
+  `approval_history`, `budget_history`, `catalog_history`) plus content-free audit rows.
+
+Audit rows, events and logs carry IDs, codes, amounts and argument **digests** only. Tool arguments
+and results never enter them (Rule A).
+
+## D-C2-10 — Official-source refresh (2026-09-27) and the Cloud gap
+
+- **Node 24 `node:sqlite` documentation**, `nodejs.org/docs/latest-v24.x/api/sqlite.html`, reached
+  and reviewed:
+  - Stability 1.2 (release candidate);
+  - `DatabaseSync` APIs are synchronous;
+  - `readBigInts: false` → an out-of-safe-range INTEGER read throws `ERR_OUT_OF_RANGE`;
+  - JS numbers bind as INTEGER or REAL.
+
+  C2 keeps every stored amount ≤ 10^15, so no amount read can exceed the safe range.
+- **`www.sqlite.org`** is blocked by the Cloud egress proxy, as in D-C1-05. The behaviour C2
+  relies on was probed on the bundled SQLite 3.53.4 instead: integer overflow in arithmetic
+  becomes REAL; STRICT refuses a non-integral REAL in an INTEGER column. C2 does not depend on
+  either, because it does no SQL arithmetic.
+- **Follow-up:** the Founder-host review repeats the sqlite.org check.
+- **Toolchain:** the Cloud session used Node 24.21.0 (npm 11.19.0), checksum-verified from
+  nodejs.org.
+
+## D-C2-11 — Verifier and mutation evolution
+
+**Decision.**
+- **New verifier rules**, each with negative self-tests:
+  - `model-calls-confined`;
+  - `tool-drivers-confined`;
+  - `budget-mutation-scoped`: budget, reservation and usage writes only in the storage governance
+    modules; fenced signatures; nothing on the ordinary stores;
+  - `no-plaintext-secrets`: secret literal formats; secret-shaped schema columns;
+  - `c1-migrations-frozen`;
+  - `no-later-scope-leakage`: C3–C7 tables and packages;
+  - `c2-proofs-present`;
+  - `c2-not-claimed-closed`: no C3 start before a C2 closure record.
+- The synthetic self-test repository embeds the real frozen C1 migration texts.
+- **`npm run c2:mutation`** removes 13 C2 gates from the compiled output. Its proof tests must fail
+  for every one. It runs in `npm run ci`.
+- **Known limitation:** the confinement rules are lexical (`.generate(` / `.invoke(`). Structural
+  confinement comes from privacy: adapters and drivers are held in private fields of the two
+  modules, and no API returns them.
+- **CI:** the job timeout was raised to 50 minutes, and CI now runs the C2 acceptance on Windows
+  and Ubuntu.
+
+## D-C2-12 — Internal review round (four focused reviews at `4178d88`) and fixes
+
+Four read-only reviewers ran at `4178d88`: authority / security; budget races / hidden spend;
+model / tool boundary; scope leakage. Every in-scope BLOCKER and MAJOR was fixed on this branch.
+Each item below is covered by a regression test, and new gates by a mutation.
+
+**BLOCKER — processor-mutable run context (boundary review).** The shared run context could be
+mutated, so a hostile governed processor could lower its data class (D4 → D1) and send D4 content
+to an EXTERNAL provider.
+- The context and cognitive profile are now deeply frozen.
+- Model authorization and every reservation re-derive the effective data class, egress, locality,
+  qualification, task class and the Employee's ceiling from durable state inside the transaction.
+- Proofs: a hostile-processor runtime test; mutation `processor-can-widen-egress`.
+
+**MAJOR — tool results could carry higher-class data to a model (security).** Each tool action
+has a `result_data_class`. The effective context class is the maximum of the declared class and
+the result classes of tool results already in the Work Item's context. It governs model egress
+and later tool egress. Mutation `tool-result-does-not-raise-class`.
+
+**MAJOR — an invalid data class became D1 (security + scope).** A missing class still defaults to
+D1 (surfaced to the Product Owner). A class that is present but invalid now resolves to D4 in
+storage and is refused by `c2.employee-task` (`INVALID_TASK_INPUT`) before any call.
+
+**MAJOR — interrupted tool intents released money that may have been spent (budget).** A tool
+call whose driver may have run is never released:
+- after a crash, a timeout, a driver throw or a superseded dead intent, the fixed per-call cost is
+  charged (`FAILED_CHARGED`), and NONE / IDEMPOTENT actions become RETRYABLE;
+- UNSAFE actions become RECONCILIATION_REQUIRED with the reservation held;
+- only an explicit driver `sent: 'NO'` releases the reservation.
+
+**MAJOR — a retry superseded a live intent (budget).** An `INTENT_RECORDED` invocation whose run
+is still RUNNING is never superseded (`IN_FLIGHT`). A dead run's intent is classified as recovery
+classifies it before being reused. Recovery touches tool reservations only through their
+invocation, so batching can no longer release an UNSAFE reservation.
+
+**MAJOR — "academy:" refs looked like certification (scope).** Those refs are now reserved and
+refused (D-C2-05).
+
+**MAJOR — ordinary model mistakes paused Employees (scope).** Only authority / bypass signals
+count toward the automatic pause (D-C2-08).
+
+**MINOR fixes:**
+- model authorization is re-run before every attempt, so a revoked grant or withdrawn egress
+  applies to the next retry;
+- model-written tool / action names never enter audit (Rule A);
+- `recordDeploymentOutcome` requires the run's own fencing token;
+- a cap cannot drop below a child's cap;
+- a charge beyond its reservation is flagged as overrun per settlement;
+- `accountingInvariants` also checks child ≤ parent caps, usage only on SETTLED reservations,
+  succeeded invocations settled, reservations held on their own Run budget, and attribution
+  consistency;
+- reconciling a reservation that belongs to an uncertain tool invocation is refused (resolve the
+  invocation instead);
+- a late settlement after a Founder release is recorded as `budget.late_usage_discrepancy`;
+- drivers receive the validated, frozen arguments bound to the intent / approval;
+- the tool step is validated;
+- context-overflow escalation happens at most once;
+- external mutations must be R3 or R4 (the 0004 CHECK and the kernel);
+- the Founder may decide a request they filed, but never one whose subject they are;
+- a new ESLint AST rule confines `generate` / `invoke` in any syntactic form (dot, computed,
+  destructuring) to the two modules.
+
+**Mechanics.** The C1 mutation check now expects 5 occurrences of the recovery supervisor-fence
+guard: the 4 C1 recovery writes plus the supervisor-fenced governed recovery. Migration 0004 was
+not yet released or merged, so it was amended in place and re-pinned.
+
+**Surfaced to the Product Owner rather than decided:** listed in `docs/C2_IMPLEMENTATION_REPORT.md`
+§13.
+
+## D-C2-13 — Founder-approved authority remediation (Founder decision)
+
+**Context.** The Founder approved three corrections to the C2 candidate at `aea4d54`. They resolve
+three items that §13 of the report had surfaced as Product interpretations.
+
+**Decision.**
+1. **A Founder reference is not authentication.** Until C5 provides the authenticated Founder
+   surface:
+   - production has no Founder write authority;
+   - every Founder-authority write fails closed with `FOUNDER_SURFACE_UNAVAILABLE`, and is
+     audited. This covers administration, grants, budgets, qualification, egress, holds,
+     reconciliation, `registerFounder` and `decideApproval`;
+   - the CLI offers no `register-founder`, `approve` or `reject` (read-only `governance` /
+     `approvals` remain);
+   - durable approvals and their enforcement stay: R3 stays `WAITING_APPROVAL` and R4 stays
+     Founder-only.
+2. **No Founder-attestation shortcut to `ACTIVE`.** Activation fails closed until the C3 Academy
+   supplies real training / certification. C2 persists Employee identity and lifecycle, enforces
+   execution eligibility and never fakes Academy evidence.
+3. **D3 external egress stays closed.** Stage 14 makes D3 external authorization depend on a
+   qualified conditional egress profile (account / endpoint / region / features / retention), not
+   on the provider brand or a generic approval. C2 implements no such profile and invents no
+   placeholder for it. The external ceiling is therefore D2 (`MAX_EXTERNAL_DATA_CLASS`), enforced
+   in five places:
+   - the router hard gate (before quality and cost);
+   - the reserving transaction;
+   - egress approval;
+   - external tool registration and use;
+   - migration 0004 triggers.
+
+   D4 remains local-only, and D0–D2 go through the unchanged gates.
+
+**Test-only seam.** Tests still need Founder-authority states and ACTIVE Employees, so a seam
+(`packages/storage/src/testing/founder-seam.ts`) arms a workspace root in the current process and
+activates an Employee. It is structurally test-only:
+- it resolves only under the `qandeel-test` export condition (production resolution fails);
+- it throws when loaded in a process started without that condition;
+- it is not re-exported from the package index;
+- the verifier confines its importers to tests and the C2 acceptance harness.
+
+The seam's internals (`founderSurfaceInternals`) live in `governance.ts` because they need the
+store's private field. Only the seam module may reference them, and the verifier rule
+`founder-surface-test-only` enforces that.
+
+**Consequence.** Until C5 and C3 exist, C2 production can inspect governance state but cannot
+configure it or activate anyone: governed work fails closed. This is the intended fail-closed
+posture, not a regression.

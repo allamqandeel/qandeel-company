@@ -249,7 +249,7 @@ describe('runtime lifecycle, end to end', () => {
       assert.equal('runRecovery' in (await import('../../src/index.js')), false);
       const w = runtime.submitWorkItem({ objective: 'through the runtime', ownerRef: owner, processorKind: 'c1.noop', initialState: 'READY' }).workItem;
       await eventually(() => view.getWorkItem(w.id).state === 'COMPLETED', 5_000, 'completion observed through the view');
-      assert.equal(view.schemaVersion, 3);
+      assert.equal(view.schemaVersion, 4);
     } finally {
       await runtime.stop();
       removeRoot(root);

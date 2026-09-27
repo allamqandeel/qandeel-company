@@ -27,7 +27,10 @@ export type FaultPoint =
   | 'checkpoint.afterCommit'
   | 'artifact.afterTempWrite'
   | 'artifact.afterStage'
-  | 'artifact.afterRename';
+  | 'artifact.afterRename'
+  | 'reservation.afterCommit'
+  | 'settlement.beforeCommit'
+  | 'toolIntent.afterCommit';
 
 export type FaultHook = (point: FaultPoint) => void;
 
@@ -79,6 +82,7 @@ export function mapWorkItem(r: Row): WorkItemRecord {
     terminationReason: optStr(r.termination_reason),
     supersededBy: optStr(r.superseded_by) as Id | null,
     dedupeKey: optStr(r.dedupe_key),
+    approvalId: optStr(r.approval_id) as Id | null,
     correlationId: str(r.correlation_id) as Id,
     createdAt: str(r.created_at) as Timestamp,
     updatedAt: str(r.updated_at) as Timestamp,

@@ -1,0 +1,171 @@
+/**
+ * `c2.employee-task` — the runtime-owned agent loop for one Employee Work Item (Stage 13 D13-D).
+ *
+ * The runtime owns the loop; the model proposes ONE typed next action per turn. A proposal is data:
+ * FINAL completes, TOOL_REQUEST is handed to the Tool Executor (which enforces authority), anything
+ * else is invalid and never executed. Every turn is checkpointed before its side effect, so a
+ * resumed run continues the same step with the same idempotency key. Waiting (approval, budget,
+ * review) is an event-driven WAIT that consumes no tokens.
+ */
+import { assertIntInRange, boundedText, type JsonValue, type ProcessorContext, type ProcessorResult } from '@qandeel-company/domain';
+import { assertTaskClass, isDataClass, isReasoningClass, type ModelProposal, type ProviderMessage, type ReasoningClass } from '@qandeel-company/governance';
+
+import type { GovernedProcessor, GovernedRunServices, ToolRequest } from './types.js';
+
+export const EMPLOYEE_TASK_KIND = 'c2.employee-task';
+
+export interface EmployeeTaskInput {
+  readonly taskClass: string;
+  /** Declared data class of the context (D0..D4); default D1. Set by the submitter, never the model. */
+  readonly dataClass?: string;
+  readonly reasoningClass?: ReasoningClass;
+  /** Instructions (context payload): sent only to the provider, never to logs, events or audit. */
+  readonly instructions: string;
+  readonly maxTurns?: number;
+  readonly maxOutputTokens?: number;
+}
+
+interface LoopState {
+  readonly turn: number;
+  readonly phase: 'MODEL' | 'TOOL';
+  readonly pending: ToolRequest | null;
+  readonly results: readonly string[];
+  readonly modelCalls: number;
+  readonly invalid: number;
+}
+
+const MAX_RESULT_CHARS = 2_048;
+const MAX_KEPT_RESULTS = 8;
+
+function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasoningClass' | 'dataClass'>> & { reasoningClass: ReasoningClass | null } {
+  const o = (input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}) as Record<string, JsonValue>;
+  // An invalid data class is refused outright (classification never fails open).
+  if (o.dataClass !== undefined && !isDataClass(o.dataClass)) throw new Error('invalid dataClass');
+  if (o.reasoningClass !== undefined && !isReasoningClass(o.reasoningClass)) throw new Error('invalid reasoningClass');
+  return {
+    taskClass: assertTaskClass(o.taskClass),
+    instructions: boundedText(o.instructions, 'instructions', 12_000),
+    maxTurns: o.maxTurns === undefined ? 8 : assertIntInRange(o.maxTurns, 'maxTurns', 1, 32),
+    maxOutputTokens: o.maxOutputTokens === undefined ? 512 : assertIntInRange(o.maxOutputTokens, 'maxOutputTokens', 1, 32_768),
+    reasoningClass: isReasoningClass(o.reasoningClass) ? o.reasoningClass : null,
+  };
+}
+
+function readState(ctx: ProcessorContext): LoopState {
+  const s = ctx.resumeFrom?.state as Partial<LoopState> | null | undefined;
+  if (ctx.resumeFrom?.kind !== 'employee-loop' || typeof s !== 'object' || s === null || typeof s.turn !== 'number') return { turn: 0, phase: 'MODEL', pending: null, results: [], modelCalls: 0, invalid: 0 };
+  return { turn: s.turn, phase: s.phase === 'TOOL' ? 'TOOL' : 'MODEL', pending: (s.pending ?? null) as ToolRequest | null, results: Array.isArray(s.results) ? s.results : [], modelCalls: Number(s.modelCalls ?? 0), invalid: Number(s.invalid ?? 0) };
+}
+
+const save = (ctx: ProcessorContext, s: LoopState): Promise<void> => ctx.checkpoint('employee-loop', s as unknown as JsonValue);
+
+function messages(taskClass: string, instructions: string, results: readonly string[]): ProviderMessage[] {
+  return [
+    { role: 'system', content: `QANDEEL governed employee run. Task class: ${taskClass}. Propose exactly one next action as JSON: {"type":"FINAL","summaryCode":"..."} or {"type":"TOOL_REQUEST","tool":"...","action":"...","args":{...}}.` },
+    { role: 'user', content: instructions },
+    ...results.map((r) => ({ role: 'tool' as const, content: r })),
+  ];
+}
+
+const keep = (results: readonly string[], next: string): string[] => [...results, next.slice(0, MAX_RESULT_CHARS)].slice(-MAX_KEPT_RESULTS);
+
+export const employeeTaskProcessor: GovernedProcessor = {
+  kind: EMPLOYEE_TASK_KIND,
+  // External effects happen only through tools with idempotency keys and tool-level reconciliation;
+  // an interrupted run resumes from its checkpoint and never repeats a recorded effect.
+  sideEffects: 'IDEMPOTENT',
+  governed: true,
+  maxRunMs: 10 * 60_000,
+  run: () => Promise.resolve({ type: 'PERMANENT_FAILURE', code: 'GOVERNANCE_REQUIRED' }),
+  async runGoverned(ctx: ProcessorContext, gov: GovernedRunServices): Promise<ProcessorResult> {
+    let cfg;
+    try {
+      cfg = readInput(ctx.input);
+    } catch {
+      return { type: 'PERMANENT_FAILURE', code: 'INVALID_TASK_INPUT' };
+    }
+    let s = readState(ctx);
+    let escalateFrom: { fromClass: ReasoningClass; evidence: 'OUTPUT_FAILED_VALIDATION' | 'CONTEXT_OVERFLOW' } | null = null;
+    let escalated = false;
+    while (s.turn < cfg.maxTurns) {
+      if (ctx.signal.aborted) return { type: 'CANCELLED' };
+      if (s.phase === 'TOOL' && s.pending) {
+        const out = await gov.executeTool(s.pending, s.turn);
+        switch (out.kind) {
+          case 'SUCCEEDED':
+            s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null, results: keep(s.results, JSON.stringify({ tool: s.pending.tool, action: s.pending.action, result: out.result })) };
+            await save(ctx, s);
+            continue;
+          case 'DENIED':
+            if (out.paused || out.code === 'EMPLOYEE_NOT_ELIGIBLE') return { type: 'PERMANENT_FAILURE', code: 'EMPLOYEE_CONTAINED' };
+            s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null, results: keep(s.results, JSON.stringify({ tool: s.pending.tool, action: s.pending.action, denied: out.code })) };
+            await save(ctx, s);
+            continue;
+          case 'APPROVAL_REQUIRED':
+            return { type: 'WAIT', reasonCode: 'AWAITING_APPROVAL' };
+          case 'REVIEW_REQUIRED':
+            return { type: 'WAIT', reasonCode: 'AWAITING_INDEPENDENT_REVIEW' };
+          case 'BUDGET':
+            return out.code === 'BUDGET_EXHAUSTED' ? { type: 'WAIT', reasonCode: 'BUDGET_EXHAUSTED' } : { type: 'PERMANENT_FAILURE', code: out.code };
+          case 'RECONCILIATION_REQUIRED':
+            return { type: 'RECONCILIATION_REQUIRED', code: 'TOOL_OUTCOME_UNCERTAIN' };
+          case 'NOT_EXECUTED':
+            return { type: 'RETRYABLE_FAILURE', code: 'TOOL_NOT_EXECUTED' };
+          case 'FAILED':
+            return { type: 'PERMANENT_FAILURE', code: 'TOOL_FAILED' };
+        }
+      }
+      const requested = escalateFrom === null ? (cfg.reasoningClass ?? undefined) : undefined;
+      const out = await gov.invokeModel({
+        taskClass: cfg.taskClass,
+        ...(requested !== undefined ? { reasoningClass: requested } : {}),
+        ...(escalateFrom !== null ? { escalation: escalateFrom } : {}),
+        messages: messages(cfg.taskClass, cfg.instructions, s.results),
+        maxOutputTokens: cfg.maxOutputTokens,
+      });
+      if (escalateFrom !== null) escalated = true;
+      escalateFrom = null;
+      switch (out.kind) {
+        case 'NO_LLM':
+          // E0: deterministic work, no model call at all.
+          return { type: 'COMPLETED', evidence: { reasoningClass: 'E0', modelCalls: 0, turns: s.turn } };
+        case 'DENIED':
+          return { type: 'PERMANENT_FAILURE', code: out.code === 'EMPLOYEE_NOT_ELIGIBLE' ? 'EMPLOYEE_CONTAINED' : 'MODEL_ACCESS_DENIED' };
+        case 'BUDGET':
+          return out.code === 'BUDGET_EXHAUSTED' ? { type: 'WAIT', reasonCode: 'BUDGET_EXHAUSTED' } : { type: 'PERMANENT_FAILURE', code: out.code === 'RUN_LIMIT' ? 'RUN_LIMIT' : out.code };
+        case 'ESCALATION_REFUSED':
+          return { type: 'PERMANENT_FAILURE', code: 'ESCALATION_REFUSED' };
+        case 'UNAVAILABLE':
+        case 'UNCERTAIN':
+          // Provider trouble never crashes the Company: bounded C1 retry, then dead letter.
+          return { type: 'RETRYABLE_FAILURE', code: 'PROVIDER_UNAVAILABLE' };
+        case 'FAILED':
+          // One evidence-based escalation per run step; never re-escalate from the class that just failed.
+          if (out.failure === 'CONTEXT_OVERFLOW' && !escalated && cfg.reasoningClass !== 'E4') {
+            escalateFrom = { fromClass: cfg.reasoningClass ?? gov.context.cognitiveProfile.defaultClass, evidence: 'CONTEXT_OVERFLOW' };
+            continue;
+          }
+          return { type: 'PERMANENT_FAILURE', code: `PROVIDER_${out.failure}` };
+        case 'OK':
+          break;
+      }
+      s = { ...s, modelCalls: s.modelCalls + 1 };
+      const proposal: ModelProposal = out.proposal;
+      if (proposal.type === 'FINAL') {
+        await save(ctx, { ...s, phase: 'MODEL', pending: null });
+        return { type: 'COMPLETED', evidence: { summaryCode: proposal.summaryCode, turns: s.turn, modelCalls: s.modelCalls, reasoningClass: out.reasoningClass } };
+      }
+      if (proposal.type === 'INVALID') {
+        // Observable evidence (the output failed validation) may justify one escalation.
+        s = { ...s, invalid: s.invalid + 1 };
+        if (s.invalid >= 2 || escalated) return { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_INVALID' };
+        escalateFrom = { fromClass: out.reasoningClass, evidence: 'OUTPUT_FAILED_VALIDATION' };
+        continue;
+      }
+      // Checkpoint the planned action before any side effect: resume re-presents the same request.
+      s = { ...s, phase: 'TOOL', pending: { tool: proposal.tool, action: proposal.action, args: proposal.args } };
+      await save(ctx, s);
+    }
+    return { type: 'PERMANENT_FAILURE', code: 'MAX_TURNS' };
+  },
+};
