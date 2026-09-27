@@ -40,7 +40,7 @@ import {
   type RenderItem,
 } from '@qandeel-company/mind';
 
-import { getEmployeeRow } from './governance-core.js';
+import { getEmployeeRow, wakeWorkItemJob } from './governance-core.js';
 import type { EmployeeRecord } from './governance-records.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import {
@@ -112,6 +112,11 @@ export function constrainedRun(ctx: StoreContext, runId: Id, e: EmployeeRecord):
 }
 
 // --- Capability gate (Stage 7 §17, §20) ---------------------------------------------------------
+
+/** Work parked on an open capability gap of this Employee is re-evaluated (targeted wake, no polling). */
+export function wakeCapabilityGaps(ctx: StoreContext, employeeId: Id, reasonCode: string): void {
+  for (const g of ctx.db.all<{ work_item_id: string }>(`SELECT work_item_id FROM capability_gaps WHERE employee_id = ? AND state = 'OPEN'`, employeeId)) wakeWorkItemJob(ctx, g.work_item_id as Id, ['CAPABILITY_GAP'], reasonCode);
+}
 
 export interface WorkItemCapabilities {
   readonly requirements: readonly CapabilityRequirement[];

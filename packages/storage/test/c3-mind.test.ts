@@ -683,6 +683,23 @@ describe('C3 academy: gated, evidence-bound, never self-certifying', () => {
 
 const ASSESSMENT_SCORES = (['REASONING_QUALITY', 'CORRECTNESS', 'EVIDENCE_USE', 'QANDEEL_UNDERSTANDING', 'ROLE_MASTERY', 'COLLABORATION', 'FOUNDER_COMMUNICATION', 'LEARNING_FROM_FEEDBACK'] as const).map((dimension) => ({ dimension, scorePct: 90 }));
 
+describe('C3 health: counts and codes only', () => {
+  test('memory / knowledge / skills / academy health counts are content-free and reflect state', () => {
+    withSeed((h, s) => {
+      const c = run(h, s);
+      propose(h, c, 1, { content: 'Egypt payments: the Alexandria pilot used Fawry kiosks.' });
+      MemoryStore.for(h.store).recordKnowledge(s.founder, { scope: 'COMPANY', topic: 'egypt.payments', content: 'Company: Fawry kiosks cover Alexandria.', dataClass: 'D1' });
+      assemble(h, c, 2);
+      const all = { memory: MemoryStore.for(h.store).healthCounts(), skills: SkillStore.for(h.store).healthCounts(), academy: AcademyStore.for(h.store).healthCounts() };
+      assert.equal(all.memory.memories['ACTIVE'], 1);
+      assert.equal(all.memory.knowledge['COMPANY:ACTIVE'], 1);
+      assert.equal(all.memory.contextManifests, 1);
+      assert.equal(all.academy.capabilityGapsOpen, 0);
+      assert.ok(!JSON.stringify(all).includes('Fawry'), 'health never carries content');
+    });
+  });
+});
+
 describe('C3 production posture: authority writes fail closed without the authenticated Founder surface', () => {
   test('canonical truth, knowledge, skills, academy evaluation and activation all refuse a bare Founder reference', () => {
     withSeed((h, s) => {

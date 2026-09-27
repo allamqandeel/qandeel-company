@@ -2,7 +2,7 @@
  * The governed Model Runtime (Stage 13): the ONLY code that calls a provider adapter (verifier rule
  * `model-calls-confined`). Adapters are handed over at construction and held privately.
  *
- * One call = authorize (`model.invoke`, default deny) → Router Policy (hard gates, then cost) →
+ * One call = governed context (C3 assembler only) → authorize (`model.invoke`, default deny) → Router Policy (hard gates, then cost) →
  * worst-case reservation committed → provider call → settle actual usage (unused reservation
  * released) or hold it when the outcome is uncertain. Retry, fallback and escalation are separate
  * attempts with separate reasons, each reserved and attributed on its own. The model's output is
@@ -14,6 +14,7 @@ import { newId, type Id } from '@qandeel-company/domain';
 import {
   FAILURE_DISPOSITIONS,
   ProviderError,
+  maxDataClass,
   classifyProviderError,
   mayRetry,
   normalizeUsage,
@@ -31,6 +32,7 @@ import {
 import { GovernanceStore, type CompanyStore, type Fence } from '@qandeel-company/storage';
 import { authorizeModelCall, holdReservation, recordDeploymentOutcome, releaseReservation, reserveBudget, settleReservation, type GovernedRunContext } from '@qandeel-company/storage/runtime-authority';
 
+import { isAssembledContext, type AssembledContext } from '../c3/context-assembler.js';
 import type { ModelCallOutcome, ModelCallRequest } from './types.js';
 
 export const DEFAULT_MODEL_CALL_TIMEOUT_MS = 120_000;
@@ -59,10 +61,16 @@ export class GovernedModelRuntime {
     return [...this.#adapters.keys()];
   }
 
-  async call(store: CompanyStore, fence: Fence, run: GovernedRunContext, req: ModelCallRequest, signal: AbortSignal): Promise<ModelCallOutcome> {
+  /**
+   * One governed model step. `context` must be a value minted by the C3 Context Assembler for this
+   * run: anything else (a hand-built message list, a copy) is refused before any authorization,
+   * routing or reservation — the model only ever sees governed, budgeted, manifest-bound context.
+   */
+  async call(store: CompanyStore, fence: Fence, run: GovernedRunContext, req: ModelCallRequest, context: AssembledContext, signal: AbortSignal): Promise<ModelCallOutcome> {
+    if (!isAssembledContext(context)) return { kind: 'CONTEXT', code: 'CONTEXT_NOT_ASSEMBLED' };
     // Authorization (and the durable effective data class) is re-evaluated before EVERY attempt:
-    // a revoked grant or a context raised by a tool result applies to the very next call.
-    const auth = authorizeModelCall(store, fence, { taskClass: req.taskClass, dataClass: run.dataClass });
+    // a revoked grant or a context raised by a tool result or by assembled context applies at once.
+    const auth = authorizeModelCall(store, fence, { taskClass: req.taskClass, dataClass: maxDataClass(run.dataClass, context.dataClass) });
     if (!auth.ok) return { kind: 'DENIED', code: auth.code };
     const governance = GovernanceStore.for(store);
     const snapshot = governance.routingSnapshot(req.taskClass);
@@ -85,7 +93,7 @@ export class GovernedModelRuntime {
       // The context's effective data class comes from durable state (declared class raised by tool
       // results already in context): neither the model nor the processor can lower it.
       dataClass: auth.dataClass,
-      inputTokensUpperBound: utf8TokenUpperBound(req.messages),
+      inputTokensUpperBound: Math.max(utf8TokenUpperBound(context.messages), context.estimatedInputTokens),
       maxOutputTokens: req.maxOutputTokens,
       employeeCeiling: profile.ceilingClass,
       currency,
@@ -118,6 +126,8 @@ export class GovernedModelRuntime {
           routePolicyId: policy.id as Id,
           money: d.worstCase.economicMicros,
           tokens: d.worstCase.tokens,
+          // The reservation is bound to this run's OK manifest (store and datastore both check it).
+          contextManifestId: context.manifestId,
         });
         if (!reserved.ok) {
           if (reserved.code === 'ROUTE_NO_LONGER_ELIGIBLE') {
@@ -129,7 +139,7 @@ export class GovernedModelRuntime {
           const reservationId = reserved.reservation.id;
           const sessionId = newId();
           this.#calls++;
-          const outcome = await this.#call(adapter, { providerCode: d.deployment.providerCode, modelCode: d.deployment.modelCode, deploymentCode: d.deployment.code, messages: req.messages, maxOutputTokens: req.maxOutputTokens }, signal);
+          const outcome = await this.#call(adapter, { providerCode: d.deployment.providerCode, modelCode: d.deployment.modelCode, deploymentCode: d.deployment.code, messages: context.messages, maxOutputTokens: req.maxOutputTokens }, signal);
           if (outcome.ok) {
             let usage;
             try {
@@ -143,7 +153,7 @@ export class GovernedModelRuntime {
             }
             settleReservation(store, fence, reservationId, { inputTokens: usage.usage.inputTokens, outputTokens: usage.usage.outputTokens, withinBounds: usage.withinBounds, sessionId, outcome: 'OK' });
             recordDeploymentOutcome(store, fence, d.deployment.id as Id, usage.withinBounds ? null : 'CONTRACT_VIOLATION');
-            return { kind: 'OK', proposal: parseProposal(outcome.response.outputText), usage: usage.usage, deploymentId: d.deployment.id, reasoningClass: d.reasoningClass, attempts: attempt };
+            return { kind: 'OK', proposal: parseProposal(outcome.response.outputText), usage: usage.usage, deploymentId: d.deployment.id, reasoningClass: d.reasoningClass, attempts: attempt, manifestId: context.manifestId };
           }
           const failure = outcome.failure;
           lastFailure = failure;

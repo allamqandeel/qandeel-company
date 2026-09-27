@@ -36,10 +36,11 @@ import {
   type ScenarioKind,
 } from '@qandeel-company/mind';
 
-import { wakeWorkItemJob, getEmployeeRow, setEmployeeState } from './governance-core.js';
+import { getEmployeeRow, setEmployeeState } from './governance-core.js';
 import { founder, founderAdminWrite } from './governance.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { SYSTEM_MIND_REF, getSkillVersionRow, liveCertifications, versionEligibility } from './mind-core.js';
+import { wakeCapabilityGaps } from './mind-writes.js';
 import {
   mapActivation,
   mapAttempt,
@@ -677,7 +678,7 @@ function issueCertification(ctx: StoreContext, e: EnrollmentRecord): void {
   }
   appendAudit(ctx, 'certification.issued', 'certification', id, { actorRef: SYSTEM_MIND_REF }, 'OK', null, { employeeId: e.employeeId, skills: pins.length });
   // Work parked on a capability gap of this Employee is re-evaluated (targeted wake, no polling).
-  for (const g of ctx.db.all<{ work_item_id: string }>(`SELECT work_item_id FROM capability_gaps WHERE employee_id = ? AND state = 'OPEN'`, e.employeeId)) wakeWorkItemJob(ctx, g.work_item_id as Id, ['CAPABILITY_GAP'], 'certification.issued');
+  wakeCapabilityGaps(ctx, e.employeeId, 'certification.issued');
 }
 
 /** Files the activation request with its evidence (system). The decision itself needs authenticated authority. */

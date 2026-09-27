@@ -8,7 +8,7 @@
  * review) is an event-driven WAIT that consumes no tokens.
  */
 import { assertIntInRange, boundedText, type JsonValue, type ProcessorContext, type ProcessorResult } from '@qandeel-company/domain';
-import { assertTaskClass, isDataClass, isReasoningClass, type ModelProposal, type ProviderMessage, type ReasoningClass } from '@qandeel-company/governance';
+import { assertTaskClass, isDataClass, isReasoningClass, type ModelProposal, type ReasoningClass } from '@qandeel-company/governance';
 
 import type { GovernedProcessor, GovernedRunServices, ToolRequest } from './types.js';
 
@@ -58,14 +58,6 @@ function readState(ctx: ProcessorContext): LoopState {
 }
 
 const save = (ctx: ProcessorContext, s: LoopState): Promise<void> => ctx.checkpoint('employee-loop', s as unknown as JsonValue);
-
-function messages(taskClass: string, instructions: string, results: readonly string[]): ProviderMessage[] {
-  return [
-    { role: 'system', content: `QANDEEL governed employee run. Task class: ${taskClass}. Propose exactly one next action as JSON: {"type":"FINAL","summaryCode":"..."} or {"type":"TOOL_REQUEST","tool":"...","action":"...","args":{...}}.` },
-    { role: 'user', content: instructions },
-    ...results.map((r) => ({ role: 'tool' as const, content: r })),
-  ];
-}
 
 const keep = (results: readonly string[], next: string): string[] => [...results, next.slice(0, MAX_RESULT_CHARS)].slice(-MAX_KEPT_RESULTS);
 
@@ -120,7 +112,10 @@ export const employeeTaskProcessor: GovernedProcessor = {
         taskClass: cfg.taskClass,
         ...(requested !== undefined ? { reasoningClass: requested } : {}),
         ...(escalateFrom !== null ? { escalation: escalateFrom } : {}),
-        messages: messages(cfg.taskClass, cfg.instructions, s.results),
+        // No messages: the runtime assembles this step's context (C3 Context Assembler). The loop only
+        // offers its bounded recent results; instructions, skills, knowledge and memory come from durable state.
+        step: s.turn,
+        recentResults: s.results,
         maxOutputTokens: cfg.maxOutputTokens,
       });
       if (escalateFrom !== null) escalated = true;
@@ -146,6 +141,12 @@ export const employeeTaskProcessor: GovernedProcessor = {
             continue;
           }
           return { type: 'PERMANENT_FAILURE', code: `PROVIDER_${out.failure}` };
+        case 'CONTEXT':
+          // Typed context outcomes: an IMPORTANT unresolved conflict or conflicting skills park the work
+          // for review (zero tokens); a context that cannot fit or fails integrity never reaches a model.
+          if (out.code === 'CONFLICT_HOLD') return { type: 'WAIT', reasonCode: 'MEMORY_CONFLICT_REVIEW' };
+          if (out.code === 'SKILL_CONFLICT') return { type: 'WAIT', reasonCode: 'SKILL_CONFLICT_REVIEW' };
+          return { type: 'PERMANENT_FAILURE', code: out.code };
         case 'OK':
           break;
       }
@@ -154,6 +155,14 @@ export const employeeTaskProcessor: GovernedProcessor = {
       if (proposal.type === 'FINAL') {
         await save(ctx, { ...s, phase: 'MODEL', pending: null });
         return { type: 'COMPLETED', evidence: { summaryCode: proposal.summaryCode, turns: s.turn, modelCalls: s.modelCalls, reasoningClass: out.reasoningClass } };
+      }
+      if (proposal.type === 'MEMORY_CANDIDATE' || proposal.type === 'OBSERVATION') {
+        // Only a candidate: the Memory Write Policy decides. The loop learns the decision code, never more.
+        const m = gov.proposeMemory(proposal, s.turn);
+        const note = m.kind === 'DECIDED' ? { memory: m.state, reason: m.reasonCode } : { memory: m.kind, reason: m.code };
+        s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null, results: keep(s.results, JSON.stringify(note)) };
+        await save(ctx, s);
+        continue;
       }
       if (proposal.type === 'INVALID') {
         // Observable evidence (the output failed validation) may justify one escalation.

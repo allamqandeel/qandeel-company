@@ -15,6 +15,7 @@ import { accessSync, constants as fsConstants } from 'node:fs';
 
 import { CompanyStore, CURRENT_SCHEMA_VERSION, GovernanceStore, workspaceFreeBytes, type CompanyReadView, type GovernanceHealth, type HealthCounts, type WorkspaceLayout } from '@qandeel-company/storage';
 
+import { C3_ATTENTION, C3_DEGRADED, c3HealthOf, c3Reasons, type C3Health } from './c3/health.js';
 import type { CompanyRuntime } from './runtime.js';
 
 export type HealthStatus = 'HEALTHY' | 'DEGRADED' | 'ATTENTION' | 'CRITICAL';
@@ -49,6 +50,8 @@ export interface HealthSnapshot {
     readonly workspace: { readonly freeBytes: number | null; readonly lowDisk: boolean };
     /** C2: employees, deployments / providers, budgets, tool executor, approvals (content-free counts). */
     readonly governance: (GovernanceHealth & { readonly toolExecutor: { readonly drivers: readonly string[] | null; readonly missingDrivers: readonly string[] }; readonly providerCalls: number | null }) | null;
+    /** C3: memory / knowledge / context, Skills, Academy and capability gaps (content-free counts). */
+    readonly mind: C3Health | null;
   };
   readonly reasons: readonly string[];
 }
@@ -74,8 +77,8 @@ function classify(checksReady: boolean, alive: boolean, counts: HealthCounts | n
   }
   if (lowDisk) reasons.push('LOW_DISK');
   let status: HealthStatus = 'HEALTHY';
-  if (reasons.includes('EXPIRED_LEASES') || reasons.includes('WAKE_WATCHER_UNAVAILABLE') || reasons.some((r) => GOVERNANCE_DEGRADED.includes(r))) status = 'DEGRADED';
-  if (reasons.some((r) => ['DEAD_LETTERS_PRESENT', 'RECONCILIATION_REQUIRED', 'ARTIFACT_INTEGRITY', 'LOW_DISK', ...GOVERNANCE_ATTENTION].includes(r))) status = 'ATTENTION';
+  if (reasons.includes('EXPIRED_LEASES') || reasons.includes('WAKE_WATCHER_UNAVAILABLE') || reasons.some((r) => GOVERNANCE_DEGRADED.includes(r) || C3_DEGRADED.includes(r))) status = 'DEGRADED';
+  if (reasons.some((r) => ['DEAD_LETTERS_PRESENT', 'RECONCILIATION_REQUIRED', 'ARTIFACT_INTEGRITY', 'LOW_DISK', ...GOVERNANCE_ATTENTION, ...C3_ATTENTION].includes(r))) status = 'ATTENTION';
   if (!alive || !checksReady || reasons.includes('WAL_NOT_ACTIVE') || reasons.includes('SCHEMA_MISMATCH')) status = 'CRITICAL';
   return { status, reasons };
 }
@@ -116,6 +119,7 @@ function snapshotFrom(
   runtime: { state: string; instanceId: string | null; uptimeMs: number; activeRuns: number; concurrency: number; failure: string | null; recovery: Record<string, unknown> | null; ownsLease: boolean | null; wakeWatcher?: string },
   now: number,
   governance: GovernanceInput | null = null,
+  mind: C3Health | null = null,
 ): HealthSnapshot {
   const counts = store && !store.isClosed ? store.healthCounts() : null;
   const lease = store && !store.isClosed ? store.supervisorLease() : null;
@@ -139,6 +143,7 @@ function snapshotFrom(
   if (counts && counts.schemaVersion !== CURRENT_SCHEMA_VERSION) extra.push('SCHEMA_MISMATCH');
   if (runtime.wakeWatcher === 'UNAVAILABLE') extra.push('WAKE_WATCHER_UNAVAILABLE');
   extra.push(...governanceReasons(governance));
+  extra.push(...c3Reasons(mind));
   const { status, reasons } = classify(ready, alive, counts, lowDisk, extra);
   return {
     status,
@@ -166,6 +171,7 @@ function snapshotFrom(
       governance: governance
         ? { ...governance.counts, toolExecutor: { drivers: governance.drivers, missingDrivers: governance.drivers === null ? [] : governance.requiredDrivers.filter((d) => !governance.drivers?.includes(d)) }, providerCalls: governance.providerCalls }
         : null,
+      mind,
     },
     reasons,
   };
@@ -197,7 +203,16 @@ export function runtimeHealth(runtime: CompanyRuntime): HealthSnapshot {
     },
     Date.now(),
     governanceOf(runtime),
+    mindOf(runtime),
   );
+}
+
+function mindOf(runtime: CompanyRuntime): C3Health | null {
+  try {
+    return runtime.mindHealth();
+  } catch {
+    return null;
+  }
 }
 
 function governanceOf(runtime: CompanyRuntime): GovernanceInput | null {
@@ -239,6 +254,7 @@ export function inspectWorkspace(root: string): HealthSnapshot {
         const g = GovernanceStore.for(store);
         return { counts: g.healthCounts(), requiredDrivers: g.activeToolDriverCodes(), drivers: null, providerCalls: null };
       })(),
+      c3HealthOf(store),
     );
   } finally {
     store.close();

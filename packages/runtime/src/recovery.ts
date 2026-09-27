@@ -9,7 +9,7 @@
  */
 import type { Id } from '@qandeel-company/domain';
 import type { ArtifactStore, CompanyStore, SupervisorFence } from '@qandeel-company/storage';
-import { abandonStaleInstances, interruptClaim, interruptOrphanRun, recoverGovernedOrphans, settleDanglingTermination } from '@qandeel-company/storage/runtime-authority';
+import { abandonStaleInstances, decidePendingCandidates, interruptClaim, interruptOrphanRun, recoverGovernedOrphans, settleDanglingTermination } from '@qandeel-company/storage/runtime-authority';
 
 export interface RecoverySummary {
   [key: string]: number | string | boolean | null;
@@ -37,6 +37,7 @@ export interface RecoverySummary {
   governedReservationsReleased: number;
   governedInvocationsRetryable: number;
   governedInvocationsHeld: number;
+  memoryCandidatesDecided: number;
 }
 
 const BATCH = 100;
@@ -74,6 +75,7 @@ export function runRecovery(store: CompanyStore, artifacts: ArtifactStore, { ins
     governedReservationsReleased: 0,
     governedInvocationsRetryable: 0,
     governedInvocationsHeld: 0,
+    memoryCandidatesDecided: 0,
   };
 
   // 1. Claims left by any previous supervisor (expired or not: this supervisor holds the lease, so
@@ -122,6 +124,14 @@ export function runRecovery(store: CompanyStore, artifacts: ArtifactStore, { ins
     summary.governedInvocationsRetryable += g.invocationsRetryable;
     summary.governedInvocationsHeld += g.invocationsHeld;
     if (g.reservationsHeld + g.reservationsReleased + g.invocationsRetryable + g.invocationsHeld === 0) break;
+  }
+
+  // 3c. C3 memory candidates submitted before a crash are decided by the runtime-owned policy now
+  //     (a candidate never becomes memory without a decision, and never waits forever).
+  for (let i = 0; i < MAX_BATCHES; i++) {
+    const n = decidePendingCandidates(store, supervisor, BATCH);
+    summary.memoryCandidatesDecided += n;
+    if (n === 0) break;
   }
 
   // 4. Cross-store artifact boundary.

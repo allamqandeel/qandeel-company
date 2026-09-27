@@ -3,7 +3,7 @@ import { describe, test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { isQandeelError, type Id, type Processor } from '@qandeel-company/domain';
-import { CompanyStore } from '@qandeel-company/storage';
+import { CURRENT_SCHEMA_VERSION, CompanyStore } from '@qandeel-company/storage';
 
 import { inspectWorkspace, notifyRuntime, runtimeHealth, type HealthSnapshot } from '../../src/index.js';
 import { concurrencyProbe, eventually, owner, removeRoot, runtimeFor, tempRoot, unsafeProbe } from '../helpers.js';
@@ -249,7 +249,7 @@ describe('runtime lifecycle, end to end', () => {
       assert.equal('runRecovery' in (await import('../../src/index.js')), false);
       const w = runtime.submitWorkItem({ objective: 'through the runtime', ownerRef: owner, processorKind: 'c1.noop', initialState: 'READY' }).workItem;
       await eventually(() => view.getWorkItem(w.id).state === 'COMPLETED', 5_000, 'completion observed through the view');
-      assert.equal(view.schemaVersion, 4);
+      assert.equal(view.schemaVersion, CURRENT_SCHEMA_VERSION);
     } finally {
       await runtime.stop();
       removeRoot(root);

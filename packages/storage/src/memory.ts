@@ -498,7 +498,7 @@ export class MemoryStore {
         memoryConflictsOpen: n(`SELECT COUNT(*) AS n FROM memory_conflicts WHERE state = 'OPEN'`),
         memoryStaleDue: n(`SELECT COUNT(*) AS n FROM memory_records WHERE status IN ('ACTIVE', 'LOW_CONFIDENCE') AND review_at IS NOT NULL AND review_at <= ?`, at),
         candidatesPending: n(`SELECT COUNT(*) AS n FROM memory_candidates WHERE state = 'SUBMITTED'`),
-        knowledge: group('SELECT scope || ":" || status AS s, COUNT(*) AS n FROM knowledge_items GROUP BY scope, status'),
+        knowledge: group("SELECT scope || ':' || status AS s, COUNT(*) AS n FROM knowledge_items GROUP BY scope, status"),
         knowledgeIntegrityFailures: n(`SELECT COUNT(*) AS n FROM knowledge_items WHERE integrity = 'CORRUPT'`),
         canonicalIntegrityFailures: n(`SELECT COUNT(*) AS n FROM canonical_truth WHERE integrity = 'CORRUPT' AND status = 'ACTIVE'`),
         lessonsAwaitingReview: n(`SELECT COUNT(*) AS n FROM lessons WHERE stage IN ('LESSON_CANDIDATE', 'UNDER_REVIEW')`),

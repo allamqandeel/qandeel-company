@@ -26,6 +26,7 @@ import {
   txInterruptClaim,
   txRenewLease,
   txSettle,
+  verifyFence,
   verifySupervisor,
   type Claim,
   type ClaimOptions,
@@ -299,9 +300,12 @@ export function submitMemoryCandidate(store: CompanyStore, fence: Fence, step: n
 
 /** The runtime-owned Memory Write Policy decides one candidate (its own transaction, after submission). */
 export function decideMemoryCandidate(store: CompanyStore, fence: Fence, candidateId: Id): MemoryCandidateRecord {
-  return write(store, 'decide memory candidate', (ctx) => {
-    const c = ctx.db.get<{ run_id: string }>('SELECT run_id FROM memory_candidates WHERE id = ?', candidateId);
-    if (!c || c.run_id !== fence.runId) throw new QandeelError('STALE_LEASE', 'this candidate belongs to another run', { candidateId });
+  return fenced(store, 'decide memory candidate', fence, (ctx) => {
+    verifyFence(ctx, fence);
+    // The candidate must belong to this run's Work Item (a resumed run replays an earlier run's step).
+    const c = ctx.db.get<{ work_item_id: string }>('SELECT work_item_id FROM memory_candidates WHERE id = ?', candidateId);
+    const a = ctx.db.get<{ work_item_id: string }>('SELECT work_item_id FROM run_attributions WHERE run_id = ?', fence.runId);
+    if (!c || !a || c.work_item_id !== a.work_item_id) throw new QandeelError('AUTHORITY_DENIED', 'this candidate belongs to another Work Item', { candidateId, reason: 'CANDIDATE_NOT_THIS_WORK' });
     return txDecideMemoryCandidate(ctx, candidateId);
   });
 }

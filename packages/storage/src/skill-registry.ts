@@ -38,6 +38,7 @@ import {
 import { founder, founderAdminWrite } from './governance.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
 import { SYSTEM_MIND_REF, getSkillVersionRow, versionEligibility } from './mind-core.js';
+import { wakeCapabilityGaps } from './mind-writes.js';
 import {
   mapCertification,
   mapPassport,
@@ -318,6 +319,7 @@ export class SkillStore {
       );
       passportHistory(ctx, entryId, 1, v.id, 'LEARNING', 'ACTIVE', 'passport.opened', p.ref);
       appendAudit(ctx, 'passport.opened', 'passport_entry', entryId, { actorRef: p.ref }, 'OK', null, { employeeId: id, skillId: v.skillId });
+      wakeCapabilityGaps(ctx, id, 'passport.opened');
       return mapPassport(ctx.db.get('SELECT * FROM passport_entries WHERE id = ?', entryId) ?? {});
     });
   }
