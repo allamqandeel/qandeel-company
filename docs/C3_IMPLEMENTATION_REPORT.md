@@ -254,7 +254,7 @@ Proof markers checked by the verifier rule `c3-proofs-present`: `C3-PROOF: mind-
 
 ## 10. Mutation checks, verifier, acceptances, results
 
-- **`npm run c3:mutation`: 39 mutations** (30 at the candidate, 9 added by the Founder decision
+- **`npm run c3:mutation`: 40 mutations** (30 at the candidate, 9 added by the Founder decision
   closure, §16). Each removes one gate from the compiled output and
   requires a proof to fail:
   - **Memory:** `memory-secret-stored`, `memory-contradicts-canonical`,
@@ -273,7 +273,7 @@ Proof markers checked by the verifier rule `c3-proofs-present`: `C3-PROOF: mind-
   - **Founder decisions (§16):** `role-cert-loss-ignored`, `role-cert-loss-not-at-run-start`,
     `role-cert-loss-not-at-authorization`, `role-cert-loss-not-at-reservation`,
     `role-cert-loss-not-at-tool-intent`, `calibration-not-required-at-activation`,
-    `calibration-gates-certification`, `extension-evidence-not-required`, `unlicense-auto-clears`.
+    `calibration-gates-certification`, `extension-evidence-not-required`, `unlicense-auto-clears`, `role-reassignment-without-cert-keeps-active`.
 - **C1 / C2 mutation checks still run.**
   - C1's supervisor-guard count is now 8, because C3 candidate recovery adds three fenced
     transactions.
@@ -296,14 +296,14 @@ Results (Node 24.21.0 / SQLite 3.53.4, Linux Cloud):
 | Suite | Tests | Result |
 |---|---|---|
 | mind (C3 kernel) | 27 | pass |
-| storage (C1 + C2 + C3, incl. multi-process) | 210 | pass |
+| storage (C1 + C2 + C3, incl. multi-process) | 212 | pass |
 | runtime (C1 + C2 + C3, incl. fault matrices) | 61 | pass |
 | bootstrap-contract (C0) | 5 | pass |
 | domain (C1) | 22 | pass |
 | governance (C2 kernel) | 25 | pass |
-| **Total** | **350** | **0 failed, 0 skipped** |
+| **Total** | **352** | **0 failed, 0 skipped** |
 
-- **Mutation checks:** C1 **6/6**, C2 **19/19**, C3 **39/39** caught.
+- **Mutation checks:** C1 **6/6**, C2 **19/19**, C3 **40/40** caught.
 - **Verifier:** **49/49** (48 rules + workspace resolution), and the self-test proves each of the 48 rules can fail.
 - **Acceptances:** C1, C2 and C3 all **PASS**.
 - **`git diff --check`:** clean.
@@ -451,12 +451,15 @@ redesigned, and C4 / C5 were not started.
   - D3 / D4 stay conservative;
   - numeric values are tunable engineering defaults;
   - practice during RETRY is allowed, is never a holdout and is never certification proof (proved).
-- **Proofs:** `packages/storage/test/c3-founder-decisions.test.ts` (`C3-PROOF: founder-decisions`, 14
+- **Proofs:** `packages/storage/test/c3-founder-decisions.test.ts` (`C3-PROOF: founder-decisions`, 16
   tests). The kernel licence and calibration assertions are in `mind-kernel.test.ts`, and the EXTEND
   path in `c3-review-fixes.test.ts` was updated.
-- **Closure review:** no BLOCKER.
-  - One MAJOR (Product): reassigning an ACTIVE Employee to a role for which it holds no certification
-    is outside the "loss" rule.
-  - Three minor Product consequences.
-  - All are recorded as open questions in D-C3-23. None was decided, because C3 must not invent
-    Product policy.
+- **D-C3-24 — ACTIVE role reassignment:** the Founder resolved the one MAJOR Product question.
+  - The role assignment is recorded.
+  - If an ACTIVE Employee changes roles without a currently VALID certification for the target role,
+    the same transaction moves it to RETRAINING; identity, prior certifications and evidence remain.
+  - Returning to a role whose certification is still VALID does not cause unnecessary retraining.
+  - After a demotion, certification alone does not restore ACTIVE; the existing Activation Approval
+    path remains required.
+- **Closure review:** no BLOCKER and no remaining MAJOR. The remaining D-C3-23 items are minor Product
+  tuning questions and do not block C3 closure.
