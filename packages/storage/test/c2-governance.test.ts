@@ -40,7 +40,8 @@ describe('C2 identity: persistent Employees (Employee ≠ Model ≠ Session ≠ 
       const moved = s.gov.reassignEmployee(s.founder, e.id, { roleRef: 'role:senior-analyst', reasonCode: 'promotion' });
       assert.equal(moved.id, e.id);
       assert.deepEqual(moved.name, e.name);
-      assert.deepEqual(s.gov.employeeHistory(e.id).map((x) => `${x.changeKind}:${x.toState}`), ['CREATED:CANDIDATE', 'LIFECYCLE:TRAINING', 'LIFECYCLE:PROBATION', 'LIFECYCLE:ACTIVE', 'ASSIGNMENT:role:senior-analyst']);
+      assert.equal(moved.state, 'RETRAINING', 'C3: an ACTIVE role change without target-role certification preserves identity but ends ordinary duty');
+      assert.deepEqual(s.gov.employeeHistory(e.id).map((x) => `${x.changeKind}:${x.toState}`), ['CREATED:CANDIDATE', 'LIFECYCLE:TRAINING', 'LIFECYCLE:PROBATION', 'LIFECYCLE:ACTIVE', 'ASSIGNMENT:role:senior-analyst', 'LIFECYCLE:RETRAINING']);
       // The Employee row names no provider, model, session, run or process.
       assert.ok(!/provider|model|session|run|process/i.test(Object.keys(e).filter((k) => k !== 'cognitiveProfile').join(',')));
     } finally {
