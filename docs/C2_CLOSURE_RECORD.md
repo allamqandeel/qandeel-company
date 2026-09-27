@@ -1,9 +1,9 @@
 # C2 — Employees + Models + Tools + Cost Governance — Closure Record
 
-> **C2 — CLOSED / READY FOR MERGE** (Founder approved merge on 2026-09-27)
+> **C2 — CLOSED / MERGED / CANONICAL** (PR #3 merged on 2026-09-27 as `d374001fa92f27d19aabf97b185ccac3bfc9099d`)
 
-The **C2 gate is satisfied**. This record closes the implementation gate on the exact validated
-candidate below. PR #3 remains the merge vehicle; C3 is **NOT STARTED**.
+The **C2 gate is satisfied**. PR #3 is merged into `main` as `d374001fa92f27d19aabf97b185ccac3bfc9099d`; C2 is now
+**CLOSED / MERGED / CANONICAL**. C3 is **NOT STARTED**.
 
 - **Repository / PR:** `allamqandeel/qandeel-company`, PR #3, branch
   `claude/hopeful-pascal-c1f6dk`.
@@ -31,5 +31,4 @@ candidate below. PR #3 remains the merge vehicle; C3 is **NOT STARTED**.
   matches `qandeel-company`; validation used a process-scoped workaround without mutating global
   config. This is an environment-maintenance item, not a C2 blocker.
 
-Once PR #3 is merged into `main`, C2 becomes **CLOSED / MERGED / CANONICAL**. No C3 work is
-authorized by this record.
+C2 is **CLOSED / MERGED / CANONICAL**. No C3 work is authorized by this record.
