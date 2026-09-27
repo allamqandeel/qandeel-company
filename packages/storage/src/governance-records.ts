@@ -217,6 +217,8 @@ export interface ReservationRecord {
   readonly tokens: number;
   readonly state: 'RESERVED' | 'SETTLED' | 'RELEASED' | 'RECONCILIATION_REQUIRED';
   readonly reasonCode: string | null;
+  /** C3: the OK context manifest a model-call reservation is bound to (null for tool calls). */
+  readonly contextManifestId: Id | null;
 }
 
 export interface UsageRecord {
@@ -423,6 +425,7 @@ export const mapReservation = (r: Row): ReservationRecord => ({
   tokens: num(r.tokens),
   state: str(r.state) as ReservationRecord['state'],
   reasonCode: optStr(r.reason_code),
+  contextManifestId: optStr(r.context_manifest_id) as Id | null,
 });
 
 export const mapUsage = (r: Row): UsageRecord => ({

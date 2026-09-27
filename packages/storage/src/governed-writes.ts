@@ -57,6 +57,8 @@ import {
 import { mapApproval, mapGrant, mapReservation, mapToolAction, mapToolInvocation, type BudgetRecord, type ReservationRecord, type ToolInvocationRecord } from './governance-records.js';
 import { routingSnapshotTx, upsertApprovalRequest, workItemDataClass } from './governance.js';
 import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from './internal.js';
+import { enforceRoleCertification } from './mind-core.js';
+import { academyExecutionMode, academyRun, constrainedRun, contextClassOf, manifestForReservation, txCapabilityGate } from './mind-writes.js';
 import { verifyFence } from './queue.js';
 import type { Fence } from './records.js';
 
@@ -71,9 +73,15 @@ export interface GovernedRunContext {
   readonly cognitiveProfile: CognitiveProfile;
   /** Highest data class of this run's context (declared on the Work Item; the model cannot lower it). */
   readonly dataClass: DataClass;
+  /** ACTIVE duty, or constrained Academy / shadow execution by a non-ACTIVE Employee (C3, Stage 6 §11). */
+  readonly executionMode: 'ACTIVE' | 'ACADEMY_ATTEMPT' | 'SHADOW_WORK';
 }
 
-export type BeginResult = { readonly ok: true; readonly context: GovernedRunContext } | { readonly ok: false; readonly code: 'EMPLOYEE_NOT_ELIGIBLE' | 'NOT_EMPLOYEE_OWNED'; readonly state: string | null };
+export type BeginResult =
+  | { readonly ok: true; readonly context: GovernedRunContext }
+  | { readonly ok: false; readonly code: 'EMPLOYEE_NOT_ELIGIBLE' | 'NOT_EMPLOYEE_OWNED' | 'CAPABILITY_GAP_CANCELLED'; readonly state: string | null }
+  /** C3: the owning Employee does not meet the Work Item's capability requirements (durable gap, work parked). */
+  | { readonly ok: false; readonly code: 'CAPABILITY_GAP'; readonly state: string | null; readonly gapId: Id };
 
 function denyAudit(ctx: StoreContext, runId: Id, action: string, code: string, details: Record<string, string | number | boolean | null> = {}): void {
   appendAudit(ctx, action, 'run', runId, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', code, details);
@@ -88,10 +96,24 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
     denyAudit(ctx, fence.runId, 'run.not_governed', 'NOT_EMPLOYEE_OWNED');
     return { ok: false, code: 'NOT_EMPLOYEE_OWNED', state: null };
   }
-  const e = getEmployeeRow(ctx, employeeId);
-  if (!canExecute(e.state)) {
+  // D-C3-18: an ACTIVE Employee whose current-role certification was revoked / has expired moves to
+  // RETRAINING here, before anything executes, and so starts no ordinary run.
+  const e = enforceRoleCertification(ctx, getEmployeeRow(ctx, employeeId));
+  // A non-ACTIVE Employee executes only its own open Academy attempt or shadow assignment (C3); an
+  // Academy attempt runs in its constrained mode whoever takes it.
+  const academyMode = academyExecutionMode(ctx, fence.runId, item, e);
+  if (!canExecute(e.state) && academyMode === null) {
     denyAudit(ctx, fence.runId, 'authority.denied', 'EMPLOYEE_NOT_ELIGIBLE', { employeeId, state: e.state });
     return { ok: false, code: 'EMPLOYEE_NOT_ELIGIBLE', state: e.state };
+  }
+  // Capability eligibility is decided before any model or tool call; a gap parks the work (C3).
+  const gate = txCapabilityGate(ctx, item, e);
+  if (!gate.ok) {
+    if (gate.cancelled) {
+      denyAudit(ctx, fence.runId, 'run.not_governed', 'CAPABILITY_GAP_CANCELLED', { gapId: gate.gapId });
+      return { ok: false, code: 'CAPABILITY_GAP_CANCELLED', state: e.state };
+    }
+    return { ok: false, code: 'CAPABILITY_GAP', state: e.state, gapId: gate.gapId };
   }
   if (!ctx.db.get('SELECT 1 AS ok FROM run_attributions WHERE run_id = ?', fence.runId)) {
     ctx.db.run('INSERT INTO run_attributions (run_id, work_item_id, employee_id, department_id, created_at) VALUES (?, ?, ?, ?, ?)', fence.runId, item.id, e.id, e.departmentId, ts(ctx));
@@ -107,6 +129,7 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
     departmentId: e.departmentId,
     cognitiveProfile: Object.freeze({ ...assertCognitiveProfile(e.cognitiveProfile) }),
     dataClass: workItemDataClass(item.processorInput),
+    executionMode: academyMode ?? 'ACTIVE',
   });
   return { ok: true, context };
 }
@@ -119,7 +142,14 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
 export function effectiveDataClass(ctx: StoreContext, workItemId: Id): DataClass {
   const declared = workItemDataClass(getWorkItemRow(ctx, workItemId).processorInput);
   const results = ctx.db.all<{ c: string }>(`SELECT DISTINCT a.result_data_class AS c FROM tool_invocations i JOIN tool_actions a ON a.id = i.tool_action_id WHERE i.work_item_id = ? AND i.state = 'SUCCEEDED'`, workItemId);
-  return maxDataClass(declared, ...results.map((r) => r.c).filter(isDataClass));
+  // C3: whatever an assembled context contained (memory, knowledge, skills) raises the class too, so the
+  // model's later output — e.g. tool arguments — can never carry it past a lower egress ceiling.
+  return maxDataClass(declared, contextClassOf(ctx, workItemId), ...results.map((r) => r.c).filter(isDataClass));
+}
+
+/** The lifecycle state the authority kernel sees: a constrained Academy / shadow run acts as eligible. */
+function actingState(ctx: StoreContext, runId: Id, e: ReturnType<typeof getEmployeeRow>): ReturnType<typeof getEmployeeRow>['state'] {
+  return canExecute(e.state) || constrainedRun(ctx, runId, e) ? 'ACTIVE' : e.state;
 }
 
 interface Attributed {
@@ -162,21 +192,22 @@ function consumeGrant(ctx: StoreContext, grantId: Id): void {
 export function txAuthorizeModelCall(ctx: StoreContext, fence: Fence, input: { taskClass: string; dataClass: DataClass }): AuthorizeResult {
   verifyFence(ctx, fence);
   const a = attributed(ctx, fence);
-  const e = getEmployeeRow(ctx, a.employeeId);
+  const e = enforceRoleCertification(ctx, getEmployeeRow(ctx, a.employeeId));
   // The durable Work Item's data class governs; a caller may only raise it, never lower it.
   const dataClass = maxDataClass(effectiveDataClass(ctx, a.workItemId), input.dataClass);
   const grants = ctx.db.all(`SELECT * FROM permission_grants WHERE employee_id = ? AND status = 'ACTIVE'`, e.id).map(mapGrant);
-  const d = decideEmployeeAction('EMPLOYEE', e.state, grants, { capability: 'model.invoke', resource: input.taskClass, risk: 'R0', dataClass, at: ts(ctx) });
+  const d = decideEmployeeAction('EMPLOYEE', actingState(ctx, fence.runId, e), grants, { capability: 'model.invoke', resource: input.taskClass, risk: 'R0', dataClass, at: ts(ctx) });
   if (d.effect === 'DENY') return { ok: false, code: d.code, ...recordDenial(ctx, fence, e.id, d.code, { capability: 'model.invoke' }) };
   consumeGrant(ctx, d.grantId as Id);
   return { ok: true, grantId: d.grantId as Id, dataClass };
 }
 
 export type ReserveInput =
-  | { readonly purpose: 'MODEL_CALL'; readonly attemptKind: AttemptKind; readonly deploymentId: Id; readonly priceCardId: Id; readonly routePolicyId: Id; readonly money: number; readonly tokens: number }
+  /** A model call is reserved only against its own OK Context Manifest (C3: every inference is assembled). */
+  | { readonly purpose: 'MODEL_CALL'; readonly attemptKind: AttemptKind; readonly deploymentId: Id; readonly priceCardId: Id; readonly routePolicyId: Id; readonly money: number; readonly tokens: number; readonly contextManifestId: Id }
   | { readonly purpose: 'TOOL_CALL'; readonly attemptKind: 'PRIMARY'; readonly toolActionId: Id; readonly money: number; readonly tokens: 0 };
 
-export type ReserveResult = { readonly ok: true; readonly reservation: ReservationRecord } | { readonly ok: false; readonly code: 'BUDGET_MISSING' | 'BUDGET_EXHAUSTED' | 'EMPLOYEE_NOT_ELIGIBLE' | 'ROUTE_NO_LONGER_ELIGIBLE' | 'RUN_LIMIT'; readonly detail: string };
+export type ReserveResult = { readonly ok: true; readonly reservation: ReservationRecord } | { readonly ok: false; readonly code: 'BUDGET_MISSING' | 'BUDGET_EXHAUSTED' | 'EMPLOYEE_NOT_ELIGIBLE' | 'ROUTE_NO_LONGER_ELIGIBLE' | 'RUN_LIMIT' | 'CONTEXT_MANIFEST_REQUIRED'; readonly detail: string };
 
 /** The Work Item budget and its chain, verified to hang under this employee and department. */
 function workItemChain(ctx: StoreContext, a: Attributed): BudgetRecord[] | null {
@@ -223,8 +254,9 @@ function policyById(ctx: StoreContext, id: Id): RoutePolicy {
 export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput): ReserveResult {
   const job = verifyFence(ctx, fence);
   const a = attributed(ctx, fence);
-  const e = getEmployeeRow(ctx, a.employeeId);
-  if (!canExecute(e.state)) return { ok: false, code: 'EMPLOYEE_NOT_ELIGIBLE', detail: e.state };
+  // D-C3-18: re-checked per reservation, so a run begun before the loss spends nothing after it.
+  const e = enforceRoleCertification(ctx, getEmployeeRow(ctx, a.employeeId));
+  if (!canExecute(e.state) && !constrainedRun(ctx, fence.runId, e)) return { ok: false, code: 'EMPLOYEE_NOT_ELIGIBLE', detail: e.state };
   const refuse = (code: Extract<ReserveResult, { ok: false }>['code'], detail: string): ReserveResult => {
     appendAudit(ctx, 'budget.refused', 'run', fence.runId, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', code, { detail: detail.slice(0, 64), purpose: input.purpose, attemptKind: input.attemptKind });
     return { ok: false, code, detail };
@@ -237,9 +269,13 @@ export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput):
     );
     if (!d || d.status !== 'ACTIVE' || d.provider_status !== 'ACTIVE' || d.price_card_id !== input.priceCardId || (d.circuit_open_until !== null && d.circuit_open_until > ts(ctx))) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'deployment');
     const policy = policyById(ctx, input.routePolicyId);
+    // C3: the reservation pays for one assembled inference; its manifest's class and input bound bind it.
+    const manifest = manifestForReservation(ctx, fence.runId, input.contextManifestId);
+    if (!manifest) return refuse('CONTEXT_MANIFEST_REQUIRED', 'NO_OK_MANIFEST');
+    if (input.tokens < manifest.estimatedInputTokens) return refuse('CONTEXT_MANIFEST_REQUIRED', 'INPUT_BOUND_BELOW_CONTEXT');
     // Hard gates re-checked from durable state inside the reserving transaction (defence in depth:
     // the router ran outside it on inputs a caller could influence). Privacy first.
-    const dataClass = effectiveDataClass(ctx, a.workItemId);
+    const dataClass = maxDataClass(effectiveDataClass(ctx, a.workItemId), manifest.maxDataClass);
     if (dataClass === 'D4' && d.locality !== 'LOCAL') return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'D4_EXTERNAL_DENIED');
     if (!externalEgressAvailable(d.locality, dataClass)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'D3_EXTERNAL_DENIED');
     if (!isDataClass(d.egress_max_data_class) || dataRank(d.egress_max_data_class) < dataRank(dataClass)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'EGRESS_NOT_APPROVED');
@@ -269,8 +305,8 @@ export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput):
   applyBudgetDelta(ctx, chain, { reservedMoney: input.money, reservedTokens: input.tokens });
   const id = newId();
   ctx.db.run(
-    `INSERT INTO budget_reservations (id, budget_id, run_id, job_id, fencing_token, work_item_id, employee_id, department_id, purpose, attempt_kind, deployment_id, price_card_id, tool_action_id, route_policy_id, money, tokens, state, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RESERVED', ?, ?)`,
+    `INSERT INTO budget_reservations (id, budget_id, run_id, job_id, fencing_token, work_item_id, employee_id, department_id, purpose, attempt_kind, deployment_id, price_card_id, tool_action_id, route_policy_id, money, tokens, state, created_at, updated_at, context_manifest_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RESERVED', ?, ?, ?)`,
     id,
     (chain[0] as BudgetRecord).id,
     fence.runId,
@@ -289,6 +325,7 @@ export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput):
     input.tokens,
     ts(ctx),
     ts(ctx),
+    input.purpose === 'MODEL_CALL' ? input.contextManifestId : null,
   );
   appendAudit(ctx, 'budget.reserved', 'reservation', id, { actorRef: SYSTEM_RUNTIME_REF }, 'OK', null, { runId: fence.runId, purpose: input.purpose, attemptKind: input.attemptKind, money: input.money, tokens: input.tokens });
   return { ok: true, reservation: getReservationRow(ctx, id) };
@@ -389,7 +426,7 @@ export type ToolIntent =
 export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentInput): ToolIntent {
   verifyFence(ctx, fence);
   const a = attributed(ctx, fence);
-  const e = getEmployeeRow(ctx, a.employeeId);
+  const e = enforceRoleCertification(ctx, getEmployeeRow(ctx, a.employeeId));
   const item = getWorkItemRow(ctx, a.workItemId);
   const dataClass = effectiveDataClass(ctx, item.id);
   // Audit details carry registered IDs and codes only: model-written tool / action names never
@@ -411,7 +448,12 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
   if (dataRank(dataClass) > dataRank(action.dataClassCeiling) || !externalEgressAvailable(String(row.tool_egress) === 'EXTERNAL' ? 'EXTERNAL' : 'LOCAL', dataClass)) return deny('EGRESS_DENIED', { toolActionId: action.id, dataClass });
   const capability = toolCapability(input.toolCode, input.actionCode);
   const grants = ctx.db.all(`SELECT * FROM permission_grants WHERE employee_id = ? AND status = 'ACTIVE'`, e.id).map(mapGrant);
-  const decision = decideEmployeeAction('EMPLOYEE', e.state, grants, { capability, resource: input.toolCode, risk: action.risk, dataClass, at: ts(ctx) });
+  const decision = decideEmployeeAction('EMPLOYEE', actingState(ctx, fence.runId, e), grants, { capability, resource: input.toolCode, risk: action.risk, dataClass, at: ts(ctx) });
+  // Academy attempts and shadow work: internal, reversible, non-external actions only (Stage 6 §11) —
+  // refused before any review path, so no external action of a trainee ever waits to be approved.
+  if (decision.effect === 'ALLOW' || decision.code === 'REVIEW_PATH_UNAVAILABLE') {
+    if ((!canExecute(e.state) || academyRun(ctx, fence.runId)) && (String(row.tool_egress) === 'EXTERNAL' || action.mutatesExternal || action.risk === 'R3')) return deny('ACADEMY_CONSTRAINED', { toolActionId: action.id, risk: action.risk });
+  }
   if (decision.effect === 'DENY' && decision.code === 'REVIEW_PATH_UNAVAILABLE') {
     appendAudit(ctx, 'tool.review_required', 'run', fence.runId, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', 'REVIEW_PATH_UNAVAILABLE', { toolActionId: action.id });
     return { kind: 'REVIEW_REQUIRED' };

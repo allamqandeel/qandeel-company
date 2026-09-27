@@ -64,12 +64,19 @@ import {
   type WorkItemRecord,
   type CompanyReadView,
   GovernanceStore,
+  AcademyStore,
+  CapabilityStore,
+  MemoryStore,
+  SkillStore,
 } from '@qandeel-company/storage';
 import type { ProviderAdapter, ToolDriver } from '@qandeel-company/governance';
 
 import { GovernedModelRuntime } from './c2/model-runtime.js';
 import { ToolExecutor } from './c2/tool-executor.js';
-import { isGovernedProcessor, type GovernedRunServices, type ModelCallRequest, type ToolRequest } from './c2/types.js';
+import { isGovernedProcessor, type GovernedRunServices, type MemoryProposal, type ModelCallOutcome, type ModelCallRequest, type ToolRequest } from './c2/types.js';
+import { assembleGovernedContext } from './c3/context-assembler.js';
+import { c3HealthOf, type C3Health } from './c3/health.js';
+import { proposeMemory } from './c3/memory-proposals.js';
 import {
   acquireSupervisor,
   beginGovernedRun,
@@ -81,6 +88,7 @@ import {
   releaseSupervisor,
   renewLease,
   renewSupervisor,
+  recordStepResult,
   settle,
   updateInstance,
 } from '@qandeel-company/storage/runtime-authority';
@@ -143,6 +151,12 @@ export interface RuntimeOptions {
 
 /** Governance administration handed out by the runtime: every call wakes the dispatcher after commit. */
 export type GovernanceAdmin = Omit<GovernanceStore, never>;
+export interface MindAdmin {
+  readonly memory: MemoryStore;
+  readonly skills: SkillStore;
+  readonly academy: AcademyStore;
+  readonly capability: CapabilityStore;
+}
 
 const recoverGovernedOrphansCount = (g: { reservationsHeld: number; reservationsReleased: number; invocationsRetryable: number; invocationsHeld: number }): number =>
   g.reservationsHeld + g.reservationsReleased + g.invocationsRetryable + g.invocationsHeld;
@@ -216,6 +230,7 @@ export class CompanyRuntime {
   readonly #models: GovernedModelRuntime;
   readonly #tools: ToolExecutor;
   #governanceAdmin: GovernanceAdmin | undefined;
+  #mindAdmin: MindAdmin | undefined;
 
   #state: RuntimeState = 'CREATED';
   #store: CompanyStore | undefined;
@@ -581,6 +596,42 @@ export class CompanyRuntime {
     return this.#governanceAdmin;
   }
 
+  /**
+   * C3 administration: memory / knowledge, Skills, Academy and capability requirements. Like
+   * `governance`, a capability object that executes nothing and claims nothing; every call signals the
+   * dispatcher afterwards (a certification can resolve a capability gap and wake the parked work).
+   * Founder-authority writes fail closed until the authenticated Founder surface exists (C5).
+   */
+  get mind(): MindAdmin {
+    if (!this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
+    if (!this.#mindAdmin) {
+      const wake = (): void => this.#wake.signal();
+      const wrap = <T extends object>(target: T): T =>
+        new Proxy(target, {
+          get(t, prop, receiver) {
+            const v = Reflect.get(t, prop, receiver) as unknown;
+            if (typeof v !== 'function') return v;
+            return (...args: unknown[]) => {
+              try {
+                return (v as (...a: unknown[]) => unknown).apply(t, args);
+              } finally {
+                wake();
+              }
+            };
+          },
+        });
+      const s = this.#store;
+      this.#mindAdmin = Object.freeze({ memory: wrap(MemoryStore.for(s)), skills: wrap(SkillStore.for(s)), academy: wrap(AcademyStore.for(s)), capability: wrap(CapabilityStore.for(s)) });
+    }
+    return this.#mindAdmin;
+  }
+
+  /** C3 health counts (content-free). */
+  mindHealth(): C3Health {
+    if (!this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
+    return c3HealthOf(this.#store);
+  }
+
   /** Governed execution diagnostics (content-free). */
   governanceDiagnostics(): { providerCalls: number; providerAdapters: readonly string[]; toolDrivers: readonly string[] } {
     return { providerCalls: this.#models.providerCalls, providerAdapters: this.#models.adapterCodes, toolDrivers: this.#tools.driverCodes };
@@ -903,13 +954,32 @@ export class CompanyRuntime {
     const begun = beginGovernedRun(store, claim.fence);
     if (!begun.ok) {
       this.#log.warn('run.governance_refused', { jobId: claim.fence.jobId, runId: claim.fence.runId, code: begun.code });
+      // A capability gap is durable and parks the work (event-driven, zero tokens) until resolved (C3).
+      if (begun.code === 'CAPABILITY_GAP') return { type: 'WAIT', reasonCode: 'CAPABILITY_GAP' };
       return { type: 'PERMANENT_FAILURE', code: begun.code };
     }
     const run = begun.context;
     const services: GovernedRunServices = Object.freeze({
       context: run,
-      invokeModel: (request: ModelCallRequest) => this.#models.call(store, claim.fence, run, request, signal),
-      executeTool: (request: ToolRequest, step: number) => this.#tools.execute(store, claim.fence, run, request, step, signal),
+      // Every inference goes through governed Context Assembly first (C3): the processor names the
+      // step, the runtime builds, budgets and records the context; the model runtime accepts only that.
+      invokeModel: async (request: ModelCallRequest): Promise<ModelCallOutcome> => {
+        const assembled = assembleGovernedContext(store, claim.fence, { step: request.step });
+        if (assembled.kind !== 'OK') return { kind: 'CONTEXT', code: assembled.code };
+        return this.#models.call(store, claim.fence, run, request, assembled.context, signal);
+      },
+      // The runtime (not the processor) records each step's outcome for later context (layer L6).
+      proposeMemory: (proposal: MemoryProposal, step: number) => {
+        const out = proposeMemory(store, claim.fence, proposal, step);
+        recordStepResult(store, claim.fence, step, 'MEMORY_DECISION', JSON.stringify(out.kind === 'DECIDED' ? { memory: out.state, reason: out.reasonCode } : { memory: out.kind, reason: out.code }));
+        return out;
+      },
+      executeTool: async (request: ToolRequest, step: number) => {
+        const out = await this.#tools.execute(store, claim.fence, run, request, step, signal);
+        if (out.kind === 'SUCCEEDED') recordStepResult(store, claim.fence, step, 'TOOL_RESULT', JSON.stringify({ tool: request.tool, action: request.action, result: out.result }));
+        else if (out.kind === 'DENIED' && !out.paused) recordStepResult(store, claim.fence, step, 'TOOL_REFUSED', JSON.stringify({ tool: request.tool, action: request.action, denied: out.code }));
+        return out;
+      },
     });
     return processor.runGoverned(context, services);
   }

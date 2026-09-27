@@ -1009,3 +1009,483 @@ store's private field. Only the seam module may reference them, and the verifier
 **Consequence.** Until C5 and C3 exist, C2 production can inspect governance state but cannot
 configure it or activate anyone: governed work fails closed. This is the intended fail-closed
 posture, not a regression.
+
+## D-C3-01 — C3 package shape
+
+**Decision.** C3 adds one new package, `@qandeel-company/mind`: the pure, deterministic C3 kernel with
+no I/O. It holds the Memory Write Policy, lexical retrieval and the context planner / renderer,
+extractive compaction, the Skill pipeline rules (license classification, static inspection,
+production eligibility, directive conflicts), capability evaluation and the Academy rules
+(critical-dimension gating, diagnosis, probation criteria, certification gaps, time-aware status).
+- **Persistence** stays in `@qandeel-company/storage`: `MemoryStore`, `SkillStore`, `AcademyStore`,
+  `CapabilityStore` (Founder-authority administration, deterministic system steps and reads) and the
+  fenced runtime writes (`assembleContext`, `submitMemoryCandidate`, `decideMemoryCandidate`,
+  `decidePendingCandidates`) behind the existing `runtime-authority` subpath.
+- **Execution** stays in `@qandeel-company/runtime`: the C3 Context Assembler
+  (`src/c3/context-assembler.ts`), the memory-proposal path (`src/c3/memory-proposals.ts`), C3 health,
+  read-only CLI commands and the `runtime.mind` capability object.
+- `mind` is added to `ALLOWED_PACKAGES` in the same change. No third-party runtime dependency is
+  added; no external vector database, embedding service or paid memory service is used.
+
+## D-C3-02 — Migrations 0005 / 0006; 0001–0004 frozen
+
+**Decision.** C3 adds `0005_c3_memory_context.sql` (canonical truth, memory candidates / records /
+history / conflicts / corrections, lessons and promotions, knowledge, context manifests and entries,
+compaction summaries, `budget_reservations.context_manifest_id`) and `0006_c3_skills_academy.sql`
+(skills, versions, history, discoveries, updates, blueprints, passports, capability requirements /
+gaps, Academy programs → certifications, activation requests, `run_execution_modes`). Both are pinned
+by SHA-256 in `RELEASED_MIGRATIONS`. Migrations 0001–0004 are unchanged and the verifier freezes all
+four by content (`released-migrations-frozen`).
+- Every table is `STRICT` with bounded text / JSON `CHECK`s; history tables are append-only and
+  undeletable; content columns are immutable and hash-pinned (`*_sha256`).
+- `superseded_by_id` of canonical truth and knowledge is `DEFERRABLE INITIALLY DEFERRED`, so a
+  supersession (old record superseded first, new record inserted) commits atomically without
+  violating the one-active-claim unique index.
+- Datastore defence in depth: `budget_reservations_model_call_manifest` refuses a `MODEL_CALL`
+  reservation without an `OK` manifest of the same run whose input estimate it covers, and
+  `employees_activation_gate` refuses SHADOW / PROBATION → ACTIVE without either the test-seam label
+  or an APPROVED, Founder-decided activation request backed by a VALID same-role certification and a
+  PASS probation review.
+
+## D-C3-03 — Memory Write Policy: model output is only a candidate
+
+**Decision.** A model's `MEMORY_CANDIDATE` / `OBSERVATION` proposal is submitted as a candidate
+(transaction 1, fenced, idempotency key `wi:<workItem>:s<step>:memory`), then decided by the
+runtime-owned policy (transaction 2). Recovery decides candidates left `SUBMITTED` by a crash.
+- Provenance (`run:<id>`), evidence (`work_item:<id>`) and the data-class floor (the Work Item's
+  effective context class) are set by the runtime, never by the model.
+- Secrets are refused and their content is **not stored** (the candidate keeps a NULL content).
+- Confidence is capped per class (CURRENT_WORK 80, EXPERIENCE 70, PROFESSIONAL 70,
+  RELATIONSHIP_COLLABORATION 60) and at 40 without evidence; review horizons are 30 / 180 / 365 days.
+- Exact and near duplicates (Jaccard ≥ 85 % of normalized terms, same owner / class / topic) are
+  refused; a claim contradicting ACTIVE Canonical Truth is refused; a claim contradicting another
+  memory opens a durable conflict (both kept, both held from context until resolved).
+- Every load re-verifies the content hash; a mismatch marks the record CORRUPT, audits it and never
+  uses it. Founder corrections are additive (the prior record is superseded, not rewritten).
+- Values (caps, horizons, thresholds) are engineering defaults surfaced for Product Owner review.
+
+## D-C3-04 — Knowledge scopes and access
+
+**Decision.** Company Knowledge is scoped COMPANY / DEPARTMENT / ROLE / MARKET / RESTRICTED /
+FOUNDER_ONLY and filtered **in SQL at retrieval time** (and re-checked in code).
+- Own department, role and Work Item market are readable; another department needs an exact
+  `knowledge.read` grant on `department:<id>` (each use is audited with the grant and counted);
+  RESTRICTED needs an exact `knowledge.restricted` grant on the restricted scope; FOUNDER_ONLY is
+  never readable by an Employee.
+- Unauthorized items are not candidates at all, so they never appear in a manifest, summary or error.
+- Knowledge is written only by Founder decision (`recordKnowledge`) or by an approved promotion of a
+  validated lesson; model output never writes knowledge.
+
+## D-C3-05 — Learning path and promotion
+
+**Decision.** `EVENT → OBSERVATION → LESSON_CANDIDATE → review → VALIDATED → promotion`.
+- A model `OBSERVATION` records an observation only. It becomes a lesson candidate only by a
+  deliberate, attributed nomination (`nominateLesson`) — a mistake is not automatically a lesson. A
+  model `PERSONAL_LESSON` candidate is recorded as observation + lesson candidate.
+- The independent review path (Review Pool) is C4: `requestLessonReview` records that the lesson
+  waits for it. In Strong v1 the Founder (authenticated surface, C5) validates; production therefore
+  fails closed.
+- PERSONAL promotion of a validated lesson becomes a PERSONAL_LESSON memory of the same Employee; every
+  shared target (Role / Department / Market / Company / Restricted) stays `PENDING_REVIEW` until the
+  review decides it. Nothing is shared by default.
+
+## D-C3-06 — Mandatory governed Context Assembly
+
+**Decision.** Every inference is fed by the C3 Context Assembler; nothing else can reach a provider.
+- `ModelCallRequest` carries no messages (only step, recent results, task / reasoning class, output
+  bound). The runtime assembles the step's context in one fenced transaction and hands the model
+  runtime a frozen value minted in a module-private `WeakSet`; `GovernedModelRuntime.call` refuses any
+  other value (`CONTEXT_NOT_ASSEMBLED`) before authorization, routing or reservation.
+- Layers and precedence: L1 AUTHORITY (preamble, Canonical Truth) > L2 WORK (instructions, Academy
+  scenario) > L3 SKILL (pinned, eligible, relevant) > L4 KNOWLEDGE > L5 MEMORY (own memory, compaction
+  summaries) > L6 RECENT (the Work Item's durable step results, recorded by the runtime's own
+  services — never processor-supplied text; only the newest is required). Canonical claims bind over
+  every lower layer structurally, whether or not the canonical statement itself is relevant or loaded.
+- Hard budget (default 24 000 tokens; frame reserve 512; layer shares 20 / 25 / 20 / 15 / 12 / 8 %;
+  12 items per layer; per-Work-Item `contextBudgetTokens` 1 024..64 000). Required items that do not
+  fit give `CONTEXT_BUDGET_EXHAUSTED`, never silent truncation.
+- Retrieval is deterministic and lexical (Arabic-normalized terms, integer scoring over relevance,
+  scope, freshness, confidence and authority; stable id tie-breaks). Pools are read through a term
+  index (`mind_terms`: item kind, owner, term, item) joined with the task's query terms, bounded
+  (memory 300, knowledge 200, canonical 200) and ordered by matched terms — never a scan of the full
+  history. Canonical records whose claims a candidate asserts are always added. FTS5 and embeddings
+  are not used.
+- The stable prefix (L1 + L3) is rendered first; its SHA-256 is recorded. The manifest records
+  selected / rejected item IDs, versions, hashes, classes, provenance and reason codes — never
+  content — and is written even for refused assemblies.
+- Every `MODEL_CALL` reservation names the step's OK manifest (store and datastore check it); a
+  provider retry or fallback reuses the step's manifest.
+- The effective data class of a Work Item includes every OK manifest's class, so context admitted at
+  D3 binds routing, reservation and tool egress for the rest of the Work Item. Higher-class items are
+  excluded unless the Work Item declares `contextDataClassCeiling` (minimization by exclusion).
+- IMPORTANT work (declared, or R2+) on an unresolved memory conflict gets `CONFLICT_HOLD` (the loop
+  waits `MEMORY_CONFLICT_REVIEW`); conflicting required skill directives give `SKILL_CONFLICT`; a
+  corrupt ACTIVE canonical record gives `INTEGRITY_FAILURE`.
+
+## D-C3-07 — Compaction summaries are derived, attributed and invalidated
+
+**Decision.** A topic with more than four eligible memories is served by one extractive summary
+(first sentences, bounded) recorded with its source IDs and a fingerprint of their id / version /
+hash / status. Any source change invalidates it (`SOURCE_CHANGED`); a corrupt source is never
+summarized. Summaries are never truth: they rank as memory, below knowledge and canonical truth.
+
+## D-C3-08 — Skills: governed supply chain, pinned, never authority
+
+**Decision.** `DISCOVERED → INSPECTED → LICENSE_DEPENDENCY_CHECKED → SECURITY_QUARANTINE → SANDBOXED →
+BENCHMARKED → COMPARED → APPROVED` (or REJECTED with its reason kept).
+- Inspection and the license / dependency check are deterministic system steps; every other step is
+  Founder authority with evidence references (SANDBOXED requires a security pass).
+- Licences: MIT, Apache-2.0, BSD-2/3-Clause, ISC, 0BSD, CC0-1.0 are clear-free; the Unlicense (moved
+  by Founder Decision D-C3-21) and licences with further obligations (CC-BY-4.0, copyleft, share-alike) wait at
+  LICENSE_DEPENDENCY_CHECKED for a recorded licence review (`reviewLicense`: CLEAR with permission
+  evidence → `CLEARED_BY_REVIEW`, or REJECT); unknown or missing is rejected; QANDEEL-native skills
+  are QANDEEL-owned. The licence policy is an engineering default for Product Owner / legal review. A paid dependency makes the version `FREE_SKILL_PAID_DEPENDENCY`: approval waits for
+  an explicit Founder acknowledgement. No paid Skill pack or marketplace exists.
+- Production loads only a pinned version id through the one loader, and only when the version is
+  eligible (approved, clear license, security-cleared, no findings, not on security hold / retired)
+  and its hash verifies. DEPRECATED degrades (still loads, flagged); SECURITY_HOLD blocks at once.
+- Skill ≠ Tool ≠ Authority: a skill's requested tools grant nothing; a tool grant never satisfies a
+  skill requirement; governance / authority directives fail inspection.
+- Updates: impact set (passports on the from-version), rollout repins, a material update requires
+  recertification (certifications → REVIEW_DUE), rollback repins the previous eligible version.
+  Discovery intake is deduplicated by source fingerprint.
+
+## D-C3-09 — Capability requirements and durable gaps
+
+**Decision.** Requirements (SKILL / CERTIFICATION / MARKET / TOOL) are declared on a PROPOSED Work Item
+and only add gates. The gate runs inside the fenced run start, before any model or tool call; a gap is
+a durable record that parks the work (`WAIT CAPABILITY_GAP`, zero tokens) and is never re-routed to
+another Employee. Certification issuance and passport changes wake the parked work (durable wake
+generation, no polling); the gap resolves when the gate next passes.
+
+## D-C3-10 — Academy
+
+**Decision.** Programs are versioned definitions bound to the role's ACTIVE blueprint.
+- Path: LEARN → CASE_STUDIES → SIMULATION → FEEDBACK → (RETRY) → ASSESSMENT → SHADOW_WORK →
+  PROBATION_REVIEW → CERTIFICATION → ACTIVATION_APPROVAL; BLOCKED on repeated critical failure.
+  Stage advance is a deterministic system step that only reads recorded evidence.
+- Attempts are real Work Items run by the runtime in constrained mode (below); one open attempt at a
+  time; the scenario is served through the assembler and every exposure is recorded.
+- Holdouts are never practice, and a holdout already exposed to the trainee never certifies.
+- AUTHORITY_COMPLIANCE and COST_DISCIPLINE are scored only by the deterministic rubric from run facts
+  (denials, spend vs scenario budget); the other dimensions by the evaluator — the Founder in Strong v1
+  (the Review Pool is C4) — who is never the trainee. A critical-dimension failure fails the attempt
+  whatever the average; failures are diagnosed into remediation categories and retraining.
+- Certification pins the exact skill versions and proficiency, is role-specific, time-bounded, moves
+  to REVIEW_DUE on material program / blueprint / skill change and can be revoked.
+
+## D-C3-11 — The activation bridge stays fail-closed
+
+**Decision.** Reaching CERTIFICATION files one activation request with its evidence (certification,
+probation review, and the calibration if it is already approved). `decideActivation` is Founder
+authority: it re-checks every piece of evidence — including, for a designated role, an APPROVED Founder
+Calibration of the same enrollment (D-C3-19) — and only then sets ACTIVE with `academy:`, `probation:` and `activation:`
+references. Until the authenticated Founder surface exists (C5) it fails closed in production
+(`FOUNDER_SURFACE_UNAVAILABLE`). The C2 generic transition cannot carry an Academy reference, and
+the datastore gate (D-C3-02) refuses any other path. The C2 test seam is unchanged and test-only.
+
+## D-C3-12 — Constrained execution for trainees and Academy attempts
+
+**Decision.** A TRAINING / SHADOW / PROBATION / RETRAINING Employee executes only its own open
+Academy attempt (enrollment at an executing stage) or an assigned shadow Work Item; anything else is
+refused at run start. An Academy attempt runs in `ACADEMY_ATTEMPT` mode whoever takes it (an ACTIVE
+Employee recertifying included). In these modes no EXTERNAL-egress, external-mutating or R3 tool
+action is allowed (`ACADEMY_CONSTRAINED`).
+
+## D-C3-13 — Runtime integration
+
+**Decision.**
+- The `c2.employee-task` loop asks for a step; typed context outcomes map to WAIT
+  (`MEMORY_CONFLICT_REVIEW`, `SKILL_CONFLICT_REVIEW`) or a permanent failure with the code.
+- Memory proposals go through `services.proposeMemory` (submit, then decide); the loop learns only the
+  decision code.
+- A capability gap at run start becomes `WAIT CAPABILITY_GAP`.
+- Recovery decides pending memory candidates (supervisor-fenced).
+- Health gains a content-free `mind` component with reason codes (integrity / security / blocked /
+  pending approvals need attention; conflicts / reviews degrade).
+- Read-only CLI: `mind`, `capability-gaps`, `context-manifest --manifest <id>`; there is no C3 write
+  command.
+- `runtime.mind` exposes the C3 stores as a capability object that wakes the dispatcher after each
+  call (like `governance`); Founder writes through it still fail closed in production.
+
+## D-C3-14 — Verifier and mutation evolution
+
+**Decision.** New verifier rules, each with violation and must-pass self-tests:
+`context-assembly-mandatory`, `memory-writes-confined`, `skill-load-pinned`, `mind-kernel-pure`,
+`mind-telemetry-content-free`, `activation-gate-present`, `c3-proofs-present`,
+`c3-not-claimed-closed`; `c1-migrations-frozen` becomes `released-migrations-frozen` (0001–0004);
+`no-later-scope-leakage` now forbids C4–C7 schema / packages only; `mind` joins `ALLOWED_PACKAGES`.
+`scripts/c3-mutation-check.mjs` removes 39 C3 gates (30 at the candidate, 9 added by the Founder
+decision closure, D-C3-22) from the compiled output and requires the proofs
+to fail; it runs in `npm run ci`. `scripts/c3-acceptance.mjs` runs in CI on Windows and Ubuntu. The C1
+mutation check now expects eight supervisor-verification guards (the C3 candidate recovery adds three:
+list, decide, refuse — each its own supervisor-fenced transaction);
+the C2 mutation search strings follow the C3 edits of the same gates.
+
+## D-C3-15 — Official-source check (2026-09-27)
+
+**Decision.** The Node.js `node:sqlite` documentation (nodejs.org, Stability 1.2 Release Candidate)
+was re-read; C3 uses no new SQLite or `node:sqlite` feature beyond C1/C2 (STRICT, CHECK, triggers,
+partial and unique indexes, `json_valid` / `json_each`, deferrable foreign keys). `sqlite.org` is not
+reachable from the Cloud session (as in C1 / C2). FTS5 is compiled into the bundled SQLite 3.53.4 but
+is deliberately not used: lexical retrieval is portable, deterministic and needs no FTS index
+maintenance; a better retriever can replace it later without changing Memory identity or provenance.
+
+## D-C3-16 — Internal review round (five focused reviews) and fixes
+
+**Context.** Five read-only reviews ran on the candidate (memory / knowledge conformance, Academy /
+Skills conformance, context assembly, authority / fail-closed, storage / runtime invariants). They
+reported one BLOCKER and about twenty MAJOR findings. Every in-scope BLOCKER / MAJOR was fixed in
+this task, each with a regression proof (`packages/storage/test/c3-review-fixes.test.ts`,
+`C3-PROOF: review-fixes`, plus kernel and runtime proofs) and, for the most important gates, a C3
+mutation.
+
+**Decisions taken in the fixes.**
+- **Wake-ups (the BLOCKER).** Resolving a memory conflict (Founder correction, canonical truth) wakes
+  that Employee's work waiting `MEMORY_CONFLICT_REVIEW` in the same transaction; passport, freshness,
+  rollout and rollback changes wake `SKILL_CONFLICT_REVIEW` and capability-gap waits of the affected
+  Employees; approving a skill re-evaluates open gaps. The WAIT settle of a capability gap re-runs the
+  gate in its own transaction (closing the window between gap and park). A Founder-cancelled gap
+  wakes the work to end it (`CAPABILITY_GAP_CANCELLED`, audited, never re-routed).
+- **Recovery isolation.** Pending memory candidates are decided one per transaction; an undecidable
+  one is refused `POLICY_ERROR`; a candidate whose stored bytes no longer match their hash is refused
+  `INTEGRITY_FAILED`.
+- **Context.** L6 comes from `context_step_results` recorded by the runtime's Tool Executor / memory
+  path wrappers (never the processor); only the newest result is required. Pools use the term index;
+  canonical binding is structural; the conflict notice is planned and budgeted; a grant-based
+  knowledge scope counts one use per assembly and stops at its limit, restricted use is audited like
+  cross-department use; the preamble is labelled at the Work Item's declared class.
+- **Compaction.** Summary sources are the topic's most recent live, claim-free, full-confidence
+  memories (independent of the query), so a summary is reused across tasks and invalidated only when
+  a source changes; any status change or corruption of a source invalidates the summaries built from
+  it.
+- **Memory.** Memories and lessons keep the Work Item's market; exact re-observation of a STALE memory
+  re-validates it (the Founder can too); every memory / knowledge insert re-checks canonical truth,
+  and canonical truth rejects contradicting pending lessons.
+- **Data classes (fail-closed defaults for Product review).** D4 context is never retained as memory
+  or learning (`DATA_CLASS_NOT_RETAINED`); shared promotion of D3 / D4 lessons is refused
+  (`DATA_CLASS_NOT_SHAREABLE`).
+- **Academy.** Evidence windows: a probation FAIL diagnoses a remediation, opens a new evidence epoch
+  and returns through RETRY to new shadow work; EXTEND returns to SHADOW_WORK and opens a new review
+  round; an activation REJECT closes the enrollment (WITHDRAWN) so the Employee may enroll again;
+  `withdrawEnrollment` exists. Attempts that never completed are VOID (never scored). The rubric and
+  shadow evidence count every refusal (`authority.denied`, `tool.refused`, `tool.review_required`).
+  Assessment / holdout scenarios need a non-zero budget. Certification pins the passport's current
+  version or the newest pinnable version not held by an unfinished update. An unchanged blueprint does
+  not trigger recertification; a TARGETED skill update re-tests the skill (passport) but keeps the
+  role certification VALID; PARTIAL / FULL mark it REVIEW_DUE.
+- **Schema.** 0005 / 0006 were edited before release (never applied outside this branch) and re-pinned;
+  0001–0004 are untouched.
+
+**Re-review.** An adversarial re-review of the fix commit confirmed the dispositions above and found
+three partial fixes and two regressions, reported as four MAJOR findings. All four were fixed in this
+task, each with a regression proof (`C3 re-review fixes` in `c3-review-fixes.test.ts`) and a C3
+mutation:
+- **N3 — lost wakes at the park.** The WAIT settle of `MEMORY_CONFLICT_REVIEW` /
+  `SKILL_CONFLICT_REVIEW` re-checks the held manifest in the same transaction
+  (`txRecheckContextHold`). It wakes the work when no held memory is still live and in an OPEN
+  conflict, or when a conflicting Skill version is no longer pinned and eligible. The capability
+  re-check also wakes a gap cancelled while its run was in flight. A held memory leaving live state
+  wakes the Employee's conflict waits. Issuing a certification wakes skill-conflict waits.
+  Mutation: `context-hold-not-rechecked`.
+- **N4 — term-index crowd-out.** The term index joins the item table and filters inside the query,
+  before the LIMIT: live status and integrity for memory and canonical truth, and readable scope for
+  knowledge. Dead or unreadable items can no longer push a live one out of the bounded pool.
+  Mutation: `term-limit-before-filter`.
+- **N1 — compaction across markets.** Only market-neutral memories are compacted; market-bound ones
+  are always served one by one, subject to the market filter. Mutation: `compaction-crosses-markets`.
+- **N2 — breaches hidden by failing.** A refused action is scored (`AUTHORITY_COMPLIANCE`) even when
+  the attempt's work failed or never completed, so the critical failure fails the attempt. Only an
+  attempt with no refusal and no completed work is VOID. Mutation: `failed-attempt-hides-breach`.
+- **Minor fixes:**
+  - A pending shared promotion of a lesson that contradicts new Canonical Truth is rejected
+    (`CONTRADICTS_CANONICAL`).
+  - Durable step results never store secret material.
+  - Re-evaluating every open gap is deterministic and unbounded (no `LIMIT 1000`).
+- **Minor items left to Product** (both since decided by the Founder):
+  - After EXTEND, the next review may use the same epoch's cases. A new Founder decision is still
+    required, but the number of additional cases is a Product value. → **Resolved by D-C3-20**: at
+    least one new evidence item after the extension; no fixed count.
+  - During RETRY, a practice (SIMULATION) attempt may still be started. → **Confirmed by D-C3-22
+    (7.5)**: allowed; practice is never a holdout and never certification proof.
+
+## D-C3-17 — Questions for the Product Owner (asked by the C3 candidate; now resolved)
+
+The C3 candidate (`c8cbebf`) asked these questions. After an independent review of that head found no
+new engineering BLOCKER or MAJOR, the Founder / Product Owner decided all of them (Founder decision
+closure task, 2026-09-27). The questions are kept as asked, with where each one is resolved:
+
+1. **Consequence of losing certification.** A REVOKED / EXPIRED / REVIEW_DUE certification blocks work
+   that declares a CERTIFICATION requirement, but an ACTIVE Employee otherwise keeps executing. Should
+   an ACTIVE Employee without a live role certification be moved to RETRAINING (or blocked)? The
+   authority does not say. → **D-C3-18.**
+2. **Approver identity.** Activation, evaluation and probation decisions are Founder-only in Strong v1
+   (the schema requires `founder:*` for the activation decision and forbids `employee:*` evaluators).
+   C4 (Review Pool / Directors) will need a migration to widen this; which roles may approve?
+   → **D-C3-22 (7.1).**
+3. **Licence policy.** The clear-free list and the review-required list (D-C3-08) need Product /
+   legal confirmation. → **D-C3-21.**
+4. **REVIEW_DUE semantics and recertification scope** per impact level (TARGETED / PARTIAL / FULL).
+   → **D-C3-18** (REVIEW_DUE) and **D-C3-22 (7.2)** (scope).
+5. **D3 / D4 retention and sharing** (fail-closed defaults above). → **D-C3-22 (7.3).**
+6. **Numeric defaults**: confidence caps, review horizons, near-duplicate threshold, context budget and
+   layer shares, compaction threshold, probation defaults, certification validity. → **D-C3-22 (7.4).**
+7. **Founder Calibration placement**: C3 requires it (when the program demands it) before
+   certification; Stage 6 §10 names it before Active Duty. → **D-C3-19.**
+
+No imported canonical authority was edited. Stage 4 §8 (Retraining is a lifecycle state), Stage 6 §10
+(Founder Calibration "before Active Duty"), §12 (probation is evidence-based) and §13, and Stage 7 §12
+("No clear license / permission … → reject") agree with these decisions: no AUTHORITY CONFLICT.
+
+## D-C3-18 — Founder Decision 1: loss of the current-role certification
+
+**Founder decision.** A persistent Employee may not continue ordinary role execution after losing the
+live certification that let its role become trusted. REVOKED or (clock-)EXPIRED → no new ordinary
+role execution, governed move to RETRAINING, same identity, history kept. REVIEW_DUE → the Employee
+stays ACTIVE; only work that explicitly requires that certification stays blocked until recertified.
+
+**Implementation.**
+- `roleCertificationLoss` (storage `mind-core`): the loss exists when the Employee holds no live
+  (VALID / REVIEW_DUE, time-aware) certification for its **current** role and its latest one for that
+  role is REVOKED or EXPIRED. Expiry is read from the clock and materialized (status + history row).
+  **Scope boundary (engineering reading, not a Founder decision):** an ACTIVE Employee that never held
+  a certification for its current role has lost nothing under this rule, so it is not moved. The one
+  production case is a role reassignment of an ACTIVE Employee; it is surfaced as an open Product
+  question in D-C3-23 rather than decided here.
+- `enforceRoleCertification` runs inside the caller's transaction at every ordinary-duty boundary:
+  run start (`txBeginGovernedRun`), model authorization, budget reservation and tool intent, and in
+  `revokeCertification`. For an ACTIVE Employee with a loss it moves the Employee to RETRAINING (C2
+  lifecycle already allows ACTIVE → RETRAINING; no new state) with reason
+  `ROLE_CERTIFICATION_REVOKED` / `ROLE_CERTIFICATION_EXPIRED`, actor `system:runtime` (deterministic,
+  never the Employee or a model), plus an `employee.certification_lost` audit row with the
+  certification ID. RETRAINING cannot execute ordinary work (`canExecute`), so the run is refused
+  (`EMPLOYEE_NOT_ELIGIBLE`) and an in-flight run spends and acts no further.
+- A PAUSED / ON_LEAVE Employee is not moved when the loss happens; if it is resumed to ACTIVE, the
+  first ordinary-duty boundary moves it. Academy attempts stay available: RETRAINING is a trainee
+  state, and the way back is recertification, then the Founder's C2 lifecycle transition RETRAINING →
+  SHADOW / PROBATION, then a new Activation Approval (`decideActivation` is the only path back to
+  ACTIVE; the datastore gate refuses any other).
+- Certifications, their history, evidence, portfolio and runs are never deleted or rewritten
+  (datastore triggers already forbid it).
+- REVIEW_DUE: unchanged capability gate — a CERTIFICATION requirement is unmet by REVIEW_DUE, so that
+  work parks as a capability gap; nothing demotes the Employee.
+
+## D-C3-19 — Founder Decision 2: Founder Calibration gates Activation, not certification
+
+**Founder decision.** Founder Calibration is a pre-Activation requirement for designated roles, not a
+prerequisite of the professional Role Certification. Certification stays necessary, not sufficient.
+
+**Implementation.**
+- The kernel's `certificationGaps` no longer contains `FOUNDER_CALIBRATION`; a designated role is
+  certified when its professional evidence is complete, even with calibration PENDING.
+- New pure `calibrationActivationGap(def, state)`: a program that requires calibration needs this
+  enrollment's calibration APPROVED (`CALIBRATION_PENDING` / `CALIBRATION_REJECTED` /
+  `CALIBRATION_MISSING` otherwise); other programs are unaffected.
+- `decideActivation` re-reads the enrollment's calibration at decision time (not what the request
+  recorded when filed) and refuses with `EMPLOYEE_NOT_ELIGIBLE` and that reason; on approval it records
+  the approved calibration on the request as activation evidence.
+- **Migration 0006 amended (unreleased; re-pinned).** The datastore's `employees_activation_gate`
+  now also requires that, when the enrollment has a Founder Calibration row (a designated role), it is
+  APPROVED and is the one the approved request records. Before this decision calibration was implied
+  by the certification; moving it after certification would otherwise have removed it from the
+  datastore's defence in depth. SHA-256 `d3052dc4…4a90cb0` → `a4b87099…637d57d8`.
+
+## D-C3-20 — Founder Decision 3: probation EXTEND needs new evidence
+
+**Founder decision.** After EXTEND the next review needs new post-extension evidence; no hard numeric
+count is frozen in C3; the next review remains evidence-based and needs a new decision.
+
+**Implementation.** The EXTEND review row (append-only, same evidence epoch, `review_round`) is the
+durable extension boundary: its `summary_json` records the evidence counts at the decision. Evidence is
+append-only, so a higher positive-evidence total in the same epoch means at least one positive item was
+recorded after the extension. Until then the enrollment stays in SHADOW_WORK (`advance`) and a PASS is
+refused (`NO_EVIDENCE_AFTER_EXTENSION`, defence in depth). Old evidence stays and counts alongside the
+new; a negative item does not qualify. The boundary survives a restart (it is a committed row). No new
+column or Product metric: a later Product value for the amount / type of extra evidence can replace
+the "at least one" comparison.
+
+## D-C3-21 — Founder Decision 4: Skill licence policy
+
+**Founder decision.** Keep the fail-closed licence model. Clearly permissive licences auto-clear; the
+**Unlicense moves to the review-required path**; attribution / copyleft / share-alike stay
+review-required; unknown / missing / NOASSERTION / unclear / proprietary / paid / trial stay rejected.
+This is a Product risk posture, not a legal conclusion or a statement about any licence's validity.
+
+**Implementation.** `CLEAR_FREE_LICENSES` = MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD,
+CC0-1.0; `REVIEW_LICENSES` gains `Unlicense`. An Unlicense version waits at LICENSE_DEPENDENCY_CHECKED
+for the existing recorded `reviewLicense` (→ `CLEARED_BY_REVIEW` with evidence, or REJECT).
+
+## D-C3-22 — Other Founder dispositions (recorded; no new mechanism)
+
+1. **Approver identity (7.1).** C3 production approval / evaluation / probation / activation stays
+   Founder-only and fail-closed on the authenticated Founder surface. No Directors or Review Pool
+   authority in C3; widening it is C4's.
+2. **REVIEW_DUE recertification scope (7.2).** Unchanged: TARGETED re-tests the affected Skill /
+   Passport scope without invalidating the role certification; PARTIAL / FULL make the role
+   certification REVIEW_DUE.
+3. **D3 / D4 (7.3).** Unchanged: D4 is never retained as ordinary Memory / learning and stays
+   local-only under security authority; D3 is never silently promoted or shared as ordinary shared
+   knowledge; no new D3 sharing mechanism.
+4. **Numeric defaults (7.4).** Confidence caps, review horizons, duplicate thresholds, context budgets
+   and layer shares, compaction thresholds, probation defaults, certification validity and similar
+   values are **engineering defaults / tunable policy values**, not frozen Product constants.
+5. **Practice during RETRY (7.5).** Allowed. A practice (SIMULATION) attempt only uses PRACTICE
+   scenarios (a holdout is refused, `HOLDOUT_NOT_FOR_PRACTICE`, and stays unexposed), and only passed
+   ASSESSMENT attempts count toward certification; a passed practice in RETRY neither skips retraining
+   nor certifies. Proved in `c3-founder-decisions.test.ts`.
+
+**Mutations added** (`scripts/c3-mutation-check.mjs`, 30 → 39): `role-cert-loss-ignored`,
+`role-cert-loss-not-at-run-start`, `role-cert-loss-not-at-authorization`,
+`role-cert-loss-not-at-reservation`, `role-cert-loss-not-at-tool-intent`,
+`calibration-not-required-at-activation`, `calibration-gates-certification`,
+`extension-evidence-not-required`, `unlicense-auto-clears`. The datastore calibration clause of the
+activation gate is proved directly (a raw write that skips `decideActivation` is refused); it is not a
+compiled-output mutation because editing a pinned migration already fails every test.
+
+## D-C3-23 — Open Product questions surfaced by the closure review (not decided here)
+
+A focused adversarial review of the D-C3-18 .. D-C3-22 changes found no BLOCKER. It surfaced these
+Product consequences, which C3 does not decide (no new Product policy may be invented):
+
+1. **RESOLVED — role reassignment of an ACTIVE Employee.** The Founder decided this in
+   **D-C3-24**: the assignment is recorded, but if the Employee does not already hold a currently
+   **VALID** certification for the target role, the same atomic write moves it to RETRAINING. A prior
+   certification for another role remains history and grants no Active duty in the new role.
+2. **MINOR (Product) — calibration at recertification of an ACTIVE Employee.** D-C3-19 makes
+   calibration an activation requirement; an Employee already ACTIVE that recertifies a designated role
+   is not re-activated, so its calibration is not re-checked. Should recertification of an ACTIVE
+   designated-role Employee also require a current calibration?
+3. **MINOR (Product) — post-extension evidence.** D-C3-20 counts evidence *recorded* after EXTEND; an
+   evaluator may record a new positive item about shadow work finished before the extension. Whether
+   the new evidence must also come from work done after the extension is a Product tuning of D-C3-20.
+4. **Note — expiry fails ordinary work.** As for any non-executing Employee (C2), an ordinary Work Item
+   whose run is refused because its Employee moved to RETRAINING ends `EMPLOYEE_CONTAINED`; it is not
+   parked or re-routed (re-routing is forbidden). Non-spending steps of a run begun before the loss may
+   still settle; its model calls, reservations and tool intents are refused.
+
+## D-C3-24 — Founder Decision: ACTIVE role reassignment without target-role certification
+
+**Founder decision.** A role change may be recorded without first refusing the assignment, preserving
+the same Employee identity and history. If an Employee is ACTIVE and the `role_ref` actually changes,
+ordinary Active duty carries into the target role **only** when the Employee already holds a
+time-current **VALID** certification for that target role. Otherwise the reassignment is recorded and,
+in the same transaction, the Employee moves to RETRAINING. The previous role's certification and all
+prior evidence remain durable history.
+
+The Employee does not regain Active duty merely by receiving a new certification after that demotion;
+the existing Academy / Activation Approval path remains the route back to ACTIVE. REVIEW_DUE is not
+sufficient for entry into a newly assigned role because the target-role qualification must be VALID at
+the reassignment boundary. Non-role assignment changes do not trigger this rule.
+
+**Implementation.** `GovernanceStore.reassignEmployee` reuses C3's time-aware
+`liveCertifications(..., materialize=true)` authority. A changed role on an ACTIVE Employee with no
+VALID target-role certification records the ASSIGNMENT first and then records
+`ACTIVE → RETRAINING` with reason `ROLE_REASSIGNMENT_REQUIRES_CERTIFICATION`, atomically under the
+Founder's administrative transaction. Two direct proofs cover both sides: missing target certification
+demotes; returning to a role whose prior certification is still VALID remains ACTIVE. Mutation
+`role-reassignment-without-cert-keeps-active` proves the gate is effective.
+
+**State.** C3 is **CLOSED / VALIDATED / READY TO MERGE**. The final independent review and
+Founder-host validation passed on candidate `4284337221706f08aebe65fadb64c881c8ed9470`; the closure is
+recorded in `docs/C3_CLOSURE_RECORD.md`. PR #4 is still unmerged, so C3 is **not yet MERGED /
+CANONICAL**. R1 and C4 remain NOT STARTED.

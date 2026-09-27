@@ -13,7 +13,7 @@
  * rebuilt from the publicly readable lease row is refused. Every worker write presents its job fence. Recovery writes that take a claim away
  * from a worker also present the supervisor fence.
  */
-import { isQandeelError, type Id, type JsonValue, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
+import { QandeelError, isQandeelError, type Id, type JsonValue, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
 import type { DataClass, ProviderFailureClass } from '@qandeel-company/governance';
 
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
@@ -26,6 +26,7 @@ import {
   txInterruptClaim,
   txRenewLease,
   txSettle,
+  verifyFence,
   verifySupervisor,
   type Claim,
   type ClaimOptions,
@@ -44,6 +45,7 @@ import {
   type InstanceState,
 } from './runtime-state.js';
 import type { SettleUsage } from './governance-core.js';
+import type { MemoryCandidateRecord } from './mind-records.js';
 import {
   txAuthorizeModelCall,
   txBeginGovernedRun,
@@ -65,6 +67,21 @@ import {
   type ToolIntentInput,
 } from './governed-writes.js';
 import { userVersion } from './migrations.js';
+import {
+  pendingCandidateIds,
+  txAssembleContext,
+  txDecideMemoryCandidate,
+  txRecheckCapabilityWait,
+  txRecheckContextHold,
+  txRecordStepResult,
+  txRefuseCandidate,
+  txSubmitMemoryCandidate,
+  type AssembleRequest,
+  type AssembleResult,
+  type CandidateProposal,
+  type StepResultKind,
+  type SubmitResult,
+} from './mind-writes.js';
 import { storeContext, type CompanyStore } from './store.js';
 import { txRequestCancellation, txSupersede } from './work-items.js';
 import type { TerminationOutcome } from './work-core.js';
@@ -162,7 +179,17 @@ export function checkpoint(store: CompanyStore, fence: Fence, kind: string, stat
 }
 
 export function settle(store: CompanyStore, fence: Fence, result: ProcessorResult, options: SettleOptions): SettleOutcome {
-  return fenced(store, 'settle', fence, (ctx) => txSettle(ctx, fence, result, options));
+  return fenced(store, 'settle', fence, (ctx) => {
+    const out = txSettle(ctx, fence, result, options);
+    // C3: a capability gap may have closed while the run was settling — re-check in the same transaction.
+    // Likewise a memory / skill conflict resolved between the held assembly and this park.
+    if (result.type === 'WAIT' && ['CAPABILITY_GAP', 'MEMORY_CONFLICT_REVIEW', 'SKILL_CONFLICT_REVIEW'].includes(result.reasonCode)) {
+      const wi = ctx.db.get<{ w: string }>('SELECT work_item_id AS w FROM queue_jobs WHERE id = ?', fence.jobId)?.w as Id | undefined;
+      if (wi && result.reasonCode === 'CAPABILITY_GAP') txRecheckCapabilityWait(ctx, wi);
+      else if (wi) txRecheckContextHold(ctx, wi, result.reasonCode as 'MEMORY_CONFLICT_REVIEW' | 'SKILL_CONFLICT_REVIEW');
+    }
+    return out;
+  });
 }
 
 // --- Claim recovery (supervisor fence mandatory) -------------------------------------------------
@@ -273,4 +300,68 @@ export function recoverGovernedOrphans(store: CompanyStore, supervisor: Supervis
     verifySupervisor(ctx, supervisor);
     return txRecoverGovernedOrphans(ctx, limit);
   });
+}
+
+// --- C3 governed Context Assembly and memory candidates (job fence mandatory; runtime only) --------
+
+export type { AssembleRequest, AssembleResult, CandidateProposal, StepResultKind, SubmitResult } from './mind-writes.js';
+export type { MemoryCandidateRecord } from './mind-records.js';
+
+/**
+ * Governed Context Assembly for one inference: durable reads, hard budget, integrity-verified content
+ * for the selection only, and the Context Manifest — in one transaction. The only producer of model input.
+ */
+export function assembleContext(store: CompanyStore, fence: Fence, request: AssembleRequest): AssembleResult {
+  return fenced(store, 'assemble context', fence, (ctx) => txAssembleContext(ctx, fence, request));
+}
+
+/** Records a structured memory CANDIDATE from the run (provenance, evidence and class floor set here, never by the model). */
+export function submitMemoryCandidate(store: CompanyStore, fence: Fence, step: number, proposal: CandidateProposal): SubmitResult {
+  const r = fenced(store, 'submit memory candidate', fence, (ctx) => txSubmitMemoryCandidate(ctx, fence, step, proposal));
+  if (r.kind === 'SUBMITTED') storeContext(store).fault('memoryCandidate.afterCommit');
+  return r;
+}
+
+/** The runtime-owned Memory Write Policy decides one candidate (its own transaction, after submission). */
+export function decideMemoryCandidate(store: CompanyStore, fence: Fence, candidateId: Id): MemoryCandidateRecord {
+  return fenced(store, 'decide memory candidate', fence, (ctx) => {
+    verifyFence(ctx, fence);
+    // The candidate must belong to this run's Work Item (a resumed run replays an earlier run's step).
+    const c = ctx.db.get<{ work_item_id: string }>('SELECT work_item_id FROM memory_candidates WHERE id = ?', candidateId);
+    const a = ctx.db.get<{ work_item_id: string }>('SELECT work_item_id FROM run_attributions WHERE run_id = ?', fence.runId);
+    if (!c || !a || c.work_item_id !== a.work_item_id) throw new QandeelError('AUTHORITY_DENIED', 'this candidate belongs to another Work Item', { candidateId, reason: 'CANDIDATE_NOT_THIS_WORK' });
+    return txDecideMemoryCandidate(ctx, candidateId);
+  });
+}
+
+/** Records one step's result for context layer L6 (the runtime's governed services only; job fence mandatory). */
+export function recordStepResult(store: CompanyStore, fence: Fence, step: number, kind: StepResultKind, content: string): void {
+  fenced(store, 'record step result', fence, (ctx) => txRecordStepResult(ctx, fence, step, kind, content));
+}
+
+/**
+ * Recovery (supervisor fence mandatory): decide candidates whose run died between submission and
+ * decision — each in its own transaction, so one undecidable candidate is refused with a code and can
+ * never block startup.
+ */
+export function decidePendingCandidates(store: CompanyStore, supervisor: SupervisorFence, limit = 100): number {
+  const ids = write(store, 'list pending candidates', (ctx) => {
+    verifySupervisor(ctx, supervisor);
+    return pendingCandidateIds(ctx, limit);
+  });
+  for (const id of ids) {
+    try {
+      write(store, 'decide pending candidate', (ctx) => {
+        verifySupervisor(ctx, supervisor);
+        txDecideMemoryCandidate(ctx, id);
+      });
+    } catch (error) {
+      if (isQandeelError(error, 'SUPERVISOR_NOT_AUTHORITATIVE') || isQandeelError(error, 'STORAGE_BUSY')) throw error;
+      write(store, 'refuse pending candidate', (ctx) => {
+        verifySupervisor(ctx, supervisor);
+        txRefuseCandidate(ctx, id, 'POLICY_ERROR');
+      });
+    }
+  }
+  return ids.length;
 }

@@ -8,6 +8,22 @@ import { boundedText, type JsonObject } from '@qandeel-company/domain';
 
 export type ModelProposal =
   | { readonly type: 'FINAL'; readonly summaryCode: string }
+  /**
+   * C3: a structured memory CANDIDATE. It is only a proposal: the runtime-owned Memory Write Policy
+   * decides whether and how it is stored. Provenance, data class, scope and status are never taken
+   * from the model.
+   */
+  | {
+      readonly type: 'MEMORY_CANDIDATE';
+      readonly memoryClass: string;
+      readonly topic: string;
+      readonly claimKey: string | null;
+      readonly claimValue: string | null;
+      readonly content: string;
+      readonly confidencePct: number;
+    }
+  /** C3: an observation about this Work Item's outcome — the first step of the learning path, never a lesson. */
+  | { readonly type: 'OBSERVATION'; readonly topic: string; readonly content: string }
   | { readonly type: 'TOOL_REQUEST'; readonly tool: string; readonly action: string; readonly args: JsonObject }
   | { readonly type: 'INVALID'; readonly code: 'NOT_JSON' | 'UNKNOWN_TYPE' | 'MALFORMED' };
 
@@ -31,6 +47,20 @@ export function parseProposal(outputText: string): ModelProposal {
     if (keys !== 'action,args,tool,type' || typeof o.tool !== 'string' || !CODE.test(o.tool) || typeof o.action !== 'string' || !CODE.test(o.action)) return { type: 'INVALID', code: 'MALFORMED' };
     if (typeof o.args !== 'object' || o.args === null || Array.isArray(o.args)) return { type: 'INVALID', code: 'MALFORMED' };
     return { type: 'TOOL_REQUEST', tool: o.tool, action: o.action, args: o.args as JsonObject };
+  }
+  if (o.type === 'MEMORY_CANDIDATE') {
+    const allowed = new Set(['type', 'memoryClass', 'topic', 'claimKey', 'claimValue', 'content', 'confidencePct']);
+    if (Object.keys(o).some((k) => !allowed.has(k))) return { type: 'INVALID', code: 'MALFORMED' };
+    if (typeof o.memoryClass !== 'string' || typeof o.topic !== 'string' || !CODE.test(o.topic) || typeof o.content !== 'string' || o.content.length === 0 || o.content.length > 2_000) return { type: 'INVALID', code: 'MALFORMED' };
+    if (typeof o.confidencePct !== 'number' || !Number.isInteger(o.confidencePct) || o.confidencePct < 0 || o.confidencePct > 100) return { type: 'INVALID', code: 'MALFORMED' };
+    const claimKey = o.claimKey === undefined || o.claimKey === null ? null : o.claimKey;
+    const claimValue = o.claimValue === undefined || o.claimValue === null ? null : o.claimValue;
+    if ((claimKey !== null && (typeof claimKey !== 'string' || !CODE.test(claimKey))) || (claimValue !== null && (typeof claimValue !== 'string' || !CODE.test(claimValue)))) return { type: 'INVALID', code: 'MALFORMED' };
+    return { type: 'MEMORY_CANDIDATE', memoryClass: o.memoryClass, topic: o.topic, claimKey: claimKey as string | null, claimValue: claimValue as string | null, content: o.content, confidencePct: o.confidencePct };
+  }
+  if (o.type === 'OBSERVATION') {
+    if (keys !== 'content,topic,type' || typeof o.topic !== 'string' || !CODE.test(o.topic) || typeof o.content !== 'string' || o.content.length === 0 || o.content.length > 2_000) return { type: 'INVALID', code: 'MALFORMED' };
+    return { type: 'OBSERVATION', topic: o.topic, content: o.content };
   }
   return { type: 'INVALID', code: 'UNKNOWN_TYPE' };
 }

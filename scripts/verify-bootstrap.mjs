@@ -92,8 +92,8 @@ const IMPLEMENTATION_MAP = 'docs/architecture/IMPLEMENTATION_MAP.md';
 const C1_CLOSURE = /^docs\/C1_[^/]*CLOSURE[^/]*\.md$/i;
 
 // The change that adds a real package extends this list in the same change. A placeholder
-// package is a verifier failure. C1 added domain, storage and runtime.
-const ALLOWED_PACKAGES = ['bootstrap-contract', 'domain', 'governance', 'storage', 'runtime'];
+// package is a verifier failure. C1 added domain, storage and runtime; C2 governance; C3 mind.
+const ALLOWED_PACKAGES = ['bootstrap-contract', 'domain', 'governance', 'mind', 'storage', 'runtime'];
 
 // C1 persistence boundary: `node:sqlite` (a Release Candidate API) is imported by exactly one module.
 const SQLITE_ADAPTER = 'packages/storage/src/sqlite/connection.ts';
@@ -130,7 +130,7 @@ const STORAGE_EXPORTS = ['.', './runtime-authority', './testing'];
 // D-C2-13: the test-only Founder seam resolves only under the `qandeel-test` export condition, and only
 // tests (plus the acceptance harness) may import it.
 const TEST_CONDITION = 'qandeel-test';
-const TEST_SEAM_HARNESSES = ['scripts/c2-acceptance.mjs'];
+const TEST_SEAM_HARNESSES = ['scripts/c2-acceptance.mjs', 'scripts/c3-acceptance.mjs'];
 const FOUNDER_SEAM_FILES = ['packages/storage/src/governance.ts', 'packages/storage/src/testing/founder-seam.ts'];
 const CLI_SOURCE = 'packages/runtime/src/cli.ts';
 const AUTHORITY_SUBPATH = '@qandeel-company/storage/runtime-authority';
@@ -164,17 +164,41 @@ const SECRET_LITERALS = [
   /\bAIza[0-9A-Za-z_-]{35}\b/,
 ];
 const SECRET_COLUMN = /(?:^|[(,])\s*"?(\w*(?:password|passwd|secret|api_?key|private_?key|access_?token|refresh_?token|bearer)\w*)"?\s+(?:TEXT|BLOB|ANY)\b/im;
-// Released C1 migrations are frozen by content, independently of the registry pins.
-const C1_FROZEN_MIGRATIONS = [
+// Released canonical migrations (C1 0001–0003, C2 0004) are frozen by content, independently of the
+// registry pins: editing one and re-pinning it is still refused.
+const FROZEN_MIGRATIONS = [
   { file: '0001_work_foundation.sql', sha256: '3022ed5ed626f9394cfa9a7e897d2ed4e7bcb9b94c8de7a9a4bde7c0c658436e' },
   { file: '0002_queue_runs_artifacts.sql', sha256: 'b3060a1ea7a3e57e8bf0f76a4edba437c9f1b8d2886ef97ff5ca2b6920b0a7c2' },
   { file: '0003_runtime_wake_generation.sql', sha256: 'f47cf341f677585d762672929bdf2f41eeb4bf7440463b68846bac0c777762e4' },
+  { file: '0004_c2_governance.sql', sha256: '51dd9a38df306751eace1dc6cf82e231b92e487b7e913b061f336e8c25a0066c' },
 ];
-// C3 / C4 / C5 / C7 subsystems must not appear as C2 schema or packages.
-const LATER_SCOPE_TABLE = /\bCREATE\s+(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(\w*(?:memor|skill|academ|certif|curricul|review_pool|reviewer|director|delegation|founder_ui|command_center)\w*)/i;
-const LATER_SCOPE_PACKAGE = /^(?:memory|knowledge|skills?|academy|certification|review-pool|reviews?|directors?|delegation|organization|command-center|founder-ui|app-ops)$/;
+// C4 / C5 / C7 subsystems must not appear as C3 schema or packages (Memory / Skills / Academy are C3's own).
+const LATER_SCOPE_TABLE = /\bCREATE\s+(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(\w*(?:review_pool|reviewer|director|delegation|org_chart|founder_ui|command_center|app_ops)\w*)/i;
+const LATER_SCOPE_PACKAGE = /^(?:review-pool|reviews?|directors?|delegation|organization|command-center|founder-ui|app-ops)$/;
 const C2_PROOF_MARKERS = ['C2-PROOF: governance-kernel', 'C2-PROOF: storage-governance', 'C2-PROOF: concurrent-reservations', 'C2-PROOF: governed-runtime', 'C2-PROOF: governed-crash-recovery'];
 const C2_MUTATION_CHECK = 'scripts/c2-mutation-check.mjs';
+
+// --- C3 boundaries ------------------------------------------------------------------------------
+const C3_CLOSURE = /^docs\/C3_[^/]*CLOSURE[^/]*\.md$/i;
+const C3_REPORT = 'docs/C3_IMPLEMENTATION_REPORT.md';
+const C3_PROOF_MARKERS = ['C3-PROOF: mind-kernel', 'C3-PROOF: storage-mind', 'C3-PROOF: runtime-mind', 'C3-PROOF: memory-crash-recovery', 'C3-PROOF: concurrent-certification', 'C3-PROOF: review-fixes', 'C3-PROOF: founder-decisions'];
+const C3_MUTATION_CHECK = 'scripts/c3-mutation-check.mjs';
+// Every inference is fed by the governed Context Assembler: the runtime module that mints the
+// context, the model runtime that accepts only a minted context, and the request type without messages.
+const CONTEXT_ASSEMBLER = 'packages/runtime/src/c3/context-assembler.ts';
+const RUNTIME_TYPES = 'packages/runtime/src/c2/types.ts';
+const MEMORY_PROPOSALS = 'packages/runtime/src/c3/memory-proposals.ts';
+// Recent step results (context layer L6) are recorded by the runtime's own governed services only.
+const RUNTIME_SERVICES = 'packages/runtime/src/runtime.ts';
+// Durable Memory / Knowledge / Canonical Truth / Skill / Academy / certification state changes only in
+// the C3 storage modules (never in the runtime, the governance kernel or the ordinary CompanyStore).
+const MIND_WRITERS = ['mind-core', 'mind-writes', 'memory', 'skill-registry', 'academy', 'capability'].map((m) => `packages/storage/src/${m}.ts`);
+const MIND_WRITE = /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO|DELETE\s+FROM|REPLACE\s+INTO)\s+(?:canonical_truth|memory_\w+|lesson\w*|knowledge_\w+|context_\w+|skill\w*|role_blueprint\w*|passport_\w+|academy_\w+|certification\w*|founder_calibrations|probation_\w+|activation_requests|capability_gaps|work_item_capabilities|run_execution_modes)\b/i;
+// Founder / evaluator acts that model output must never reach: the runtime and CLI never call them.
+const MIND_AUTHORITY_CALL = /\.(?:recordCanonicalTruth|correctMemory|recordKnowledge|validateLesson|decidePromotion|advanceSkillVersion|acknowledgePaidDependency|publishBlueprint|openPassportEntry|rolloutUpdate|rollbackUpdate|recordEvaluation|decideProbationReview|decideFounderCalibration|decideActivation|revokeCertification|requireRecertification|cancelGap)\s*\(/;
+const SKILL_LOADER = 'packages/storage/src/mind-core.ts';
+const MIND_KERNEL_IMPORT = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)['"](?:node:(?:fs|fs\/promises|sqlite|child_process|net|http|https)|@qandeel-company\/(?:storage|runtime)(?:\/[^'"]*)?)['"]/;
+const CONTENT_IN_TELEMETRY = /\b(?:appendAudit|appendEvent|\.(?:info|warn|error|debug))\s*\([^\n]*[{,]\s*(?:content|instructions|statement|text|messages|claimValue)\s*[,:}]/;
 const pkgOf = (f) => f.split('/')[1];
 const isTestPath = (f) => /^packages\/[^/]+\/test\//.test(f);
 
@@ -649,19 +673,20 @@ export const RULES = [
     ],
   },
   {
-    id: 'c1-migrations-frozen',
-    // C1 migrations 0001–0003 are frozen by content: editing one and re-pinning it is still refused.
+    id: 'released-migrations-frozen',
+    // Canonical migrations 0001–0004 (C1, C2) are frozen by content: editing one and re-pinning it is
+    // still refused. C3 adds new migrations from 0005.
     check: ({ files, read }) =>
-      C1_FROZEN_MIGRATIONS.flatMap(({ file, sha256 }) => {
+      FROZEN_MIGRATIONS.flatMap(({ file, sha256 }) => {
         const f = `${MIGRATIONS_DIR}${file}`;
-        if (!files.includes(f)) return [`released C1 migration ${f} is missing`];
-        return migrationSha(read(f)) === sha256 ? [] : [`released C1 migration ${f} was edited (C1 migrations are immutable)`];
+        if (!files.includes(f)) return [`released canonical migration ${f} is missing`];
+        return migrationSha(read(f)) === sha256 ? [] : [`released canonical migration ${f} was edited (released migrations are immutable)`];
       }),
   },
   {
     id: 'no-later-scope-leakage',
-    // C2 does not implement Memory / Skills / Academy (C3), Review Pool / Directors / delegation (C4),
-    // Founder UI (C5) or APP-OPS (C7): no such tables, views or packages.
+    // C3 does not implement Review Pool / Directors / delegation / organization (C4), the Founder UI
+    // (C5) or APP-OPS (C7): no such tables, views or packages.
     check: ({ files, read, dirs }) => [
       ...files.filter((f) => f.startsWith(MIGRATIONS_DIR) && f.endsWith('.sql')).flatMap((f) => {
         const m = (read(f) ?? '').match(LATER_SCOPE_TABLE);
@@ -694,6 +719,128 @@ export const RULES = [
       if (report !== undefined && /\bC2\s*(?:—|-|:|is)?\s*CLOSED\b/i.test(report.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`${C2_REPORT} claims C2 is closed without a closure record`);
       const c3 = mapState(read(IMPLEMENTATION_MAP), 'C3');
       if (c3 !== undefined && c3 !== 'Not started' && !c2Closed) problems.push(`C3 is ${JSON.stringify(c3)} before C2 has a closure record`);
+      return problems;
+    },
+  },
+  {
+    id: 'c3-proofs-present',
+    check: ({ files, read }) => {
+      const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
+      const problems = C3_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
+      if (!files.includes(C3_MUTATION_CHECK)) problems.push(`missing ${C3_MUTATION_CHECK}`);
+      const ci = json(read('package.json'))?.scripts?.ci ?? '';
+      if (!/\bc3:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c3:mutation');
+      return problems;
+    },
+  },
+  {
+    id: 'c3-not-claimed-closed',
+    // C3 may be a cloud implementation candidate; it is closed only in the change that adds its record,
+    // and R1 / C4 do not start before it.
+    check: ({ files, read }) => {
+      if (files.some((f) => C3_CLOSURE.test(f))) return [];
+      const problems = [];
+      const map = read(IMPLEMENTATION_MAP);
+      const c3 = mapState(map, 'C3');
+      if (c3 !== undefined && /\bCLOSED\b/i.test(c3.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`C3 is marked ${JSON.stringify(c3)} but no docs/C3_*CLOSURE*.md record exists`);
+      const report = read(C3_REPORT);
+      if (report !== undefined && /\bC3\s*(?:—|-|:|is)?\s*CLOSED\b/i.test(report.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`${C3_REPORT} claims C3 is closed without a closure record`);
+      for (const id of ['R1', 'C4']) {
+        const st = mapState(map, id);
+        if (st !== undefined && st !== 'Not started') problems.push(`${id} is ${JSON.stringify(st)} before C3 has a closure record`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'context-assembly-mandatory',
+    // Every inference goes through the governed Context Assembler: only it calls the storage
+    // assembly, the model runtime accepts only a context it minted (never processor messages), and the
+    // model request type carries no messages.
+    check: ({ files, read }) => {
+      const problems = files
+        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && f !== CONTEXT_ASSEMBLER && pkgOf(f) !== 'storage' && /\bassembleContext\s*\(/.test(read(f) ?? ''))
+        .map((f) => `${f} calls the storage context assembly directly; only ${CONTEXT_ASSEMBLER} may`);
+      const model = read(MODEL_RUNTIME);
+      if (model !== undefined) {
+        if (!/\bif\s*\(\s*!isAssembledContext\(\s*context\s*\)\s*\)/.test(model)) problems.push(`${MODEL_RUNTIME} does not refuse a context the assembler did not mint`);
+        if (/\breq(?:uest)?\.messages\b/.test(model)) problems.push(`${MODEL_RUNTIME} sends processor-supplied messages to a provider`);
+        if (!/\bcontextManifestId\s*:\s*context\.manifestId\b/.test(model)) problems.push(`${MODEL_RUNTIME} does not bind the reservation to the context manifest`);
+      }
+      const types = read(RUNTIME_TYPES);
+      const body = types?.split(/\binterface\s+ModelCallRequest\b/)[1]?.split('\n}')[0];
+      if (body !== undefined && /\b(?:messages|recentResults)\s*\??\s*:/.test(body)) problems.push(`${RUNTIME_TYPES}: ModelCallRequest carries messages or results (context comes from the assembler and durable step records only)`);
+      for (const f of files.filter((x) => x.startsWith('packages/runtime/src/') && isCode(x) && x !== RUNTIME_SERVICES)) {
+        if (/\brecordStepResult\s*\(/.test(read(f) ?? '')) problems.push(`${f} records step results; only the runtime's governed services (${RUNTIME_SERVICES}) may`);
+      }
+      const asm = read(CONTEXT_ASSEMBLER);
+      if (asm !== undefined && !/\bMINTED\.add\(/.test(asm)) problems.push(`${CONTEXT_ASSEMBLER} does not mint its contexts`);
+      return problems;
+    },
+  },
+  {
+    id: 'memory-writes-confined',
+    // Durable C3 state changes only in the C3 storage modules; model output reaches memory only as a
+    // candidate through the runtime's memory-proposal path; Founder / evaluator acts are never called
+    // by runtime code or the CLI.
+    check: ({ files, read }) => {
+      const problems = files
+        .filter((f) => isCode(f) && !MIND_WRITERS.includes(f) && !isTestPath(f) && MIND_WRITE.test(read(f) ?? ''))
+        .map((f) => `${f} writes Memory / Knowledge / Skill / Academy state outside the C3 storage modules`);
+      for (const f of files.filter((x) => x.startsWith('packages/runtime/src/') && isCode(x))) {
+        const text = read(f) ?? '';
+        if (f !== MEMORY_PROPOSALS && /\bsubmitMemoryCandidate\s*\(/.test(text)) problems.push(`${f} submits memory candidates; only ${MEMORY_PROPOSALS} may`);
+        if (MIND_AUTHORITY_CALL.test(text)) problems.push(`${f} calls a Founder / evaluator act (model output never writes memory, knowledge, certification or authority)`);
+      }
+      const index = (read('packages/storage/src/index.ts') ?? '').replace(/^\s*\/\/.*$/gm, '');
+      if (/mind-writes|mind-core/.test(index)) problems.push('packages/storage/src/index.ts re-exports the fenced C3 writes or internals');
+      return problems;
+    },
+  },
+  {
+    id: 'skill-load-pinned',
+    // Skill payloads load only through the one pinned, eligibility-checked, hash-verified loader.
+    check: ({ files, read }) =>
+      files
+        .filter((f) => isCode(f) && f !== SKILL_LOADER && !isTestPath(f))
+        .filter((f) => {
+          const text = read(f) ?? '';
+          return /loadVerified\s*\([^)]*['"]skill_versions['"]/.test(text) || /SELECT[^;`'"]*(?<!CAST\()\binstructions\b[^;`'"]*\bFROM\s+skill_versions\b/i.test(text);
+        })
+        .map((f) => `${f} reads skill instructions directly; only ${SKILL_LOADER} (pinned, eligible, hash-verified) may`),
+  },
+  {
+    id: 'mind-kernel-pure',
+    // The C3 kernel decides; it performs no I/O, holds no store and reaches no provider or tool driver.
+    check: ({ files, read }) =>
+      files
+        .filter((f) => f.startsWith('packages/mind/src/') && isCode(f))
+        .filter((f) => {
+          const text = read(f) ?? '';
+          return MIND_KERNEL_IMPORT.test(text) || ADAPTER_CALL.test(text) || DRIVER_CALL.test(text);
+        })
+        .map((f) => `${f} performs I/O or reaches storage / runtime / a provider / a tool driver (the mind kernel is pure)`),
+  },
+  {
+    id: 'mind-telemetry-content-free',
+    // Rule A: C3 audit, events and logs carry IDs, states, counts and codes — never content.
+    check: ({ files, read }) =>
+      files
+        .filter((f) => (MIND_WRITERS.includes(f) || f.startsWith('packages/runtime/src/c3/') || f.startsWith('packages/mind/src/')) && isCode(f) && CONTENT_IN_TELEMETRY.test(read(f) ?? ''))
+        .map((f) => `${f} passes content into audit / events / logs (Rule A)`),
+  },
+  {
+    id: 'activation-gate-present',
+    // ACTIVE stays fail-closed: the datastore gate exists in a C3 migration and only the test seam
+    // (never production code) labels a test activation.
+    check: ({ files, read }) => {
+      const problems = [];
+      const sql = files.filter((f) => f.startsWith(MIGRATIONS_DIR) && f.endsWith('.sql')).map((f) => read(f) ?? '').join('\n');
+      if (files.some((f) => f.startsWith(`${MIGRATIONS_DIR}0005`)) && !/CREATE\s+TRIGGER\s+employees_activation_gate\b/.test(sql)) problems.push('no employees_activation_gate trigger guards SHADOW / PROBATION → ACTIVE');
+      for (const f of files.filter((x) => /^packages\/[^/]+\/src\//.test(x) && isCode(x) && !FOUNDER_SEAM_FILES.includes(x))) {
+        const code = (read(f) ?? '').replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, '');
+        if (/`test-seam:|'test-seam:|"test-seam:/.test(code)) problems.push(`${f} writes a test-seam activation label outside the test-only seam`);
+      }
       return problems;
     },
   },
@@ -738,15 +885,26 @@ const SYNTH_STAGE_16 = `${AUTHORITY_DIR}STAGE_16/STAGE_16_CANONICAL_CLOSURE_v1.m
 const manifestRow = (p, text, classification = 'CLOSED / FROZEN') =>
   `| Stage | \`${p}\` | \`a.zip\` | \`a/x.md\` | \`${sha(text)}\` | \`${sha(text)}\` | ${classification} | exact | - | - |`;
 const synthManifest = (...rows) => ['# Manifest', '', '| Stage / area | Imported repo path | a | b | c | d | e | f | g | h |', '|---|---|---|---|---|---|---|---|---|---|', ...rows, ''].join('\n');
-const synthMap = (c0 = 'CLOSED / PASS', c1 = 'NEXT — CLOUD MEGA-TASK', c2 = 'Not started') =>
-  ['| Stage | Name | Mode | State |', '|---|---|---|---|', '| `L0` | Env | Local | CLOSED / PASS |', `| \`C0\` | Boot | Local | ${c0} |`, `| \`C1\` | Found | Cloud | ${c1} |`, `| \`C2\` | Emp | Cloud | ${c2} |`, ''].join('\n');
+const synthMap = (c0 = 'CLOSED / PASS', c1 = 'NEXT — CLOUD MEGA-TASK', c2 = 'Not started', c3, r1, c4) =>
+  [
+    '| Stage | Name | Mode | State |',
+    '|---|---|---|---|',
+    '| `L0` | Env | Local | CLOSED / PASS |',
+    `| \`C0\` | Boot | Local | ${c0} |`,
+    `| \`C1\` | Found | Cloud | ${c1} |`,
+    `| \`C2\` | Emp | Cloud | ${c2} |`,
+    ...(c3 === undefined ? [] : [`| \`C3\` | Mind | Cloud | ${c3} |`]),
+    ...(r1 === undefined ? [] : [`| \`R1\` | Review | Review | ${r1} |`]),
+    ...(c4 === undefined ? [] : [`| \`C4\` | Org | Cloud | ${c4} |`]),
+    '',
+  ].join('\n');
 const SYNTH_SQL = 'CREATE TABLE t (x INTEGER) STRICT;\n';
 // The real, frozen C1 migration texts (read from this checkout) so the synthetic repository is clean.
-const C1_MIGRATION_TEXT = Object.fromEntries(C1_FROZEN_MIGRATIONS.map(({ file }) => [file, readFileSync(path.join(ROOT, MIGRATIONS_DIR, file), 'utf8')]));
-const c1Pins = () => C1_FROZEN_MIGRATIONS.map(({ file }, i) => `  { version: ${i + 2}, name: 'c1-${i}', file: '${file}', sha256: '${migrationSha(C1_MIGRATION_TEXT[file])}' },\n`).join('');
+const C1_MIGRATION_TEXT = Object.fromEntries(FROZEN_MIGRATIONS.map(({ file }) => [file, readFileSync(path.join(ROOT, MIGRATIONS_DIR, file), 'utf8')]));
+const c1Pins = () => FROZEN_MIGRATIONS.map(({ file }, i) => `  { version: ${i + 2}, name: 'c1-${i}', file: '${file}', sha256: '${migrationSha(C1_MIGRATION_TEXT[file])}' },\n`).join('');
 const SYNTH_C2_SQL = 'CREATE TABLE employees (id TEXT, credential_ref TEXT) STRICT;\n';
 const synthRegistry = (sql = SYNTH_SQL) =>
-  `export const RELEASED_MIGRATIONS = [\n  { version: 1, name: 'one', file: '0001_one.sql', sha256: '${migrationSha(sql)}' },\n${c1Pins()}  { version: 5, name: 'c2', file: '0004_c2.sql', sha256: '${migrationSha(SYNTH_C2_SQL)}' },\n];\n`;
+  `export const RELEASED_MIGRATIONS = [\n  { version: 1, name: 'one', file: '0001_one.sql', sha256: '${migrationSha(sql)}' },\n${c1Pins()}  { version: 5, name: 'c2', file: '0004_c2.sql', sha256: '${migrationSha(SYNTH_C2_SQL)}' },\n  { version: 6, name: 'c3', file: '0005_c3.sql', sha256: '${migrationSha(SYNTH_C3_SQL)}' },\n];\n`;
 const SYNTH_AUTHORITY = [
   'export function reserveBudget(store: CompanyStore, fence: Fence, input: ReserveInput): ReserveResult {}',
   'export function settleReservation(store: CompanyStore, fence: Fence, id: Id, usage: SettleUsage): Id {}',
@@ -756,6 +914,17 @@ const SYNTH_AUTHORITY = [
   'export function recordToolResult(store: CompanyStore, fence: Fence, id: Id, outcome: ToolDriverOutcome): string {}',
   '',
 ].join('\n');
+const SYNTH_C3_SQL = 'CREATE TABLE memory_records (id TEXT) STRICT;\nCREATE TABLE skill_versions (id TEXT) STRICT;\nCREATE TRIGGER employees_activation_gate BEFORE UPDATE ON employees BEGIN SELECT 1; END;\n';
+const SYNTH_ASSEMBLER = "const r = assembleContext(store, fence, request);\nconst context = Object.freeze({ manifestId: r.manifestId });\nMINTED.add(context);\n";
+const SYNTH_MODEL_RUNTIME = [
+  'async call(store: CompanyStore, fence: Fence, run: GovernedRunContext, req: ModelCallRequest, context: AssembledContext, signal: AbortSignal) {',
+  "  if (!isAssembledContext(context)) return { kind: 'CONTEXT', code: 'CONTEXT_NOT_ASSEMBLED' };",
+  '  const reserved = reserveBudget(store, fence, { tokens: 1, contextManifestId: context.manifestId });',
+  '  const r = await adapter.generate({ messages: context.messages }, signal);',
+  '}',
+  '',
+].join('\n');
+const SYNTH_TYPES = 'export interface ModelCallRequest {\n  readonly taskClass: string;\n  readonly step: number;\n}\n';
 const SYNTH_BASELINE = `## 5. Data and privacy\n\n- **Rule A — ${PRIVACY_RULES[0]}**\n- **Rule B — ${PRIVACY_RULES[1].replace('private user content', 'private user\n  content')}**\n- **Rule C — ${PRIVACY_RULES[2]}**\n\n## 2. Operating principles\n\n- Event-driven by default.\n`;
 
 const SYNTH_QUEUE = "export interface ClaimOptions {\n  readonly workerId: string;\n  readonly supervisor: SupervisorFence;\n}\n";
@@ -783,7 +952,7 @@ function syntheticRepo(overrides = {}) {
     [AUTHORITY_INDEX]: `## Missing\n\n**${STAGE_16_MISSING}.**\n`,
     [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT)),
     [SYNTH_SOURCE]: SYNTH_SOURCE_TEXT,
-    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation' } }),
+    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation' } }),
     'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'node --test dist/test' } }),
     'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'packages/bootstrap-contract': {}, 'node_modules/tar': { version: '7.0.0' } } }),
     '.gitattributes': '* text=auto eol=lf\n*.sh text eol=lf\n*.ps1 text eol=crlf\n*.png binary\n',
@@ -810,9 +979,8 @@ function syntheticRepo(overrides = {}) {
     // Legitimate code that mentions the words without opening a network path must stay clean.
     'packages/runtime/src/wake.ts': "// no fetch here; a 'net' income is not a socket\nexport const prefetched = 1;",
     'packages/storage/test/labels.test.ts': "const root = tempRoot('sqlite');",
-    ...Object.fromEntries(C1_FROZEN_MIGRATIONS.map(({ file }) => [`${MIGRATIONS_DIR}${file}`, C1_MIGRATION_TEXT[file]])),
+    ...Object.fromEntries(FROZEN_MIGRATIONS.map(({ file }) => [`${MIGRATIONS_DIR}${file}`, C1_MIGRATION_TEXT[file]])),
     'packages/storage/src/runtime-authority.ts': SYNTH_AUTHORITY,
-    [MODEL_RUNTIME]: 'const r = await adapter.generate(request, signal);',
     [TOOL_EXECUTOR]: 'const r = await driver.invoke(input, signal);',
     'packages/storage/src/governed-writes.ts': "ctx.db.run('UPDATE budgets SET reserved_money = ? WHERE id = ?', a, b);",
     // Legitimate code that mentions the words: an interface declaration, a vault reference, a CREATE of a C2 table.
@@ -821,6 +989,18 @@ function syntheticRepo(overrides = {}) {
     [`${MIGRATIONS_DIR}0004_c2.sql`]: SYNTH_C2_SQL,
     'packages/runtime/test/c2/proofs.test.ts': C2_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
     [C2_MUTATION_CHECK]: '',
+    // C3: proofs, the minting assembler, a model runtime that accepts only minted context, a request
+    // type without messages, the one skill loader, the pure kernel and the activation gate.
+    'packages/runtime/test/c3/proofs.test.ts': C3_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
+    [C3_MUTATION_CHECK]: '',
+    [CONTEXT_ASSEMBLER]: SYNTH_ASSEMBLER,
+    [MODEL_RUNTIME]: SYNTH_MODEL_RUNTIME,
+    [RUNTIME_TYPES]: SYNTH_TYPES,
+    [MEMORY_PROPOSALS]: 'const s = submitMemoryCandidate(store, fence, step, proposal);\n',
+    [SKILL_LOADER]: "const t = loadVerified(ctx, 'skill_versions', id);\n",
+    'packages/storage/src/memory.ts': "ctx.db.run('INSERT INTO memory_records (id) VALUES (?)', id);\nappendAudit(ctx, 'memory.corrected', 'memory', id, a, 'OK', null, { version: 2 });\n",
+    'packages/mind/src/memory.ts': "import { QandeelError } from '@qandeel-company/domain';\nexport const decide = (content: string): string => content.trim();\n",
+    [`${MIGRATIONS_DIR}0005_c3.sql`]: SYNTH_C3_SQL,
     ...overrides.contents,
   };
   const files = Object.keys(baseContents).filter((f) => !(overrides.remove ?? []).includes(f));
@@ -970,7 +1150,7 @@ const VIOLATIONS = {
     { contents: { [`${MIGRATIONS_DIR}0004_c2.sql`]: 'CREATE TABLE providers (id TEXT, api_key TEXT) STRICT;\n' } },
     { contents: { 'config/ci.yml': 'token: ghp_abcdefghijklmnopqrstuvwxyz0123456789' } },
   ],
-  'c1-migrations-frozen': [
+  'released-migrations-frozen': [
     // Edited AND re-pinned: migrations-immutable alone would accept this.
     {
       contents: {
@@ -978,11 +1158,14 @@ const VIOLATIONS = {
       },
     },
     { remove: [`${MIGRATIONS_DIR}0003_runtime_wake_generation.sql`] },
+    // The C2 migration is canonical too: C3 never edits it.
+    { contents: { [`${MIGRATIONS_DIR}0004_c2_governance.sql`]: `${C1_MIGRATION_TEXT['0004_c2_governance.sql']}ALTER TABLE employees ADD COLUMN memory_json TEXT;\n` } },
   ],
   'no-later-scope-leakage': [
-    { contents: { [`${MIGRATIONS_DIR}0004_c2.sql`]: 'CREATE TABLE skill_passports (id TEXT) STRICT;\n' } },
+    { contents: { [`${MIGRATIONS_DIR}0005_c3.sql`]: `${SYNTH_C3_SQL}CREATE TABLE director_assignments (id TEXT) STRICT;\n` } },
     { contents: { [`${MIGRATIONS_DIR}0004_c2.sql`]: 'CREATE TABLE IF NOT EXISTS review_pool_members (id TEXT) STRICT;\n' } },
-    { dirs: ['bootstrap-contract', 'academy'] },
+    { dirs: ['bootstrap-contract', 'directors'] },
+    { dirs: ['bootstrap-contract', 'organization'] },
   ],
   'c2-proofs-present': [
     { contents: { 'packages/runtime/test/c2/proofs.test.ts': '// markers removed\n' } },
@@ -993,6 +1176,52 @@ const VIOLATIONS = {
     { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS') } },
     { contents: { [C2_REPORT]: '# Report\n\nC2 — CLOSED.\n' } },
     { contents: { [IMPLEMENTATION_MAP]: `${synthMap('CLOSED / PASS', 'CLOSED / PASS', 'IN PROGRESS')}| \`C3\` | Mem | Cloud | IN PROGRESS |\n` } },
+  ],
+  'c3-proofs-present': [
+    { contents: { 'packages/runtime/test/c3/proofs.test.ts': '// markers removed\n' } },
+    { remove: [C3_MUTATION_CHECK] },
+    { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation' } }) } },
+  ],
+  'c3-not-claimed-closed': [
+    { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS') } },
+    { contents: { [C3_REPORT]: '# Report\n\nC3 — CLOSED.\n' } },
+    { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'IN PROGRESS', 'IN PROGRESS') } },
+    { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'IN PROGRESS', 'Not started', 'IN PROGRESS') } },
+  ],
+  'context-assembly-mandatory': [
+    { contents: { 'packages/runtime/src/c2/employee-task.ts': "const r = assembleContext(store, fence, { step: 0, recentResults: [] });" } },
+    { contents: { [MODEL_RUNTIME]: SYNTH_MODEL_RUNTIME.replace("  if (!isAssembledContext(context)) return { kind: 'CONTEXT', code: 'CONTEXT_NOT_ASSEMBLED' };\n", '') } },
+    { contents: { [MODEL_RUNTIME]: SYNTH_MODEL_RUNTIME.replace('messages: context.messages', 'messages: req.messages') } },
+    { contents: { [MODEL_RUNTIME]: SYNTH_MODEL_RUNTIME.replace(', contextManifestId: context.manifestId', '') } },
+    { contents: { [RUNTIME_TYPES]: SYNTH_TYPES.replace('  readonly step: number;\n', '  readonly messages: readonly ProviderMessage[];\n') } },
+    { contents: { [CONTEXT_ASSEMBLER]: SYNTH_ASSEMBLER.replace('MINTED.add(context);\n', '') } },
+    { contents: { [RUNTIME_TYPES]: SYNTH_TYPES.replace('  readonly step: number;\n', '  readonly step: number;\n  readonly recentResults: readonly string[];\n') } },
+    { contents: { 'packages/runtime/src/c2/employee-task.ts': "recordStepResult(store, fence, step, 'TOOL_RESULT', processorText);" } },
+  ],
+  'memory-writes-confined': [
+    { contents: { 'packages/runtime/src/c3/shortcut.ts': "db.run('INSERT INTO memory_records (id, content) VALUES (?, ?)', id, output);" } },
+    { contents: { 'packages/storage/src/store.ts': 'const q = `UPDATE certifications SET status = \'VALID\'`;' } },
+    { contents: { 'packages/runtime/src/c2/employee-task.ts': 'submitMemoryCandidate(store, fence, 1, proposal);' } },
+    { contents: { 'packages/runtime/src/c2/employee-task.ts': 'mind.memory.recordKnowledge(founder, { content: proposal.content });' } },
+    { contents: { [CLI_SOURCE]: "case 'activate':\n  academy.decideActivation(founder, id, { decision: 'APPROVE' });" } },
+    { contents: { 'packages/storage/src/index.ts': "export { txSubmitMemoryCandidate } from './mind-writes.js';\n" } },
+  ],
+  'skill-load-pinned': [
+    { contents: { 'packages/storage/src/academy.ts': "const t = loadVerified(ctx, 'skill_versions', id);" } },
+    { contents: { 'packages/storage/src/mind-writes.ts': "const r = ctx.db.get('SELECT instructions FROM skill_versions WHERE id = ?', id);" } },
+  ],
+  'mind-kernel-pure': [
+    { contents: { 'packages/mind/src/io.ts': "import { readFileSync } from 'node:fs';" } },
+    { contents: { 'packages/mind/src/store.ts': "import { MemoryStore } from '@qandeel-company/storage';" } },
+    { contents: { 'packages/mind/src/tool.ts': 'await driver.invoke(input, signal);' } },
+  ],
+  'mind-telemetry-content-free': [
+    { contents: { 'packages/storage/src/memory.ts': "appendAudit(ctx, 'memory.corrected', 'memory', id, a, 'OK', null, { content: input.correctedContent });" } },
+    { contents: { 'packages/runtime/src/c3/memory-proposals.ts': "this.log.info('memory.proposed', { topic, content });" } },
+  ],
+  'activation-gate-present': [
+    { contents: { [`${MIGRATIONS_DIR}0005_c3.sql`]: 'CREATE TABLE memory_records (id TEXT) STRICT;\n' } },
+    { contents: { 'packages/storage/src/academy.ts': "setEmployeeState(ctx, e, 'ACTIVE', 'CERTIFIED', ref, [`test-seam:${id}`]);" } },
   ],
   'local-core-longpaths': { longpaths: undefined },
 };
@@ -1031,12 +1260,25 @@ const MUST_PASS = [
   // A C2 candidate that is explicitly not closed; C2 closed together with its record.
   { id: 'c2-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / MERGED / CANONICAL', 'IN PROGRESS — implementation candidate, not closed'), [C2_REPORT]: '# Report\n\nC2 is NOT CLOSED.\n' } } },
   { id: 'c2-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS'), 'docs/C2_CLOSURE_RECORD.md': '' } } },
-  // CRLF checkouts of the frozen C1 migrations are the same content.
-  { id: 'c1-migrations-frozen', scenario: { contents: { [`${MIGRATIONS_DIR}0001_work_foundation.sql`]: C1_MIGRATION_TEXT['0001_work_foundation.sql'].replace(/\n/g, '\r\n') } } },
+  // CRLF checkouts of the frozen canonical migrations are the same content.
+  { id: 'released-migrations-frozen', scenario: { contents: { [`${MIGRATIONS_DIR}0001_work_foundation.sql`]: C1_MIGRATION_TEXT['0001_work_foundation.sql'].replace(/\n/g, '\r\n') } } },
   // Tests (and the acceptance harness) may import the test-only Founder seam.
   { id: 'runtime-authority-confined', scenario: { contents: { 'packages/runtime/test/c2/seed.ts': "import { armFounderTestSurface } from '@qandeel-company/storage/testing';", 'scripts/c2-acceptance.mjs': "await import('@qandeel-company/storage/testing');" } } },
   // Tests may call adapters and drivers directly (fakes); only production src is confined.
   { id: 'model-calls-confined', scenario: { contents: { 'packages/runtime/test/c2/fake.test.ts': 'await provider.generate(req, signal); await driver.invoke(x, s);' } } },
+  // C3 owns Memory / Skills / Academy / certification schema and the `mind` package (not later-scope leakage).
+  { id: 'no-later-scope-leakage', scenario: { contents: { [`${MIGRATIONS_DIR}0005_c3.sql`]: `${SYNTH_C3_SQL}CREATE TABLE academy_enrollments (id TEXT) STRICT;\nCREATE TABLE certifications (id TEXT) STRICT;\nCREATE TABLE knowledge_items (id TEXT) STRICT;\n` }, dirs: ['bootstrap-contract', 'mind'] } },
+  // C3 as a cloud implementation candidate, explicitly not closed, R1 / C4 not started; later, C3 closed with its record.
+  { id: 'c3-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'IN PROGRESS — Cloud implementation candidate, NOT CLOSED', 'Not started', 'Not started'), [C3_REPORT]: '# Report\n\nC3 is NOT CLOSED.\n' } } },
+  { id: 'c3-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'IN PROGRESS'), 'docs/C3_CLOSURE_RECORD.md': '' } } },
+  // Tests may exercise the assembly and write fixtures directly; the kernel may import the domain / governance kernels.
+  { id: 'memory-writes-confined', scenario: { contents: { 'packages/storage/test/c3.test.ts': "db.run('UPDATE memory_records SET content = ? WHERE id = ?', x, id);", 'packages/runtime/test/c3/x.test.ts': 'rt.mind.academy.decideActivation(founder, id, input);' } } },
+  { id: 'mind-kernel-pure', scenario: { contents: { 'packages/mind/src/academy.ts': "import { QandeelError } from '@qandeel-company/domain';\nimport { maxDataClass } from '@qandeel-company/governance';" } } },
+  // A size probe of a payload is not a payload read; a comment naming the seam label is not code.
+  { id: 'skill-load-pinned', scenario: { contents: { 'packages/storage/src/mind-writes.ts': "ctx.db.get('SELECT length(CAST(instructions AS BLOB)) AS b FROM skill_versions WHERE id = ?', id);" } } },
+  { id: 'activation-gate-present', scenario: { contents: { 'packages/governance/src/employee.ts': ' * certification it cannot verify. `test-seam:` marks the test-only seam label.\n' } } },
+  // Content hashes and counts in telemetry are fine; only content itself is refused.
+  { id: 'mind-telemetry-content-free', scenario: { contents: { 'packages/storage/src/memory.ts': "appendAudit(ctx, 'memory.stored', 'memory', id, a, 'OK', null, { contentSha256: sha, bytes: n });" } } },
   // Windows checkouts with CRLF do not trip the migration pin.
   { id: 'migrations-immutable', scenario: { contents: { [`${MIGRATIONS_DIR}0001_one.sql`]: SYNTH_SQL.replace(/\n/g, '\r\n') } } },
   {

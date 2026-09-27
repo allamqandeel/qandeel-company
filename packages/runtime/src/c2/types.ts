@@ -4,14 +4,22 @@
  * routing, budgets and fencing on every call (Stage 12 §11, Stage 13 D13-D).
  */
 import type { JsonObject, Processor, ProcessorContext, ProcessorResult } from '@qandeel-company/domain';
-import type { EscalationEvidence, ModelProposal, ProviderFailureClass, ProviderMessage, ProviderUsage, ReasoningClass } from '@qandeel-company/governance';
+import type { EscalationEvidence, ModelProposal, ProviderFailureClass, ProviderUsage, ReasoningClass } from '@qandeel-company/governance';
 import type { GovernedRunContext } from '@qandeel-company/storage/runtime-authority';
 
+/**
+ * One model step. There are no messages here: the runtime assembles the context for the step through
+ * the governed C3 Context Assembler (C3 §11) — a processor never supplies model input directly.
+ */
 export interface ModelCallRequest {
   readonly taskClass: string;
   /** Defaults to the Employee's Cognitive Profile default class. */
   readonly reasoningClass?: ReasoningClass;
-  readonly messages: readonly ProviderMessage[];
+  /**
+   * Durable step (turn) of the runtime-owned loop; recorded on the context manifest. Recent results
+   * (layer L6) come from what the runtime's own services recorded for earlier steps — never from here.
+   */
+  readonly step: number;
   readonly maxOutputTokens: number;
   /** Evidence-based escalation of this step to the next class (never on self-reported uncertainty alone). */
   readonly escalation?: { readonly fromClass: ReasoningClass; readonly evidence: EscalationEvidence };
@@ -19,7 +27,9 @@ export interface ModelCallRequest {
 
 export type ModelCallOutcome =
   | { readonly kind: 'NO_LLM' }
-  | { readonly kind: 'OK'; readonly proposal: ModelProposal; readonly usage: ProviderUsage; readonly deploymentId: string; readonly reasoningClass: ReasoningClass; readonly attempts: number }
+  | { readonly kind: 'OK'; readonly proposal: ModelProposal; readonly usage: ProviderUsage; readonly deploymentId: string; readonly reasoningClass: ReasoningClass; readonly attempts: number; readonly manifestId: string }
+  /** No context could be assembled for this step (typed; never a silent truncation). */
+  | { readonly kind: 'CONTEXT'; readonly code: 'CONTEXT_BUDGET_EXHAUSTED' | 'CONFLICT_HOLD' | 'SKILL_CONFLICT' | 'INTEGRITY_FAILURE' | 'CONTEXT_NOT_ASSEMBLED' }
   | { readonly kind: 'DENIED'; readonly code: string }
   | { readonly kind: 'BUDGET'; readonly code: string; readonly detail: string }
   | { readonly kind: 'ESCALATION_REFUSED'; readonly code: string }
@@ -43,9 +53,18 @@ export type ToolOutcome =
   | { readonly kind: 'NOT_EXECUTED'; readonly code: string }
   | { readonly kind: 'FAILED'; readonly code: string };
 
+/** A model-proposed memory candidate or observation: submitted to the Memory Write Policy, never written directly. */
+export type MemoryProposal = Extract<ModelProposal, { type: 'MEMORY_CANDIDATE' | 'OBSERVATION' }>;
+
+export type MemoryProposalOutcome =
+  | { readonly kind: 'DECIDED'; readonly state: string; readonly reasonCode: string | null }
+  | { readonly kind: 'INVALID' | 'REFUSED'; readonly code: string };
+
 export interface GovernedRunServices {
   readonly context: GovernedRunContext;
   invokeModel(request: ModelCallRequest): Promise<ModelCallOutcome>;
+  /** Submits a model proposal as a memory candidate; the runtime's Memory Write Policy decides it. */
+  proposeMemory(proposal: MemoryProposal, step: number): MemoryProposalOutcome;
   /** `step` is a durable, checkpointed step number: it derives the tool call's idempotency key. */
   executeTool(request: ToolRequest, step: number): Promise<ToolOutcome>;
 }

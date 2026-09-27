@@ -9,6 +9,7 @@
     "packages/bootstrap-contract",
     "packages/domain",
     "packages/governance",
+    "packages/mind",
     "packages/storage",
     "packages/runtime"
   ],
@@ -26,9 +27,11 @@
     "c1:faults": "npm run test:faults --workspace @qandeel-company/runtime",
     "c1:acceptance": "node scripts/c1-acceptance.mjs",
     "c1:mutation": "node scripts/c1-mutation-check.mjs",
-    "ci": "npm run build && npm run typecheck && npm run lint && npm run test && npm run c1:mutation && npm run c2:mutation && npm run verify",
+    "ci": "npm run build && npm run typecheck && npm run lint && npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run verify",
     "c2:mutation": "node scripts/c2-mutation-check.mjs",
-    "c2:acceptance": "node --conditions=qandeel-test scripts/c2-acceptance.mjs"
+    "c2:acceptance": "node --conditions=qandeel-test scripts/c2-acceptance.mjs",
+    "c3:mutation": "node scripts/c3-mutation-check.mjs",
+    "c3:acceptance": "node --conditions=qandeel-test scripts/c3-acceptance.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

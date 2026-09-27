@@ -30,7 +30,8 @@ export type FaultPoint =
   | 'artifact.afterRename'
   | 'reservation.afterCommit'
   | 'settlement.beforeCommit'
-  | 'toolIntent.afterCommit';
+  | 'toolIntent.afterCommit'
+  | 'memoryCandidate.afterCommit';
 
 export type FaultHook = (point: FaultPoint) => void;
 

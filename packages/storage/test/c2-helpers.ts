@@ -5,6 +5,9 @@ import { GovernanceStore, type CompanyStore, type EmployeeRecord } from '../src/
 import { beginGovernedRun, claimNext } from '../src/runtime-authority.js';
 import { activateEmployeeForTest, armFounderTestSurface } from '../src/testing/founder-seam.js';
 import type { Harness } from './helpers.js';
+import { storeContext } from '../src/store.js';
+import { newId as freshId } from '@qandeel-company/domain';
+import type { Fence } from '../src/index.js';
 
 export const GOVERNED_KIND = 'c2.employee-task';
 export const C2_KINDS: ReadonlyMap<string, SideEffectClass> = new Map([[GOVERNED_KIND, 'IDEMPOTENT']]);
@@ -90,4 +93,24 @@ export function claimGoverned(h: Harness, workerId = 'w1') {
   if (!claim) throw new Error('nothing to claim');
   const begun = beginGovernedRun(h.store, claim.fence);
   return { claim, begun };
+}
+
+/**
+ * C3 binds every model reservation to an OK Context Manifest of its own run. The C2 budget proofs test
+ * reservation arithmetic, not assembly, so they use a minimal manifest row (estimate 1 token); the
+ * binding itself is proven by the C3 storage and runtime proofs.
+ */
+export function testManifest(h: Harness, fence: Fence, employeeId: Id, dataClass = 'D1'): Id {
+  const ctx = storeContext(h.store);
+  const id = freshId();
+  const run = ctx.db.get<{ work_item_id: string }>('SELECT work_item_id FROM runs WHERE id = ?', fence.runId);
+  const at = h.store.now();
+  ctx.db.immediate('test manifest', () =>
+    ctx.db.run(
+      `INSERT INTO context_manifests (id, run_id, work_item_id, employee_id, inference_seq, step, outcome, policy_json, total_budget, used_tokens, estimated_input_tokens, max_data_class, per_layer_json, selected_count, rejected_count, conflict_count, prefix_sha256, messages_sha256, created_at)
+       VALUES (?, ?, ?, ?, (SELECT COUNT(*) + 1 FROM context_manifests WHERE run_id = ?), 0, 'OK', '{}', 24000, 1, 1, ?, '{}', 0, 0, 0, NULL, ?, ?)`,
+      id, fence.runId, String(run?.work_item_id), employeeId, fence.runId, dataClass, 'a'.repeat(64), at,
+    ),
+  );
+  return id;
 }

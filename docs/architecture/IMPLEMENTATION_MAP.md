@@ -4,7 +4,10 @@
 (2026-09-26), at C1 closure (2026-09-27; `docs/C1_CLOSURE_RECORD.md`) and at C2 start
 (2026-09-27: PR #2 was merged into `main` as `419ee4f`, so C1 is CLOSED / MERGED / CANONICAL;
 C2 closed and merged on 2026-09-27 as `d374001fa92f27d19aabf97b185ccac3bfc9099d` after exact-SHA independent review and
-Founder-host validation).
+Founder-host validation), at C3 start (2026-09-27, from `main` @ `f9bd7d4`), and at C3 closure
+(2026-09-27; `docs/C3_CLOSURE_RECORD.md`; candidate `4284337221706f08aebe65fadb64c881c8ed9470`
+passed independent review, GitHub CI and Founder-host validation). C3 is CLOSED / VALIDATED / READY
+TO MERGE, but is not MERGED / CANONICAL until PR #4 is merged.
 
 This is **sequencing, not evidence**. A stage listed here is not implemented until its own work
 package is merged to `main` with green CI and the required review. The implementation packages
@@ -16,7 +19,7 @@ below are not the Product / Architecture Stages 0–18 in `docs/authority/compan
 | `C0` | Repository Bootstrap | Local | CLOSED / PASS |
 | `C1` | Company Foundation & Durable Runtime | Cloud Mega-Task | CLOSED / MERGED / CANONICAL (PR #2, `main` @ `419ee4f`) |
 | `C2` | Employees + Models + Tools + Cost Governance | Cloud Mega-Task | CLOSED / MERGED / CANONICAL (PR #3, `d374001`) |
-| `C3` | Memory + Context + Skills + Academy | Cloud Mega-Task | Not started |
+| `C3` | Memory + Context + Skills + Academy | Cloud Mega-Task | CLOSED / VALIDATED / READY TO MERGE (PR #4; not yet merged/canonical) |
 | `R1` | Independent Core Review | Review | Not started |
 | `C4` | Organization + Directors + Delegation + Review Pool | Cloud Mega-Task | Not started |
 | `C5` | Founder Command Center | Cloud Mega-Task | Not started |

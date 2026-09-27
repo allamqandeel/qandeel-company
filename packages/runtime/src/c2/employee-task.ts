@@ -8,7 +8,7 @@
  * review) is an event-driven WAIT that consumes no tokens.
  */
 import { assertIntInRange, boundedText, type JsonValue, type ProcessorContext, type ProcessorResult } from '@qandeel-company/domain';
-import { assertTaskClass, isDataClass, isReasoningClass, type ModelProposal, type ProviderMessage, type ReasoningClass } from '@qandeel-company/governance';
+import { assertTaskClass, isDataClass, isReasoningClass, type ModelProposal, type ReasoningClass } from '@qandeel-company/governance';
 
 import type { GovernedProcessor, GovernedRunServices, ToolRequest } from './types.js';
 
@@ -29,19 +29,19 @@ interface LoopState {
   readonly turn: number;
   readonly phase: 'MODEL' | 'TOOL';
   readonly pending: ToolRequest | null;
-  readonly results: readonly string[];
   readonly modelCalls: number;
   readonly invalid: number;
 }
 
-const MAX_RESULT_CHARS = 2_048;
-const MAX_KEPT_RESULTS = 8;
 
 function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasoningClass' | 'dataClass'>> & { reasoningClass: ReasoningClass | null } {
   const o = (input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}) as Record<string, JsonValue>;
   // An invalid data class is refused outright (classification never fails open).
   if (o.dataClass !== undefined && !isDataClass(o.dataClass)) throw new Error('invalid dataClass');
   if (o.reasoningClass !== undefined && !isReasoningClass(o.reasoningClass)) throw new Error('invalid reasoningClass');
+  // C3 context controls are validated up front (a typed refusal, never a failure inside assembly).
+  if (o.contextDataClassCeiling !== undefined && !isDataClass(o.contextDataClassCeiling)) throw new Error('invalid contextDataClassCeiling');
+  if (o.contextBudgetTokens !== undefined) assertIntInRange(o.contextBudgetTokens, 'contextBudgetTokens', 1_024, 64_000);
   return {
     taskClass: assertTaskClass(o.taskClass),
     instructions: boundedText(o.instructions, 'instructions', 12_000),
@@ -53,21 +53,12 @@ function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasonin
 
 function readState(ctx: ProcessorContext): LoopState {
   const s = ctx.resumeFrom?.state as Partial<LoopState> | null | undefined;
-  if (ctx.resumeFrom?.kind !== 'employee-loop' || typeof s !== 'object' || s === null || typeof s.turn !== 'number') return { turn: 0, phase: 'MODEL', pending: null, results: [], modelCalls: 0, invalid: 0 };
-  return { turn: s.turn, phase: s.phase === 'TOOL' ? 'TOOL' : 'MODEL', pending: (s.pending ?? null) as ToolRequest | null, results: Array.isArray(s.results) ? s.results : [], modelCalls: Number(s.modelCalls ?? 0), invalid: Number(s.invalid ?? 0) };
+  if (ctx.resumeFrom?.kind !== 'employee-loop' || typeof s !== 'object' || s === null || typeof s.turn !== 'number') return { turn: 0, phase: 'MODEL', pending: null, modelCalls: 0, invalid: 0 };
+  return { turn: s.turn, phase: s.phase === 'TOOL' ? 'TOOL' : 'MODEL', pending: (s.pending ?? null) as ToolRequest | null, modelCalls: Number(s.modelCalls ?? 0), invalid: Number(s.invalid ?? 0) };
 }
 
 const save = (ctx: ProcessorContext, s: LoopState): Promise<void> => ctx.checkpoint('employee-loop', s as unknown as JsonValue);
 
-function messages(taskClass: string, instructions: string, results: readonly string[]): ProviderMessage[] {
-  return [
-    { role: 'system', content: `QANDEEL governed employee run. Task class: ${taskClass}. Propose exactly one next action as JSON: {"type":"FINAL","summaryCode":"..."} or {"type":"TOOL_REQUEST","tool":"...","action":"...","args":{...}}.` },
-    { role: 'user', content: instructions },
-    ...results.map((r) => ({ role: 'tool' as const, content: r })),
-  ];
-}
-
-const keep = (results: readonly string[], next: string): string[] => [...results, next.slice(0, MAX_RESULT_CHARS)].slice(-MAX_KEPT_RESULTS);
 
 export const employeeTaskProcessor: GovernedProcessor = {
   kind: EMPLOYEE_TASK_KIND,
@@ -93,12 +84,12 @@ export const employeeTaskProcessor: GovernedProcessor = {
         const out = await gov.executeTool(s.pending, s.turn);
         switch (out.kind) {
           case 'SUCCEEDED':
-            s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null, results: keep(s.results, JSON.stringify({ tool: s.pending.tool, action: s.pending.action, result: out.result })) };
+            s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null };
             await save(ctx, s);
             continue;
           case 'DENIED':
             if (out.paused || out.code === 'EMPLOYEE_NOT_ELIGIBLE') return { type: 'PERMANENT_FAILURE', code: 'EMPLOYEE_CONTAINED' };
-            s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null, results: keep(s.results, JSON.stringify({ tool: s.pending.tool, action: s.pending.action, denied: out.code })) };
+            s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null };
             await save(ctx, s);
             continue;
           case 'APPROVAL_REQUIRED':
@@ -120,7 +111,9 @@ export const employeeTaskProcessor: GovernedProcessor = {
         taskClass: cfg.taskClass,
         ...(requested !== undefined ? { reasoningClass: requested } : {}),
         ...(escalateFrom !== null ? { escalation: escalateFrom } : {}),
-        messages: messages(cfg.taskClass, cfg.instructions, s.results),
+        // No messages: the runtime assembles this step's context (C3 Context Assembler) from durable state —
+        // instructions, skills, knowledge, memory and the results its own services recorded for earlier steps.
+        step: s.turn,
         maxOutputTokens: cfg.maxOutputTokens,
       });
       if (escalateFrom !== null) escalated = true;
@@ -146,6 +139,12 @@ export const employeeTaskProcessor: GovernedProcessor = {
             continue;
           }
           return { type: 'PERMANENT_FAILURE', code: `PROVIDER_${out.failure}` };
+        case 'CONTEXT':
+          // Typed context outcomes: an IMPORTANT unresolved conflict or conflicting skills park the work
+          // for review (zero tokens); a context that cannot fit or fails integrity never reaches a model.
+          if (out.code === 'CONFLICT_HOLD') return { type: 'WAIT', reasonCode: 'MEMORY_CONFLICT_REVIEW' };
+          if (out.code === 'SKILL_CONFLICT') return { type: 'WAIT', reasonCode: 'SKILL_CONFLICT_REVIEW' };
+          return { type: 'PERMANENT_FAILURE', code: out.code };
         case 'OK':
           break;
       }
@@ -154,6 +153,13 @@ export const employeeTaskProcessor: GovernedProcessor = {
       if (proposal.type === 'FINAL') {
         await save(ctx, { ...s, phase: 'MODEL', pending: null });
         return { type: 'COMPLETED', evidence: { summaryCode: proposal.summaryCode, turns: s.turn, modelCalls: s.modelCalls, reasoningClass: out.reasoningClass } };
+      }
+      if (proposal.type === 'MEMORY_CANDIDATE' || proposal.type === 'OBSERVATION') {
+        // Only a candidate: the Memory Write Policy decides. The loop learns the decision code, never more.
+        gov.proposeMemory(proposal, s.turn);
+        s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null };
+        await save(ctx, s);
+        continue;
       }
       if (proposal.type === 'INVALID') {
         // Observable evidence (the output failed validation) may justify one escalation.
