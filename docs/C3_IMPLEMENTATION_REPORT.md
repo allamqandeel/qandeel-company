@@ -1,12 +1,11 @@
 # C3 — Memory + Context + Skills + Academy — Implementation Report
 
-> **C3 — IN PROGRESS — Cloud implementation candidate. NOT CLOSED.** Nothing here is a closure
-> record. C3 closes only after final independent review and Founder-host validation (§14). R1 is NOT
-> STARTED; C4 is NOT STARTED.
+> **C3 — CLOSED / VALIDATED / READY TO MERGE.** Closure record:
+> `docs/C3_CLOSURE_RECORD.md`. PR #4 is still unmerged, so C3 is **NOT YET MERGED / CANONICAL**.
+> R1 is NOT STARTED; C4 is NOT STARTED.
 >
-> **Founder Decision closure (§16).** After an independent review of `c8cbebf` found no new engineering
-> BLOCKER or MAJOR, the Founder decided the D-C3-17 Product questions. They are implemented on this
-> same PR as D-C3-18 .. D-C3-22.
+> **Founder Decision closure (§16).** After independent review found no engineering BLOCKER or MAJOR,
+> the Founder decisions required for C3 closure were implemented as D-C3-18 .. D-C3-22 and D-C3-24.
 
 ## 1. Baseline, branch, PR
 
@@ -17,10 +16,11 @@
   ([allamqandeel/qandeel-company#4](https://github.com/allamqandeel/qandeel-company/pull/4)). It is
   not to be merged by this task.
 - **Lifecycle records:**
-  - IMPLEMENTATION_MAP and README say C3 IN PROGRESS / Cloud implementation candidate.
-  - C1 and C2 remain CLOSED.
-  - R1 remains NOT STARTED.
-  - No C3 closure record exists; the verifier rule `c3-not-claimed-closed` enforces this.
+  - IMPLEMENTATION_MAP and README say C3 CLOSED / VALIDATED / READY TO MERGE.
+  - `docs/C3_CLOSURE_RECORD.md` records the satisfied C3 gate.
+  - C1 and C2 remain CLOSED / MERGED / CANONICAL.
+  - R1 and C4 remain NOT STARTED.
+  - PR #4 is still unmerged; C3 is not yet canonical on `main`.
 
 ## 2. Authority read
 
@@ -254,7 +254,7 @@ Proof markers checked by the verifier rule `c3-proofs-present`: `C3-PROOF: mind-
 
 ## 10. Mutation checks, verifier, acceptances, results
 
-- **`npm run c3:mutation`: 40 mutations** (30 at the candidate, 9 added by the Founder decision
+- **`npm run c3:mutation`: 40 mutations** (30 at the candidate, 10 added by the Founder decision
   closure, §16). Each removes one gate from the compiled output and
   requires a proof to fail:
   - **Memory:** `memory-secret-stored`, `memory-contradicts-canonical`,
@@ -392,25 +392,31 @@ Other MINOR and NIT findings were fixed where cheap.
 - **Product Owner questions** asked in D-C3-17 are all decided by the Founder (D-C3-18 .. D-C3-22).
   The numeric values stay engineering defaults / tunable policy values, not frozen Product constants.
 
-## 14. Remaining Founder-host validation gate
+## 14. Founder-host validation — PASS
 
-On the Founder's Windows host, at the exact candidate SHA:
-1. Run a fresh clone with `core.longpaths=true`, then `npm ci` and `npm run ci`. This covers the
-   verifier, the C1 / C2 / C3 mutation checks and all tests, including multi-process.
-2. Run `npm run c1:acceptance`, `npm run c2:acceptance` and `npm run c3:acceptance`.
-3. Confirm Smart App Control raises no block: no native binaries, and signed Node 24 only.
-4. Confirm that Arabic paths and names round-trip, and that a v5 / v6 database opens after a restart.
-5. Re-read the sqlite.org pages on STRICT tables, triggers and deferrable foreign keys, which the
-   Cloud cannot reach.
-6. Complete the final independent review of this PR at its final head (the Founder decisions of
-   D-C3-17 are recorded and implemented in D-C3-18 .. D-C3-22).
+Founder-host Windows validation passed on exact candidate
+`4284337221706f08aebe65fadb64c881c8ed9470` in a fresh disposable clone.
+
+1. `npm ci` PASS, 0 vulnerabilities.
+2. `npm run ci` PASS: 352/352 tests, storage 212/212, C1 mutation 6/6, C2 mutation 19/19,
+   C3 mutation 40/40, verifier 49/49.
+3. `npm run c1:acceptance`, `npm run c2:acceptance` and `npm run c3:acceptance` all PASS.
+4. Smart App Control remained enabled and raised no block; no security setting or exclusion changed.
+5. Arabic workspace/path and Arabic Work Item text round-tripped unchanged.
+6. A released-schema v5 workspace upgraded to v6 with only migration 6 applied; a second v6 restart
+   applied zero migrations; `quick_check` stayed `ok`.
+7. The official sqlite.org pages for STRICT tables, CREATE TRIGGER and deferred foreign keys were
+   re-read on the Founder host; no material contradiction with the implementation assumptions was found.
+8. Final local HEAD remained exactly the candidate SHA and the tracked tree remained clean.
+
+Final independent Technical Lead review: PASS. No BLOCKER or MAJOR remains.
 
 ## 15. Skills used
 
 None. The installed Skills were inspected and none applied to this repository's governed work, so
 none had an effect. The reviews were performed by focused subagents (§11).
 
-## 16. Founder Decision closure (D-C3-17 → D-C3-18 .. D-C3-23)
+## 16. Founder Decision closure (D-C3-17 → D-C3-18 .. D-C3-24)
 
 Started from the reviewed candidate `c8cbebfc632ecb84b387e20e229631515466946c` (PR #4 Draft / Open /
 Unmerged; `main` still `f9bd7d4`). Only the Founder-approved decisions were implemented; C3 was not
@@ -463,3 +469,13 @@ redesigned, and C4 / C5 were not started.
     path remains required.
 - **Closure review:** no BLOCKER and no remaining MAJOR. The remaining D-C3-23 items are minor Product
   tuning questions and do not block C3 closure.
+
+
+## 17. C3 closure state
+
+The C3 gate is **CLOSED / VALIDATED / READY TO MERGE**. See
+`docs/C3_CLOSURE_RECORD.md`.
+
+This is deliberately distinct from repository canonization: PR #4 is still unmerged, so C3 is
+**NOT YET MERGED / CANONICAL**. R1 and C4 remain NOT STARTED until the merge boundary is crossed and
+the Founder explicitly authorizes the next step.
