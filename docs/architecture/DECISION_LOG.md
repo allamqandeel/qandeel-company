@@ -1485,7 +1485,8 @@ Founder's administrative transaction. Two direct proofs cover both sides: missin
 demotes; returning to a role whose prior certification is still VALID remains ACTIVE. Mutation
 `role-reassignment-without-cert-keeps-active` proves the gate is effective.
 
-**State.** C3 is **CLOSED / VALIDATED / READY TO MERGE**. The final independent review and
-Founder-host validation passed on candidate `4284337221706f08aebe65fadb64c881c8ed9470`; the closure is
-recorded in `docs/C3_CLOSURE_RECORD.md`. PR #4 is still unmerged, so C3 is **not yet MERGED /
-CANONICAL**. R1 and C4 remain NOT STARTED.
+**State.** C3 is **CLOSED / MERGED / CANONICAL**. The final independent review and Founder-host
+validation passed on candidate `4284337221706f08aebe65fadb64c881c8ed9470`; the final pre-merge closure
+head was `e4fdaa119eeef4cb612e349f962adb38108a62f8`; PR #4 merged to `main` on 2026-09-27 as
+`4592b525bdc4937dd130dac452a7dc8fc29de909`. The closure is recorded in `docs/C3_CLOSURE_RECORD.md`.
+R1 and C4 remain NOT STARTED.

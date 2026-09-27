@@ -1,8 +1,8 @@
 # C3 — Memory + Context + Skills + Academy — Implementation Report
 
-> **C3 — CLOSED / VALIDATED / READY TO MERGE.** Closure record:
-> `docs/C3_CLOSURE_RECORD.md`. PR #4 is still unmerged, so C3 is **NOT YET MERGED / CANONICAL**.
-> R1 is NOT STARTED; C4 is NOT STARTED.
+> **C3 — CLOSED / MERGED / CANONICAL.** Closure record: `docs/C3_CLOSURE_RECORD.md`. PR #4 merged on
+> 2026-09-27 as `4592b525bdc4937dd130dac452a7dc8fc29de909` (closure head `e4fdaa1`; Founder-host
+> validated candidate `4284337`). R1 is NOT STARTED; C4 is NOT STARTED.
 >
 > **Founder Decision closure (§16).** After independent review found no engineering BLOCKER or MAJOR,
 > the Founder decisions required for C3 closure were implemented as D-C3-18 .. D-C3-22 and D-C3-24.
@@ -12,15 +12,16 @@
 - **Baseline:** `main @ f9bd7d4d817b20ea5911fd566c21b5288eec5b7b`. C1 and C2 are CLOSED / MERGED /
   CANONICAL. The C2 post-merge CI (run 36309634255, attempt 2) passed on Windows and Ubuntu. The
   tree was clean at start, and `main` had not moved.
-- **Branch / PR:** `claude/eager-cray-vmv69o`, one Draft PR
-  ([allamqandeel/qandeel-company#4](https://github.com/allamqandeel/qandeel-company/pull/4)). It is
-  not to be merged by this task.
+- **Branch / PR:** `claude/eager-cray-vmv69o`, one PR
+  ([allamqandeel/qandeel-company#4](https://github.com/allamqandeel/qandeel-company/pull/4)). It was
+  not merged by the implementation task; after the Founder's merge authorization it merged on
+  2026-09-27 at head `e4fdaa119eeef4cb612e349f962adb38108a62f8` as merge commit
+  `4592b525bdc4937dd130dac452a7dc8fc29de909`.
 - **Lifecycle records:**
-  - IMPLEMENTATION_MAP and README say C3 CLOSED / VALIDATED / READY TO MERGE.
-  - `docs/C3_CLOSURE_RECORD.md` records the satisfied C3 gate.
-  - C1 and C2 remain CLOSED / MERGED / CANONICAL.
+  - IMPLEMENTATION_MAP and README say C3 CLOSED / MERGED / CANONICAL.
+  - `docs/C3_CLOSURE_RECORD.md` records the satisfied C3 gate and the merge.
+  - C1, C2 and C3 are CLOSED / MERGED / CANONICAL.
   - R1 and C4 remain NOT STARTED.
-  - PR #4 is still unmerged; C3 is not yet canonical on `main`.
 
 ## 2. Authority read
 
@@ -441,8 +442,9 @@ redesigned, and C4 / C5 were not started.
   - `decideActivation` refuses a designated role without this enrollment's APPROVED calibration
     (`CALIBRATION_PENDING`, `CALIBRATION_REJECTED` or `CALIBRATION_MISSING`), and records the approved
     calibration on the request.
-  - The `employees_activation_gate` trigger in 0006 also requires it. 0006 is amended and re-pinned;
-    it is unreleased because PR #4 is unmerged.
+  - The `employees_activation_gate` trigger in 0006 also requires it. At this point in the recorded
+    history, 0006 had been amended and re-pinned but was still unreleased because PR #4 had not yet
+    merged.
 - **D-C3-20 — EXTEND:**
   - The EXTEND review row is the durable boundary.
   - The next review needs a higher positive-evidence count in the same epoch. Until then the
@@ -473,9 +475,14 @@ redesigned, and C4 / C5 were not started.
 
 ## 17. C3 closure state
 
-The C3 gate is **CLOSED / VALIDATED / READY TO MERGE**. See
-`docs/C3_CLOSURE_RECORD.md`.
+C3 is **CLOSED / MERGED / CANONICAL**. See `docs/C3_CLOSURE_RECORD.md`.
 
-This is deliberately distinct from repository canonization: PR #4 is still unmerged, so C3 is
-**NOT YET MERGED / CANONICAL**. R1 and C4 remain NOT STARTED until the merge boundary is crossed and
-the Founder explicitly authorizes the next step.
+- Founder-host validation passed on implementation candidate
+  `4284337221706f08aebe65fadb64c881c8ed9470`.
+- The final pre-merge closure head was `e4fdaa119eeef4cb612e349f962adb38108a62f8`; its exact-head CI
+  (run `36332980079`) passed on Windows and Ubuntu.
+- PR #4 merged to `main` on 2026-09-27 as `4592b525bdc4937dd130dac452a7dc8fc29de909`; the post-merge
+  CI (run `36335102735`) passed on Windows and Ubuntu.
+
+Before the merge this section recorded C3 as CLOSED / VALIDATED / READY TO MERGE; that state is
+superseded. R1 and C4 remain NOT STARTED until the Founder explicitly authorizes the next step.
