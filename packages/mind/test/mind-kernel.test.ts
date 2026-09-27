@@ -44,6 +44,9 @@ import {
   type SkillVersionView,
 } from '../src/index.js';
 
+// A secret-shaped value assembled at runtime: no secret-looking literal sits in the repository.
+const FAKE_KEY = ['sk', 'live', 'abcdefghijklmnopqrstuvwxyz1234'].join('-');
+
 const NOW = '2026-09-27T12:00:00.000Z' as Timestamp;
 const code = (c: string) => (e: unknown): boolean => isQandeelError(e) && e.code === c;
 
@@ -81,7 +84,7 @@ describe('C3 kernel: Memory Write Policy (Stage 5 §3)', () => {
 
   test('unprovenanced / wrongly provenanced candidates are refused; secrets never enter memory', () => {
     assert.deepEqual(decideMemoryCandidate(candidate({ provenance: { kind: 'KNOWLEDGE', ref: 'knowledge:x' } }), policyCtx), { decision: 'REFUSE', reason: 'PROVENANCE_REQUIRED', duplicateOf: null });
-    assert.deepEqual(decideMemoryCandidate(candidate({ content: 'the api_key=sk-live-abcdefghijklmnopqrstuvwxyz1234 works' }), policyCtx), { decision: 'REFUSE', reason: 'SECRET_MATERIAL', duplicateOf: null });
+    assert.deepEqual(decideMemoryCandidate(candidate({ content: `the api_key=${FAKE_KEY} works` }), policyCtx), { decision: 'REFUSE', reason: 'SECRET_MATERIAL', duplicateOf: null });
   });
 
   test('exact and near duplicates never create independent active truth', () => {

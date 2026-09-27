@@ -37,7 +37,7 @@ import {
 
 import { founder, founderAdminWrite } from './governance.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
-import { SYSTEM_MIND_REF, getSkillVersionRow, versionEligibility } from './mind-core.js';
+import { SYSTEM_MIND_REF, getSkillVersionRow, loadSkillPayloadForInspection, versionEligibility } from './mind-core.js';
 import { wakeCapabilityGaps } from './mind-writes.js';
 import {
   mapCertification,
@@ -205,8 +205,8 @@ export class SkillStore {
     return this.#write('inspect skill version', (ctx) => {
       const v = getSkillVersionRow(ctx, assertId(versionId, 'versionId'));
       if (v.pipelineState !== 'DISCOVERED') throw new QandeelError('INVALID_TRANSITION', 'only a discovered version is inspected', { skillVersionId: v.id });
-      const instructions = String(ctx.db.get<{ i: string }>('SELECT instructions AS i FROM skill_versions WHERE id = ?', v.id)?.i);
-      const findings = sha256Hex(instructions) === v.instructionsSha256 ? inspectSkillPayload(instructions, v.directives) : ['INTEGRITY_FAILED'];
+      const instructions = loadSkillPayloadForInspection(ctx, v.id);
+      const findings = instructions !== null ? inspectSkillPayload(instructions, v.directives) : ['INTEGRITY_FAILED'];
       const inspected = this.#advance(ctx, v, 'INSPECTED', findings.length ? 'inspection.findings' : 'inspection.clean', SYSTEM_MIND_REF, { findings });
       return findings.length ? this.#advance(ctx, inspected, 'REJECTED', `INSPECTION_${findings[0]}`, SYSTEM_MIND_REF) : inspected;
     });

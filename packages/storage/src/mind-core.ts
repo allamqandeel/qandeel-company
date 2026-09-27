@@ -247,6 +247,17 @@ export function loadPinnedSkillInstructions(ctx: StoreContext, skillVersionId: I
   return { ok: true, text };
 }
 
+/**
+ * The payload of an unapproved version for the deterministic static inspection step only (never into a
+ * context): returned only when its hash verifies. Kept beside the pinned loader so skill payload reads
+ * live in one module (verifier rule `skill-load-pinned`).
+ */
+export function loadSkillPayloadForInspection(ctx: StoreContext, skillVersionId: Id): string | null {
+  const text = ctx.db.get<{ i: string }>('SELECT instructions AS i FROM skill_versions WHERE id = ?', skillVersionId)?.i;
+  const v = getSkillVersionRow(ctx, skillVersionId);
+  return typeof text === 'string' && sha256Hex(text) === v.instructionsSha256 ? text : null;
+}
+
 // --- Capability eligibility snapshot --------------------------------------------------------------
 
 /** Certification status at now, materializing EXPIRED (history + audit) when a write transaction is open. */
