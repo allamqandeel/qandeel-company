@@ -15,10 +15,11 @@ export interface ModelCallRequest {
   readonly taskClass: string;
   /** Defaults to the Employee's Cognitive Profile default class. */
   readonly reasoningClass?: ReasoningClass;
-  /** Durable step (turn) of the runtime-owned loop; recorded on the context manifest. */
+  /**
+   * Durable step (turn) of the runtime-owned loop; recorded on the context manifest. Recent results
+   * (layer L6) come from what the runtime's own services recorded for earlier steps — never from here.
+   */
   readonly step: number;
-  /** Bounded recent runtime / tool results this loop already holds (layer L6; never memory). */
-  readonly recentResults: readonly string[];
   readonly maxOutputTokens: number;
   /** Evidence-based escalation of this step to the next class (never on self-reported uncertainty alone). */
   readonly escalation?: { readonly fromClass: ReasoningClass; readonly evidence: EscalationEvidence };

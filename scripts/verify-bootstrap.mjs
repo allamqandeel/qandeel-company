@@ -181,13 +181,15 @@ const C2_MUTATION_CHECK = 'scripts/c2-mutation-check.mjs';
 // --- C3 boundaries ------------------------------------------------------------------------------
 const C3_CLOSURE = /^docs\/C3_[^/]*CLOSURE[^/]*\.md$/i;
 const C3_REPORT = 'docs/C3_IMPLEMENTATION_REPORT.md';
-const C3_PROOF_MARKERS = ['C3-PROOF: mind-kernel', 'C3-PROOF: storage-mind', 'C3-PROOF: runtime-mind', 'C3-PROOF: memory-crash-recovery', 'C3-PROOF: concurrent-certification'];
+const C3_PROOF_MARKERS = ['C3-PROOF: mind-kernel', 'C3-PROOF: storage-mind', 'C3-PROOF: runtime-mind', 'C3-PROOF: memory-crash-recovery', 'C3-PROOF: concurrent-certification', 'C3-PROOF: review-fixes'];
 const C3_MUTATION_CHECK = 'scripts/c3-mutation-check.mjs';
 // Every inference is fed by the governed Context Assembler: the runtime module that mints the
 // context, the model runtime that accepts only a minted context, and the request type without messages.
 const CONTEXT_ASSEMBLER = 'packages/runtime/src/c3/context-assembler.ts';
 const RUNTIME_TYPES = 'packages/runtime/src/c2/types.ts';
 const MEMORY_PROPOSALS = 'packages/runtime/src/c3/memory-proposals.ts';
+// Recent step results (context layer L6) are recorded by the runtime's own governed services only.
+const RUNTIME_SERVICES = 'packages/runtime/src/runtime.ts';
 // Durable Memory / Knowledge / Canonical Truth / Skill / Academy / certification state changes only in
 // the C3 storage modules (never in the runtime, the governance kernel or the ordinary CompanyStore).
 const MIND_WRITERS = ['mind-core', 'mind-writes', 'memory', 'skill-registry', 'academy', 'capability'].map((m) => `packages/storage/src/${m}.ts`);
@@ -767,7 +769,10 @@ export const RULES = [
       }
       const types = read(RUNTIME_TYPES);
       const body = types?.split(/\binterface\s+ModelCallRequest\b/)[1]?.split('\n}')[0];
-      if (body !== undefined && /\bmessages\s*\??\s*:/.test(body)) problems.push(`${RUNTIME_TYPES}: ModelCallRequest carries messages (context comes from the assembler only)`);
+      if (body !== undefined && /\b(?:messages|recentResults)\s*\??\s*:/.test(body)) problems.push(`${RUNTIME_TYPES}: ModelCallRequest carries messages or results (context comes from the assembler and durable step records only)`);
+      for (const f of files.filter((x) => x.startsWith('packages/runtime/src/') && isCode(x) && x !== RUNTIME_SERVICES)) {
+        if (/\brecordStepResult\s*\(/.test(read(f) ?? '')) problems.push(`${f} records step results; only the runtime's governed services (${RUNTIME_SERVICES}) may`);
+      }
       const asm = read(CONTEXT_ASSEMBLER);
       if (asm !== undefined && !/\bMINTED\.add\(/.test(asm)) problems.push(`${CONTEXT_ASSEMBLER} does not mint its contexts`);
       return problems;
@@ -919,7 +924,7 @@ const SYNTH_MODEL_RUNTIME = [
   '}',
   '',
 ].join('\n');
-const SYNTH_TYPES = 'export interface ModelCallRequest {\n  readonly taskClass: string;\n  readonly step: number;\n  readonly recentResults: readonly string[];\n}\n';
+const SYNTH_TYPES = 'export interface ModelCallRequest {\n  readonly taskClass: string;\n  readonly step: number;\n}\n';
 const SYNTH_BASELINE = `## 5. Data and privacy\n\n- **Rule A — ${PRIVACY_RULES[0]}**\n- **Rule B — ${PRIVACY_RULES[1].replace('private user content', 'private user\n  content')}**\n- **Rule C — ${PRIVACY_RULES[2]}**\n\n## 2. Operating principles\n\n- Event-driven by default.\n`;
 
 const SYNTH_QUEUE = "export interface ClaimOptions {\n  readonly workerId: string;\n  readonly supervisor: SupervisorFence;\n}\n";
@@ -1190,6 +1195,8 @@ const VIOLATIONS = {
     { contents: { [MODEL_RUNTIME]: SYNTH_MODEL_RUNTIME.replace(', contextManifestId: context.manifestId', '') } },
     { contents: { [RUNTIME_TYPES]: SYNTH_TYPES.replace('  readonly step: number;\n', '  readonly messages: readonly ProviderMessage[];\n') } },
     { contents: { [CONTEXT_ASSEMBLER]: SYNTH_ASSEMBLER.replace('MINTED.add(context);\n', '') } },
+    { contents: { [RUNTIME_TYPES]: SYNTH_TYPES.replace('  readonly step: number;\n', '  readonly step: number;\n  readonly recentResults: readonly string[];\n') } },
+    { contents: { 'packages/runtime/src/c2/employee-task.ts': "recordStepResult(store, fence, step, 'TOOL_RESULT', processorText);" } },
   ],
   'memory-writes-confined': [
     { contents: { 'packages/runtime/src/c3/shortcut.ts': "db.run('INSERT INTO memory_records (id, content) VALUES (?, ?)', id, output);" } },

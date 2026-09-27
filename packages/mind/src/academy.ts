@@ -28,7 +28,8 @@ export const STAGE_NEXT: Readonly<Record<LearningStage, readonly LearningStage[]
   CASE_STUDIES: ['SIMULATION', 'WITHDRAWN'],
   SIMULATION: ['FEEDBACK', 'WITHDRAWN'],
   FEEDBACK: ['RETRY', 'ASSESSMENT', 'WITHDRAWN'],
-  RETRY: ['SIMULATION', 'ASSESSMENT', 'WITHDRAWN'],
+  // After retraining for a failed probation, new shadow work (a new evidence epoch) — not a re-assessment.
+  RETRY: ['SIMULATION', 'ASSESSMENT', 'SHADOW_WORK', 'WITHDRAWN'],
   ASSESSMENT: ['SHADOW_WORK', 'RETRY', 'BLOCKED', 'WITHDRAWN'],
   SHADOW_WORK: ['PROBATION_REVIEW', 'WITHDRAWN'],
   PROBATION_REVIEW: ['CERTIFICATION', 'SHADOW_WORK', 'RETRY', 'WITHDRAWN'],
@@ -225,6 +226,23 @@ export interface ProbationSummary {
 }
 
 /** Probation review is evidence-based (Stage 6 §12), never only time-based. */
+/** Retraining categories for unmet probation criteria (Stage 6 §9 / §12: failure → diagnosis → retraining). */
+const PROBATION_RETRAINING: Readonly<Record<string, readonly CurriculumCategory[]>> = {
+  MIN_CASES: ['ROLE_MASTERY'],
+  STABLE_QUALITY: ['ROLE_MASTERY', 'REAL_CASE_STUDIES'],
+  CRITICAL_FAILURES: ['COMPANY_OPERATING_SKILLS'],
+  DEMONSTRATED_LEARNING: ['REAL_CASE_STUDIES'],
+  COST_DISCIPLINE: ['COMPANY_OPERATING_SKILLS'],
+  CORRECT_ESCALATION: ['COMPANY_OPERATING_SKILLS', 'FOUNDER_UNDERSTANDING'],
+  COLLABORATION: ['COMPANY_OPERATING_SKILLS'],
+};
+
+export function diagnoseProbation(unmet: readonly string[], curriculum: readonly CurriculumModule[]): { readonly categories: readonly CurriculumCategory[]; readonly modules: readonly string[] } {
+  const fallback: readonly CurriculumCategory[] = ['ROLE_MASTERY'];
+  const categories = [...new Set((unmet.length > 0 ? unmet : ['STABLE_QUALITY']).flatMap((u): readonly CurriculumCategory[] => PROBATION_RETRAINING[u] ?? fallback))].sort();
+  return { categories, modules: curriculum.filter((m) => categories.includes(m.category)).map((m) => m.code) };
+}
+
 export function evaluateProbation(c: ProbationCriteria, s: ProbationSummary): { readonly met: boolean; readonly unmet: readonly string[] } {
   const unmet: string[] = [];
   if (s.cases < c.minCases) unmet.push('MIN_CASES');

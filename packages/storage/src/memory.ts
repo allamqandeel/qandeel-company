@@ -18,6 +18,7 @@ import {
   CORRECTION_DISPOSITIONS,
   PROMOTION_SCOPE,
   PROMOTION_TARGETS,
+  REVIEW_AFTER_DAYS,
   addDays,
   assertKeyCode,
   assertKnowledgeScope,
@@ -32,7 +33,7 @@ import {
 
 import { founder, founderAdminWrite } from './governance.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
-import { SYSTEM_MIND_REF, getKnowledgeRow, getMemoryRow, indexTerms, insertMemory, setMemoryStatus } from './mind-core.js';
+import { SYSTEM_MIND_REF, assertNotContradictingCanonical, getKnowledgeRow, getMemoryRow, indexItemTerms, indexTerms, insertMemory, setMemoryStatus, wakeEmployeeWaits } from './mind-core.js';
 import {
   mapCandidate,
   mapCanonical,
@@ -127,10 +128,23 @@ function applyCanonicalClaim(ctx: StoreContext, canonicalId: Id, claimKey: strin
   for (const c of ctx.db.all(`SELECT * FROM memory_conflicts WHERE claim_key = ? AND state = 'OPEN'`, claimKey).map(mapConflict)) {
     ctx.db.run(`UPDATE memory_conflicts SET state = 'RESOLVED', resolution_ref = ?, resolved_by_ref = ?, resolved_at = ? WHERE id = ?`, `canonical_truth:${canonicalId}`, actorRef, at, c.id);
     appendAudit(ctx, 'memory.conflict_resolved', 'memory_conflict', c.id, { actorRef }, 'OK', 'CANONICAL_TRUTH', {});
+    wakeConflictWaits(ctx, c);
   }
   for (const k of ctx.db.all(`SELECT * FROM knowledge_items WHERE claim_key = ? AND claim_value <> ? AND status IN ('ACTIVE', 'LOW_CONFIDENCE', 'STALE')`, claimKey, claimValue).map(mapKnowledge)) {
     setKnowledgeStatus(ctx, k, 'INCORRECT', 'CONTRADICTS_CANONICAL', actorRef);
   }
+  // Lessons still on their way to validation that contradict the truth are rejected now (a validated
+  // one can no longer be promoted: every memory / knowledge insert re-checks canonical truth).
+  for (const l of ctx.db.all(`SELECT * FROM lessons WHERE claim_key = ? AND claim_value <> ? AND stage IN ('LESSON_CANDIDATE', 'UNDER_REVIEW')`, claimKey, claimValue).map(mapLesson)) {
+    ctx.db.run(`UPDATE lessons SET stage = 'REJECTED', decided_by_ref = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, actorRef, at, l.id, l.version);
+    lessonHistory(ctx, l, 'REJECTED', 'CONTRADICTS_CANONICAL', actorRef);
+  }
+}
+
+/** A resolved conflict wakes its Employee's work held for memory-conflict review (same transaction). */
+function wakeConflictWaits(ctx: StoreContext, c: MemoryConflictRecord): void {
+  const owner = ctx.db.get<{ e: string }>('SELECT employee_id AS e FROM memory_records WHERE id = ?', c.memoryAId)?.e;
+  if (owner) wakeEmployeeWaits(ctx, owner as Id, ['MEMORY_CONFLICT_REVIEW'], 'memory.conflict_resolved');
 }
 
 function setKnowledgeStatus(ctx: StoreContext, k: KnowledgeRecord, to: KnowledgeRecord['status'], reasonCode: string, actorRef: string, supersededById: Id | null = null): void {
@@ -142,8 +156,7 @@ function setKnowledgeStatus(ctx: StoreContext, k: KnowledgeRecord, to: Knowledge
 
 function insertKnowledge(ctx: StoreContext, f: { scope: KnowledgeScope; scopeRef: string | null; topic: string; claimKey: string | null; claimValue: string | null; content: string; dataClass: DataClass; marketRef: string | null; provenanceKind: 'VALIDATED_LESSON' | 'FOUNDER_DECISION' | 'CANONICAL'; provenanceRef: string; confidencePct: number; reviewAt: Timestamp | null; supersedesId: Id | null; actorRef: string }): Id {
   if (f.claimKey !== null) {
-    const canon = ctx.db.get<{ claim_value: string }>(`SELECT claim_value FROM canonical_truth WHERE claim_key = ? AND status = 'ACTIVE'`, f.claimKey);
-    if (canon && canon.claim_value !== f.claimValue) throw new QandeelError('VALIDATION_FAILED', 'knowledge may not contradict canonical truth', { reason: 'CONTRADICTS_CANONICAL' });
+    assertNotContradictingCanonical(ctx, f.claimKey, f.claimValue);
     const clash = ctx.db.get<{ id: string }>(`SELECT id FROM knowledge_items WHERE scope = ? AND COALESCE(scope_ref, '') = ? AND claim_key = ? AND status IN ('ACTIVE', 'LOW_CONFIDENCE') AND id IS NOT ?`, f.scope, f.scopeRef ?? '', f.claimKey, f.supersedesId);
     if (clash) throw new QandeelError('VALIDATION_FAILED', 'this scope already holds knowledge for the claim; supersede it explicitly', { reason: 'KNOWLEDGE_CONFLICT', knowledgeId: clash.id });
   }
@@ -159,6 +172,7 @@ function insertKnowledge(ctx: StoreContext, f: { scope: KnowledgeScope; scopeRef
     id, f.scope, f.scopeRef, f.topic, f.claimKey, f.claimValue, f.content, sha256Hex(f.content), contentFingerprint(f.content), JSON.stringify(indexTerms(f.topic, f.content)), f.dataClass, f.marketRef, f.provenanceKind, f.provenanceRef, f.confidencePct, f.reviewAt, at, f.supersedesId, f.actorRef, at, at,
   );
   ctx.db.run('INSERT INTO knowledge_history (knowledge_id, version, from_status, to_status, reason_code, actor_ref, occurred_at) VALUES (?, 1, NULL, ?, ?, ?, ?)', id, 'ACTIVE', 'knowledge.recorded', f.actorRef, at);
+  indexItemTerms(ctx, 'KNOWLEDGE', '', id, indexTerms(f.topic, f.content));
   appendAudit(ctx, 'knowledge.recorded', 'knowledge', id, { actorRef: f.actorRef }, 'OK', null, { scope: f.scope, dataClass: f.dataClass, provenance: f.provenanceKind });
   return id;
 }
@@ -234,6 +248,7 @@ export class MemoryStore {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 'OK', ?, 1, ?, ?, ?)`,
         id, input.level, topic, claimKey, claimValue, statement, sha256Hex(statement), JSON.stringify(indexTerms(topic, statement)), assertDataClass(input.dataClass, 'dataClass'), assertOpaqueRef(input.sourceRef, 'sourceRef'), input.sourceSha256 ?? null, supersedes, p.ref, at, at,
       );
+      indexItemTerms(ctx, 'CANONICAL', '', id, indexTerms(topic, statement));
       appendAudit(ctx, 'canonical_truth.recorded', 'canonical_truth', id, { actorRef: p.ref }, 'OK', null, { level: input.level, supersedes });
       if (claimKey !== null && claimValue !== null) applyCanonicalClaim(ctx, id, claimKey, claimValue, p.ref);
       return mapCanonical(ctx.db.get('SELECT * FROM canonical_truth WHERE id = ?', id) ?? {});
@@ -304,9 +319,25 @@ export class MemoryStore {
       for (const c of ctx.db.all(`SELECT * FROM memory_conflicts WHERE state = 'OPEN' AND (memory_a_id = ? OR memory_b_id = ?)`, m.id, m.id).map(mapConflict)) {
         ctx.db.run(`UPDATE memory_conflicts SET state = 'RESOLVED', resolution_ref = ?, resolved_by_ref = ?, resolved_at = ? WHERE id = ?`, `memory_correction:${correctionId}`, p.ref, ts(ctx), c.id);
         appendAudit(ctx, 'memory.conflict_resolved', 'memory_conflict', c.id, { actorRef: p.ref }, 'OK', 'FOUNDER_CORRECTION', {});
+        wakeConflictWaits(ctx, c);
       }
       appendAudit(ctx, 'memory.corrected', 'memory', m.id, { actorRef: p.ref }, 'OK', reason, { disposition: to, correctedMemoryId: correctedId });
       return { correctionId, correctedMemoryId: correctedId };
+    });
+  }
+
+  /**
+   * Re-validates a STALE memory (Founder review): it returns to ACTIVE with a new review horizon and a
+   * history row. Staleness is decay, not deletion; a superseded / incorrect / corrupt memory never returns.
+   */
+  revalidateMemory(actorRef: string, memoryId: string, reasonCode: string): MemoryRecord {
+    return founderAdminWrite(this.#store, 'revalidate memory', actorRef, (ctx) => {
+      const p = founder(ctx, actorRef, null, 'memory revalidation');
+      const m = getMemoryRow(ctx, assertId(memoryId, 'memoryId'));
+      if (m.status !== 'STALE' || m.integrity !== 'OK') throw new QandeelError('INVALID_TRANSITION', 'only a stale, intact memory is revalidated', { memoryId: m.id, status: m.status });
+      assertNotContradictingCanonical(ctx, m.claimKey, m.claimValue);
+      const at = ts(ctx);
+      return setMemoryStatus(ctx, m, 'ACTIVE', assertCode(reasonCode, 'reasonCode'), p.ref, { validatedAt: at, reviewAt: addDays(at, REVIEW_AFTER_DAYS[m.memoryClass]) });
     });
   }
 
@@ -355,7 +386,7 @@ export class MemoryStore {
       if (o.stage !== 'OBSERVATION') throw new QandeelError('INVALID_TRANSITION', 'only a recorded observation is nominated', { lessonId: o.id, stage: o.stage });
       if (ctx.db.get(`SELECT 1 AS x FROM lessons WHERE observation_id = ?`, o.id)) throw new QandeelError('INVALID_TRANSITION', 'this observation already has a lesson candidate', { lessonId: o.id, reason: 'ALREADY_NOMINATED' });
       const r = ctx.db.get<{ content: string; candidate_id: string }>('SELECT content, candidate_id FROM lessons WHERE id = ?', o.id);
-      const id = insertLesson(ctx, { employeeId: o.employeeId, kind: 'LESSON', observationId: o.id, eventRef: o.eventRef, topic: o.topic, claimKey: o.claimKey, claimValue: o.claimValue, content: String(r?.content), dataClass: o.dataClass, candidateId: r?.candidate_id as Id });
+      const id = insertLesson(ctx, { employeeId: o.employeeId, kind: 'LESSON', observationId: o.id, eventRef: o.eventRef, topic: o.topic, claimKey: o.claimKey, claimValue: o.claimValue, content: String(r?.content), dataClass: o.dataClass, marketRef: o.marketRef, candidateId: (r?.candidate_id ?? null) as Id | null });
       appendAudit(ctx, 'learning.nominated', 'lesson', id, { actorRef: p.ref }, 'OK', assertCode(reasonCode, 'reasonCode'), { observationId: o.id });
       return getLesson(ctx, id);
     });
@@ -395,7 +426,10 @@ export class MemoryStore {
       if (l.stage !== 'VALIDATED') throw new QandeelError('INVALID_TRANSITION', 'only a validated lesson is promoted', { lessonId: l.id, stage: l.stage, reason: 'LESSON_NOT_VALIDATED' });
       if (!(PROMOTION_TARGETS as readonly string[]).includes(target)) throw new QandeelError('VALIDATION_FAILED', 'unknown promotion target', { field: 'target' });
       const ref = target === 'PERSONAL' || target === 'COMPANY' ? null : scopeRefFor(PROMOTION_SCOPE[target], targetRef);
+      // The requester is data, never an actor: a request carries no authority (and cannot claim the Founder's).
       const requester = assertOpaqueRef(requesterRef, 'requesterRef');
+      if (requester.startsWith('founder:') || requester.startsWith('principal:')) throw new QandeelError('VALIDATION_FAILED', 'a promotion request cannot claim Founder authority', { field: 'requesterRef' });
+      if (ctx.db.get(`SELECT 1 AS x FROM lesson_promotions WHERE lesson_id = ? AND target = ? AND COALESCE(target_ref, '') = ?`, l.id, target, ref ?? '')) throw new QandeelError('INVALID_TRANSITION', 'this lesson already has a promotion to that target', { lessonId: l.id, reason: 'PROMOTION_EXISTS' });
       const id = newId();
       const at = ts(ctx);
       ctx.db.run(`INSERT INTO lesson_promotions (id, lesson_id, target, target_ref, state, requested_by_ref, created_at) VALUES (?, ?, ?, ?, 'PENDING_REVIEW', ?, ?)`, id, l.id, target, ref, requester, at);
@@ -403,13 +437,13 @@ export class MemoryStore {
         const content = String(ctx.db.get<{ c: string }>('SELECT content AS c FROM lessons WHERE id = ?', l.id)?.c);
         const memoryId = insertMemory(
           ctx,
-          { employeeId: l.employeeId, memoryClass: 'PERSONAL_LESSON', topic: l.topic, claimKey: l.claimKey, claimValue: l.claimValue, content, fingerprint: contentFingerprint(content), terms: indexTerms(l.topic, content), dataClass: l.dataClass, marketRef: null, projectRef: null, provenanceKind: 'VALIDATED_LESSON', provenanceRef: `lesson:${l.id}`, sourceVersion: null, sourceSha256: null, evidenceRefs: [l.eventRef], confidencePct: 80, status: 'ACTIVE', retentionPolicy: 'REVIEW_AFTER_365D', reviewAt: addDays(at, 365), candidateId: null, supersedesId: null, validatedAt: at },
+          { employeeId: l.employeeId, memoryClass: 'PERSONAL_LESSON', topic: l.topic, claimKey: l.claimKey, claimValue: l.claimValue, content, fingerprint: contentFingerprint(content), terms: indexTerms(l.topic, content), dataClass: l.dataClass, marketRef: l.marketRef, projectRef: null, provenanceKind: 'VALIDATED_LESSON', provenanceRef: `lesson:${l.id}`, sourceVersion: null, sourceSha256: null, evidenceRefs: [l.eventRef], confidencePct: 80, status: 'ACTIVE', retentionPolicy: 'REVIEW_AFTER_365D', reviewAt: addDays(at, 365), candidateId: null, supersedesId: null, validatedAt: at },
           SYSTEM_MIND_REF,
           'learning.promoted_personal',
         );
         ctx.db.run(`UPDATE lesson_promotions SET state = 'APPROVED', result_memory_id = ?, decided_by_ref = ?, reason_code = 'PERSONAL_SCOPE', decided_at = ? WHERE id = ?`, memoryId, l.decidedByRef ?? SYSTEM_MIND_REF, at, id);
       }
-      appendAudit(ctx, 'learning.promotion_requested', 'lesson', l.id, { actorRef: requester }, 'OK', target, { promotionId: id });
+      appendAudit(ctx, 'learning.promotion_requested', 'lesson', l.id, { actorRef: SYSTEM_MIND_REF }, 'OK', target, { promotionId: id });
       return mapPromotion(ctx.db.get('SELECT * FROM lesson_promotions WHERE id = ?', id) ?? {});
     });
   }
@@ -427,9 +461,12 @@ export class MemoryStore {
         ctx.db.run(`UPDATE lesson_promotions SET state = 'REJECTED', decided_by_ref = ?, reason_code = ?, decided_at = ? WHERE id = ?`, p.ref, reason, at, pr.id);
       } else {
         if (pr.target === 'PERSONAL') throw new QandeelError('INVALID_TRANSITION', 'personal promotion needs no review', { promotionId: pr.id });
+        // Sharing D3 / D4 work-derived content stays closed until the Product Owner defines it (Rule C / Stage 14).
+        const shared = maxDataClass(l.dataClass, input.dataClass ?? 'D0');
+        if (shared === 'D3' || shared === 'D4') throw new QandeelError('VALIDATION_FAILED', 'shared promotion of D3 / D4 content is not authorized', { reason: 'DATA_CLASS_NOT_SHAREABLE', promotionId: pr.id });
         const content = String(ctx.db.get<{ c: string }>('SELECT content AS c FROM lessons WHERE id = ?', l.id)?.c);
         const scope = PROMOTION_SCOPE[pr.target];
-        const knowledgeId = insertKnowledge(ctx, { scope, scopeRef: pr.targetRef, topic: l.topic, claimKey: l.claimKey, claimValue: l.claimValue, content, dataClass: maxDataClass(l.dataClass, input.dataClass ?? 'D0'), marketRef: pr.target === 'MARKET' ? pr.targetRef : null, provenanceKind: 'VALIDATED_LESSON', provenanceRef: `lesson:${l.id}`, confidencePct: 80, reviewAt: addDays(at, 365), supersedesId: null, actorRef: p.ref });
+        const knowledgeId = insertKnowledge(ctx, { scope, scopeRef: pr.targetRef, topic: l.topic, claimKey: l.claimKey, claimValue: l.claimValue, content, dataClass: maxDataClass(l.dataClass, input.dataClass ?? 'D0'), marketRef: pr.target === 'MARKET' ? pr.targetRef : l.marketRef, provenanceKind: 'VALIDATED_LESSON', provenanceRef: `lesson:${l.id}`, confidencePct: 80, reviewAt: addDays(at, 365), supersedesId: null, actorRef: p.ref });
         ctx.db.run(`UPDATE lesson_promotions SET state = 'APPROVED', result_knowledge_id = ?, decided_by_ref = ?, reason_code = ?, decided_at = ? WHERE id = ?`, knowledgeId, p.ref, reason, at, pr.id);
       }
       appendAudit(ctx, 'learning.promotion_decided', 'lesson', l.id, { actorRef: p.ref }, 'OK', reason, { promotionId: pr.id, decision: input.decision });

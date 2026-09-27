@@ -67,7 +67,20 @@ import {
   type ToolIntentInput,
 } from './governed-writes.js';
 import { userVersion } from './migrations.js';
-import { txAssembleContext, txDecideMemoryCandidate, txDecidePendingCandidates, txSubmitMemoryCandidate, type AssembleRequest, type AssembleResult, type CandidateProposal, type SubmitResult } from './mind-writes.js';
+import {
+  pendingCandidateIds,
+  txAssembleContext,
+  txDecideMemoryCandidate,
+  txRecheckCapabilityWait,
+  txRecordStepResult,
+  txRefuseCandidate,
+  txSubmitMemoryCandidate,
+  type AssembleRequest,
+  type AssembleResult,
+  type CandidateProposal,
+  type StepResultKind,
+  type SubmitResult,
+} from './mind-writes.js';
 import { storeContext, type CompanyStore } from './store.js';
 import { txRequestCancellation, txSupersede } from './work-items.js';
 import type { TerminationOutcome } from './work-core.js';
@@ -165,7 +178,15 @@ export function checkpoint(store: CompanyStore, fence: Fence, kind: string, stat
 }
 
 export function settle(store: CompanyStore, fence: Fence, result: ProcessorResult, options: SettleOptions): SettleOutcome {
-  return fenced(store, 'settle', fence, (ctx) => txSettle(ctx, fence, result, options));
+  return fenced(store, 'settle', fence, (ctx) => {
+    const out = txSettle(ctx, fence, result, options);
+    // C3: a capability gap may have closed while the run was settling — re-check in the same transaction.
+    if (result.type === 'WAIT' && result.reasonCode === 'CAPABILITY_GAP') {
+      const wi = ctx.db.get<{ w: string }>('SELECT work_item_id AS w FROM queue_jobs WHERE id = ?', fence.jobId)?.w;
+      if (wi) txRecheckCapabilityWait(ctx, wi as Id);
+    }
+    return out;
+  });
 }
 
 // --- Claim recovery (supervisor fence mandatory) -------------------------------------------------
@@ -280,7 +301,7 @@ export function recoverGovernedOrphans(store: CompanyStore, supervisor: Supervis
 
 // --- C3 governed Context Assembly and memory candidates (job fence mandatory; runtime only) --------
 
-export type { AssembleRequest, AssembleResult, CandidateProposal, SubmitResult } from './mind-writes.js';
+export type { AssembleRequest, AssembleResult, CandidateProposal, StepResultKind, SubmitResult } from './mind-writes.js';
 export type { MemoryCandidateRecord } from './mind-records.js';
 
 /**
@@ -310,10 +331,34 @@ export function decideMemoryCandidate(store: CompanyStore, fence: Fence, candida
   });
 }
 
-/** Recovery (supervisor fence mandatory): decide candidates whose run died between submission and decision. */
+/** Records one step's result for context layer L6 (the runtime's governed services only; job fence mandatory). */
+export function recordStepResult(store: CompanyStore, fence: Fence, step: number, kind: StepResultKind, content: string): void {
+  fenced(store, 'record step result', fence, (ctx) => txRecordStepResult(ctx, fence, step, kind, content));
+}
+
+/**
+ * Recovery (supervisor fence mandatory): decide candidates whose run died between submission and
+ * decision — each in its own transaction, so one undecidable candidate is refused with a code and can
+ * never block startup.
+ */
 export function decidePendingCandidates(store: CompanyStore, supervisor: SupervisorFence, limit = 100): number {
-  return write(store, 'decide pending candidates', (ctx) => {
+  const ids = write(store, 'list pending candidates', (ctx) => {
     verifySupervisor(ctx, supervisor);
-    return txDecidePendingCandidates(ctx, limit);
+    return pendingCandidateIds(ctx, limit);
   });
+  for (const id of ids) {
+    try {
+      write(store, 'decide pending candidate', (ctx) => {
+        verifySupervisor(ctx, supervisor);
+        txDecideMemoryCandidate(ctx, id);
+      });
+    } catch (error) {
+      if (isQandeelError(error, 'SUPERVISOR_NOT_AUTHORITATIVE') || isQandeelError(error, 'STORAGE_BUSY')) throw error;
+      write(store, 'refuse pending candidate', (ctx) => {
+        verifySupervisor(ctx, supervisor);
+        txRefuseCandidate(ctx, id, 'POLICY_ERROR');
+      });
+    }
+  }
+  return ids.length;
 }

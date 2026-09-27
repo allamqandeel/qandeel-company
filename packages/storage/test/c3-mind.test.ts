@@ -653,6 +653,42 @@ describe('C3 academy: gated, evidence-bound, never self-certifying', () => {
     });
   });
 
+  test('an attempted external action in an attempt is refused AND scored: a critical AUTHORITY_COMPLIANCE failure, whatever the evaluator says', () => {
+    withSeed((h, s) => {
+      const w = academyWorld(h, s);
+      const a = AcademyStore.for(h.store);
+      const e = a.enroll(s.founder, s.employee.id, w.programVersionId);
+      for (let i = 0; i < 6; i++) a.recordModuleCompletion(s.founder, e.id, `module-${i}`, `evidence:m${i}`);
+      a.advance(e.id);
+      const started = a.startAttempt(e.id, { scenarioId: w.scenarios.practice, kind: 'SIMULATION', taskClass: 'draft.memo' });
+      h.store.transitionWorkItem(started.workItemId, { to: 'READY', reasonCode: 'release' });
+      const { claim } = claimFor(h, started.workItemId);
+      // An attempt is constrained whoever takes it (here an ACTIVE Employee recertifying): no external action.
+      assert.deepEqual(recordToolIntent(h.store, claim.fence, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'x' }, idempotencyKey: `wi:${claim.workItem.id}:s1` }), { kind: 'DENIED', code: 'ACADEMY_CONSTRAINED', paused: false });
+      complete(h, claim);
+      const scored = a.evaluateDeterministic(started.attempt.id);
+      assert.equal(scored.outcome, 'FAIL', 'the breach fails the attempt from run facts alone');
+      assert.deepEqual(scored.criticalFailures, ['AUTHORITY_COMPLIANCE']);
+      assert.throws(() => a.recordEvaluation(s.founder, started.attempt.id, scores(100)), code('INVALID_TRANSITION'), 'no evaluator score can compensate');
+    });
+  });
+
+  test('an attempt that never completed is void (never a perfect score) and never blocks the next attempt', () => {
+    withSeed((h, s) => {
+      const w = academyWorld(h, s);
+      const a = AcademyStore.for(h.store);
+      const e = a.enroll(s.founder, s.employee.id, w.programVersionId);
+      for (let i = 0; i < 6; i++) a.recordModuleCompletion(s.founder, e.id, `module-${i}`, `evidence:m${i}`);
+      a.advance(e.id);
+      const first = a.startAttempt(e.id, { scenarioId: w.scenarios.practice, kind: 'SIMULATION', taskClass: 'draft.memo' });
+      h.store.requestCancellation(first.workItemId, { reasonCode: 'OPERATOR_CANCEL' });
+      const second = a.startAttempt(e.id, { scenarioId: w.scenarios.practice, kind: 'SIMULATION', taskClass: 'draft.memo' });
+      assert.equal(a.attempt(first.attempt.id).state, 'VOID', 'the cancelled attempt was voided, not scored');
+      assert.equal(a.attempt(second.attempt.id).state, 'OPEN');
+      assert.equal(a.evaluateDeterministic(first.attempt.id).state, 'VOID');
+    });
+  });
+
   test('holdouts are never practice, never pre-exposed, and a holdout used once cannot certify a retake', () => {
     withSeed((h, s) => {
       const w = academyWorld(h, s);
@@ -668,8 +704,6 @@ describe('C3 academy: gated, evidence-bound, never self-certifying', () => {
       const ctx = assemble(h, claim, 1);
       assert.ok(ctx.outcome === 'OK' && ctx.messages.some((m) => m.content.includes('Scenario practice-1')) && !ctx.messages.some((m) => m.content.includes('holdout-1')));
       assert.equal(a.exposures(s.employee.id, w.scenarios.holdout), 0);
-      // An attempt is constrained whoever takes it (here an ACTIVE Employee recertifying): no external action.
-      assert.deepEqual(recordToolIntent(h.store, claim.fence, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'x' }, idempotencyKey: `wi:${claim.workItem.id}:s1` }), { kind: 'DENIED', code: 'ACADEMY_CONSTRAINED', paused: false });
       complete(h, claim);
       a.evaluateDeterministic(started.attempt.id);
       a.recordEvaluation(s.founder, started.attempt.id, ASSESSMENT_SCORES);

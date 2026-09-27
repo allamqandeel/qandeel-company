@@ -172,6 +172,16 @@ export function planContext(candidates: readonly ContextCandidate[], policy: Con
     rejected.push({ candidate: p.candidate, score: p.score, reason });
   };
   const scored: PlannedItem[] = candidates.map((c) => ({ candidate: c, score: c.required ? 1_000 : scoreCandidate(c, q, now) }));
+  // Canonical truth binds structurally: every live canonical claim in the pool constrains lower layers
+  // whether or not its statement is relevant, loaded or even within this context's data class.
+  const canonicalClaims = new Map<string, string>();
+  for (const p of scored) {
+    const c = p.candidate;
+    if (c.kind === 'CANONICAL' && !c.stale && RETRIEVABLE.has(c.status) && c.claimKey !== null && c.claimValue !== null && !canonicalClaims.has(c.claimKey)) canonicalClaims.set(c.claimKey, c.claimValue);
+  }
+  // A canonical statement whose claim another candidate asserts is relevant to this task by that claim.
+  const assertedKeys = new Set(scored.filter((p) => p.candidate.kind !== 'CANONICAL' && p.candidate.claimKey !== null).map((p) => p.candidate.claimKey as string));
+  const relevant = (c: ContextCandidate): boolean => overlap(q.terms, c.terms) > 0 || (c.kind === 'CANONICAL' && c.claimKey !== null && assertedKeys.has(c.claimKey));
   // 1. Eligibility (status, staleness, data class, market scope).
   const eligible: PlannedItem[] = [];
   for (const p of scored) {
@@ -180,7 +190,8 @@ export function planContext(candidates: readonly ContextCandidate[], policy: Con
     else if (!c.required && !RETRIEVABLE.has(c.status)) reject(p, 'STATUS_NOT_RETRIEVABLE');
     else if (dataRank(c.dataClass) > dataRank(q.dataClassCeiling) && !c.required) reject(p, 'DATA_CLASS_ABOVE_CONTEXT');
     else if (c.marketRef !== null && q.marketRef !== c.marketRef && (c.kind === 'MEMORY' || c.kind === 'KNOWLEDGE')) reject(p, 'MARKET_MISMATCH');
-    else if (!c.required && RELEVANCE_GATED.includes(c.kind) && overlap(q.terms, c.terms) === 0) reject(p, 'NOT_RELEVANT');
+    else if (!c.required && RELEVANCE_GATED.includes(c.kind) && !relevant(c)) reject(p, 'NOT_RELEVANT');
+    else if (c.kind !== 'CANONICAL' && c.claimKey !== null && canonicalClaims.has(c.claimKey) && canonicalClaims.get(c.claimKey) !== c.claimValue) reject(p, 'HIGHER_AUTHORITY_OVERRIDES');
     else eligible.push(p);
   }
   // 2. Unresolved memory-vs-memory conflicts: never pretend both are reliable (Stage 5 §7).
@@ -212,9 +223,8 @@ export function planContext(candidates: readonly ContextCandidate[], policy: Con
     const c = p.candidate;
     if (c.claimKey !== null && c.claimValue !== null && !claims.has(c.claimKey)) claims.set(c.claimKey, { value: c.claimValue, layer: layerRank(c.layer) });
   };
+  for (const [k, v] of canonicalClaims) claims.set(k, { value: v, layer: layerRank('AUTHORITY') });
   for (const p of required) assertClaims(p);
-  // Canonical claims bind even when the canonical item itself is not loaded (budget): truth still wins.
-  for (const p of pool) if (p.candidate.kind === 'CANONICAL') assertClaims(p);
   const overridden = (p: PlannedItem): boolean => {
     const c = p.candidate;
     if (c.claimKey === null) return false;
@@ -317,7 +327,8 @@ export function renderContext(items: readonly RenderItem[]): RenderedContext {
   for (const w of inLayer('WORK')) messages.push({ role: 'user', content: w.text });
   const reference = [section('KNOWLEDGE'), section('MEMORY')].filter((s): s is string => s !== null).join('\n\n');
   if (reference) messages.push({ role: 'system', content: reference });
-  for (const r of inLayer('RECENT')) messages.push({ role: 'tool', content: r.text });
+  // Recent results are rendered in the order they happened (keys carry the zero-padded step).
+  for (const r of [...inLayer('RECENT')].sort((a, b) => (a.candidate.key < b.candidate.key ? -1 : a.candidate.key > b.candidate.key ? 1 : 0))) messages.push({ role: 'tool', content: r.text });
   return { messages, estimatedTokens: utf8TokenUpperBound(messages), prefixText };
 }
 

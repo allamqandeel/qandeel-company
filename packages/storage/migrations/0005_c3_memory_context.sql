@@ -83,6 +83,10 @@ CREATE TRIGGER memory_candidates_no_delete BEFORE DELETE ON memory_candidates BE
 CREATE TRIGGER memory_candidates_decided_once BEFORE UPDATE ON memory_candidates
 WHEN OLD.state <> 'SUBMITTED' OR NEW.content IS NOT OLD.content OR NEW.content_sha256 IS NOT OLD.content_sha256 OR NEW.employee_id IS NOT OLD.employee_id
   OR NEW.memory_class IS NOT OLD.memory_class OR NEW.idempotency_key IS NOT OLD.idempotency_key OR NEW.data_class IS NOT OLD.data_class
+  OR NEW.run_id IS NOT OLD.run_id OR NEW.work_item_id IS NOT OLD.work_item_id OR NEW.kind IS NOT OLD.kind OR NEW.topic IS NOT OLD.topic
+  OR NEW.claim_key IS NOT OLD.claim_key OR NEW.claim_value IS NOT OLD.claim_value OR NEW.confidence_pct IS NOT OLD.confidence_pct
+  OR NEW.evidence_refs_json IS NOT OLD.evidence_refs_json OR NEW.provenance_kind IS NOT OLD.provenance_kind OR NEW.provenance_ref IS NOT OLD.provenance_ref
+  OR NEW.created_at IS NOT OLD.created_at
 BEGIN SELECT RAISE(ABORT, 'a memory candidate is decided exactly once and never edited'); END;
 
 -- Employee Memory (Stage 5 §1): explicit classes, PERSONAL scope, provenance, confidence, retention,
@@ -206,6 +210,7 @@ CREATE TABLE lessons (
   fingerprint       TEXT    NOT NULL CHECK (length(fingerprint) = 64 AND fingerprint NOT GLOB '*[^0-9a-f]*'),
   terms_json        TEXT    NOT NULL CHECK (json_valid(terms_json) AND json_type(terms_json) = 'array' AND length(terms_json) <= 2048),
   data_class        TEXT    NOT NULL CHECK (data_class IN ('D0', 'D1', 'D2', 'D3', 'D4')),
+  market_ref        TEXT             CHECK (market_ref IS NULL OR length(market_ref) BETWEEN 3 AND 200),
   candidate_id      TEXT             REFERENCES memory_candidates (id) ON DELETE RESTRICT,
   review_path       TEXT             CHECK (review_path IS NULL OR review_path IN ('FOUNDER', 'INDEPENDENT_REVIEW')),
   decided_by_ref    TEXT             CHECK (decided_by_ref IS NULL OR length(decided_by_ref) BETWEEN 3 AND 161),
@@ -220,7 +225,8 @@ CREATE INDEX lessons_employee ON lessons (employee_id, stage);
 CREATE TRIGGER lessons_no_delete BEFORE DELETE ON lessons BEGIN SELECT RAISE(ABORT, 'lessons are durable history'); END;
 CREATE TRIGGER lessons_content_immutable BEFORE UPDATE ON lessons
 WHEN NEW.content IS NOT OLD.content OR NEW.content_sha256 IS NOT OLD.content_sha256 OR NEW.employee_id IS NOT OLD.employee_id OR NEW.kind IS NOT OLD.kind
-  OR NEW.observation_id IS NOT OLD.observation_id OR NEW.event_ref IS NOT OLD.event_ref OR NEW.version <> OLD.version + 1 OR OLD.stage IN ('VALIDATED', 'REJECTED', 'OBSERVATION')
+  OR NEW.observation_id IS NOT OLD.observation_id OR NEW.event_ref IS NOT OLD.event_ref OR NEW.market_ref IS NOT OLD.market_ref OR NEW.claim_key IS NOT OLD.claim_key
+  OR NEW.claim_value IS NOT OLD.claim_value OR NEW.data_class IS NOT OLD.data_class OR NEW.version <> OLD.version + 1 OR OLD.stage IN ('VALIDATED', 'REJECTED', 'OBSERVATION')
 BEGIN SELECT RAISE(ABORT, 'lesson content is immutable and a decided lesson is final'); END;
 
 CREATE TABLE lesson_history (
@@ -275,7 +281,8 @@ CREATE TRIGGER knowledge_items_no_delete BEFORE DELETE ON knowledge_items BEGIN 
 CREATE TRIGGER knowledge_items_content_immutable BEFORE UPDATE ON knowledge_items
 WHEN NEW.id IS NOT OLD.id OR NEW.scope IS NOT OLD.scope OR NEW.scope_ref IS NOT OLD.scope_ref OR NEW.content IS NOT OLD.content OR NEW.content_sha256 IS NOT OLD.content_sha256
   OR NEW.claim_key IS NOT OLD.claim_key OR NEW.claim_value IS NOT OLD.claim_value OR NEW.data_class IS NOT OLD.data_class OR NEW.provenance_ref IS NOT OLD.provenance_ref
-  OR NEW.created_at IS NOT OLD.created_at OR NEW.version <> OLD.version + 1
+  OR NEW.provenance_kind IS NOT OLD.provenance_kind OR NEW.market_ref IS NOT OLD.market_ref OR NEW.terms_json IS NOT OLD.terms_json OR NEW.fingerprint IS NOT OLD.fingerprint
+  OR NEW.topic IS NOT OLD.topic OR NEW.created_by_ref IS NOT OLD.created_by_ref OR NEW.created_at IS NOT OLD.created_at OR NEW.version <> OLD.version + 1
   OR (OLD.status IN ('SUPERSEDED', 'INCORRECT', 'ARCHIVED') AND NEW.status <> OLD.status) OR (OLD.integrity = 'CORRUPT' AND NEW.integrity <> 'CORRUPT')
 BEGIN SELECT RAISE(ABORT, 'knowledge content, scope and provenance are immutable; changes supersede'); END;
 
@@ -309,9 +316,10 @@ CREATE TABLE lesson_promotions (
   created_at           TEXT NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
   decided_at           TEXT          CHECK (decided_at IS NULL OR decided_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
   CHECK ((state = 'PENDING_REVIEW') = (decided_at IS NULL)),
-  CHECK (state <> 'APPROVED' OR result_memory_id IS NOT NULL OR result_knowledge_id IS NOT NULL),
-  UNIQUE (lesson_id, target, target_ref)
+  CHECK (state <> 'APPROVED' OR result_memory_id IS NOT NULL OR result_knowledge_id IS NOT NULL)
 ) STRICT;
+-- One promotion per lesson and target (a NULL target_ref is one value here, not "distinct").
+CREATE UNIQUE INDEX lesson_promotions_one ON lesson_promotions (lesson_id, target, COALESCE(target_ref, ''));
 CREATE TRIGGER lesson_promotions_no_delete BEFORE DELETE ON lesson_promotions BEGIN SELECT RAISE(ABORT, 'lesson promotions are durable history'); END;
 CREATE TRIGGER lesson_promotions_decided_once BEFORE UPDATE ON lesson_promotions
 WHEN OLD.state <> 'PENDING_REVIEW' OR NEW.lesson_id IS NOT OLD.lesson_id OR NEW.target IS NOT OLD.target OR NEW.target_ref IS NOT OLD.target_ref
@@ -404,3 +412,34 @@ CREATE TRIGGER context_summaries_no_delete BEFORE DELETE ON context_summaries BE
 CREATE TRIGGER context_summaries_invalidate_only BEFORE UPDATE ON context_summaries
 WHEN OLD.status = 'INVALIDATED' OR NEW.content IS NOT OLD.content OR NEW.content_sha256 IS NOT OLD.content_sha256 OR NEW.source_fingerprint IS NOT OLD.source_fingerprint OR NEW.source_ids_json IS NOT OLD.source_ids_json
 BEGIN SELECT RAISE(ABORT, 'a summary is derived: it is invalidated, never edited'); END;
+CREATE INDEX context_summaries_employee ON context_summaries (employee_id, status);
+
+-- Term index for deterministic lexical retrieval (C3 §14): one row per (item, normalized term). A
+-- pool query joins it with the task's query terms, so an assembly reads only relevant candidates
+-- (bounded) and never scans an Employee's or the Company's full history. Terms of an item never change.
+CREATE TABLE mind_terms (
+  item_kind  TEXT NOT NULL CHECK (item_kind IN ('MEMORY', 'KNOWLEDGE', 'CANONICAL')),
+  owner_key  TEXT NOT NULL CHECK (length(owner_key) <= 36),
+  term       TEXT NOT NULL CHECK (length(term) BETWEEN 1 AND 64),
+  item_id    TEXT NOT NULL CHECK (length(item_id) = 36),
+  PRIMARY KEY (item_kind, owner_key, term, item_id)
+) STRICT, WITHOUT ROWID;
+CREATE TRIGGER mind_terms_append_only_u BEFORE UPDATE ON mind_terms BEGIN SELECT RAISE(ABORT, 'mind terms is append-only'); END;
+CREATE TRIGGER mind_terms_append_only_d BEFORE DELETE ON mind_terms BEGIN SELECT RAISE(ABORT, 'mind terms is append-only'); END;
+
+-- Recent step results of a Work Item (context layer L6), recorded by the runtime's governed services
+-- (tool executor results / refusals, memory decisions) — never supplied by a processor. One per step.
+CREATE TABLE context_step_results (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_item_id    TEXT    NOT NULL REFERENCES work_items (id) ON DELETE RESTRICT,
+  run_id          TEXT    NOT NULL REFERENCES runs (id) ON DELETE RESTRICT,
+  step            INTEGER NOT NULL CHECK (step BETWEEN 0 AND 100000),
+  kind            TEXT    NOT NULL CHECK (kind IN ('TOOL_RESULT', 'TOOL_REFUSED', 'MEMORY_DECISION')),
+  content         TEXT    NOT NULL CHECK (length(content) BETWEEN 1 AND 2048),
+  content_sha256  TEXT    NOT NULL CHECK (length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'),
+  data_class      TEXT    NOT NULL CHECK (data_class IN ('D0', 'D1', 'D2', 'D3', 'D4')),
+  created_at      TEXT    NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
+  UNIQUE (work_item_id, step)
+) STRICT;
+CREATE TRIGGER context_step_results_append_only_u BEFORE UPDATE ON context_step_results BEGIN SELECT RAISE(ABORT, 'context step results is append-only'); END;
+CREATE TRIGGER context_step_results_append_only_d BEFORE DELETE ON context_step_results BEGIN SELECT RAISE(ABORT, 'context step results is append-only'); END;

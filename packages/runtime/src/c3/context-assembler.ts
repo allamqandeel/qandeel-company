@@ -32,8 +32,8 @@ export function isAssembledContext(value: unknown): value is AssembledContext {
 }
 
 /** Assembles this run's context for one step through the governed storage path. */
-export function assembleGovernedContext(store: CompanyStore, fence: Fence, request: { readonly step: number; readonly recentResults: readonly string[] }): AssemblyOutcome {
-  const r = assembleContext(store, fence, { step: request.step, recentResults: request.recentResults });
+export function assembleGovernedContext(store: CompanyStore, fence: Fence, request: { readonly step: number }): AssemblyOutcome {
+  const r = assembleContext(store, fence, { step: request.step });
   if (r.outcome !== 'OK') return { kind: 'REFUSED', code: r.outcome, manifestId: r.manifestId };
   const context: AssembledContext = Object.freeze({
     manifestId: r.manifestId,

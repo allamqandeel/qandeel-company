@@ -22,6 +22,7 @@ import {
   costLabel,
   hasPaidDependency,
   inspectSkillPayload,
+  LICENSE_CLEARED,
   mandatory,
   SKILL_TYPES,
   FRESHNESS_STATES,
@@ -37,7 +38,7 @@ import {
 
 import { founder, founderAdminWrite } from './governance.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
-import { SYSTEM_MIND_REF, getSkillVersionRow, loadSkillPayloadForInspection, versionEligibility } from './mind-core.js';
+import { SYSTEM_MIND_REF, getSkillVersionRow, loadSkillPayloadForInspection, versionEligibility, wakeEmployeeWaits } from './mind-core.js';
 import { wakeCapabilityGaps } from './mind-writes.js';
 import {
   mapCertification,
@@ -217,7 +218,10 @@ export class SkillStore {
     return this.#write('check skill license', (ctx) => {
       const v = getSkillVersionRow(ctx, assertId(versionId, 'versionId'));
       if (v.pipelineState !== 'INSPECTED') throw new QandeelError('INVALID_TRANSITION', 'only an inspected version is license-checked', { skillVersionId: v.id });
-      if (!(v.licenseStatus === 'CLEAR_FREE' || v.licenseStatus === 'QANDEEL_OWNED')) return this.#advance(ctx, v, 'REJECTED', `LICENSE_${v.licenseStatus}`, SYSTEM_MIND_REF);
+      // Unknown / non-free licences are rejected; licences with obligations wait for a recorded licence
+      // review (never auto-cleared, never auto-rejected); clear-free and QANDEEL-owned continue.
+      if (v.licenseStatus === 'UNCLEAR' || v.licenseStatus === 'NOT_FREE') return this.#advance(ctx, v, 'REJECTED', `LICENSE_${v.licenseStatus}`, SYSTEM_MIND_REF);
+      if (v.licenseStatus === 'REVIEW_REQUIRED') return this.#advance(ctx, v, 'LICENSE_DEPENDENCY_CHECKED', 'license.review_required', SYSTEM_MIND_REF);
       return this.#advance(ctx, v, 'LICENSE_DEPENDENCY_CHECKED', v.paidDependency ? 'license.clear_paid_dependency' : 'license.clear', SYSTEM_MIND_REF);
     });
   }
@@ -235,6 +239,7 @@ export class SkillStore {
       if (!PIPELINE_NEXT[v.pipelineState].includes(to)) assertPipelineStep(v.pipelineState, to);
       const reason = assertCode(input.reasonCode, 'reasonCode');
       const evidence = input.evidenceRef === undefined ? null : assertOpaqueRef(input.evidenceRef, 'evidenceRef');
+      if (to === 'SECURITY_QUARANTINE' && !LICENSE_CLEARED.includes(v.licenseStatus)) throw new QandeelError('VALIDATION_FAILED', 'the licence needs a recorded review first', { reason: 'LICENSE_REVIEW_REQUIRED' });
       if (to === 'SANDBOXED') {
         if (evidence === null) throw new QandeelError('VALIDATION_FAILED', 'leaving quarantine needs security review evidence', { field: 'evidenceRef' });
         if (input.securityPassed !== true) return this.#advance(ctx, this.#advance(ctx, v, 'SANDBOXED', reason, p.ref, { security: 'FAILED' }, evidence), 'REJECTED', 'SECURITY_REVIEW_FAILED', p.ref);
@@ -243,9 +248,30 @@ export class SkillStore {
       if (to === 'BENCHMARKED' && evidence === null) throw new QandeelError('VALIDATION_FAILED', 'a benchmark step records its evidence', { field: 'evidenceRef' });
       if (to === 'APPROVED') {
         if (v.paidDependency && !v.paidDependencyAcknowledged) throw new QandeelError('VALIDATION_FAILED', 'FREE_SKILL_PAID_DEPENDENCY: the paid dependency must be acknowledged explicitly first', { reason: 'PAID_DEPENDENCY_UNACKNOWLEDGED' });
-        return this.#advance(ctx, v, 'APPROVED', reason, p.ref, { approvedBy: p.ref }, evidence);
+        const approved = this.#advance(ctx, v, 'APPROVED', reason, p.ref, { approvedBy: p.ref }, evidence);
+        wakeAllCapabilityGaps(ctx, 'skill.approved');
+        return approved;
       }
       return this.#advance(ctx, v, to, reason, p.ref, to === 'BENCHMARKED' && evidence !== null ? { benchmark: evidence } : {}, evidence);
+    });
+  }
+
+  /**
+   * A recorded licence review (Founder / legal authority) for a licence with obligations: CLEAR records
+   * the permission evidence (the version may then continue to quarantine); REJECT ends it. The licence
+   * policy itself is a Product Owner decision (D-C3-08).
+   */
+  reviewLicense(actorRef: string, versionId: string, input: { decision: 'CLEAR' | 'REJECT'; evidenceRef: string; reasonCode: string }): SkillVersionRecord {
+    return founderAdminWrite(this.#store, 'review skill licence', actorRef, (ctx) => {
+      const p = founder(ctx, actorRef, null, 'skill licence review');
+      const v = getSkillVersionRow(ctx, assertId(versionId, 'versionId'));
+      if (v.pipelineState !== 'LICENSE_DEPENDENCY_CHECKED' || v.licenseStatus !== 'REVIEW_REQUIRED') throw new QandeelError('INVALID_TRANSITION', 'only a version waiting for a licence review is reviewed', { skillVersionId: v.id });
+      const evidence = assertOpaqueRef(input.evidenceRef, 'evidenceRef');
+      const reason = assertCode(input.reasonCode, 'reasonCode');
+      if (input.decision === 'REJECT') return this.#advance(ctx, v, 'REJECTED', 'LICENSE_REVIEW_REJECTED', p.ref, {}, evidence);
+      ctx.db.run(`UPDATE skill_versions SET license_status = 'CLEARED_BY_REVIEW', license_review_ref = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, evidence, ts(ctx), v.id, v.version);
+      history(ctx, v, 'LICENSE_REVIEW', 'REVIEW_REQUIRED', 'CLEARED_BY_REVIEW', reason, p.ref, evidence);
+      return getSkillVersionRow(ctx, v.id);
     });
   }
 
@@ -270,6 +296,7 @@ export class SkillStore {
       if (v.freshness === 'RETIRED') throw new QandeelError('TERMINAL_STATE', 'a retired version is history', { skillVersionId: v.id });
       ctx.db.run('UPDATE skill_versions SET freshness = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?', freshness, ts(ctx), v.id, v.version);
       history(ctx, v, 'FRESHNESS', v.freshness, freshness, assertCode(reasonCode, 'reasonCode'), p.ref);
+      wakeSkillHolders(ctx, [v.id], 'skill.freshness_changed');
       return getSkillVersionRow(ctx, v.id);
     });
   }
@@ -290,7 +317,9 @@ export class SkillStore {
       const id = newId();
       ctx.db.run(`INSERT INTO role_blueprints (id, role_ref, version, status, created_by_ref, created_at) VALUES (?, ?, ?, 'ACTIVE', ?, ?)`, id, role, (prior?.version ?? 0) + 1, p.ref, at);
       for (const e of list) ctx.db.run('INSERT INTO role_blueprint_entries (blueprint_id, skill_id, category, min_proficiency, critical) VALUES (?, ?, ?, ?, ?)', id, e.skillId, e.category, e.minProficiency, e.critical ? 1 : 0);
-      if (prior) markRoleReviewDue(ctx, role, 'BLUEPRINT_CHANGED', p.ref);
+      // Recertification matches the change (Stage 6 §14): only a change to the role's mandatory skill
+      // requirements marks its certifications REVIEW_DUE; an unchanged or optional-only change does not.
+      if (prior && blueprintMaterialChange(ctx, prior.id as Id, list)) markRoleReviewDue(ctx, role, 'BLUEPRINT_CHANGED', p.ref);
       appendAudit(ctx, 'blueprint.published', 'role_blueprint', id, { actorRef: p.ref }, 'OK', null, { version: (prior?.version ?? 0) + 1, skills: list.length, mandatory: mandatory(list).length });
       return blueprintOf(ctx, id);
     });
@@ -320,6 +349,7 @@ export class SkillStore {
       passportHistory(ctx, entryId, 1, v.id, 'LEARNING', 'ACTIVE', 'passport.opened', p.ref);
       appendAudit(ctx, 'passport.opened', 'passport_entry', entryId, { actorRef: p.ref }, 'OK', null, { employeeId: id, skillId: v.skillId });
       wakeCapabilityGaps(ctx, id, 'passport.opened');
+      wakeEmployeeWaits(ctx, id, ['SKILL_CONFLICT_REVIEW'], 'passport.opened');
       return mapPassport(ctx.db.get('SELECT * FROM passport_entries WHERE id = ?', entryId) ?? {});
     });
   }
@@ -377,6 +407,8 @@ export class SkillStore {
       const to = getSkillVersionRow(ctx, u.toVersionId);
       if (!versionEligibility(ctx, to).eligible) throw new QandeelError('VALIDATION_FAILED', 'the target version is no longer production-eligible', { reason: 'TARGET_NOT_ELIGIBLE' });
       const recert = u.material && u.recertificationImpact !== 'NONE';
+      // TARGETED: the affected skill is re-tested (passport); PARTIAL / FULL: the role certification too.
+      const certImpact = recert && u.recertificationImpact !== 'TARGETED';
       for (const pid of u.impact.passportEntryIds) {
         const pe = mapPassport(ctx.db.get('SELECT * FROM passport_entries WHERE id = ?', pid) ?? {});
         if (pe.skillVersionId !== u.fromVersionId || pe.status === 'REVOKED') continue;
@@ -384,7 +416,8 @@ export class SkillStore {
         ctx.db.run(`UPDATE passport_entries SET skill_version_id = ?, status = ?, training_state = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, u.toVersionId, status, recert ? 'RETRAINING_REQUIRED' : pe.trainingState, ts(ctx), pe.id, pe.version);
         passportHistory(ctx, pe.id, pe.version + 1, u.toVersionId, pe.proficiency, status, recert ? 'SKILL_MATERIAL_UPDATE' : 'SKILL_MINOR_UPDATE', p.ref);
       }
-      if (recert) for (const cid of u.impact.certificationIds) markReviewDue(ctx, cid as Id, 'SKILL_MATERIAL_UPDATE', p.ref);
+      if (certImpact) for (const cid of u.impact.certificationIds) markReviewDue(ctx, cid as Id, 'SKILL_MATERIAL_UPDATE', p.ref);
+      wakeSkillHolders(ctx, [u.fromVersionId, u.toVersionId], 'skill.rolled_out');
       if (to.pipelineState === 'APPROVED' || to.pipelineState === 'TARGETED_LEARNING') this.#advance(ctx, to, 'ROLLED_OUT', 'skill.rolled_out', p.ref);
       ctx.db.run(`UPDATE skill_updates SET state = 'ROLLED_OUT', version = version + 1, updated_at = ? WHERE id = ?`, ts(ctx), u.id);
       appendAudit(ctx, 'skill.update_rolled_out', 'skill_update', u.id, { actorRef: p.ref }, 'OK', recert ? 'RECERTIFICATION_REQUIRED' : 'NO_RECERTIFICATION', {});
@@ -417,6 +450,7 @@ export class SkillStore {
         history(ctx, rolled, 'FRESHNESS', rolled.freshness, 'DEPRECATED', 'SKILL_ROLLED_BACK', p.ref);
       }
       ctx.db.run(`UPDATE skill_updates SET state = 'ROLLED_BACK', version = version + 1, updated_at = ? WHERE id = ?`, ts(ctx), u.id);
+      wakeSkillHolders(ctx, [u.fromVersionId, u.toVersionId], 'skill.rolled_back');
       appendAudit(ctx, 'skill.update_rolled_back', 'skill_update', u.id, { actorRef: p.ref }, 'OK', reason, {});
       return mapSkillUpdate(ctx.db.get('SELECT * FROM skill_updates WHERE id = ?', u.id) ?? {});
     });
@@ -500,6 +534,28 @@ export function markRoleReviewDue(ctx: StoreContext, roleRef: string, reason: st
   let n = 0;
   for (const r of ctx.db.all<{ id: string }>(`SELECT id FROM certifications WHERE role_ref = ? AND status = 'VALID'`, roleRef)) if (markReviewDue(ctx, r.id as Id, reason, actorRef)) n++;
   return n;
+}
+
+/** Whether a new blueprint changes the role's mandatory skill requirements (skill, category, minimum proficiency, criticality). */
+function blueprintMaterialChange(ctx: StoreContext, priorId: Id, next: readonly BlueprintEntry[]): boolean {
+  const key = (e: { skillId: string; category: string; minProficiency: string; critical: boolean }): string => `${e.skillId}|${e.category}|${e.minProficiency}|${e.critical ? 1 : 0}`;
+  const prior = ctx.db.all<{ skill_id: string; category: string; min_proficiency: string; critical: number }>('SELECT skill_id, category, min_proficiency, critical FROM role_blueprint_entries WHERE blueprint_id = ?', priorId).map((r) => ({ skillId: r.skill_id, category: r.category, minProficiency: r.min_proficiency, critical: Number(r.critical) === 1 }));
+  const a = new Set(mandatory(prior as BlueprintEntry[]).map(key));
+  const b = new Set(mandatory(next).map(key));
+  return a.size !== b.size || [...a].some((k) => !b.has(k));
+}
+
+/** Work of Employees holding these versions that waits on a capability gap or a skill conflict is re-evaluated. */
+function wakeSkillHolders(ctx: StoreContext, versionIds: readonly string[], reason: string): void {
+  for (const r of ctx.db.all<{ e: string }>(`SELECT DISTINCT employee_id AS e FROM passport_entries WHERE skill_version_id IN (SELECT value FROM json_each(?))`, JSON.stringify(versionIds))) {
+    wakeCapabilityGaps(ctx, r.e as Id, reason);
+    wakeEmployeeWaits(ctx, r.e as Id, ['SKILL_CONFLICT_REVIEW'], reason);
+  }
+}
+
+/** A newly approved skill can close anyone's gap: every open gap's work is re-evaluated (bounded). */
+function wakeAllCapabilityGaps(ctx: StoreContext, reason: string): void {
+  for (const g of ctx.db.all<{ e: string }>(`SELECT DISTINCT employee_id AS e FROM capability_gaps WHERE state = 'OPEN' LIMIT 1000`)) wakeCapabilityGaps(ctx, g.e as Id, reason);
 }
 
 function notFound(what: string, id: string): never {

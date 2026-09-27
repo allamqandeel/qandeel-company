@@ -36,7 +36,8 @@ CREATE TABLE skill_versions (
   author_ref                  TEXT    NOT NULL CHECK (length(author_ref) BETWEEN 3 AND 161),
   acquired_at                 TEXT    NOT NULL CHECK (acquired_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
   license_spdx                TEXT             CHECK (license_spdx IS NULL OR length(license_spdx) BETWEEN 1 AND 64),
-  license_status              TEXT    NOT NULL CHECK (license_status IN ('CLEAR_FREE', 'QANDEEL_OWNED', 'REVIEW_REQUIRED', 'UNCLEAR', 'NOT_FREE')),
+  license_status              TEXT    NOT NULL CHECK (license_status IN ('CLEAR_FREE', 'QANDEEL_OWNED', 'REVIEW_REQUIRED', 'CLEARED_BY_REVIEW', 'UNCLEAR', 'NOT_FREE')),
+  license_review_ref          TEXT             CHECK (license_review_ref IS NULL OR length(license_review_ref) BETWEEN 3 AND 200),
   dependencies_json           TEXT    NOT NULL CHECK (json_valid(dependencies_json) AND json_type(dependencies_json) = 'array' AND length(dependencies_json) <= 8192),
   paid_dependency             INTEGER NOT NULL CHECK (paid_dependency IN (0, 1)),
   paid_dependency_ack_ref     TEXT             CHECK (paid_dependency_ack_ref IS NULL OR length(paid_dependency_ack_ref) BETWEEN 3 AND 161),
@@ -60,7 +61,7 @@ CREATE TABLE skill_versions (
   updated_at                  TEXT    NOT NULL CHECK (updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
   UNIQUE (skill_id, version_label),
   CHECK (pipeline_state <> 'REJECTED' OR failure_reason IS NOT NULL),
-  CHECK (pipeline_state NOT IN ('APPROVED', 'TARGETED_LEARNING', 'ROLLED_OUT') OR (approved_by_ref IS NOT NULL AND security_status = 'CLEARED' AND license_status IN ('CLEAR_FREE', 'QANDEEL_OWNED') AND inspection_findings_json = '[]' AND (paid_dependency = 0 OR paid_dependency_ack_ref IS NOT NULL)))
+  CHECK (pipeline_state NOT IN ('APPROVED', 'TARGETED_LEARNING', 'ROLLED_OUT') OR (approved_by_ref IS NOT NULL AND security_status = 'CLEARED' AND license_status IN ('CLEAR_FREE', 'QANDEEL_OWNED', 'CLEARED_BY_REVIEW') AND inspection_findings_json = '[]' AND (paid_dependency = 0 OR paid_dependency_ack_ref IS NOT NULL)))
 ) STRICT;
 CREATE INDEX skill_versions_skill ON skill_versions (skill_id, pipeline_state);
 CREATE TRIGGER skill_versions_no_delete BEFORE DELETE ON skill_versions BEGIN SELECT RAISE(ABORT, 'skill versions are durable history'); END;
@@ -71,13 +72,16 @@ WHEN NEW.id IS NOT OLD.id OR NEW.skill_id IS NOT OLD.skill_id OR NEW.version_lab
   OR NEW.requested_tools_json IS NOT OLD.requested_tools_json OR NEW.created_at IS NOT OLD.created_at OR NEW.version <> OLD.version + 1
   OR (OLD.pipeline_state IN ('REJECTED', 'ROLLED_OUT') AND NEW.pipeline_state <> OLD.pipeline_state)
   OR (OLD.freshness = 'RETIRED' AND NEW.freshness <> 'RETIRED') OR (OLD.integrity = 'CORRUPT' AND NEW.integrity <> 'CORRUPT')
+  OR (OLD.license_review_ref IS NOT NULL AND NEW.license_review_ref IS NOT OLD.license_review_ref)
+  OR (NEW.license_status = 'CLEARED_BY_REVIEW' AND OLD.license_status NOT IN ('REVIEW_REQUIRED', 'CLEARED_BY_REVIEW'))
+  OR (NEW.license_status = 'CLEARED_BY_REVIEW' AND NEW.license_review_ref IS NULL)
 BEGIN SELECT RAISE(ABORT, 'a skill version is pinned: its payload and provenance never change'); END;
 
 CREATE TABLE skill_version_history (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   skill_version_id  TEXT    NOT NULL REFERENCES skill_versions (id) ON DELETE RESTRICT,
   version           INTEGER NOT NULL CHECK (version >= 1),
-  change_kind       TEXT    NOT NULL CHECK (change_kind IN ('REGISTERED', 'PIPELINE', 'FRESHNESS', 'PAID_DEPENDENCY_ACK', 'INTEGRITY')),
+  change_kind       TEXT    NOT NULL CHECK (change_kind IN ('REGISTERED', 'PIPELINE', 'FRESHNESS', 'PAID_DEPENDENCY_ACK', 'INTEGRITY', 'LICENSE_REVIEW')),
   from_value        TEXT,
   to_value          TEXT    NOT NULL CHECK (length(to_value) <= 64),
   reason_code       TEXT    NOT NULL CHECK (length(reason_code) BETWEEN 1 AND 64),
@@ -105,6 +109,11 @@ CREATE TABLE skill_discoveries (
   updated_at         TEXT    NOT NULL CHECK (updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z')
 ) STRICT;
 CREATE TRIGGER skill_discoveries_no_delete BEFORE DELETE ON skill_discoveries BEGIN SELECT RAISE(ABORT, 'skill discoveries are durable history'); END;
+CREATE TRIGGER skill_discoveries_identity_immutable BEFORE UPDATE ON skill_discoveries
+WHEN NEW.id IS NOT OLD.id OR NEW.fingerprint IS NOT OLD.fingerprint OR NEW.skill_code IS NOT OLD.skill_code OR NEW.source_ref IS NOT OLD.source_ref
+  OR NEW.source_revision IS NOT OLD.source_revision OR NEW.discovered_by_ref IS NOT OLD.discovered_by_ref OR NEW.created_at IS NOT OLD.created_at
+  OR NEW.seen_count < OLD.seen_count OR (OLD.skill_version_id IS NOT NULL AND NEW.skill_version_id IS NOT OLD.skill_version_id)
+BEGIN SELECT RAISE(ABORT, 'a discovery record is identified by its source; only its intake state and sighting count move'); END;
 
 -- Material version updates: impact set (IDs only), recertification impact, rollout and rollback target.
 CREATE TABLE skill_updates (
@@ -187,8 +196,8 @@ CREATE TRIGGER passport_entries_pin_i BEFORE INSERT ON passport_entries
 WHEN NOT EXISTS (SELECT 1 FROM skill_versions v WHERE v.id = NEW.skill_version_id AND v.skill_id = NEW.skill_id AND v.pipeline_state IN ('APPROVED', 'TARGETED_LEARNING', 'ROLLED_OUT') AND v.freshness NOT IN ('SECURITY_HOLD', 'RETIRED', 'DEPRECATED') AND v.integrity = 'OK')
 BEGIN SELECT RAISE(ABORT, 'a passport pins only an approved, current version of its own skill'); END;
 CREATE TRIGGER passport_entries_pin_u BEFORE UPDATE OF skill_version_id ON passport_entries
-WHEN NEW.skill_version_id IS NOT OLD.skill_version_id AND NOT EXISTS (SELECT 1 FROM skill_versions v WHERE v.id = NEW.skill_version_id AND v.skill_id = NEW.skill_id AND v.pipeline_state IN ('APPROVED', 'TARGETED_LEARNING', 'ROLLED_OUT') AND v.freshness NOT IN ('SECURITY_HOLD', 'RETIRED') AND v.integrity = 'OK')
-BEGIN SELECT RAISE(ABORT, 'a passport re-pins only to an approved version of its own skill'); END;
+WHEN NEW.skill_version_id IS NOT OLD.skill_version_id AND NOT EXISTS (SELECT 1 FROM skill_versions v WHERE v.id = NEW.skill_version_id AND v.skill_id = NEW.skill_id AND v.pipeline_state IN ('APPROVED', 'TARGETED_LEARNING', 'ROLLED_OUT') AND v.freshness NOT IN ('SECURITY_HOLD', 'RETIRED', 'DEPRECATED') AND v.integrity = 'OK')
+BEGIN SELECT RAISE(ABORT, 'a passport re-pins only to an approved, current version of its own skill'); END;
 
 CREATE TABLE passport_history (
   id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -282,7 +291,9 @@ CREATE TABLE academy_scenarios (
   budget_micros       INTEGER NOT NULL CHECK (budget_micros BETWEEN 0 AND 1000000000000),
   status              TEXT NOT NULL CHECK (status IN ('ACTIVE', 'RETIRED')),
   created_at          TEXT NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
-  UNIQUE (program_version_id, code)
+  UNIQUE (program_version_id, code),
+  -- An assessment / holdout always has a real cost budget: COST_DISCIPLINE is never passed by default.
+  CHECK (kind = 'PRACTICE' OR budget_micros > 0)
 ) STRICT;
 CREATE TRIGGER academy_scenarios_no_delete BEFORE DELETE ON academy_scenarios BEGIN SELECT RAISE(ABORT, 'academy scenarios are durable history'); END;
 CREATE TRIGGER academy_scenarios_content_immutable BEFORE UPDATE ON academy_scenarios
@@ -296,6 +307,10 @@ CREATE TABLE academy_enrollments (
   role_ref            TEXT    NOT NULL CHECK (length(role_ref) BETWEEN 6 AND 161 AND role_ref GLOB 'role:*'),
   stage               TEXT    NOT NULL CHECK (stage IN ('LEARN', 'CASE_STUDIES', 'SIMULATION', 'FEEDBACK', 'RETRY', 'ASSESSMENT', 'SHADOW_WORK', 'PROBATION_REVIEW', 'CERTIFICATION', 'ACTIVATION_APPROVAL', 'ACTIVATED', 'BLOCKED', 'WITHDRAWN')),
   blocked_reason      TEXT             CHECK (blocked_reason IS NULL OR length(blocked_reason) BETWEEN 1 AND 64),
+  -- Evidence windows: a probation FAIL opens a new epoch (earlier shadow cases no longer count); every
+  -- probation decision closes its review round (the next review needs a new decision).
+  evidence_epoch      INTEGER NOT NULL DEFAULT 1 CHECK (evidence_epoch >= 1),
+  review_round        INTEGER NOT NULL DEFAULT 1 CHECK (review_round >= 1),
   version             INTEGER NOT NULL CHECK (version >= 1),
   created_at          TEXT    NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
   updated_at          TEXT    NOT NULL CHECK (updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
@@ -305,7 +320,7 @@ CREATE UNIQUE INDEX academy_enrollments_one_open ON academy_enrollments (employe
 CREATE TRIGGER academy_enrollments_no_delete BEFORE DELETE ON academy_enrollments BEGIN SELECT RAISE(ABORT, 'academy enrollments are durable history'); END;
 CREATE TRIGGER academy_enrollments_forward BEFORE UPDATE ON academy_enrollments
 WHEN NEW.employee_id IS NOT OLD.employee_id OR NEW.program_version_id IS NOT OLD.program_version_id OR NEW.role_ref IS NOT OLD.role_ref OR NEW.version <> OLD.version + 1
-  OR OLD.stage IN ('ACTIVATED', 'BLOCKED', 'WITHDRAWN')
+  OR NEW.evidence_epoch < OLD.evidence_epoch OR NEW.review_round < OLD.review_round OR OLD.stage IN ('ACTIVATED', 'BLOCKED', 'WITHDRAWN')
 BEGIN SELECT RAISE(ABORT, 'an enrollment moves along its path once; a closed enrollment is history'); END;
 
 CREATE TABLE academy_stage_history (
@@ -349,16 +364,19 @@ CREATE TABLE academy_attempts (
   average_pct             INTEGER          CHECK (average_pct IS NULL OR average_pct BETWEEN 0 AND 100),
   failed_json             TEXT    NOT NULL DEFAULT '[]' CHECK (json_valid(failed_json) AND json_type(failed_json) = 'array' AND length(failed_json) <= 1024),
   critical_failures_json  TEXT    NOT NULL DEFAULT '[]' CHECK (json_valid(critical_failures_json) AND json_type(critical_failures_json) = 'array' AND length(critical_failures_json) <= 1024),
+  epoch                   INTEGER NOT NULL DEFAULT 1 CHECK (epoch >= 1),
+  void_reason             TEXT             CHECK (void_reason IS NULL OR length(void_reason) BETWEEN 1 AND 64),
   version                 INTEGER NOT NULL CHECK (version >= 1),
   created_at              TEXT    NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
   evaluated_at            TEXT             CHECK (evaluated_at IS NULL OR evaluated_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
   CHECK ((state = 'EVALUATED') = (outcome IS NOT NULL AND evaluated_at IS NOT NULL)),
+  CHECK ((state = 'VOID') = (void_reason IS NOT NULL)),
   UNIQUE (enrollment_id, kind, trial_no)
 ) STRICT;
 CREATE TRIGGER academy_attempts_no_delete BEFORE DELETE ON academy_attempts BEGIN SELECT RAISE(ABORT, 'academy attempts are durable history'); END;
 CREATE TRIGGER academy_attempts_once BEFORE UPDATE ON academy_attempts
 WHEN OLD.state <> 'OPEN' OR NEW.enrollment_id IS NOT OLD.enrollment_id OR NEW.scenario_id IS NOT OLD.scenario_id OR NEW.work_item_id IS NOT OLD.work_item_id
-  OR NEW.holdout_clean IS NOT OLD.holdout_clean OR NEW.version <> OLD.version + 1
+  OR NEW.holdout_clean IS NOT OLD.holdout_clean OR NEW.epoch IS NOT OLD.epoch OR NEW.version <> OLD.version + 1
 BEGIN SELECT RAISE(ABORT, 'an attempt has exactly one canonical outcome'); END;
 
 -- One result per dimension per attempt. The evaluator is never the trainee; deterministic dimensions
@@ -393,7 +411,8 @@ CREATE TRIGGER academy_scenario_exposures_append_only_d BEFORE DELETE ON academy
 CREATE TABLE academy_remediations (
   id                     TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
   enrollment_id          TEXT NOT NULL REFERENCES academy_enrollments (id) ON DELETE RESTRICT,
-  attempt_id             TEXT NOT NULL UNIQUE REFERENCES academy_attempts (id) ON DELETE RESTRICT,
+  attempt_id             TEXT          UNIQUE REFERENCES academy_attempts (id) ON DELETE RESTRICT,
+  probation_review_id    TEXT          UNIQUE REFERENCES probation_reviews (id) ON DELETE RESTRICT,
   failed_json            TEXT NOT NULL CHECK (json_valid(failed_json) AND json_type(failed_json) = 'array' AND length(failed_json) <= 1024),
   critical_failures_json TEXT NOT NULL CHECK (json_valid(critical_failures_json) AND json_type(critical_failures_json) = 'array' AND length(critical_failures_json) <= 1024),
   categories_json        TEXT NOT NULL CHECK (json_valid(categories_json) AND json_type(categories_json) = 'array' AND length(categories_json) <= 1024),
@@ -401,12 +420,27 @@ CREATE TABLE academy_remediations (
   state                  TEXT NOT NULL CHECK (state IN ('DIAGNOSED', 'RETRAINING', 'RETEST_READY', 'RETESTED')),
   retest_attempt_id      TEXT          REFERENCES academy_attempts (id) ON DELETE RESTRICT,
   created_at             TEXT NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
-  updated_at             TEXT NOT NULL CHECK (updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z')
+  updated_at             TEXT NOT NULL CHECK (updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
+  -- Diagnosed from exactly one failure: a failed attempt or a failed probation review.
+  CHECK ((attempt_id IS NULL) <> (probation_review_id IS NULL))
 ) STRICT;
 CREATE TRIGGER academy_remediations_no_delete BEFORE DELETE ON academy_remediations BEGIN SELECT RAISE(ABORT, 'academy remediations are durable history'); END;
 CREATE TRIGGER academy_remediations_forward BEFORE UPDATE ON academy_remediations
-WHEN NEW.failed_json IS NOT OLD.failed_json OR NEW.critical_failures_json IS NOT OLD.critical_failures_json OR NEW.attempt_id IS NOT OLD.attempt_id OR OLD.state = 'RETESTED'
+WHEN NEW.failed_json IS NOT OLD.failed_json OR NEW.critical_failures_json IS NOT OLD.critical_failures_json OR NEW.attempt_id IS NOT OLD.attempt_id
+  OR NEW.probation_review_id IS NOT OLD.probation_review_id OR NEW.enrollment_id IS NOT OLD.enrollment_id OR NEW.categories_json IS NOT OLD.categories_json OR OLD.state = 'RETESTED'
+  OR (CASE NEW.state WHEN 'DIAGNOSED' THEN 0 WHEN 'RETRAINING' THEN 1 WHEN 'RETEST_READY' THEN 2 ELSE 3 END) < (CASE OLD.state WHEN 'DIAGNOSED' THEN 0 WHEN 'RETRAINING' THEN 1 WHEN 'RETEST_READY' THEN 2 ELSE 3 END)
 BEGIN SELECT RAISE(ABORT, 'a remediation record only moves forward'); END;
+CREATE TABLE academy_remediation_history (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  remediation_id  TEXT    NOT NULL REFERENCES academy_remediations (id) ON DELETE RESTRICT,
+  from_state      TEXT,
+  to_state        TEXT    NOT NULL,
+  reason_code     TEXT    NOT NULL CHECK (length(reason_code) BETWEEN 1 AND 64),
+  actor_ref       TEXT    NOT NULL CHECK (length(actor_ref) BETWEEN 3 AND 161),
+  occurred_at     TEXT    NOT NULL CHECK (occurred_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z')
+) STRICT;
+CREATE TRIGGER academy_remediation_history_append_only_u BEFORE UPDATE ON academy_remediation_history BEGIN SELECT RAISE(ABORT, 'academy remediation history is append-only'); END;
+CREATE TRIGGER academy_remediation_history_append_only_d BEFORE DELETE ON academy_remediation_history BEGIN SELECT RAISE(ABORT, 'academy remediation history is append-only'); END;
 
 -- Shadow / probation work (Stage 6 §11–§12): real Work Items under constrained authority, and evidence.
 CREATE TABLE academy_shadow_assignments (
@@ -426,6 +460,7 @@ CREATE TABLE probation_evidence (
   positive         INTEGER NOT NULL CHECK (positive IN (0, 1)),
   recorded_by_kind TEXT    NOT NULL CHECK (recorded_by_kind IN ('DETERMINISTIC', 'EVALUATOR')),
   recorded_by_ref  TEXT    NOT NULL CHECK (length(recorded_by_ref) BETWEEN 3 AND 161 AND recorded_by_ref NOT GLOB 'employee:*'),
+  epoch            INTEGER NOT NULL DEFAULT 1 CHECK (epoch >= 1),
   recorded_at      TEXT    NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
   UNIQUE (enrollment_id, kind, work_item_id)
 ) STRICT;
@@ -439,8 +474,11 @@ CREATE TABLE probation_reviews (
   summary_json     TEXT NOT NULL CHECK (json_valid(summary_json) AND json_type(summary_json) = 'object' AND length(summary_json) <= 1024),
   unmet_json       TEXT NOT NULL CHECK (json_valid(unmet_json) AND json_type(unmet_json) = 'array' AND length(unmet_json) <= 1024),
   decided_by_ref   TEXT NOT NULL CHECK (length(decided_by_ref) BETWEEN 3 AND 161 AND decided_by_ref NOT GLOB 'employee:*'),
+  epoch            INTEGER NOT NULL DEFAULT 1 CHECK (epoch >= 1),
+  review_round     INTEGER NOT NULL DEFAULT 1 CHECK (review_round >= 1),
   decided_at       TEXT NOT NULL CHECK (decided_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
-  CHECK (decision <> 'PASS' OR unmet_json = '[]')
+  CHECK (decision <> 'PASS' OR unmet_json = '[]'),
+  UNIQUE (enrollment_id, review_round)
 ) STRICT;
 CREATE TRIGGER probation_reviews_append_only_u BEFORE UPDATE ON probation_reviews BEGIN SELECT RAISE(ABORT, 'probation reviews is append-only'); END;
 CREATE TRIGGER probation_reviews_append_only_d BEFORE DELETE ON probation_reviews BEGIN SELECT RAISE(ABORT, 'probation reviews is append-only'); END;
@@ -530,15 +568,15 @@ BEGIN SELECT RAISE(ABORT, 'an activation request moves forward once'); END;
 -- whose probation review PASSED. (The C2 test-only seam's labelled rows are the only other path, and
 -- only tests can reach that seam.)
 CREATE TRIGGER employees_activation_gate BEFORE UPDATE OF state ON employees
-WHEN NEW.state = 'ACTIVE' AND OLD.state IN ('SHADOW', 'PROBATION')
+WHEN NEW.state = 'ACTIVE' AND OLD.state NOT IN ('ACTIVE', 'PAUSED', 'ON_LEAVE')
   AND NOT EXISTS (SELECT 1 FROM json_each(NEW.qualification_refs_json) j WHERE j.value GLOB 'test-seam:*')
   AND NOT EXISTS (
     SELECT 1 FROM activation_requests a
       JOIN certifications c ON c.id = a.certification_id
       JOIN probation_reviews p ON p.id = a.probation_review_id
      WHERE a.employee_id = NEW.id AND a.state = 'APPROVED' AND a.decided_by_ref GLOB 'founder:*'
-       AND c.employee_id = NEW.id AND c.status = 'VALID' AND c.role_ref = NEW.role_ref
-       AND p.decision = 'PASS')
+       AND c.employee_id = NEW.id AND c.status = 'VALID' AND c.role_ref = NEW.role_ref AND c.valid_until > NEW.updated_at
+       AND c.enrollment_id = a.enrollment_id AND p.enrollment_id = a.enrollment_id AND p.decision = 'PASS')
 BEGIN SELECT RAISE(ABORT, 'activation requires a valid role certification, a passed probation review and an approved activation request'); END;
 
 -- Execution mode of a Run by a non-ACTIVE Employee (Academy attempt or shadow work): constrained authority.

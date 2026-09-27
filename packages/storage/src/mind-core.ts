@@ -19,7 +19,7 @@ import {
   type SkillVersionView,
 } from '@qandeel-company/mind';
 
-import { getEmployeeRow } from './governance-core.js';
+import { getEmployeeRow, wakeWorkItemJob } from './governance-core.js';
 import { mapGrant, type EmployeeRecord } from './governance-records.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
 import {
@@ -49,12 +49,15 @@ export function memoryHistory(ctx: StoreContext, memoryId: Id, version: number, 
 }
 
 /** One status change: version + 1, history row and a content-free audit row, together. */
-export function setMemoryStatus(ctx: StoreContext, m: MemoryRecord, to: MemoryRecord['status'], reasonCode: string, actorRef: string, extra: { supersededById?: Id; validatedAt?: Timestamp } = {}): MemoryRecord {
+export function setMemoryStatus(ctx: StoreContext, m: MemoryRecord, to: MemoryRecord['status'], reasonCode: string, actorRef: string, extra: { supersededById?: Id; validatedAt?: Timestamp; reviewAt?: Timestamp } = {}): MemoryRecord {
+  // Any status change of a source invalidates the compaction summaries built from it (derived, never truth).
+  if (to !== m.status) invalidateSummariesOf(ctx, m.id, 'SOURCE_CHANGED');
   const changed = ctx.db.run(
-    'UPDATE memory_records SET status = ?, superseded_by_id = COALESCE(?, superseded_by_id), last_validated_at = COALESCE(?, last_validated_at), version = version + 1, updated_at = ? WHERE id = ? AND version = ?',
+    'UPDATE memory_records SET status = ?, superseded_by_id = COALESCE(?, superseded_by_id), last_validated_at = COALESCE(?, last_validated_at), review_at = COALESCE(?, review_at), version = version + 1, updated_at = ? WHERE id = ? AND version = ?',
     to,
     extra.supersededById ?? null,
     extra.validatedAt ?? null,
+    extra.reviewAt ?? null,
     ts(ctx),
     m.id,
     m.version,
@@ -91,7 +94,43 @@ export interface NewMemory {
   readonly validatedAt: Timestamp | null;
 }
 
+/** Summaries derived from this memory stop being valid (they would otherwise keep its old text). */
+export function invalidateSummariesOf(ctx: StoreContext, memoryId: Id, reason: string): void {
+  for (const s of ctx.db.all<{ id: string; employee_id: string }>(`SELECT id, employee_id FROM context_summaries WHERE status = 'VALID' AND EXISTS (SELECT 1 FROM json_each(source_ids_json) j WHERE j.value = ?)`, memoryId)) {
+    ctx.db.run(`UPDATE context_summaries SET status = 'INVALIDATED', invalidation_reason = ?, invalidated_at = ? WHERE id = ? AND status = 'VALID'`, reason, ts(ctx), s.id);
+    appendAudit(ctx, 'context_summary.invalidated', 'context_summary', s.id, { actorRef: SYSTEM_MIND_REF }, 'OK', reason, { employeeId: s.employee_id });
+  }
+}
+
+/** Term index rows for deterministic lexical retrieval (one per normalized term; never rewritten). */
+export function indexItemTerms(ctx: StoreContext, kind: 'MEMORY' | 'KNOWLEDGE' | 'CANONICAL', ownerKey: string, itemId: Id, terms: readonly string[]): void {
+  for (const t of new Set(terms)) if (t.length >= 1 && t.length <= 64) ctx.db.run('INSERT OR IGNORE INTO mind_terms (item_kind, owner_key, term, item_id) VALUES (?, ?, ?, ?)', kind, ownerKey, t, itemId);
+}
+
+/** Canonical Truth outranks every lower layer at write time too: no memory / knowledge contradicts an ACTIVE claim. */
+export function assertNotContradictingCanonical(ctx: StoreContext, claimKey: string | null, claimValue: string | null): void {
+  if (claimKey === null) return;
+  const c = ctx.db.get<{ id: string; claim_value: string }>(`SELECT id, claim_value FROM canonical_truth WHERE claim_key = ? AND status = 'ACTIVE'`, claimKey);
+  if (c && c.claim_value !== claimValue) throw new QandeelError('VALIDATION_FAILED', 'this claim contradicts active Canonical Truth', { reason: 'CONTRADICTS_CANONICAL', canonicalId: c.id });
+}
+
+/**
+ * Wakes work of one Employee parked for the given reasons (conflict / skill review resolved). The
+ * wake advances the durable wake generation in the same transaction (D-C1-23); no polling.
+ */
+export function wakeEmployeeWaits(ctx: StoreContext, employeeId: Id, reasons: readonly string[], reasonCode: string): number {
+  const rows = ctx.db.all<{ w: string }>(
+    `SELECT q.work_item_id AS w FROM queue_jobs q JOIN work_items i ON i.id = q.work_item_id WHERE q.state = 'WAITING' AND q.wait_reason IN (SELECT value FROM json_each(?)) AND i.owner_ref = ?`,
+    JSON.stringify(reasons),
+    `employee:${employeeId}`,
+  );
+  let n = 0;
+  for (const r of rows) if (wakeWorkItemJob(ctx, r.w as Id, reasons, reasonCode)) n++;
+  return n;
+}
+
 export function insertMemory(ctx: StoreContext, m: NewMemory, actorRef: string, reasonCode: string): Id {
+  assertNotContradictingCanonical(ctx, m.claimKey, m.claimValue);
   const id = newId();
   const at = ts(ctx);
   ctx.db.run(
@@ -102,6 +141,7 @@ export function insertMemory(ctx: StoreContext, m: NewMemory, actorRef: string, 
     m.provenanceKind, m.provenanceRef, m.sourceVersion, m.sourceSha256, JSON.stringify(m.evidenceRefs), m.confidencePct, m.status, m.retentionPolicy, m.reviewAt, m.validatedAt, m.candidateId, m.supersedesId, at, at,
   );
   memoryHistory(ctx, id, 1, null, m.status, reasonCode, actorRef);
+  indexItemTerms(ctx, 'MEMORY', m.employeeId, id, m.terms);
   appendAudit(ctx, 'memory.stored', 'memory', id, { actorRef }, 'OK', reasonCode, { employeeId: m.employeeId, memoryClass: m.memoryClass, dataClass: m.dataClass, provenance: m.provenanceKind });
   return id;
 }
@@ -126,12 +166,28 @@ export function loadVerified(ctx: StoreContext, table: ContentTable, id: string)
   if (!row) return null;
   if (sha256Hex(String(row.t)) === row.s) return String(row.t);
   if (c.integrity) {
-    ctx.db.run(`UPDATE ${table} SET integrity = 'CORRUPT', version = version + 1, updated_at = ? WHERE id = ? AND integrity = 'OK'`, ts(ctx), id);
+    const changed = ctx.db.run(`UPDATE ${table} SET integrity = 'CORRUPT', version = version + 1, updated_at = ? WHERE id = ? AND integrity = 'OK'`, ts(ctx), id).changes;
+    // The version bump is recorded in the entity's own history (no version gaps).
+    if (changed === 1 && row.v !== null) integrityHistory(ctx, table, id, Number(row.v) + 1);
+    if (table === 'memory_records') invalidateSummariesOf(ctx, id as Id, 'INTEGRITY_FAILED');
   } else if (table === 'context_summaries') {
     ctx.db.run(`UPDATE context_summaries SET status = 'INVALIDATED', invalidation_reason = 'INTEGRITY_FAILED', invalidated_at = ? WHERE id = ? AND status = 'VALID'`, ts(ctx), id);
   }
   appendAudit(ctx, `${c.entity}.integrity_failed`, c.entity, id, { actorRef: SYSTEM_MIND_REF }, 'ERROR', 'CONTENT_HASH_MISMATCH', {});
   return null;
+}
+
+function integrityHistory(ctx: StoreContext, table: ContentTable, id: string, version: number): void {
+  const at = ts(ctx);
+  if (table === 'memory_records') {
+    const st = ctx.db.get<{ s: string }>('SELECT status AS s FROM memory_records WHERE id = ?', id)?.s ?? 'ACTIVE';
+    memoryHistory(ctx, id as Id, version, st, st, 'INTEGRITY_FAILED', SYSTEM_MIND_REF);
+  } else if (table === 'knowledge_items') {
+    const st = ctx.db.get<{ s: string }>('SELECT status AS s FROM knowledge_items WHERE id = ?', id)?.s ?? 'ACTIVE';
+    ctx.db.run('INSERT INTO knowledge_history (knowledge_id, version, from_status, to_status, reason_code, actor_ref, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?)', id, version, st, st, 'INTEGRITY_FAILED', SYSTEM_MIND_REF, at);
+  } else if (table === 'skill_versions') {
+    ctx.db.run('INSERT INTO skill_version_history (skill_version_id, version, change_kind, from_value, to_value, reason_code, evidence_ref, actor_ref, occurred_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)', id, version, 'INTEGRITY', 'OK', 'CORRUPT', 'INTEGRITY_FAILED', SYSTEM_MIND_REF, at);
+  }
 }
 
 /** Whether a record's recorded source has changed since it was derived (stale by source version / hash). */

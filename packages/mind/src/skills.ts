@@ -60,11 +60,16 @@ export function assertProficiency(v: unknown, field = 'proficiency'): Proficienc
  * of RECORDED license evidence, not legal interpretation; anything else needs explicit review, and
  * the list is surfaced to the Product Owner.
  */
-export const CLEAR_FREE_LICENSES: readonly string[] = ['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', '0BSD', 'CC0-1.0', 'CC-BY-4.0', 'Unlicense'];
+// Engineering default, surfaced for Product Owner / legal review (D-C3-08): permissive licences with no
+// obligation beyond keeping the notice. Anything with further duties (attribution to end users,
+// copyleft, share-alike) needs a recorded licence review.
+export const CLEAR_FREE_LICENSES: readonly string[] = ['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', '0BSD', 'CC0-1.0', 'Unlicense'];
 /** Free but with conditions a reviewer must read (copyleft / share-alike): never auto-cleared. */
-export const REVIEW_LICENSES: readonly string[] = ['MPL-2.0', 'LGPL-2.1-only', 'LGPL-3.0-only', 'GPL-2.0-only', 'GPL-3.0-only', 'AGPL-3.0-only', 'CC-BY-SA-4.0', 'EPL-2.0'];
+export const REVIEW_LICENSES: readonly string[] = ['CC-BY-4.0', 'MPL-2.0', 'LGPL-2.1-only', 'LGPL-3.0-only', 'GPL-2.0-only', 'GPL-3.0-only', 'AGPL-3.0-only', 'CC-BY-SA-4.0', 'EPL-2.0'];
 
-export const LICENSE_STATUSES = ['CLEAR_FREE', 'QANDEEL_OWNED', 'REVIEW_REQUIRED', 'UNCLEAR', 'NOT_FREE'] as const;
+export const LICENSE_STATUSES = ['CLEAR_FREE', 'QANDEEL_OWNED', 'REVIEW_REQUIRED', 'CLEARED_BY_REVIEW', 'UNCLEAR', 'NOT_FREE'] as const;
+/** Licence statuses that permit production use (a review-required licence only after a recorded review). */
+export const LICENSE_CLEARED: readonly LicenseStatus[] = ['CLEAR_FREE', 'QANDEEL_OWNED', 'CLEARED_BY_REVIEW'];
 export type LicenseStatus = (typeof LICENSE_STATUSES)[number];
 
 export function classifyLicense(spdx: string | null, type: SkillType): LicenseStatus {
@@ -176,7 +181,7 @@ export type IneligibilityReason = (typeof INELIGIBILITY_REASONS)[number];
 export function productionEligibility(v: SkillVersionView): { readonly eligible: boolean; readonly reasons: readonly IneligibilityReason[]; readonly degraded: boolean } {
   const reasons: IneligibilityReason[] = [];
   if (!APPROVED_STATES.includes(v.pipelineState)) reasons.push('NOT_APPROVED');
-  if (!(v.licenseStatus === 'CLEAR_FREE' || v.licenseStatus === 'QANDEEL_OWNED')) reasons.push('LICENSE_NOT_CLEAR');
+  if (!LICENSE_CLEARED.includes(v.licenseStatus)) reasons.push('LICENSE_NOT_CLEAR');
   if (v.paidDependency && !v.paidDependencyAcknowledged) reasons.push('PAID_DEPENDENCY_UNACKNOWLEDGED');
   if (!v.securityCleared) reasons.push('SECURITY_NOT_CLEARED');
   if (v.inspectionFindings.length > 0) reasons.push('INSPECTION_FINDINGS');

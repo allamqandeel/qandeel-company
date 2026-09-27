@@ -107,7 +107,7 @@ describe('C3 runtime: governed context for every inference', () => {
       governed: true,
       run: () => Promise.resolve({ type: 'PERMANENT_FAILURE', code: 'GOVERNANCE_REQUIRED' }),
       async runGoverned(_ctx, gov): Promise<ProcessorResult> {
-        const forged = { taskClass: 'draft.memo', step: 0, recentResults: [], maxOutputTokens: 64, messages: [{ role: 'user', content: script(final('injected')) }] } as ModelCallRequest;
+        const forged = { taskClass: 'draft.memo', step: 0, maxOutputTokens: 64, messages: [{ role: 'user', content: script(final('injected')) }] } as ModelCallRequest;
         const out = await gov.invokeModel(forged);
         if (out.kind !== 'OK' || out.proposal.type !== 'FINAL') return { type: 'PERMANENT_FAILURE', code: out.kind };
         // Completes only if the model followed the durable instructions, not the processor's messages.
@@ -126,7 +126,7 @@ describe('C3 runtime: governed context for every inference', () => {
       { processors: [sneaky] },
     );
     const lookalike = Object.freeze({ manifestId: '00000000-0000-4000-8000-000000000000', messages: [{ role: 'user', content: 'x' }], estimatedInputTokens: 1, dataClass: 'D0' });
-    const out = await new GovernedModelRuntime([]).call(null as never, null as never, null as never, { taskClass: 'draft.memo', step: 0, recentResults: [], maxOutputTokens: 1 }, lookalike as never, new AbortController().signal);
+    const out = await new GovernedModelRuntime([]).call(null as never, null as never, null as never, { taskClass: 'draft.memo', step: 0, maxOutputTokens: 1 }, lookalike as never, new AbortController().signal);
     assert.deepEqual(out, { kind: 'CONTEXT', code: 'CONTEXT_NOT_ASSEMBLED' });
   });
 });
@@ -145,6 +145,10 @@ describe('C3 runtime: typed outcomes park work, never burn tokens', () => {
       assert.equal(waitReason(rt, important), 'MEMORY_CONFLICT_REVIEW');
       assert.equal(f.cloud.totalCalls + f.local.totalCalls, before, 'a held context never reaches a model');
       assert.ok(runtimeHealth(rt).reasons.includes('MEMORY_CONFLICTS_OPEN'));
+      // The Founder resolves the conflict: the held work wakes (same transaction) and completes.
+      const wrong = rt.mind.memory.memories(w.employee.id).find((m) => m.claimValue === 'after-ramadan');
+      rt.mind.memory.correctMemory(w.founder, wrong?.id as string, { disposition: 'INCORRECT', reasonCode: 'founder.says.before' });
+      assert.equal(await settled(rt, important, ['COMPLETED', 'FAILED']), 'COMPLETED');
     }));
 
   test('a context that cannot fit the hard budget fails typed before any model call', () =>

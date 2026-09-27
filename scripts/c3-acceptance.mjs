@@ -222,20 +222,33 @@ try {
     check(academy.exposures(world.trainee.id, world.scenarios.holdout) === 0, 'the holdout was never exposed during practice');
     check((await runAttempt(world.scenarios.holdout, 'ASSESSMENT')).outcome === 'PASS', 'the holdout assessment passes');
     check(academy.advance(e.id).stage === 'SHADOW_WORK', 'assessment → shadow work');
-    const { workItem: shadow } = runtime.submitWorkItem({ objective: 'shadow work', ownerRef: world.trainee.ref, processorKind: 'c2.employee-task', processorInput: { taskClass: 'draft.memo', maxOutputTokens: 128, instructions: script({ type: 'TOOL_REQUEST', tool: 'publisher', action: 'publish', args: { text: 'shadow release' } }, { type: 'FINAL', summaryCode: 'shadow.done' }) } });
-    academy.assignShadowWork(world.founder, e.id, shadow.id);
-    release(shadow.id);
-    await until(() => stateOf(shadow.id) === 'COMPLETED', 'shadow work');
+    const shadowWork = async (instructions) => {
+      const { workItem } = runtime.submitWorkItem({ objective: 'shadow work', ownerRef: world.trainee.ref, processorKind: 'c2.employee-task', processorInput: { taskClass: 'draft.memo', maxOutputTokens: 128, instructions } });
+      academy.assignShadowWork(world.founder, e.id, workItem.id);
+      release(workItem.id);
+      await until(() => stateOf(workItem.id) === 'COMPLETED', 'shadow work');
+      academy.collectShadowEvidence(e.id);
+      for (const kind of ['QUALITY', 'DEMONSTRATED_LEARNING', 'COST_DISCIPLINE', 'CORRECT_ESCALATION', 'COLLABORATION']) academy.recordProbationEvidence(world.founder, e.id, { kind, workItemId: workItem.id, positive: true });
+      return workItem.id;
+    };
+    // Shadow work that attempts an external action: refused (constrained authority) AND counted as a critical failure.
+    await shadowWork(script({ type: 'TOOL_REQUEST', tool: 'publisher', action: 'publish', args: { text: 'shadow release' } }, { type: 'FINAL', summaryCode: 'shadow.done' }));
     check(publisher.invocations.length === 0, 'shadow work never acts externally (constrained authority)');
-    academy.collectShadowEvidence(e.id);
-    for (const kind of ['QUALITY', 'DEMONSTRATED_LEARNING', 'COST_DISCIPLINE', 'CORRECT_ESCALATION', 'COLLABORATION']) academy.recordProbationEvidence(world.founder, e.id, { kind, workItemId: shadow.id, positive: true });
     check(academy.advance(e.id).stage === 'PROBATION_REVIEW', 'shadow cases → probation review');
+    check(refusedWith(() => academy.decideProbationReview(world.founder, e.id, 'PASS'), 'VALIDATION_FAILED'), 'probation cannot pass over a critical failure');
+    academy.decideProbationReview(world.founder, e.id, 'FAIL');
+    const rem = academy.remediations(e.id).at(-1);
+    check(rem?.probationReviewId && academy.enrollment(e.id).stage === 'RETRY', 'failure → diagnosis → retraining');
+    academy.completeRetraining(world.founder, rem.id, 'evidence:retrained');
+    check(academy.advance(e.id).stage === 'SHADOW_WORK' && academy.enrollment(e.id).evidenceEpoch === 2, 'new shadow work in a new evidence epoch');
+    const shadow = { id: await shadowWork(script({ type: 'FINAL', summaryCode: 'shadow.done' })) };
+    check(academy.advance(e.id).stage === 'PROBATION_REVIEW', 'clean shadow cases → probation review');
     academy.decideProbationReview(world.founder, e.id, 'PASS');
     check(academy.advance(e.id).stage === 'ACTIVATION_APPROVAL', 'certified → activation approval');
     const manifests = runtime.view.runsForWorkItem(shadow.id).flatMap((r) => memory.manifestsFor(r.id));
     check(manifests.length > 0 && manifests.every((m) => m.outcome === 'OK'), 'every trainee inference went through the governed assembler');
     world.enrollmentId = e.id;
-    return { stage: 'ACTIVATION_APPROVAL', externalActions: 0 };
+    return { stage: 'ACTIVATION_APPROVAL', externalActions: 0, probation: 'FAIL_RETRAIN_PASS' };
   });
   await step('certification-necessary-not-sufficient', () => {
     const cert = academy.certifications(world.trainee.id)[0];

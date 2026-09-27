@@ -31,8 +31,8 @@ export function claimFor(h: Harness, workItemId: Id, workerId = 'w-c3'): { claim
   return { claim, begun: beginGovernedRun(h.store, claim.fence) };
 }
 
-export function assemble(h: Harness, claim: Claim, step = 0, recentResults: readonly string[] = []): AssembleResult {
-  return assembleContext(h.store, claim.fence, { step, recentResults });
+export function assemble(h: Harness, claim: Claim, step = 0): AssembleResult {
+  return assembleContext(h.store, claim.fence, { step });
 }
 
 /** Submits and decides one memory candidate through the policy (two transactions, as the runtime does). */
@@ -143,7 +143,7 @@ export function certify(h: Harness, s: Seed, employee: EmployeeRecord, w: Academ
 }
 
 /** The complete path up to a PASS probation review, one `advance` short of certification. */
-export function prepareCertification(h: Harness, s: Seed, employee: EmployeeRecord, w: AcademyWorld): Id {
+export function prepareCertification(h: Harness, s: Seed, employee: EmployeeRecord, w: AcademyWorld, decide = true): Id {
   const a = AcademyStore.for(h.store);
   const e = a.enroll(s.founder, employee.id, w.programVersionId);
   for (let i = 0; i < 6; i++) a.recordModuleCompletion(s.founder, e.id, `module-${i}`, `evidence:module-${i}`);
@@ -161,6 +161,19 @@ export function prepareCertification(h: Harness, s: Seed, employee: EmployeeReco
   }
   a.collectShadowEvidence(e.id);
   a.advance(e.id);
-  a.decideProbationReview(s.founder, e.id, 'PASS');
+  if (decide) a.decideProbationReview(s.founder, e.id, 'PASS');
   return e.id;
+}
+
+/** Real shadow work for an enrollment at SHADOW_WORK: assigned, run, collected, with positive evaluator evidence. */
+export function shadowCases(h: Harness, s: Seed, employee: EmployeeRecord, enrollmentId: Id, n: number): void {
+  const a = AcademyStore.for(h.store);
+  for (let i = 0; i < n; i++) {
+    const { workItem: shadow } = h.store.createWorkItem({ objective: 'shadow work', ownerRef: employee.ref, processorKind: GOVERNED_KIND, processorInput: { taskClass: 'draft.memo', instructions: 'shadow' } });
+    a.assignShadowWork(s.founder, enrollmentId, shadow.id);
+    finish(h, shadow.id);
+    if (i === 0) for (const kind of ['DEMONSTRATED_LEARNING', 'COST_DISCIPLINE', 'CORRECT_ESCALATION', 'COLLABORATION'] as const) a.recordProbationEvidence(s.founder, enrollmentId, { kind, workItemId: shadow.id, positive: true });
+    a.recordProbationEvidence(s.founder, enrollmentId, { kind: 'QUALITY', workItemId: shadow.id, positive: true });
+  }
+  a.collectShadowEvidence(enrollmentId);
 }

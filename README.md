@@ -17,7 +17,8 @@ governed and auditable.
 | `C0` Repository Bootstrap | CLOSED / PASS |
 | PRE-C1 Authority Sync & Import | Complete (merged). Documentation / authority only |
 | `C1` Company Foundation & Durable Runtime | CLOSED / MERGED / CANONICAL (`main` @ `419ee4f`) |
-| `C2` Employees + Models + Tools + Cost Governance | **In progress — Cloud implementation candidate, not closed** |
+| `C2` Employees + Models + Tools + Cost Governance | CLOSED / MERGED / CANONICAL (PR #3, `d374001`) |
+| `C3` Memory + Context + Skills + Academy | **In progress — Cloud implementation candidate, not closed** |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
@@ -29,7 +30,7 @@ governed and auditable.
 C1 itself has no AI subsystem. Details: `docs/c1/C1_SCHEMA_AND_STATE.md`,
 `docs/c1/C1_RUNTIME_RECOVERY_MODEL.md`, `docs/C1_IMPLEMENTATION_REPORT.md`.
 
-**C2 (in progress, implementation candidate) adds the governed execution layer.** It covers:
+**C2 (closed) adds the governed execution layer.** It covers:
 - persistent Employees: identity, lifecycle and history, independent of every model, provider,
   session, run and process;
 - a provider-neutral model catalog and Router Policy: `E0..E4`, qualification lifecycle, hard
@@ -45,15 +46,40 @@ All of this runs inside the C1 durable runtime. C2 chooses **no commercial provi
 provider and tools are deterministic fakes, so CI makes no network or paid call and uses no
 credential. Details: `docs/C2_IMPLEMENTATION_REPORT.md`, decisions D-C2-01 to D-C2-13.
 
-Still out of scope: Memory / Skills / Academy (C3), Directors / Review Pool (C4), the Founder
-Command Center (C5), reporting / learning (C6), APP-OPS (C7) and any QANDEEL App integration.
+**C3 (in progress, Cloud implementation candidate) adds the Employee mind.** It covers:
+- governed Employee Memory with a runtime-owned Memory Write Policy: model output is only a
+  *candidate*; provenance, confidence caps, duplicates, secrets, staleness, conflicts, corruption
+  and Founder corrections are decided by the runtime, and Canonical Truth always outranks memory;
+- scoped Company Knowledge (Company / Department / Role / Market / Restricted / Founder-only) with
+  exact grants and attributed cross-department use, and the learning path observation → lesson
+  candidate → review → validated lesson → promotion (shared promotion waits for independent review);
+- **mandatory governed Context Assembly** for every inference: deterministic lexical retrieval over
+  a bounded metadata pool, a hard layered budget, progressive Skill disclosure, a stable prefix and
+  a content-free Context Manifest to which every model-call reservation is bound;
+- the Skill Registry and pipeline (license / dependency check, static inspection, quarantine,
+  security review, benchmark, approval), pinned versions, Role Skill Blueprints, Employee Skill
+  Passports, freshness / security holds, update impact sets, rollout and rollback; Skill ≠ Tool ≠
+  Authority, and no paid Skill packs;
+- durable Capability Gaps that park work before any model or tool call;
+- the QANDEEL Academy: programs, scenarios and holdouts, attempts executed by the real runtime in
+  constrained mode, critical-dimension gating, diagnosis and retraining, shadow work, probation
+  review, Founder calibration, certification with pinned skills, recertification — and the
+  **activation bridge**, which files an activation request that production cannot approve until the
+  authenticated Founder surface exists (C5).
+
+C3 adds no external vector database, embedding service or paid memory service. Details:
+`docs/C3_IMPLEMENTATION_REPORT.md`, decisions D-C3-01 onward.
+
+Still out of scope: Directors / Review Pool / organization (C4), the Founder Command Center (C5),
+reporting / learning dashboards (C6), APP-OPS (C7) and any QANDEEL App integration.
 
 | Package | Role |
 |---|---|
 | `@qandeel-company/domain` | Pure contracts: IDs, UTC clock, state machines, retry policy, processor contract |
 | `@qandeel-company/governance` | C2 pure policy kernel: Employee lifecycle, R0–R4 authority, `E0..E4` / `D0..D4`, Router Policy, checked economics, provider / tool contracts, typed proposals |
+| `@qandeel-company/mind` | C3 pure kernel: Memory Write Policy, deterministic retrieval and context planning, compaction, Skill pipeline / licensing / inspection, capability evaluation, Academy rules |
 | `@qandeel-company/storage` | Workspace, SQLite/WAL adapter (the only `node:sqlite` user), migrations, repositories, Artifact Store, backup |
-| `@qandeel-company/runtime` | Runtime Supervisor, bounded worker pool, recovery, health, CLI; C2 governed Model Runtime, Tool Executor, `c2.employee-task` loop, deterministic fakes |
+| `@qandeel-company/runtime` | Runtime Supervisor, bounded worker pool, recovery, health, CLI; C2 governed Model Runtime, Tool Executor, `c2.employee-task` loop, deterministic fakes; C3 Context Assembler and memory-proposal path |
 | `@qandeel-company/bootstrap-contract` | C0 toolchain proof (unchanged) |
 
 **The runtime workspace is separate from Git.** Live Company state
@@ -109,8 +135,10 @@ npm run ci
 | `npm run c1:acceptance -- --workspace <dir>` | C1 local acceptance in a disposable directory (below) |
 | `npm run c2:mutation` | Removes 19 C2 authority / budget / tool / routing gates from the build; their proof tests must fail (after a build) |
 | `npm run c2:acceptance -- --workspace <dir>` | C2 local acceptance in a disposable directory (below) |
+| `npm run c3:mutation` | Removes 19 C3 memory / context / skill / academy gates from the build; their proof tests must fail (after a build) |
+| `npm run c3:acceptance -- --workspace <dir>` | C3 local acceptance in a disposable directory (below) |
 | `npm run verify` | Repository-contract verifier (`scripts/verify-bootstrap.mjs`) |
-| `npm run ci` | build → typecheck → lint → test → C1 + C2 mutation checks → verify; the same command CI runs |
+| `npm run ci` | build → typecheck → lint → test → C1 + C2 + C3 mutation checks → verify; the same command CI runs |
 
 ### C1 local acceptance (Founder host)
 
@@ -153,6 +181,30 @@ npm run c2:acceptance -- --workspace "D:\QANDEEL-C2-ACCEPTANCE\run-1"
 - **Result and cleanup:** it prints `C2 LOCAL ACCEPTANCE — PASS` and deletes only what it created.
 - **What it needs:** no credentials, no provider keys, no network.
 
+### C3 local acceptance (Founder host)
+
+```bash
+npm run c3:acceptance -- --workspace "D:\QANDEEL-C3-ACCEPTANCE\run-1"
+```
+
+- **What it proves:**
+  - production fail-closed first: no C3 authority act (canonical truth, knowledge, skill pipeline,
+    Academy, activation) without the authenticated Founder surface, and no C3 write command on the CLI;
+  - then, through the **test-only** Founder seam: the Skill pipeline (an unlicensed skill rejected,
+    a paid dependency held for acknowledgement, one skill approved), a Role Skill Blueprint and
+    Academy program, and a trainee who is **never** activated by the seam;
+  - zero provider calls and zero context assemblies while idle;
+  - the Academy path executed by the real runtime in constrained mode (no external action), through
+    the governed Context Assembler;
+  - certification that does not activate, an activation request production cannot approve, then
+    a seam approval that re-checks the evidence and activates;
+  - a model-proposed memory stored by policy (capped, attributed), manifest-bound reservations, and
+    the memory and pinned skill recalled in a later run;
+  - a durable capability gap that parks work without a model call and never re-routes it;
+  - content-free health and read-only CLI.
+- **Result and cleanup:** it prints `C3 LOCAL ACCEPTANCE — PASS` and deletes only what it created.
+- **What it needs:** no credentials, no provider keys, no network.
+
 ### Engineering CLI
 
 After `npm run build`: `node packages/runtime/dist/src/cli.js <command> --workspace <dir>`.
@@ -170,6 +222,9 @@ After `npm run build`: `node packages/runtime/dist/src/cli.js <command> --worksp
 | `verify-artifacts` | Re-hashes every artifact object |
 | `governance` | Read-only C2 governance health: employees, holds, budgets, approvals, reconciliation |
 | `approvals` | Lists pending approvals (IDs, risk, action codes; no content) |
+| `mind` | Read-only C3 health: memory / knowledge / context / skills / academy counts |
+| `capability-gaps` | Open capability gaps (Work Item, Employee, missing codes) |
+| `context-manifest --manifest <id>` | One context manifest: selected / rejected IDs, versions, hashes, classes (no content) |
 
 The CLI has no Founder write command: a Founder reference typed on a command line is not
 authentication. Founder authority arrives with the authenticated Founder surface (C5), and until
@@ -179,7 +234,7 @@ The CLI installs no service, creates no scheduled task and opens no network port
 
 ## Validation
 
-CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm run ci` and the C1 and C2 local acceptances on
+CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm run ci` and the C1, C2 and C3 local acceptances on
 Windows and Linux for every push to `main` and every PR targeting `main`. The verifier first proves that each of its rules can fail,
 then checks the repository: required files and docs, private packages, bounded Node 24 engine, npm
 workspaces and lockfile, no tracked `.env` / secret / `node_modules` / SQLite / native-binary files,
@@ -191,8 +246,9 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
 - that the baseline carries the privacy rules and no stale default-with-exception wording;
 - the lifecycle state:
   - `C0` closed;
-  - `C1` and `C2` not claimed closed without a closure record;
-  - `C2` not started before C1 closes, and `C3` not before C2 closes;
+  - `C1`, `C2` and `C3` not claimed closed without a closure record;
+  - `C2` not started before C1 closes, `C3` not before C2 closes, and `R1` / `C4` not before C3
+    closes;
 - the C1 boundaries: `node:sqlite` only in the storage adapter, no network code in runtime packages,
   no third-party runtime dependencies, released migrations pinned by SHA-256, and the C1 proof tests
   present;
@@ -202,11 +258,24 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
   - budget / reservation / usage writes only in the storage governance modules, behind fenced
     functions;
   - no plaintext secrets or secret-shaped columns;
-  - C1 migrations frozen by content;
-  - no C3–C7 tables or packages;
+  - canonical migrations 0001–0004 frozen by content;
+  - no C4–C7 tables or packages;
   - the test-only Founder seam unreachable from production code, no Founder-attestation
     activation, and no Founder write command on the CLI (D-C2-13);
-  - the C2 proofs and the mutation check present.
+  - the C2 proofs and the mutation check present;
+- the C3 boundaries:
+  - Context Assembly mandatory: only the assembler calls the storage assembly, the Model Runtime
+    accepts only a context the assembler minted and binds the reservation to its manifest, and the
+    model request carries no messages;
+  - durable Memory / Knowledge / Skill / Academy state written only by the C3 storage modules,
+    memory candidates submitted only by the runtime's memory-proposal path, and no Founder /
+    evaluator act called by runtime code or the CLI;
+  - skill payloads loaded only by the one pinned, eligibility-checked, hash-verified loader;
+  - the `mind` kernel pure (no I/O, storage, runtime, provider or tool driver);
+  - no content in C3 audit / events / logs;
+  - the `employees_activation_gate` trigger present and no test-seam activation label in
+    production code;
+  - the C3 proofs and the mutation check present.
 
 ## Windows notes (Founder host)
 

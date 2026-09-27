@@ -78,7 +78,7 @@ export interface GovernedRunContext {
 
 export type BeginResult =
   | { readonly ok: true; readonly context: GovernedRunContext }
-  | { readonly ok: false; readonly code: 'EMPLOYEE_NOT_ELIGIBLE' | 'NOT_EMPLOYEE_OWNED'; readonly state: string | null }
+  | { readonly ok: false; readonly code: 'EMPLOYEE_NOT_ELIGIBLE' | 'NOT_EMPLOYEE_OWNED' | 'CAPABILITY_GAP_CANCELLED'; readonly state: string | null }
   /** C3: the owning Employee does not meet the Work Item's capability requirements (durable gap, work parked). */
   | { readonly ok: false; readonly code: 'CAPABILITY_GAP'; readonly state: string | null; readonly gapId: Id };
 
@@ -105,7 +105,13 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
   }
   // Capability eligibility is decided before any model or tool call; a gap parks the work (C3).
   const gate = txCapabilityGate(ctx, item, e);
-  if (!gate.ok) return { ok: false, code: 'CAPABILITY_GAP', state: e.state, gapId: gate.gapId };
+  if (!gate.ok) {
+    if (gate.cancelled) {
+      denyAudit(ctx, fence.runId, 'run.not_governed', 'CAPABILITY_GAP_CANCELLED', { gapId: gate.gapId });
+      return { ok: false, code: 'CAPABILITY_GAP_CANCELLED', state: e.state };
+    }
+    return { ok: false, code: 'CAPABILITY_GAP', state: e.state, gapId: gate.gapId };
+  }
   if (!ctx.db.get('SELECT 1 AS ok FROM run_attributions WHERE run_id = ?', fence.runId)) {
     ctx.db.run('INSERT INTO run_attributions (run_id, work_item_id, employee_id, department_id, created_at) VALUES (?, ?, ?, ?, ?)', fence.runId, item.id, e.id, e.departmentId, ts(ctx));
     appendEvent(ctx, 'run.attributed', 'run', fence.runId, { correlationId: item.correlationId }, { employeeId: e.id, departmentId: e.departmentId, workItemId: item.id });
@@ -439,13 +445,16 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
   const capability = toolCapability(input.toolCode, input.actionCode);
   const grants = ctx.db.all(`SELECT * FROM permission_grants WHERE employee_id = ? AND status = 'ACTIVE'`, e.id).map(mapGrant);
   const decision = decideEmployeeAction('EMPLOYEE', actingState(ctx, fence.runId, e), grants, { capability, resource: input.toolCode, risk: action.risk, dataClass, at: ts(ctx) });
+  // Academy attempts and shadow work: internal, reversible, non-external actions only (Stage 6 §11) —
+  // refused before any review path, so no external action of a trainee ever waits to be approved.
+  if (decision.effect === 'ALLOW' || decision.code === 'REVIEW_PATH_UNAVAILABLE') {
+    if ((!canExecute(e.state) || academyRun(ctx, fence.runId)) && (String(row.tool_egress) === 'EXTERNAL' || action.mutatesExternal || action.risk === 'R3')) return deny('ACADEMY_CONSTRAINED', { toolActionId: action.id, risk: action.risk });
+  }
   if (decision.effect === 'DENY' && decision.code === 'REVIEW_PATH_UNAVAILABLE') {
     appendAudit(ctx, 'tool.review_required', 'run', fence.runId, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', 'REVIEW_PATH_UNAVAILABLE', { toolActionId: action.id });
     return { kind: 'REVIEW_REQUIRED' };
   }
   if (decision.effect === 'DENY') return deny(decision.code, { toolActionId: action.id, risk: action.risk });
-  // Academy attempts and shadow work: internal, reversible, non-external actions only (Stage 6 §11).
-  if ((!canExecute(e.state) || academyRun(ctx, fence.runId)) && (String(row.tool_egress) === 'EXTERNAL' || action.mutatesExternal || action.risk === 'R3')) return deny('ACADEMY_CONSTRAINED', { toolActionId: action.id, risk: action.risk });
   const argsSha256 = sha256Hex(canonicalJson(args));
   if (!/^[A-Za-z0-9:._-]{8,128}$/.test(input.idempotencyKey)) throw new QandeelError('VALIDATION_FAILED', 'idempotency key is a runtime-derived identifier', { field: 'idempotencyKey' });
   const existingRow = ctx.db.get('SELECT * FROM tool_invocations WHERE tool_action_id = ? AND idempotency_key = ?', action.id, input.idempotencyKey);

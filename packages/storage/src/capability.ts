@@ -9,6 +9,7 @@
 import { QandeelError, assertCode, assertId, type Id } from '@qandeel-company/domain';
 import { assertKeyCode, assertRequirements, terms as termsOf, type CapabilityRequirement } from '@qandeel-company/mind';
 
+import { wakeWorkItemJob } from './governance-core.js';
 import { founder, founderAdminWrite } from './governance.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { mapGap, type CapabilityGapRecord } from './mind-records.js';
@@ -86,9 +87,14 @@ export class CapabilityStore {
     return founderAdminWrite(this.#store, 'cancel capability gap', actorRef, (ctx) => {
       const p = founder(ctx, actorRef, null, 'capability gap');
       const id = assertId(gapId, 'gapId');
-      const changed = ctx.db.run(`UPDATE capability_gaps SET state = 'CANCELLED', resolved_by_ref = ?, reason_code = ?, resolved_at = ? WHERE id = ? AND state = 'OPEN'`, p.ref, assertCode(reasonCode, 'reasonCode'), ts(ctx), id).changes;
+      const reason = assertCode(reasonCode, 'reasonCode');
+      const changed = ctx.db.run(`UPDATE capability_gaps SET state = 'CANCELLED', resolved_by_ref = ?, reason_code = ?, resolved_at = ? WHERE id = ? AND state = 'OPEN'`, p.ref, reason, ts(ctx), id).changes;
       if (changed !== 1) throw new QandeelError('INVALID_TRANSITION', 'the gap is not open', { gapId: id });
-      return mapGap(ctx.db.get('SELECT * FROM capability_gaps WHERE id = ?', id) ?? {});
+      const gap = mapGap(ctx.db.get('SELECT * FROM capability_gaps WHERE id = ?', id) ?? {});
+      appendAudit(ctx, 'capability.gap_cancelled', 'capability_gap', id, { actorRef: p.ref }, 'OK', reason, { workItemId: gap.workItemId });
+      // The parked work is woken to end: its next run start sees the cancelled gap and fails (never re-routed).
+      wakeWorkItemJob(ctx, gap.workItemId, ['CAPABILITY_GAP'], 'capability.gap_cancelled');
+      return gap;
     });
   }
 }

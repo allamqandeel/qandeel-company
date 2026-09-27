@@ -37,9 +37,9 @@ const MUTATIONS = [
     file: 'packages/storage/dist/src/runtime-authority.js',
     search: 'verifySupervisor(ctx, supervisor);',
     replace: '/* mutation: supervisor verification removed */',
-    // 4 C1 recovery writes + the C2 governed-orphan recovery + the C3 pending-candidate decision
-    // (all supervisor-fenced).
-    expectedCount: 6,
+    // 4 C1 recovery writes + the C2 governed-orphan recovery + the C3 pending-candidate recovery
+    // (list, decide, refuse: each transaction supervisor-fenced).
+    expectedCount: 8,
     cwd: 'packages/storage',
     tests: ['dist/test/supervisor-authority.test.js'],
   },

@@ -187,6 +187,7 @@ export interface LessonRecord {
   readonly claimValue: string | null;
   readonly contentSha256: string;
   readonly dataClass: DataClass;
+  readonly marketRef: string | null;
   readonly reviewPath: 'FOUNDER' | 'INDEPENDENT_REVIEW' | null;
   readonly decidedByRef: string | null;
   readonly version: number;
@@ -206,6 +207,7 @@ export function mapLesson(r: Row): LessonRecord {
     claimValue: optStr(r.claim_value),
     contentSha256: str(r.content_sha256),
     dataClass: str(r.data_class) as DataClass,
+    marketRef: optStr(r.market_ref),
     reviewPath: optStr(r.review_path) as LessonRecord['reviewPath'],
     decidedByRef: optStr(r.decided_by_ref),
     version: num(r.version),
@@ -538,11 +540,15 @@ export interface EnrollmentRecord {
   readonly roleRef: string;
   readonly stage: LearningStage;
   readonly blockedReason: string | null;
+  /** Probation evidence window (a probation FAIL opens a new one). */
+  readonly evidenceEpoch: number;
+  /** Probation review round (each decision closes one). */
+  readonly reviewRound: number;
   readonly version: number;
 }
 
 export function mapEnrollment(r: Row): EnrollmentRecord {
-  return { id: str(r.id) as Id, employeeId: str(r.employee_id) as Id, programVersionId: str(r.program_version_id) as Id, roleRef: str(r.role_ref), stage: str(r.stage) as LearningStage, blockedReason: optStr(r.blocked_reason), version: num(r.version) };
+  return { id: str(r.id) as Id, employeeId: str(r.employee_id) as Id, programVersionId: str(r.program_version_id) as Id, roleRef: str(r.role_ref), stage: str(r.stage) as LearningStage, blockedReason: optStr(r.blocked_reason), evidenceEpoch: num(r.evidence_epoch), reviewRound: num(r.review_round), version: num(r.version) };
 }
 
 export interface ScenarioRecord {
@@ -599,7 +605,9 @@ export function mapAttempt(r: Row): AttemptRecord {
 export interface RemediationRecord {
   readonly id: Id;
   readonly enrollmentId: Id;
-  readonly attemptId: Id;
+  /** The failed attempt diagnosed — or null when a failed probation review was diagnosed. */
+  readonly attemptId: Id | null;
+  readonly probationReviewId: Id | null;
   readonly failed: readonly AssessmentDimension[];
   readonly criticalFailures: readonly AssessmentDimension[];
   readonly categories: readonly string[];
@@ -612,7 +620,8 @@ export function mapRemediation(r: Row): RemediationRecord {
   return {
     id: str(r.id) as Id,
     enrollmentId: str(r.enrollment_id) as Id,
-    attemptId: str(r.attempt_id) as Id,
+    attemptId: optStr(r.attempt_id) as Id | null,
+    probationReviewId: optStr(r.probation_review_id) as Id | null,
     failed: arr(r.failed_json),
     criticalFailures: arr(r.critical_failures_json),
     categories: arr(r.categories_json),

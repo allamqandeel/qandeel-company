@@ -22,6 +22,7 @@ const TEST_ENV = { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const KERNEL = { cwd: 'packages/mind', tests: ['dist/test/mind-kernel.test.js'] };
 const STORAGE = { cwd: 'packages/storage', tests: ['dist/test/c3-mind.test.js'] };
+const STORAGE_FIXES = { cwd: 'packages/storage', tests: ['dist/test/c3-review-fixes.test.js'] };
 const RUNTIME = { cwd: 'packages/runtime', tests: ['dist/test/c3/c3-runtime.test.js'] };
 const CRASH = { cwd: 'packages/runtime', tests: ['dist/test/faults/c3-fault.test.js'] };
 
@@ -97,8 +98,11 @@ const MUTATIONS = [
   },
   {
     id: 'memory-other-employee-visible',
-    gate: 'an Employee\'s memory pool is its own',
-    edits: [{ file: `${STORE}/mind-writes.js`, search: "      WHERE employee_id = ? AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE', 'STALE')", replace: "      WHERE (employee_id = ? OR 1) AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE', 'STALE')" }],
+    gate: 'an Employee\'s memory pool is its own (term index owner and row owner)',
+    edits: [
+      { file: `${STORE}/mind-writes.js`, search: 'WHERE item_kind = ? AND owner_key = ? AND term IN', replace: 'WHERE item_kind = ? AND (owner_key = ? OR 1) AND term IN' },
+      { file: `${STORE}/mind-writes.js`, search: "AND employee_id = ? AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE')`", replace: "AND (employee_id = ? OR 1) AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE')`" },
+    ],
     runs: [STORAGE],
   },
   {
@@ -116,7 +120,7 @@ const MUTATIONS = [
   {
     id: 'capability-gate-bypassed',
     gate: 'capability eligibility is decided before any model or tool call',
-    edits: [{ file: `${STORE}/governed-writes.js`, search: "    if (!gate.ok)\n        return { ok: false, code: 'CAPABILITY_GAP', state: e.state, gapId: gate.gapId };", replace: '    /* mutation: capability gate removed */' }],
+    edits: [{ file: `${STORE}/governed-writes.js`, search: '    if (!gate.ok) {', replace: '    if (false) { /* mutation: capability gate removed */' }],
     runs: [STORAGE, RUNTIME],
   },
   {
@@ -136,6 +140,48 @@ const MUTATIONS = [
     gate: 'deterministic dimensions come only from run facts (no self-certification by assertion)',
     edits: [{ file: `${STORE}/academy.js`, search: '                if (DETERMINISTIC_DIMENSIONS.includes(r.dimension))', replace: '                if (false) /* mutation: deterministic-dimension guard removed */' }],
     runs: [STORAGE],
+  },
+  {
+    id: 'conflict-resolution-no-wake',
+    gate: 'resolving a memory conflict wakes the work held for it',
+    edits: [{ file: `${STORE}/memory.js`, search: "        wakeEmployeeWaits(ctx, owner, ['MEMORY_CONFLICT_REVIEW'], 'memory.conflict_resolved');", replace: '        void owner; /* mutation: conflict wake removed */' }],
+    runs: [STORAGE_FIXES],
+  },
+  {
+    id: 'capability-wait-not-rechecked',
+    gate: 'a WAIT on a capability gap re-checks the gate in the settle transaction (no lost wake)',
+    edits: [{ file: `${STORE}/runtime-authority.js`, search: '                txRecheckCapabilityWait(ctx, wi);', replace: '                void wi; /* mutation: settle re-check removed */' }],
+    runs: [STORAGE_FIXES],
+  },
+  {
+    id: 'processor-supplied-recent-results',
+    gate: 'recent results come only from durable step records, the newest required',
+    edits: [{ file: `${STORE}/mind-writes.js`, search: "layer: 'RECENT', required: i === 0,", replace: "layer: 'RECENT', required: true," }],
+    runs: [STORAGE_FIXES],
+  },
+  {
+    id: 'canonical-binds-only-if-relevant',
+    gate: 'canonical claims bind whether or not the statement is relevant',
+    edits: [{ file: `${MIND}/context.js`, search: "        else if (c.kind !== 'CANONICAL' && c.claimKey !== null && canonicalClaims.has(c.claimKey) && canonicalClaims.get(c.claimKey) !== c.claimValue)", replace: "        else if (false)" }, { file: `${MIND}/context.js`, search: '    for (const [k, v] of canonicalClaims)', replace: '    for (const [k, v] of [])' }],
+    runs: [KERNEL],
+  },
+  {
+    id: 'probation-fail-no-new-epoch',
+    gate: 'a failed probation opens a new evidence epoch (old shadow cases never count again)',
+    edits: [{ file: `${STORE}/academy.js`, search: "AND kind = 'CASE' AND positive = 1 AND epoch = ?`, e.id, e.evidenceEpoch)", replace: "AND kind = 'CASE' AND positive = 1 AND epoch <= ?`, e.id, e.evidenceEpoch)" }],
+    runs: [STORAGE_FIXES],
+  },
+  {
+    id: 'rubric-ignores-refused-actions',
+    gate: 'a refused external action in an attempt fails AUTHORITY_COMPLIANCE',
+    edits: [{ file: `${STORE}/academy.js`, search: "action IN ('authority.denied', 'tool.refused', 'tool.review_required')", replace: "action IN ('authority.denied')" }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'licence-review-skipped',
+    gate: 'a licence with obligations never reaches quarantine without a recorded review',
+    edits: [{ file: `${STORE}/skill-registry.js`, search: "            if (to === 'SECURITY_QUARANTINE' && !LICENSE_CLEARED.includes(v.licenseStatus))", replace: '            if (false)' }],
+    runs: [STORAGE_FIXES],
   },
   {
     id: 'model-accepts-foreign-context',

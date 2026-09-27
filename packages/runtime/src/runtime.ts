@@ -88,6 +88,7 @@ import {
   releaseSupervisor,
   renewLease,
   renewSupervisor,
+  recordStepResult,
   settle,
   updateInstance,
 } from '@qandeel-company/storage/runtime-authority';
@@ -963,12 +964,22 @@ export class CompanyRuntime {
       // Every inference goes through governed Context Assembly first (C3): the processor names the
       // step, the runtime builds, budgets and records the context; the model runtime accepts only that.
       invokeModel: async (request: ModelCallRequest): Promise<ModelCallOutcome> => {
-        const assembled = assembleGovernedContext(store, claim.fence, { step: request.step, recentResults: request.recentResults });
+        const assembled = assembleGovernedContext(store, claim.fence, { step: request.step });
         if (assembled.kind !== 'OK') return { kind: 'CONTEXT', code: assembled.code };
         return this.#models.call(store, claim.fence, run, request, assembled.context, signal);
       },
-      proposeMemory: (proposal: MemoryProposal, step: number) => proposeMemory(store, claim.fence, proposal, step),
-      executeTool: (request: ToolRequest, step: number) => this.#tools.execute(store, claim.fence, run, request, step, signal),
+      // The runtime (not the processor) records each step's outcome for later context (layer L6).
+      proposeMemory: (proposal: MemoryProposal, step: number) => {
+        const out = proposeMemory(store, claim.fence, proposal, step);
+        recordStepResult(store, claim.fence, step, 'MEMORY_DECISION', JSON.stringify(out.kind === 'DECIDED' ? { memory: out.state, reason: out.reasonCode } : { memory: out.kind, reason: out.code }));
+        return out;
+      },
+      executeTool: async (request: ToolRequest, step: number) => {
+        const out = await this.#tools.execute(store, claim.fence, run, request, step, signal);
+        if (out.kind === 'SUCCEEDED') recordStepResult(store, claim.fence, step, 'TOOL_RESULT', JSON.stringify({ tool: request.tool, action: request.action, result: out.result }));
+        else if (out.kind === 'DENIED' && !out.paused) recordStepResult(store, claim.fence, step, 'TOOL_REFUSED', JSON.stringify({ tool: request.tool, action: request.action, denied: out.code }));
+        return out;
+      },
     });
     return processor.runGoverned(context, services);
   }

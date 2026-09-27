@@ -4,7 +4,9 @@
 (2026-09-26), at C1 closure (2026-09-27; `docs/C1_CLOSURE_RECORD.md`) and at C2 start
 (2026-09-27: PR #2 was merged into `main` as `419ee4f`, so C1 is CLOSED / MERGED / CANONICAL;
 C2 closed and merged on 2026-09-27 as `d374001fa92f27d19aabf97b185ccac3bfc9099d` after exact-SHA independent review and
-Founder-host validation).
+Founder-host validation) and at C3 start (2026-09-27, from `main` @ `f9bd7d4`: C3 is IN PROGRESS as a
+Cloud implementation candidate on branch `claude/eager-cray-vmv69o`; it is not closed and has no
+closure record).
 
 This is **sequencing, not evidence**. A stage listed here is not implemented until its own work
 package is merged to `main` with green CI and the required review. The implementation packages
@@ -16,7 +18,7 @@ below are not the Product / Architecture Stages 0–18 in `docs/authority/compan
 | `C0` | Repository Bootstrap | Local | CLOSED / PASS |
 | `C1` | Company Foundation & Durable Runtime | Cloud Mega-Task | CLOSED / MERGED / CANONICAL (PR #2, `main` @ `419ee4f`) |
 | `C2` | Employees + Models + Tools + Cost Governance | Cloud Mega-Task | CLOSED / MERGED / CANONICAL (PR #3, `d374001`) |
-| `C3` | Memory + Context + Skills + Academy | Cloud Mega-Task | Not started |
+| `C3` | Memory + Context + Skills + Academy | Cloud Mega-Task | IN PROGRESS — Cloud implementation candidate, NOT CLOSED (awaiting independent review / Founder-host validation) |
 | `R1` | Independent Core Review | Review | Not started |
 | `C4` | Organization + Directors + Delegation + Review Pool | Cloud Mega-Task | Not started |
 | `C5` | Founder Command Center | Cloud Mega-Task | Not started |

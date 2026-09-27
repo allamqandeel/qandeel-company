@@ -190,6 +190,18 @@ describe('C3 kernel: Context Assembly (D13-E)', () => {
     assert.equal(plan.rejected.find((r) => r.candidate.key === 'c1')?.reason, 'BUDGET_EXCEEDED');
   });
 
+  test('canonical claims bind structurally: an irrelevant or out-of-class canonical statement still overrides; a claim makes its statement relevant', () => {
+    const offTopic = item('c1', { kind: 'CANONICAL', layer: 'AUTHORITY', claimKey: 'egypt.payments.method', claimValue: 'wallets', terms: ['constitution'], dataClass: 'D4' });
+    const memory = item('m1', { claimKey: 'egypt.payments.method', claimValue: 'cards' });
+    const knowledge = item('k1', { kind: 'KNOWLEDGE', layer: 'KNOWLEDGE', claimKey: 'egypt.payments.method', claimValue: 'cards' });
+    const plan = planContext([preamble, work, offTopic, memory, knowledge], DEFAULT_CONTEXT_POLICY, query, NOW);
+    assert.equal(plan.rejected.find((r) => r.candidate.key === 'm1')?.reason, 'HIGHER_AUTHORITY_OVERRIDES');
+    assert.equal(plan.rejected.find((r) => r.candidate.key === 'k1')?.reason, 'HIGHER_AUTHORITY_OVERRIDES');
+    const inClass = item('c2', { kind: 'CANONICAL', layer: 'AUTHORITY', claimKey: 'egypt.payments.method', claimValue: 'wallets', terms: ['constitution'] });
+    const withClaim = planContext([preamble, work, inClass, item('m2', { claimKey: 'egypt.payments.method', claimValue: 'wallets' })], DEFAULT_CONTEXT_POLICY, query, NOW);
+    assert.ok(withClaim.selected.some((p) => p.candidate.key === 'c2'), 'the statement is loaded because a candidate asserts its claim');
+  });
+
   test('unresolved memory conflicts are never blended: excluded for ordinary work, held for important work', () => {
     const a = item('m1', { claimKey: 'k.x', claimValue: 'a', conflictHeld: true });
     const b = item('m2', { claimKey: 'k.x', claimValue: 'b', conflictHeld: true });
