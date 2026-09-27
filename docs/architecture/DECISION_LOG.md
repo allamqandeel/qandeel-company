@@ -1485,5 +1485,7 @@ Founder's administrative transaction. Two direct proofs cover both sides: missin
 demotes; returning to a role whose prior certification is still VALID remains ACTIVE. Mutation
 `role-reassignment-without-cert-keeps-active` proves the gate is effective.
 
-**State.** C3 remains a Cloud implementation candidate — ready for final independent review and
-Founder-host validation. It is not closed, merged or canonical.
+**State.** C3 is **CLOSED / VALIDATED / READY TO MERGE**. The final independent review and
+Founder-host validation passed on candidate `4284337221706f08aebe65fadb64c881c8ed9470`; the closure is
+recorded in `docs/C3_CLOSURE_RECORD.md`. PR #4 is still unmerged, so C3 is **not yet MERGED /
+CANONICAL**. R1 and C4 remain NOT STARTED.
