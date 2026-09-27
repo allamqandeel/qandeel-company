@@ -18,7 +18,7 @@ governed and auditable.
 | PRE-C1 Authority Sync & Import | Complete (merged). Documentation / authority only |
 | `C1` Company Foundation & Durable Runtime | CLOSED / MERGED / CANONICAL (`main` @ `419ee4f`) |
 | `C2` Employees + Models + Tools + Cost Governance | CLOSED / MERGED / CANONICAL (PR #3, `d374001`) |
-| `C3` Memory + Context + Skills + Academy | **In progress — Cloud implementation candidate, not closed** |
+| `C3` Memory + Context + Skills + Academy | **CLOSED / VALIDATED / READY TO MERGE** (PR #4; not yet merged/canonical) |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
@@ -46,7 +46,7 @@ All of this runs inside the C1 durable runtime. C2 chooses **no commercial provi
 provider and tools are deterministic fakes, so CI makes no network or paid call and uses no
 credential. Details: `docs/C2_IMPLEMENTATION_REPORT.md`, decisions D-C2-01 to D-C2-13.
 
-**C3 (in progress, Cloud implementation candidate) adds the Employee mind.** It covers:
+**C3 (closed / validated, awaiting merge) adds the Employee mind.** It covers:
 - governed Employee Memory with a runtime-owned Memory Write Policy: model output is only a
   *candidate*; provenance, confidence caps, duplicates, secrets, staleness, conflicts, corruption
   and Founder corrections are decided by the runtime, and Canonical Truth always outranks memory;
