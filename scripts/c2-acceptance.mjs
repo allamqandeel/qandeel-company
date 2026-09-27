@@ -74,7 +74,7 @@ await step('seed-governance', () => {
     const e = gov.createEmployee(founder, { name: { given: 'نور', family: 'الشريف' }, profile: { personality: 'analytical' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' }, roleRef: 'role:growth-analyst', positionRef: 'position:growth-1', departmentId: dept.id, managerRef: founder });
     gov.transitionEmployee(founder, e.id, { to: 'TRAINING', reasonCode: 'onboarding' });
     gov.transitionEmployee(founder, e.id, { to: 'PROBATION', reasonCode: 'trained' });
-    gov.transitionEmployee(founder, e.id, { to: 'ACTIVE', reasonCode: 'qualified', qualificationRefs: ['academy:founder-attested'] });
+    gov.transitionEmployee(founder, e.id, { to: 'ACTIVE', reasonCode: 'qualified', qualificationRefs: ['founder-attestation:acceptance'] });
     gov.createBudget(founder, { scope: 'EMPLOYEE', scopeId: e.id, capMoney: 1_000_000, capTokens: 1_000_000, reasonCode: 'acceptance' });
     const p = gov.registerProvider(founder, { code: 'fake-local', locality: 'LOCAL' });
     const m = gov.registerModel(founder, { providerId: p.id, code: 'fake-small' });

@@ -1,6 +1,15 @@
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
+// C2: provider adapters (`generate`) are called only by the governed Model Runtime and tool drivers
+// (`invoke`) only by the Tool Executor — in any syntactic form (dot, computed, destructuring).
+const C2_CONFINED = [
+  { selector: 'MemberExpression[property.name=/^(generate|invoke)$/]', message: 'Provider adapters / tool drivers are called only by the governed Model Runtime / Tool Executor (C2).' },
+  { selector: 'MemberExpression[computed=true][property.value=/^(generate|invoke)$/]', message: 'Provider adapters / tool drivers are called only by the governed Model Runtime / Tool Executor (C2).' },
+  { selector: 'ObjectPattern > Property[key.name=/^(generate|invoke)$/]', message: 'Provider adapters / tool drivers are called only by the governed Model Runtime / Tool Executor (C2).' },
+];
+const C2_CONFINED_MODULES = ['packages/runtime/src/c2/model-runtime.ts', 'packages/runtime/src/c2/tool-executor.ts'];
+
 const NETWORK_MODULES = ['http', 'https', 'http2', 'net', 'tls', 'dgram', 'dns', 'dns/promises'].flatMap((m) => [m, `node:${m}`]);
 
 export default tseslint.config(
@@ -57,13 +66,43 @@ export default tseslint.config(
           selector: "CallExpression[callee.name='createRequire'], MemberExpression[property.name='createRequire']",
           message: 'createRequire can bypass the import boundary checks; use static ESM imports (D-C1-22).',
         },
+        ...C2_CONFINED,
       ],
     },
+  },
+  {
+    // C2 confinement inside the storage package (its own import rules are the verifier's).
+    files: ['packages/storage/src/**/*.ts'],
+    rules: { 'no-restricted-syntax': ['error', ...C2_CONFINED] },
   },
   {
     // The runtime may import the runtime-authority subpath, but no other storage subpath, and its
     // production code never imports storage internals by path.
     files: ['packages/runtime/src/**/*.ts'],
+    ignores: C2_CONFINED_MODULES,
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...C2_CONFINED,
+        {
+          selector: ":matches(ImportDeclaration, ImportExpression, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/^@qandeel-company\\/storage\\/(?!runtime-authority$)/]",
+          message: 'The only storage subpath the runtime may import is @qandeel-company/storage/runtime-authority.',
+        },
+        {
+          selector: ':matches(ImportDeclaration, ImportExpression, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/\\/storage\\/(src|dist)\\//]',
+          message: 'Do not import storage internals by path (D-C1-22).',
+        },
+        {
+          selector: "CallExpression[callee.name='createRequire'], MemberExpression[property.name='createRequire']",
+          message: 'createRequire can bypass the import boundary checks; use static ESM imports (D-C1-22).',
+        },
+      ],
+    },
+  },  {
+    // The runtime may import the runtime-authority subpath, but no other storage subpath, and its
+    // production code never imports storage internals by path.
+    // The two confined modules: the same import rules, without the C2 confinement they implement.
+    files: C2_CONFINED_MODULES,
     rules: {
       'no-restricted-syntax': [
         'error',

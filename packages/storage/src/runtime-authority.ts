@@ -240,7 +240,7 @@ export function reserveBudget(store: CompanyStore, fence: Fence, input: ReserveI
   return r;
 }
 
-export function settleReservation(store: CompanyStore, fence: Fence, reservationId: Id, usage: SettleUsage): Id {
+export function settleReservation(store: CompanyStore, fence: Fence, reservationId: Id, usage: SettleUsage): Id | null {
   return write(store, 'settle reservation', (ctx) => txSettleReservation(ctx, fence, reservationId, usage));
 }
 

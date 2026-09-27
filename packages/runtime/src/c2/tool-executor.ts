@@ -46,6 +46,7 @@ export class ToolExecutor {
   }
 
   async execute(store: CompanyStore, fence: Fence, run: GovernedRunContext, request: ToolRequest, step: number, signal: AbortSignal): Promise<ToolOutcome> {
+    if (!Number.isSafeInteger(step) || step < 0 || step > 100_000) return { kind: 'FAILED', code: 'INVALID_STEP' };
     const intent = recordToolIntent(store, fence, { toolCode: request.tool, actionCode: request.action, args: request.args, idempotencyKey: ToolExecutor.idempotencyKey(run.workItemId, step) });
     switch (intent.kind) {
       case 'REPLAY':
@@ -62,6 +63,8 @@ export class ToolExecutor {
         return { kind: 'RECONCILIATION_REQUIRED', invocationId: intent.invocationId };
       case 'FAILED':
         return { kind: 'FAILED', code: intent.code };
+      case 'IN_FLIGHT':
+        return { kind: 'NOT_EXECUTED', code: 'TOOL_IN_FLIGHT' };
       case 'EXECUTE':
         break;
     }
@@ -70,7 +73,9 @@ export class ToolExecutor {
     if (!driver) {
       result = { ok: false, code: 'DRIVER_NOT_REGISTERED', sent: 'NO' };
     } else {
-      result = await this.#invoke(driver, { actionCode: intent.actionCode, args: request.args as JsonObject, idempotencyKey: ToolExecutor.idempotencyKey(run.workItemId, step) }, intent.sideEffects === 'NONE', signal);
+      // The driver receives the validated arguments the intent (and any approval) was bound to, as an
+      // immutable copy: nothing the caller does afterwards can change what is executed.
+      result = await this.#invoke(driver, { actionCode: intent.actionCode, args: deepFreeze(structuredClone(intent.args)) as JsonObject, idempotencyKey: ToolExecutor.idempotencyKey(run.workItemId, step) }, signal);
     }
     const state = recordToolResult(store, fence, intent.invocationId, result);
     if (state === 'SUCCEEDED' && result.ok) return { kind: 'SUCCEEDED', result: result.result, replayed: false };
@@ -79,12 +84,13 @@ export class ToolExecutor {
   }
 
   /** A bounded driver call. A throw or timeout is "sent: UNKNOWN" unless the action has no side effects. */
-  async #invoke(driver: ToolDriver, input: Parameters<ToolDriver['invoke']>[0], sideEffectFree: boolean, runSignal: AbortSignal): Promise<ToolDriverResult> {
+  async #invoke(driver: ToolDriver, input: Parameters<ToolDriver['invoke']>[0], runSignal: AbortSignal): Promise<ToolDriverResult> {
     const controller = new AbortController();
     const onAbort = (): void => controller.abort();
     runSignal.addEventListener('abort', onAbort, { once: true });
     const timer = new AbortController();
-    const unknown: ToolDriverResult = { ok: false, code: 'DRIVER_OUTCOME_UNKNOWN', sent: sideEffectFree ? 'NO' : 'UNKNOWN' };
+    // A throw or timeout never proves the driver did nothing: always UNKNOWN (charged; UNSAFE → reconcile).
+    const unknown: ToolDriverResult = { ok: false, code: 'DRIVER_OUTCOME_UNKNOWN', sent: 'UNKNOWN' };
     try {
       const timeout = sleep(this.#timeoutMs, 'TIMEOUT' as const, { signal: timer.signal }).catch(() => 'CANCELLED' as const);
       const r = await Promise.race([driver.invoke(input, controller.signal), timeout]);
@@ -102,6 +108,14 @@ export class ToolExecutor {
       runSignal.removeEventListener('abort', onAbort);
     }
   }
+}
+
+function deepFreeze<T>(v: T): T {
+  if (v !== null && typeof v === 'object') {
+    for (const x of Object.values(v)) deepFreeze(x);
+    Object.freeze(v);
+  }
+  return v;
 }
 
 /** Content-free digest of a tool result for logs / evidence (Rule A). */

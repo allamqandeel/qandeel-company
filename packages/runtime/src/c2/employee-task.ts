@@ -8,7 +8,7 @@
  * review) is an event-driven WAIT that consumes no tokens.
  */
 import { assertIntInRange, boundedText, type JsonValue, type ProcessorContext, type ProcessorResult } from '@qandeel-company/domain';
-import { assertTaskClass, isReasoningClass, type ModelProposal, type ProviderMessage, type ReasoningClass } from '@qandeel-company/governance';
+import { assertTaskClass, isDataClass, isReasoningClass, type ModelProposal, type ProviderMessage, type ReasoningClass } from '@qandeel-company/governance';
 
 import type { GovernedProcessor, GovernedRunServices, ToolRequest } from './types.js';
 
@@ -39,6 +39,9 @@ const MAX_KEPT_RESULTS = 8;
 
 function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasoningClass' | 'dataClass'>> & { reasoningClass: ReasoningClass | null } {
   const o = (input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}) as Record<string, JsonValue>;
+  // An invalid data class is refused outright (classification never fails open).
+  if (o.dataClass !== undefined && !isDataClass(o.dataClass)) throw new Error('invalid dataClass');
+  if (o.reasoningClass !== undefined && !isReasoningClass(o.reasoningClass)) throw new Error('invalid reasoningClass');
   return {
     taskClass: assertTaskClass(o.taskClass),
     instructions: boundedText(o.instructions, 'instructions', 12_000),
@@ -83,6 +86,7 @@ export const employeeTaskProcessor: GovernedProcessor = {
     }
     let s = readState(ctx);
     let escalateFrom: { fromClass: ReasoningClass; evidence: 'OUTPUT_FAILED_VALIDATION' | 'CONTEXT_OVERFLOW' } | null = null;
+    let escalated = false;
     while (s.turn < cfg.maxTurns) {
       if (ctx.signal.aborted) return { type: 'CANCELLED' };
       if (s.phase === 'TOOL' && s.pending) {
@@ -119,6 +123,7 @@ export const employeeTaskProcessor: GovernedProcessor = {
         messages: messages(cfg.taskClass, cfg.instructions, s.results),
         maxOutputTokens: cfg.maxOutputTokens,
       });
+      if (escalateFrom !== null) escalated = true;
       escalateFrom = null;
       switch (out.kind) {
         case 'NO_LLM':
@@ -135,7 +140,8 @@ export const employeeTaskProcessor: GovernedProcessor = {
           // Provider trouble never crashes the Company: bounded C1 retry, then dead letter.
           return { type: 'RETRYABLE_FAILURE', code: 'PROVIDER_UNAVAILABLE' };
         case 'FAILED':
-          if (out.failure === 'CONTEXT_OVERFLOW' && cfg.reasoningClass !== 'E4') {
+          // One evidence-based escalation per run step; never re-escalate from the class that just failed.
+          if (out.failure === 'CONTEXT_OVERFLOW' && !escalated && cfg.reasoningClass !== 'E4') {
             escalateFrom = { fromClass: cfg.reasoningClass ?? gov.context.cognitiveProfile.defaultClass, evidence: 'CONTEXT_OVERFLOW' };
             continue;
           }
@@ -152,7 +158,7 @@ export const employeeTaskProcessor: GovernedProcessor = {
       if (proposal.type === 'INVALID') {
         // Observable evidence (the output failed validation) may justify one escalation.
         s = { ...s, invalid: s.invalid + 1 };
-        if (s.invalid >= 2) return { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_INVALID' };
+        if (s.invalid >= 2 || escalated) return { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_INVALID' };
         escalateFrom = { fromClass: out.reasoningClass, evidence: 'OUTPUT_FAILED_VALIDATION' };
         continue;
       }

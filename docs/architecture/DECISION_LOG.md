@@ -769,7 +769,10 @@ refused.
   granted here.
 - **Evidence refs, not certification.** Entering `ACTIVE` requires qualification evidence
   references, and a CHECK refuses an `ACTIVE` row without them. C2 records those refs as
-  Founder-attested opaque references and never claims they prove certification (C3).
+  Founder-attested opaque references (for example `founder-attestation:<id>`) and never claims
+  they prove certification (C3).
+- **Certificate kinds are reserved.** Review finding: `academy:`, `certification:` and `cert:`
+  refs are refused, because only the C3 Academy may issue them.
 - **Retirement** revokes grants and retires the employee principal. The Employee stays in history.
 - **Lifting a suspension** goes through `RETRAINING`, never straight back to `ACTIVE`.
 - **Names:** one Egyptian two-part human-style name per employee, distinct from every other
@@ -828,9 +831,12 @@ refused.
   The runtime binds the run to an eligible Employee (`run_attributions`) before calling it.
 - **Side-effect class.** `c2.employee-task` declares `IDEMPOTENT`: external effects happen only
   through keyed tools, and tool-level reconciliation handles `UNSAFE` actions.
-- **Automatic pause.** Three authority denials inside one run pause the Employee (`PAUSED`,
-  `AUTO_PAUSE_AUTHORITY_DENIALS`, audited). This is deterministic containment (Stage 3 §9,
-  D14-E.5): it only reduces autonomy.
+- **Automatic pause.** Three authority / bypass signals inside one run pause the Employee
+  (`PAUSED`, `AUTO_PAUSE_AUTHORITY_DENIALS`, audited). This is deterministic containment (Stage 3
+  §9, D14-E.5): it only reduces autonomy.
+  - The signals are `NO_GRANT`, `FOUNDER_ONLY`, `EGRESS_DENIED` and `IDEMPOTENCY_CONFLICT`.
+  - An unknown tool, invalid arguments or a Founder rejection are ordinary failures (review
+    finding). They are audited as `tool.refused` and never counted.
 - **R2 is not a violation.** An R2 request parks the work (`AWAITING_INDEPENDENT_REVIEW`) until the
   Review Pool exists (C4), and does not count as a denial.
 
@@ -886,3 +892,72 @@ and results never enter them (Rule A).
   modules, and no API returns them.
 - **CI:** the job timeout was raised to 50 minutes, and CI now runs the C2 acceptance on Windows
   and Ubuntu.
+
+## D-C2-12 — Internal review round (four focused reviews at `4178d88`) and fixes
+
+Four read-only reviewers ran at `4178d88`: authority / security; budget races / hidden spend;
+model / tool boundary; scope leakage. Every in-scope BLOCKER and MAJOR was fixed on this branch.
+Each item below is covered by a regression test, and new gates by a mutation.
+
+**BLOCKER — processor-mutable run context (boundary review).** The shared run context could be
+mutated, so a hostile governed processor could lower its data class (D4 → D1) and send D4 content
+to an EXTERNAL provider.
+- The context and cognitive profile are now deeply frozen.
+- Model authorization and every reservation re-derive the effective data class, egress, locality,
+  qualification, task class and the Employee's ceiling from durable state inside the transaction.
+- Proofs: a hostile-processor runtime test; mutation `processor-can-widen-egress`.
+
+**MAJOR — tool results could carry higher-class data to a model (security).** Each tool action
+has a `result_data_class`. The effective context class is the maximum of the declared class and
+the result classes of tool results already in the Work Item's context. It governs model egress
+and later tool egress. Mutation `tool-result-does-not-raise-class`.
+
+**MAJOR — an invalid data class became D1 (security + scope).** A missing class still defaults to
+D1 (surfaced to the Product Owner). A class that is present but invalid now resolves to D4 in
+storage and is refused by `c2.employee-task` (`INVALID_TASK_INPUT`) before any call.
+
+**MAJOR — interrupted tool intents released money that may have been spent (budget).** A tool
+call whose driver may have run is never released:
+- after a crash, a timeout, a driver throw or a superseded dead intent, the fixed per-call cost is
+  charged (`FAILED_CHARGED`), and NONE / IDEMPOTENT actions become RETRYABLE;
+- UNSAFE actions become RECONCILIATION_REQUIRED with the reservation held;
+- only an explicit driver `sent: 'NO'` releases the reservation.
+
+**MAJOR — a retry superseded a live intent (budget).** An `INTENT_RECORDED` invocation whose run
+is still RUNNING is never superseded (`IN_FLIGHT`). A dead run's intent is classified as recovery
+classifies it before being reused. Recovery touches tool reservations only through their
+invocation, so batching can no longer release an UNSAFE reservation.
+
+**MAJOR — "academy:" refs looked like certification (scope).** Those refs are now reserved and
+refused (D-C2-05).
+
+**MAJOR — ordinary model mistakes paused Employees (scope).** Only authority / bypass signals
+count toward the automatic pause (D-C2-08).
+
+**MINOR fixes:**
+- model authorization is re-run before every attempt, so a revoked grant or withdrawn egress
+  applies to the next retry;
+- model-written tool / action names never enter audit (Rule A);
+- `recordDeploymentOutcome` requires the run's own fencing token;
+- a cap cannot drop below a child's cap;
+- a charge beyond its reservation is flagged as overrun per settlement;
+- `accountingInvariants` also checks child ≤ parent caps, usage only on SETTLED reservations,
+  succeeded invocations settled, reservations held on their own Run budget, and attribution
+  consistency;
+- reconciling a reservation that belongs to an uncertain tool invocation is refused (resolve the
+  invocation instead);
+- a late settlement after a Founder release is recorded as `budget.late_usage_discrepancy`;
+- drivers receive the validated, frozen arguments bound to the intent / approval;
+- the tool step is validated;
+- context-overflow escalation happens at most once;
+- external mutations must be R3 or R4 (the 0004 CHECK and the kernel);
+- the Founder may decide a request they filed, but never one whose subject they are;
+- a new ESLint AST rule confines `generate` / `invoke` in any syntactic form (dot, computed,
+  destructuring) to the two modules.
+
+**Mechanics.** The C1 mutation check now expects 5 occurrences of the recovery supervisor-fence
+guard: the 4 C1 recovery writes plus the supervisor-fenced governed recovery. Migration 0004 was
+not yet released or merged, so it was amended in place and re-pinned.
+
+**Surfaced to the Product Owner rather than decided:** listed in `docs/C2_IMPLEMENTATION_REPORT.md`
+§13.

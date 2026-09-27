@@ -31,7 +31,7 @@ export function hire(gov: GovernanceStore, founder: string, departmentId: Id, ac
   if (!active) return e;
   gov.transitionEmployee(founder, e.id, { to: 'TRAINING', reasonCode: 'onboarding' });
   gov.transitionEmployee(founder, e.id, { to: 'PROBATION', reasonCode: 'trained' });
-  return gov.transitionEmployee(founder, e.id, { to: 'ACTIVE', reasonCode: 'qualified', qualificationRefs: ['academy:attested-1'] });
+  return gov.transitionEmployee(founder, e.id, { to: 'ACTIVE', reasonCode: 'qualified', qualificationRefs: ['founder-attestation:qualified-1'] });
 }
 
 export function seed(store: CompanyStore, { companyCap = 10_000_000, employeeCap = 1_000_000, grants = true } = {}): Seed {

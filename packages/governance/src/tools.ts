@@ -73,6 +73,8 @@ export interface ToolActionDefinition {
   /** Mutates something outside Company state (external record, publication, payment…). */
   readonly mutatesExternal: boolean;
   readonly dataClassCeiling: DataClass;
+  /** Highest data class a result may carry back into the run's context. */
+  readonly resultDataClass: DataClass;
   readonly egress: ToolEgress;
   readonly argsSchema: ArgsSchema;
   /** Internal economic cost per call (money micros; 0 allowed). */
@@ -81,13 +83,13 @@ export interface ToolActionDefinition {
 
 /**
  * Consistency rules for an action definition: an external mutation is never side-effect-free, it
- * always needs an idempotency key, and it is at least R3 in Strong v1 (Stage 3 §2: sensitive /
+ * always needs an idempotency key, and it is R3 or R4 in Strong v1 (Stage 3 §2: sensitive /
  * external action). An R0 action is read-only.
  */
 export function assertActionConsistency(a: Pick<ToolActionDefinition, 'risk' | 'sideEffects' | 'mutatesExternal' | 'egress'>): void {
   if (a.mutatesExternal && a.sideEffects === 'NONE') throw new QandeelError('VALIDATION_FAILED', 'an external mutation cannot declare side effects NONE', { field: 'sideEffects' });
   if (a.mutatesExternal && a.egress !== 'EXTERNAL') throw new QandeelError('VALIDATION_FAILED', 'an external mutation has EXTERNAL egress', { field: 'egress' });
-  if (a.mutatesExternal && (a.risk === 'R0' || a.risk === 'R1')) throw new QandeelError('VALIDATION_FAILED', 'external mutations are at least R2 (sensitive / external)', { field: 'risk' });
+  if (a.mutatesExternal && a.risk !== 'R3' && a.risk !== 'R4') throw new QandeelError('VALIDATION_FAILED', 'external mutations are sensitive / external actions: R3 (Founder approval) or R4', { field: 'risk' });
   if (a.risk === 'R0' && a.sideEffects !== 'NONE') throw new QandeelError('VALIDATION_FAILED', 'R0 actions are read / analyze only', { field: 'risk' });
 }
 

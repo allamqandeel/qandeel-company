@@ -136,6 +136,7 @@ export interface ToolActionRecord {
   readonly mutatesExternal: boolean;
   readonly requiresIdempotency: boolean;
   readonly dataClassCeiling: DataClass;
+  readonly resultDataClass: DataClass;
   readonly argsSchema: unknown;
   readonly costPerCallMicros: number;
   readonly status: 'ACTIVE' | 'RETIRED';
@@ -341,6 +342,7 @@ export const mapToolAction = (r: Row): ToolActionRecord => ({
   mutatesExternal: num(r.mutates_external) === 1,
   requiresIdempotency: num(r.requires_idempotency) === 1,
   dataClassCeiling: str(r.data_class_ceiling) as DataClass,
+  resultDataClass: str(r.result_data_class) as DataClass,
   argsSchema: parse(r.args_schema_json),
   costPerCallMicros: num(r.cost_per_call_micros),
   status: str(r.status) as ToolActionRecord['status'],

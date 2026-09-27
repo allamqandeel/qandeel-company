@@ -51,10 +51,10 @@ listed in §13.
 | Router Policy | Deterministic and per task class. Hard gates in fixed order: operational → **privacy / egress** → qualification → task class → class → output / context → price card / currency → cost ceiling. Then cheapest eligible worst case. E0 = NO_LLM. Minimum-sufficient class, bounded by the employee ceiling. No global ranking | governance `routing.ts` |
 | Retry / fallback / escalation | Retry: same deployment, retryable failures only, bounded per call. Fallback: a prequalified route with the same contract, never costlier than the original unless the policy says so explicitly. Escalation: observable evidence only, bounded depth, never above ceilings. Each is a separately reserved, attributed attempt | `routing.ts`, `model-runtime.ts`, `txReserve` |
 | Failure taxonomy | 13 classes → retry / fallback / hold / circuit / sent-uncertain. Auth, billing, quota and deprecation are operational holds, not retry loops. Circuit opens after 3 counted failures for 5 min | governance `providers.ts`; `txDeploymentOutcome` |
-| Data / egress | `D0..D4`. The highest class of the run's context governs, and the model cannot lower it. D4 is never routed to an external provider (router + approval refusal). Egress approval is explicit per deployment. External tools make their own egress decision | `routing.ts`, `approveEgress`, `txToolIntent` |
+| Data / egress | `D0..D4`. The effective class — declared, raised by the result class of every tool result already in context — governs. It is re-derived from durable state per call. Neither the model nor the processor can lower it; an invalid declared class fails closed to D4. D4 is never routed to an external provider (router + approval refusal). Egress approval is explicit per deployment. External tools make their own egress decision | `routing.ts`, `approveEgress`, `txToolIntent` |
 | Authority | R0 read · R1 internal · R2 → fail closed (Review Pool is C4) · R3 → scoped Founder approval · R4 → Founder-only, never approvable. Default deny: explicit grants (capability, resource, risk ceiling, data class, expiry, uses). Role / Department / Skill / Model / seniority grant nothing. No self-escalation | governance `authority.ts`; `txToolIntent`; `decideApproval` |
 | Approvals | Durable, scoped by subject, action, resource, Work Item, argument digest, data class, risk and limits. Expiry and use count. Survive restart. Changed arguments → new approval. A rejection does not regenerate silently. The C1 `WAITING_APPROVAL` gate now releases through a bound Founder approval (DB triggers re-check) | `approvals`, `approval_history`, 0004 triggers |
-| Tools | Tool Registry + immutable action definitions: risk, side-effect / replay class, external mutation, idempotency requirement, data-class ceiling, strict argument schema, cost; vault reference only. The governed Tool Executor records a durable intent after the full authority path, then calls the driver, then records the result. No shell / execute-anything tool (refused by name) | governance `tools.ts`; `tool-executor.ts`; `tool_invocations` |
+| Tools | Tool Registry + immutable action definitions: risk (external mutation ⇒ R3 / R4), side-effect / replay class, idempotency requirement, data-class ceiling **and result class**, strict argument schema, cost; vault reference only. The governed Tool Executor records a durable intent after the full authority path, then calls the driver, then records the result. No shell / execute-anything tool (refused by name) | governance `tools.ts`; `tool-executor.ts`; `tool_invocations` |
 | Budgets | Company → Department → Employee → Work Item → Run. Money (micro-units) + tokens. Worst-case reservation before every call, atomic across the chain. Settlement of actual usage releases the unused part. Billed ≠ economic cost (FREE / SUBSCRIPTION still cost and count tokens). Price-card provenance. Overhead attribution. Hard refusal. Checked arithmetic plus DB CHECKs. Overrun recorded truthfully | `economics.ts`, `governance-core.ts`, `txReserve` |
 | C1 integration | Governed work is ordinary C1 Work Items / jobs / Runs with checkpoints, leases, fencing, retry / dead-letter and wake generation. The runtime-owned loop `c2.employee-task` (IDEMPOTENT) checkpoints each planned tool call before its effect. Recovery classifies governed orphans. Health gains a `governance` component | `runtime.ts`, `recovery.ts`, `health.ts`, `employee-task.ts` |
 | CLI | `register-founder`, `governance`, `approvals`, `approve`, `reject` | `cli.ts` |
@@ -114,15 +114,18 @@ Proof markers (verifier `c2-proofs-present`): `C2-PROOF: governance-kernel`,
 
 ## 7. Mutation checks and verifier
 
-- **`npm run c2:mutation`:** 13 gates, each removed from the compiled output, must make a proof test
+- **`npm run c2:mutation`:** 15 gates, each removed from the compiled output, must make a proof test
   fail:
   - default deny; R4 Founder-only; R3 approval;
   - Founder-only administration; self-approval;
   - budget headroom (caught by storage and by the multi-process race);
   - ineligible employee; denied intent reaching a driver; idempotent replay;
   - call despite a refused reservation;
-  - D4 egress; silent expensive fallback; self-reported-uncertainty escalation.
-- **`npm run c1:mutation`:** the C1 check (6 mutations) is unchanged and still runs.
+  - D4 egress; silent expensive fallback;
+  - immutable run context; a tool result raising the data class;
+  - self-reported-uncertainty escalation.
+- **`npm run c1:mutation`:** the C1 check (6 mutations) still runs. Its recovery-guard count went
+  from 4 to 5 because the governed recovery is also supervisor-fenced.
 - **Verifier:** 8 new rules (D-C2-11). The self-test proves every rule can fail.
 
 ## 8. Results
@@ -149,7 +152,8 @@ Filled in with the final validated head in §14 (test counts, mutation, verifier
 
 - **Founder authentication** at a Founder surface is C5. C2 accepts the registered Founder
   reference at the engineering API and CLI (D-C2-04).
-- **Certification is C3.** Activation uses Founder-attested evidence references (D-C2-05).
+- **Certification is C3.** Activation uses Founder-attested evidence references
+  (`founder-attestation:`); `academy:` / `certification:` refs are refused (D-C2-05).
 - **R2 stays fail-closed** until the C4 Review Pool.
 - **Delegated allocation is C4.** Director / manager budget allocation and delegated grants do not
   exist.
@@ -177,6 +181,9 @@ Recorded in §14 with their concrete effect.
 
 ## 13. Interpretations to surface to the Product Owner
 
+Each item below is an engineering interpretation adopted for C2. None is a silently invented Product
+decision; the Product Owner may confirm or change each one.
+
 - **Execution eligibility.** Only `ACTIVE` executes. `SHADOW` / `PROBATION` execution is left to the
   C3 Academy.
 - **Lifecycle transitions.** `SUSPENDED → RETRAINING → SHADOW / PROBATION → ACTIVE`; no direct
@@ -189,3 +196,23 @@ Recorded in §14 with their concrete effect.
 - **Founder-only administration in C2:** grants, all budget caps and qualification. Delegation to
   Directors waits for C4.
 - **Currency.** A single Company currency, set on the Company budget.
+- **Interim activation.** A Founder attestation is the interim route to `ACTIVE` until the C3
+  Academy exists.
+- **Default data class.** A missing class defaults to D1 (an invalid one is treated as D4).
+- **Containment.** Which signals count, and the threshold of 3.
+- **Egress approvals** have no expiry and no endpoint / region / retention conditions yet
+  (D14-B.5). Qualification is advanced by Founder decision without a stored Qualification Suite
+  result (D13-B.2).
+- **Routing economics.** Routing optimizes cheapest worst-case price (D13-G.8 "cost per qualified
+  outcome" needs outcome data, C6).
+- **Grant scope.** Grants are per tool code or `*`, not per Work Item (just-in-time grants,
+  D14-C.5).
+- **Founder identity and approval.**
+  - The Founder principal is the first registered one.
+  - The CLI `approve --actor` is unauthenticated (C5).
+  - The Founder cannot approve an approval whose subject is the Founder.
+  - Nothing files a work-item approval request automatically.
+- **R3 explanations.** Approvals carry no Founder-friendly explanation (what / why /
+  recommendation / risk, Stage 3 §3). Likely C5.
+- **Stuck R2 work.** R2 work parks as `AWAITING_INDEPENDENT_REVIEW` with no wake until C4.
+- **Engineering constants:** circuit 3 failures / 5 min; router-policy bounds.

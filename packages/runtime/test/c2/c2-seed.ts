@@ -24,7 +24,7 @@ export function hireActive(gov: GovernanceStore, founder: string, departmentId: 
   const e = gov.createEmployee(founder, { name: nextName(), profile: { personality: 'practical' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' }, roleRef: 'role:content-strategist', positionRef: 'position:p1', departmentId, managerRef: founder });
   gov.transitionEmployee(founder, e.id, { to: 'TRAINING', reasonCode: 'onboarding' });
   gov.transitionEmployee(founder, e.id, { to: 'PROBATION', reasonCode: 'trained' });
-  const active = gov.transitionEmployee(founder, e.id, { to: 'ACTIVE', reasonCode: 'qualified', qualificationRefs: ['academy:attested-1'] });
+  const active = gov.transitionEmployee(founder, e.id, { to: 'ACTIVE', reasonCode: 'qualified', qualificationRefs: ['founder-attestation:qualified-1'] });
   gov.createBudget(founder, { scope: 'EMPLOYEE', scopeId: e.id, capMoney: budget, capTokens: 5_000_000, reasonCode: 'seed' });
   if (grants) {
     gov.grant(founder, { employeeId: e.id, capability: 'model.invoke', riskCeiling: 'R0', dataClassCeiling: 'D4', reasonCode: 'seed' });

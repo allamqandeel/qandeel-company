@@ -186,6 +186,8 @@ export interface RegisterToolActionInput {
   readonly sideEffects: 'NONE' | 'IDEMPOTENT' | 'UNSAFE';
   readonly mutatesExternal: boolean;
   readonly dataClassCeiling: DataClass;
+  /** Highest data class the result may carry into the run's context; defaults to the ceiling. */
+  readonly resultDataClass?: DataClass;
   readonly argsSchema: unknown;
   readonly costPerCallMicros: number;
 }
@@ -633,8 +635,8 @@ export class GovernanceStore {
       const schema = assertArgsSchema(input.argsSchema);
       const id = newId();
       ctx.db.run(
-        `INSERT INTO tool_actions (id, tool_id, code, risk_level, side_effects, mutates_external, requires_idempotency, data_class_ceiling, args_schema_json, cost_per_call_micros, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)`,
+        `INSERT INTO tool_actions (id, tool_id, code, risk_level, side_effects, mutates_external, requires_idempotency, data_class_ceiling, result_data_class, args_schema_json, cost_per_call_micros, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)`,
         id,
         toolId,
         assertToolCode(input.code, 'code'),
@@ -643,6 +645,7 @@ export class GovernanceStore {
         def.mutatesExternal ? 1 : 0,
         requiresIdempotencyKey(def) ? 1 : 0,
         assertDataClass(input.dataClassCeiling, 'dataClassCeiling'),
+        assertDataClass(input.resultDataClass ?? input.dataClassCeiling, 'resultDataClass'),
         canonicalJson(schema),
         assertMoney(input.costPerCallMicros, 'costPerCallMicros'),
         at(ctx),
@@ -743,7 +746,9 @@ export class GovernanceStore {
       const id = assertId(approvalId, 'approvalId');
       const a = getApproval(ctx, id);
       const p = resolvePrincipal(ctx, actorRef);
-      if (p.ref === a.subjectRef || p.ref === a.requestedByRef) throw new QandeelError('SELF_ESCALATION_REFUSED', 'an actor cannot approve its own request', { what: 'approval' });
+      // The subject is who gains authority: it never approves itself. (Filing a request on someone's
+      // behalf and deciding it is not self-escalation; decisions are Founder-only anyway.)
+      if (p.ref === a.subjectRef || (p.kind !== 'FOUNDER' && p.ref === a.requestedByRef)) throw new QandeelError('SELF_ESCALATION_REFUSED', 'an actor cannot approve its own request', { what: 'approval' });
       assertApprover(p.kind, a.risk);
       if (a.state !== 'PENDING') throw new QandeelError('INVALID_TRANSITION', 'only a pending approval can be decided', { approvalId: id, state: a.state });
       const reason = assertCode(input.reasonCode, 'reasonCode');
@@ -846,6 +851,8 @@ export class GovernanceStore {
         const parent = getBudgetRow(ctx, b.parentId);
         if (capMoney > parent.capMoney || capTokens > parent.capTokens) throw new QandeelError('BUDGET_EXHAUSTED', 'a child budget cap cannot exceed its parent cap', { budgetId: b.id, parentId: parent.id });
       }
+      const children = ctx.db.get<{ m: number | null; t: number | null }>('SELECT MAX(cap_money) AS m, MAX(cap_tokens) AS t FROM budgets WHERE parent_id = ?', b.id);
+      if (capMoney < Number(children?.m ?? 0) || capTokens < Number(children?.t ?? 0)) throw new QandeelError('VALIDATION_FAILED', 'a cap cannot drop below a child budget\'s cap; lower the children first', { budgetId: b.id });
       if (capMoney + b.overrunMoney < b.reservedMoney + b.spentMoney || capTokens + b.overrunTokens < b.reservedTokens + b.spentTokens) throw new QandeelError('VALIDATION_FAILED', 'a cap cannot drop below what is already reserved and spent', { budgetId: b.id });
       ctx.db.run('UPDATE budgets SET cap_money = ?, cap_tokens = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?', capMoney, capTokens, at(ctx), b.id, b.version);
       const actor = resolvePrincipal(ctx, actorRef);
@@ -891,6 +898,9 @@ export class GovernanceStore {
       const p = founder(ctx, actorRef, null, 'reservation reconciliation');
       const r = getReservationRow(ctx, assertId(reservationId, 'reservationId'));
       if (r.state !== 'RECONCILIATION_REQUIRED') throw new QandeelError('INVALID_TRANSITION', 'only a held reservation is reconciled', { reservationId: r.id, state: r.state });
+      if (ctx.db.get(`SELECT 1 AS x FROM tool_invocations WHERE reservation_id = ? AND state = 'RECONCILIATION_REQUIRED'`, r.id)) {
+        throw new QandeelError('INVALID_TRANSITION', 'this reservation belongs to an uncertain tool invocation; resolve the invocation instead', { reservationId: r.id });
+      }
       const code = assertCode(reasonCode, 'reasonCode');
       if (decision.kind === 'RELEASE') releaseReservationTx(ctx, r, code, p.ref);
       else settleReservationTx(ctx, r, { inputTokens: assertTokens(decision.inputTokens, 'inputTokens'), outputTokens: assertTokens(decision.outputTokens, 'outputTokens'), withinBounds: true, sessionId: null, outcome: 'RECONCILED' }, p.ref);
@@ -992,6 +1002,19 @@ export class GovernanceStore {
         if (e.sm !== b.spentMoney || e.st !== b.spentTokens) violations.push(`budget ${b.id} (${b.scope}) spent ${b.spentMoney}/${b.spentTokens} != usage ${e.sm}/${e.st}`);
         if (b.reservedMoney + b.spentMoney > b.capMoney + b.overrunMoney || b.reservedTokens + b.spentTokens > b.capTokens + b.overrunTokens) violations.push(`budget ${b.id} exceeds its cap`);
       }
+      for (const b of budgets) {
+        const parent = b.parentId ? byId.get(b.parentId) : undefined;
+        if (parent && (b.capMoney > parent.capMoney || b.capTokens > parent.capTokens)) violations.push(`budget ${b.id} (${b.scope}) cap exceeds its parent's cap`);
+      }
+      const n = (sql: string): number => Number(ctx.db.get<{ n: number }>(sql)?.n ?? 0);
+      const usageOnOpen = n(`SELECT COUNT(*) AS n FROM usage_records u JOIN budget_reservations r ON r.id = u.reservation_id WHERE r.state <> 'SETTLED'`);
+      if (usageOnOpen) violations.push(`${usageOnOpen} usage record(s) on a reservation that is not SETTLED`);
+      const succeededUnsettled = n(`SELECT COUNT(*) AS n FROM tool_invocations i JOIN budget_reservations r ON r.id = i.reservation_id WHERE i.state = 'SUCCEEDED' AND r.state <> 'SETTLED'`);
+      if (succeededUnsettled) violations.push(`${succeededUnsettled} succeeded tool invocation(s) whose reservation is not settled`);
+      const wrongLeaf = n(`SELECT COUNT(*) AS n FROM budget_reservations r JOIN budgets b ON b.id = r.budget_id WHERE b.scope <> 'RUN' OR b.scope_id <> r.run_id`);
+      if (wrongLeaf) violations.push(`${wrongLeaf} reservation(s) not held against their own Run budget`);
+      const misattributed = n(`SELECT COUNT(*) AS n FROM budget_reservations r JOIN run_attributions a ON a.run_id = r.run_id WHERE a.employee_id <> r.employee_id OR a.department_id <> r.department_id OR a.work_item_id <> r.work_item_id`);
+      if (misattributed) violations.push(`${misattributed} reservation(s) attributed differently from their run`);
       const settledWithoutUsage = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM budget_reservations r WHERE r.state = 'SETTLED' AND NOT EXISTS (SELECT 1 FROM usage_records u WHERE u.reservation_id = r.id)`)?.n ?? 0);
       if (settledWithoutUsage) violations.push(`${settledWithoutUsage} settled reservation(s) without a usage record`);
       return violations;
@@ -1011,10 +1034,15 @@ export function assertCredentialRef(v: unknown): string {
   return v;
 }
 
-/** The data class declared for a governed Work Item's context (defaults to D1 INTERNAL). */
+/**
+ * The data class declared for a governed Work Item's context. Missing → D1 INTERNAL (the Company's
+ * ordinary internal class; surfaced to the Product Owner). Present but not a valid class → D4:
+ * classification fails closed, never open (a typo can never widen egress).
+ */
 export function workItemDataClass(processorInput: unknown): DataClass {
-  const d = (processorInput as { dataClass?: unknown } | null)?.dataClass;
-  return isDataClass(d) ? d : 'D1';
+  const o = processorInput as { dataClass?: unknown } | null;
+  if (o === null || typeof o !== 'object' || !('dataClass' in o) || o.dataClass === undefined) return 'D1';
+  return isDataClass(o.dataClass) ? o.dataClass : 'D4';
 }
 
 function getApproval(ctx: StoreContext, id: Id): ApprovalRecord {

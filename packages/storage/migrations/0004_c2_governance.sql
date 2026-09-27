@@ -224,18 +224,20 @@ CREATE TABLE tool_actions (
   mutates_external       INTEGER NOT NULL CHECK (mutates_external IN (0, 1)),
   requires_idempotency   INTEGER NOT NULL CHECK (requires_idempotency IN (0, 1)),
   data_class_ceiling     TEXT    NOT NULL CHECK (data_class_ceiling IN ('D0', 'D1', 'D2', 'D3', 'D4')),
+  -- Highest data class the action's RESULT may carry back into the run's context (D14-B.1).
+  result_data_class      TEXT    NOT NULL CHECK (result_data_class IN ('D0', 'D1', 'D2', 'D3', 'D4')),
   args_schema_json       TEXT    NOT NULL CHECK (json_valid(args_schema_json) AND length(args_schema_json) <= 4096),
   cost_per_call_micros   INTEGER NOT NULL CHECK (cost_per_call_micros BETWEEN 0 AND 1000000000000000),
   status                 TEXT    NOT NULL CHECK (status IN ('ACTIVE', 'RETIRED')),
   created_at             TEXT    NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
   UNIQUE (tool_id, code),
-  CHECK (mutates_external = 0 OR (requires_idempotency = 1 AND side_effects <> 'NONE' AND risk_level IN ('R2', 'R3', 'R4'))),
+  CHECK (mutates_external = 0 OR (requires_idempotency = 1 AND side_effects <> 'NONE' AND risk_level IN ('R3', 'R4'))),
   CHECK (side_effects = 'NONE' OR requires_idempotency = 1),
   CHECK (risk_level <> 'R0' OR side_effects = 'NONE')
 ) STRICT;
 CREATE TRIGGER tool_actions_definition_immutable BEFORE UPDATE ON tool_actions
 WHEN NEW.id IS NOT OLD.id OR NEW.tool_id IS NOT OLD.tool_id OR NEW.code IS NOT OLD.code OR NEW.risk_level IS NOT OLD.risk_level OR NEW.side_effects IS NOT OLD.side_effects
-  OR NEW.mutates_external IS NOT OLD.mutates_external OR NEW.requires_idempotency IS NOT OLD.requires_idempotency OR NEW.data_class_ceiling IS NOT OLD.data_class_ceiling
+  OR NEW.mutates_external IS NOT OLD.mutates_external OR NEW.requires_idempotency IS NOT OLD.requires_idempotency OR NEW.data_class_ceiling IS NOT OLD.data_class_ceiling OR NEW.result_data_class IS NOT OLD.result_data_class
   OR NEW.args_schema_json IS NOT OLD.args_schema_json OR NEW.cost_per_call_micros IS NOT OLD.cost_per_call_micros OR NEW.created_at IS NOT OLD.created_at OR OLD.status = 'RETIRED'
 BEGIN SELECT RAISE(ABORT, 'tool action definitions are immutable; register a new action'); END;
 CREATE TRIGGER tool_actions_no_delete BEFORE DELETE ON tool_actions BEGIN SELECT RAISE(ABORT, 'tool actions are durable history'); END;

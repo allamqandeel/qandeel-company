@@ -19,6 +19,7 @@ import {
   assertEmployeeTransition,
   assertGovernanceAuthority,
   assertPriceCardRates,
+  assertQualificationRefs,
   assertToolCode,
   canExecute,
   checkReservation,
@@ -102,7 +103,9 @@ describe('C2 kernel: employees', () => {
 
   test('activation fails closed without qualification evidence (certification is C3)', () => {
     assert.throws(() => assertActivationEvidence([]), (e) => isQandeelError(e, 'EMPLOYEE_NOT_ELIGIBLE'));
-    assert.doesNotThrow(() => assertActivationEvidence(['academy:attested-1']));
+    assert.doesNotThrow(() => assertActivationEvidence(['founder-attestation:qualified-1']));
+    assert.throws(() => assertQualificationRefs(['academy:cert-1']), 'Academy certification references are C3 and refused in C2');
+    assert.deepEqual(assertQualificationRefs(['founder-attestation:x']), ['founder-attestation:x']);
   });
 
   test('names: two human-style parts (Arabic and Latin), no digits or single part', () => {
@@ -268,6 +271,8 @@ describe('C2 kernel: tools and proposals (model output never grants or executes)
 
   test('external mutations require idempotency keys, EXTERNAL egress and at least R2', () => {
     assert.throws(() => assertActionConsistency({ risk: 'R1', sideEffects: 'IDEMPOTENT', mutatesExternal: true, egress: 'EXTERNAL' }));
+    assert.throws(() => assertActionConsistency({ risk: 'R2', sideEffects: 'IDEMPOTENT', mutatesExternal: true, egress: 'EXTERNAL' }), 'external mutations are R3+');
+    assert.doesNotThrow(() => assertActionConsistency({ risk: 'R3', sideEffects: 'IDEMPOTENT', mutatesExternal: true, egress: 'EXTERNAL' }));
     assert.throws(() => assertActionConsistency({ risk: 'R3', sideEffects: 'NONE', mutatesExternal: true, egress: 'EXTERNAL' }));
     assert.throws(() => assertActionConsistency({ risk: 'R0', sideEffects: 'IDEMPOTENT', mutatesExternal: false, egress: 'NONE' }));
     assert.equal(requiresIdempotencyKey({ mutatesExternal: true, sideEffects: 'IDEMPOTENT' }), true);

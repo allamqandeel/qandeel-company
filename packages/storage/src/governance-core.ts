@@ -189,7 +189,9 @@ export function settleReservationTx(ctx: StoreContext, r: ReservationRecord, usa
     tokens = 0;
   }
   const chain = budgetChain(ctx, r.budgetId);
-  const overran = applyBudgetDelta(ctx, chain, { releaseMoney: r.money, releaseTokens: r.tokens, spendMoney: economic, spendTokens: tokens });
+  // A charge beyond what was reserved is flagged on its own, whatever slack earlier overruns left.
+  const beyondReservation = economic > r.money || tokens > r.tokens;
+  const overran = applyBudgetDelta(ctx, chain, { releaseMoney: r.money, releaseTokens: r.tokens, spendMoney: economic, spendTokens: tokens }) || beyondReservation;
   const usageId = newId();
   ctx.db.run(
     `INSERT INTO usage_records (id, reservation_id, run_id, work_item_id, employee_id, department_id, purpose, attempt_kind, provider_id, model_id, deployment_id, price_card_id,

@@ -60,6 +60,8 @@ export class GovernedModelRuntime {
   }
 
   async call(store: CompanyStore, fence: Fence, run: GovernedRunContext, req: ModelCallRequest, signal: AbortSignal): Promise<ModelCallOutcome> {
+    // Authorization (and the durable effective data class) is re-evaluated before EVERY attempt:
+    // a revoked grant or a context raised by a tool result applies to the very next call.
     const auth = authorizeModelCall(store, fence, { taskClass: req.taskClass, dataClass: run.dataClass });
     if (!auth.ok) return { kind: 'DENIED', code: auth.code };
     const governance = GovernanceStore.for(store);
@@ -80,8 +82,9 @@ export class GovernedModelRuntime {
     const routeReq: RouteRequest = {
       taskClass: req.taskClass,
       reasoningClass: requested,
-      // The context's data class is the run's declared class: a model can never lower it.
-      dataClass: run.dataClass,
+      // The context's effective data class comes from durable state (declared class raised by tool
+      // results already in context): neither the model nor the processor can lower it.
+      dataClass: auth.dataClass,
       inputTokensUpperBound: utf8TokenUpperBound(req.messages),
       maxOutputTokens: req.maxOutputTokens,
       employeeCeiling: profile.ceilingClass,
@@ -97,6 +100,10 @@ export class GovernedModelRuntime {
     const ceiling = policy.maxRetriesPerCall + snapshot.deployments.length + 1;
     for (let attempt = 1; attempt <= ceiling; attempt++) {
       if (signal.aborted) return { kind: 'UNAVAILABLE', code: 'ABORTED' };
+      if (attempt > 1) {
+        const again = authorizeModelCall(store, fence, { taskClass: req.taskClass, dataClass: routeReq.dataClass });
+        if (!again.ok) return { kind: 'DENIED', code: again.code };
+      }
       const d = decision as Extract<RouteDecision, { kind: 'ROUTE' }>;
       const adapter = this.#adapters.get(d.deployment.providerCode);
       if (!adapter) {

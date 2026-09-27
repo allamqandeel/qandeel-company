@@ -14,6 +14,7 @@
 import { QandeelError, canonicalJson, isQandeelError, newId, sha256Hex, type Id, type JsonObject, type Timestamp } from '@qandeel-company/domain';
 import {
   AUTO_PAUSE_DENIALS_PER_RUN,
+  CONTAINMENT_SIGNALS,
   CIRCUIT_OPEN_MS,
   CIRCUIT_THRESHOLD,
   FAILURE_DISPOSITIONS,
@@ -25,6 +26,10 @@ import {
   canExecute,
   checkReservation,
   dataRank,
+  isDataClass,
+  isReasoningClass,
+  maxDataClass,
+  reasoningRank,
   decideEmployeeAction,
   toolCapability,
   validateArgs,
@@ -91,10 +96,29 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
     ctx.db.run('INSERT INTO run_attributions (run_id, work_item_id, employee_id, department_id, created_at) VALUES (?, ?, ?, ?, ?)', fence.runId, item.id, e.id, e.departmentId, ts(ctx));
     appendEvent(ctx, 'run.attributed', 'run', fence.runId, { correlationId: item.correlationId }, { employeeId: e.id, departmentId: e.departmentId, workItemId: item.id });
   }
-  return {
-    ok: true,
-    context: { runId: fence.runId, workItemId: item.id, employeeId: e.id, employeeRef: e.ref, departmentId: e.departmentId, cognitiveProfile: assertCognitiveProfile(e.cognitiveProfile), dataClass: workItemDataClass(item.processorInput) },
-  };
+  // Deeply immutable: the processor holds this object, and nothing it does to it can lower the data
+  // class or raise the ceiling (the model path also re-derives both from durable state per call).
+  const context: GovernedRunContext = Object.freeze({
+    runId: fence.runId,
+    workItemId: item.id,
+    employeeId: e.id,
+    employeeRef: e.ref,
+    departmentId: e.departmentId,
+    cognitiveProfile: Object.freeze({ ...assertCognitiveProfile(e.cognitiveProfile) }),
+    dataClass: workItemDataClass(item.processorInput),
+  });
+  return { ok: true, context };
+}
+
+/**
+ * The run context's effective data class (D14-B.1): the Work Item's declared class raised by the
+ * result class of every tool result already fed into this Work Item's context. Durable, never
+ * lowered, never supplied by the processor or the model.
+ */
+export function effectiveDataClass(ctx: StoreContext, workItemId: Id): DataClass {
+  const declared = workItemDataClass(getWorkItemRow(ctx, workItemId).processorInput);
+  const results = ctx.db.all<{ c: string }>(`SELECT DISTINCT a.result_data_class AS c FROM tool_invocations i JOIN tool_actions a ON a.id = i.tool_action_id WHERE i.work_item_id = ? AND i.state = 'SUCCEEDED'`, workItemId);
+  return maxDataClass(declared, ...results.map((r) => r.c).filter(isDataClass));
 }
 
 interface Attributed {
@@ -111,6 +135,12 @@ function attributed(ctx: StoreContext, fence: Fence): Attributed {
 
 /** Counts this run's authority denials and pauses the employee at the containment threshold. */
 function recordDenial(ctx: StoreContext, fence: Fence, employeeId: Id, code: string, details: Record<string, string | number | boolean | null>): { paused: boolean } {
+  // Ordinary failures (unknown tool, invalid arguments, a Founder rejection) are audited but never
+  // counted toward containment; only authority / bypass signals are (Stage 3 §9).
+  if (!CONTAINMENT_SIGNALS.has(code)) {
+    denyAudit(ctx, fence.runId, 'tool.refused', code, { employeeId, ...details });
+    return { paused: false };
+  }
   denyAudit(ctx, fence.runId, 'authority.denied', code, { employeeId, ...details });
   const n = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM audit_events WHERE entity_id = ? AND action = 'authority.denied'`, fence.runId)?.n ?? 0);
   const e = getEmployeeRow(ctx, employeeId);
@@ -121,7 +151,7 @@ function recordDenial(ctx: StoreContext, fence: Fence, employeeId: Id, code: str
   return { paused: false };
 }
 
-export type AuthorizeResult = { readonly ok: true; readonly grantId: Id } | { readonly ok: false; readonly code: string; readonly paused: boolean };
+export type AuthorizeResult = { readonly ok: true; readonly grantId: Id; readonly dataClass: DataClass } | { readonly ok: false; readonly code: string; readonly paused: boolean };
 
 function consumeGrant(ctx: StoreContext, grantId: Id): void {
   ctx.db.run(`UPDATE permission_grants SET uses = uses + 1 WHERE id = ? AND status = 'ACTIVE' AND (max_uses IS NULL OR uses < max_uses)`, grantId);
@@ -132,11 +162,13 @@ export function txAuthorizeModelCall(ctx: StoreContext, fence: Fence, input: { t
   verifyFence(ctx, fence);
   const a = attributed(ctx, fence);
   const e = getEmployeeRow(ctx, a.employeeId);
+  // The durable Work Item's data class governs; a caller may only raise it, never lower it.
+  const dataClass = maxDataClass(effectiveDataClass(ctx, a.workItemId), input.dataClass);
   const grants = ctx.db.all(`SELECT * FROM permission_grants WHERE employee_id = ? AND status = 'ACTIVE'`, e.id).map(mapGrant);
-  const d = decideEmployeeAction('EMPLOYEE', e.state, grants, { capability: 'model.invoke', resource: input.taskClass, risk: 'R0', dataClass: input.dataClass, at: ts(ctx) });
+  const d = decideEmployeeAction('EMPLOYEE', e.state, grants, { capability: 'model.invoke', resource: input.taskClass, risk: 'R0', dataClass, at: ts(ctx) });
   if (d.effect === 'DENY') return { ok: false, code: d.code, ...recordDenial(ctx, fence, e.id, d.code, { capability: 'model.invoke' }) };
   consumeGrant(ctx, d.grantId as Id);
-  return { ok: true, grantId: d.grantId as Id };
+  return { ok: true, grantId: d.grantId as Id, dataClass };
 }
 
 export type ReserveInput =
@@ -197,12 +229,22 @@ export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput):
     return { ok: false, code, detail };
   };
   if (input.purpose === 'MODEL_CALL') {
-    const d = ctx.db.get<{ status: string; price_card_id: string | null; circuit_open_until: string | null; provider_status: string }>(
-      `SELECT d.status, d.price_card_id, d.circuit_open_until, p.status AS provider_status FROM deployments d JOIN models m ON m.id = d.model_id JOIN model_providers p ON p.id = m.provider_id WHERE d.id = ?`,
+    const d = ctx.db.get<{ status: string; price_card_id: string | null; circuit_open_until: string | null; provider_status: string; locality: string; egress_max_data_class: string | null; reasoning_class: string; qualification: string; task_classes_json: string }>(
+      `SELECT d.status, d.price_card_id, d.circuit_open_until, d.egress_max_data_class, d.reasoning_class, d.qualification, d.task_classes_json, p.status AS provider_status, p.locality
+         FROM deployments d JOIN models m ON m.id = d.model_id JOIN model_providers p ON p.id = m.provider_id WHERE d.id = ?`,
       input.deploymentId,
     );
     if (!d || d.status !== 'ACTIVE' || d.provider_status !== 'ACTIVE' || d.price_card_id !== input.priceCardId || (d.circuit_open_until !== null && d.circuit_open_until > ts(ctx))) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'deployment');
     const policy = policyById(ctx, input.routePolicyId);
+    // Hard gates re-checked from durable state inside the reserving transaction (defence in depth:
+    // the router ran outside it on inputs a caller could influence). Privacy first.
+    const dataClass = effectiveDataClass(ctx, a.workItemId);
+    if (dataClass === 'D4' && d.locality !== 'LOCAL') return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'D4_EXTERNAL_DENIED');
+    if (!isDataClass(d.egress_max_data_class) || dataRank(d.egress_max_data_class) < dataRank(dataClass)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'EGRESS_NOT_APPROVED');
+    if (!(d.qualification === 'QUALIFIED' || (d.qualification === 'LIMITED_PRODUCTION' && policy.allowLimitedProduction))) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'NOT_QUALIFIED');
+    if (!(JSON.parse(d.task_classes_json) as string[]).includes(policy.taskClass)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'TASK_CLASS_NOT_QUALIFIED');
+    const ceiling = assertCognitiveProfile(e.cognitiveProfile).ceilingClass;
+    if (!isReasoningClass(d.reasoning_class) || reasoningRank(d.reasoning_class) > reasoningRank(ceiling) || reasoningRank(d.reasoning_class) > reasoningRank(policy.maxClass)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'REASONING_ABOVE_CEILING');
     const calls = ctx.db.all(`SELECT attempt_kind, state, money FROM budget_reservations WHERE run_id = ? AND purpose = 'MODEL_CALL'`, fence.runId);
     if (calls.length >= policy.maxCallsPerRun) return refuse('RUN_LIMIT', 'MAX_CALLS_PER_RUN');
     if (input.attemptKind === 'ESCALATION' && calls.filter((c) => c.attempt_kind === 'ESCALATION').length >= policy.escalation.maxDepth) return refuse('RUN_LIMIT', 'ESCALATION_DEPTH');
@@ -257,8 +299,13 @@ function ownReservation(ctx: StoreContext, fence: Fence, reservationId: Id): Res
   return r;
 }
 
-export function txSettle(ctx: StoreContext, fence: Fence, reservationId: Id, usage: SettleUsage): Id {
+export function txSettle(ctx: StoreContext, fence: Fence, reservationId: Id, usage: SettleUsage): Id | null {
   const r = ownReservation(ctx, fence, reservationId);
+  if (r.state === 'SETTLED' || r.state === 'RELEASED') {
+    // Already reconciled by the Founder: the worker's actual usage is still recorded, as a discrepancy.
+    appendAudit(ctx, 'budget.late_usage_discrepancy', 'reservation', r.id, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', 'ALREADY_FINAL', { state: r.state, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens });
+    return null;
+  }
   const id = settleReservationTx(ctx, r, usage, SYSTEM_RUNTIME_REF);
   ctx.fault('settlement.beforeCommit');
   return id;
@@ -278,7 +325,8 @@ export function txHold(ctx: StoreContext, fence: Fence, reservationId: Id, reaso
  * auth / billing / quota / deprecation failure is an operational hold, never a retry loop (D13-F).
  */
 export function txDeploymentOutcome(ctx: StoreContext, fence: Fence, deploymentId: Id, failure: ProviderFailureClass | null): void {
-  if (!ctx.db.get('SELECT 1 AS ok FROM runs WHERE id = ?', fence.runId)) throw new QandeelError('STALE_LEASE', 'unknown run', { runId: fence.runId });
+  // Same worker only (its run and fencing token): a replaced worker cannot open or close circuits or place holds.
+  if (!ctx.db.get('SELECT 1 AS ok FROM runs WHERE id = ? AND job_id = ? AND fencing_token = ?', fence.runId, fence.jobId, fence.fencingToken)) throw new QandeelError('STALE_LEASE', 'this run / token did not make the call', { runId: fence.runId });
   const d = ctx.db.get<{ circuit_failures: number; circuit_open_until: string | null; provider_id: string; status: string }>('SELECT d.circuit_failures, d.circuit_open_until, m.provider_id, d.status FROM deployments d JOIN models m ON m.id = d.model_id WHERE d.id = ?', deploymentId);
   if (!d) throw new QandeelError('NOT_FOUND', 'deployment not found', { deploymentId });
   const now = ts(ctx);
@@ -318,7 +366,9 @@ export interface ToolIntentInput {
 }
 
 export type ToolIntent =
-  | { readonly kind: 'EXECUTE'; readonly invocationId: Id; readonly reservationId: Id | null; readonly driverCode: string; readonly actionCode: string; readonly sideEffects: string }
+  | { readonly kind: 'EXECUTE'; readonly invocationId: Id; readonly reservationId: Id | null; readonly driverCode: string; readonly actionCode: string; readonly sideEffects: string; readonly args: JsonObject }
+  /** Another live run of this Work Item holds an unsettled intent for the same key: never supersede it. */
+  | { readonly kind: 'IN_FLIGHT'; readonly invocationId: Id }
   | { readonly kind: 'REPLAY'; readonly invocationId: Id; readonly result: unknown }
   | { readonly kind: 'DENIED'; readonly code: string; readonly paused: boolean }
   | { readonly kind: 'APPROVAL_REQUIRED'; readonly approvalId: Id }
@@ -339,21 +389,23 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
   const a = attributed(ctx, fence);
   const e = getEmployeeRow(ctx, a.employeeId);
   const item = getWorkItemRow(ctx, a.workItemId);
-  const dataClass = workItemDataClass(item.processorInput);
-  const deny = (code: string, extra: Record<string, string | number | boolean | null> = {}): ToolIntent => ({ kind: 'DENIED', code, ...recordDenial(ctx, fence, e.id, code, { tool: input.toolCode.slice(0, 64), action: input.actionCode.slice(0, 64), ...extra }) });
+  const dataClass = effectiveDataClass(ctx, item.id);
+  // Audit details carry registered IDs and codes only: model-written tool / action names never
+  // enter telemetry (Rule A).
+  const deny = (code: string, extra: Record<string, string | number | boolean | null> = {}): ToolIntent => ({ kind: 'DENIED', code, ...recordDenial(ctx, fence, e.id, code, extra) });
   const row = ctx.db.get(`SELECT a.*, t.code AS tool_code, t.status AS tool_status, t.egress AS tool_egress, t.driver_code AS driver_code FROM tool_actions a JOIN tools t ON t.id = a.tool_id WHERE t.code = ? AND a.code = ?`, input.toolCode, input.actionCode);
   if (!row) return deny('UNKNOWN_TOOL');
   const action = mapToolAction(row);
-  if (String(row.tool_status) !== 'ACTIVE' || action.status !== 'ACTIVE') return deny('TOOL_NOT_ACTIVE');
+  if (String(row.tool_status) !== 'ACTIVE' || action.status !== 'ACTIVE') return deny('TOOL_NOT_ACTIVE', { toolActionId: action.id });
   let args: JsonObject;
   try {
     args = validateArgs(assertArgsSchema(action.argsSchema), input.args);
   } catch (error) {
-    if (isQandeelError(error, 'VALIDATION_FAILED')) return deny('INVALID_ARGS');
+    if (isQandeelError(error, 'VALIDATION_FAILED')) return deny('INVALID_ARGS', { toolActionId: action.id });
     throw error;
   }
   // External tool egress is its own decision (D14-B.7): the run's data class must fit the action.
-  if (dataRank(dataClass) > dataRank(action.dataClassCeiling) || (String(row.tool_egress) === 'EXTERNAL' && dataClass === 'D4')) return deny('EGRESS_DENIED', { dataClass });
+  if (dataRank(dataClass) > dataRank(action.dataClassCeiling) || (String(row.tool_egress) === 'EXTERNAL' && dataClass === 'D4')) return deny('EGRESS_DENIED', { toolActionId: action.id, dataClass });
   const capability = toolCapability(input.toolCode, input.actionCode);
   const grants = ctx.db.all(`SELECT * FROM permission_grants WHERE employee_id = ? AND status = 'ACTIVE'`, e.id).map(mapGrant);
   const decision = decideEmployeeAction('EMPLOYEE', e.state, grants, { capability, resource: input.toolCode, risk: action.risk, dataClass, at: ts(ctx) });
@@ -361,27 +413,23 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
     appendAudit(ctx, 'tool.review_required', 'run', fence.runId, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', 'REVIEW_PATH_UNAVAILABLE', { toolActionId: action.id });
     return { kind: 'REVIEW_REQUIRED' };
   }
-  if (decision.effect === 'DENY') return deny(decision.code, { risk: action.risk });
+  if (decision.effect === 'DENY') return deny(decision.code, { toolActionId: action.id, risk: action.risk });
   const argsSha256 = sha256Hex(canonicalJson(args));
   if (!/^[A-Za-z0-9:._-]{8,128}$/.test(input.idempotencyKey)) throw new QandeelError('VALIDATION_FAILED', 'idempotency key is a runtime-derived identifier', { field: 'idempotencyKey' });
   const existingRow = ctx.db.get('SELECT * FROM tool_invocations WHERE tool_action_id = ? AND idempotency_key = ?', action.id, input.idempotencyKey);
   const existing: ToolInvocationRecord | null = existingRow ? mapToolInvocation(existingRow) : null;
   if (existing) {
-    if (existing.argsSha256 !== argsSha256) return deny('IDEMPOTENCY_CONFLICT');
+    if (existing.argsSha256 !== argsSha256) return deny('IDEMPOTENCY_CONFLICT', { toolActionId: action.id });
     if (existing.state === 'SUCCEEDED') return { kind: 'REPLAY', invocationId: existing.id, result: existing.result };
     if (existing.state === 'FAILED') return { kind: 'FAILED', invocationId: existing.id, code: existing.failureCode ?? 'FAILED' };
     if (existing.state === 'RECONCILIATION_REQUIRED') return { kind: 'RECONCILIATION_REQUIRED', invocationId: existing.id };
     if (existing.state === 'INTENT_RECORDED') {
-      // A live intent of another worker, or an orphan recovery has not classified yet: never guess.
-      if (action.sideEffects === 'UNSAFE') {
-        ctx.db.run(`UPDATE tool_invocations SET state = 'RECONCILIATION_REQUIRED', failure_code = 'INTENT_UNSETTLED', updated_at = ? WHERE id = ?`, ts(ctx), existing.id);
-        if (existing.reservationId) holdReservationTx(ctx, getReservationRow(ctx, existing.reservationId), 'INTENT_UNSETTLED');
-        return { kind: 'RECONCILIATION_REQUIRED', invocationId: existing.id };
-      }
-      if (existing.reservationId) {
-        const r = getReservationRow(ctx, existing.reservationId);
-        if (r.state === 'RESERVED') releaseReservationTx(ctx, r, 'SUPERSEDED_BY_RETRY', SYSTEM_RUNTIME_REF);
-      }
+      // An unsettled intent is never superseded while its run lives; a dead run's intent is
+      // classified exactly as recovery would (the driver may have run: charge or hold, never release).
+      const owner = ctx.db.get<{ state: string }>('SELECT state FROM runs WHERE id = ?', existing.runId);
+      if (owner?.state === 'RUNNING') return { kind: 'IN_FLIGHT', invocationId: existing.id };
+      const next = classifyOrphanIntent(ctx, existing, action.sideEffects);
+      if (next === 'RECONCILIATION_REQUIRED') return { kind: 'RECONCILIATION_REQUIRED', invocationId: existing.id };
     }
   }
   // R3: scoped, durable Founder approval for exactly these arguments (Stage 3 §3/§5).
@@ -396,7 +444,7 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
     const fingerprint = approvalFingerprint(scope);
     usable = ctx.db.all(`SELECT * FROM approvals WHERE work_item_id = ? AND action = ? AND state = 'APPROVED' ORDER BY created_at, id`, item.id, capability).map(mapApproval).find((c) => approvalUsable(c, fingerprint, now as Timestamp));
     if (!usable) {
-      if (ctx.db.get(`SELECT 1 AS r FROM approvals WHERE fingerprint = ? AND state = 'REJECTED'`, fingerprint)) return deny('APPROVAL_REJECTED');
+      if (ctx.db.get(`SELECT 1 AS r FROM approvals WHERE fingerprint = ? AND state = 'REJECTED'`, fingerprint)) return deny('APPROVAL_REJECTED', { toolActionId: action.id });
       const req = upsertApprovalRequest(ctx, e.ref, scope, null);
       return { kind: 'APPROVAL_REQUIRED', approvalId: req.id };
     }
@@ -434,7 +482,7 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
   }
   appendEvent(ctx, 'run.tool_invocation', 'run', fence.runId, { correlationId: item.correlationId }, { invocationId, toolActionId: action.id, state: 'INTENT_RECORDED', risk: action.risk });
   appendAudit(ctx, 'tool.intent', 'tool_invocation', invocationId, { actorRef: e.ref, correlationId: item.correlationId }, 'OK', null, { runId: fence.runId, toolActionId: action.id, risk: action.risk, approvalId, grantId: decision.grantId });
-  return { kind: 'EXECUTE', invocationId, reservationId, driverCode: String(row.driver_code), actionCode: action.code, sideEffects: action.sideEffects };
+  return { kind: 'EXECUTE', invocationId, reservationId, driverCode: String(row.driver_code), actionCode: action.code, sideEffects: action.sideEffects, args };
 }
 
 
@@ -466,9 +514,15 @@ export function txToolResult(ctx: StoreContext, fence: Fence, invocationId: Id, 
     if (r) releaseReservationTx(ctx, r, 'TOOL_NOT_EXECUTED', SYSTEM_RUNTIME_REF);
     state = 'RETRYABLE';
   } else {
-    ctx.db.run(`UPDATE tool_invocations SET state = 'RECONCILIATION_REQUIRED', failure_code = ?, updated_at = ? WHERE id = ?`, outcome.code.slice(0, 64), at, invocationId);
-    if (r) holdReservationTx(ctx, r, 'TOOL_OUTCOME_UNKNOWN');
-    state = 'RECONCILIATION_REQUIRED';
+    // The driver may have run. Its cost is the fixed per-call amount, so it is charged (never
+    // released); an UNSAFE effect additionally needs reconciliation before anything repeats it.
+    const side = String(ctx.db.get<{ s: string }>('SELECT side_effects AS s FROM tool_actions WHERE id = ?', inv.toolActionId)?.s);
+    state = side === 'UNSAFE' ? 'RECONCILIATION_REQUIRED' : 'RETRYABLE';
+    ctx.db.run(`UPDATE tool_invocations SET state = ?, failure_code = ?, updated_at = ? WHERE id = ?`, state, outcome.code.slice(0, 64), at, invocationId);
+    if (r) {
+      if (side === 'UNSAFE') holdReservationTx(ctx, r, 'TOOL_OUTCOME_UNKNOWN');
+      else settleReservationTx(ctx, r, { inputTokens: 0, outputTokens: 0, withinBounds: true, sessionId: null, outcome: 'FAILED_CHARGED' }, SYSTEM_RUNTIME_REF);
+    }
   }
   appendEvent(ctx, 'run.tool_invocation', 'run', fence.runId, { correlationId: getWorkItemRow(ctx, inv.workItemId).correlationId }, { invocationId, state });
   appendAudit(ctx, 'tool.result', 'tool_invocation', invocationId, { actorRef: SYSTEM_RUNTIME_REF }, 'OK', outcome.ok ? null : outcome.code.slice(0, 64), { state, runId: fence.runId });
@@ -476,6 +530,23 @@ export function txToolResult(ctx: StoreContext, fence: Fence, invocationId: Id, 
 }
 
 // --- Recovery ---------------------------------------------------------------------------------------
+
+/**
+ * An unsettled tool intent whose run is gone. The driver may have run: the fixed per-call cost is
+ * charged (never released); NONE / IDEMPOTENT actions become RETRYABLE under the same key, UNSAFE
+ * ones require reconciliation with the reservation held.
+ */
+function classifyOrphanIntent(ctx: StoreContext, inv: ToolInvocationRecord, sideEffects: string): 'RETRYABLE' | 'RECONCILIATION_REQUIRED' {
+  const r = inv.reservationId ? getReservationRow(ctx, inv.reservationId) : null;
+  const next = sideEffects === 'UNSAFE' ? 'RECONCILIATION_REQUIRED' : 'RETRYABLE';
+  ctx.db.run(`UPDATE tool_invocations SET state = ?, failure_code = 'RUN_INTERRUPTED', updated_at = ? WHERE id = ?`, next, ts(ctx), inv.id);
+  if (r?.state === 'RESERVED') {
+    if (next === 'RECONCILIATION_REQUIRED') holdReservationTx(ctx, r, 'RUN_INTERRUPTED');
+    else settleReservationTx(ctx, r, { inputTokens: 0, outputTokens: 0, withinBounds: true, sessionId: null, outcome: 'FAILED_CHARGED' }, SYSTEM_RUNTIME_REF);
+  }
+  appendAudit(ctx, 'tool.recovered', 'tool_invocation', inv.id, { actorRef: SYSTEM_RUNTIME_REF }, 'OK', next, { runId: inv.runId });
+  return next;
+}
 
 export interface GovernedRecoverySummary {
   readonly reservationsHeld: number;
@@ -500,32 +571,27 @@ export function txRecoverGovernedOrphans(ctx: StoreContext, limit: number): Gove
     .map(mapToolInvocation);
   for (const inv of invocations) {
     const side = String(ctx.db.get<{ s: string }>('SELECT side_effects AS s FROM tool_actions WHERE id = ?', inv.toolActionId)?.s);
-    const r = inv.reservationId ? getReservationRow(ctx, inv.reservationId) : null;
-    if (side === 'UNSAFE') {
-      ctx.db.run(`UPDATE tool_invocations SET state = 'RECONCILIATION_REQUIRED', failure_code = 'RUN_INTERRUPTED', updated_at = ? WHERE id = ?`, ts(ctx), inv.id);
-      if (r?.state === 'RESERVED') holdReservationTx(ctx, r, 'RUN_INTERRUPTED');
-      invocationsHeld++;
-    } else {
-      ctx.db.run(`UPDATE tool_invocations SET state = 'RETRYABLE', failure_code = 'RUN_INTERRUPTED', updated_at = ? WHERE id = ?`, ts(ctx), inv.id);
-      if (r?.state === 'RESERVED') {
-        releaseReservationTx(ctx, r, 'RUN_INTERRUPTED', SYSTEM_RUNTIME_REF);
-        reservationsReleased++;
-      }
-      invocationsRetryable++;
-    }
-    appendAudit(ctx, 'tool.recovered', 'tool_invocation', inv.id, { actorRef: SYSTEM_RUNTIME_REF }, 'OK', side === 'UNSAFE' ? 'RECONCILIATION_REQUIRED' : 'RETRYABLE', { runId: inv.runId });
+    const next = classifyOrphanIntent(ctx, inv, side);
+    if (next === 'RECONCILIATION_REQUIRED') invocationsHeld++;
+    else invocationsRetryable++;
   }
+  // Model-call reservations of dead runs: the call may have been sent and billed → held. Tool-call
+  // reservations are classified only through their invocation (above), never released blindly here.
   const reservations = ctx.db
-    .all(`SELECT b.* FROM budget_reservations b JOIN runs r ON r.id = b.run_id WHERE b.state = 'RESERVED' AND r.state <> 'RUNNING' LIMIT ?`, limit)
+    .all(`SELECT b.* FROM budget_reservations b JOIN runs r ON r.id = b.run_id WHERE b.state = 'RESERVED' AND b.purpose = 'MODEL_CALL' AND r.state <> 'RUNNING' LIMIT ?`, limit)
     .map(mapReservation);
   for (const r of reservations) {
-    if (r.purpose === 'MODEL_CALL') {
-      holdReservationTx(ctx, r, 'RUN_INTERRUPTED');
-      reservationsHeld++;
-    } else {
-      releaseReservationTx(ctx, r, 'RUN_INTERRUPTED', SYSTEM_RUNTIME_REF);
-      reservationsReleased++;
-    }
+    holdReservationTx(ctx, r, 'RUN_INTERRUPTED');
+    reservationsHeld++;
+  }
+  // A tool reservation without an unsettled intent (not reachable today) is released only if no
+  // invocation references it at all.
+  for (const r of ctx.db
+    .all(`SELECT b.* FROM budget_reservations b JOIN runs r ON r.id = b.run_id WHERE b.state = 'RESERVED' AND b.purpose = 'TOOL_CALL' AND r.state <> 'RUNNING'
+            AND NOT EXISTS (SELECT 1 FROM tool_invocations i WHERE i.reservation_id = b.id) LIMIT ?`, limit)
+    .map(mapReservation)) {
+    releaseReservationTx(ctx, r, 'RUN_INTERRUPTED', SYSTEM_RUNTIME_REF);
+    reservationsReleased++;
   }
   return { reservationsHeld, reservationsReleased, invocationsRetryable, invocationsHeld };
 }

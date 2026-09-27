@@ -144,6 +144,9 @@ export interface RuntimeOptions {
 /** Governance administration handed out by the runtime: every call wakes the dispatcher after commit. */
 export type GovernanceAdmin = Omit<GovernanceStore, never>;
 
+const recoverGovernedOrphansCount = (g: { reservationsHeld: number; reservationsReleased: number; invocationsRetryable: number; invocationsHeld: number }): number =>
+  g.reservationsHeld + g.reservationsReleased + g.invocationsRetryable + g.invocationsHeld;
+
 interface ActiveRun {
   readonly claim: Claim;
   readonly processor: Processor;
@@ -433,7 +436,7 @@ export class CompanyRuntime {
       }
     }
     try {
-      if (this.#fence) recoverGovernedOrphans(store, this.#fence);
+      if (this.#fence) for (let i = 0; i < 20 && recoverGovernedOrphansCount(recoverGovernedOrphans(store, this.#fence)) > 0; i++);
     } catch (error) {
       this.#log.warn('runtime.shutdown_governed_recovery_failed', { code: errorCode(error) });
     }
@@ -665,7 +668,7 @@ export class CompanyRuntime {
           interrupted++;
         }
         // Governed work left by an interrupted run is classified at once (held / retryable).
-        if (interrupted > 0) recoverGovernedOrphans(store, this.#fence);
+        if (interrupted > 0) for (let i = 0; i < 20 && recoverGovernedOrphansCount(recoverGovernedOrphans(store, this.#fence)) > 0; i++);
         while (this.#active.size < this.#concurrency && this.#state === 'READY') {
           this.#claimsAttempted++;
           const claim = claimNext(store, { workerId: `${this.instanceId}:${++this.#workerSeq}`, leaseMs: this.#jobLeaseMs, kinds: this.#registry.sideEffects, supervisor: this.#fence });

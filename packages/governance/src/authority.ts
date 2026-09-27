@@ -163,3 +163,10 @@ export function approvalUsable(a: ApprovalView, fingerprint: string, at: Timesta
  * the employee (LOG → HOLD). The pause reduces autonomy; it never grants anything.
  */
 export const AUTO_PAUSE_DENIALS_PER_RUN = 3;
+
+/**
+ * Only authority / bypass signals count toward containment (Stage 3 §9: ordinary task failure does
+ * not pause an employee). An unknown tool, malformed arguments or a Founder rejection are ordinary
+ * failures: audited, never counted.
+ */
+export const CONTAINMENT_SIGNALS: ReadonlySet<string> = new Set(['NO_GRANT', 'FOUNDER_ONLY', 'EGRESS_DENIED', 'IDEMPOTENCY_CONFLICT']);

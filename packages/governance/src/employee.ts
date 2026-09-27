@@ -124,11 +124,19 @@ export function profileJson(v: unknown): string {
 /** Opaque qualification evidence references (C3 owns their meaning), e.g. `academy:cert-123`. */
 export const QUALIFICATION_REF = /^[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9._:-]{1,128}$/;
 
+/**
+ * Reference kinds reserved for later subsystems. `academy:` certificates are issued by the C3
+ * Academy, which does not exist yet: C2 refuses them rather than store something that looks like
+ * certification it cannot verify.
+ */
+export const RESERVED_QUALIFICATION_KINDS: readonly string[] = ['academy', 'certification', 'cert'];
+
 export function assertQualificationRefs(v: unknown): string[] {
   if (!Array.isArray(v)) throw new QandeelError('VALIDATION_FAILED', 'qualification refs must be an array', { field: 'qualificationRefs' });
   if (v.length > 32) throw new QandeelError('VALIDATION_FAILED', 'too many qualification refs', { field: 'qualificationRefs' });
   return [...new Set(v.map((r, i) => {
     if (typeof r !== 'string' || !QUALIFICATION_REF.test(r)) throw new QandeelError('VALIDATION_FAILED', 'a qualification ref is "<kind>:<id>"', { field: `qualificationRefs[${i}]` });
+    if (RESERVED_QUALIFICATION_KINDS.includes(r.slice(0, r.indexOf(':')))) throw new QandeelError('VALIDATION_FAILED', 'certification references belong to the C3 Academy; C2 records Founder attestation references only', { field: `qualificationRefs[${i}]` });
     return r;
   }))];
 }

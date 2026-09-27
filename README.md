@@ -105,7 +105,7 @@ npm run ci
 | `npm run c1:integration` | Multi-process storage proofs + runtime integration tests (after a build) |
 | `npm run c1:faults` | The process-kill fault matrix (after a build) |
 | `npm run c1:acceptance -- --workspace <dir>` | C1 local acceptance in a disposable directory (below) |
-| `npm run c2:mutation` | Removes 13 C2 authority / budget / tool / routing gates from the build; their proof tests must fail (after a build) |
+| `npm run c2:mutation` | Removes 15 C2 authority / budget / tool / routing gates from the build; their proof tests must fail (after a build) |
 | `npm run c2:acceptance -- --workspace <dir>` | C2 local acceptance in a disposable directory (below) |
 | `npm run verify` | Repository-contract verifier (`scripts/verify-bootstrap.mjs`) |
 | `npm run ci` | build → typecheck → lint → test → C1 + C2 mutation checks → verify; the same command CI runs |

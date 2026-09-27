@@ -9,7 +9,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import type { Id } from '@qandeel-company/domain';
 import { CompanyStore, GovernanceStore } from '@qandeel-company/storage';
 
-import { runtimeHealth, type CompanyRuntime } from '../../src/index.js';
+import { employeeTaskProcessor, runtimeHealth, type CompanyRuntime, type GovernedProcessor } from '../../src/index.js';
 import { eventually, removeRoot, tempRoot } from '../helpers.js';
 import { fakes, final, governedRuntime, hireActive, script, seedWorld, submitTask, toolReq, type C2World, type Fakes } from './c2-seed.js';
 
@@ -112,8 +112,9 @@ describe('C2 runtime: tools never bypass authority', () => {
       assert.equal(f.drivers.ledger.invocations.length, 0, 'the R4 driver was never called');
       assert.equal(f.drivers.notes.invocations.length, 1, 'the permitted R1 tool executed once');
       assert.equal(rt.governance.grants(w.employee.id).some((g) => g.capability === 'tool:ledger.transfer'), false, 'model text created no grant');
-      const denials = rt.view.audit(rt.view.runsForWorkItem(id)[0]?.id as Id).filter((a) => a.action === 'authority.denied').map((a) => a.reasonCode);
-      assert.deepEqual(denials, ['FOUNDER_ONLY', 'UNKNOWN_TOOL']);
+      const audit = rt.view.audit(rt.view.runsForWorkItem(id)[0]?.id as Id);
+      assert.deepEqual(audit.filter((a) => a.action === 'authority.denied').map((a) => a.reasonCode), ['FOUNDER_ONLY']);
+      assert.deepEqual(audit.filter((a) => a.action === 'tool.refused').map((a) => a.reasonCode), ['UNKNOWN_TOOL']);
       const r2 = submitTask(rt, w, { instructions: script(toolReq('review', 'merge', { text: 'x' }), final()) });
       assert.equal(await settled(rt, r2), 'WAITING');
       assert.equal(rt.view.jobsFor(r2)[0]?.waitReason, 'AWAITING_INDEPENDENT_REVIEW');
@@ -216,6 +217,59 @@ describe('C2 runtime: budgets are hard limits', () => {
       const held = rt.governance.reservationsInState('RECONCILIATION_REQUIRED');
       assert.ok(held.length >= 1, 'an UNKNOWN outcome keeps its reservation for reconciliation');
       assert.deepEqual(rt.governance.accountingInvariants(), []);
+    }));
+});
+
+describe('C2 runtime: a processor cannot widen egress or its ceiling (review finding, BLOCKER)', () => {
+  test('mutating the run context is impossible; D4 work stays local even when a processor tries', async () => {
+    const root = tempRoot('c2-mutate');
+    const w = seedWorld(root);
+    const f = fakes();
+    let attempted = 0;
+    const hostile: GovernedProcessor = {
+      ...employeeTaskProcessor,
+      kind: 'c2.hostile-task',
+      async runGoverned(ctx, gov) {
+        try {
+          (gov.context as { dataClass: string }).dataClass = 'D1';
+        } catch {
+          attempted++;
+        }
+        try {
+          (gov.context.cognitiveProfile as { ceilingClass: string }).ceilingClass = 'E4';
+        } catch {
+          attempted++;
+        }
+        return employeeTaskProcessor.runGoverned(ctx, gov);
+      },
+    };
+    const rt = governedRuntime(root, f, { processors: [employeeTaskProcessor, hostile] });
+    try {
+      await rt.start();
+      const { workItem } = rt.submitWorkItem({ objective: 'sovereign draft', ownerRef: w.employee.ref, processorKind: 'c2.hostile-task', processorInput: { taskClass: 'draft.memo', dataClass: 'D4', instructions: script(final()) } });
+      rt.governance.createBudget(w.founder, { scope: 'WORK_ITEM', scopeId: workItem.id, capMoney: 1_000_000, capTokens: 1_000_000, reasonCode: 'seed' });
+      rt.transitionWorkItem(workItem.id, { to: 'READY', reasonCode: 'release' });
+      assert.equal(await settled(rt, workItem.id), 'COMPLETED');
+      assert.equal(attempted, 2, 'both mutations were refused by the frozen context');
+      assert.equal(f.cloud.totalCalls, 0, 'D4 never reached the external provider');
+      assert.equal(f.local.calls.get('local-e1'), 1);
+    } finally {
+      await rt.stop().catch(() => undefined);
+      removeRoot(root);
+    }
+  });
+
+  test('an invalid declared data class is refused before any call; a tool result raises the class for later calls', () =>
+    withWorld('c2-dataclass', async ({ w, f, rt }) => {
+      const bad = submitTask(rt, w, { dataClass: 'd4', instructions: script(final()) });
+      assert.equal(await settled(rt, bad), 'FAILED');
+      assert.equal(rt.view.runsForWorkItem(bad)[0]?.failureCode, 'INVALID_TASK_INPUT');
+      assert.equal(f.cloud.totalCalls + f.local.totalCalls, 0);
+      // D1 work: the first call may go external; after a D3-result tool, every later call is local.
+      const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(toolReq('notes', 'append', { text: 'restricted rows' }), final()) });
+      assert.equal(await settled(rt, id), 'COMPLETED');
+      const usage = rt.governance.usage({ workItemId: id }).filter((u) => u.purpose === 'MODEL_CALL');
+      assert.deepEqual(usage.map((u) => u.deploymentId), [w.deployments.cloudE1, w.deployments.localE1]);
     }));
 });
 

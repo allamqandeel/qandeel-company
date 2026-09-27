@@ -10,6 +10,7 @@ import { isQandeelError, type Id } from '@qandeel-company/domain';
 import { CompanyStore, GovernanceStore } from '../src/index.js';
 import {
   authorizeModelCall,
+  recordDeploymentOutcome,
   beginGovernedRun,
   claimNext,
   interruptClaim,
@@ -172,7 +173,7 @@ describe('C2 authority: default deny, no self-escalation, Founder approvals', ()
 });
 
 describe('C2 tools: authority path before any driver', () => {
-  test('R1 permitted; R0 needs its own grant; R2 fails closed (review); R4 refused; unknown tool refused', () => {
+  test('R1 permitted; R2 fails closed (review); R4 refused; unknown tool refused; only authority signals count toward containment', () => {
     const h = harness();
     try {
       const s = seed(h.store);
@@ -181,16 +182,66 @@ describe('C2 tools: authority path before any driver', () => {
       const f = claim.fence;
       const append = recordToolIntent(h.store, f, { toolCode: 'notes', actionCode: 'append', args: { text: 'hello' }, idempotencyKey: 'wi:test:s1' });
       assert.equal(append.kind, 'EXECUTE');
+      assert.deepEqual(append.kind === 'EXECUTE' && append.args, { text: 'hello' }, 'the executor receives the validated arguments');
       assert.equal(recordToolIntent(h.store, f, { toolCode: 'review', actionCode: 'merge', args: { text: 'x' }, idempotencyKey: 'wi:test:s2' }).kind, 'REVIEW_REQUIRED');
-      const r4 = recordToolIntent(h.store, f, { toolCode: 'ledger', actionCode: 'transfer', args: { text: 'x' }, idempotencyKey: 'wi:test:s3' });
-      assert.deepEqual(r4, { kind: 'DENIED', code: 'FOUNDER_ONLY', paused: false });
-      const unknown = recordToolIntent(h.store, f, { toolCode: 'shellish', actionCode: 'run', args: {}, idempotencyKey: 'wi:test:s4' });
-      assert.equal(unknown.kind === 'DENIED' && unknown.code, 'UNKNOWN_TOOL');
-      // Third denial in this run: containment pauses the employee (it never grants anything).
-      assert.equal(unknown.kind === 'DENIED' && unknown.paused, false);
-      const third = recordToolIntent(h.store, f, { toolCode: 'notes', actionCode: 'append', args: { text: 'x', apiKey: 'y' }, idempotencyKey: 'wi:test:s5' });
-      assert.deepEqual(third, { kind: 'DENIED', code: 'INVALID_ARGS', paused: true });
+      assert.deepEqual(recordToolIntent(h.store, f, { toolCode: 'ledger', actionCode: 'transfer', args: { text: 'x' }, idempotencyKey: 'wi:test:s3' }), { kind: 'DENIED', code: 'FOUNDER_ONLY', paused: false });
+      // Ordinary failures (model mistakes) are refused and audited but never pause the employee.
+      const unknown = recordToolIntent(h.store, f, { toolCode: 'patient-name-leak', actionCode: 'run', args: {}, idempotencyKey: 'wi:test:s4' });
+      assert.deepEqual(unknown, { kind: 'DENIED', code: 'UNKNOWN_TOOL', paused: false });
+      assert.deepEqual(recordToolIntent(h.store, f, { toolCode: 'notes', actionCode: 'append', args: { text: 'x', apiKey: 'y' }, idempotencyKey: 'wi:test:s5' }), { kind: 'DENIED', code: 'INVALID_ARGS', paused: false });
+      assert.ok(!JSON.stringify(h.store.audit(f.runId)).includes('patient-name-leak'), 'model-written names never enter audit (Rule A)');
+      assert.equal(s.gov.getEmployee(s.employee.id).state, 'ACTIVE');
+      // Repeated authority violations do: the third R4 attempt pauses the employee (it grants nothing).
+      assert.deepEqual(recordToolIntent(h.store, f, { toolCode: 'ledger', actionCode: 'transfer', args: { text: 'y' }, idempotencyKey: 'wi:test:s6' }), { kind: 'DENIED', code: 'FOUNDER_ONLY', paused: false });
+      assert.deepEqual(recordToolIntent(h.store, f, { toolCode: 'ledger', actionCode: 'transfer', args: { text: 'z' }, idempotencyKey: 'wi:test:s7' }), { kind: 'DENIED', code: 'FOUNDER_ONLY', paused: true });
       assert.equal(s.gov.getEmployee(s.employee.id).state, 'PAUSED');
+    } finally {
+      h.close();
+    }
+  });
+
+  test('data class: an invalid declared class fails closed to D4; a tool result raises the context class durably', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store);
+      governedItem(h, s, s.employee, { dataClass: 'd1-typo' });
+      const { claim } = claimGoverned(h);
+      assert.ok(claim);
+      // The typo is treated as D4, beyond this employee's D3 model grant: denied, never widened.
+      assert.deepEqual(authorizeModelCall(h.store, claim.fence, { taskClass: 'draft.memo', dataClass: 'D0' }), { ok: false, code: 'NO_GRANT', paused: false });
+      // A D1 item whose tool returns D3 data is D3 from then on.
+      governedItem(h, s, s.employee, { dataClass: 'D1' });
+      const c2 = claimGoverned(h, 'w2').claim;
+      const readA = recordToolIntent(h.store, c2.fence, { toolCode: 'notes', actionCode: 'append', args: { text: 'x' }, idempotencyKey: 'wi:test:r1' });
+      assert.equal(readA.kind, 'EXECUTE');
+      const before = authorizeModelCall(h.store, c2.fence, { taskClass: 'draft.memo', dataClass: 'D1' });
+      assert.equal(before.ok && before.dataClass, 'D1');
+      if (readA.kind === 'EXECUTE') recordToolResult(h.store, c2.fence, readA.invocationId, { ok: true, result: { rows: 1 } });
+      const after = authorizeModelCall(h.store, c2.fence, { taskClass: 'draft.memo', dataClass: 'D1' });
+      assert.equal(after.ok && after.dataClass, 'D3');
+    } finally {
+      h.close();
+    }
+  });
+
+  test('an interrupted tool intent is charged (the driver may have run), never released; a cap cannot drop below a child cap', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store);
+      governedItem(h, s);
+      const { claim } = claimGoverned(h);
+      const intent = recordToolIntent(h.store, claim.fence, { toolCode: 'notes', actionCode: 'append', args: { text: 'x' }, idempotencyKey: 'wi:test:c1' });
+      assert.equal(intent.kind, 'EXECUTE');
+      interruptClaim(h.store, h.supervisor, claim.fence.jobId, 'TEST_CRASH');
+      assert.deepEqual(recoverGovernedOrphans(h.store, h.supervisor), { reservationsHeld: 0, reservationsReleased: 0, invocationsRetryable: 1, invocationsHeld: 0 });
+      const r = s.gov.reservations(claim.fence.runId)[0];
+      assert.equal(r?.state, 'SETTLED');
+      assert.equal(s.gov.usage({ runId: claim.fence.runId })[0]?.outcome, 'FAILED_CHARGED');
+      assert.deepEqual(s.gov.accountingInvariants(), []);
+      const dept = s.gov.budgetFor('DEPARTMENT', s.departmentId);
+      const company = s.gov.budgetFor('COMPANY', 'company');
+      assert.ok(dept && company);
+      assert.throws(() => s.gov.changeBudgetCap(s.founder, company.id, { capMoney: dept.capMoney - 1, capTokens: company.capTokens, reasonCode: 'x' }), code('VALIDATION_FAILED'));
     } finally {
       h.close();
     }
@@ -283,7 +334,10 @@ describe('C2 budgets: reserve before spend, settle actual, hard refusal, coheren
       assert.equal(usage.employeeId, s.employee.id);
       assert.equal(usage.departmentId, s.departmentId);
       assert.deepEqual(s.gov.accountingInvariants(), []);
-      assert.throws(() => settleReservation(h.store, claim.fence, r.reservation.id, { inputTokens: 1, outputTokens: 1, withinBounds: true, sessionId: null, outcome: 'OK' }), code('ALREADY_SETTLED'), 'no double settlement');
+      assert.equal(settleReservation(h.store, claim.fence, r.reservation.id, { inputTokens: 1, outputTokens: 1, withinBounds: true, sessionId: null, outcome: 'OK' }), null, 'no double settlement');
+      assert.equal(company()?.spentMoney, 600, 'nothing charged twice');
+      assert.ok(h.store.audit(r.reservation.id).some((x) => x.action === 'budget.late_usage_discrepancy'), 'the late report is recorded as a discrepancy, not lost');
+      assert.equal(s.gov.usage({ runId: claim.fence.runId }).length, 1);
     } finally {
       h.close();
     }
@@ -362,6 +416,20 @@ describe('C2 budgets: reserve before spend, settle actual, hard refusal, coheren
       assert.equal(s.gov.reservations(claim.fence.runId)[0]?.state, 'SETTLED');
       assert.equal(s.gov.usage({ runId: claim.fence.runId })[0]?.outcome, 'RECONCILED');
       assert.deepEqual(s.gov.accountingInvariants(), []);
+    } finally {
+      h.close();
+    }
+  });
+
+  test('a replaced worker cannot touch provider health (circuits / holds)', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store);
+      governedItem(h, s);
+      const { claim } = claimGoverned(h);
+      assert.throws(() => recordDeploymentOutcome(h.store, { ...claim.fence, fencingToken: claim.fence.fencingToken + 1 }, s.deploymentId, 'AUTH'), code('STALE_LEASE'));
+      recordDeploymentOutcome(h.store, claim.fence, s.deploymentId, 'QUOTA_EXHAUSTED');
+      assert.equal(s.gov.deployment(s.deploymentId).status, 'HOLD');
     } finally {
       h.close();
     }

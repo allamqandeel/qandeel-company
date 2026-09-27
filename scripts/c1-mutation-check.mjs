@@ -34,7 +34,8 @@ const MUTATIONS = [
     file: 'packages/storage/dist/src/runtime-authority.js',
     search: 'verifySupervisor(ctx, supervisor);',
     replace: '/* mutation: supervisor verification removed */',
-    expectedCount: 4,
+    // 4 C1 recovery writes + the C2 governed-orphan recovery (also supervisor-fenced).
+    expectedCount: 5,
     cwd: 'packages/storage',
     tests: ['dist/test/supervisor-authority.test.js'],
   },
