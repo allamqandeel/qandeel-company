@@ -206,7 +206,7 @@ describe('D-C3-24: ACTIVE role reassignment requires a valid target-role certifi
       const { employee, certificationId: analystCertificationId } = activeCertified(h, s);
       assert.equal(s.gov.reassignEmployee(s.founder, employee.id, { roleRef: 'role:growth-director', reasonCode: 'founder.role_change' }).state, 'RETRAINING');
 
-      const growthWorld = academyWorld(h, s, 'role:growth-director');
+      const growthWorld = academyWorld(h, s, 'role:growth-director', {}, 'growth.strategy');
       const growthEmployee = s.gov.getEmployee(employee.id);
       const growth = certify(h, s, growthEmployee, growthWorld);
       s.gov.transitionEmployee(s.founder, employee.id, { to: 'PROBATION', reasonCode: 'recertified' });
