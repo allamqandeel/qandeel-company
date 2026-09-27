@@ -41,7 +41,7 @@ A focused remediation of one real defect found by Founder-host local acceptance.
   egress proxy** and was not read in this pass. A Node 24.21.0 / SQLite 3.53.4 probe confirmed the
   facts the design relies on: `BEGIN IMMEDIATE` returns BUSY (5) after the timeout while another
   connection holds the lock; WAL readers keep reading; `COMMIT` after a successful
-  `BEGIN IMMEDIATE` does not return BUSY. The Founder-host re-read (D-C1-05) remains required.
+  `BEGIN IMMEDIATE` does not return BUSY. The Cloud limitation was later closed by Founder-host re-validation (§24), which successfully read the required official SQLite pages.
 
 **Change** (`packages/storage/src/backup.ts`; no schema change):
 - `finalizeBackupRecord` retries **only** the small record transaction and **only** on
@@ -353,7 +353,7 @@ installed. UI, design, document, slides and data-visualization Skills were not i
     failure, the defensive probe, extension refusal, backup plus a rollback-journal snapshot.
 
   The WAL/transaction/pragma facts were not re-fetched; they are recorded from prior knowledge and
-  match the task. **Founder-host follow-up:** re-read the four pages (D-C1-05).
+  match the task. **Founder-host follow-up:** completed during re-validation (§24); the required official pages were reachable and reviewed successfully.
 - **Consequences:**
   - the Node floor rises to 24.12.0 (D-C1-02);
   - `synchronous=FULL`; `wal_autocheckpoint` untouched (D-C1-04);
@@ -719,8 +719,7 @@ clone of exact SHA `4140d5ee6de1b6b1d7c5379de3535320bf442b45`:
 
 GitHub exact-head CI run `36291573986` on the same SHA passed on Windows and Ubuntu.
 
-**Still open (not part of the recorded Founder-host evidence):** the re-read of the four
-`sqlite.org` pages (D-C1-05, D-C1-24), which the Cloud egress proxy blocked.
+**Official-source follow-up: COMPLETE.** During Founder-host re-validation, the required `sqlite.org` pages and the Node 24 `node:sqlite` documentation were reachable and reviewed successfully, closing the Cloud egress limitation recorded in D-C1-05 and D-C1-24.
 
 ## 25. Exact next gate
 
