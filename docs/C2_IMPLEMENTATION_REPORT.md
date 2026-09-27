@@ -1,7 +1,7 @@
 # C2 — Employees + Models + Tools + Cost Governance — Implementation Report
 
-> **C2 CLOUD IMPLEMENTATION CANDIDATE — NOT CLOSED.** There is no C2 closure record. Closure needs
-> independent review of an exact SHA and Founder-host validation.
+> **C2 — CLOSED / READY FOR MERGE.** Independent review and Founder-host validation passed on
+> exact candidate `c6d54cfde8e6243e409d0d08632d1e6ff5c5e381`. See `docs/C2_CLOSURE_RECORD.md`.
 
 ## 1. Baseline, branch, PR
 
@@ -11,7 +11,7 @@
   this task.
 - **Lifecycle correction:**
   - the implementation map, README and C1 closure record now say C1 is CLOSED / MERGED / CANONICAL;
-  - C2 is "IN PROGRESS — Cloud implementation candidate (not closed)".
+  - C2 gate is CLOSED / READY FOR MERGE; C3 is NOT STARTED.
 
 ## 2. Authority read
 
@@ -195,13 +195,18 @@ The current results are in §15.
 - **Lexical confinement rules.** `model-calls-confined` and `tool-drivers-confined` are lexical;
   privacy of the registries is the structural guarantee.
 
-## 11. Founder-host / local gate (remaining)
+## 11. Founder-host / local gate — COMPLETE
 
-On the Founder Windows host, at the exact final SHA (the D-C2-13 remediation head, §15):
-1. `npm ci`, then `npm run ci` (includes the C1 + C2 mutation checks and the verifier).
-2. `npm run c1:acceptance -- --workspace <new dir>` and `npm run c2:acceptance -- --workspace <new dir>`.
-3. Re-read the sqlite.org pages on integer overflow and STRICT tables (Cloud egress gap).
-4. Independent review of the exact SHA. The Founder decides on the interpretations in §13.
+Founder-host validation passed on exact SHA `c6d54cfde8e6243e409d0d08632d1e6ff5c5e381`:
+
+1. `npm ci`, `npm audit` and `npm run ci`: PASS; 241 tests, 0 failed / skipped.
+2. C1 mutation 6/6; C2 mutation 19/19; verifier 41/41.
+3. C1 acceptance PASS (6 steps); C2 acceptance PASS (8 steps).
+4. The official `sqlite.org` pages on integer overflow and STRICT tables were reachable and
+   re-read successfully; no material contradiction with C2 assumptions was found.
+5. Exact-SHA independent review: PASS.
+
+The C2 gate is satisfied. See `docs/C2_CLOSURE_RECORD.md`.
 
 ## 12. Skills used
 
