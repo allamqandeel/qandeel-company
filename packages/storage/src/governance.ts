@@ -7,9 +7,17 @@
  * C2 (Stage 3 §3/§6): an employee actor is refused — on itself as a self-escalation. Director /
  * manager delegation is C4 and does not exist here.
  *
+ * A Founder reference is an identifier, not authentication. Until C5 provides the authenticated
+ * Founder surface, every Founder-authority write fails closed with `FOUNDER_SURFACE_UNAVAILABLE`
+ * (D-C2-13): presenting a Founder ref grants nothing. The only way to exercise these paths is the
+ * test-only seam (`src/testing/founder-seam.ts`), which production code cannot reach.
+ *
  * Nothing here executes work, claims jobs, calls a model or invokes a tool: the Runtime Supervisor
  * does that through the fenced `runtime-authority` writes.
  */
+import { realpathSync } from 'node:fs';
+import path from 'node:path';
+
 import {
   QandeelError,
   assertCode,
@@ -30,7 +38,7 @@ import {
   RESOURCE_SCOPE,
   approvalFingerprint,
   assertActionConsistency,
-  assertActivationEvidence,
+  assertActivationAvailable,
   assertApprover,
   assertArgsSchema,
   assertCapability,
@@ -64,6 +72,8 @@ import {
   type ReasoningClass,
   type RoutePolicy,
   type ToolEgress,
+  externalEgressAvailable,
+  MAX_EXTERNAL_DATA_CLASS,
 } from '@qandeel-company/governance';
 
 import {
@@ -236,11 +246,63 @@ export interface GovernanceHealth {
   readonly reservationsAwaitingReconciliation: number;
 }
 
+/**
+ * Workspaces whose Founder-authority surface is armed in this process. Nothing in production arms
+ * one: the only entry is the test-only seam, reachable solely under the `qandeel-test` export
+ * condition. C5 replaces this with an authenticated Founder surface.
+ */
+const armedFounderSurfaces = new Set<string>();
+/** The workspace root is canonical (realpath); an armed root is compared the same way (Windows 8.3 / symlinked temp dirs). */
+const canonical = (root: string): string => {
+  try {
+    return realpathSync.native(root);
+  } catch {
+    return path.resolve(root);
+  }
+};
+const founderSurfaceArmed = (store: CompanyStore): boolean => {
+  if (armedFounderSurfaces.size === 0) return false;
+  const root = canonical(store.workspace.root);
+  for (const armed of armedFounderSurfaces) if (canonical(armed) === root) return true;
+  return false;
+};
+let storeOf: (gov: GovernanceStore) => CompanyStore;
+
+/** Test-seam internals: not exported from the package index; only `src/testing/` may import them. */
+export const founderSurfaceInternals = Object.freeze({
+  arm(root: string): void {
+    armedFounderSurfaces.add(path.resolve(root));
+  },
+  disarm(root: string): void {
+    const target = canonical(root);
+    for (const armed of [...armedFounderSurfaces]) if (canonical(armed) === target) armedFounderSurfaces.delete(armed);
+  },
+  /** ACTIVE without C3 certification: a test fixture only, recorded as such in history and audit. */
+  activateEmployee(gov: GovernanceStore, actorRef: string, employeeId: string): EmployeeRecord {
+    const store = storeOf(gov);
+    if (!founderSurfaceArmed(store)) throw new QandeelError('FOUNDER_SURFACE_UNAVAILABLE', 'the Founder test surface is not armed for this workspace');
+    const ctx = storeContext(store);
+    return ctx.db.immediate('test-seam activation', () => {
+      const id = assertId(employeeId, 'employeeId');
+      const p = founder(ctx, actorRef, `employee:${id}`, 'employee lifecycle');
+      const e = getEmployeeRow(ctx, id);
+      assertEmployeeTransition(e.state, 'ACTIVE');
+      // The datastore keeps its invariant (ACTIVE carries evidence refs); the seam labels its own,
+      // under a kind production refuses, so it can never pass for Academy certification.
+      return setEmployeeState(ctx, e, 'ACTIVE', 'TEST_SEAM_ACTIVATION', p.ref, [...e.qualificationRefs, `test-seam:${id}`]);
+    });
+  },
+});
+
 export class GovernanceStore {
   readonly #store: CompanyStore;
 
   private constructor(store: CompanyStore) {
     this.#store = store;
+  }
+
+  static {
+    storeOf = (gov) => gov.#store;
   }
 
   /** A governance view over an open CompanyStore (same connection, same transactions). */
@@ -264,9 +326,13 @@ export class GovernanceStore {
    */
   #admin<T>(operation: string, actorRef: string, fn: (ctx: StoreContext) => T): T {
     try {
+      // Before anything else: a caller-supplied ref is never authentication (D-C2-13).
+      if (!founderSurfaceArmed(this.#store)) {
+        throw new QandeelError('FOUNDER_SURFACE_UNAVAILABLE', 'Founder authority requires the authenticated Founder surface (C5); a Founder reference is not authentication', { operation: operation.slice(0, 64) });
+      }
       return this.#write(operation, fn);
     } catch (error) {
-      if (error instanceof QandeelError && ['FOUNDER_ONLY', 'SELF_ESCALATION_REFUSED', 'AUTHORITY_DENIED'].includes(error.code)) {
+      if (error instanceof QandeelError && ['FOUNDER_SURFACE_UNAVAILABLE', 'FOUNDER_ONLY', 'SELF_ESCALATION_REFUSED', 'AUTHORITY_DENIED'].includes(error.code)) {
         try {
           this.#write('audit refusal', (ctx) => appendAudit(ctx, 'governance.refused', 'governance', 'admin', { actorRef: String(actorRef).slice(0, 161) }, 'REJECTED', error.code, { operation: operation.slice(0, 64) }));
         } catch {
@@ -280,11 +346,11 @@ export class GovernanceStore {
   // --- Principals & organization ------------------------------------------------------------------
 
   /**
-   * Registers the single Founder principal (human identity ≠ Employee, D14-A.2). C2 records who the
-   * Founder is; authenticating the human at the Founder surface is C5 (local IPC with caller identity).
+   * Registers the single Founder principal (human identity ≠ Employee, D14-A.2). Creating Founder
+   * authority is itself a Founder-surface act: it fails closed until C5 authenticates the human.
    */
   registerFounder(): { ref: string; id: Id } {
-    return this.#write('register founder', (ctx) => {
+    return this.#admin('register founder', 'founder:unauthenticated', (ctx) => {
       const existing = ctx.db.get(`SELECT id FROM principals WHERE kind = 'FOUNDER' AND status = 'ACTIVE'`);
       if (existing) throw new QandeelError('AUTHORITY_DENIED', 'a Founder principal is already registered', { reason: 'FOUNDER_EXISTS' });
       const id = newId();
@@ -349,8 +415,8 @@ export class GovernanceStore {
   }
 
   /**
-   * Lifecycle transition (Stage 4 §8). Entering ACTIVE requires qualification evidence refs, which
-   * C2 records as Founder-attested references — never as proof of certification (C3).
+   * Lifecycle transition (Stage 4 §8). Activation (SHADOW / PROBATION → ACTIVE) requires Academy
+   * certification, which C3 provides: in C2 it always fails closed, with no substitute (D-C2-13).
    */
   transitionEmployee(actorRef: string, employeeId: string, input: { to: EmployeeState; reasonCode: string; qualificationRefs?: readonly string[] }): EmployeeRecord {
     return this.#admin('transition employee', actorRef, (ctx) => {
@@ -359,7 +425,7 @@ export class GovernanceStore {
       const e = getEmployeeRow(ctx, id);
       assertEmployeeTransition(e.state, input.to);
       const refs = input.qualificationRefs === undefined ? e.qualificationRefs : assertQualificationRefs(input.qualificationRefs);
-      if (input.to === 'ACTIVE') assertActivationEvidence(refs);
+      if (input.to === 'ACTIVE') assertActivationAvailable(e.state);
       const next = setEmployeeState(ctx, e, input.to, assertCode(input.reasonCode, 'reasonCode'), p.ref, refs);
       if (input.to === 'RETIRED') {
         // A retired employee loses active authority (Stage 4 §14): its grants are revoked.
@@ -521,7 +587,9 @@ export class GovernanceStore {
 
   /**
    * Explicit egress approval for one deployment / egress profile (D14-B.3/.5). D4 never goes to an
-   * external provider. `null` withdraws the approval.
+   * external provider, and in C2 neither does D3: its external authorization needs a qualified
+   * conditional egress profile (account / endpoint / region / features / retention) that C2 does not
+   * implement, so it fails closed (D-C2-13). `null` withdraws the approval.
    */
   approveEgress(actorRef: string, deploymentId: string, maxDataClass: DataClass | null, reasonCode: string): DeploymentRecord {
     return this.#admin('approve egress', actorRef, (ctx) => {
@@ -530,6 +598,9 @@ export class GovernanceStore {
       if (maxDataClass !== null) assertDataClass(maxDataClass, 'maxDataClass');
       const locality = ctx.db.get<{ locality: string }>('SELECT p.locality FROM models m JOIN model_providers p ON p.id = m.provider_id WHERE m.id = ?', d.modelId)?.locality;
       if (maxDataClass === 'D4' && locality !== 'LOCAL') throw new QandeelError('EGRESS_DENIED', 'D4 is local-only and never approved for an external provider', { deploymentId: d.id });
+      if (maxDataClass !== null && !externalEgressAvailable(locality === 'LOCAL' ? 'LOCAL' : 'EXTERNAL', maxDataClass)) {
+        throw new QandeelError('EGRESS_DENIED', 'D3 external egress requires a qualified conditional egress profile, which C2 does not provide', { deploymentId: d.id, reason: 'D3_EGRESS_PROFILE_UNAVAILABLE' });
+      }
       const next = this.#bumpDeployment(ctx, d, 'egress_max_data_class = ?', maxDataClass);
       catalogHistory(ctx, 'deployment', d.id, 'EGRESS', d.egressMaxDataClass, maxDataClass, assertCode(reasonCode, 'reasonCode'), p.ref);
       return next;
@@ -632,6 +703,9 @@ export class GovernanceStore {
       if (!tool) throw new QandeelError('NOT_FOUND', 'tool not found', { toolId });
       const def = { risk: input.risk, sideEffects: input.sideEffects, mutatesExternal: input.mutatesExternal === true, egress: tool.egress as ToolEgress };
       assertActionConsistency(def);
+      if (def.egress === 'EXTERNAL' && !externalEgressAvailable('EXTERNAL', assertDataClass(input.dataClassCeiling, 'dataClassCeiling'))) {
+        throw new QandeelError('EGRESS_DENIED', `an external tool action accepts at most ${MAX_EXTERNAL_DATA_CLASS} in C2 (no qualified D3 egress profile)`, { field: 'dataClassCeiling' });
+      }
       const schema = assertArgsSchema(input.argsSchema);
       const id = newId();
       ctx.db.run(

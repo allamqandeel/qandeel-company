@@ -55,7 +55,9 @@ export default tseslint.config(
       'no-restricted-syntax': [
         'error',
         {
-          selector: ":matches(ImportDeclaration, ImportExpression, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/^@qandeel-company\\/storage\\//]",
+          // `testing` (the test-only Founder seam, D-C2-13) is policed by the verifier rules
+          // `runtime-authority-confined` / `founder-surface-test-only`: tests and the C2 acceptance only.
+          selector: ":matches(ImportDeclaration, ImportExpression, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/^@qandeel-company\\/storage\\/(?!testing$)/]",
           message: 'Only @qandeel-company/runtime may import @qandeel-company/storage/runtime-authority (D-C1-22); use the ordinary @qandeel-company/storage API.',
         },
         {

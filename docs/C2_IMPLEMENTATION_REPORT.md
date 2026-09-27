@@ -57,7 +57,7 @@ listed in §13.
 | Tools | Tool Registry + immutable action definitions: risk (external mutation ⇒ R3 / R4), side-effect / replay class, idempotency requirement, data-class ceiling **and result class**, strict argument schema, cost; vault reference only. The governed Tool Executor records a durable intent after the full authority path, then calls the driver, then records the result. No shell / execute-anything tool (refused by name) | governance `tools.ts`; `tool-executor.ts`; `tool_invocations` |
 | Budgets | Company → Department → Employee → Work Item → Run. Money (micro-units) + tokens. Worst-case reservation before every call, atomic across the chain. Settlement of actual usage releases the unused part. Billed ≠ economic cost (FREE / SUBSCRIPTION still cost and count tokens). Price-card provenance. Overhead attribution. Hard refusal. Checked arithmetic plus DB CHECKs. Overrun recorded truthfully | `economics.ts`, `governance-core.ts`, `txReserve` |
 | C1 integration | Governed work is ordinary C1 Work Items / jobs / Runs with checkpoints, leases, fencing, retry / dead-letter and wake generation. The runtime-owned loop `c2.employee-task` (IDEMPOTENT) checkpoints each planned tool call before its effect. Recovery classifies governed orphans. Health gains a `governance` component | `runtime.ts`, `recovery.ts`, `health.ts`, `employee-task.ts` |
-| CLI | `register-founder`, `governance`, `approvals`, `approve`, `reject` | `cli.ts` |
+| CLI | `governance`, `approvals` (read-only; no Founder write command until C5) | `cli.ts` |
 
 **Runtime invariants and how each is enforced:**
 - **The runtime owns execution.** The model returns text; `parseProposal` turns it into a closed
@@ -114,7 +114,7 @@ Proof markers (verifier `c2-proofs-present`): `C2-PROOF: governance-kernel`,
 
 ## 7. Mutation checks and verifier
 
-- **`npm run c2:mutation`:** 15 gates, each removed from the compiled output, must make a proof test
+- **`npm run c2:mutation`:** 15 gates at `19de117`, 19 after the D-C2-13 remediation (§15), each removed from the compiled output, must make a proof test
   fail:
   - default deny; R4 Founder-only; R3 approval;
   - Founder-only administration; self-approval;
@@ -128,7 +128,9 @@ Proof markers (verifier `c2-proofs-present`): `C2-PROOF: governance-kernel`,
   from 4 to 5 because the governed recovery is also supervisor-fenced.
 - **Verifier:** 8 new rules (D-C2-11). The self-test proves every rule can fail.
 
-## 8. Results (code SHA `19de117`; Node 24.21.0 / SQLite 3.53.4, Linux Cloud)
+## 8. Results before the remediation (code SHA `19de117`; Node 24.21.0 / SQLite 3.53.4, Linux Cloud)
+
+The current results are in §15.
 
 | Suite | Files | Tests | Result |
 |---|---|---|---|
@@ -168,10 +170,18 @@ Proof markers (verifier `c2-proofs-present`): `C2-PROOF: governance-kernel`,
 
 ## 10. Honest limits and deferred scope
 
-- **Founder authentication** at a Founder surface is C5. C2 accepts the registered Founder
-  reference at the engineering API and CLI (D-C2-04).
-- **Certification is C3.** Activation uses Founder-attested evidence references
-  (`founder-attestation:`); `academy:` / `certification:` refs are refused (D-C2-05).
+- **Authenticated Founder control arrives later (C5).** A Founder reference is not
+  authentication. In production C2 every Founder-authority write fails closed
+  (`FOUNDER_SURFACE_UNAVAILABLE`), including creating the Founder principal and deciding approvals,
+  so R3 work stays `WAITING_APPROVAL`. The CLI has no Founder write command. Tests exercise these
+  paths only through the test-only Founder seam (D-C2-13, §15).
+- **C3 supplies real training/certification.** Activation (`SHADOW` / `PROBATION → ACTIVE`) fails
+  closed in C2, with no Founder-attestation or reference substitute. `academy:`, `certification:`,
+  `cert:` and `test-seam:` refs are refused. Tests reach `ACTIVE` only through the test seam
+  (D-C2-13).
+- **D3 external egress stays closed** until a qualified conditional egress profile exists (account,
+  endpoint, region, features, retention; Stage 14). D4 never leaves the machine. D0–D2 continue
+  through the existing hard gates (D-C2-13).
 - **R2 stays fail-closed** until the C4 Review Pool.
 - **Delegated allocation is C4.** Director / manager budget allocation and delegated grants do not
   exist.
@@ -187,7 +197,7 @@ Proof markers (verifier `c2-proofs-present`): `C2-PROOF: governance-kernel`,
 
 ## 11. Founder-host / local gate (remaining)
 
-On the Founder Windows host, at the exact final SHA:
+On the Founder Windows host, at the exact final SHA (the D-C2-13 remediation head, §15):
 1. `npm ci`, then `npm run ci` (includes the C1 + C2 mutation checks and the verifier).
 2. `npm run c1:acceptance -- --workspace <new dir>` and `npm run c2:acceptance -- --workspace <new dir>`.
 3. Re-read the sqlite.org pages on integer overflow and STRICT tables (Cloud egress gap).
@@ -211,6 +221,9 @@ On the Founder Windows host, at the exact final SHA:
 
 ## 13. Interpretations to surface to the Product Owner
 
+The Founder CLI / authentication boundary, interim activation and D3 egress qualification are no
+longer open interpretations: the Founder decided them (D-C2-13, §15).
+
 Each item below is an engineering interpretation adopted for C2. None is a silently invented Product
 decision; the Product Owner may confirm or change each one.
 
@@ -226,20 +239,17 @@ decision; the Product Owner may confirm or change each one.
 - **Founder-only administration in C2:** grants, all budget caps and qualification. Delegation to
   Directors waits for C4.
 - **Currency.** A single Company currency, set on the Company budget.
-- **Interim activation.** A Founder attestation is the interim route to `ACTIVE` until the C3
-  Academy exists.
 - **Default data class.** A missing class defaults to D1 (an invalid one is treated as D4).
 - **Containment.** Which signals count, and the threshold of 3.
-- **Egress approvals** have no expiry and no endpoint / region / retention conditions yet
-  (D14-B.5). Qualification is advanced by Founder decision without a stored Qualification Suite
+- **Egress approvals** have no expiry (D14-B.5); they reach at most D2 for an external
+  deployment, since D3 external egress is closed (D-C2-13). Qualification is advanced by Founder decision without a stored Qualification Suite
   result (D13-B.2).
 - **Routing economics.** Routing optimizes cheapest worst-case price (D13-G.8 "cost per qualified
   outcome" needs outcome data, C6).
 - **Grant scope.** Grants are per tool code or `*`, not per Work Item (just-in-time grants,
   D14-C.5).
 - **Founder identity and approval.**
-  - The Founder principal is the first registered one.
-  - The CLI `approve --actor` is unauthenticated (C5).
+  - The Founder principal is the first registered one (through the future authenticated surface).
   - The Founder cannot approve an approval whose subject is the Founder.
   - Nothing files a work-item approval request automatically.
 - **R3 explanations.** Approvals carry no Founder-friendly explanation (what / why /
@@ -277,3 +287,55 @@ decision; the Product Owner may confirm or change each one.
 
 No C3–C7 functionality was found, the C1 guarantees were verified intact, and no secrets or App
 references were found.
+
+## 15. Founder-approved authority remediation (D-C2-13)
+
+This is a focused remediation on the same Draft PR, starting from `aea4d54`. It changes only the
+three points the Founder approved; no other C2 behaviour changed.
+
+| Fix | What changed | Regression proof |
+|---|---|---|
+| A. No bearer Founder authority | Every Founder-authority write in `GovernanceStore` (administration, `registerFounder`, `decideApproval`, reconciliation) fails closed with `FOUNDER_SURFACE_UNAVAILABLE` unless the workspace was armed by the **test-only seam**, and every refusal is audited. The CLI lost `register-founder`, `approve` and `reject` (and `--actor`); `governance` / `approvals` stay read-only. Durable approvals and their enforcement are unchanged, so R3 stays `WAITING_APPROVAL` and R4 stays Founder-only. | storage "a caller cannot gain Founder authority by supplying a Founder reference"; runtime "a caller holding the Founder ref cannot approve, reject or register a Founder through the CLI"; acceptance step `production-founder-surface-closed`; mutation `founder-ref-is-authentication` |
+| B. No attestation shortcut to ACTIVE | `SHADOW` / `PROBATION → ACTIVE` always fails closed (`EMPLOYEE_NOT_ELIGIBLE`, `CERTIFICATION_UNAVAILABLE`), whatever refs are presented; `founder-attestation:` is gone; `test-seam:` is a reserved kind. Resuming from `PAUSED` / `ON_LEAVE` is not an activation. The test seam activates with a history reason `TEST_SEAM_ACTIVATION`. | kernel and storage activation tests; acceptance `seed-governance-via-test-seam`; mutation `activation-without-certification` |
+| C. D3 external egress closed | A router hard gate `D3_EXTERNAL_DENIED` runs before quality and cost. The same gate is re-checked in the reserving transaction, refused at egress approval (`D3_EGRESS_PROFILE_UNAVAILABLE`) and at external tool-action registration and use, and enforced by 0004 triggers. D0–D2 are unchanged. | kernel "D3 never routes externally … even to a cheap, qualified, D3-approved external deployment"; storage "D3 external egress is refused at approval, registration, reservation and in the datastore"; mutations `d3-external-egress-allowed`, `d3-external-reservation-allowed` |
+
+**Test-only seam.** `packages/storage/src/testing/founder-seam.ts`:
+- **Resolution.** It is exported as `@qandeel-company/storage/testing` only under the
+  `qandeel-test` export condition. The default condition resolves to `null`, and production
+  resolution fails with `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+- **Import guard.** Importing the module by path from a process started without that condition
+  throws `FOUNDER_SURFACE_UNAVAILABLE`.
+- **Allowed importers.** Only tests and the C2 acceptance harness import it. The verifier rules
+  `runtime-authority-confined` and `founder-surface-test-only` enforce that.
+- **Runners.** The test runner and mutation scripts set the condition, and `c2:acceptance` runs
+  with `node --conditions=qandeel-test`.
+
+**Migration.** `0004_c2_governance.sql` gained 3 triggers:
+- `deployments_external_egress_closed_i` / `_u`: no D3 / D4 egress on a deployment of a non-LOCAL
+  provider;
+- `tool_actions_external_egress_closed`: an EXTERNAL tool action accepts at most D2.
+
+Migration 0004 was re-pinned; it is unreleased and unmerged. C1 migrations 0001–0003 are unchanged.
+
+**Results of the remediation** (Node 24.21.0, Linux Cloud):
+- `npm ci` and `npm run ci` exit 0.
+- **241 tests**, 0 failed / skipped:
+  - bootstrap-contract 5;
+  - domain 22;
+  - governance 25 (+1);
+  - storage 136 (+2);
+  - runtime 53 (+1).
+- Mutation checks: `c1:mutation` **6/6** and `c2:mutation` **19/19** (+4).
+- Verifier: the self-test proves 40 rules can fail; **41/41** pass (+1 rule:
+  `founder-surface-test-only`).
+- Acceptances: `c1:acceptance` **PASS** (6 steps) and `c2:acceptance` **PASS** (8 steps).
+- `git diff --check`: clean.
+- Fresh-clone proof and exact-head Windows + Ubuntu CI: recorded on PR #3 for the pushed head.
+
+**Seam behaviour, checked by hand:**
+- `import('@qandeel-company/storage/testing')` without the condition fails with
+  `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+- A deep import of `dist/src/testing/founder-seam.js` fails with `FOUNDER_SURFACE_UNAVAILABLE`.
+- With `--conditions=qandeel-test`, the seam loads.
+- A probe file in `packages/runtime/src` importing the seam is rejected by both ESLint and the
+  verifier.

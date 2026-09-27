@@ -758,19 +758,19 @@ refused.
 - **C4 owns delegation.** Director / manager delegation ("managers may allocate within an
   approved departmental budget") is not implemented.
 - **Honest limit.** C2 records who the Founder is. Authenticating the human at a Founder surface
-  (local IPC with caller identity, Stage 12 §48–49) is C5. The engineering API and CLI accept the
-  registered Founder reference as the actor. Model output can never reach these entry points: no
-  proposal type exists for them.
+  (local IPC with caller identity, Stage 12 §48–49) is C5. Model output can never reach these
+  entry points: no proposal type exists for them. **Superseded in part by D-C2-13:** a Founder
+  reference is not authentication, so production C2 has no Founder write surface at all.
 
 ## D-C2-05 — Employee activation and execution eligibility
 
 **Decision.**
 - **Only `ACTIVE` executes.** `SHADOW`/`PROBATION` execution is Academy-controlled (C3) and is not
   granted here.
-- **Evidence refs, not certification.** Entering `ACTIVE` requires qualification evidence
-  references, and a CHECK refuses an `ACTIVE` row without them. C2 records those refs as
-  Founder-attested opaque references (for example `founder-attestation:<id>`) and never claims
-  they prove certification (C3).
+- **No activation before certification (D-C2-13).** Activation (`SHADOW` / `PROBATION → ACTIVE`)
+  fails closed in C2: certification is C3's, and no Founder attestation or opaque reference
+  substitutes for it. The CHECK that refuses an `ACTIVE` row without evidence references stays;
+  only the test seam writes one, labelled `test-seam:<id>`.
 - **Certificate kinds are reserved.** Review finding: `academy:`, `certification:` and `cert:`
   refs are refused, because only the C3 Academy may issue them.
 - **Retirement** revokes grants and retires the employee principal. The Employee stays in history.
@@ -961,3 +961,51 @@ not yet released or merged, so it was amended in place and re-pinned.
 
 **Surfaced to the Product Owner rather than decided:** listed in `docs/C2_IMPLEMENTATION_REPORT.md`
 §13.
+
+## D-C2-13 — Founder-approved authority remediation (Founder decision)
+
+**Context.** The Founder approved three corrections to the C2 candidate at `aea4d54`. They resolve
+three items that §13 of the report had surfaced as Product interpretations.
+
+**Decision.**
+1. **A Founder reference is not authentication.** Until C5 provides the authenticated Founder
+   surface:
+   - production has no Founder write authority;
+   - every Founder-authority write fails closed with `FOUNDER_SURFACE_UNAVAILABLE`, and is
+     audited. This covers administration, grants, budgets, qualification, egress, holds,
+     reconciliation, `registerFounder` and `decideApproval`;
+   - the CLI offers no `register-founder`, `approve` or `reject` (read-only `governance` /
+     `approvals` remain);
+   - durable approvals and their enforcement stay: R3 stays `WAITING_APPROVAL` and R4 stays
+     Founder-only.
+2. **No Founder-attestation shortcut to `ACTIVE`.** Activation fails closed until the C3 Academy
+   supplies real training / certification. C2 persists Employee identity and lifecycle, enforces
+   execution eligibility and never fakes Academy evidence.
+3. **D3 external egress stays closed.** Stage 14 makes D3 external authorization depend on a
+   qualified conditional egress profile (account / endpoint / region / features / retention), not
+   on the provider brand or a generic approval. C2 implements no such profile and invents no
+   placeholder for it. The external ceiling is therefore D2 (`MAX_EXTERNAL_DATA_CLASS`), enforced
+   in five places:
+   - the router hard gate (before quality and cost);
+   - the reserving transaction;
+   - egress approval;
+   - external tool registration and use;
+   - migration 0004 triggers.
+
+   D4 remains local-only, and D0–D2 go through the unchanged gates.
+
+**Test-only seam.** Tests still need Founder-authority states and ACTIVE Employees, so a seam
+(`packages/storage/src/testing/founder-seam.ts`) arms a workspace root in the current process and
+activates an Employee. It is structurally test-only:
+- it resolves only under the `qandeel-test` export condition (production resolution fails);
+- it throws when loaded in a process started without that condition;
+- it is not re-exported from the package index;
+- the verifier confines its importers to tests and the C2 acceptance harness.
+
+The seam's internals (`founderSurfaceInternals`) live in `governance.ts` because they need the
+store's private field. Only the seam module may reference them, and the verifier rule
+`founder-surface-test-only` enforces that.
+
+**Consequence.** Until C5 and C3 exist, C2 production can inspect governance state but cannot
+configure it or activate anyone: governed work fails closed. This is the intended fail-closed
+posture, not a regression.

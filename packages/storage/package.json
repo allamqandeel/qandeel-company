@@ -13,6 +13,13 @@
     "./runtime-authority": {
       "types": "./dist/src/runtime-authority.d.ts",
       "default": "./dist/src/runtime-authority.js"
+    },
+    "./testing": {
+      "qandeel-test": {
+        "types": "./dist/src/testing/founder-seam.d.ts",
+        "default": "./dist/src/testing/founder-seam.js"
+      },
+      "default": null
     }
   },
   "engines": {

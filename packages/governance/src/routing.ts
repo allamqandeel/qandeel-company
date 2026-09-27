@@ -94,6 +94,7 @@ export type RejectionCode =
   | 'DEPLOYMENT_HOLD'
   | 'CIRCUIT_OPEN'
   | 'D4_EXTERNAL_DENIED'
+  | 'D3_EXTERNAL_DENIED'
   | 'EGRESS_NOT_APPROVED'
   | 'NOT_QUALIFIED'
   | 'TASK_CLASS_NOT_QUALIFIED'
@@ -119,6 +120,17 @@ export function effectiveClass(req: Pick<RouteRequest, 'reasoningClass'>, policy
   return reasoningRank(req.reasoningClass) < reasoningRank(policy.minClass) && req.reasoningClass !== 'E0' ? policy.minClass : req.reasoningClass;
 }
 
+/**
+ * Highest data class that may leave the machine in C2. D3 external egress needs a qualified
+ * conditional egress profile that does not exist yet; D4 never leaves. Both fail closed.
+ */
+export const MAX_EXTERNAL_DATA_CLASS: DataClass = 'D2';
+
+/** True when data of `dataClass` may go to a deployment / tool of `locality` at all in C2. */
+export function externalEgressAvailable(locality: string, dataClass: DataClass): boolean {
+  return locality === 'LOCAL' || dataRank(dataClass) <= dataRank(MAX_EXTERNAL_DATA_CLASS);
+}
+
 /** Hard gates for one deployment, in fixed order: operational → privacy/egress → quality → capacity → cost. */
 export function hardGate(d: DeploymentView, req: RouteRequest, policy: RoutePolicy, cls: ReasoningClass, at: Timestamp): RejectionCode | null {
   if (req.excludeDeploymentIds?.includes(d.id)) return 'EXCLUDED';
@@ -127,6 +139,9 @@ export function hardGate(d: DeploymentView, req: RouteRequest, policy: RoutePoli
   if (d.circuitOpenUntil !== null && d.circuitOpenUntil > at) return 'CIRCUIT_OPEN';
   // Privacy / egress before capability, quality or cost (D14-B.4). D4 never leaves the machine.
   if (req.dataClass === 'D4' && d.locality === 'EXTERNAL') return 'D4_EXTERNAL_DENIED';
+  // D3 leaves the machine only through a qualified conditional egress profile (account, endpoint,
+  // region, features, retention — Stage 14). C2 has no such profile, so it stays closed (D-C2-13).
+  if (!externalEgressAvailable(d.locality, req.dataClass)) return 'D3_EXTERNAL_DENIED';
   if (d.egressMaxDataClass === null || dataRank(d.egressMaxDataClass) < dataRank(req.dataClass)) return 'EGRESS_NOT_APPROVED';
   if (!(d.qualification === 'QUALIFIED' || (d.qualification === 'LIMITED_PRODUCTION' && policy.allowLimitedProduction))) return 'NOT_QUALIFIED';
   if (!d.taskClasses.includes(req.taskClass)) return 'TASK_CLASS_NOT_QUALIFIED';

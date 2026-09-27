@@ -41,6 +41,14 @@ if (missing.length) {
   process.exit(1);
 }
 
+// Test processes (and every fixture process they spawn) resolve the test-only Founder seam through
+// the `qandeel-test` export condition; production processes never carry it (D-C2-13).
+function testEnv(env = process.env) {
+  const flag = '--conditions=qandeel-test';
+  const current = env.NODE_OPTIONS ?? '';
+  return { ...env, NODE_OPTIONS: current.split(/\s+/).includes(flag) ? current : `${current} ${flag}`.trim() };
+}
+
 const reportDir = mkdtempSync(path.join(tmpdir(), 'qc-tests-'));
 const tapFile = path.join(reportDir, 'report.tap');
 const result = spawnSync(
@@ -55,7 +63,7 @@ const result = spawnSync(
     `--test-reporter-destination=${tapFile}`,
     ...compiled,
   ],
-  { cwd, stdio: 'inherit', shell: false },
+  { cwd, stdio: 'inherit', shell: false, env: testEnv() },
 );
 
 let summary = {};

@@ -3,8 +3,10 @@
  * C2-PROOF: governed-runtime
  */
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { describe, test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 
 import type { Id } from '@qandeel-company/domain';
 import { CompanyStore, GovernanceStore } from '@qandeel-company/storage';
@@ -306,4 +308,52 @@ describe('C2 runtime: health and a second employee', () => {
       assert.equal(g.qualifiedDeployments, 4);
       assert.deepEqual(g.toolExecutor.missingDrivers, []);
     }));
+});
+
+describe('C2 runtime: no bearer Founder authority on the public CLI (D-C2-13)', () => {
+  const CLI = fileURLToPath(new URL('../../src/cli.js', import.meta.url));
+  const cli = (...args: string[]) => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', shell: false, windowsHide: true, timeout: 60_000 });
+
+  test('a caller holding the Founder ref cannot approve, reject or register a Founder through the CLI; R3 stays waiting', () => {
+    const root = tempRoot('c2-cli-founder');
+    try {
+      const w = seedWorld(root);
+      const store = CompanyStore.open(root);
+      let approvalId: Id;
+      let workItemId: Id;
+      try {
+        const { workItem } = store.createWorkItem({ objective: 'publish launch notes', ownerRef: w.employee.ref, processorKind: 'c2.employee-task', processorInput: { taskClass: 'draft.memo', instructions: 'x' }, riskLevel: 'R3', initialState: 'READY' });
+        workItemId = workItem.id;
+        approvalId = GovernanceStore.for(store).requestWorkItemApproval(w.employee.ref, workItem.id).id;
+      } finally {
+        store.close();
+      }
+      // Read-only inspection stays available and content-free.
+      const listed = cli('approvals', '--workspace', root);
+      assert.equal(listed.status, 0, listed.stderr);
+      assert.deepEqual((JSON.parse(listed.stdout.trim()) as { pending: { approvalId: string }[] }).pending.map((a) => a.approvalId), [approvalId]);
+      assert.equal(cli('governance', '--workspace', root).status, 0);
+      // Every Founder write path is gone, whatever identity the caller claims.
+      for (const args of [
+        ['approve', '--workspace', root, '--approval', approvalId, '--actor', w.founder],
+        ['reject', '--workspace', root, '--approval', approvalId, '--actor', w.founder],
+        ['approve', '--workspace', root],
+        ['register-founder', '--workspace', root],
+      ]) {
+        const r = cli(...args);
+        assert.notEqual(r.status, 0, `${args[0]} must be refused`);
+        assert.doesNotMatch(r.stdout, /"ok":true/);
+      }
+      const after = CompanyStore.open(root);
+      try {
+        assert.equal(GovernanceStore.for(after).getApproval(approvalId).state, 'PENDING');
+        assert.equal(after.getWorkItem(workItemId).state, 'WAITING_APPROVAL');
+        assert.equal(GovernanceStore.for(after).listApprovals().length, 1);
+      } finally {
+        after.close();
+      }
+    } finally {
+      removeRoot(root);
+    }
+  });
 });

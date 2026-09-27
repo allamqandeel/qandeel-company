@@ -1,6 +1,7 @@
-/** Seeds a C2 workspace through public APIs only (before the runtime starts). */
+/** Seeds a C2 workspace (before the runtime starts): public APIs plus the test-only Founder seam. */
 import type { Id } from '@qandeel-company/domain';
 import { CompanyStore, GovernanceStore, type EmployeeRecord } from '@qandeel-company/storage';
+import { activateEmployeeForTest, armFounderTestSurface } from '@qandeel-company/storage/testing';
 
 import { DeterministicFakeProvider, FakeToolDriver, employeeTaskProcessor, type CompanyRuntime, type RuntimeOptions } from '../../src/index.js';
 import { runtimeFor } from '../helpers.js';
@@ -24,7 +25,8 @@ export function hireActive(gov: GovernanceStore, founder: string, departmentId: 
   const e = gov.createEmployee(founder, { name: nextName(), profile: { personality: 'practical' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' }, roleRef: 'role:content-strategist', positionRef: 'position:p1', departmentId, managerRef: founder });
   gov.transitionEmployee(founder, e.id, { to: 'TRAINING', reasonCode: 'onboarding' });
   gov.transitionEmployee(founder, e.id, { to: 'PROBATION', reasonCode: 'trained' });
-  const active = gov.transitionEmployee(founder, e.id, { to: 'ACTIVE', reasonCode: 'qualified', qualificationRefs: ['founder-attestation:qualified-1'] });
+  // ACTIVE needs C3 certification, which C2 never fakes: tests reach it only through the test seam.
+  const active = activateEmployeeForTest(gov, founder, e.id);
   gov.createBudget(founder, { scope: 'EMPLOYEE', scopeId: e.id, capMoney: budget, capTokens: 5_000_000, reasonCode: 'seed' });
   if (grants) {
     gov.grant(founder, { employeeId: e.id, capability: 'model.invoke', riskCeiling: 'R0', dataClassCeiling: 'D4', reasonCode: 'seed' });
@@ -43,6 +45,8 @@ function deployment(gov: GovernanceStore, founder: string, modelId: Id, code: st
 }
 
 export function seedWorld(root: string): C2World {
+  // Production has no Founder surface in C2 (D-C2-13); tests arm one through the test-only seam.
+  armFounderTestSurface(root);
   const store = CompanyStore.open(root);
   try {
     const gov = GovernanceStore.for(store);

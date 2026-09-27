@@ -38,6 +38,7 @@ import {
   type DataClass,
   type ProviderFailureClass,
   type RoutePolicy,
+  externalEgressAvailable,
 } from '@qandeel-company/governance';
 
 import {
@@ -240,6 +241,7 @@ export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput):
     // the router ran outside it on inputs a caller could influence). Privacy first.
     const dataClass = effectiveDataClass(ctx, a.workItemId);
     if (dataClass === 'D4' && d.locality !== 'LOCAL') return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'D4_EXTERNAL_DENIED');
+    if (!externalEgressAvailable(d.locality, dataClass)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'D3_EXTERNAL_DENIED');
     if (!isDataClass(d.egress_max_data_class) || dataRank(d.egress_max_data_class) < dataRank(dataClass)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'EGRESS_NOT_APPROVED');
     if (!(d.qualification === 'QUALIFIED' || (d.qualification === 'LIMITED_PRODUCTION' && policy.allowLimitedProduction))) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'NOT_QUALIFIED');
     if (!(JSON.parse(d.task_classes_json) as string[]).includes(policy.taskClass)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'TASK_CLASS_NOT_QUALIFIED');
@@ -405,7 +407,8 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
     throw error;
   }
   // External tool egress is its own decision (D14-B.7): the run's data class must fit the action.
-  if (dataRank(dataClass) > dataRank(action.dataClassCeiling) || (String(row.tool_egress) === 'EXTERNAL' && dataClass === 'D4')) return deny('EGRESS_DENIED', { toolActionId: action.id, dataClass });
+  // D3 / D4 never leave through an external tool in C2 (no qualified egress profile, D-C2-13).
+  if (dataRank(dataClass) > dataRank(action.dataClassCeiling) || !externalEgressAvailable(String(row.tool_egress) === 'EXTERNAL' ? 'EXTERNAL' : 'LOCAL', dataClass)) return deny('EGRESS_DENIED', { toolActionId: action.id, dataClass });
   const capability = toolCapability(input.toolCode, input.actionCode);
   const grants = ctx.db.all(`SELECT * FROM permission_grants WHERE employee_id = ? AND status = 'ACTIVE'`, e.id).map(mapGrant);
   const decision = decideEmployeeAction('EMPLOYEE', e.state, grants, { capability, resource: input.toolCode, risk: action.risk, dataClass, at: ts(ctx) });

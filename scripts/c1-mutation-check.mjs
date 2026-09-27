@@ -15,6 +15,9 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Proof tests resolve the test-only Founder seam through the `qandeel-test` condition (D-C2-13).
+const TEST_ENV = { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --conditions=qandeel-test`.trim() };
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const MUTATIONS = [
@@ -93,7 +96,7 @@ for (const m of MUTATIONS) {
   }
   try {
     writeFileSync(file, original.split(m.search).join(m.replace));
-    const r = spawnSync(process.execPath, ['--test', ...m.tests], { cwd: path.join(ROOT, m.cwd), encoding: 'utf8', shell: false, windowsHide: true, timeout: 300_000 });
+    const r = spawnSync(process.execPath, ['--test', ...m.tests], { cwd: path.join(ROOT, m.cwd), encoding: 'utf8', shell: false, windowsHide: true, timeout: 300_000, env: TEST_ENV });
     const failed = /^# fail [1-9]/m.test(r.stdout ?? '') || /^ℹ fail [1-9]/m.test(r.stdout ?? '');
     if (r.status !== 0 && failed) {
       console.log(`c1-mutation: ok   ${m.id} (${m.finding}) — proof tests failed as required`);

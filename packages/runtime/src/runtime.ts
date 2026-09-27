@@ -556,6 +556,8 @@ export class CompanyRuntime {
    * C2 governance administration (Founder-authority operations, reads, health). It is a capability
    * object, not the store: it executes nothing and claims nothing, and every call signals the
    * dispatcher afterwards so an approval or cap increase that made work actionable is picked up.
+   * Founder-authority writes fail closed until the authenticated Founder surface exists (C5,
+   * D-C2-13): holding this object, or a Founder reference, grants no authority.
    */
   get governance(): GovernanceAdmin {
     if (!this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');

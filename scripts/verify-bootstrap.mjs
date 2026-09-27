@@ -126,7 +126,13 @@ const C1_REPORT = 'docs/C1_IMPLEMENTATION_REPORT.md';
 // D-C1-22: runtime authority (claims, supervisor lease, worker writes) lives behind one subpath
 // that only the runtime package may import; nothing reaches into another package's internals.
 const STORAGE_PKG = 'packages/storage/package.json';
-const STORAGE_EXPORTS = ['.', './runtime-authority'];
+const STORAGE_EXPORTS = ['.', './runtime-authority', './testing'];
+// D-C2-13: the test-only Founder seam resolves only under the `qandeel-test` export condition, and only
+// tests (plus the acceptance harness) may import it.
+const TEST_CONDITION = 'qandeel-test';
+const TEST_SEAM_HARNESSES = ['scripts/c2-acceptance.mjs'];
+const FOUNDER_SEAM_FILES = ['packages/storage/src/governance.ts', 'packages/storage/src/testing/founder-seam.ts'];
+const CLI_SOURCE = 'packages/runtime/src/cli.ts';
 const AUTHORITY_SUBPATH = '@qandeel-company/storage/runtime-authority';
 const STORAGE_SUBPATH_IMPORT = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)['"]@qandeel-company\/storage\/([^'"]+)['"]/g;
 const STORAGE_INTERNALS_IMPORT = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)['"][^'"]*\/storage\/(?:src|dist)\/[^'"]*['"]/;
@@ -498,8 +504,8 @@ export const RULES = [
       for (const f of files.filter((x) => isCode(x) && pkgOf(x) !== 'storage')) {
         const text = read(f) ?? '';
         for (const m of text.matchAll(STORAGE_SUBPATH_IMPORT)) {
-          const allowed = m[1] === 'runtime-authority' && f.startsWith('packages/runtime/');
-          if (!allowed) problems.push(`${f} imports @qandeel-company/storage/${m[1]} (only packages/runtime may import ${AUTHORITY_SUBPATH})`);
+          const allowed = (m[1] === 'runtime-authority' && f.startsWith('packages/runtime/')) || (m[1] === 'testing' && (isTestPath(f) || TEST_SEAM_HARNESSES.includes(f)));
+          if (!allowed) problems.push(`${f} imports @qandeel-company/storage/${m[1]} (only packages/runtime may import ${AUTHORITY_SUBPATH}; only tests may import the test seam)`);
         }
         if (!(pkgOf(f) === 'runtime' && isTestPath(f)) && STORAGE_INTERNALS_IMPORT.test(text)) problems.push(`${f} imports storage internals by path`);
         if (/^packages\/[^/]+\/src\//.test(f) && /\bcreateRequire\b/.test(text)) problems.push(`${f} uses createRequire, which bypasses the static import boundary`);
@@ -508,6 +514,9 @@ export const RULES = [
       if (manifest) {
         const keys = Object.keys(manifest.exports ?? {});
         if (keys.length !== STORAGE_EXPORTS.length || keys.some((k) => !STORAGE_EXPORTS.includes(k))) problems.push(`${STORAGE_PKG} exports ${JSON.stringify(keys)}; only ${JSON.stringify(STORAGE_EXPORTS)} are allowed`);
+        const seam = manifest.exports?.['./testing'];
+        const conditional = seam !== null && typeof seam === 'object' && seam.default === null && typeof seam[TEST_CONDITION] === 'object' && Object.keys(seam).length === 2;
+        if (seam !== undefined && !conditional) problems.push(`${STORAGE_PKG} "./testing" must resolve only under the "${TEST_CONDITION}" condition (default: null)`);
       }
       return problems;
     },
@@ -584,6 +593,25 @@ export const RULES = [
       files
         .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && f !== TOOL_EXECUTOR && DRIVER_CALL.test(read(f) ?? ''))
         .map((f) => `${f} invokes a tool driver (.invoke); only ${TOOL_EXECUTOR} may`),
+  },
+  {
+    id: 'founder-surface-test-only',
+    // D-C2-13: a Founder ref is not authentication. Production code never reaches the test-only
+    // Founder seam, accepts no Founder attestation as activation evidence, and the CLI offers no
+    // Founder write command (the authenticated Founder surface is C5).
+    check: ({ files, read }) => {
+      const problems = [];
+      for (const f of files.filter((x) => /^packages\/[^/]+\/src\//.test(x) && isCode(x))) {
+        const text = read(f) ?? '';
+        if (!FOUNDER_SEAM_FILES.includes(f) && /\bfounderSurfaceInternals\b|testing\/founder-seam/.test(text)) problems.push(`${f} reaches the test-only Founder seam`);
+        if (/founder-attestation:/.test(text)) problems.push(`${f} treats a Founder attestation as activation evidence (certification is C3)`);
+      }
+      const index = read('packages/storage/src/index.ts');
+      if (index !== undefined && /founderSurfaceInternals|testing\//.test(index.replace(/^\s*\/\/.*$/gm, ''))) problems.push('packages/storage/src/index.ts exports the test-only Founder seam');
+      const cli = read(CLI_SOURCE);
+      if (cli !== undefined && (/case\s+['"](?:approve|reject|register-founder)['"]/.test(cli) || /\bactor\s*:\s*\{\s*type\b/.test(cli))) problems.push(`${CLI_SOURCE} exposes a Founder write command (a Founder ref is not authentication; C5)`);
+      return problems;
+    },
   },
   {
     id: 'budget-mutation-scoped',
@@ -769,7 +797,7 @@ function syntheticRepo(overrides = {}) {
     [MIGRATIONS_REGISTRY]: synthRegistry(),
     [`${MIGRATIONS_DIR}0001_one.sql`]: SYNTH_SQL,
     'packages/runtime/package.json': JSON.stringify({ private: true, dependencies: { '@qandeel-company/storage': '0.1.0' } }),
-    [STORAGE_PKG]: JSON.stringify({ private: true, exports: { '.': {}, './runtime-authority': {} } }),
+    [STORAGE_PKG]: JSON.stringify({ private: true, exports: { '.': {}, './runtime-authority': {}, './testing': { [TEST_CONDITION]: {}, default: null } } }),
     'packages/storage/src/queue.ts': SYNTH_QUEUE,
     'packages/storage/src/store.ts': SYNTH_STORE,
     'packages/storage/src/index.ts': "// Claims are not exported here; see the runtime-authority subpath.\nexport { CompanyStore } from './store.js';\n",
@@ -886,7 +914,9 @@ const VIOLATIONS = {
     { contents: { 'packages/runtime/src/sneaky.ts': "import { txClaimNext } from '@qandeel-company/storage/dist/src/queue.js';" } },
     { contents: { 'packages/domain/src/x.ts': "const q = await import('../../storage/src/queue.js');" } },
     { contents: { 'scripts/drive.mjs': "import { settle } from '@qandeel-company/storage/runtime-authority';" } },
-    { contents: { [STORAGE_PKG]: JSON.stringify({ private: true, exports: { '.': {}, './runtime-authority': {}, './*': {} } }) } },
+    { contents: { [STORAGE_PKG]: JSON.stringify({ private: true, exports: { '.': {}, './runtime-authority': {}, './testing': { [TEST_CONDITION]: {}, default: null }, './*': {} } }) } },
+    { contents: { [STORAGE_PKG]: JSON.stringify({ private: true, exports: { '.': {}, './runtime-authority': {}, './testing': { default: {} } } }) } },
+    { contents: { 'packages/runtime/src/admin.ts': "import { armFounderTestSurface } from '@qandeel-company/storage/testing';" } },
     { contents: { 'packages/employees/src/reexport.ts': "export { claimNext } from '@qandeel-company/storage/runtime-authority';" } },
     { contents: { 'packages/employees/src/req.ts': "import { createRequire } from 'node:module';\nconst r = createRequire(import.meta.url);" } },
   ],
@@ -915,6 +945,13 @@ const VIOLATIONS = {
   'model-calls-confined': [
     { contents: { 'packages/runtime/src/c2/employee-task.ts': 'const out = await adapter.generate(req, signal);' } },
     { contents: { 'packages/storage/src/sneaky.ts': 'provider.generate ({ messages });' } },
+  ],
+  'founder-surface-test-only': [
+    { contents: { 'packages/storage/src/store.ts': "import { founderSurfaceInternals } from './governance.js';" } },
+    { contents: { 'packages/governance/src/employee.ts': "export const ACCEPTED = ['founder-attestation:x'];" } },
+    { contents: { [CLI_SOURCE]: "switch (command) {\n  case 'approve':\n    break;\n}" } },
+    { contents: { [CLI_SOURCE]: "parseArgs({ options: { actor: { type: 'string' } } });" } },
+    { contents: { 'packages/storage/src/index.ts': "export { armFounderTestSurface } from './testing/founder-seam.js';\n" } },
   ],
   'tool-drivers-confined': [
     { contents: { 'packages/runtime/src/c2/model-runtime.ts': 'await driver.invoke(input, signal);' } },
@@ -996,6 +1033,8 @@ const MUST_PASS = [
   { id: 'c2-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS'), 'docs/C2_CLOSURE_RECORD.md': '' } } },
   // CRLF checkouts of the frozen C1 migrations are the same content.
   { id: 'c1-migrations-frozen', scenario: { contents: { [`${MIGRATIONS_DIR}0001_work_foundation.sql`]: C1_MIGRATION_TEXT['0001_work_foundation.sql'].replace(/\n/g, '\r\n') } } },
+  // Tests (and the acceptance harness) may import the test-only Founder seam.
+  { id: 'runtime-authority-confined', scenario: { contents: { 'packages/runtime/test/c2/seed.ts': "import { armFounderTestSurface } from '@qandeel-company/storage/testing';", 'scripts/c2-acceptance.mjs': "await import('@qandeel-company/storage/testing');" } } },
   // Tests may call adapters and drivers directly (fakes); only production src is confined.
   { id: 'model-calls-confined', scenario: { contents: { 'packages/runtime/test/c2/fake.test.ts': 'await provider.generate(req, signal); await driver.invoke(x, s);' } } },
   // Windows checkouts with CRLF do not trip the migration pin.

@@ -28,7 +28,7 @@
     "c1:mutation": "node scripts/c1-mutation-check.mjs",
     "ci": "npm run build && npm run typecheck && npm run lint && npm run test && npm run c1:mutation && npm run c2:mutation && npm run verify",
     "c2:mutation": "node scripts/c2-mutation-check.mjs",
-    "c2:acceptance": "node scripts/c2-acceptance.mjs"
+    "c2:acceptance": "node --conditions=qandeel-test scripts/c2-acceptance.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

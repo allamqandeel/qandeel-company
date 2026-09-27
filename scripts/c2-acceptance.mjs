@@ -4,13 +4,20 @@
 //   npm run c2:acceptance -- --workspace <disposable directory> [--keep]
 //
 // The directory must not exist yet, or be empty. The harness writes an ownership marker, creates a
-// Company workspace in <dir>/company and proves through public APIs only: Founder principal,
-// department, Employee lifecycle to ACTIVE with history, provider-neutral catalog (deterministic
-// fake provider — no commercial provider, no network, no credential), Router Policy, Tool Registry,
-// explicit grants, hierarchical budgets, a governed run with a permitted R1 tool, an R3 tool parked
-// for Founder approval and then executed once, a hard budget refusal before any provider call,
-// D4 staying local, accounting invariants, health and the read-only CLI. At the end it deletes only
-// what it created unless --keep is given.
+// Company workspace in <dir>/company and proves:
+//
+// - production fail-closed first (D-C2-13): with no Founder surface armed, Founder authority cannot
+//   be created or exercised by presenting a reference, and the CLI has no Founder write command;
+// - then, through the TEST-ONLY Founder seam (loaded only under --conditions=qandeel-test, never a
+//   product path): department, an Employee reaching ACTIVE through the seam (C2 has no Academy and
+//   fakes no certification), a provider-neutral catalog (deterministic fake provider — no
+//   commercial provider, no network, no credential), D3 external egress refused, Router Policy,
+//   Tool Registry, explicit grants, hierarchical budgets, a governed run with a permitted R1 tool,
+//   an R3 tool parked for approval (the CLI cannot approve it) and executed once after a seam
+//   approval, a hard budget refusal before any provider call, D4 staying local, accounting
+//   invariants, health and the read-only CLI.
+//
+// At the end it deletes only what it created unless --keep is given.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -26,6 +33,8 @@ const CLI = path.join(ROOT, 'packages/runtime/dist/src/cli.js');
 const { values } = parseArgs({ strict: true, options: { workspace: { type: 'string' }, keep: { type: 'boolean', default: false } } });
 const { CompanyRuntime, DeterministicFakeProvider, FakeToolDriver, employeeTaskProcessor, runtimeHealth } = await import('@qandeel-company/runtime');
 const { CompanyStore, GovernanceStore, CURRENT_SCHEMA_VERSION } = await import('@qandeel-company/storage');
+// Test-only seam: resolvable only because this harness runs with --conditions=qandeel-test.
+const { activateEmployeeForTest, armFounderTestSurface } = await import('@qandeel-company/storage/testing');
 
 function refuse(message) {
   console.error(JSON.stringify({ ok: false, verdict: 'REFUSED', message }));
@@ -61,11 +70,33 @@ async function step(name, fn) {
   }
 }
 
+const cliRun = (...args) => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', shell: false, windowsHide: true });
+const refusedWith = (fn, code) => {
+  try {
+    fn();
+  } catch (error) {
+    return error?.code === code;
+  }
+  return false;
+};
+
 const world = {};
-await step('seed-governance', () => {
+await step('production-founder-surface-closed', () => {
   const store = CompanyStore.open(company);
   try {
     check(store.schemaVersion === CURRENT_SCHEMA_VERSION, 'schema is current');
+    check(refusedWith(() => GovernanceStore.for(store).registerFounder(), 'FOUNDER_SURFACE_UNAVAILABLE'), 'Founder authority cannot be created without the authenticated surface');
+  } finally {
+    store.close();
+  }
+  for (const cmd of ['register-founder', 'approve', 'reject']) check(cliRun(cmd, '--workspace', company).status === 2, `the CLI has no ${cmd} command`);
+  return { founderSurface: 'UNAVAILABLE_UNTIL_C5' };
+});
+
+await step('seed-governance-via-test-seam', () => {
+  armFounderTestSurface(company);
+  const store = CompanyStore.open(company);
+  try {
     const gov = GovernanceStore.for(store);
     const founder = gov.registerFounder().ref;
     gov.createBudget(founder, { scope: 'COMPANY', scopeId: 'company', capMoney: 10_000_000, capTokens: 10_000_000, currency: 'USD', reasonCode: 'acceptance' });
@@ -74,7 +105,8 @@ await step('seed-governance', () => {
     const e = gov.createEmployee(founder, { name: { given: 'نور', family: 'الشريف' }, profile: { personality: 'analytical' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' }, roleRef: 'role:growth-analyst', positionRef: 'position:growth-1', departmentId: dept.id, managerRef: founder });
     gov.transitionEmployee(founder, e.id, { to: 'TRAINING', reasonCode: 'onboarding' });
     gov.transitionEmployee(founder, e.id, { to: 'PROBATION', reasonCode: 'trained' });
-    gov.transitionEmployee(founder, e.id, { to: 'ACTIVE', reasonCode: 'qualified', qualificationRefs: ['founder-attestation:acceptance'] });
+    check(refusedWith(() => gov.transitionEmployee(founder, e.id, { to: 'ACTIVE', reasonCode: 'qualified', qualificationRefs: ['founder-attestation:acceptance'] }), 'EMPLOYEE_NOT_ELIGIBLE'), 'activation fails closed until the C3 Academy');
+    activateEmployeeForTest(gov, founder, e.id);
     gov.createBudget(founder, { scope: 'EMPLOYEE', scopeId: e.id, capMoney: 1_000_000, capTokens: 1_000_000, reasonCode: 'acceptance' });
     const p = gov.registerProvider(founder, { code: 'fake-local', locality: 'LOCAL' });
     const m = gov.registerModel(founder, { providerId: p.id, code: 'fake-small' });
@@ -93,7 +125,12 @@ await step('seed-governance', () => {
     gov.grant(founder, { employeeId: e.id, capability: 'tool:publisher.publish', riskCeiling: 'R3', dataClassCeiling: 'D1', reasonCode: 'acceptance' });
     Object.assign(world, { founder, employee: gov.getEmployee(e.id) });
     check(gov.employeeHistory(e.id).length === 4, 'employee history recorded');
-    return { employeeState: 'ACTIVE', schemaVersion: store.schemaVersion };
+    // D3 external egress stays closed even for a qualified external deployment (no egress profile).
+    const cp = gov.registerProvider(founder, { code: 'fake-cloud', locality: 'EXTERNAL', credentialRef: 'vault:fake-cloud' });
+    const cd = gov.registerDeployment(founder, { code: 'cloud-e1', modelId: gov.registerModel(founder, { providerId: cp.id, code: 'fake-hosted' }).id, pinnedRevision: 'r1', reasoningClass: 'E1', contextWindowTokens: 100_000, maxOutputTokens: 2_048, taskClasses: ['draft.memo'] });
+    for (const q of ['BENCHMARK', 'SHADOW', 'CHALLENGER', 'LIMITED_PRODUCTION', 'QUALIFIED']) gov.setQualification(founder, cd.id, q, 'acceptance');
+    check(refusedWith(() => gov.approveEgress(founder, cd.id, 'D3', 'egress.approved'), 'EGRESS_DENIED'), 'D3 external egress refused');
+    return { employeeState: 'ACTIVE', activation: 'TEST_SEAM', d3ExternalEgress: 'REFUSED', schemaVersion: store.schemaVersion };
   } finally {
     store.close();
   }
@@ -145,13 +182,16 @@ try {
     check(runtime.view.audit(run.id).some((a) => a.action === 'authority.denied' && a.reasonCode === 'EGRESS_DENIED'), 'egress denial audited');
     return { denied: 'EGRESS_DENIED' };
   });
-  await step('r3-tool-founder-approval', async () => {
+  await step('r3-tool-waits-cli-cannot-approve-seam-approval', async () => {
     const id = submit({ dataClass: 'D1', instructions: script({ type: 'TOOL_REQUEST', tool: 'publisher', action: 'publish', args: { text: 'release notes' } }, { type: 'FINAL', summaryCode: 'published' }) });
     await until(() => stateOf(id) === 'WAITING', 'R3 parks');
     check(drivers.publisher.invocations.length === 0, 'R3 driver must not run before approval');
     const cli = spawnSync(process.execPath, [CLI, 'approvals', '--workspace', company], { encoding: 'utf8', shell: false, windowsHide: true });
     const pending = JSON.parse(cli.stdout).pending;
     check(cli.status === 0 && pending.length === 1 && pending[0].risk === 'R3', 'CLI lists the pending R3 approval');
+    const forged = cliRun('approve', '--workspace', company, '--approval', pending[0].approvalId, '--actor', world.founder);
+    check(forged.status !== 0 && stateOf(id) === 'WAITING' && drivers.publisher.invocations.length === 0, 'the CLI cannot approve with a Founder ref');
+    // Test seam only (armed above): stands in for the authenticated Founder surface C5 will provide.
     runtime.governance.decideApproval(world.founder, pending[0].approvalId, { decision: 'APPROVE', reasonCode: 'founder.ok' });
     await until(() => stateOf(id) === 'COMPLETED', 'R3 completes after approval');
     check(drivers.publisher.invocations.length === 1, 'R3 driver executed exactly once');

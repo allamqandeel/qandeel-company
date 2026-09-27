@@ -21,6 +21,8 @@ import {
   reserveBudget,
   settleReservation,
 } from '../src/runtime-authority.js';
+import { storeContext } from '../src/store.js';
+import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
 import { C2_KINDS, claimGoverned, governedItem, hire, seed } from './c2-helpers.js';
 import { harness } from './helpers.js';
 
@@ -46,19 +48,29 @@ describe('C2 identity: persistent Employees (Employee ≠ Model ≠ Session ≠ 
     }
   });
 
-  test('activation fails closed without qualification evidence; the datastore refuses an ACTIVE row without it', () => {
+  test('activation fails closed in C2: no Founder attestation or reference substitutes for C3 certification', () => {
     const h = harness();
     try {
       const s = seed(h.store);
       const c = hire(s.gov, s.founder, s.departmentId, false);
       s.gov.transitionEmployee(s.founder, c.id, { to: 'TRAINING', reasonCode: 'onboarding' });
       s.gov.transitionEmployee(s.founder, c.id, { to: 'SHADOW', reasonCode: 'shadow' });
-      assert.throws(() => s.gov.transitionEmployee(s.founder, c.id, { to: 'ACTIVE', reasonCode: 'x' }), code('EMPLOYEE_NOT_ELIGIBLE'));
-      assert.equal(s.gov.getEmployee(c.id).state, 'SHADOW');
+      const refused = (e: unknown): boolean => isQandeelError(e, 'EMPLOYEE_NOT_ELIGIBLE') && e.details['reason'] === 'CERTIFICATION_UNAVAILABLE';
+      assert.throws(() => s.gov.transitionEmployee(s.founder, c.id, { to: 'ACTIVE', reasonCode: 'x' }), refused);
+      assert.throws(() => s.gov.transitionEmployee(s.founder, c.id, { to: 'ACTIVE', reasonCode: 'qualified', qualificationRefs: ['founder-attestation:qualified-1'] }), refused);
+      s.gov.transitionEmployee(s.founder, c.id, { to: 'PROBATION', reasonCode: 'probation' });
+      assert.throws(() => s.gov.transitionEmployee(s.founder, c.id, { to: 'ACTIVE', reasonCode: 'qualified', qualificationRefs: ['evidence:anything'] }), refused);
+      assert.equal(s.gov.getEmployee(c.id).state, 'PROBATION');
+      // The seeded ACTIVE Employee came from the test seam, and its history says so.
+      assert.equal(s.gov.employeeHistory(s.employee.id).find((x) => x.toState === 'ACTIVE')?.reasonCode, 'TEST_SEAM_ACTIVATION');
+      // Resuming an already-active Employee is not an activation.
+      s.gov.transitionEmployee(s.founder, s.employee.id, { to: 'PAUSED', reasonCode: 'pause' });
+      assert.equal(s.gov.transitionEmployee(s.founder, s.employee.id, { to: 'ACTIVE', reasonCode: 'resume' }).state, 'ACTIVE');
     } finally {
       h.close();
     }
   });
+
 
   test('suspended and retired Employees cannot execute: the governed run is refused before any action', () => {
     const h = harness();
@@ -474,6 +486,73 @@ describe('C2 schema: history is durable', () => {
     try {
       assert.equal(h.store.schemaVersion, 4);
       assert.equal(CompanyStore.name, 'CompanyStore');
+    } finally {
+      h.close();
+    }
+  });
+});
+
+describe('C2 authority remediation (D-C2-13): no bearer Founder authority, no fake activation, D3 egress closed', () => {
+  test('a caller cannot gain Founder authority by supplying a Founder reference', () => {
+    const h = harness();
+    try {
+      const root = h.store.workspace.root;
+      // Production state: nothing is armed. Even creating the Founder principal is refused.
+      disarmFounderTestSurface(root);
+      assert.throws(() => GovernanceStore.for(h.store).registerFounder(), code('FOUNDER_SURFACE_UNAVAILABLE'));
+      armFounderTestSurface(root);
+      const s = seed(h.store);
+      const other = hire(s.gov, s.founder, s.departmentId, false);
+      const { workItem } = h.store.createWorkItem({ objective: 'publish launch notes', ownerRef: s.employee.ref, processorKind: 'c2.employee-task', processorInput: { taskClass: 'draft.memo', instructions: 'x' }, riskLevel: 'R3', initialState: 'READY' });
+      const id = workItem.id;
+      assert.equal(workItem.state, 'WAITING_APPROVAL');
+      const approval = s.gov.requestWorkItemApproval(s.employee.ref, id);
+      // The Founder ref is now known to the caller — and it is worth nothing without the surface.
+      disarmFounderTestSurface(root);
+      const gov = GovernanceStore.for(h.store);
+      const attempts: [string, () => unknown][] = [
+        ['decideApproval', () => gov.decideApproval(s.founder, approval.id, { decision: 'APPROVE', reasonCode: 'x' })],
+        ['grant', () => gov.grant(s.founder, { employeeId: s.employee.id, capability: 'tool:ledger.transfer', riskCeiling: 'R3', dataClassCeiling: 'D1', reasonCode: 'x' })],
+        ['transitionEmployee', () => gov.transitionEmployee(s.founder, other.id, { to: 'TRAINING', reasonCode: 'x' })],
+        ['createBudget', () => gov.createBudget(s.founder, { scope: 'EMPLOYEE', scopeId: other.id, capMoney: 1, capTokens: 1, reasonCode: 'x' })],
+        ['approveEgress', () => gov.approveEgress(s.founder, s.deploymentId, 'D1', 'x')],
+        ['registerFounder', () => gov.registerFounder()],
+      ];
+      for (const [what, attempt] of attempts) assert.throws(attempt, code('FOUNDER_SURFACE_UNAVAILABLE'), what);
+      assert.equal(gov.getApproval(approval.id).state, 'PENDING');
+      assert.equal(h.store.getWorkItem(id).state, 'WAITING_APPROVAL', 'R3 stays fail-closed without an authenticated Founder');
+      assert.equal(gov.getEmployee(other.id).state, 'CANDIDATE');
+      assert.equal(h.store.auditByAction('governance.refused').filter((a) => a.reasonCode === 'FOUNDER_SURFACE_UNAVAILABLE').length, attempts.length + 1, 'every refused attempt is audited (content-free)');
+    } finally {
+      h.close();
+    }
+  });
+
+  test('D3 external egress is refused at approval, registration, reservation and in the datastore', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store);
+      const cloud = s.gov.registerProvider(s.founder, { code: 'fake-cloud', locality: 'EXTERNAL', credentialRef: 'vault:fake-cloud' });
+      const m = s.gov.registerModel(s.founder, { providerId: cloud.id, code: 'fake-hosted' });
+      const d = s.gov.registerDeployment(s.founder, { code: 'cloud-e1', modelId: m.id, pinnedRevision: 'r1', reasoningClass: 'E1', contextWindowTokens: 100_000, maxOutputTokens: 4_096, taskClasses: ['draft.memo'] });
+      for (const q of ['BENCHMARK', 'SHADOW', 'CHALLENGER', 'LIMITED_PRODUCTION', 'QUALIFIED'] as const) s.gov.setQualification(s.founder, d.id, q, 'qualification.step');
+      assert.throws(() => s.gov.approveEgress(s.founder, d.id, 'D3', 'egress.approved'), (e) => isQandeelError(e, 'EGRESS_DENIED') && e.details['reason'] === 'D3_EGRESS_PROFILE_UNAVAILABLE');
+      assert.throws(() => s.gov.approveEgress(s.founder, d.id, 'D4', 'egress.approved'), code('EGRESS_DENIED'));
+      assert.equal(s.gov.approveEgress(s.founder, d.id, 'D2', 'egress.approved').egressMaxDataClass, 'D2');
+      const db = storeContext(h.store).db;
+      assert.throws(() => db.run(`UPDATE deployments SET egress_max_data_class = 'D3', version = version + 1 WHERE id = ?`, d.id), (e) => isQandeelError(e, 'STORAGE_INVARIANT') && /external provider is closed/.test(String((e as Error).cause)));
+      const ext = s.gov.registerTool(s.founder, { code: 'mailer', driverCode: 'fake-mailer', egress: 'EXTERNAL' });
+      const text = { fields: { text: { type: 'string' as const, required: true, maxLength: 20 } } };
+      assert.throws(() => s.gov.registerToolAction(s.founder, { toolId: ext.id, code: 'send', risk: 'R3', sideEffects: 'IDEMPOTENT', mutatesExternal: true, dataClassCeiling: 'D3', argsSchema: text, costPerCallMicros: 1 }), code('EGRESS_DENIED'));
+      assert.equal(s.gov.registerToolAction(s.founder, { toolId: ext.id, code: 'send', risk: 'R3', sideEffects: 'IDEMPOTENT', mutatesExternal: true, dataClassCeiling: 'D2', argsSchema: text, costPerCallMicros: 1 }).dataClassCeiling, 'D2');
+      // Even a D3 approval smuggled past both layers is refused again when a D3 run reserves.
+      db.run('DROP TRIGGER deployments_external_egress_closed_u');
+      db.run(`UPDATE deployments SET egress_max_data_class = 'D3', version = version + 1 WHERE id = ?`, d.id);
+      const card = s.gov.addPriceCard(s.founder, d.id, { currency: 'USD', billingMode: 'METERED', billedInputPerMTok: 1, billedOutputPerMTok: 1, billedPerCall: 0, economicInputPerMTok: 1, economicOutputPerMTok: 1, economicPerCall: 0 });
+      governedItem(h, s, s.employee, { dataClass: 'D3' });
+      const { claim } = claimGoverned(h);
+      const r = reserveBudget(h.store, claim.fence, { purpose: 'MODEL_CALL', attemptKind: 'PRIMARY', deploymentId: d.id, priceCardId: card.id, routePolicyId: s.policyId, money: 100, tokens: 20 });
+      assert.deepEqual(r.ok ? 'reserved' : [r.code, r.detail], ['ROUTE_NO_LONGER_ELIGIBLE', 'D3_EXTERNAL_DENIED']);
     } finally {
       h.close();
     }

@@ -3,6 +3,8 @@
  * SIGKILLs itself at a named storage fault point, or drains and exits when idle.
  * argv: <workspaceRoot> <configJson>
  */
+import { armFounderTestSurface } from '@qandeel-company/storage/testing';
+
 import { Logger, jsonLinesSink } from '../../src/index.js';
 import { fakes, governedRuntime, submitTask, type C2World } from '../c2/c2-seed.js';
 
@@ -18,6 +20,8 @@ const config = JSON.parse(String(configJson)) as HostConfig;
 const emit = (v: Record<string, unknown>): void => {
   process.stdout.write(`${JSON.stringify(v)}\n`);
 };
+// Work Item budgets are Founder acts: this test process arms the test-only Founder seam (D-C2-13).
+armFounderTestSurface(String(root));
 const f = fakes();
 const rt = governedRuntime(String(root), f, {
   supervisorTtlMs: 1_500,

@@ -13,7 +13,7 @@ import {
   approvalFingerprint,
   approvalUsable,
   assertActionConsistency,
-  assertActivationEvidence,
+  assertActivationAvailable,
   assertApprover,
   assertEmployeeName,
   assertEmployeeTransition,
@@ -22,6 +22,7 @@ import {
   assertQualificationRefs,
   assertToolCode,
   canExecute,
+  externalEgressAvailable,
   checkReservation,
   costOf,
   decideEmployeeAction,
@@ -101,11 +102,15 @@ describe('C2 kernel: employees', () => {
     assert.equal(canExecute('ACTIVE'), true);
   });
 
-  test('activation fails closed without qualification evidence (certification is C3)', () => {
-    assert.throws(() => assertActivationEvidence([]), (e) => isQandeelError(e, 'EMPLOYEE_NOT_ELIGIBLE'));
-    assert.doesNotThrow(() => assertActivationEvidence(['founder-attestation:qualified-1']));
+  test('activation fails closed in C2: no Founder attestation or opaque ref substitutes for C3 certification', () => {
+    for (const from of ['SHADOW', 'PROBATION'] as const) {
+      assert.throws(() => assertActivationAvailable(from), (e) => isQandeelError(e, 'EMPLOYEE_NOT_ELIGIBLE') && e.details['reason'] === 'CERTIFICATION_UNAVAILABLE');
+    }
+    // Resuming an already-active Employee is not an activation.
+    assert.doesNotThrow(() => assertActivationAvailable('PAUSED'));
+    assert.doesNotThrow(() => assertActivationAvailable('ON_LEAVE'));
     assert.throws(() => assertQualificationRefs(['academy:cert-1']), 'Academy certification references are C3 and refused in C2');
-    assert.deepEqual(assertQualificationRefs(['founder-attestation:x']), ['founder-attestation:x']);
+    assert.throws(() => assertQualificationRefs(['test-seam:x']), 'the test seam label is never accepted from a caller');
   });
 
   test('names: two human-style parts (Arabic and Latin), no digits or single part', () => {
@@ -179,6 +184,21 @@ describe('C2 kernel: routing (hard gates before optimization)', () => {
     assert.equal(r.kind, 'NONE');
     assert.deepEqual(r.kind === 'NONE' && r.rejected, [{ deploymentId: 'ext', code: 'D4_EXTERNAL_DENIED' }]);
     assert.equal(route(req({ dataClass: 'D4' }), policy, [dep({ id: 'loc', egressMaxDataClass: 'D4' })], AT).kind, 'ROUTE');
+  });
+
+  test('D3 never routes externally in C2, even to a cheap, qualified, D3-approved external deployment', () => {
+    const cheapExternal = dep({ id: 'ext', locality: 'EXTERNAL', egressMaxDataClass: 'D3', priceCard: card('ext-card', 1, 1) });
+    const costlyLocal = dep({ id: 'loc', egressMaxDataClass: 'D4', priceCard: card('loc-card', 9_000_000, 30_000_000) });
+    const only = route(req({ dataClass: 'D3' }), policy, [cheapExternal], AT);
+    assert.equal(only.kind, 'NONE');
+    assert.deepEqual(only.kind === 'NONE' && only.rejected, [{ deploymentId: 'ext', code: 'D3_EXTERNAL_DENIED' }]);
+    const both = route(req({ dataClass: 'D3' }), policy, [cheapExternal, costlyLocal], AT);
+    assert.equal(both.kind === 'ROUTE' && both.deployment.id, 'loc', 'the privacy gate runs before cost');
+    // D0..D2 still pass the external gate and go through the ordinary egress / quality / cost gates.
+    const d2 = route(req({ dataClass: 'D2' }), policy, [cheapExternal, costlyLocal], AT);
+    assert.equal(d2.kind === 'ROUTE' && d2.deployment.id, 'ext');
+    assert.deepEqual((['D0', 'D1', 'D2', 'D3', 'D4'] as const).map((c) => externalEgressAvailable('EXTERNAL', c)), [true, true, true, false, false]);
+    assert.deepEqual((['D3', 'D4'] as const).map((c) => externalEgressAvailable('LOCAL', c)), [true, true]);
   });
 
   test('egress needs explicit approval for the data class; unqualified / limited deployments are ineligible', () => {

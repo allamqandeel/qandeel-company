@@ -3,6 +3,7 @@ import type { Id, SideEffectClass } from '@qandeel-company/domain';
 
 import { GovernanceStore, type CompanyStore, type EmployeeRecord } from '../src/index.js';
 import { beginGovernedRun, claimNext } from '../src/runtime-authority.js';
+import { activateEmployeeForTest, armFounderTestSurface } from '../src/testing/founder-seam.js';
 import type { Harness } from './helpers.js';
 
 export const GOVERNED_KIND = 'c2.employee-task';
@@ -31,10 +32,13 @@ export function hire(gov: GovernanceStore, founder: string, departmentId: Id, ac
   if (!active) return e;
   gov.transitionEmployee(founder, e.id, { to: 'TRAINING', reasonCode: 'onboarding' });
   gov.transitionEmployee(founder, e.id, { to: 'PROBATION', reasonCode: 'trained' });
-  return gov.transitionEmployee(founder, e.id, { to: 'ACTIVE', reasonCode: 'qualified', qualificationRefs: ['founder-attestation:qualified-1'] });
+  // ACTIVE needs C3 certification, which C2 never fakes: tests reach it only through the test seam.
+  return activateEmployeeForTest(gov, founder, e.id);
 }
 
 export function seed(store: CompanyStore, { companyCap = 10_000_000, employeeCap = 1_000_000, grants = true } = {}): Seed {
+  // Production has no Founder surface in C2 (D-C2-13); tests arm one through the test-only seam.
+  armFounderTestSurface(store.workspace.root);
   const gov = GovernanceStore.for(store);
   const founder = gov.registerFounder().ref;
   gov.createBudget(founder, { scope: 'COMPANY', scopeId: 'company', capMoney: companyCap, capTokens: 10_000_000, currency: 'USD', reasonCode: 'seed' });

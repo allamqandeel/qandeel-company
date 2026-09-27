@@ -156,6 +156,16 @@ CREATE TRIGGER deployments_identity_immutable BEFORE UPDATE OF id, code, model_i
 WHEN NEW.id IS NOT OLD.id OR NEW.code IS NOT OLD.code OR NEW.model_id IS NOT OLD.model_id OR NEW.pinned_revision IS NOT OLD.pinned_revision
   OR NEW.reasoning_class IS NOT OLD.reasoning_class OR NEW.created_at IS NOT OLD.created_at
 BEGIN SELECT RAISE(ABORT, 'deployment identity is immutable; register a new deployment profile'); END;
+-- External egress stops at D2 in C2 (D-C2-13): D4 never leaves the machine, and D3 needs a qualified
+-- conditional egress profile (account / endpoint / region / features / retention) C2 does not have.
+CREATE TRIGGER deployments_external_egress_closed_i BEFORE INSERT ON deployments
+WHEN NEW.egress_max_data_class IN ('D3', 'D4')
+  AND (SELECT p.locality FROM models m JOIN model_providers p ON p.id = m.provider_id WHERE m.id = NEW.model_id) IS NOT 'LOCAL'
+BEGIN SELECT RAISE(ABORT, 'D3/D4 egress to an external provider is closed'); END;
+CREATE TRIGGER deployments_external_egress_closed_u BEFORE UPDATE OF egress_max_data_class ON deployments
+WHEN NEW.egress_max_data_class IN ('D3', 'D4')
+  AND (SELECT p.locality FROM models m JOIN model_providers p ON p.id = m.provider_id WHERE m.id = NEW.model_id) IS NOT 'LOCAL'
+BEGIN SELECT RAISE(ABORT, 'D3/D4 egress to an external provider is closed'); END;
 
 -- Versioned, immutable price cards: every usage record points at the exact card it was priced with.
 CREATE TABLE price_cards (
@@ -241,6 +251,9 @@ WHEN NEW.id IS NOT OLD.id OR NEW.tool_id IS NOT OLD.tool_id OR NEW.code IS NOT O
   OR NEW.args_schema_json IS NOT OLD.args_schema_json OR NEW.cost_per_call_micros IS NOT OLD.cost_per_call_micros OR NEW.created_at IS NOT OLD.created_at OR OLD.status = 'RETIRED'
 BEGIN SELECT RAISE(ABORT, 'tool action definitions are immutable; register a new action'); END;
 CREATE TRIGGER tool_actions_no_delete BEFORE DELETE ON tool_actions BEGIN SELECT RAISE(ABORT, 'tool actions are durable history'); END;
+CREATE TRIGGER tool_actions_external_egress_closed BEFORE INSERT ON tool_actions
+WHEN NEW.data_class_ceiling IN ('D3', 'D4') AND (SELECT egress FROM tools WHERE id = NEW.tool_id) = 'EXTERNAL'
+BEGIN SELECT RAISE(ABORT, 'an external tool action accepts at most D2'); END;
 
 -- Catalog change history (qualification, holds, egress approvals, circuits, policy activations).
 CREATE TABLE catalog_history (

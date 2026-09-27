@@ -14,12 +14,13 @@
  *   restore-check   --workspace <dir> --backup <id> --target <new empty dir>
  *   verify-artifacts --workspace <dir>                     re-hash every artifact object
  *
- * C2 engineering commands (Founder authority is the registered Founder principal; authenticating the
- * human at a Founder surface is C5):
- *   register-founder --workspace <dir>                     register the single Founder principal
- *   governance      --workspace <dir>                      read-only governance health (counts only)
+ * C2 read-only commands (content-free counts / IDs / codes):
+ *   governance      --workspace <dir>                      governance health
  *   approvals       --workspace <dir>                      pending approvals (IDs, risk, action codes)
- *   approve | reject --workspace <dir> --approval <id> --actor <founder:ref> [--reason <CODE>] [--expires-at <ts>]
+ *
+ * There is deliberately no Founder write command (no register-founder, approve or reject): a
+ * Founder reference typed on a command line is not authentication. Founder authority arrives with
+ * the authenticated Founder surface (C5); until then R3 work stays WAITING_APPROVAL (D-C2-13).
  */
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
@@ -35,7 +36,7 @@ import { Logger, jsonLinesSink } from './logger.js';
 import { CompanyRuntime, RUNTIME_VERSION } from './runtime.js';
 import { notifyRuntime } from './wake.js';
 
-const USAGE = 'usage: qandeel-company <init|start|health|submit|cancel|backup|verify-backup|restore-check|verify-artifacts|register-founder|governance|approvals|approve|reject> --workspace <dir> [options]';
+const USAGE = 'usage: qandeel-company <init|start|health|submit|cancel|backup|verify-backup|restore-check|verify-artifacts|governance|approvals> --workspace <dir> [options]';
 
 function out(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -70,9 +71,6 @@ export async function main(argv: readonly string[]): Promise<void> {
       backup: { type: 'string' },
       target: { type: 'string' },
       owner: { type: 'string' },
-      approval: { type: 'string' },
-      actor: { type: 'string' },
-      'expires-at': { type: 'string' },
     },
   });
   if (command === undefined || values.workspace === undefined) fail('USAGE', USAGE, 2);
@@ -190,16 +188,6 @@ export async function main(argv: readonly string[]): Promise<void> {
       }
       return;
     }
-    case 'register-founder': {
-      const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
-      try {
-        const f = GovernanceStore.for(store).registerFounder();
-        out({ ok: true, command, founderRef: f.ref });
-      } finally {
-        store.close();
-      }
-      return;
-    }
     case 'governance': {
       const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
       try {
@@ -214,23 +202,6 @@ export async function main(argv: readonly string[]): Promise<void> {
       try {
         const pending = GovernanceStore.for(store).listApprovals('PENDING').map((a) => ({ approvalId: a.id, risk: a.risk, action: a.action, workItemId: a.workItemId, subjectRef: a.subjectRef, requestedAt: a.createdAt }));
         out({ ok: true, command, pending });
-      } finally {
-        store.close();
-      }
-      return;
-    }
-    case 'approve':
-    case 'reject': {
-      if (values.actor === undefined) fail('USAGE', '--actor <founder:ref> is required', 2);
-      const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
-      try {
-        const a = GovernanceStore.for(store).decideApproval(values.actor, assertId(values.approval, 'approval'), {
-          decision: command === 'approve' ? 'APPROVE' : 'REJECT',
-          reasonCode: assertCode(values.reason ?? (command === 'approve' ? 'FOUNDER_APPROVED' : 'FOUNDER_REJECTED'), 'reason'),
-          ...(values['expires-at'] !== undefined ? { expiresAt: values['expires-at'] } : {}),
-        });
-        notifyRuntime(workspace);
-        out({ ok: true, command, approvalId: a.id, state: a.state });
       } finally {
         store.close();
       }

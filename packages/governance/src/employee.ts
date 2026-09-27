@@ -50,13 +50,20 @@ export function canExecute(state: EmployeeState): boolean {
 }
 
 /**
- * Entering ACTIVE fails closed unless qualification evidence references exist. C2 cannot verify
- * certification (the Academy is C3): it records opaque evidence refs attested by the Founder and
- * never claims they prove certification.
+ * States from which entering ACTIVE is a first activation (or re-activation after retraining).
+ * Stage 4 §8: no Employee enters active duty before the required training/certification, which
+ * the C3 Academy issues. Resuming from PAUSED / ON_LEAVE is not an activation.
  */
-export function assertActivationEvidence(qualificationRefs: readonly string[]): void {
-  if (qualificationRefs.length === 0) {
-    throw new QandeelError('EMPLOYEE_NOT_ELIGIBLE', 'activation requires qualification evidence references (Academy certification is C3; none is assumed)', { reason: 'QUALIFICATION_EVIDENCE_MISSING' });
+export const ACTIVATION_SOURCES: readonly EmployeeState[] = ['SHADOW', 'PROBATION'];
+
+/**
+ * Activation fails closed in C2 (D-C2-13). Certification is C3's; C2 accepts no substitute for it
+ * (no Founder attestation, no opaque reference), so a production activation is always refused until
+ * the Academy exists. Tests reach ACTIVE only through the test-only seam.
+ */
+export function assertActivationAvailable(from: EmployeeState): void {
+  if (ACTIVATION_SOURCES.includes(from)) {
+    throw new QandeelError('EMPLOYEE_NOT_ELIGIBLE', 'activation requires Academy training/certification, which C3 provides; C2 has no substitute', { reason: 'CERTIFICATION_UNAVAILABLE', from });
   }
 }
 
@@ -121,22 +128,22 @@ export function profileJson(v: unknown): string {
   return boundedJson(v ?? {}, 'profile', 8192);
 }
 
-/** Opaque qualification evidence references (C3 owns their meaning), e.g. `academy:cert-123`. */
+/** Opaque qualification evidence references (C3 owns their meaning). They never activate anyone in C2. */
 export const QUALIFICATION_REF = /^[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9._:-]{1,128}$/;
 
 /**
  * Reference kinds reserved for later subsystems. `academy:` certificates are issued by the C3
  * Academy, which does not exist yet: C2 refuses them rather than store something that looks like
- * certification it cannot verify.
+ * certification it cannot verify. `test-seam:` marks the test-only activation seam's own label.
  */
-export const RESERVED_QUALIFICATION_KINDS: readonly string[] = ['academy', 'certification', 'cert'];
+export const RESERVED_QUALIFICATION_KINDS: readonly string[] = ['academy', 'certification', 'cert', 'test-seam'];
 
 export function assertQualificationRefs(v: unknown): string[] {
   if (!Array.isArray(v)) throw new QandeelError('VALIDATION_FAILED', 'qualification refs must be an array', { field: 'qualificationRefs' });
   if (v.length > 32) throw new QandeelError('VALIDATION_FAILED', 'too many qualification refs', { field: 'qualificationRefs' });
   return [...new Set(v.map((r, i) => {
     if (typeof r !== 'string' || !QUALIFICATION_REF.test(r)) throw new QandeelError('VALIDATION_FAILED', 'a qualification ref is "<kind>:<id>"', { field: `qualificationRefs[${i}]` });
-    if (RESERVED_QUALIFICATION_KINDS.includes(r.slice(0, r.indexOf(':')))) throw new QandeelError('VALIDATION_FAILED', 'certification references belong to the C3 Academy; C2 records Founder attestation references only', { field: `qualificationRefs[${i}]` });
+    if (RESERVED_QUALIFICATION_KINDS.includes(r.slice(0, r.indexOf(':')))) throw new QandeelError('VALIDATION_FAILED', 'certification references belong to the C3 Academy; C2 cannot verify them', { field: `qualificationRefs[${i}]` });
     return r;
   }))];
 }

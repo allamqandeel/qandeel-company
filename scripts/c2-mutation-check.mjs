@@ -15,6 +15,9 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Proof tests resolve the test-only Founder seam through the `qandeel-test` condition (D-C2-13).
+const TEST_ENV = { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --conditions=qandeel-test`.trim() };
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const KERNEL = { cwd: 'packages/governance', tests: ['dist/test/governance-kernel.test.js'] };
 const STORAGE = { cwd: 'packages/storage', tests: ['dist/test/c2-governance.test.js'] };
@@ -157,6 +160,43 @@ const MUTATIONS = [
     expectedCount: 1,
     runs: [KERNEL],
   },
+  // D-C2-13 remediation gates.
+  {
+    id: 'founder-ref-is-authentication',
+    gate: 'a Founder reference is not authentication (no Founder surface until C5)',
+    file: 'packages/storage/dist/src/governance.js',
+    search: 'if (!founderSurfaceArmed(this.#store)) {',
+    replace: 'if (false) {',
+    expectedCount: 1,
+    runs: [STORAGE],
+  },
+  {
+    id: 'activation-without-certification',
+    gate: 'no activation before C3 certification',
+    file: 'packages/governance/dist/src/employee.js',
+    search: 'if (ACTIVATION_SOURCES.includes(from)) {',
+    replace: 'if (false) {',
+    expectedCount: 1,
+    runs: [KERNEL, STORAGE],
+  },
+  {
+    id: 'd3-external-egress-allowed',
+    gate: 'D3 external egress closed without a qualified egress profile',
+    file: 'packages/governance/dist/src/routing.js',
+    search: "return locality === 'LOCAL' || dataRank(dataClass) <= dataRank(MAX_EXTERNAL_DATA_CLASS);",
+    replace: "return locality === 'LOCAL' || dataRank(dataClass) <= dataRank('D3');",
+    expectedCount: 1,
+    runs: [KERNEL, STORAGE],
+  },
+  {
+    id: 'd3-external-reservation-allowed',
+    gate: 'the reserving transaction re-checks D3 external egress from durable state',
+    file: 'packages/storage/dist/src/governed-writes.js',
+    search: 'if (!externalEgressAvailable(d.locality, dataClass))',
+    replace: 'if (false)',
+    expectedCount: 1,
+    runs: [STORAGE],
+  },
 ];
 
 function failed(r) {
@@ -175,7 +215,7 @@ for (const m of MUTATIONS) {
   }
   try {
     writeFileSync(file, original.split(m.search).join(m.replace));
-    const caughtBy = m.runs.filter(({ cwd, tests }) => failed(spawnSync(process.execPath, ['--test', '--test-concurrency=1', ...tests], { cwd: path.join(ROOT, cwd), encoding: 'utf8', shell: false, windowsHide: true, timeout: 300_000 })));
+    const caughtBy = m.runs.filter(({ cwd, tests }) => failed(spawnSync(process.execPath, ['--test', '--test-concurrency=1', ...tests], { cwd: path.join(ROOT, cwd), encoding: 'utf8', shell: false, windowsHide: true, timeout: 300_000, env: TEST_ENV })));
     if (caughtBy.length > 0) {
       console.log(`c2-mutation: ok   ${m.id} (${m.gate}) — caught by ${caughtBy.map((r) => r.tests.join(',')).join(' + ')}`);
     } else {
