@@ -1,7 +1,7 @@
 # C2 — Employees + Models + Tools + Cost Governance — Implementation Report
 
-> **C2 — CLOSED / READY FOR MERGE.** Independent review and Founder-host validation passed on
-> exact candidate `c6d54cfde8e6243e409d0d08632d1e6ff5c5e381`. See `docs/C2_CLOSURE_RECORD.md`.
+> **C2 — CLOSED / MERGED / CANONICAL.** PR #3 merged into `main` as `d374001fa92f27d19aabf97b185ccac3bfc9099d` after
+> independent review and Founder-host validation passed on exact candidate `c6d54cfde8e6243e409d0d08632d1e6ff5c5e381`.
 
 ## 1. Baseline, branch, PR
 
@@ -11,7 +11,7 @@
   this task.
 - **Lifecycle correction:**
   - the implementation map, README and C1 closure record now say C1 is CLOSED / MERGED / CANONICAL;
-  - C2 gate is CLOSED / READY FOR MERGE; C3 is NOT STARTED.
+  - C2 is CLOSED / MERGED / CANONICAL (PR #3, `d374001fa92f27d19aabf97b185ccac3bfc9099d`); C3 is NOT STARTED.
 
 ## 2. Authority read
 
