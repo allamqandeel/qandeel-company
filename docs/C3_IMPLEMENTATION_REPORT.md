@@ -212,7 +212,7 @@ Findings:
 |---|---|---|---|
 | 1–4 | C1 / C2 (unchanged) | pinned; frozen by content (`released-migrations-frozen`) | — |
 | 5 | `0005_c3_memory_context.sql` | `2c2f0d8092f108de2596c15e795ba6ba8d17b316761d0ac59e45d8845409e44a` | canonical truth, memory candidates / records / history / conflicts / corrections, lessons / promotions, knowledge, `mind_terms`, context manifests / entries, `context_step_results`, compaction summaries, `budget_reservations.context_manifest_id` + manifest trigger |
-| 6 | `0006_c3_skills_academy.sql` | `a4b8709915fbad924212e3278b64d2f58d4d1e40c5ba1ff937cb7c50637d57d8` | skills / versions / history / discoveries / updates, blueprints, passports, capability requirements / gaps, Academy programs → scenarios → enrollments → attempts → evaluations → remediations → probation → certifications, activation requests, `run_execution_modes`, `employees_activation_gate` |
+| 6 | `0006_c3_skills_academy.sql` | `a4b8709915fbad924212e3278b64d2f58d4d1e40c5ba1ff937cb7c50637d57d8` (was `d3052dc4…4a90cb0` at `c8cbebf`; amended by D-C3-19, unreleased) | skills / versions / history / discoveries / updates, blueprints, passports, capability requirements / gaps, Academy programs → scenarios → enrollments → attempts → evaluations → remediations → probation → certifications, activation requests, `run_execution_modes`, `employees_activation_gate` |
 
 Schema properties:
 - Schema version is 6.
@@ -254,7 +254,8 @@ Proof markers checked by the verifier rule `c3-proofs-present`: `C3-PROOF: mind-
 
 ## 10. Mutation checks, verifier, acceptances, results
 
-- **`npm run c3:mutation`: 30 mutations.** Each removes one gate from the compiled output and
+- **`npm run c3:mutation`: 39 mutations** (30 at the candidate, 9 added by the Founder decision
+  closure, §16). Each removes one gate from the compiled output and
   requires a proof to fail:
   - **Memory:** `memory-secret-stored`, `memory-contradicts-canonical`,
     `memory-model-sets-confidence`, `memory-other-employee-visible`, `corrupt-content-used`,
@@ -269,6 +270,10 @@ Proof markers checked by the verifier rule `c3-proofs-present`: `C3-PROOF: mind-
   - **Academy:** `critical-dimension-compensated`, `academy-authority-unconstrained`,
     `holdout-reused`, `evaluator-sets-run-facts`, `probation-fail-no-new-epoch`,
     `rubric-ignores-refused-actions`, `failed-attempt-hides-breach`.
+  - **Founder decisions (§16):** `role-cert-loss-ignored`, `role-cert-loss-not-at-run-start`,
+    `role-cert-loss-not-at-authorization`, `role-cert-loss-not-at-reservation`,
+    `role-cert-loss-not-at-tool-intent`, `calibration-not-required-at-activation`,
+    `calibration-gates-certification`, `extension-evidence-not-required`, `unlicense-auto-clears`.
 - **C1 / C2 mutation checks still run.**
   - C1's supervisor-guard count is now 8, because C3 candidate recovery adds three fenced
     transactions.
@@ -291,14 +296,14 @@ Results (Node 24.21.0 / SQLite 3.53.4, Linux Cloud):
 | Suite | Tests | Result |
 |---|---|---|
 | mind (C3 kernel) | 27 | pass |
-| storage (C1 + C2 + C3, incl. multi-process) | 196 | pass |
+| storage (C1 + C2 + C3, incl. multi-process) | 210 | pass |
 | runtime (C1 + C2 + C3, incl. fault matrices) | 61 | pass |
 | bootstrap-contract (C0) | 5 | pass |
 | domain (C1) | 22 | pass |
 | governance (C2 kernel) | 25 | pass |
-| **Total** | **336** | **0 failed, 0 skipped** |
+| **Total** | **350** | **0 failed, 0 skipped** |
 
-- **Mutation checks:** C1 **6/6**, C2 **19/19**, C3 **30/30** caught.
+- **Mutation checks:** C1 **6/6**, C2 **19/19**, C3 **39/39** caught.
 - **Verifier:** **49/49** (48 rules + workspace resolution), and the self-test proves each of the 48 rules can fail.
 - **Acceptances:** C1, C2 and C3 all **PASS**.
 - **`git diff --check`:** clean.
@@ -404,3 +409,54 @@ On the Founder's Windows host, at the exact candidate SHA:
 
 None. The installed Skills were inspected and none applied to this repository's governed work, so
 none had an effect. The reviews were performed by focused subagents (§11).
+
+## 16. Founder Decision closure (D-C3-17 → D-C3-18 .. D-C3-23)
+
+Started from the reviewed candidate `c8cbebfc632ecb84b387e20e229631515466946c` (PR #4 Draft / Open /
+Unmerged; `main` still `f9bd7d4`). Only the Founder-approved decisions were implemented; C3 was not
+redesigned, and C4 / C5 were not started.
+
+- **G1 for this task:**
+  - **Skills inspected:** the session's installed Skills list; the repository has no `.claude/`
+    directory.
+  - **Skills used:** none, because none materially applied to implementing these governed decisions.
+    One focused adversarial review subagent (not a Skill) reviewed the diff.
+  - **External research:** none. No external fact changed the implementation; the Founder decisions
+    and the imported authority (Stages 4, 6, 7) were the sources.
+- **D-C3-18 — loss of role certification:**
+  - An ACTIVE Employee whose current-role certification is REVOKED or clock-EXPIRED moves to
+    RETRAINING. This is deterministic, uses the system actor, is audited as
+    `employee.certification_lost`, keeps the same identity and deletes no history.
+  - It is enforced at run start, model authorization, reservation and tool intent, and at revocation
+    time.
+  - REVIEW_DUE never demotes; work that requires that certification stays gap-blocked.
+- **D-C3-19 — calibration:**
+  - Certification no longer needs calibration.
+  - `decideActivation` refuses a designated role without this enrollment's APPROVED calibration
+    (`CALIBRATION_PENDING`, `CALIBRATION_REJECTED` or `CALIBRATION_MISSING`), and records the approved
+    calibration on the request.
+  - The `employees_activation_gate` trigger in 0006 also requires it. 0006 is amended and re-pinned;
+    it is unreleased because PR #4 is unmerged.
+- **D-C3-20 — EXTEND:**
+  - The EXTEND review row is the durable boundary.
+  - The next review needs a higher positive-evidence count in the same epoch. Until then the
+    enrollment stays in SHADOW_WORK, and a PASS is refused (`NO_EVIDENCE_AFTER_EXTENSION`).
+  - No numeric count is frozen.
+- **D-C3-21 — licences:** the Unlicense moves to the recorded licence-review path. The clearly
+  permissive list still auto-clears, and unknown or missing licences stay rejected. This is a Product
+  risk posture, not legal advice.
+- **D-C3-22 — other dispositions:** these are recorded, with no new mechanism:
+  - approvals stay Founder-only (C4 widens them);
+  - the TARGETED / PARTIAL / FULL recertification scope is unchanged;
+  - D3 / D4 stay conservative;
+  - numeric values are tunable engineering defaults;
+  - practice during RETRY is allowed, is never a holdout and is never certification proof (proved).
+- **Proofs:** `packages/storage/test/c3-founder-decisions.test.ts` (`C3-PROOF: founder-decisions`, 14
+  tests). The kernel licence and calibration assertions are in `mind-kernel.test.ts`, and the EXTEND
+  path in `c3-review-fixes.test.ts` was updated.
+- **Closure review:** no BLOCKER.
+  - One MAJOR (Product): reassigning an ACTIVE Employee to a role for which it holds no certification
+    is outside the "loss" rule.
+  - Three minor Product consequences.
+  - All are recorded as open questions in D-C3-23. None was decided, because C3 must not invent
+    Product policy.
