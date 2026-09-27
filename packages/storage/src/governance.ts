@@ -652,6 +652,11 @@ export class GovernanceStore {
     });
   }
 
+  /** Driver codes that ACTIVE tools depend on (Tool Executor readiness: every one must be registered). */
+  activeToolDriverCodes(): string[] {
+    return this.#read((ctx) => ctx.db.all<{ d: string }>(`SELECT DISTINCT driver_code AS d FROM tools WHERE status = 'ACTIVE' ORDER BY d`).map((r) => r.d));
+  }
+
   tool(id: Id): ToolRecord {
     return this.#read((ctx) => mapTool(ctx.db.get('SELECT * FROM tools WHERE id = ?', id) ?? notFound('tool', id)));
   }

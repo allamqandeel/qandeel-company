@@ -322,6 +322,8 @@ export type ToolIntent =
   | { readonly kind: 'REPLAY'; readonly invocationId: Id; readonly result: unknown }
   | { readonly kind: 'DENIED'; readonly code: string; readonly paused: boolean }
   | { readonly kind: 'APPROVAL_REQUIRED'; readonly approvalId: Id }
+  /** R2: independent review is required and the Review Pool (C4) does not exist — fail closed, not a violation. */
+  | { readonly kind: 'REVIEW_REQUIRED' }
   | { readonly kind: 'BUDGET'; readonly code: string }
   | { readonly kind: 'RECONCILIATION_REQUIRED'; readonly invocationId: Id }
   | { readonly kind: 'FAILED'; readonly invocationId: Id; readonly code: string };
@@ -355,6 +357,10 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
   const capability = toolCapability(input.toolCode, input.actionCode);
   const grants = ctx.db.all(`SELECT * FROM permission_grants WHERE employee_id = ? AND status = 'ACTIVE'`, e.id).map(mapGrant);
   const decision = decideEmployeeAction('EMPLOYEE', e.state, grants, { capability, resource: input.toolCode, risk: action.risk, dataClass, at: ts(ctx) });
+  if (decision.effect === 'DENY' && decision.code === 'REVIEW_PATH_UNAVAILABLE') {
+    appendAudit(ctx, 'tool.review_required', 'run', fence.runId, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', 'REVIEW_PATH_UNAVAILABLE', { toolActionId: action.id });
+    return { kind: 'REVIEW_REQUIRED' };
+  }
   if (decision.effect === 'DENY') return deny(decision.code, { risk: action.risk });
   const argsSha256 = sha256Hex(canonicalJson(args));
   if (!/^[A-Za-z0-9:._-]{8,128}$/.test(input.idempotencyKey)) throw new QandeelError('VALIDATION_FAILED', 'idempotency key is a runtime-derived identifier', { field: 'idempotencyKey' });

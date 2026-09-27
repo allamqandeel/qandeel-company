@@ -42,13 +42,12 @@ export interface ProviderResponse {
  */
 export interface ProviderAdapter {
   readonly providerCode: string;
-  /** An upper bound on the input tokens of `request` (used for the worst-case reservation). */
-  inputTokensUpperBound(request: Pick<ProviderRequest, 'messages'>): number;
   generate(request: ProviderRequest, signal: AbortSignal): Promise<ProviderResponse>;
 }
 
 /**
- * Conservative default upper bound: the UTF-8 byte length of every message plus a fixed per-message
+ * The runtime's provider-neutral input bound used for every worst-case reservation: the UTF-8 byte
+ * length of every message plus a fixed per-message
  * framing allowance. Byte-level tokenizers never produce more tokens than bytes.
  */
 export function utf8TokenUpperBound(messages: readonly ProviderMessage[]): number {

@@ -63,12 +63,20 @@ import {
   type TransitionInput,
   type WorkItemRecord,
   type CompanyReadView,
+  GovernanceStore,
 } from '@qandeel-company/storage';
+import type { ProviderAdapter, ToolDriver } from '@qandeel-company/governance';
+
+import { GovernedModelRuntime } from './c2/model-runtime.js';
+import { ToolExecutor } from './c2/tool-executor.js';
+import { isGovernedProcessor, type GovernedRunServices, type ModelCallRequest, type ToolRequest } from './c2/types.js';
 import {
   acquireSupervisor,
+  beginGovernedRun,
   checkpoint,
   claimNext,
   interruptClaim,
+  recoverGovernedOrphans,
   registerInstance,
   releaseSupervisor,
   renewLease,
@@ -120,7 +128,21 @@ export interface RuntimeOptions {
    */
   readonly onFailStop?: (code: string) => void;
   readonly storageFault?: FaultHook;
+  /**
+   * C2 governed execution. Provider adapters and tool drivers are handed to the governed Model
+   * Runtime and Tool Executor here and are reachable from nowhere else. Omitted → none registered:
+   * governed work then finds no route / no driver and fails closed.
+   */
+  readonly governance?: {
+    readonly providers?: readonly ProviderAdapter[];
+    readonly toolDrivers?: readonly ToolDriver[];
+    readonly modelCallTimeoutMs?: number;
+    readonly toolCallTimeoutMs?: number;
+  };
 }
+
+/** Governance administration handed out by the runtime: every call wakes the dispatcher after commit. */
+export type GovernanceAdmin = Omit<GovernanceStore, never>;
 
 interface ActiveRun {
   readonly claim: Claim;
@@ -188,6 +210,9 @@ export class CompanyRuntime {
   readonly #wake: WakeSignal;
   readonly #active = new Map<Id, ActiveRun>();
   readonly #handlers = new Set<EventHandler>();
+  readonly #models: GovernedModelRuntime;
+  readonly #tools: ToolExecutor;
+  #governanceAdmin: GovernanceAdmin | undefined;
 
   #state: RuntimeState = 'CREATED';
   #store: CompanyStore | undefined;
@@ -225,6 +250,8 @@ export class CompanyRuntime {
     this.#jobLeaseMs = clampInt(options.jobLeaseMs, 60_000, 300, 3_600_000);
     this.#wake = new WakeSignal(() => this.#pump(), options.fault ? () => options.fault?.('wake.fileHint') : undefined);
     this.#heartbeatMs = Math.max(100, Math.floor(this.#supervisorTtlMs / 3));
+    this.#models = new GovernedModelRuntime(options.governance?.providers ?? [], options.governance?.modelCallTimeoutMs);
+    this.#tools = new ToolExecutor(options.governance?.toolDrivers ?? [], options.governance?.toolCallTimeoutMs);
   }
 
   // --- lifecycle --------------------------------------------------------------------------------
@@ -405,6 +432,11 @@ export class CompanyRuntime {
         this.#log.warn('runtime.shutdown_interrupt_failed', { jobId: run.claim.fence.jobId, code: errorCode(error) });
       }
     }
+    try {
+      if (this.#fence) recoverGovernedOrphans(store, this.#fence);
+    } catch (error) {
+      this.#log.warn('runtime.shutdown_governed_recovery_failed', { code: errorCode(error) });
+    }
     this.#dispatchEvents();
     if (this.#fence) releaseSupervisor(store, this.#fence);
     this.#log.info('runtime.stopped', { instanceId: this.instanceId });
@@ -517,6 +549,38 @@ export class CompanyRuntime {
     return { backup: result, verification };
   }
 
+  /**
+   * C2 governance administration (Founder-authority operations, reads, health). It is a capability
+   * object, not the store: it executes nothing and claims nothing, and every call signals the
+   * dispatcher afterwards so an approval or cap increase that made work actionable is picked up.
+   */
+  get governance(): GovernanceAdmin {
+    if (!this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
+    if (!this.#governanceAdmin) {
+      const target = GovernanceStore.for(this.#store);
+      const wake = (): void => this.#wake.signal();
+      this.#governanceAdmin = new Proxy(target, {
+        get(t, prop, receiver) {
+          const v = Reflect.get(t, prop, receiver) as unknown;
+          if (typeof v !== 'function') return v;
+          return (...args: unknown[]) => {
+            try {
+              return (v as (...a: unknown[]) => unknown).apply(t, args);
+            } finally {
+              wake();
+            }
+          };
+        },
+      });
+    }
+    return this.#governanceAdmin;
+  }
+
+  /** Governed execution diagnostics (content-free). */
+  governanceDiagnostics(): { providerCalls: number; providerAdapters: readonly string[]; toolDrivers: readonly string[] } {
+    return { providerCalls: this.#models.providerCalls, providerAdapters: this.#models.adapterCodes, toolDrivers: this.#tools.driverCodes };
+  }
+
   /** In-process subscribers to durable outbox events (delivered at least once, after commit). */
   onEvent(handler: EventHandler): () => void {
     this.#handlers.add(handler);
@@ -594,10 +658,14 @@ export class CompanyRuntime {
         this.#observedGeneration = store.wakeGeneration();
         this.#dispatchEvents();
         this.#noticeCrossProcessCancellation(store);
+        let interrupted = 0;
         for (const jobId of store.expiredClaims(this.#concurrency)) {
           if (this.#active.has(jobId)) this.#active.get(jobId)?.controller.abort();
           interruptClaim(store, this.#fence, jobId, 'LEASE_EXPIRED');
+          interrupted++;
         }
+        // Governed work left by an interrupted run is classified at once (held / retryable).
+        if (interrupted > 0) recoverGovernedOrphans(store, this.#fence);
         while (this.#active.size < this.#concurrency && this.#state === 'READY') {
           this.#claimsAttempted++;
           const claim = claimNext(store, { workerId: `${this.instanceId}:${++this.#workerSeq}`, leaseMs: this.#jobLeaseMs, kinds: this.#registry.sideEffects, supervisor: this.#fence });
@@ -766,7 +834,7 @@ export class CompanyRuntime {
         );
       });
       try {
-        const outcome = await Promise.race([processor.run(context), abandoned]);
+        const outcome = await Promise.race([this.#runProcessor(processor, context, claim, store, run.controller.signal), abandoned]);
         result = outcome === 'ABANDONED' ? { type: 'CANCELLED' } : outcome;
       } finally {
         graceTimer.abort();
@@ -818,6 +886,27 @@ export class CompanyRuntime {
       clearInterval(renew);
       run.settled = true;
     }
+  }
+
+  /**
+   * Plain processors run as in C1. A governed processor first has its run bound to an eligible
+   * Employee (the runtime refuses ineligible Employees before any model or tool call), then receives
+   * services bound to this claim's fence — never the store, an adapter or a driver.
+   */
+  async #runProcessor(processor: Processor, context: ProcessorContext, claim: Claim, store: CompanyStore, signal: AbortSignal): Promise<ProcessorResult> {
+    if (!isGovernedProcessor(processor)) return processor.run(context);
+    const begun = beginGovernedRun(store, claim.fence);
+    if (!begun.ok) {
+      this.#log.warn('run.governance_refused', { jobId: claim.fence.jobId, runId: claim.fence.runId, code: begun.code });
+      return { type: 'PERMANENT_FAILURE', code: begun.code };
+    }
+    const run = begun.context;
+    const services: GovernedRunServices = Object.freeze({
+      context: run,
+      invokeModel: (request: ModelCallRequest) => this.#models.invoke(store, claim.fence, run, request, signal),
+      executeTool: (request: ToolRequest, step: number) => this.#tools.execute(store, claim.fence, run, request, step, signal),
+    });
+    return processor.runGoverned(context, services);
   }
 
   // --- artifacts from processors ------------------------------------------------------------------
