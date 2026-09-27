@@ -259,19 +259,31 @@ export interface CertificationInputs {
   readonly passedAssessments: number;
   readonly passedCleanHoldouts: number;
   readonly probationReviewPassed: boolean;
-  readonly calibrationApproved: boolean;
   readonly blocked: boolean;
 }
 
 /** What the evidence still lacks for certification (empty = certifiable). */
-export function certificationGaps(def: Pick<ProgramDefinition, 'assessmentTrials' | 'holdoutRequired' | 'founderCalibrationRequired'>, i: CertificationInputs): string[] {
+export function certificationGaps(def: Pick<ProgramDefinition, 'assessmentTrials' | 'holdoutRequired'>, i: CertificationInputs): string[] {
   const gaps: string[] = [];
   if (i.blocked) gaps.push('BLOCKED_REPEATED_CRITICAL_FAILURE');
   if (i.passedAssessments < def.assessmentTrials) gaps.push('ASSESSMENT_TRIALS');
   if (def.holdoutRequired && i.passedCleanHoldouts < 1) gaps.push('HOLDOUT_PASS');
   if (!i.probationReviewPassed) gaps.push('PROBATION_REVIEW');
-  if (def.founderCalibrationRequired && !i.calibrationApproved) gaps.push('FOUNDER_CALIBRATION');
+  // Founder Decision D-C3-19: Founder Calibration is a pre-ACTIVATION requirement for designated roles,
+  // never a prerequisite of the professional role certification (checked at Activation Approval).
   return gaps;
+}
+
+/**
+ * Founder Decision D-C3-19: whether the Founder Calibration a designated role requires is in place for
+ * this Activation Approval (null = nothing missing). A program that does not require it is unaffected;
+ * one that does needs this enrollment's calibration APPROVED — pending, rejected or absent refuses.
+ */
+export function calibrationActivationGap(def: Pick<ProgramDefinition, 'founderCalibrationRequired'>, calibrationState: 'PENDING' | 'APPROVED' | 'REJECTED' | null): 'CALIBRATION_MISSING' | 'CALIBRATION_PENDING' | 'CALIBRATION_REJECTED' | null {
+  if (!def.founderCalibrationRequired) return null;
+  if (calibrationState === 'APPROVED') return null;
+  if (calibrationState === 'REJECTED') return 'CALIBRATION_REJECTED';
+  return calibrationState === 'PENDING' ? 'CALIBRATION_PENDING' : 'CALIBRATION_MISSING';
 }
 
 export const CERTIFICATION_STATUSES = ['VALID', 'REVIEW_DUE', 'EXPIRED', 'REVOKED', 'SUPERSEDED'] as const;

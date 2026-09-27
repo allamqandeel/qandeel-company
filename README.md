@@ -63,9 +63,10 @@ credential. Details: `docs/C2_IMPLEMENTATION_REPORT.md`, decisions D-C2-01 to D-
 - durable Capability Gaps that park work before any model or tool call;
 - the QANDEEL Academy: programs, scenarios and holdouts, attempts executed by the real runtime in
   constrained mode, critical-dimension gating, diagnosis and retraining, shadow work, probation
-  review, Founder calibration, certification with pinned skills, recertification — and the
-  **activation bridge**, which files an activation request that production cannot approve until the
-  authenticated Founder surface exists (C5).
+  review, certification with pinned skills, recertification, loss of a revoked / expired role
+  certification (ACTIVE → RETRAINING), Founder calibration before activation for designated roles —
+  and the **activation bridge**, which files an activation request that production cannot approve
+  until the authenticated Founder surface exists (C5).
 
 C3 adds no external vector database, embedding service or paid memory service. Details:
 `docs/C3_IMPLEMENTATION_REPORT.md`, decisions D-C3-01 onward.

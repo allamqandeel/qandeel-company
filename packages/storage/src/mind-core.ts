@@ -19,7 +19,7 @@ import {
   type SkillVersionView,
 } from '@qandeel-company/mind';
 
-import { getEmployeeRow, wakeWorkItemJob } from './governance-core.js';
+import { getEmployeeRow, setEmployeeState, wakeWorkItemJob } from './governance-core.js';
 import { mapGrant, type EmployeeRecord } from './governance-records.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
 import {
@@ -332,6 +332,36 @@ export function liveCertifications(ctx: StoreContext, employeeId: Id, materializ
     } else out.push({ ...c, status: certificationStatusAt(c, now) });
   }
   return out;
+}
+
+/**
+ * Founder Decision D-C3-18 (loss of role certification): the Employee's certification for its CURRENT
+ * role is lost when no live one remains (VALID / REVIEW_DUE, time-aware) and the latest one was REVOKED
+ * or has EXPIRED. REVIEW_DUE is not a loss. An Employee that never held a certification for the role is
+ * not covered by this rule (it is not a loss). Expiry is read from the clock, and materialized.
+ */
+export function roleCertificationLoss(ctx: StoreContext, e: EmployeeRecord): { readonly code: 'ROLE_CERTIFICATION_REVOKED' | 'ROLE_CERTIFICATION_EXPIRED'; readonly certificationId: Id } | null {
+  if (liveCertifications(ctx, e.id, true).some((c) => c.roleRef === e.roleRef && (c.status === 'VALID' || c.status === 'REVIEW_DUE'))) return null;
+  const lost = ctx.db.get<{ id: string; status: string }>(`SELECT id, status FROM certifications WHERE employee_id = ? AND role_ref = ? AND status IN ('REVOKED', 'EXPIRED') ORDER BY updated_at DESC, rowid DESC LIMIT 1`, e.id, e.roleRef);
+  if (!lost) return null;
+  return { code: lost.status === 'REVOKED' ? 'ROLE_CERTIFICATION_REVOKED' : 'ROLE_CERTIFICATION_EXPIRED', certificationId: lost.id as Id };
+}
+
+/**
+ * The ordinary-duty eligibility boundary for certification loss (D-C3-18), run inside the caller's
+ * transaction at every point where an ACTIVE Employee would start or continue ordinary work (run
+ * start, model authorization, reservation, tool intent) and when a certification is revoked. An ACTIVE
+ * Employee whose current-role certification was lost moves to RETRAINING (deterministic, system actor,
+ * audited; same identity; history and evidence untouched) and so can no longer execute ordinary work.
+ * Returns the Employee as it now stands.
+ */
+export function enforceRoleCertification(ctx: StoreContext, e: EmployeeRecord): EmployeeRecord {
+  if (e.state !== 'ACTIVE') return e;
+  const loss = roleCertificationLoss(ctx, e);
+  if (loss === null) return e;
+  const next = setEmployeeState(ctx, e, 'RETRAINING', loss.code, SYSTEM_MIND_REF);
+  appendAudit(ctx, 'employee.certification_lost', 'employee', e.id, { actorRef: SYSTEM_MIND_REF }, 'OK', loss.code, { certificationId: loss.certificationId, from: 'ACTIVE', to: 'RETRAINING' });
+  return next;
 }
 
 export function eligibilitySnapshot(ctx: StoreContext, employeeId: Id, materialize: boolean): EligibilitySnapshot {

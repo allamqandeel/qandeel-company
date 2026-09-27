@@ -1135,8 +1135,8 @@ summarized. Summaries are never truth: they rank as memory, below knowledge and 
 BENCHMARKED → COMPARED → APPROVED` (or REJECTED with its reason kept).
 - Inspection and the license / dependency check are deterministic system steps; every other step is
   Founder authority with evidence references (SANDBOXED requires a security pass).
-- Licences: MIT, Apache-2.0, BSD-2/3-Clause, ISC, 0BSD, CC0-1.0, Unlicense are clear-free;
-  licences with further obligations (CC-BY-4.0, copyleft, share-alike) wait at
+- Licences: MIT, Apache-2.0, BSD-2/3-Clause, ISC, 0BSD, CC0-1.0 are clear-free; the Unlicense (moved
+  by Founder Decision D-C3-21) and licences with further obligations (CC-BY-4.0, copyleft, share-alike) wait at
   LICENSE_DEPENDENCY_CHECKED for a recorded licence review (`reviewLicense`: CLEAR with permission
   evidence → `CLEARED_BY_REVIEW`, or REJECT); unknown or missing is rejected; QANDEEL-native skills
   are QANDEEL-owned. The licence policy is an engineering default for Product Owner / legal review. A paid dependency makes the version `FREE_SKILL_PAID_DEPENDENCY`: approval waits for
@@ -1177,8 +1177,9 @@ generation, no polling); the gap resolves when the gate next passes.
 ## D-C3-11 — The activation bridge stays fail-closed
 
 **Decision.** Reaching CERTIFICATION files one activation request with its evidence (certification,
-probation review, calibration when required). `decideActivation` is Founder authority: it re-checks
-every piece of evidence and only then sets ACTIVE with `academy:`, `probation:` and `activation:`
+probation review, and the calibration if it is already approved). `decideActivation` is Founder
+authority: it re-checks every piece of evidence — including, for a designated role, an APPROVED Founder
+Calibration of the same enrollment (D-C3-19) — and only then sets ACTIVE with `academy:`, `probation:` and `activation:`
 references. Until the authenticated Founder surface exists (C5) it fails closed in production
 (`FOUNDER_SURFACE_UNAVAILABLE`). The C2 generic transition cannot carry an Academy reference, and
 the datastore gate (D-C3-02) refuses any other path. The C2 test seam is unchanged and test-only.
@@ -1214,7 +1215,8 @@ action is allowed (`ACADEMY_CONSTRAINED`).
 `mind-telemetry-content-free`, `activation-gate-present`, `c3-proofs-present`,
 `c3-not-claimed-closed`; `c1-migrations-frozen` becomes `released-migrations-frozen` (0001–0004);
 `no-later-scope-leakage` now forbids C4–C7 schema / packages only; `mind` joins `ALLOWED_PACKAGES`.
-`scripts/c3-mutation-check.mjs` removes 30 C3 gates from the compiled output and requires the proofs
+`scripts/c3-mutation-check.mjs` removes 39 C3 gates (30 at the candidate, 9 added by the Founder
+decision closure, D-C3-22) from the compiled output and requires the proofs
 to fail; it runs in `npm run ci`. `scripts/c3-acceptance.mjs` runs in CI on Windows and Ubuntu. The C1
 mutation check now expects eight supervisor-verification guards (the C3 candidate recovery adds three:
 list, decide, refuse — each its own supervisor-fenced transaction);
@@ -1300,25 +1302,141 @@ mutation:
     (`CONTRADICTS_CANONICAL`).
   - Durable step results never store secret material.
   - Re-evaluating every open gap is deterministic and unbounded (no `LIMIT 1000`).
-- **Minor items left to Product:**
+- **Minor items left to Product** (both since decided by the Founder):
   - After EXTEND, the next review may use the same epoch's cases. A new Founder decision is still
-    required, but the number of additional cases is a Product value.
-  - During RETRY, a practice (SIMULATION) attempt may still be started.
+    required, but the number of additional cases is a Product value. → **Resolved by D-C3-20**: at
+    least one new evidence item after the extension; no fixed count.
+  - During RETRY, a practice (SIMULATION) attempt may still be started. → **Confirmed by D-C3-22
+    (7.5)**: allowed; practice is never a holdout and never certification proof.
 
-## D-C3-17 — Questions for the Product Owner (not decided by C3)
+## D-C3-17 — Questions for the Product Owner (asked by the C3 candidate; now resolved)
+
+The C3 candidate (`c8cbebf`) asked these questions. After an independent review of that head found no
+new engineering BLOCKER or MAJOR, the Founder / Product Owner decided all of them (Founder decision
+closure task, 2026-09-27). The questions are kept as asked, with where each one is resolved:
 
 1. **Consequence of losing certification.** A REVOKED / EXPIRED / REVIEW_DUE certification blocks work
    that declares a CERTIFICATION requirement, but an ACTIVE Employee otherwise keeps executing. Should
    an ACTIVE Employee without a live role certification be moved to RETRAINING (or blocked)? The
-   authority does not say.
+   authority does not say. → **D-C3-18.**
 2. **Approver identity.** Activation, evaluation and probation decisions are Founder-only in Strong v1
    (the schema requires `founder:*` for the activation decision and forbids `employee:*` evaluators).
    C4 (Review Pool / Directors) will need a migration to widen this; which roles may approve?
+   → **D-C3-22 (7.1).**
 3. **Licence policy.** The clear-free list and the review-required list (D-C3-08) need Product /
-   legal confirmation.
+   legal confirmation. → **D-C3-21.**
 4. **REVIEW_DUE semantics and recertification scope** per impact level (TARGETED / PARTIAL / FULL).
-5. **D3 / D4 retention and sharing** (fail-closed defaults above).
+   → **D-C3-18** (REVIEW_DUE) and **D-C3-22 (7.2)** (scope).
+5. **D3 / D4 retention and sharing** (fail-closed defaults above). → **D-C3-22 (7.3).**
 6. **Numeric defaults**: confidence caps, review horizons, near-duplicate threshold, context budget and
-   layer shares, compaction threshold, probation defaults, certification validity.
+   layer shares, compaction threshold, probation defaults, certification validity. → **D-C3-22 (7.4).**
 7. **Founder Calibration placement**: C3 requires it (when the program demands it) before
-   certification; Stage 6 §10 names it before Active Duty.
+   certification; Stage 6 §10 names it before Active Duty. → **D-C3-19.**
+
+No imported canonical authority was edited. Stage 4 §8 (Retraining is a lifecycle state), Stage 6 §10
+(Founder Calibration "before Active Duty"), §12 (probation is evidence-based) and §13, and Stage 7 §12
+("No clear license / permission … → reject") agree with these decisions: no AUTHORITY CONFLICT.
+
+## D-C3-18 — Founder Decision 1: loss of the current-role certification
+
+**Founder decision.** A persistent Employee may not continue ordinary role execution after losing the
+live certification that let its role become trusted. REVOKED or (clock-)EXPIRED → no new ordinary
+role execution, governed move to RETRAINING, same identity, history kept. REVIEW_DUE → the Employee
+stays ACTIVE; only work that explicitly requires that certification stays blocked until recertified.
+
+**Implementation.**
+- `roleCertificationLoss` (storage `mind-core`): the loss exists when the Employee holds no live
+  (VALID / REVIEW_DUE, time-aware) certification for its **current** role and its latest one for that
+  role is REVOKED or EXPIRED. Expiry is read from the clock and materialized (status + history row). An
+  Employee that never held a certification for the role is outside this rule (it lost nothing).
+- `enforceRoleCertification` runs inside the caller's transaction at every ordinary-duty boundary:
+  run start (`txBeginGovernedRun`), model authorization, budget reservation and tool intent, and in
+  `revokeCertification`. For an ACTIVE Employee with a loss it moves the Employee to RETRAINING (C2
+  lifecycle already allows ACTIVE → RETRAINING; no new state) with reason
+  `ROLE_CERTIFICATION_REVOKED` / `ROLE_CERTIFICATION_EXPIRED`, actor `system:runtime` (deterministic,
+  never the Employee or a model), plus an `employee.certification_lost` audit row with the
+  certification ID. RETRAINING cannot execute ordinary work (`canExecute`), so the run is refused
+  (`EMPLOYEE_NOT_ELIGIBLE`) and an in-flight run spends and acts no further.
+- A PAUSED / ON_LEAVE Employee is not moved when the loss happens; if it is resumed to ACTIVE, the
+  first ordinary-duty boundary moves it. Academy attempts stay available: RETRAINING is a trainee
+  state, and the way back is recertification + a new Activation Approval (RETRAINING → SHADOW /
+  PROBATION → ACTIVE through `decideActivation` only).
+- Certifications, their history, evidence, portfolio and runs are never deleted or rewritten
+  (datastore triggers already forbid it).
+- REVIEW_DUE: unchanged capability gate — a CERTIFICATION requirement is unmet by REVIEW_DUE, so that
+  work parks as a capability gap; nothing demotes the Employee.
+
+## D-C3-19 — Founder Decision 2: Founder Calibration gates Activation, not certification
+
+**Founder decision.** Founder Calibration is a pre-Activation requirement for designated roles, not a
+prerequisite of the professional Role Certification. Certification stays necessary, not sufficient.
+
+**Implementation.**
+- The kernel's `certificationGaps` no longer contains `FOUNDER_CALIBRATION`; a designated role is
+  certified when its professional evidence is complete, even with calibration PENDING.
+- New pure `calibrationActivationGap(def, state)`: a program that requires calibration needs this
+  enrollment's calibration APPROVED (`CALIBRATION_PENDING` / `CALIBRATION_REJECTED` /
+  `CALIBRATION_MISSING` otherwise); other programs are unaffected.
+- `decideActivation` re-reads the enrollment's calibration at decision time (not what the request
+  recorded when filed) and refuses with `EMPLOYEE_NOT_ELIGIBLE` and that reason; on approval it records
+  the approved calibration on the request as activation evidence.
+- **Migration 0006 amended (unreleased; re-pinned).** The datastore's `employees_activation_gate`
+  now also requires that, when the enrollment has a Founder Calibration row (a designated role), it is
+  APPROVED and is the one the approved request records. Before this decision calibration was implied
+  by the certification; moving it after certification would otherwise have removed it from the
+  datastore's defence in depth. SHA-256 `d3052dc4…4a90cb0` → `a4b87099…637d57d8`.
+
+## D-C3-20 — Founder Decision 3: probation EXTEND needs new evidence
+
+**Founder decision.** After EXTEND the next review needs new post-extension evidence; no hard numeric
+count is frozen in C3; the next review remains evidence-based and needs a new decision.
+
+**Implementation.** The EXTEND review row (append-only, same evidence epoch, `review_round`) is the
+durable extension boundary: its `summary_json` records the evidence counts at the decision. Evidence is
+append-only, so a higher positive-evidence total in the same epoch means at least one positive item was
+recorded after the extension. Until then the enrollment stays in SHADOW_WORK (`advance`) and a PASS is
+refused (`NO_EVIDENCE_AFTER_EXTENSION`, defence in depth). Old evidence stays and counts alongside the
+new; a negative item does not qualify. The boundary survives a restart (it is a committed row). No new
+column or Product metric: a later Product value for the amount / type of extra evidence can replace
+the "at least one" comparison.
+
+## D-C3-21 — Founder Decision 4: Skill licence policy
+
+**Founder decision.** Keep the fail-closed licence model. Clearly permissive licences auto-clear; the
+**Unlicense moves to the review-required path**; attribution / copyleft / share-alike stay
+review-required; unknown / missing / NOASSERTION / unclear / proprietary / paid / trial stay rejected.
+This is a Product risk posture, not a legal conclusion or a statement about any licence's validity.
+
+**Implementation.** `CLEAR_FREE_LICENSES` = MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD,
+CC0-1.0; `REVIEW_LICENSES` gains `Unlicense`. An Unlicense version waits at LICENSE_DEPENDENCY_CHECKED
+for the existing recorded `reviewLicense` (→ `CLEARED_BY_REVIEW` with evidence, or REJECT).
+
+## D-C3-22 — Other Founder dispositions (recorded; no new mechanism)
+
+1. **Approver identity (7.1).** C3 production approval / evaluation / probation / activation stays
+   Founder-only and fail-closed on the authenticated Founder surface. No Directors or Review Pool
+   authority in C3; widening it is C4's.
+2. **REVIEW_DUE recertification scope (7.2).** Unchanged: TARGETED re-tests the affected Skill /
+   Passport scope without invalidating the role certification; PARTIAL / FULL make the role
+   certification REVIEW_DUE.
+3. **D3 / D4 (7.3).** Unchanged: D4 is never retained as ordinary Memory / learning and stays
+   local-only under security authority; D3 is never silently promoted or shared as ordinary shared
+   knowledge; no new D3 sharing mechanism.
+4. **Numeric defaults (7.4).** Confidence caps, review horizons, duplicate thresholds, context budgets
+   and layer shares, compaction thresholds, probation defaults, certification validity and similar
+   values are **engineering defaults / tunable policy values**, not frozen Product constants.
+5. **Practice during RETRY (7.5).** Allowed. A practice (SIMULATION) attempt only uses PRACTICE
+   scenarios (a holdout is refused, `HOLDOUT_NOT_FOR_PRACTICE`, and stays unexposed), and only passed
+   ASSESSMENT attempts count toward certification; a passed practice in RETRY neither skips retraining
+   nor certifies. Proved in `c3-founder-decisions.test.ts`.
+
+**Mutations added** (`scripts/c3-mutation-check.mjs`, 30 → 39): `role-cert-loss-ignored`,
+`role-cert-loss-not-at-run-start`, `role-cert-loss-not-at-authorization`,
+`role-cert-loss-not-at-reservation`, `role-cert-loss-not-at-tool-intent`,
+`calibration-not-required-at-activation`, `calibration-gates-certification`,
+`extension-evidence-not-required`, `unlicense-auto-clears`. The datastore calibration clause of the
+activation gate is proved directly (a raw write that skips `decideActivation` is refused); it is not a
+compiled-output mutation because editing a pinned migration already fails every test.
+
+**State.** C3 remains a Cloud implementation candidate — ready for final independent review and
+Founder-host validation. It is not closed, merged or canonical.

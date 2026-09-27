@@ -564,9 +564,10 @@ WHEN NEW.employee_id IS NOT OLD.employee_id OR NEW.certification_id IS NOT OLD.c
 BEGIN SELECT RAISE(ABORT, 'an activation request moves forward once'); END;
 
 -- The datastore's own activation gate (defence in depth): SHADOW / PROBATION → ACTIVE requires an
--- APPROVED activation request whose certification is VALID for this Employee's current role and
--- whose probation review PASSED. (The C2 test-only seam's labelled rows are the only other path, and
--- only tests can reach that seam.)
+-- APPROVED activation request whose certification is VALID for this Employee's current role, whose
+-- probation review PASSED and, when the enrollment carries a Founder Calibration (a designated role),
+-- which records that calibration APPROVED (D-C3-19: calibration gates activation, not certification).
+-- (The C2 test-only seam's labelled rows are the only other path, and only tests can reach that seam.)
 CREATE TRIGGER employees_activation_gate BEFORE UPDATE OF state ON employees
 WHEN NEW.state = 'ACTIVE' AND OLD.state NOT IN ('ACTIVE', 'PAUSED', 'ON_LEAVE')
   AND NOT EXISTS (SELECT 1 FROM json_each(NEW.qualification_refs_json) j WHERE j.value GLOB 'test-seam:*')
@@ -576,7 +577,8 @@ WHEN NEW.state = 'ACTIVE' AND OLD.state NOT IN ('ACTIVE', 'PAUSED', 'ON_LEAVE')
       JOIN probation_reviews p ON p.id = a.probation_review_id
      WHERE a.employee_id = NEW.id AND a.state = 'APPROVED' AND a.decided_by_ref GLOB 'founder:*'
        AND c.employee_id = NEW.id AND c.status = 'VALID' AND c.role_ref = NEW.role_ref AND c.valid_until > NEW.updated_at
-       AND c.enrollment_id = a.enrollment_id AND p.enrollment_id = a.enrollment_id AND p.decision = 'PASS')
+       AND c.enrollment_id = a.enrollment_id AND p.enrollment_id = a.enrollment_id AND p.decision = 'PASS'
+       AND NOT EXISTS (SELECT 1 FROM founder_calibrations f WHERE f.enrollment_id = a.enrollment_id AND (f.state <> 'APPROVED' OR a.calibration_id IS NOT f.id)))
 BEGIN SELECT RAISE(ABORT, 'activation requires a valid role certification, a passed probation review and an approved activation request'); END;
 
 -- Execution mode of a Run by a non-ACTIVE Employee (Academy attempt or shadow work): constrained authority.

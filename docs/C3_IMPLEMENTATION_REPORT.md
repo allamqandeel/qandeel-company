@@ -1,8 +1,12 @@
 # C3 — Memory + Context + Skills + Academy — Implementation Report
 
 > **C3 — IN PROGRESS — Cloud implementation candidate. NOT CLOSED.** Nothing here is a closure
-> record. C3 closes only after independent review and Founder-host validation (§14). R1 is NOT
+> record. C3 closes only after final independent review and Founder-host validation (§14). R1 is NOT
 > STARTED; C4 is NOT STARTED.
+>
+> **Founder Decision closure (§16).** After an independent review of `c8cbebf` found no new engineering
+> BLOCKER or MAJOR, the Founder decided the D-C3-17 Product questions. They are implemented on this
+> same PR as D-C3-18 .. D-C3-22.
 
 ## 1. Baseline, branch, PR
 
@@ -136,8 +140,11 @@ Findings:
   - Inspection and the licence check are deterministic.
   - Every other step is Founder authority with evidence.
 - **Licences:**
-  - Permissive licences clear automatically.
-  - Licences with obligations (CC-BY, copyleft, share-alike) wait for a recorded licence review.
+  - Clearly permissive licences (MIT, Apache-2.0, BSD-2/3-Clause, ISC, 0BSD, CC0-1.0) clear
+    automatically.
+  - The Unlicense (Founder Decision D-C3-21) and licences with obligations (CC-BY, copyleft,
+    share-alike) wait for a recorded licence review.
+  - This is a Product risk posture, not a legal conclusion.
   - Unknown or missing licences are rejected.
   - A paid dependency is flagged `FREE_SKILL_PAID_DEPENDENCY` and needs an explicit acknowledgement.
   - There is no marketplace and no paid pack.
@@ -178,20 +185,26 @@ Findings:
 - **Evidence windows.**
   - A probation FAIL is diagnosed into remediation, opens a new evidence epoch, and returns through
     RETRY to new shadow work.
-  - EXTEND opens a new review round.
+  - EXTEND opens a new review round, and the next review needs at least one new evidence item
+    recorded after the extension (D-C3-20).
   - An activation REJECT withdraws the enrollment; the Employee may enroll again.
 - **Certification** is role-specific and time-bounded. It pins exact, rolled-out Skill versions and
   can move to REVIEW_DUE or be revoked. Concurrent issuance produces exactly one certification
-  (multi-process proof).
+  (multi-process proof). Founder Calibration is not a certification prerequisite (D-C3-19).
+- **Losing certification (D-C3-18).** If an ACTIVE Employee's current-role certification is REVOKED or
+  has EXPIRED by the clock, the Employee moves to RETRAINING at the next ordinary-duty boundary (or at
+  once on revocation) and starts no ordinary work. REVIEW_DUE keeps the Employee ACTIVE and blocks only
+  work that requires that certification.
 - **C2 activation bridge — status: FAIL-CLOSED in production, as required.**
   - `decideActivation` is Founder authority. It re-checks every piece of evidence: a VALID same-role
-    certification, a PASS probation review for the current round, calibration when required, and an
-    unexpired certification. Only then does it set ACTIVE, with `academy:` / `probation:` /
+    certification, a PASS probation review for the current round, an unexpired certification and, for
+    a designated role, an APPROVED Founder Calibration of the same enrollment (D-C3-19). Only then does it set ACTIVE, with `academy:` / `probation:` /
     `activation:` references.
   - Until the authenticated Founder surface exists (C5), it returns `FOUNDER_SURFACE_UNAVAILABLE` in
     production.
-  - The trigger `employees_activation_gate` refuses every other path to ACTIVE. The C2 test seam is
-    unchanged and test-only.
+  - The trigger `employees_activation_gate` refuses every other path to ACTIVE; it also requires an
+    enrollment's Founder Calibration, when one exists, to be APPROVED and recorded on the request. The
+    C2 test seam is unchanged and test-only.
 
 ## 8. Migrations
 
@@ -199,7 +212,7 @@ Findings:
 |---|---|---|---|
 | 1–4 | C1 / C2 (unchanged) | pinned; frozen by content (`released-migrations-frozen`) | — |
 | 5 | `0005_c3_memory_context.sql` | `2c2f0d8092f108de2596c15e795ba6ba8d17b316761d0ac59e45d8845409e44a` | canonical truth, memory candidates / records / history / conflicts / corrections, lessons / promotions, knowledge, `mind_terms`, context manifests / entries, `context_step_results`, compaction summaries, `budget_reservations.context_manifest_id` + manifest trigger |
-| 6 | `0006_c3_skills_academy.sql` | `d3052dc4a5ead7e5119edd2395952d301e0a7deb627ad6242aa890f4b7a90cb0` | skills / versions / history / discoveries / updates, blueprints, passports, capability requirements / gaps, Academy programs → scenarios → enrollments → attempts → evaluations → remediations → probation → certifications, activation requests, `run_execution_modes`, `employees_activation_gate` |
+| 6 | `0006_c3_skills_academy.sql` | `a4b8709915fbad924212e3278b64d2f58d4d1e40c5ba1ff937cb7c50637d57d8` | skills / versions / history / discoveries / updates, blueprints, passports, capability requirements / gaps, Academy programs → scenarios → enrollments → attempts → evaluations → remediations → probation → certifications, activation requests, `run_execution_modes`, `employees_activation_gate` |
 
 Schema properties:
 - Schema version is 6.
@@ -319,8 +332,8 @@ a regression proof.
 | A4 | MAJOR | recert ignores magnitude | FIXED — blueprint compare, TARGETED / PARTIAL / FULL |
 | A6 | MAJOR | copyleft never reviewable; CC-BY auto-cleared | FIXED — licence review step; mutation |
 | A7 | MAJOR | rubric ignores refusals | FIXED — all refusals count; mutation |
-| P1 | MAJOR (Product) | losing certification does not affect ACTIVE Employee | REPORTED — D-C3-17 Q1 |
-| P2 | MAJOR (Product) | approver identity fixed to `founder:*` | REPORTED — D-C3-17 Q2 (fail-closed; C4 widens) |
+| P1 | MAJOR (Product) | losing certification does not affect ACTIVE Employee | FOUNDER DECIDED — implemented, D-C3-18 |
+| P2 | MAJOR (Product) | approver identity fixed to `founder:*` | FOUNDER DECIDED — kept Founder-only / fail-closed; C4 widens (D-C3-22) |
 
 **Re-review of the fix commit.** A final adversarial re-review confirmed most dispositions. It found
 three partial fixes (W1, W3, C3) and two regressions (from C5 / M1 and A7), reported as four MAJOR
@@ -335,7 +348,7 @@ findings, all fixed in this task:
 | — | MINOR | pending promotion of a lesson contradicting new canonical truth left undecidable | FIXED — rejected `CONTRADICTS_CANONICAL` |
 | — | MINOR | durable step results could store secret material | FIXED — withheld |
 | — | MINOR | `wakeAllCapabilityGaps` bounded without ORDER BY | FIXED — deterministic, unbounded |
-| — | MINOR | after EXTEND the same epoch's cases may satisfy the next review; SIMULATION allowed in RETRY | REPORTED — Product values (D-C3-16) |
+| — | MINOR | after EXTEND the same epoch's cases may satisfy the next review; SIMULATION allowed in RETRY | FOUNDER DECIDED — new evidence after EXTEND (D-C3-20); practice in RETRY allowed (D-C3-22) |
 
 Other MINOR and NIT findings were fixed where cheap.
 
@@ -371,9 +384,8 @@ Other MINOR and NIT findings were fixed where cheap.
   can replace it later without changing identity or provenance.
 - **Compaction** is extractive, not model-written.
 - **Skill sandboxing / benchmarking** records Founder evidence; C3 has no execution sandbox.
-- **Product Owner questions** are in D-C3-17: the consequence of losing certification, approver
-  identity, licence lists, REVIEW_DUE scope, D3 / D4 retention, numeric defaults, and calibration
-  placement.
+- **Product Owner questions** asked in D-C3-17 are all decided by the Founder (D-C3-18 .. D-C3-22).
+  The numeric values stay engineering defaults / tunable policy values, not frozen Product constants.
 
 ## 14. Remaining Founder-host validation gate
 
@@ -385,7 +397,8 @@ On the Founder's Windows host, at the exact candidate SHA:
 4. Confirm that Arabic paths and names round-trip, and that a v5 / v6 database opens after a restart.
 5. Re-read the sqlite.org pages on STRICT tables, triggers and deferrable foreign keys, which the
    Cloud cannot reach.
-6. Complete an independent review of this PR, and give Product Owner answers to D-C3-17.
+6. Complete the final independent review of this PR at its final head (the Founder decisions of
+   D-C3-17 are recorded and implemented in D-C3-18 .. D-C3-22).
 
 ## 15. Skills used
 

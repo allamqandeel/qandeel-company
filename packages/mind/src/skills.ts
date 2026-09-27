@@ -60,12 +60,15 @@ export function assertProficiency(v: unknown, field = 'proficiency'): Proficienc
  * of RECORDED license evidence, not legal interpretation; anything else needs explicit review, and
  * the list is surfaced to the Product Owner.
  */
-// Engineering default, surfaced for Product Owner / legal review (D-C3-08): permissive licences with no
-// obligation beyond keeping the notice. Anything with further duties (attribution to end users,
-// copyleft, share-alike) needs a recorded licence review.
-export const CLEAR_FREE_LICENSES: readonly string[] = ['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', '0BSD', 'CC0-1.0', 'Unlicense'];
-/** Free but with conditions a reviewer must read (copyleft / share-alike): never auto-cleared. */
-export const REVIEW_LICENSES: readonly string[] = ['CC-BY-4.0', 'MPL-2.0', 'LGPL-2.1-only', 'LGPL-3.0-only', 'GPL-2.0-only', 'GPL-3.0-only', 'AGPL-3.0-only', 'CC-BY-SA-4.0', 'EPL-2.0'];
+// Founder risk posture (D-C3-08, confirmed by Founder Decision D-C3-21), not a legal conclusion:
+// clearly permissive licences with no obligation beyond keeping the notice auto-clear. Anything with
+// further duties (attribution to end users, copyleft, share-alike) needs a recorded licence review.
+export const CLEAR_FREE_LICENSES: readonly string[] = ['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', '0BSD', 'CC0-1.0'];
+/**
+ * Never auto-cleared: conditions a reviewer must read (copyleft / share-alike / attribution), and the
+ * Unlicense, which the Founder placed on the recorded-review path (D-C3-21).
+ */
+export const REVIEW_LICENSES: readonly string[] = ['Unlicense', 'CC-BY-4.0', 'MPL-2.0', 'LGPL-2.1-only', 'LGPL-3.0-only', 'GPL-2.0-only', 'GPL-3.0-only', 'AGPL-3.0-only', 'CC-BY-SA-4.0', 'EPL-2.0'];
 
 export const LICENSE_STATUSES = ['CLEAR_FREE', 'QANDEEL_OWNED', 'REVIEW_REQUIRED', 'CLEARED_BY_REVIEW', 'UNCLEAR', 'NOT_FREE'] as const;
 /** Licence statuses that permit production use (a review-required licence only after a recorded review). */

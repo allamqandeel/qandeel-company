@@ -23,6 +23,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const KERNEL = { cwd: 'packages/mind', tests: ['dist/test/mind-kernel.test.js'] };
 const STORAGE = { cwd: 'packages/storage', tests: ['dist/test/c3-mind.test.js'] };
 const STORAGE_FIXES = { cwd: 'packages/storage', tests: ['dist/test/c3-review-fixes.test.js'] };
+const FOUNDER = { cwd: 'packages/storage', tests: ['dist/test/c3-founder-decisions.test.js'] };
 const RUNTIME = { cwd: 'packages/runtime', tests: ['dist/test/c3/c3-runtime.test.js'] };
 const CRASH = { cwd: 'packages/runtime', tests: ['dist/test/faults/c3-fault.test.js'] };
 
@@ -227,6 +228,61 @@ const MUTATIONS = [
     gate: 'a refused action is scored even when the attempt fails',
     edits: [{ file: `${STORE}/academy.js`, search: 'if (denials > 0) {', replace: 'if (false) {' }],
     runs: [STORAGE_FIXES],
+  },
+  // --- Founder Decision closure (D-C3-18 .. D-C3-21) ---------------------------------------------
+  {
+    id: 'role-cert-loss-ignored',
+    gate: 'a revoked / expired current-role certification ends ordinary duty (ACTIVE → RETRAINING)',
+    edits: [{ file: `${STORE}/mind-core.js`, search: "    if (e.state !== 'ACTIVE')\n        return e;\n    const loss = roleCertificationLoss(ctx, e);", replace: "    if (true)\n        return e;\n    const loss = roleCertificationLoss(ctx, e);" }],
+    runs: [FOUNDER],
+  },
+  {
+    id: 'role-cert-loss-not-at-run-start',
+    gate: 'the run-start eligibility boundary enforces certification loss (no administrative write needed for expiry)',
+    edits: [{ file: `${STORE}/governed-writes.js`, search: 'const e = enforceRoleCertification(ctx, getEmployeeRow(ctx, employeeId));', replace: 'const e = getEmployeeRow(ctx, employeeId);' }],
+    runs: [FOUNDER],
+  },
+  {
+    id: 'role-cert-loss-not-at-authorization',
+    gate: 'model authorization re-checks certification loss in flight',
+    edits: [{ file: `${STORE}/governed-writes.js`, search: "    const e = enforceRoleCertification(ctx, getEmployeeRow(ctx, a.employeeId));\n    // The durable Work Item's data class governs", replace: "    const e = getEmployeeRow(ctx, a.employeeId);\n    // The durable Work Item's data class governs" }],
+    runs: [FOUNDER],
+  },
+  {
+    id: 'role-cert-loss-not-at-reservation',
+    gate: 'a reservation re-checks certification loss in flight',
+    edits: [{ file: `${STORE}/governed-writes.js`, search: "    const e = enforceRoleCertification(ctx, getEmployeeRow(ctx, a.employeeId));\n    if (!canExecute(e.state) && !constrainedRun(ctx, fence.runId, e))", replace: "    const e = getEmployeeRow(ctx, a.employeeId);\n    if (!canExecute(e.state) && !constrainedRun(ctx, fence.runId, e))" }],
+    runs: [FOUNDER],
+  },
+  {
+    id: 'role-cert-loss-not-at-tool-intent',
+    gate: 'a tool intent re-checks certification loss in flight',
+    edits: [{ file: `${STORE}/governed-writes.js`, search: "    const e = enforceRoleCertification(ctx, getEmployeeRow(ctx, a.employeeId));\n    const item = getWorkItemRow(ctx, a.workItemId);", replace: "    const e = getEmployeeRow(ctx, a.employeeId);\n    const item = getWorkItemRow(ctx, a.workItemId);" }],
+    runs: [FOUNDER],
+  },
+  {
+    id: 'calibration-not-required-at-activation',
+    gate: 'Activation Approval refuses a designated role without an approved Founder Calibration',
+    edits: [{ file: `${STORE}/academy.js`, search: 'if (calibrationGap !== null)', replace: 'if (false)' }],
+    runs: [FOUNDER],
+  },
+  {
+    id: 'calibration-gates-certification',
+    gate: 'Founder Calibration is never a prerequisite of the role certification',
+    edits: [{ file: `${MIND}/academy.js`, search: "        gaps.push('PROBATION_REVIEW');\n", replace: "        gaps.push('PROBATION_REVIEW');\n    if (def.founderCalibrationRequired && i.calibrationApproved !== true)\n        gaps.push('FOUNDER_CALIBRATION');\n" }],
+    runs: [FOUNDER],
+  },
+  {
+    id: 'extension-evidence-not-required',
+    gate: 'after a probation EXTEND the next review needs new evidence',
+    edits: [{ file: `${STORE}/academy.js`, search: '    if (!extended)\n        return false;', replace: '    if (true)\n        return false;' }],
+    runs: [FOUNDER, STORAGE_FIXES],
+  },
+  {
+    id: 'unlicense-auto-clears',
+    gate: 'the Unlicense needs a recorded licence review',
+    edits: [{ file: `${MIND}/skills.js`, search: "'0BSD', 'CC0-1.0'];", replace: "'0BSD', 'CC0-1.0', 'Unlicense'];" }],
+    runs: [KERNEL, FOUNDER],
   },
 ];
 

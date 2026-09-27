@@ -57,6 +57,7 @@ import {
 import { mapApproval, mapGrant, mapReservation, mapToolAction, mapToolInvocation, type BudgetRecord, type ReservationRecord, type ToolInvocationRecord } from './governance-records.js';
 import { routingSnapshotTx, upsertApprovalRequest, workItemDataClass } from './governance.js';
 import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from './internal.js';
+import { enforceRoleCertification } from './mind-core.js';
 import { academyExecutionMode, academyRun, constrainedRun, contextClassOf, manifestForReservation, txCapabilityGate } from './mind-writes.js';
 import { verifyFence } from './queue.js';
 import type { Fence } from './records.js';
@@ -95,7 +96,9 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
     denyAudit(ctx, fence.runId, 'run.not_governed', 'NOT_EMPLOYEE_OWNED');
     return { ok: false, code: 'NOT_EMPLOYEE_OWNED', state: null };
   }
-  const e = getEmployeeRow(ctx, employeeId);
+  // D-C3-18: an ACTIVE Employee whose current-role certification was revoked / has expired moves to
+  // RETRAINING here, before anything executes, and so starts no ordinary run.
+  const e = enforceRoleCertification(ctx, getEmployeeRow(ctx, employeeId));
   // A non-ACTIVE Employee executes only its own open Academy attempt or shadow assignment (C3); an
   // Academy attempt runs in its constrained mode whoever takes it.
   const academyMode = academyExecutionMode(ctx, fence.runId, item, e);
@@ -189,7 +192,7 @@ function consumeGrant(ctx: StoreContext, grantId: Id): void {
 export function txAuthorizeModelCall(ctx: StoreContext, fence: Fence, input: { taskClass: string; dataClass: DataClass }): AuthorizeResult {
   verifyFence(ctx, fence);
   const a = attributed(ctx, fence);
-  const e = getEmployeeRow(ctx, a.employeeId);
+  const e = enforceRoleCertification(ctx, getEmployeeRow(ctx, a.employeeId));
   // The durable Work Item's data class governs; a caller may only raise it, never lower it.
   const dataClass = maxDataClass(effectiveDataClass(ctx, a.workItemId), input.dataClass);
   const grants = ctx.db.all(`SELECT * FROM permission_grants WHERE employee_id = ? AND status = 'ACTIVE'`, e.id).map(mapGrant);
@@ -251,7 +254,8 @@ function policyById(ctx: StoreContext, id: Id): RoutePolicy {
 export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput): ReserveResult {
   const job = verifyFence(ctx, fence);
   const a = attributed(ctx, fence);
-  const e = getEmployeeRow(ctx, a.employeeId);
+  // D-C3-18: re-checked per reservation, so a run begun before the loss spends nothing after it.
+  const e = enforceRoleCertification(ctx, getEmployeeRow(ctx, a.employeeId));
   if (!canExecute(e.state) && !constrainedRun(ctx, fence.runId, e)) return { ok: false, code: 'EMPLOYEE_NOT_ELIGIBLE', detail: e.state };
   const refuse = (code: Extract<ReserveResult, { ok: false }>['code'], detail: string): ReserveResult => {
     appendAudit(ctx, 'budget.refused', 'run', fence.runId, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', code, { detail: detail.slice(0, 64), purpose: input.purpose, attemptKind: input.attemptKind });
@@ -422,7 +426,7 @@ export type ToolIntent =
 export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentInput): ToolIntent {
   verifyFence(ctx, fence);
   const a = attributed(ctx, fence);
-  const e = getEmployeeRow(ctx, a.employeeId);
+  const e = enforceRoleCertification(ctx, getEmployeeRow(ctx, a.employeeId));
   const item = getWorkItemRow(ctx, a.workItemId);
   const dataClass = effectiveDataClass(ctx, item.id);
   // Audit details carry registered IDs and codes only: model-written tool / action names never

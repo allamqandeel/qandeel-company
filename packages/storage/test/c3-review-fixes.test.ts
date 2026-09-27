@@ -221,7 +221,7 @@ describe('C3 review fixes: memory and knowledge', () => {
 });
 
 describe('C3 review fixes: Academy and Skills', () => {
-  test('probation FAIL → diagnosis → retraining → new shadow work in a new evidence epoch; EXTEND → more shadow work; old cases never count again', () => {
+  test('probation FAIL → diagnosis → retraining → new shadow work in a new evidence epoch; EXTEND → new shadow work before the next review; old cases never count again', () => {
     withSeed((h, s) => {
       const w = academyWorld(h, s);
       const trainee = hire(s.gov, s.founder, s.departmentId, false);
@@ -232,7 +232,9 @@ describe('C3 review fixes: Academy and Skills', () => {
       assert.equal(a.enrollment(e).stage, 'PROBATION_REVIEW');
       a.decideProbationReview(s.founder, e, 'EXTEND');
       assert.equal(a.enrollment(e).stage, 'SHADOW_WORK');
-      assert.equal(a.advance(e).stage, 'PROBATION_REVIEW', 'extended: back to review with the same epoch\'s cases');
+      assert.equal(a.advance(e).stage, 'SHADOW_WORK', 'extended: the same evidence alone never returns to review (D-C3-20)');
+      shadowCases(h, s, trainee, e, 1);
+      assert.equal(a.advance(e).stage, 'PROBATION_REVIEW', 'new post-extension evidence (with the same epoch\'s cases) → review');
       a.decideProbationReview(s.founder, e, 'FAIL');
       assert.deepEqual([a.enrollment(e).stage, a.enrollment(e).evidenceEpoch], ['RETRY', 2]);
       const rem = a.remediations(e).at(-1);

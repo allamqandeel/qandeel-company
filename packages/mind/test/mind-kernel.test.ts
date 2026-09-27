@@ -15,6 +15,7 @@ import {
   assertProgramDefinition,
   assertRequirements,
   buildExtractiveSummary,
+  calibrationActivationGap,
   certificationGaps,
   certificationStatusAt,
   certificationValid,
@@ -271,6 +272,12 @@ describe('C3 kernel: Skills (Stage 7)', () => {
     assert.equal(classifyLicense(null, 'EXTERNAL'), 'UNCLEAR');
     assert.equal(classifyLicense('LicenseRef-Proprietary', 'ADAPTED'), 'NOT_FREE');
     assert.equal(classifyLicense('GPL-3.0-only', 'EXTERNAL'), 'REVIEW_REQUIRED');
+    // Founder Decision D-C3-21: the clearly permissive list auto-clears; the Unlicense needs a recorded review;
+    // attribution / copyleft / share-alike stay review-required; unknown or missing stays fail-closed.
+    for (const spdx of ['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', '0BSD', 'CC0-1.0']) assert.equal(classifyLicense(spdx, 'EXTERNAL'), 'CLEAR_FREE', spdx);
+    assert.equal(classifyLicense('Unlicense', 'EXTERNAL'), 'REVIEW_REQUIRED');
+    for (const spdx of ['CC-BY-4.0', 'CC-BY-SA-4.0', 'MPL-2.0', 'LGPL-3.0-only', 'AGPL-3.0-only']) assert.equal(classifyLicense(spdx, 'EXTERNAL'), 'REVIEW_REQUIRED', spdx);
+    for (const spdx of ['NOASSERTION', '', 'WTFPL', 'LicenseRef-Trial-30d']) assert.notEqual(classifyLicense(spdx, 'EXTERNAL'), 'CLEAR_FREE', spdx);
     assert.equal(classifyLicense(null, 'QANDEEL_NATIVE'), 'QANDEEL_OWNED');
   });
 
@@ -374,8 +381,14 @@ describe('C3 kernel: Academy (Stage 6)', () => {
 
   test('certification needs trials, a clean holdout, probation review and (when required) Founder calibration', () => {
     const def = program({ founderCalibrationRequired: true, assessmentTrials: 2 });
-    assert.deepEqual(certificationGaps(def, { passedAssessments: 1, passedCleanHoldouts: 0, probationReviewPassed: false, calibrationApproved: false, blocked: false }), ['ASSESSMENT_TRIALS', 'HOLDOUT_PASS', 'PROBATION_REVIEW', 'FOUNDER_CALIBRATION']);
-    assert.deepEqual(certificationGaps(def, { passedAssessments: 2, passedCleanHoldouts: 1, probationReviewPassed: true, calibrationApproved: true, blocked: false }), []);
+    // D-C3-19: calibration is never a certification gap, even for a designated role; it gates activation.
+    assert.deepEqual(certificationGaps(def, { passedAssessments: 1, passedCleanHoldouts: 0, probationReviewPassed: false, blocked: false }), ['ASSESSMENT_TRIALS', 'HOLDOUT_PASS', 'PROBATION_REVIEW']);
+    assert.deepEqual(certificationGaps(def, { passedAssessments: 2, passedCleanHoldouts: 1, probationReviewPassed: true, blocked: false }), []);
+    assert.equal(calibrationActivationGap(def, 'PENDING'), 'CALIBRATION_PENDING');
+    assert.equal(calibrationActivationGap(def, 'REJECTED'), 'CALIBRATION_REJECTED');
+    assert.equal(calibrationActivationGap(def, null), 'CALIBRATION_MISSING');
+    assert.equal(calibrationActivationGap(def, 'APPROVED'), null);
+    assert.equal(calibrationActivationGap(program({}), null), null, 'a non-designated role is unaffected');
     const pr = evaluateProbation(def.probation, { cases: 5, stableQualityCases: 1, criticalFailures: 0, demonstratedLearning: 1, costDiscipline: 1, correctEscalation: 1, collaboration: 1 });
     assert.deepEqual(pr.unmet, ['STABLE_QUALITY'], 'time / case count alone is not enough');
   });

@@ -21,6 +21,7 @@ import {
   assertKeyCode,
   assertProgramDefinition,
   assertStageStep,
+  calibrationActivationGap,
   certificationGaps,
   containsSecretMaterial,
   diagnose,
@@ -41,7 +42,7 @@ import {
 import { getEmployeeRow, setEmployeeState } from './governance-core.js';
 import { founder, founderAdminWrite } from './governance.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
-import { SYSTEM_MIND_REF, getSkillVersionRow, liveCertifications, skillVersionView, wakeEmployeeWaits } from './mind-core.js';
+import { SYSTEM_MIND_REF, enforceRoleCertification, getSkillVersionRow, liveCertifications, skillVersionView, wakeEmployeeWaits } from './mind-core.js';
 import { wakeCapabilityGaps } from './mind-writes.js';
 import {
   mapActivation,
@@ -285,11 +286,12 @@ export class AcademyStore {
       case 'SHADOW_WORK': {
         // Cases of the current evidence epoch only (a failed probation's cases never count again).
         const cases = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM probation_evidence WHERE enrollment_id = ? AND kind = 'CASE' AND positive = 1 AND epoch = ?`, e.id, e.evidenceEpoch)?.n ?? 0);
-        return cases >= ev.def.probation.minCases ? { to: 'PROBATION_REVIEW', reason: 'SHADOW_CASES_RECORDED' } : null;
+        // After EXTEND the next review needs new evidence (D-C3-20); until then the Employee stays in shadow work.
+        return cases >= ev.def.probation.minCases && !awaitingEvidenceAfterExtension(ctx, e) ? { to: 'PROBATION_REVIEW', reason: 'SHADOW_CASES_RECORDED' } : null;
       }
       case 'PROBATION_REVIEW':
         if (ev.review?.decision === 'PASS') {
-          const gaps = certificationGaps(ev.def, { passedAssessments: ev.passed.length, passedCleanHoldouts: ev.passed.filter((a) => a.holdout && a.holdoutClean).length, probationReviewPassed: true, calibrationApproved: ev.calibration?.state === 'APPROVED', blocked: ev.blockedDims.length > 0 });
+          const gaps = certificationGaps(ev.def, { passedAssessments: ev.passed.length, passedCleanHoldouts: ev.passed.filter((a) => a.holdout && a.holdoutClean).length, probationReviewPassed: true, blocked: ev.blockedDims.length > 0 });
           if (gaps.length > 0) return null;
           // A certification pins exact, current, rolled-out skill versions; without one it waits (typed, audited).
           const missing = ev.def.skillTargets.find((t) => certificationPin(ctx, e.employeeId, t.skillId as Id) === null);
@@ -481,24 +483,18 @@ export class AcademyStore {
       const p = founder(ctx, actorRef, `employee:${e.employeeId}`, 'probation review');
       if (e.stage !== 'PROBATION_REVIEW') throw new QandeelError('INVALID_TRANSITION', 'no probation review is due', { stage: e.stage });
       const def = programDef(ctx, e.programVersionId);
-      const count = (kind: string, positive: number): number => Number(ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM probation_evidence WHERE enrollment_id = ? AND kind = ? AND positive = ? AND epoch = ?', e.id, kind, positive, e.evidenceEpoch)?.n ?? 0);
-      const summary = {
-        cases: count('CASE', 1),
-        stableQualityCases: count('QUALITY', 1),
-        criticalFailures: count('CRITICAL_FAILURE', 0),
-        demonstratedLearning: count('DEMONSTRATED_LEARNING', 1),
-        costDiscipline: count('COST_DISCIPLINE', 1),
-        correctEscalation: count('CORRECT_ESCALATION', 1),
-        collaboration: count('COLLABORATION', 1),
-      };
+      const summary = probationSummary(ctx, e);
       const check = evaluateProbation(def.probation, summary);
       if (decision === 'PASS' && !check.met) throw new QandeelError('VALIDATION_FAILED', 'probation is evidence-based: the criteria are not met', { reason: 'PROBATION_CRITERIA_UNMET', unmet: check.unmet.join(',').slice(0, 120) });
+      // D-C3-20: evidence that existed at an EXTEND decision never satisfies the next review on its own.
+      if (decision === 'PASS' && awaitingEvidenceAfterExtension(ctx, e)) throw new QandeelError('VALIDATION_FAILED', 'an extended probation needs new evidence recorded after the extension', { reason: 'NO_EVIDENCE_AFTER_EXTENSION' });
       const id = newId();
       const at = ts(ctx);
       ctx.db.run('INSERT INTO probation_reviews (id, enrollment_id, decision, summary_json, unmet_json, decided_by_ref, epoch, review_round, decided_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', id, e.id, decision, JSON.stringify(summary), JSON.stringify(decision === 'PASS' ? [] : check.unmet), p.ref, e.evidenceEpoch, e.reviewRound, at);
       appendAudit(ctx, 'academy.probation_reviewed', 'academy_enrollment', e.id, { actorRef: p.ref }, 'OK', decision, { reviewId: id });
       if (decision === 'EXTEND') {
-        // More shadow evidence in the same epoch; the next review is a new round needing a new decision.
+        // More shadow evidence in the same epoch; the next review is a new round needing a new decision and
+        // new evidence (this review row's summary is the durable extension boundary, D-C3-20).
         const next = bumpEnrollment(ctx, e, { reviewRound: e.reviewRound + 1 });
         setStage(ctx, next, 'SHADOW_WORK', 'PROBATION_EXTENDED', p.ref);
       } else if (decision === 'FAIL') {
@@ -567,8 +563,15 @@ export class AcademyStore {
       const cert = liveCertifications(ctx, emp.id, true).find((c) => c.id === r.certificationId);
       if (!cert || cert.status !== 'VALID' || cert.roleRef !== emp.roleRef) throw new QandeelError('EMPLOYEE_NOT_ELIGIBLE', 'activation needs a VALID certification for the Employee\'s current role', { reason: 'CERTIFICATION_NOT_VALID' });
       if (ctx.db.get<{ d: string }>('SELECT decision AS d FROM probation_reviews WHERE id = ?', r.probationReviewId)?.d !== 'PASS') throw new QandeelError('EMPLOYEE_NOT_ELIGIBLE', 'activation needs a passed probation review', { reason: 'PROBATION_NOT_PASSED' });
-      if (r.calibrationId !== null && ctx.db.get<{ s: string }>('SELECT state AS s FROM founder_calibrations WHERE id = ?', r.calibrationId)?.s !== 'APPROVED') throw new QandeelError('EMPLOYEE_NOT_ELIGIBLE', 'activation needs the Founder Calibration', { reason: 'CALIBRATION_PENDING' });
-      ctx.db.run(`UPDATE activation_requests SET state = 'APPROVED', decided_by_ref = ?, decided_at = ? WHERE id = ?`, p.ref, at, r.id);
+      // D-C3-19: a designated role's Founder Calibration is a pre-activation requirement: this enrollment's
+      // calibration must be APPROVED now (pending, rejected or absent refuses), whatever the request recorded.
+      const en = getEnrollment(ctx, r.enrollmentId);
+      const calibration = ctx.db.get<{ id: string; state: 'PENDING' | 'APPROVED' | 'REJECTED' }>('SELECT id, state FROM founder_calibrations WHERE enrollment_id = ?', en.id);
+      const calibrationGap = calibrationActivationGap(programDef(ctx, en.programVersionId), calibration?.state ?? null);
+      if (calibrationGap !== null) throw new QandeelError('EMPLOYEE_NOT_ELIGIBLE', 'activation of this role needs an approved Founder Calibration', { reason: calibrationGap });
+      if (r.calibrationId !== null && r.calibrationId !== calibration?.id) throw new QandeelError('EMPLOYEE_NOT_ELIGIBLE', 'the calibration does not belong to this activation evidence', { reason: 'CALIBRATION_MISMATCH' });
+      // The request records the calibration it was approved with (evidence; the datastore gate re-checks it).
+      ctx.db.run(`UPDATE activation_requests SET state = 'APPROVED', calibration_id = ?, decided_by_ref = ?, decided_at = ? WHERE id = ?`, calibration?.state === 'APPROVED' ? calibration.id : null, p.ref, at, r.id);
       if (emp.state === 'SHADOW' || emp.state === 'PROBATION') {
         setEmployeeState(ctx, emp, 'ACTIVE', 'ACADEMY_ACTIVATION_APPROVED', p.ref, [...emp.qualificationRefs.filter((q) => !q.startsWith('academy:')), `academy:${cert.id}`, `probation:${r.probationReviewId}`, `activation:${r.id}`]);
       } else if (emp.state !== 'ACTIVE') {
@@ -607,6 +610,8 @@ export class AcademyStore {
       ctx.db.run(`UPDATE certifications SET status = 'REVOKED', reason_code = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, reason, ts(ctx), c.id, c.version);
       ctx.db.run('INSERT INTO certification_history (certification_id, version, from_status, to_status, reason_code, actor_ref, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?)', c.id, c.version + 1, c.status, 'REVOKED', reason, p.ref, ts(ctx));
       appendAudit(ctx, 'certification.revoked', 'certification', c.id, { actorRef: p.ref }, 'OK', reason, { employeeId: c.employeeId });
+      // D-C3-18: losing the current-role certification ends ordinary duty now (ACTIVE → RETRAINING).
+      enforceRoleCertification(ctx, getEmployeeRow(ctx, c.employeeId));
       return mapCertification(ctx.db.get('SELECT * FROM certifications WHERE id = ?', c.id) ?? {});
     });
   }
@@ -807,6 +812,35 @@ function voidAttempt(ctx: StoreContext, a: AttemptRecord, reason: string): Attem
 function remediationState(ctx: StoreContext, id: Id, from: string, to: RemediationRecord['state'], reason: string, actorRef: string): void {
   ctx.db.run('UPDATE academy_remediations SET state = ?, updated_at = ? WHERE id = ?', to, ts(ctx), id);
   ctx.db.run('INSERT INTO academy_remediation_history (remediation_id, from_state, to_state, reason_code, actor_ref, occurred_at) VALUES (?, ?, ?, ?, ?, ?)', id, from, to, reason, actorRef, ts(ctx));
+}
+
+/** Content-free counts of the current evidence epoch, as a probation review sees them. */
+function probationSummary(ctx: StoreContext, e: EnrollmentRecord) {
+  const count = (kind: string, positive: number): number => Number(ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM probation_evidence WHERE enrollment_id = ? AND kind = ? AND positive = ? AND epoch = ?', e.id, kind, positive, e.evidenceEpoch)?.n ?? 0);
+  return {
+    cases: count('CASE', 1),
+    stableQualityCases: count('QUALITY', 1),
+    criticalFailures: count('CRITICAL_FAILURE', 0),
+    demonstratedLearning: count('DEMONSTRATED_LEARNING', 1),
+    costDiscipline: count('COST_DISCIPLINE', 1),
+    correctEscalation: count('CORRECT_ESCALATION', 1),
+    collaboration: count('COLLABORATION', 1),
+  };
+}
+
+const positiveEvidence = (s: Record<string, number>): number => Object.entries(s).reduce((n, [k, v]) => (k === 'criticalFailures' ? n : n + Number(v ?? 0)), 0);
+
+/**
+ * Founder Decision D-C3-20: after a probation EXTEND, the next review needs at least one new positive
+ * evidence item recorded after the extension. The boundary is the EXTEND review row itself (durable,
+ * append-only, same epoch): its summary counts what existed then, and evidence is append-only, so a
+ * higher positive count now means new evidence. Old evidence stays and still counts alongside it.
+ * No numeric amount beyond "at least one" is fixed (Product may tune it later).
+ */
+function awaitingEvidenceAfterExtension(ctx: StoreContext, e: EnrollmentRecord): boolean {
+  const extended = ctx.db.get<{ summary_json: string }>(`SELECT summary_json FROM probation_reviews WHERE enrollment_id = ? AND review_round = ? AND decision = 'EXTEND' AND epoch = ?`, e.id, e.reviewRound - 1, e.evidenceEpoch);
+  if (!extended) return false;
+  return positiveEvidence(probationSummary(ctx, e)) <= positiveEvidence(JSON.parse(extended.summary_json) as Record<string, number>);
 }
 
 function bumpEnrollment(ctx: StoreContext, e: EnrollmentRecord, change: { reviewRound?: number; evidenceEpoch?: number }): EnrollmentRecord {
