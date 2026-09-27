@@ -125,6 +125,7 @@ import {
   type UsageRecord,
 } from './governance-records.js';
 import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from './internal.js';
+import { liveCertifications } from './mind-core.js';
 import { storeContext, type CompanyStore } from './store.js';
 import { applyTransition, enqueueJob } from './work-core.js';
 
@@ -462,9 +463,15 @@ export class GovernanceStore {
       if (managerRef === e.ref) throw new QandeelError('VALIDATION_FAILED', 'an employee cannot manage itself', { field: 'managerRef' });
       const departmentId = input.departmentId === undefined ? e.departmentId : assertId(input.departmentId, 'departmentId');
       ctx.db.run(`UPDATE employees SET role_ref = ?, position_ref = ?, department_id = ?, manager_ref = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, roleRef, positionRef, departmentId, managerRef, at(ctx), id, e.version);
-      const next = getEmployeeRow(ctx, id);
+      let next = getEmployeeRow(ctx, id);
       writeEmployeeHistory(ctx, next, 'ASSIGNMENT', e.roleRef, roleRef, assertCode(input.reasonCode, 'reasonCode'), p.ref, { departmentId, previousDepartmentId: e.departmentId });
       appendAudit(ctx, 'employee.reassigned', 'employee', id, { actorRef: p.ref }, 'OK', input.reasonCode, { departmentId });
+      // D-C3-24: assignment is allowed, but ACTIVE duty never carries into a different role unless
+      // the Employee already holds a currently VALID certification for that target role. The role
+      // change and any demotion are one atomic Founder-authority write; identity and history stay.
+      if (e.state === 'ACTIVE' && roleRef !== e.roleRef && !liveCertifications(ctx, id, true).some((cert) => cert.roleRef === roleRef && cert.status === 'VALID')) {
+        next = setEmployeeState(ctx, next, 'RETRAINING', 'ROLE_REASSIGNMENT_REQUIRES_CERTIFICATION', p.ref);
+      }
       return next;
     });
   }
