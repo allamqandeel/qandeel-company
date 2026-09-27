@@ -1,14 +1,13 @@
 # C1 — Company Foundation & Durable Runtime — Implementation Report
 
-**Nature:** implementation report for the C1 Cloud mega-task. **This is not a closure record.
-C1 is NOT CLOSED.** C1 closes only after independent review, Founder-host local acceptance,
-exact-head CI and merge approval. **C2 is not started.**
+**Nature:** implementation report for the C1 Cloud mega-task. The closure record is
+`docs/C1_CLOSURE_RECORD.md`. **C2 is not started.**
 
-**Status:** `C1 — BACKUP CONTENTION REMEDIATED — READY FOR FOUNDER-HOST RE-VALIDATION` (the backup
-finalization remediation is in §0A; the earlier final remediation is in §0; §1–§25 describe the
-original candidate, updated where a remediation changed them). **FOUNDER-HOST RE-VALIDATION
-REQUIRED. NOT APPROVED FOR MERGE.** Founder-host acceptance has **not passed**: it must be re-run on
-the new exact SHA.
+**Status:** `C1 — CLOSED / READY FOR MERGE`. The C1 gate is satisfied: independent review,
+Founder-host local re-validation of exact SHA `4140d5ee6de1b6b1d7c5379de3535320bf442b45` (§24) and
+exact-head CI run `36291573986` (Windows and Ubuntu) all passed. **PR #2 remains Draft and unmerged
+until Founder merge approval.** The backup finalization remediation is in §0A, the earlier final
+remediation in §0; §1–§25 describe the original candidate, updated where a remediation changed them.
 
 ## 0A. Backup finalization contention remediation (2026-09-27)
 
@@ -111,7 +110,7 @@ retry delay.
 | R2 NIT-2, NIT-4 | Exhaustion test could hang under an unbounded mutation; one assertion message overclaimed | **Fixed.** Per-test timeout; message corrected |
 | R2 NIT-1, NIT-3 | No test drives a snapshot-phase failure through cleanup; discovery has no pinned mutation | Not changed: the code path is shared and covered by the cleanup tests; discovery is caught by tests |
 
-**Founder-host acceptance status: NOT PASSED** until re-run on the new exact SHA.
+**Founder-host acceptance status: PASSED** on re-validation of exact SHA `4140d5e` (see §24).
 
 ## 0. Final remediation (2026-09-27)
 
@@ -701,24 +700,29 @@ disposition at `300c2d5`.
   concurrency cap, and no recurring-work scheduler.
 - **Throughput.** Not benchmarked. These tests prove correctness, not production-scale throughput.
 
-## 24. Founder-host validation still required
+## 24. Founder-host validation
 
-**FOUNDER-HOST VALIDATION REQUIRED.** On the Windows host, in a fresh clone of the exact PR head:
+**PASSED.** The Founder-host local re-validation ran on the Founder's Windows host, in a fresh
+clone of exact SHA `4140d5ee6de1b6b1d7c5379de3535320bf442b45`:
 
-```bash
-git clone -c core.longpaths=true -c core.quotepath=false https://github.com/allamqandeel/qandeel-company.git
-cd qandeel-company
-git checkout <exact PR head SHA>
-npm ci
-npm run ci
-npm run c1:acceptance -- --workspace "<new empty directory outside any Git checkout>"
-```
+- `npm run ci`: PASS. 174 tests pass, mutation check 6/6 caught, verifier 32/32.
+- `c1:integration`: PASS. `c1:faults`: PASS.
+- **The previously failing multi-process suite:** 6/6 PASS.
+- **Continuous-writer proof:** 20/20 PASS, 60 backups in total.
+  - One real retry occurred on run 17, after the first 5 s lock wait; the second attempt succeeded.
+  - 0 `STORAGE_BUSY` errors escaped.
+- **Backup finalization tests:** 8/8 PASS.
+- **Acceptance:** `C1 LOCAL ACCEPTANCE — PASS`; schema v3, WAL, integrity and backup verification
+  PASS.
+- **Safety:** the canonical Company checkout was unchanged; the QANDEEL App was not accessed; no
+  security settings were changed.
 
-Also required:
-- confirm the Smart App Control posture is unchanged;
-- re-read the four `sqlite.org` pages (D-C1-05).
+GitHub exact-head CI run `36291573986` on the same SHA passed on Windows and Ubuntu.
+
+**Still open (not part of the recorded Founder-host evidence):** the re-read of the four
+`sqlite.org` pages (D-C1-05, D-C1-24), which the Cloud egress proxy blocked.
 
 ## 25. Exact next gate
 
-`FOUNDER-HOST LOCAL ACCEPTANCE + FINAL INDEPENDENT REVIEW`. C1 is **not** closed by this report.
-PR #2 stays Draft and unmerged; C2 is not started.
+`C1 — CLOSED / READY FOR MERGE` (`docs/C1_CLOSURE_RECORD.md`). The next step is the **Founder merge
+approval** of PR #2, which stays Draft and unmerged until then. C2 is not started.
