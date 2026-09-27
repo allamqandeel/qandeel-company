@@ -10,14 +10,14 @@ import { describe, test } from 'node:test';
 import { isQandeelError, type Id } from '@qandeel-company/domain';
 
 import { AcademyStore, CapabilityStore, CompanyStore, MemoryStore, SkillStore } from '../src/index.js';
-import { decidePendingCandidates, recordToolIntent, renewSupervisor, reserveBudget, submitMemoryCandidate, type Claim } from '../src/runtime-authority.js';
+import { decidePendingCandidates, interruptClaim, recordToolIntent, renewSupervisor, reserveBudget, submitMemoryCandidate, type Claim } from '../src/runtime-authority.js';
 import { storeContext } from '../src/store.js';
 import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
 import { COMPACTION_THRESHOLD } from '@qandeel-company/mind';
 import { loadPinnedSkillInstructions } from '../src/mind-core.js';
 import { MEMORY_POOL_LIMIT } from '../src/mind-writes.js';
 import { hire, seed, testManifest, type Seed } from './c2-helpers.js';
-import { academyWorld, approvedSkill, assemble, attempt, certify, claimFor, complete, finish, propose, stores, workItem } from './c3-helpers.js';
+import { academyWorld, approvedSkill, assemble, attempt, certify, claimFor, complete, finish, propose, scores, stores, workItem } from './c3-helpers.js';
 import { TEST_SUPERVISOR_TTL_MS, harness, type Harness } from './helpers.js';
 
 // A secret-shaped value assembled at runtime: no secret-looking literal sits in the repository.
@@ -213,6 +213,46 @@ describe('C3 memory: truth, conflicts, staleness, corruption, corrections', () =
       } finally {
         armFounderTestSurface(h.root);
       }
+    });
+  });
+});
+
+describe('C3 learning: observations become validated lessons only through review', () => {
+  test('an observation is a lesson candidate; validation needs the Founder path; shared promotion waits for independent review; personal promotion stays personal', () => {
+    withSeed((h, s) => {
+      const c = run(h, s);
+      const obs = propose(h, c, 1, { kind: 'OBSERVATION', memoryClass: null, content: 'Egypt payments: settlement delays spike before Eid.' });
+      assert.equal(obs.decided?.state, 'ROUTED_TO_LEARNING');
+      const m = MemoryStore.for(h.store);
+      const observationId = obs.decided?.resultLessonId as Id;
+      assert.equal(m.lesson(observationId).stage, 'OBSERVATION');
+      assert.deepEqual(m.memories(s.employee.id), [], 'an observation is not memory');
+      // A mistake is not automatically a lesson: an observation becomes a candidate only by nomination.
+      assert.throws(() => m.requestLessonReview(observationId), code('INVALID_TRANSITION'));
+      const lessonId = m.nominateLesson(s.founder, observationId, 'pattern.confirmed').id;
+      assert.deepEqual([m.lesson(lessonId).stage, m.lesson(lessonId).observationId], ['LESSON_CANDIDATE', observationId]);
+      assert.throws(() => m.nominateLesson(s.founder, observationId, 'again'), reason('ALREADY_NOMINATED'));
+      assert.throws(() => m.requestPromotion(s.employee.ref, lessonId, 'COMPANY'), reason('LESSON_NOT_VALIDATED'));
+      const review = m.requestLessonReview(lessonId);
+      assert.deepEqual([review.stage, review.reviewPath], ['UNDER_REVIEW', 'INDEPENDENT_REVIEW'], 'waits for the independent review path');
+      disarmFounderTestSurface(h.root);
+      try {
+        assert.throws(() => m.validateLesson(s.founder, lessonId, { decision: 'VALIDATE', reasonCode: 'x' }), code('FOUNDER_SURFACE_UNAVAILABLE'));
+      } finally {
+        armFounderTestSurface(h.root);
+      }
+      assert.equal(m.validateLesson(s.founder, lessonId, { decision: 'VALIDATE', reasonCode: 'founder.validated' }).stage, 'VALIDATED');
+      const shared = m.requestPromotion(s.employee.ref, lessonId, 'COMPANY');
+      assert.equal(shared.state, 'PENDING_REVIEW');
+      assert.equal(m.healthCounts().knowledge['COMPANY:ACTIVE'], undefined, 'nothing is shared by default');
+      const approved = m.decidePromotion(s.founder, shared.id, { decision: 'APPROVE', reasonCode: 'founder.approved' });
+      const k = m.knowledge(approved.resultKnowledgeId as Id);
+      assert.deepEqual([k.scope, k.provenanceKind, k.provenanceRef], ['COMPANY', 'VALIDATED_LESSON', `lesson:${lessonId}`]);
+      assert.throws(() => m.decidePromotion(s.founder, shared.id, { decision: 'APPROVE', reasonCode: 'again' }), code('INVALID_TRANSITION'), 'decided once');
+      const personal = m.requestPromotion(s.employee.ref, lessonId, 'PERSONAL');
+      assert.equal(personal.state, 'APPROVED');
+      const lessonMemory = m.memory(personal.resultMemoryId as Id);
+      assert.deepEqual([lessonMemory.employeeId, lessonMemory.memoryClass, lessonMemory.provenanceKind], [s.employee.id, 'PERSONAL_LESSON', 'VALIDATED_LESSON']);
     });
   });
 });
@@ -579,6 +619,37 @@ describe('C3 academy: gated, evidence-bound, never self-certifying', () => {
       assert.equal(a.advance(e.id).stage, 'BLOCKED', 'repeated critical failure blocks certification');
       assert.equal(a.attempts(e.id).filter((x) => x.outcome === 'FAIL').length, 2, 'attempt history is kept, not overwritten');
       assert.equal(a.certifications(s.employee.id).length, 0);
+    });
+  });
+
+  test('an Academy attempt interrupted mid-run resumes to exactly one canonical attempt and one outcome', () => {
+    withSeed((h, s) => {
+      const w = academyWorld(h, s);
+      const a = AcademyStore.for(h.store);
+      const e = a.enroll(s.founder, s.employee.id, w.programVersionId);
+      for (let i = 0; i < 6; i++) a.recordModuleCompletion(s.founder, e.id, `module-${i}`, `evidence:m${i}`);
+      a.advance(e.id);
+      const started = a.startAttempt(e.id, { scenarioId: w.scenarios.practice, kind: 'SIMULATION', taskClass: 'draft.memo' });
+      assert.throws(() => a.startAttempt(e.id, { scenarioId: w.scenarios.practice, kind: 'SIMULATION', taskClass: 'draft.memo' }), reason('ATTEMPT_OPEN'), 'one attempt at a time');
+      h.store.transitionWorkItem(started.workItemId, { to: 'READY', reasonCode: 'release' });
+      const first = claimFor(h, started.workItemId, 'w-crash').claim;
+      assemble(h, first, 1);
+      // The worker dies: the supervisor interrupts the claim (as recovery would) and the job is re-queued.
+      interruptClaim(h.store, h.supervisor, first.fence.jobId, 'PROCESS_DIED');
+      assert.throws(() => assemble(h, first, 2), code('STALE_LEASE'), 'the dead worker is fenced out');
+      h.clock.advance(60 * 60_000);
+      const second = claimFor(h, started.workItemId, 'w-resumed');
+      assert.ok(second.begun.ok && second.begun.context.executionMode === 'ACADEMY_ATTEMPT');
+      assert.equal(assemble(h, second.claim, 1).outcome, 'OK');
+      complete(h, second.claim);
+      const once = a.evaluateDeterministic(started.attempt.id);
+      const twice = a.evaluateDeterministic(started.attempt.id);
+      assert.deepEqual(twice, once, 'the deterministic rubric is idempotent');
+      const scored = a.recordEvaluation(s.founder, started.attempt.id, scores(90));
+      assert.equal(scored.outcome, 'PASS');
+      assert.throws(() => a.recordEvaluation(s.founder, started.attempt.id, scores(10)), code('INVALID_TRANSITION'), 'one outcome per attempt');
+      assert.equal(a.attempts(e.id).length, 1, 'one canonical attempt');
+      assert.equal(a.exposures(s.employee.id, w.scenarios.practice), 2, 'each assembled context is an attributed exposure');
     });
   });
 

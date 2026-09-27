@@ -257,7 +257,7 @@ export function txSubmitMemoryCandidate(ctx: StoreContext, fence: Fence, step: n
 const validClass = (v: string | null): MemoryClass => (['PROFESSIONAL', 'EXPERIENCE', 'RELATIONSHIP_COLLABORATION', 'CURRENT_WORK', 'PERSONAL_LESSON'].includes(String(v)) ? (v as MemoryClass) : 'EXPERIENCE');
 const safeTopic = (t: string): string => (typeof t === 'string' && /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+){0,9}$/.test(t) && t.length <= 96 ? t : 'unclassified');
 
-function insertLesson(ctx: StoreContext, f: { employeeId: Id; kind: 'OBSERVATION' | 'LESSON'; observationId: Id | null; eventRef: string; topic: string; claimKey: string | null; claimValue: string | null; content: string; dataClass: DataClass; candidateId: Id }): Id {
+export function insertLesson(ctx: StoreContext, f: { employeeId: Id; kind: 'OBSERVATION' | 'LESSON'; observationId: Id | null; eventRef: string; topic: string; claimKey: string | null; claimValue: string | null; content: string; dataClass: DataClass; candidateId: Id }): Id {
   const id = newId();
   const at = ts(ctx);
   const stage = f.kind === 'OBSERVATION' ? 'OBSERVATION' : 'LESSON_CANDIDATE';

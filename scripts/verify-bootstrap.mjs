@@ -181,7 +181,7 @@ const C2_MUTATION_CHECK = 'scripts/c2-mutation-check.mjs';
 // --- C3 boundaries ------------------------------------------------------------------------------
 const C3_CLOSURE = /^docs\/C3_[^/]*CLOSURE[^/]*\.md$/i;
 const C3_REPORT = 'docs/C3_IMPLEMENTATION_REPORT.md';
-const C3_PROOF_MARKERS = ['C3-PROOF: mind-kernel', 'C3-PROOF: storage-mind', 'C3-PROOF: runtime-mind', 'C3-PROOF: memory-crash-recovery'];
+const C3_PROOF_MARKERS = ['C3-PROOF: mind-kernel', 'C3-PROOF: storage-mind', 'C3-PROOF: runtime-mind', 'C3-PROOF: memory-crash-recovery', 'C3-PROOF: concurrent-certification'];
 const C3_MUTATION_CHECK = 'scripts/c3-mutation-check.mjs';
 // Every inference is fed by the governed Context Assembler: the runtime module that mints the
 // context, the model runtime that accepts only a minted context, and the request type without messages.

@@ -134,6 +134,17 @@ export function attempt(h: Harness, s: Seed, enrollmentId: Id, scenarioId: Id, k
  */
 export function certify(h: Harness, s: Seed, employee: EmployeeRecord, w: AcademyWorld): { enrollmentId: Id; certificationId: Id } {
   const a = AcademyStore.for(h.store);
+  const enrollmentId = prepareCertification(h, s, employee, w);
+  const done = a.advance(enrollmentId);
+  if (done.stage !== 'ACTIVATION_APPROVAL') throw new Error(`academy path ended at ${done.stage}`);
+  const cert = a.certifications(employee.id).find((c) => c.enrollmentId === enrollmentId);
+  if (!cert) throw new Error('no certification');
+  return { enrollmentId, certificationId: cert.id };
+}
+
+/** The complete path up to a PASS probation review, one `advance` short of certification. */
+export function prepareCertification(h: Harness, s: Seed, employee: EmployeeRecord, w: AcademyWorld): Id {
+  const a = AcademyStore.for(h.store);
   const e = a.enroll(s.founder, employee.id, w.programVersionId);
   for (let i = 0; i < 6; i++) a.recordModuleCompletion(s.founder, e.id, `module-${i}`, `evidence:module-${i}`);
   a.advance(e.id);
@@ -151,9 +162,5 @@ export function certify(h: Harness, s: Seed, employee: EmployeeRecord, w: Academ
   a.collectShadowEvidence(e.id);
   a.advance(e.id);
   a.decideProbationReview(s.founder, e.id, 'PASS');
-  const done = a.advance(e.id);
-  if (done.stage !== 'ACTIVATION_APPROVAL') throw new Error(`academy path ended at ${done.stage}`);
-  const cert = a.certifications(employee.id).find((c) => c.enrollmentId === e.id);
-  if (!cert) throw new Error('no certification');
-  return { enrollmentId: e.id, certificationId: cert.id };
+  return e.id;
 }

@@ -56,6 +56,7 @@ import {
   type SummaryRecord,
 } from './mind-records.js';
 import { storeContext, type CompanyStore } from './store.js';
+import { insertLesson } from './mind-writes.js';
 
 const text = (v: unknown, field: string, max: number): string => {
   const t = boundedText(v, field, max);
@@ -341,6 +342,24 @@ export class MemoryStore {
   }
 
   // --- Learning validation and promotion (Stage 5 §4, §10) ---------------------------------------------
+
+  /**
+   * Nominates a recorded observation as a lesson candidate. Deliberate and attributed (a mistake is not
+   * automatically a lesson): reviewer authority — the Founder in Strong v1 (the Review Pool is C4).
+   * The observation stays as recorded; the candidate links to it.
+   */
+  nominateLesson(actorRef: string, observationId: string, reasonCode: string): LessonRecord {
+    return founderAdminWrite(this.#store, 'nominate lesson', actorRef, (ctx) => {
+      const o = getLesson(ctx, assertId(observationId, 'observationId'));
+      const p = founder(ctx, actorRef, `employee:${o.employeeId}`, 'lesson nomination');
+      if (o.stage !== 'OBSERVATION') throw new QandeelError('INVALID_TRANSITION', 'only a recorded observation is nominated', { lessonId: o.id, stage: o.stage });
+      if (ctx.db.get(`SELECT 1 AS x FROM lessons WHERE observation_id = ?`, o.id)) throw new QandeelError('INVALID_TRANSITION', 'this observation already has a lesson candidate', { lessonId: o.id, reason: 'ALREADY_NOMINATED' });
+      const r = ctx.db.get<{ content: string; candidate_id: string }>('SELECT content, candidate_id FROM lessons WHERE id = ?', o.id);
+      const id = insertLesson(ctx, { employeeId: o.employeeId, kind: 'LESSON', observationId: o.id, eventRef: o.eventRef, topic: o.topic, claimKey: o.claimKey, claimValue: o.claimValue, content: String(r?.content), dataClass: o.dataClass, candidateId: r?.candidate_id as Id });
+      appendAudit(ctx, 'learning.nominated', 'lesson', id, { actorRef: p.ref }, 'OK', assertCode(reasonCode, 'reasonCode'), { observationId: o.id });
+      return getLesson(ctx, id);
+    });
+  }
 
   /** Requests validation of a lesson candidate. The independent review path (C4) does not exist, so it waits. */
   requestLessonReview(lessonId: string): LessonRecord {
