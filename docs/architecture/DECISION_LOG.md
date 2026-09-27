@@ -1347,8 +1347,11 @@ stays ACTIVE; only work that explicitly requires that certification stays blocke
 **Implementation.**
 - `roleCertificationLoss` (storage `mind-core`): the loss exists when the Employee holds no live
   (VALID / REVIEW_DUE, time-aware) certification for its **current** role and its latest one for that
-  role is REVOKED or EXPIRED. Expiry is read from the clock and materialized (status + history row). An
-  Employee that never held a certification for the role is outside this rule (it lost nothing).
+  role is REVOKED or EXPIRED. Expiry is read from the clock and materialized (status + history row).
+  **Scope boundary (engineering reading, not a Founder decision):** an ACTIVE Employee that never held
+  a certification for its current role has lost nothing under this rule, so it is not moved. The one
+  production case is a role reassignment of an ACTIVE Employee; it is surfaced as an open Product
+  question in D-C3-23 rather than decided here.
 - `enforceRoleCertification` runs inside the caller's transaction at every ordinary-duty boundary:
   run start (`txBeginGovernedRun`), model authorization, budget reservation and tool intent, and in
   `revokeCertification`. For an ACTIVE Employee with a loss it moves the Employee to RETRAINING (C2
@@ -1359,8 +1362,9 @@ stays ACTIVE; only work that explicitly requires that certification stays blocke
   (`EMPLOYEE_NOT_ELIGIBLE`) and an in-flight run spends and acts no further.
 - A PAUSED / ON_LEAVE Employee is not moved when the loss happens; if it is resumed to ACTIVE, the
   first ordinary-duty boundary moves it. Academy attempts stay available: RETRAINING is a trainee
-  state, and the way back is recertification + a new Activation Approval (RETRAINING → SHADOW /
-  PROBATION → ACTIVE through `decideActivation` only).
+  state, and the way back is recertification, then the Founder's C2 lifecycle transition RETRAINING →
+  SHADOW / PROBATION, then a new Activation Approval (`decideActivation` is the only path back to
+  ACTIVE; the datastore gate refuses any other).
 - Certifications, their history, evidence, portfolio and runs are never deleted or rewritten
   (datastore triggers already forbid it).
 - REVIEW_DUE: unchanged capability gate — a CERTIFICATION requirement is unmet by REVIEW_DUE, so that
@@ -1437,6 +1441,31 @@ for the existing recorded `reviewLicense` (→ `CLEARED_BY_REVIEW` with evidence
 `extension-evidence-not-required`, `unlicense-auto-clears`. The datastore calibration clause of the
 activation gate is proved directly (a raw write that skips `decideActivation` is refused); it is not a
 compiled-output mutation because editing a pinned migration already fails every test.
+
+## D-C3-23 — Open Product questions surfaced by the closure review (not decided here)
+
+A focused adversarial review of the D-C3-18 .. D-C3-22 changes found no BLOCKER. It surfaced these
+Product consequences, which C3 does not decide (no new Product policy may be invented):
+
+1. **MAJOR (Product) — role reassignment of an ACTIVE Employee.** C2's `reassignEmployee` changes the
+   role of an ACTIVE Employee without a certification check (existing C2 behaviour; Stage 4 §9: a
+   significant role change "may require" training / recertification). After reassignment the Employee
+   holds no certification for its new role, so D-C3-18 (a *loss* of the current-role certification)
+   does not apply, and a later expiry / revocation of the old role's certification has no effect.
+   Work that declares a CERTIFICATION requirement for the new role is still blocked by the capability
+   gate. Question: must reassignment of an ACTIVE Employee require a live certification for the new
+   role (refuse, or move to RETRAINING), or is it a Founder judgement per reassignment?
+2. **MINOR (Product) — calibration at recertification of an ACTIVE Employee.** D-C3-19 makes
+   calibration an activation requirement; an Employee already ACTIVE that recertifies a designated role
+   is not re-activated, so its calibration is not re-checked. Should recertification of an ACTIVE
+   designated-role Employee also require a current calibration?
+3. **MINOR (Product) — post-extension evidence.** D-C3-20 counts evidence *recorded* after EXTEND; an
+   evaluator may record a new positive item about shadow work finished before the extension. Whether
+   the new evidence must also come from work done after the extension is a Product tuning of D-C3-20.
+4. **Note — expiry fails ordinary work.** As for any non-executing Employee (C2), an ordinary Work Item
+   whose run is refused because its Employee moved to RETRAINING ends `EMPLOYEE_CONTAINED`; it is not
+   parked or re-routed (re-routing is forbidden). Non-spending steps of a run begun before the loss may
+   still settle; its model calls, reservations and tool intents are refused.
 
 **State.** C3 remains a Cloud implementation candidate — ready for final independent review and
 Founder-host validation. It is not closed, merged or canonical.
