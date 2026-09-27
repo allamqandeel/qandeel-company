@@ -10,12 +10,14 @@ import { describe, test } from 'node:test';
 import { isQandeelError, type Id } from '@qandeel-company/domain';
 
 import { AcademyStore, CapabilityStore, CompanyStore, MemoryStore, SkillStore } from '../src/index.js';
-import { assembleContext, decidePendingCandidates, recordToolIntent, reserveBudget, submitMemoryCandidate, type Claim } from '../src/runtime-authority.js';
+import { decidePendingCandidates, recordToolIntent, renewSupervisor, reserveBudget, submitMemoryCandidate, type Claim } from '../src/runtime-authority.js';
 import { storeContext } from '../src/store.js';
 import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
+import { COMPACTION_THRESHOLD } from '@qandeel-company/mind';
+import { MEMORY_POOL_LIMIT } from '../src/mind-writes.js';
 import { hire, seed, testManifest, type Seed } from './c2-helpers.js';
 import { academyWorld, approvedSkill, assemble, attempt, certify, claimFor, complete, finish, propose, stores, workItem } from './c3-helpers.js';
-import { harness, type Harness } from './helpers.js';
+import { TEST_SUPERVISOR_TTL_MS, harness, type Harness } from './helpers.js';
 
 const code = (c: string) => (e: unknown): boolean => isQandeelError(e) && e.code === c;
 const reason = (r: string) => (e: unknown): boolean => isQandeelError(e) && e.details['reason'] === r;
@@ -153,8 +155,13 @@ describe('C3 memory: truth, conflicts, staleness, corruption, corrections', () =
     withSeed((h, s) => {
       const c = run(h, s);
       const cw = propose(h, c, 1, { memoryClass: 'CURRENT_WORK', content: 'The Egypt payments memo draft is half done.' });
-      h.clock.advance(31 * 86_400_000);
-      const a = assemble(h, c, 2);
+      complete(h, c);
+      // The supervisor keeps renewing its lease while the days pass (as the runtime does).
+      for (let d = 0; d < 31; d++) {
+        h.clock.advance(86_400_000);
+        renewSupervisor(h.store, h.supervisor, TEST_SUPERVISOR_TTL_MS);
+      }
+      const a = assemble(h, run(h, s), 1);
       assert.equal(rejectedWhy(h, a.manifestId)[cw.decided?.resultMemoryId as string], 'STALE');
       assert.equal(MemoryStore.for(h.store).memory(cw.decided?.resultMemoryId as Id).status, 'STALE');
     });
@@ -232,7 +239,7 @@ describe('C3 knowledge: scoped, attributable, never leaking', () => {
       // Another Employee's memory on the same topic.
       const peer = hire(s.gov, s.founder, s.departmentId);
       s.gov.createBudget(s.founder, { scope: 'EMPLOYEE', scopeId: peer.id, capMoney: 100_000, capTokens: 100_000, reasonCode: 'seed' });
-      const { claim: pc } = claimFor(h, workItem(h, s, peer));
+      const { claim: pc } = claimFor(h, workItem(h, s, peer, {}, undefined, 100_000));
       const peerMem = propose(h, pc, 1, { content: 'Egypt payments: my private note about settlement delays.' });
       complete(h, pc);
       const a = assemble(h, run(h, s), 1);
@@ -257,7 +264,10 @@ describe('C3 context assembly: budgeted, deterministic, manifest-bound', () => {
       assert.equal(a.outcome, 'OK');
       const man = MemoryStore.for(h.store).manifest(a.manifestId);
       const entries = MemoryStore.for(h.store).manifestEntries(a.manifestId).filter((e) => e.itemKind === 'MEMORY' || e.itemKind === 'SUMMARY');
-      assert.ok(entries.length <= 300, `memory metadata pool is bounded (${entries.length})`);
+      const mems = entries.filter((e) => e.itemKind === 'MEMORY').length;
+      const sums = entries.filter((e) => e.itemKind === 'SUMMARY').length;
+      assert.ok(mems <= MEMORY_POOL_LIMIT, `memory metadata pool is bounded (${mems})`);
+      assert.ok(sums <= Math.floor(MEMORY_POOL_LIMIT / (COMPACTION_THRESHOLD + 1)), `summaries derive from the bounded pool only (${sums})`);
       assert.ok(man.selectedCount < 40, `selection is small (${man.selectedCount})`);
       assert.ok(man.estimatedInputTokens <= man.totalBudget, 'the rendered context never exceeds the hard budget');
     });
@@ -337,7 +347,8 @@ describe('C3 context assembly: budgeted, deterministic, manifest-bound', () => {
     withSeed((h, s) => {
       const c = run(h, s);
       const ids: Id[] = [];
-      for (let i = 0; i < 6; i++) ids.push(propose(h, c, i + 1, { content: `Egypt payments fact ${i}: merchants in city ${i} use wallet brand ${i * 3}.` }).decided?.resultMemoryId as Id);
+      const places = [['Cairo', 'Vodafone Cash'], ['Alexandria', 'Fawry kiosks'], ['Giza', 'Instapay transfers'], ['Luxor', 'cash on delivery'], ['Aswan', 'Meeza cards'], ['Mansoura', 'Orange wallets']] as const;
+      for (const [i, [city, rail]] of places.entries()) ids.push(propose(h, c, i + 1, { content: `Egypt payments: merchants in ${city} mostly settle through ${rail}.` }).decided?.resultMemoryId as Id);
       const m = MemoryStore.for(h.store);
       const a = assemble(h, c, 10);
       const summary = m.summaries(s.employee.id).find((x) => x.status === 'VALID');
@@ -347,7 +358,7 @@ describe('C3 context assembly: budgeted, deterministic, manifest-bound', () => {
       assert.equal(m.summaries(s.employee.id).filter((x) => x.status === 'VALID').length, 1);
       assemble(h, c, 11);
       assert.equal(m.summaries(s.employee.id).length, 1, 'unchanged sources reuse the summary');
-      m.correctMemory(s.founder, ids[0] as string, { disposition: 'SUPERSEDED', reasonCode: 'correction', correctedContent: 'Egypt payments fact 0 (corrected): merchants in city 0 use Instapay.' });
+      m.correctMemory(s.founder, ids[0] as string, { disposition: 'SUPERSEDED', reasonCode: 'correction', correctedContent: 'Egypt payments (corrected): merchants in Cairo now settle mostly through Instapay.' });
       assemble(h, c, 12);
       const after = m.summaries(s.employee.id);
       assert.equal(after.find((x) => x.id === summary.id)?.status, 'INVALIDATED');
@@ -389,7 +400,7 @@ describe('C3 skills: pinned, licensed, security-cleared, never authority', () =>
       const unlicensed = approvedSkill(h, s, 'seo.audit', { license: null });
       assert.equal(unlicensed.version.pipelineState, 'REJECTED');
       assert.equal(unlicensed.version.failureReason, 'LICENSE_UNCLEAR');
-      assert.deepEqual(reg.eligibility(unlicensed.version.id).reasons, ['NOT_APPROVED', 'LICENSE_NOT_CLEAR']);
+      assert.deepEqual(reg.eligibility(unlicensed.version.id).reasons, ['NOT_APPROVED', 'LICENSE_NOT_CLEAR', 'SECURITY_NOT_CLEARED']);
       const quarantined = approvedSkill(h, s, 'market.analysis', { stopAt: 'SECURITY_QUARANTINE' });
       assert.throws(() => reg.openPassportEntry(s.founder, s.employee.id, quarantined.version.id), code('STORAGE_INVARIANT'), 'a quarantined version cannot even be pinned');
       const ok = approvedSkill(h, s, 'payments.research');
@@ -407,7 +418,7 @@ describe('C3 skills: pinned, licensed, security-cleared, never authority', () =>
     withSeed((h, s) => {
       const reg = SkillStore.for(h.store);
       const skill = reg.registerSkill(s.founder, { code: 'ads.optimizer', name: 'Ads', skillType: 'EXTERNAL', ownerRef: 'department:growth' });
-      let v = reg.registerSkillVersion(s.founder, { skillId: skill.id, versionLabel: '1.0.0', sourceRef: 'github:x/ads', sourceRevision: 'r1', authorRef: 'org:x', licenseSpdx: 'MIT', dependencies: [{ name: 'ads-api', kind: 'SERVICE', paid: true }], instructions: 'Optimize ad copy.' });
+      let v = reg.registerSkillVersion(s.founder, { skillId: skill.id, versionLabel: '1.0.0', sourceRef: 'github:x.ads', sourceRevision: 'r1', authorRef: 'org:x', licenseSpdx: 'MIT', dependencies: [{ name: 'ads-api', kind: 'SERVICE', paid: true }], instructions: 'Optimize ad copy.' });
       assert.equal(reg.eligibility(v.id).costLabel, 'FREE_SKILL_PAID_DEPENDENCY');
       v = reg.inspectSkillVersion(v.id);
       v = reg.checkLicenseAndDependencies(v.id);
@@ -448,7 +459,7 @@ describe('C3 skills: pinned, licensed, security-cleared, never authority', () =>
       v = reg.checkLicenseAndDependencies(reg.inspectSkillVersion(v.id).id);
       for (const [to, extra] of [['SECURITY_QUARANTINE', {}], ['SANDBOXED', { evidenceRef: 'review:s', securityPassed: true }], ['BENCHMARKED', { evidenceRef: 'benchmark:b' }], ['COMPARED', {}], ['APPROVED', {}]] as const) v = reg.advanceSkillVersion(s.founder, v.id, to, { reasonCode: 'step', ...extra });
       reg.openPassportEntry(s.founder, peer.id, v.id);
-      const { claim } = claimFor(h, workItem(h, s, peer));
+      const { claim } = claimFor(h, workItem(h, s, peer, {}, undefined, 100_000));
       const intent = recordToolIntent(h.store, claim.fence, { toolCode: 'notes', actionCode: 'append', args: { text: 'x' }, idempotencyKey: `wi:${claim.workItem.id}:s1` });
       assert.deepEqual(intent, { kind: 'DENIED', code: 'NO_GRANT', paused: false }, 'the skill\'s requested tool is not a grant');
       // The seed Employee holds tool grants but not the skill: the requirement is a gap.
@@ -480,8 +491,8 @@ describe('C3 skills: pinned, licensed, security-cleared, never authority', () =>
   test('discovery intake is deduplicated (no one re-researches the same update)', () => {
     withSeed((h) => {
       const reg = SkillStore.for(h.store);
-      const one = reg.intakeDiscovery('system:skill-intelligence', { skillCode: 'seo.audit', sourceRef: 'github:org/seo', sourceRevision: 'abc123' });
-      const two = reg.intakeDiscovery('employee:someone', { skillCode: 'seo.audit', sourceRef: 'github:org/seo', sourceRevision: 'abc123' });
+      const one = reg.intakeDiscovery('system:skill-intelligence', { skillCode: 'seo.audit', sourceRef: 'github:org.seo', sourceRevision: 'abc123' });
+      const two = reg.intakeDiscovery('employee:someone', { skillCode: 'seo.audit', sourceRef: 'github:org.seo', sourceRevision: 'abc123' });
       assert.equal(two.id, one.id);
       assert.deepEqual([one.duplicate, two.duplicate, two.seenCount], [false, true, 2]);
     });
@@ -566,6 +577,8 @@ describe('C3 academy: gated, evidence-bound, never self-certifying', () => {
       const ctx = assemble(h, claim, 1);
       assert.ok(ctx.outcome === 'OK' && ctx.messages.some((m) => m.content.includes('Scenario practice-1')) && !ctx.messages.some((m) => m.content.includes('holdout-1')));
       assert.equal(a.exposures(s.employee.id, w.scenarios.holdout), 0);
+      // An attempt is constrained whoever takes it (here an ACTIVE Employee recertifying): no external action.
+      assert.deepEqual(recordToolIntent(h.store, claim.fence, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'x' }, idempotencyKey: `wi:${claim.workItem.id}:s1` }), { kind: 'DENIED', code: 'ACADEMY_CONSTRAINED', paused: false });
       complete(h, claim);
       a.evaluateDeterministic(started.attempt.id);
       a.recordEvaluation(s.founder, started.attempt.id, ASSESSMENT_SCORES);
@@ -620,7 +633,7 @@ describe('C3 academy: gated, evidence-bound, never self-certifying', () => {
       assert.ok(okRun.ok, 'role A certification satisfies role A work');
       // Material skill update → impact set → rollout → recertification required → rollback.
       const reg = SkillStore.for(h.store);
-      const v2 = reg.registerSkillVersion(s.founder, { skillId: w.skill.id, versionLabel: '2.0.0', sourceRef: 'github:example/market.research', sourceRevision: 'r2', authorRef: 'org:example', licenseSpdx: 'MIT', dependencies: [], instructions: 'Guidance v2 for market research.', previousVersionId: w.version.id });
+      const v2 = reg.registerSkillVersion(s.founder, { skillId: w.skill.id, versionLabel: '2.0.0', sourceRef: 'github:example.market.research', sourceRevision: 'r2', authorRef: 'org:example', licenseSpdx: 'MIT', dependencies: [], instructions: 'Guidance v2 for market research.', previousVersionId: w.version.id });
       let v = reg.checkLicenseAndDependencies(reg.inspectSkillVersion(v2.id).id);
       for (const [to, extra] of [['SECURITY_QUARANTINE', {}], ['SANDBOXED', { evidenceRef: 'review:s2', securityPassed: true }], ['BENCHMARKED', { evidenceRef: 'benchmark:b2' }], ['COMPARED', {}], ['APPROVED', {}]] as const) v = reg.advanceSkillVersion(s.founder, v.id, to, { reasonCode: 'step', ...extra });
       const plan = reg.planUpdate(s.founder, { fromVersionId: w.version.id, toVersionId: v.id, material: true, recertificationImpact: 'PARTIAL' });

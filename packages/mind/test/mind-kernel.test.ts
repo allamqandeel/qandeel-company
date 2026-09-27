@@ -94,7 +94,7 @@ describe('C3 kernel: Memory Write Policy (Stage 5 §3)', () => {
     assert.deepEqual(decideMemoryCandidate(candidate({ content: '  EGYPTIAN customers in the pilot preferred   wallet payments over cards. ' }), { ...policyCtx, existing }), { decision: 'REFUSE', reason: 'DUPLICATE', duplicateOf: 'm1' });
     assert.deepEqual(decideMemoryCandidate(candidate({ content: 'Egyptian customers in the pilot clearly preferred wallet payments over cards.' }), { ...policyCtx, existing }), { decision: 'REFUSE', reason: 'NEAR_DUPLICATE', duplicateOf: 'm1' });
     // A superseded record no longer blocks.
-    assert.equal(decideMemoryCandidate(c, { ...policyCtx, existing: [{ ...existing[0]!, status: 'SUPERSEDED' as const }] }).decision, 'STORE');
+    assert.equal(decideMemoryCandidate(c, { ...policyCtx, existing: [{ ...(existing[0] as (typeof existing)[number]), status: 'SUPERSEDED' as const }] }).decision, 'STORE');
   });
 
   test('canonical truth wins: a contradicting candidate is refused; a memory-vs-memory disagreement is kept as a conflict', () => {
@@ -230,8 +230,8 @@ describe('C3 kernel: Context Assembly (D13-E)', () => {
     ];
     const f = summaryFingerprint(src);
     assert.equal(summaryFingerprint([...src].reverse()), f);
-    assert.notEqual(summaryFingerprint([{ ...src[0]!, version: 2 }, src[1]!]), f);
-    assert.notEqual(summaryFingerprint([{ ...src[0]!, status: 'SUPERSEDED' }, src[1]!]), f);
+    assert.notEqual(summaryFingerprint([{ ...(src[0] as (typeof src)[number]), version: 2 }, (src[1] as (typeof src)[number])]), f);
+    assert.notEqual(summaryFingerprint([{ ...(src[0] as (typeof src)[number]), status: 'SUPERSEDED' }, (src[1] as (typeof src)[number])]), f);
     assert.match(buildExtractiveSummary(src), /\[memory a\] First fact\./);
   });
 });
@@ -298,7 +298,7 @@ describe('C3 kernel: capability eligibility (Stage 7 §16–§20)', () => {
   });
 
   test('underqualified, ineligible-version and recertification-required passports are gaps with suggestions', () => {
-    const e = (over: object) => evaluateCapability([reqs[0]!], { ...snap, passport: [{ skillId, versionId: 'v', proficiency: 'QUALIFIED', status: 'ACTIVE', versionEligible: true, marketCode: null, ...over }] });
+    const e = (over: object) => evaluateCapability([(reqs[0] as (typeof reqs)[number])], { ...snap, passport: [{ skillId, versionId: 'v', proficiency: 'QUALIFIED', status: 'ACTIVE', versionEligible: true, marketCode: null, ...over }] });
     assert.deepEqual(e({ proficiency: 'LEARNING' }).missing.map((m) => m.code), ['PROFICIENCY_BELOW']);
     assert.deepEqual(e({ versionEligible: false }).missing.map((m) => m.code), ['SKILL_VERSION_INELIGIBLE']);
     assert.deepEqual(e({ status: 'RECERTIFICATION_REQUIRED' }).missing.map((m) => m.code), ['PASSPORT_NOT_ACTIVE']);

@@ -259,7 +259,9 @@ export class AcademyStore {
       case 'ASSESSMENT': {
         if (ev.blockedDims.length > 0) return { to: 'BLOCKED', reason: 'REPEATED_CRITICAL_FAILURE' };
         const last = ev.attempts.filter((a) => a.kind === 'ASSESSMENT' && a.state === 'EVALUATED').at(-1);
-        if (last?.outcome === 'FAIL' && !ev.attempts.some((a) => a.kind === 'ASSESSMENT' && a.state === 'OPEN')) return { to: 'RETRY', reason: 'ASSESSMENT_FAILED' };
+        // A failure already retrained (its remediation is RETEST_READY / RETESTED) never re-triggers RETRY.
+        const retrained = last ? ctx.db.get(`SELECT 1 AS x FROM academy_remediations WHERE attempt_id = ? AND state IN ('RETEST_READY', 'RETESTED')`, last.id) !== undefined : false;
+        if (last?.outcome === 'FAIL' && !retrained && !ev.attempts.some((a) => a.kind === 'ASSESSMENT' && a.state === 'OPEN')) return { to: 'RETRY', reason: 'ASSESSMENT_FAILED' };
         const cleanHoldout = ev.passed.some((a) => a.holdout && a.holdoutClean);
         return ev.passed.length >= ev.def.assessmentTrials && (!ev.def.holdoutRequired || cleanHoldout) ? { to: 'SHADOW_WORK', reason: 'ASSESSMENT_PASSED' } : null;
       }

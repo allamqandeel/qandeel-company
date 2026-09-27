@@ -17,7 +17,7 @@ export const stores = (h: Harness) => ({ memory: MemoryStore.for(h.store), skill
 export function workItem(h: Harness, s: Seed, employee: EmployeeRecord, input: Record<string, unknown> = {}, caps?: Parameters<CapabilityStore['declareRequirements']>[1], cap = 1_000_000): Id {
   const { workItem: wi } = h.store.createWorkItem({ objective: 'c3 governed work', ownerRef: employee.ref, processorKind: GOVERNED_KIND, processorInput: { taskClass: 'draft.memo', dataClass: 'D1', instructions: 'Draft the Egypt payments memo.', ...input } });
   if (caps) CapabilityStore.for(h.store).declareRequirements(wi.id, caps);
-  s.gov.createBudget(s.founder, { scope: 'WORK_ITEM', scopeId: wi.id, capMoney: cap, capTokens: 1_000_000, reasonCode: 'seed' });
+  s.gov.createBudget(s.founder, { scope: 'WORK_ITEM', scopeId: wi.id, capMoney: cap, capTokens: cap, reasonCode: 'seed' });
   h.store.transitionWorkItem(wi.id, { to: 'READY', reasonCode: 'release' });
   return wi.id;
 }
@@ -62,7 +62,7 @@ export function approvedSkill(h: Harness, s: Seed, code: string, opts: { license
   let v = reg.registerSkillVersion(s.founder, {
     skillId: skill.id,
     versionLabel: '1.0.0',
-    sourceRef: `github:example/${code}`,
+    sourceRef: `github:example.${code}`,
     sourceRevision: 'r1',
     authorRef: 'org:example',
     licenseSpdx: opts.license === undefined ? 'MIT' : opts.license,

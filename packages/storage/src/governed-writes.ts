@@ -57,7 +57,7 @@ import {
 import { mapApproval, mapGrant, mapReservation, mapToolAction, mapToolInvocation, type BudgetRecord, type ReservationRecord, type ToolInvocationRecord } from './governance-records.js';
 import { routingSnapshotTx, upsertApprovalRequest, workItemDataClass } from './governance.js';
 import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from './internal.js';
-import { academyExecutionMode, constrainedRun, contextClassOf, manifestForReservation, txCapabilityGate } from './mind-writes.js';
+import { academyExecutionMode, academyRun, constrainedRun, contextClassOf, manifestForReservation, txCapabilityGate } from './mind-writes.js';
 import { verifyFence } from './queue.js';
 import type { Fence } from './records.js';
 
@@ -96,8 +96,9 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
     return { ok: false, code: 'NOT_EMPLOYEE_OWNED', state: null };
   }
   const e = getEmployeeRow(ctx, employeeId);
-  // A non-ACTIVE Employee executes only its own open Academy attempt or shadow assignment (C3).
-  const academyMode = canExecute(e.state) ? null : academyExecutionMode(ctx, fence.runId, item, e);
+  // A non-ACTIVE Employee executes only its own open Academy attempt or shadow assignment (C3); an
+  // Academy attempt runs in its constrained mode whoever takes it.
+  const academyMode = academyExecutionMode(ctx, fence.runId, item, e);
   if (!canExecute(e.state) && academyMode === null) {
     denyAudit(ctx, fence.runId, 'authority.denied', 'EMPLOYEE_NOT_ELIGIBLE', { employeeId, state: e.state });
     return { ok: false, code: 'EMPLOYEE_NOT_ELIGIBLE', state: e.state };
@@ -443,8 +444,8 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
     return { kind: 'REVIEW_REQUIRED' };
   }
   if (decision.effect === 'DENY') return deny(decision.code, { toolActionId: action.id, risk: action.risk });
-  // Academy / shadow work by a non-ACTIVE Employee: internal, reversible, non-external actions only (Stage 6 §11).
-  if (!canExecute(e.state) && (String(row.tool_egress) === 'EXTERNAL' || action.mutatesExternal || action.risk === 'R3')) return deny('ACADEMY_CONSTRAINED', { toolActionId: action.id, risk: action.risk });
+  // Academy attempts and shadow work: internal, reversible, non-external actions only (Stage 6 §11).
+  if ((!canExecute(e.state) || academyRun(ctx, fence.runId)) && (String(row.tool_egress) === 'EXTERNAL' || action.mutatesExternal || action.risk === 'R3')) return deny('ACADEMY_CONSTRAINED', { toolActionId: action.id, risk: action.risk });
   const argsSha256 = sha256Hex(canonicalJson(args));
   if (!/^[A-Za-z0-9:._-]{8,128}$/.test(input.idempotencyKey)) throw new QandeelError('VALIDATION_FAILED', 'idempotency key is a runtime-derived identifier', { field: 'idempotencyKey' });
   const existingRow = ctx.db.get('SELECT * FROM tool_invocations WHERE tool_action_id = ? AND idempotency_key = ?', action.id, input.idempotencyKey);

@@ -80,12 +80,14 @@ const TRAINEE_STATES: readonly string[] = ['TRAINING', 'SHADOW', 'PROBATION', 'R
  * The mode is recorded for the run (once) so every later action boundary re-checks it.
  */
 export function academyExecutionMode(ctx: StoreContext, runId: Id, item: WorkItemRecord, e: EmployeeRecord): 'ACADEMY_ATTEMPT' | 'SHADOW_WORK' | null {
-  if (!TRAINEE_STATES.includes(e.state)) return null;
+  // An Academy attempt is always an attempt (also when an ACTIVE Employee recertifies): its scenario is
+  // served and its authority constrained. Shadow work is a trainee-only mode.
+  const trainee = TRAINEE_STATES.includes(e.state);
   const attempt = ctx.db.get<{ enrollment_id: string; stage: string; employee_id: string; state: string }>(
     `SELECT a.enrollment_id, n.stage, n.employee_id, a.state FROM academy_attempts a JOIN academy_enrollments n ON n.id = a.enrollment_id WHERE a.work_item_id = ?`,
     item.id,
   );
-  const shadow = attempt ? undefined : ctx.db.get<{ enrollment_id: string; stage: string; employee_id: string }>(`SELECT s.enrollment_id, n.stage, n.employee_id FROM academy_shadow_assignments s JOIN academy_enrollments n ON n.id = s.enrollment_id WHERE s.work_item_id = ?`, item.id);
+  const shadow = attempt || !trainee ? undefined : ctx.db.get<{ enrollment_id: string; stage: string; employee_id: string }>(`SELECT s.enrollment_id, n.stage, n.employee_id FROM academy_shadow_assignments s JOIN academy_enrollments n ON n.id = s.enrollment_id WHERE s.work_item_id = ?`, item.id);
   const link = attempt ?? shadow;
   if (!link || link.employee_id !== e.id || !(ACADEMY_EXECUTION_STAGES as readonly string[]).includes(link.stage)) return null;
   if (attempt && attempt.state !== 'OPEN') return null;
@@ -95,6 +97,11 @@ export function academyExecutionMode(ctx: StoreContext, runId: Id, item: WorkIte
     ctx.db.run('INSERT INTO run_execution_modes (run_id, mode, enrollment_id, created_at) VALUES (?, ?, ?, ?)', runId, mode, link.enrollment_id, ts(ctx));
   }
   return mode;
+}
+
+/** Whether this run executes in a constrained Academy mode (attempt or shadow work), whatever the Employee's state. */
+export function academyRun(ctx: StoreContext, runId: Id): boolean {
+  return ctx.db.get('SELECT 1 AS ok FROM run_execution_modes WHERE run_id = ?', runId) !== undefined;
 }
 
 /** Whether this run may act for a non-ACTIVE Employee now (its enrollment is still at an executing stage). */
