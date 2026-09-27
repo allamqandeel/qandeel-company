@@ -16,8 +16,8 @@ governed and auditable.
 | `L0` Environment Readiness | CLOSED / PASS |
 | `C0` Repository Bootstrap | CLOSED / PASS |
 | PRE-C1 Authority Sync & Import | Complete (merged). Documentation / authority only |
-| `C1` Company Foundation & Durable Runtime | **Implementation candidate, in independent review — NOT CLOSED** |
-| `C2` Employees + Models + Tools + Cost Governance | Not started |
+| `C1` Company Foundation & Durable Runtime | CLOSED / MERGED / CANONICAL (`main` @ `419ee4f`) |
+| `C2` Employees + Models + Tools + Cost Governance | **In progress — Cloud implementation candidate, not closed** |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
