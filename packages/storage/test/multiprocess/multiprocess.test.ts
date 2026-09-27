@@ -153,29 +153,44 @@ describe('multi-process proofs (independent OS processes, independent SQLite con
     }
   });
 
-  test('backup finalization across processes: another process holds the write lock; the bounded retry records the backup after it releases', async () => {
+  test('backup finalization across processes: another process holds the write lock; the bounded retry records the backup after it releases', { timeout: 60_000 }, async () => {
     const root = tempRoot('mp-backup-lock');
     CompanyStore.open(root).close();
     const store = CompanyStore.open(root, { busyTimeoutMs: 250 });
+    const release = path.join(path.dirname(root), 'release');
+    // The locker holds until the parent's first retry delay creates the release file (30 s cap):
+    // the first attempt meets the other process's lock regardless of how long the snapshot takes.
+    const locker = spawnScript(fixture('locker'), [store.workspace.databasePath, '30000', release]);
     try {
-      const earlier = await createBackup(store);
-      const locker = spawnScript(fixture('locker'), [store.workspace.databasePath, '2000']);
       await locker.waitFor((l) => l === 'LOCKED');
+      const delays: number[] = [];
       const started = Date.now();
-      // Envelope far larger than the 2 s hold (10 attempts x 250 ms + capped delays): the outcome
-      // does not depend on timing, only the attempt count does.
-      const r = await createBackupInternal(store, {}, { policy: { maxAttempts: 10, random: () => 1 } });
+      const r = await createBackupInternal(store, {}, {
+        policy: {
+          maxAttempts: 4,
+          random: () => 1,
+          sleep: async (ms) => {
+            delays.push(ms);
+            if (delays.length === 1) {
+              writeFileSync(release, 'go');
+              await locker.waitFor((l) => l === 'RELEASED');
+            }
+          },
+        },
+      });
       const elapsed = Date.now() - started;
-      await locker.waitFor((l) => l === 'RELEASED');
       assert.equal(await locker.exited(), 0);
-      assert.ok(r.finalization.attempts >= 2, `the first attempt met the other process's lock (attempts ${r.finalization.attempts})`);
+      assert.deepEqual(r.finalization, { outcome: 'RECORDED', attempts: 2 }, 'attempt 1 met the other process\'s lock; attempt 2 recorded');
       assert.ok(elapsed < 15_000, `bounded: ${elapsed} ms`);
       const record = store.backupRecord(r.backupId);
       assert.ok(record);
       assert.equal(verifyBackup(r.directory, { liveDatabasePath: store.workspace.databasePath, expected: record }).ok, true);
-      assert.deepEqual(listBackups(store), [earlier.backupId, r.backupId].sort());
-      assert.equal(store.auditByAction('backup.created').length, 2);
+      assert.deepEqual(listBackups(store), [r.backupId]);
+      assert.equal(store.auditByAction('backup.created').length, 1);
     } finally {
+      writeFileSync(release, 'go');
+      locker.process.kill('SIGKILL');
+      await locker.exited();
       store.close();
       removeRoot(root);
     }

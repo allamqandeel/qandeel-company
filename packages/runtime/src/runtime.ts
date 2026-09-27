@@ -508,10 +508,11 @@ export class CompanyRuntime {
     const store = this.#ready();
     const result = await createBackup(store, { runtimeVersion: RUNTIME_VERSION });
     const expected = store.backupRecord(result.backupId);
+    if (!expected) throw new QandeelError('BACKUP_INTEGRITY', 'the live Company holds no record of the backup it just produced', { backupId: result.backupId });
     const verification = verifyBackup(result.directory, {
       liveDatabasePath: store.workspace.databasePath,
       artifactObjectsDir: store.workspace.objectsDir,
-      ...(expected ? { expected } : {}),
+      expected,
     });
     return { backup: result, verification };
   }

@@ -75,7 +75,41 @@ retry delay.
 - **Mutations:** `c1:mutation` adds three (single attempt = `71f2edf` behaviour, no cleanup, no
   idempotency). 6/6 are caught.
 
-**Repeated continuous-writer runs, CI, reviews.** See §0A-results below.
+**Repeated runs (Cloud Linux, Node 24.21.0).**
+- On `977d664`: the continuous-writer proof passed 25/25 runs idle and 10/10 under full CPU load
+  (4 busy processes on 4 cores).
+  - Per backup: p50 129 ms, p90 1255 ms, max 2554 ms idle; p50 281 ms, p90 1520 ms, max 4180 ms
+    loaded.
+  - The loaded maximum is close to the old 5 s single-attempt limit. Every backup finalized on its
+    first attempt in these runs.
+- On the final code: the continuous-writer proof and the cross-process locker test each passed
+  20/20. Per backup: p50 95 ms, p90 550 ms, max 1452 ms.
+- A stress probe by reviewer R1 (40 backups against the writer, store busy timeout 250 ms) recorded
+  36 backups on attempt 1 and 4 on attempt 2, with 0 failures. The retry path is exercised by
+  real contention.
+
+**Validation.**
+- `npm run ci`: build, typecheck, lint, **174 tests** (5 + 22 + 112 + 35; no skip or todo),
+  mutation **6/6** caught, verifier **32/32**.
+- `c1:integration` 6 + 20, `c1:faults` 8, acceptance PASS, and `git diff --check` clean.
+
+**Focused reviews (read-only).** Neither review found a BLOCKER or MAJOR.
+
+| Reviewer | Finding | Disposition |
+|---|---|---|
+| R1 SQLite/durability | Verified retries outside transactions, finite envelope, no timeout inflation, idempotency (STRICT types, one write lock for check + insert), no canonical orphan, earlier backups untouched, snapshot unchanged | — |
+| R1 M1 / R2 MINOR-1 | Cross-process test relied on the snapshot finishing within a 2 s hold | **Fixed.** The locker holds until the parent's first retry delay creates a release file; `attempts === 2` exactly |
+| R1 M2 | Success under a continuous writer stays probabilistic (bounded failure); crash leftovers are not swept | Accepted and documented (D-C1-24; retention in C6) |
+| R1 N1 | `finalizeBackupRecord` did not validate its policy (NaN/Infinity) | **Fixed.** Validated, with a test |
+| R1 N2, N4 | Cleanup comment; envelope formula for non-default busy timeouts | **Fixed** |
+| R1 N3 | `SQLITE_LOCKED` is retried with a busy message | Kept: bounded and harmless; it is the existing `STORAGE_BUSY` class |
+| R1 N5 | Non-Qandeel errors are rethrown without `attemptDiscarded` | Kept: the original error identity is preserved deliberately |
+| R1 N6 (pre-existing) | `runtime.backup()` verified without the record when none was found | **Fixed.** Fails closed with `BACKUP_INTEGRITY` |
+| R1 N7 (pre-existing) | The backups directory was not fsynced after `mkdir` | **Fixed** on POSIX (Windows cannot fsync directories) |
+| R2 | Verified all tests non-vacuous (mutations and per-field probes), continuous-writer proof not weakened, cleanup scoped, error codes preserved | — |
+| R2 MINOR-2, MINOR-3 | A failed assertion could leave a locker holding the lock and hide the failure on Windows cleanup | **Fixed.** Lockers are released and killed in `finally` |
+| R2 NIT-2, NIT-4 | Exhaustion test could hang under an unbounded mutation; one assertion message overclaimed | **Fixed.** Per-test timeout; message corrected |
+| R2 NIT-1, NIT-3 | No test drives a snapshot-phase failure through cleanup; discovery has no pinned mutation | Not changed: the code path is shared and covered by the cleanup tests; discovery is caught by tests |
 
 **Founder-host acceptance status: NOT PASSED** until re-run on the new exact SHA.
 

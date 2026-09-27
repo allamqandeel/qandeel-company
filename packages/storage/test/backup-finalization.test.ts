@@ -29,12 +29,19 @@ import { executable, harness, type Harness } from './helpers.js';
 
 const BUSY_MS = 50;
 
+const openLockers: { release(): void }[] = [];
+
+/** Releases any lock a failed assertion left held, so cleanup (and the real failure) stays visible on Windows. */
+function releaseLockers(): void {
+  for (const l of openLockers.splice(0)) l.release();
+}
+
 /** A second connection that holds the live database's write lock until `release()`. */
 function lockWriter(h: Harness): { release(): void; held(): boolean } {
   const db = SqliteConnection.open({ path: h.store.workspace.databasePath, busyTimeoutMs: 1_000 });
   db.execScript('BEGIN IMMEDIATE');
   let held = true;
-  return {
+  const locker = {
     release() {
       if (!held) return;
       db.execScript('COMMIT');
@@ -43,6 +50,8 @@ function lockWriter(h: Harness): { release(): void; held(): boolean } {
     },
     held: () => held,
   };
+  openLockers.push(locker);
+  return locker;
 }
 
 function backupRows(store: CompanyStore): number {
@@ -62,7 +71,8 @@ describe('backup finalization under write contention (D-C1-24)', () => {
           random: () => 1,
           sleep: async (ms) => {
             delays.push(ms);
-            assert.equal(h.store.backupRecord(earlier.backupId) !== null, true, 'the store is usable between attempts: no transaction is held while waiting');
+            // The store's own connection is outside any transaction here: a nested one would throw.
+            assert.notEqual(h.store.backupRecord(earlier.backupId), null);
             locker.release();
           },
         },
@@ -86,11 +96,12 @@ describe('backup finalization under write contention (D-C1-24)', () => {
       assert.deepEqual(readdirSync(h.store.workspace.backupsDir).sort(), [earlier.backupId, result.backupId].sort());
       assert.deepEqual(readdirSync(result.directory).sort(), ['company.sqlite3', 'manifest.json']);
     } finally {
+      releaseLockers();
       h.close();
     }
   });
 
-  test('a lock held past the whole retry envelope fails cleanly and boundedly; nothing canonical remains; the earlier backup is untouched', async () => {
+  test('a lock held past the whole retry envelope fails cleanly and boundedly; nothing canonical remains; the earlier backup is untouched', { timeout: 20_000 }, async () => {
     const h = harness({ busyTimeoutMs: BUSY_MS });
     try {
       executable(h.store);
@@ -137,6 +148,7 @@ describe('backup finalization under write contention (D-C1-24)', () => {
       const next = await createBackup(h.store);
       assert.deepEqual(next.finalization, { outcome: 'RECORDED', attempts: 1 });
     } finally {
+      releaseLockers();
       h.close();
     }
   });
@@ -154,6 +166,7 @@ describe('backup finalization under write contention (D-C1-24)', () => {
       assert.deepEqual(listBackups(h.store), [r.backupId]);
       assert.equal(backupRows(h.store), 1, 'no duplicate audit history for a replay');
     } finally {
+      releaseLockers();
       h.close();
     }
   });
@@ -185,6 +198,7 @@ describe('backup finalization under write contention (D-C1-24)', () => {
       assert.equal(backupRows(h.store), 1);
       assert.equal(verifyBackup(r.directory, { expected: before }).ok, true);
     } finally {
+      releaseLockers();
       h.close();
     }
   });
@@ -208,6 +222,7 @@ describe('backup finalization under write contention (D-C1-24)', () => {
       assert.ok(kept);
       assert.equal(verifyBackup(r.directory, { expected: kept }).ok, true);
     } finally {
+      releaseLockers();
       h.close();
     }
   });
@@ -239,6 +254,7 @@ describe('backup finalization under write contention (D-C1-24)', () => {
       assert.equal(h.store.backupRecord(id), null, 'verify-backup / restore-check refuse it (no live record)');
       assert.equal(h.store.healthCounts().lastBackup, null);
     } finally {
+      releaseLockers();
       h.close();
     }
   });
@@ -257,7 +273,13 @@ describe('backup finalization under write contention (D-C1-24)', () => {
         await assert.rejects(createBackupInternal(h.store, {}, { policy }), (e) => isQandeelError(e, 'VALIDATION_FAILED'), JSON.stringify(policy));
       }
       assert.deepEqual(readdirSync(h.store.workspace.backupsDir), [], 'an invalid policy is refused before anything is written');
+      // The finalization helper validates too: a non-finite bound can never loop forever.
+      const r = await createBackup(h.store);
+      for (const maxAttempts of [Number.NaN, Number.POSITIVE_INFINITY]) {
+        await assert.rejects(finalizeBackupRecord(h.store, backupRecordFor(r.manifest, r.manifestSha256), { maxAttempts }), (e) => isQandeelError(e, 'VALIDATION_FAILED'));
+      }
     } finally {
+      releaseLockers();
       h.close();
     }
   });
@@ -272,6 +294,7 @@ describe('backup finalization under write contention (D-C1-24)', () => {
       await assert.rejects(finalizeBackupRecord(h.store, record, { ...DEFAULT_BACKUP_FINALIZATION_POLICY, sleep: async (ms) => void delays.push(ms) }), (e) => isQandeelError(e, 'RUNTIME_STOPPING'));
       assert.deepEqual(delays, []);
     } finally {
+      releaseLockers();
       h.close();
     }
   });

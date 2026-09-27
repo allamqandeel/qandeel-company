@@ -653,7 +653,8 @@ Exact-head GitHub CI (Windows and Ubuntu) did not expose it.
     timeout (`DEFAULT_BUSY_TIMEOUT_MS` = 5 s);
   - between attempts, control is released completely and a delay is awaited outside any
     transaction: `min(1000, 100 × 2^(n−1))` ms, jittered to [0.5, 1] of that;
-  - **default 4 attempts**: worst case 4 × 5 s + ≤ 0.7 s ≈ 21 s, then `STORAGE_BUSY` "…within its
+  - **default 4 attempts**: worst case `maxAttempts × store busy timeout + delays` = 4 × 5 s +
+    ≤ 0.7 s ≈ 21 s at the defaults (a store opened with a longer busy timeout scales it), then `STORAGE_BUSY` "…within its
     bounded retry envelope" with `attempts`;
   - the policy is internal (tests inject delays); it is validated (1–10 attempts, delays ≤ 5 s)
     and not part of the public API.
@@ -691,4 +692,7 @@ Exact-head GitHub CI (Windows and Ubuntu) did not expose it.
     its live record and record-based listing.
   - Three new mutations in `npm run c1:mutation` (single attempt = the `71f2edf` behaviour; no
     cleanup; no idempotency) must each be caught.
+- **Review follow-ups (R1/R2, no BLOCKER or MAJOR):** the cross-process test releases the lock only
+  from the parent's retry delay; the helper validates its policy; `runtime.backup()` fails closed
+  without a record; on POSIX the backups directory is fsynced after the new entry.
 - **Founder-host re-validation of the new exact SHA is still required.**

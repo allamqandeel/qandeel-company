@@ -95,7 +95,8 @@ function fileSha256(file: string): string {
  * SQLITE_LOCKED at write-lock acquisition). Each attempt waits at most the store's own bounded busy
  * timeout (unchanged; DEFAULT_BUSY_TIMEOUT_MS = 5 s) inside SQLite's busy handler, then control is
  * released completely and the next attempt starts after a jittered delay taken OUTSIDE any
- * transaction. Worst case with the defaults: 4 attempts x 5 s + at most 0.7 s of delays, about 21 s.
+ * transaction. Worst case: maxAttempts x the store busy timeout + the delays; with the defaults
+ * 4 x 5 s + at most 0.7 s, about 21 s (a store opened with a longer busy timeout scales it).
  * The snapshot itself is never redone on BUSY.
  */
 export interface BackupFinalizationPolicy {
@@ -205,8 +206,9 @@ export function recordBackupOnce(store: CompanyStore, record: BackupRecordInput)
 export async function finalizeBackupRecord(
   store: CompanyStore,
   record: BackupRecordInput,
-  policy: BackupFinalizationPolicy = DEFAULT_BACKUP_FINALIZATION_POLICY,
+  overrides: Partial<BackupFinalizationPolicy> = {},
 ): Promise<{ outcome: BackupFinalizationOutcome; attempts: number }> {
+  const policy = resolvePolicy(overrides);
   for (let attempt = 1; ; attempt++) {
     try {
       return { outcome: recordBackupOnce(store, record), attempts: attempt };
@@ -232,9 +234,9 @@ function discardDirectory(directory: string): void {
 }
 
 /**
- * Removes this attempt's own directory after a failure. The path is `<backups>/<backupId>` for the
- * ID this call generated (and created with a non-recursive mkdir), never caller-supplied, so an
- * earlier backup can never be touched. If removal fails the original error is kept (with
+ * Removes this attempt's own directory after a failure. The path is `<backups>/<backupId>`, a
+ * validated UUID that this call just created with a non-recursive mkdir (an existing directory makes
+ * that mkdir fail before any cleanup can run), so an earlier backup can never be touched. If removal fails the original error is kept (with
  * `attemptDiscarded: false`); discovery is record-based, so the leftover is still not canonical.
  */
 function failAttempt(error: unknown, directory: string, backupId: Id, discard: (directory: string) => void): never {
@@ -264,7 +266,7 @@ export async function createBackup(store: CompanyStore, options: { runtimeVersio
 
 export async function createBackupInternal(store: CompanyStore, { runtimeVersion = '0.1.0' }: { runtimeVersion?: string }, internals: BackupInternals): Promise<BackupResult> {
   const ctx = storeContext(store);
-  const policy = resolvePolicy(internals.policy);
+  resolvePolicy(internals.policy); // refuse an invalid policy before anything is written
   const backupId = internals.backupId === undefined ? newId() : assertId(internals.backupId, 'backupId');
   const directory = containedPath(store.workspace.backupsDir, backupId);
   mkdirSync(directory); // non-recursive: fails if the directory exists, so no earlier backup is reused
@@ -316,9 +318,12 @@ export async function createBackupInternal(store: CompanyStore, { runtimeVersion
     const manifestSha256 = sha256Hex(manifestText);
     // Make the backup durable before the live store records it as 'ok' (synchronous=FULL there).
     for (const file of [snapshot, containedPath(directory, MANIFEST_FILE)]) fsyncPath(file);
-    if (process.platform !== 'win32') fsyncPath(directory, 'dir');
+    if (process.platform !== 'win32') {
+      fsyncPath(directory, 'dir');
+      fsyncPath(store.workspace.backupsDir, 'dir'); // the new directory entry itself is durable
+    }
 
-    const finalization = await finalizeBackupRecord(store, backupRecordFor(manifest, manifestSha256), policy);
+    const finalization = await finalizeBackupRecord(store, backupRecordFor(manifest, manifestSha256), internals.policy);
     return { backupId, directory, manifest, manifestSha256, finalization };
   } catch (error) {
     failAttempt(error, directory, backupId, internals.discard ?? discardDirectory);
