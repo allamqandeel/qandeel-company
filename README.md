@@ -64,8 +64,9 @@ credential. Details: `docs/C2_IMPLEMENTATION_REPORT.md`, decisions D-C2-01 to D-
 - the QANDEEL Academy: programs, scenarios and holdouts, attempts executed by the real runtime in
   constrained mode, critical-dimension gating, diagnosis and retraining, shadow work, probation
   review, certification with pinned skills, recertification, loss of a revoked / expired role
-  certification (ACTIVE → RETRAINING), Founder calibration before activation for designated roles —
-  and the **activation bridge**, which files an activation request that production cannot approve
+  certification (ACTIVE → RETRAINING), and ACTIVE role reassignment without a VALID target-role
+  certification (assignment recorded, then RETRAINING), Founder calibration before activation for
+  designated roles — and the **activation bridge**, which files an activation request that production cannot approve
   until the authenticated Founder surface exists (C5).
 
 C3 adds no external vector database, embedding service or paid memory service. Details:
@@ -136,7 +137,7 @@ npm run ci
 | `npm run c1:acceptance -- --workspace <dir>` | C1 local acceptance in a disposable directory (below) |
 | `npm run c2:mutation` | Removes 19 C2 authority / budget / tool / routing gates from the build; their proof tests must fail (after a build) |
 | `npm run c2:acceptance -- --workspace <dir>` | C2 local acceptance in a disposable directory (below) |
-| `npm run c3:mutation` | Removes 19 C3 memory / context / skill / academy gates from the build; their proof tests must fail (after a build) |
+| `npm run c3:mutation` | Removes 40 C3 memory / context / skill / academy / Founder-decision gates from the build; their proof tests must fail (after a build) |
 | `npm run c3:acceptance -- --workspace <dir>` | C3 local acceptance in a disposable directory (below) |
 | `npm run verify` | Repository-contract verifier (`scripts/verify-bootstrap.mjs`) |
 | `npm run ci` | build → typecheck → lint → test → C1 + C2 + C3 mutation checks → verify; the same command CI runs |
