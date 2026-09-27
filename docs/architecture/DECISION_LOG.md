@@ -1447,14 +1447,10 @@ compiled-output mutation because editing a pinned migration already fails every 
 A focused adversarial review of the D-C3-18 .. D-C3-22 changes found no BLOCKER. It surfaced these
 Product consequences, which C3 does not decide (no new Product policy may be invented):
 
-1. **MAJOR (Product) — role reassignment of an ACTIVE Employee.** C2's `reassignEmployee` changes the
-   role of an ACTIVE Employee without a certification check (existing C2 behaviour; Stage 4 §9: a
-   significant role change "may require" training / recertification). After reassignment the Employee
-   holds no certification for its new role, so D-C3-18 (a *loss* of the current-role certification)
-   does not apply, and a later expiry / revocation of the old role's certification has no effect.
-   Work that declares a CERTIFICATION requirement for the new role is still blocked by the capability
-   gate. Question: must reassignment of an ACTIVE Employee require a live certification for the new
-   role (refuse, or move to RETRAINING), or is it a Founder judgement per reassignment?
+1. **RESOLVED — role reassignment of an ACTIVE Employee.** The Founder decided this in
+   **D-C3-24**: the assignment is recorded, but if the Employee does not already hold a currently
+   **VALID** certification for the target role, the same atomic write moves it to RETRAINING. A prior
+   certification for another role remains history and grants no Active duty in the new role.
 2. **MINOR (Product) — calibration at recertification of an ACTIVE Employee.** D-C3-19 makes
    calibration an activation requirement; an Employee already ACTIVE that recertifies a designated role
    is not re-activated, so its calibration is not re-checked. Should recertification of an ACTIVE
@@ -1466,6 +1462,28 @@ Product consequences, which C3 does not decide (no new Product policy may be inv
    whose run is refused because its Employee moved to RETRAINING ends `EMPLOYEE_CONTAINED`; it is not
    parked or re-routed (re-routing is forbidden). Non-spending steps of a run begun before the loss may
    still settle; its model calls, reservations and tool intents are refused.
+
+## D-C3-24 — Founder Decision: ACTIVE role reassignment without target-role certification
+
+**Founder decision.** A role change may be recorded without first refusing the assignment, preserving
+the same Employee identity and history. If an Employee is ACTIVE and the `role_ref` actually changes,
+ordinary Active duty carries into the target role **only** when the Employee already holds a
+time-current **VALID** certification for that target role. Otherwise the reassignment is recorded and,
+in the same transaction, the Employee moves to RETRAINING. The previous role's certification and all
+prior evidence remain durable history.
+
+The Employee does not regain Active duty merely by receiving a new certification after that demotion;
+the existing Academy / Activation Approval path remains the route back to ACTIVE. REVIEW_DUE is not
+sufficient for entry into a newly assigned role because the target-role qualification must be VALID at
+the reassignment boundary. Non-role assignment changes do not trigger this rule.
+
+**Implementation.** `GovernanceStore.reassignEmployee` reuses C3's time-aware
+`liveCertifications(..., materialize=true)` authority. A changed role on an ACTIVE Employee with no
+VALID target-role certification records the ASSIGNMENT first and then records
+`ACTIVE → RETRAINING` with reason `ROLE_REASSIGNMENT_REQUIRES_CERTIFICATION`, atomically under the
+Founder's administrative transaction. Two direct proofs cover both sides: missing target certification
+demotes; returning to a role whose prior certification is still VALID remains ACTIVE. Mutation
+`role-reassignment-without-cert-keeps-active` proves the gate is effective.
 
 **State.** C3 remains a Cloud implementation candidate — ready for final independent review and
 Founder-host validation. It is not closed, merged or canonical.
