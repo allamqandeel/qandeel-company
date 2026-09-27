@@ -241,20 +241,21 @@ Proof markers checked by the verifier rule `c3-proofs-present`: `C3-PROOF: mind-
 
 ## 10. Mutation checks, verifier, acceptances, results
 
-- **`npm run c3:mutation`: 26 mutations.** Each removes one gate from the compiled output and
+- **`npm run c3:mutation`: 30 mutations.** Each removes one gate from the compiled output and
   requires a proof to fail:
   - **Memory:** `memory-secret-stored`, `memory-contradicts-canonical`,
     `memory-model-sets-confidence`, `memory-other-employee-visible`, `corrupt-content-used`,
     `pending-candidates-not-recovered`, `conflict-resolution-no-wake`.
   - **Context:** `context-budget-soft`, `reservation-without-manifest`, `knowledge-scope-leak`,
     `processor-supplied-recent-results`, `canonical-binds-only-if-relevant`,
-    `model-accepts-foreign-context`.
+    `model-accepts-foreign-context`, `context-hold-not-rechecked`, `term-limit-before-filter`,
+    `compaction-crosses-markets`.
   - **Skills:** `skill-license-unclear-eligible`, `skill-paid-dependency-silent`,
     `skill-executable-content-passes`, `unpinned-skill-loads`, `licence-review-skipped`.
   - **Capability:** `capability-gate-bypassed`, `capability-wait-not-rechecked`.
   - **Academy:** `critical-dimension-compensated`, `academy-authority-unconstrained`,
     `holdout-reused`, `evaluator-sets-run-facts`, `probation-fail-no-new-epoch`,
-    `rubric-ignores-refused-actions`.
+    `rubric-ignores-refused-actions`, `failed-attempt-hides-breach`.
 - **C1 / C2 mutation checks still run.**
   - C1's supervisor-guard count is now 8, because C3 candidate recovery adds three fenced
     transactions.
@@ -277,12 +278,15 @@ Results (Node 24.21.0 / SQLite 3.53.4, Linux Cloud):
 | Suite | Tests | Result |
 |---|---|---|
 | mind (C3 kernel) | 27 | pass |
-| storage (C1 + C2 + C3, incl. multi-process) | 191 | pass |
+| storage (C1 + C2 + C3, incl. multi-process) | 196 | pass |
 | runtime (C1 + C2 + C3, incl. fault matrices) | 61 | pass |
-| other packages (bootstrap, domain, governance) | unchanged from C2 | pass |
+| bootstrap-contract (C0) | 5 | pass |
+| domain (C1) | 22 | pass |
+| governance (C2 kernel) | 25 | pass |
+| **Total** | **336** | **0 failed, 0 skipped** |
 
-- **Mutation checks:** C1 **6/6**, C2 **19/19**, C3 **26/26** caught.
-- **Verifier:** **49/49**, with the self-test proving every rule can fail.
+- **Mutation checks:** C1 **6/6**, C2 **19/19**, C3 **30/30** caught.
+- **Verifier:** **49/49** (48 rules + workspace resolution), and the self-test proves each of the 48 rules can fail.
 - **Acceptances:** C1, C2 and C3 all **PASS**.
 - **`git diff --check`:** clean.
 - **Fresh-clone proof:** `git clone -c core.longpaths=true` of the pushed branch, then `npm ci` and
@@ -318,7 +322,22 @@ a regression proof.
 | P1 | MAJOR (Product) | losing certification does not affect ACTIVE Employee | REPORTED — D-C3-17 Q1 |
 | P2 | MAJOR (Product) | approver identity fixed to `founder:*` | REPORTED — D-C3-17 Q2 (fail-closed; C4 widens) |
 
-MINOR and NIT findings were fixed where cheap. A final re-review verified the dispositions above.
+**Re-review of the fix commit.** A final adversarial re-review confirmed most dispositions. It found
+three partial fixes (W1, W3, C3) and two regressions (from C5 / M1 and A7), reported as four MAJOR
+findings, all fixed in this task:
+
+| ID | Sev | Finding | Disposition |
+|---|---|---|---|
+| N3 | MAJOR | lost wake: conflict resolved / gap cancelled between the held assembly and the park; certification did not wake skill-conflict waits | FIXED — `txRecheckContextHold` at settle, cancelled-gap wake, member-retired wake, certification wake; mutation `context-hold-not-rechecked` |
+| N4 | MAJOR | term-index LIMIT before status / scope filter (crowd-out) | FIXED — filter inside the query before the LIMIT; mutation `term-limit-before-filter` |
+| N1 | MAJOR | compaction summarized one market's memories for another market | FIXED — only market-neutral memories are compacted; mutation `compaction-crosses-markets` |
+| N2 | MAJOR | failed attempts voided, hiding refused actions | FIXED — refusals scored whatever became of the run; mutation `failed-attempt-hides-breach` |
+| — | MINOR | pending promotion of a lesson contradicting new canonical truth left undecidable | FIXED — rejected `CONTRADICTS_CANONICAL` |
+| — | MINOR | durable step results could store secret material | FIXED — withheld |
+| — | MINOR | `wakeAllCapabilityGaps` bounded without ORDER BY | FIXED — deterministic, unbounded |
+| — | MINOR | after EXTEND the same epoch's cases may satisfy the next review; SIMULATION allowed in RETRY | REPORTED — Product values (D-C3-16) |
+
+Other MINOR and NIT findings were fixed where cheap.
 
 ## 12. Security, privacy, dependencies and licences
 

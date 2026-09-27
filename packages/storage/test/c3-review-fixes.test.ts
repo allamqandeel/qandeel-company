@@ -2,7 +2,8 @@
  * Regression proofs for the C3 internal review findings (wake-ups, recovery isolation, durable recent
  * results, compaction stability, market context, revalidation, canonical precedence at write time,
  * D3 / D4 retention, learning-path dead ends, certification pins, recertification magnitude, licence
- * review, constrained attempts). C3-PROOF: review-fixes
+ * review, constrained attempts) and the re-review (lost wakes at the park, term-index crowd-out,
+ * market-safe compaction, breaches in failed attempts). C3-PROOF: review-fixes
  */
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -10,7 +11,7 @@ import { describe, test } from 'node:test';
 import { isQandeelError, type Id } from '@qandeel-company/domain';
 
 import { AcademyStore, CapabilityStore, MemoryStore, SkillStore } from '../src/index.js';
-import { decidePendingCandidates, recordStepResult, renewSupervisor, submitMemoryCandidate, type Claim } from '../src/runtime-authority.js';
+import { decidePendingCandidates, recordStepResult, recordToolIntent, renewSupervisor, submitMemoryCandidate, type Claim } from '../src/runtime-authority.js';
 import { storeContext } from '../src/store.js';
 import { hire, seed, type Seed } from './c2-helpers.js';
 import { academyWorld, approvedSkill, assemble, certify, claimFor, complete, prepareCertification, propose, shadowCases, workItem } from './c3-helpers.js';
@@ -328,6 +329,106 @@ describe('C3 review fixes: Academy and Skills', () => {
       const begun = claimFor(h, started.workItemId).begun;
       assert.ok(!begun.ok && begun.code === 'EMPLOYEE_NOT_ELIGIBLE');
       assert.equal(a.exposures(s.employee.id, w.scenarios.practice), 0, 'nothing was assembled, nothing exposed');
+    });
+  });
+});
+
+describe('C3 re-review fixes', () => {
+  test('a memory conflict resolved between the held assembly and the park is re-checked at the WAIT settle (no lost wake)', () => {
+    withSeed((h, s) => {
+      const c = run(h, s);
+      propose(h, c, 1, { content: 'Egypt launch: before Ramadan.', claimKey: 'egypt.launch.timing', claimValue: 'before-ramadan' });
+      const b = propose(h, c, 2, { content: 'Egypt launch: after Ramadan.', claimKey: 'egypt.launch.timing', claimValue: 'after-ramadan' });
+      complete(h, c);
+      const held = run(h, s, {}, { requirements: [], importance: 'IMPORTANT', topics: ['egypt.launch'] });
+      assert.equal(assemble(h, held, 0).outcome, 'CONFLICT_HOLD');
+      // Resolved while the run is still running: the targeted wake finds nothing parked yet.
+      MemoryStore.for(h.store).correctMemory(s.founder, b.decided?.resultMemoryId as string, { disposition: 'INCORRECT', reasonCode: 'founder.says.before' });
+      complete(h, held, { type: 'WAIT', reasonCode: 'MEMORY_CONFLICT_REVIEW' });
+      assert.equal(jobState(h, held.workItem.id), 'QUEUED', 'the settle re-checked the hold and woke the work');
+      // A hold that still holds parks normally.
+      const c2 = run(h, s);
+      propose(h, c2, 1, { content: 'Egypt pricing: premium tier first.', claimKey: 'egypt.pricing.tier', claimValue: 'premium' });
+      propose(h, c2, 2, { content: 'Egypt pricing: basic tier first.', claimKey: 'egypt.pricing.tier', claimValue: 'basic' });
+      complete(h, c2);
+      const still = run(h, s, {}, { requirements: [], importance: 'IMPORTANT', topics: ['egypt.pricing'] });
+      assert.equal(assemble(h, still, 0).outcome, 'CONFLICT_HOLD');
+      complete(h, still, { type: 'WAIT', reasonCode: 'MEMORY_CONFLICT_REVIEW' });
+      assert.equal(jobState(h, still.workItem.id), 'WAITING');
+    });
+  });
+
+  test('a gap cancelled while its run is still in flight wakes the work at the WAIT settle, to end it', () => {
+    withSeed((h, s) => {
+      const { skill } = approvedSkill(h, s, 'payments.research');
+      const wi = workItem(h, s, s.employee, {}, { requirements: [{ kind: 'SKILL', skillId: skill.id, minProficiency: 'LEARNING' }] });
+      const { claim, begun } = claimFor(h, wi);
+      assert.ok(!begun.ok && begun.code === 'CAPABILITY_GAP');
+      const cap = CapabilityStore.for(h.store);
+      cap.cancelGap(s.founder, cap.gapFor(wi)?.id as string, 'requirement.withdrawn');
+      complete(h, claim, { type: 'WAIT', reasonCode: 'CAPABILITY_GAP' });
+      assert.equal(jobState(h, wi), 'QUEUED');
+      const next = claimFor(h, wi, 'w-after').begun;
+      assert.ok(!next.ok && next.code === 'CAPABILITY_GAP_CANCELLED');
+    });
+  });
+
+  test('dead memories never crowd a live, relevant one out of the bounded pool (filtered before the limit)', () => {
+    withSeed((h, s) => {
+      const words = ['kiwi', 'mango', 'papaya', 'guava', 'lychee', 'durian', 'quince', 'medlar', 'loquat', 'sapote', 'feijoa', 'jujube', 'rambutan', 'longan', 'salak', 'tamarind', 'soursop', 'cherimoya', 'pawpaw', 'yuzu'];
+      let step = 1;
+      for (let b = 0; b < 16; b++) {
+        const c = run(h, s);
+        for (let i = 0; i < 20; i++) propose(h, c, step++, { memoryClass: 'CURRENT_WORK', topic: `ops.batch${b}`, content: `Cairo logistics warehouse note ${words[i]} ${words[(i + b) % 20]}${b} code${b}x${i}.` });
+        complete(h, c);
+      }
+      days(h, 31); // every CURRENT_WORK memory is past its review horizon
+      const c = run(h, s);
+      const fresh = propose(h, c, 1, { memoryClass: 'PROFESSIONAL', topic: 'ops.fresh', content: 'Cairo warehouse opens at dawn now.' });
+      complete(h, c);
+      assert.equal(fresh.decided?.state, 'ACCEPTED');
+      const m = MemoryStore.for(h.store);
+      assemble(h, run(h, s, { instructions: 'Cairo logistics warehouse memo.' }), 0); // marks the decayed ones STALE durably
+      for (let k = 0; k < 2; k++) {
+        const a = assemble(h, run(h, s, { instructions: 'Cairo logistics warehouse memo.' }), 0);
+        assert.ok(m.manifestEntries(a.manifestId).some((e) => e.itemId === fresh.decided?.resultMemoryId), 'the fresh memory is a candidate');
+      }
+    });
+  });
+
+  test('compaction never carries one market\'s memories into another market\'s work', () => {
+    withSeed((h, s) => {
+      const eg = run(h, s, {}, { requirements: [], marketRef: 'market:eg', topics: ['egypt.payments'] });
+      const places = ['Cairo', 'Alexandria', 'Giza', 'Luxor', 'Aswan', 'Mansoura'];
+      const ids = places.map((p, i) => propose(h, eg, i + 1, { content: `Egypt payments: merchants in ${p} report wallet adoption rising.` }).decided?.resultMemoryId as string);
+      complete(h, eg);
+      const neutral = run(h, s);
+      propose(h, neutral, 1, { content: 'Egypt payments: wallets and merchants general note about fees.' });
+      complete(h, neutral);
+      const m = MemoryStore.for(h.store);
+      const sa = assemble(h, run(h, s, { instructions: 'Payments memo about wallets and merchants.' }, { requirements: [], marketRef: 'market:sa' }), 0);
+      const entries = m.manifestEntries(sa.manifestId);
+      for (const id of ids) assert.equal(entries.find((e) => e.itemId === id)?.reasonCode, 'MARKET_MISMATCH');
+      for (const sum of m.summaries(s.employee.id)) assert.ok(!sum.sourceIds.some((x) => ids.includes(x)), 'no summary is built from market-bound memories');
+    });
+  });
+
+  test('a refused action is scored even when the attempt\'s work fails: failing never hides a breach or buys a free retry', () => {
+    withSeed((h, s) => {
+      const w = academyWorld(h, s);
+      const a = AcademyStore.for(h.store);
+      const e = a.enroll(s.founder, s.employee.id, w.programVersionId);
+      for (let i = 0; i < 6; i++) a.recordModuleCompletion(s.founder, e.id, `module-${i}`, `evidence:m${i}`);
+      a.advance(e.id);
+      const started = a.startAttempt(e.id, { scenarioId: w.scenarios.practice, kind: 'SIMULATION', taskClass: 'draft.memo' });
+      h.store.transitionWorkItem(started.workItemId, { to: 'READY', reasonCode: 'release' });
+      const { claim } = claimFor(h, started.workItemId);
+      assert.equal(recordToolIntent(h.store, claim.fence, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'x' }, idempotencyKey: `wi:${claim.workItem.id}:s1` }).kind, 'DENIED');
+      complete(h, claim, { type: 'PERMANENT_FAILURE', code: 'MAX_TURNS' });
+      const scored = a.evaluateDeterministic(started.attempt.id);
+      assert.equal(scored.state, 'EVALUATED', 'scored, not voided');
+      assert.equal(scored.outcome, 'FAIL');
+      assert.deepEqual(scored.criticalFailures, ['AUTHORITY_COMPLIANCE']);
     });
   });
 });

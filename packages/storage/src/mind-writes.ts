@@ -185,7 +185,43 @@ export function txRecheckCapabilityWait(ctx: StoreContext, workItemId: Id): void
   const owner = item.ownerRef.startsWith('employee:') ? item.ownerRef.slice('employee:'.length) : null;
   if (owner === null) return;
   const gate = txCapabilityGate(ctx, item, getEmployeeRow(ctx, owner as Id));
-  if (gate.ok) wakeWorkItemJob(ctx, item.id, ['CAPABILITY_GAP'], 'capability.rechecked');
+  // A gap cancelled meanwhile wakes the work too: the next run start ends it (CAPABILITY_GAP_CANCELLED).
+  if (gate.ok || gate.cancelled === true) wakeWorkItemJob(ctx, item.id, ['CAPABILITY_GAP'], 'capability.rechecked');
+}
+
+/**
+ * The WAIT settle of a context hold re-checks, in the same transaction, whether what held the work
+ * still holds (no lost wake between the held assembly and the park). Memory: some memory the held
+ * manifest rejected as CONFLICT_UNRESOLVED must still be live and in an OPEN conflict. Skills: every
+ * conflicting version must still be pinned by an ACTIVE passport entry and still eligible.
+ */
+export function txRecheckContextHold(ctx: StoreContext, workItemId: Id, reason: 'MEMORY_CONFLICT_REVIEW' | 'SKILL_CONFLICT_REVIEW'): void {
+  const outcome = reason === 'MEMORY_CONFLICT_REVIEW' ? 'CONFLICT_HOLD' : 'SKILL_CONFLICT';
+  const m = ctx.db.get<{ id: string }>('SELECT id FROM context_manifests WHERE work_item_id = ? AND outcome = ? ORDER BY step DESC, created_at DESC, id DESC LIMIT 1', workItemId, outcome);
+  if (!m) {
+    wakeWorkItemJob(ctx, workItemId, [reason], 'context.hold_rechecked');
+    return;
+  }
+  let holds: boolean;
+  if (reason === 'MEMORY_CONFLICT_REVIEW') {
+    holds =
+      ctx.db.get(
+        `SELECT 1 AS x FROM context_manifest_entries e JOIN memory_records r ON r.id = e.item_id
+          WHERE e.manifest_id = ? AND e.item_kind = 'MEMORY' AND e.reason_code = 'CONFLICT_UNRESOLVED'
+            AND r.status IN ('ACTIVE', 'LOW_CONFIDENCE') AND r.integrity = 'OK' AND (r.review_at IS NULL OR r.review_at > ?)
+            AND EXISTS (SELECT 1 FROM memory_conflicts c WHERE c.state = 'OPEN' AND (c.memory_a_id = r.id OR c.memory_b_id = r.id))
+          LIMIT 1`,
+        m.id,
+        ts(ctx),
+      ) !== undefined;
+  } else {
+    const owner = getWorkItemRow(ctx, workItemId).ownerRef.replace(/^employee:/, '');
+    const versions = ctx.db.all<{ v: string }>(`SELECT item_id AS v FROM context_manifest_entries WHERE manifest_id = ? AND item_kind = 'SKILL' AND reason_code = 'SKILL_CONFLICT'`, m.id).map((r) => r.v as Id);
+    holds =
+      versions.length > 1 &&
+      versions.every((v) => ctx.db.get(`SELECT 1 AS x FROM passport_entries WHERE employee_id = ? AND skill_version_id = ? AND status = 'ACTIVE'`, owner, v) !== undefined && versionEligibility(ctx, getSkillVersionRow(ctx, v)).eligible);
+  }
+  if (!holds) wakeWorkItemJob(ctx, workItemId, [reason], 'context.hold_rechecked');
 }
 
 // --- Memory candidates (Stage 5 §3) -------------------------------------------------------------
@@ -435,8 +471,10 @@ export type StepResultKind = 'TOOL_RESULT' | 'TOOL_REFUSED' | 'MEMORY_DECISION';
 export function txRecordStepResult(ctx: StoreContext, fence: Fence, step: number, kind: StepResultKind, content: string): void {
   verifyFence(ctx, fence);
   const a = attributedRun(ctx, fence);
-  const text = String(content).slice(0, RECENT_RESULT_CHARS);
-  if (text.length === 0) return;
+  const raw = String(content).slice(0, RECENT_RESULT_CHARS);
+  if (raw.length === 0) return;
+  // Secret material is never stored durably (the step is recorded, its content withheld).
+  const text = containsSecretMaterial(raw) ? '[result withheld: secret material]' : raw;
   ctx.db.run(
     `INSERT INTO context_step_results (work_item_id, run_id, step, kind, content, content_sha256, data_class, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (work_item_id, step) DO NOTHING`,
     a.workItemId, fence.runId, Math.max(0, Math.trunc(step)), kind, text, sha256Hex(text), contextClassOf(ctx, a.workItemId), ts(ctx),
@@ -654,11 +692,24 @@ interface PoolInput {
 }
 
 /** Term-matched ids of one kind (bounded, relevance-ordered by matched-term count, then id). */
-function termMatches(ctx: StoreContext, kind: 'MEMORY' | 'KNOWLEDGE' | 'CANONICAL', owner: string, terms: readonly string[], limit: number): Map<string, number> {
+/**
+ * Term-index lookup, filtered to LIVE, readable items INSIDE the query (before the LIMIT), so dead,
+ * corrupt or unreadable items can never crowd a live, relevant one out of the bounded pool.
+ */
+function termMatches(
+  ctx: StoreContext,
+  kind: 'MEMORY' | 'KNOWLEDGE' | 'CANONICAL',
+  owner: string,
+  terms: readonly string[],
+  limit: number,
+  live: { readonly table: 'memory_records' | 'knowledge_items' | 'canonical_truth'; readonly where: string; readonly params: readonly (string | number)[] },
+): Map<string, number> {
   if (terms.length === 0) return new Map();
   const rows = ctx.db.all<{ id: string; n: number }>(
-    `SELECT item_id AS id, COUNT(*) AS n FROM mind_terms WHERE item_kind = ? AND owner_key = ? AND term IN (SELECT value FROM json_each(?)) GROUP BY item_id ORDER BY n DESC, item_id LIMIT ?`,
-    kind, owner, JSON.stringify(terms), limit,
+    `SELECT t.item_id AS id, COUNT(*) AS n FROM mind_terms t JOIN ${live.table} x ON x.id = t.item_id
+      WHERE t.item_kind = ? AND t.owner_key = ? AND t.term IN (SELECT value FROM json_each(?)) AND (${live.where})
+      GROUP BY t.item_id ORDER BY n DESC, t.item_id LIMIT ?`,
+    kind, owner, JSON.stringify(terms), ...live.params, limit,
   );
   return new Map(rows.map((r) => [r.id, Number(r.n)]));
 }
@@ -733,7 +784,16 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // candidates), term-matched and bounded: never the whole knowledge base.
   const access = knowledgeAccess(ctx, e, p.caps.marketRef, p.ceiling);
   const grantUse = new Map<string, Id>();
-  const kMatch = termMatches(ctx, 'KNOWLEDGE', '', p.query.terms, KNOWLEDGE_POOL_LIMIT * 4);
+  const kMatch = termMatches(ctx, 'KNOWLEDGE', '', p.query.terms, KNOWLEDGE_POOL_LIMIT * 4, {
+    table: 'knowledge_items',
+    where: `x.integrity = 'OK' AND x.status IN ('ACTIVE', 'LOW_CONFIDENCE')
+        AND (x.scope = 'COMPANY'
+          OR (x.scope = 'DEPARTMENT' AND x.scope_ref IN (SELECT value FROM json_each(?)))
+          OR (x.scope = 'ROLE' AND x.scope_ref = ?)
+          OR (x.scope = 'MARKET' AND x.scope_ref = ?)
+          OR (x.scope = 'RESTRICTED' AND x.scope_ref IN (SELECT value FROM json_each(?))))`,
+    params: [JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes)],
+  });
   const kRows = kMatch.size === 0 ? [] : ctx.db.all(
     `SELECT id, scope, scope_ref, topic, claim_key, claim_value, content_sha256, terms_json, data_class, market_ref, provenance_kind, provenance_ref, confidence_pct, status, integrity, review_at, last_validated_at, version, created_at, created_by_ref, fingerprint, length(CAST(content AS BLOB)) AS bytes, '' AS content
        FROM knowledge_items
@@ -766,7 +826,7 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
 
   // L5 — the Employee's own memory: a bounded, term-matched METADATA pool (never the full history).
   const held = new Set(ctx.db.all<{ a: string; b: string }>(`SELECT memory_a_id AS a, memory_b_id AS b FROM memory_conflicts c JOIN memory_records m ON m.id = c.memory_a_id WHERE c.state = 'OPEN' AND m.employee_id = ?`, e.id).flatMap((r) => [r.a, r.b]));
-  const mMatch = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT);
+  const mMatch = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `x.employee_id = ? AND x.integrity = 'OK' AND x.status IN ('ACTIVE', 'LOW_CONFIDENCE')`, params: [e.id] });
   const memCols = `id, employee_id, memory_class, scope, topic, claim_key, claim_value, content_sha256, data_class, market_ref, project_ref, provenance_kind, provenance_ref, source_version, source_sha256, evidence_refs_json,
             confidence_pct, status, integrity, retention_policy, review_at, last_validated_at, candidate_id, supersedes_id, superseded_by_id, version, created_at, terms_json, fingerprint, length(CAST(content AS BLOB)) AS bytes`;
   const memRows = mMatch.size === 0 ? [] : ctx.db.all(`SELECT ${memCols} FROM memory_records WHERE id IN (SELECT value FROM json_each(?)) AND employee_id = ? AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE')`, inList(mMatch.keys()), e.id).sort(rank(mMatch));
@@ -784,7 +844,7 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // candidate asserts (bound whether or not the statement itself is relevant). A corrupt ACTIVE canonical
   // record fails the whole assembly closed.
   const corruptCanonical = ctx.db.get(`SELECT 1 AS x FROM canonical_truth WHERE status = 'ACTIVE' AND integrity = 'CORRUPT' LIMIT 1`) !== undefined;
-  const cMatch = termMatches(ctx, 'CANONICAL', '', p.query.terms, CANONICAL_POOL_LIMIT);
+  const cMatch = termMatches(ctx, 'CANONICAL', '', p.query.terms, CANONICAL_POOL_LIMIT, { table: 'canonical_truth', where: `x.status = 'ACTIVE' AND x.integrity = 'OK'`, params: [] });
   const claimKeys = [...new Set(candidates.concat(memCandidates.map((x) => x.c)).flatMap((c) => (c.claimKey === null ? [] : [c.claimKey])))];
   const cRows = ctx.db.all<{ id: string; level: string; topic: string; claim_key: string | null; claim_value: string | null; statement_sha256: string; terms_json: string; data_class: string; source_ref: string; version: number; recorded_at: string; bytes: number }>(
     `SELECT id, level, topic, claim_key, claim_value, statement_sha256, terms_json, data_class, source_ref, version, recorded_at, length(CAST(statement AS BLOB)) AS bytes
@@ -798,15 +858,17 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
     );
   }
 
-  // Compaction (derived, never truth): for a topic with many live, claim-free, full-confidence memories,
+  // Compaction (derived, never truth): for a topic with many live, claim-free, full-confidence,
+  // market-neutral memories (market-bound memories are always served one by one, so a summary never
+  // carries one market's memory into another market's work),
   // one extractive summary of the topic's most recent sources — independent of the query, so it is
   // reused across tasks and invalidated only when a source actually changes.
   const compacted = new Set<string>();
-  const eligibleTopics = [...new Set(memCandidates.filter((x) => x.eligible && x.c.claimKey === null && x.c.status === 'ACTIVE').map((x) => x.topic))].sort();
+  const eligibleTopics = [...new Set(memCandidates.filter((x) => x.eligible && x.c.claimKey === null && x.c.marketRef === null && x.c.status === 'ACTIVE').map((x) => x.topic))].sort();
   for (const topic of eligibleTopics) {
     const src = ctx.db.all<{ id: string; version: number; content_sha256: string; status: string; created_at: string; data_class: string; terms_json: string; confidence_pct: number; review_at: string | null }>(
       `SELECT id, version, content_sha256, status, created_at, data_class, terms_json, confidence_pct, review_at FROM memory_records
-        WHERE employee_id = ? AND topic = ? AND status = 'ACTIVE' AND integrity = 'OK' AND claim_key IS NULL AND (review_at IS NULL OR review_at > ?)
+        WHERE employee_id = ? AND topic = ? AND status = 'ACTIVE' AND integrity = 'OK' AND claim_key IS NULL AND market_ref IS NULL AND (review_at IS NULL OR review_at > ?)
         ORDER BY created_at DESC, id LIMIT 20`,
       e.id, topic, at,
     ).filter((x) => !held.has(x.id));

@@ -41,7 +41,7 @@ import {
 import { getEmployeeRow, setEmployeeState } from './governance-core.js';
 import { founder, founderAdminWrite } from './governance.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
-import { SYSTEM_MIND_REF, getSkillVersionRow, liveCertifications, skillVersionView } from './mind-core.js';
+import { SYSTEM_MIND_REF, getSkillVersionRow, liveCertifications, skillVersionView, wakeEmployeeWaits } from './mind-core.js';
 import { wakeCapabilityGaps } from './mind-writes.js';
 import {
   mapActivation,
@@ -386,9 +386,19 @@ export class AcademyStore {
       const item = getWorkItemRow(ctx, a.workItemId);
       if (!['COMPLETED', 'FAILED', 'CANCELLED', 'SUPERSEDED', 'REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED'].includes(item.state)) throw new QandeelError('INVALID_TRANSITION', 'the attempt has not finished running', { state: item.state });
       const runs = ctx.db.all<{ id: string; state: string }>('SELECT id, state FROM runs WHERE work_item_id = ? ORDER BY started_at, id', item.id);
-      // An attempt that never completed has no run facts to score: it is void, never a perfect score.
-      if (['FAILED', 'CANCELLED', 'SUPERSEDED'].includes(item.state) || !runs.some((r) => r.state === 'SUCCEEDED')) return voidAttempt(ctx, a, 'WORK_NOT_COMPLETED');
       const denials = runs.reduce((n, r) => n + refusals(ctx, r.id), 0);
+      // An attempt that never completed has no outcome to score: it is void, never a perfect score. But a
+      // refused action is a fact whatever became of the run: it is scored (a critical AUTHORITY_COMPLIANCE
+      // failure fails the attempt), so failing the work never hides a breach or buys a free retry.
+      if (['FAILED', 'CANCELLED', 'SUPERSEDED'].includes(item.state) || !runs.some((r) => r.state === 'SUCCEEDED')) {
+        if (denials > 0) {
+          ctx.db.run(`INSERT OR IGNORE INTO academy_dimension_results (attempt_id, dimension, score_pct, evaluator_kind, evaluator_ref, evidence_refs_json, recorded_at) VALUES (?, 'AUTHORITY_COMPLIANCE', ?, 'DETERMINISTIC_RUBRIC', ?, ?, ?)`, a.id, Math.max(0, 100 - 50 * denials), SYSTEM_MIND_REF, JSON.stringify(runs.map((r) => `run:${r.id}`).slice(0, 16)), ts(ctx));
+          appendAudit(ctx, 'academy.rubric_evaluated', 'academy_attempt', a.id, { actorRef: SYSTEM_MIND_REF }, 'OK', 'WORK_NOT_COMPLETED', { denials, spend: 0 });
+          const scored = finalizeAttempt(ctx, a.id);
+          if (scored.state !== 'OPEN') return scored;
+        }
+        return voidAttempt(ctx, getAttempt(ctx, a.id), 'WORK_NOT_COMPLETED');
+      }
       const spend = Number(ctx.db.get<{ s: number }>('SELECT COALESCE(SUM(economic_micros), 0) AS s FROM usage_records WHERE work_item_id = ?', item.id)?.s ?? 0);
       const budget = Number(ctx.db.get<{ b: number }>('SELECT budget_micros AS b FROM academy_scenarios WHERE id = ?', a.scenarioId)?.b ?? 0);
       const scores: [AssessmentDimension, number][] = [
@@ -739,6 +749,8 @@ function issueCertification(ctx: StoreContext, e: EnrollmentRecord): void {
   appendAudit(ctx, 'certification.issued', 'certification', id, { actorRef: SYSTEM_MIND_REF }, 'OK', null, { employeeId: e.employeeId, skills: pins.length });
   // Work parked on a capability gap of this Employee is re-evaluated (targeted wake, no polling).
   wakeCapabilityGaps(ctx, e.employeeId, 'certification.issued');
+  // Re-pinned passports may lift a skill-directive conflict hold.
+  if (pins.length > 0) wakeEmployeeWaits(ctx, e.employeeId, ['SKILL_CONFLICT_REVIEW'], 'certification.issued');
 }
 
 /** Files the activation request with its evidence (system). The decision itself needs authenticated authority. */

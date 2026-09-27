@@ -553,9 +553,9 @@ function wakeSkillHolders(ctx: StoreContext, versionIds: readonly string[], reas
   }
 }
 
-/** A newly approved skill can close anyone's gap: every open gap's work is re-evaluated (bounded). */
+/** A newly approved skill can close anyone's gap: every open gap's work is re-evaluated (all of them, deterministically). */
 function wakeAllCapabilityGaps(ctx: StoreContext, reason: string): void {
-  for (const g of ctx.db.all<{ e: string }>(`SELECT DISTINCT employee_id AS e FROM capability_gaps WHERE state = 'OPEN' LIMIT 1000`)) wakeCapabilityGaps(ctx, g.e as Id, reason);
+  for (const g of ctx.db.all<{ e: string }>(`SELECT DISTINCT employee_id AS e FROM capability_gaps WHERE state = 'OPEN' ORDER BY employee_id`)) wakeCapabilityGaps(ctx, g.e as Id, reason);
 }
 
 function notFound(what: string, id: string): never {

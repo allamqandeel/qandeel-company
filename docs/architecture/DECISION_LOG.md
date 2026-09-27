@@ -1214,7 +1214,7 @@ action is allowed (`ACADEMY_CONSTRAINED`).
 `mind-telemetry-content-free`, `activation-gate-present`, `c3-proofs-present`,
 `c3-not-claimed-closed`; `c1-migrations-frozen` becomes `released-migrations-frozen` (0001–0004);
 `no-later-scope-leakage` now forbids C4–C7 schema / packages only; `mind` joins `ALLOWED_PACKAGES`.
-`scripts/c3-mutation-check.mjs` removes 26 C3 gates from the compiled output and requires the proofs
+`scripts/c3-mutation-check.mjs` removes 30 C3 gates from the compiled output and requires the proofs
 to fail; it runs in `npm run ci`. `scripts/c3-acceptance.mjs` runs in CI on Windows and Ubuntu. The C1
 mutation check now expects eight supervisor-verification guards (the C3 candidate recovery adds three:
 list, decide, refuse — each its own supervisor-fenced transaction);
@@ -1274,6 +1274,36 @@ mutation.
   role certification VALID; PARTIAL / FULL mark it REVIEW_DUE.
 - **Schema.** 0005 / 0006 were edited before release (never applied outside this branch) and re-pinned;
   0001–0004 are untouched.
+
+**Re-review.** An adversarial re-review of the fix commit confirmed the dispositions above and found
+three partial fixes and two regressions, reported as four MAJOR findings. All four were fixed in this
+task, each with a regression proof (`C3 re-review fixes` in `c3-review-fixes.test.ts`) and a C3
+mutation:
+- **N3 — lost wakes at the park.** The WAIT settle of `MEMORY_CONFLICT_REVIEW` /
+  `SKILL_CONFLICT_REVIEW` re-checks the held manifest in the same transaction
+  (`txRecheckContextHold`). It wakes the work when no held memory is still live and in an OPEN
+  conflict, or when a conflicting Skill version is no longer pinned and eligible. The capability
+  re-check also wakes a gap cancelled while its run was in flight. A held memory leaving live state
+  wakes the Employee's conflict waits. Issuing a certification wakes skill-conflict waits.
+  Mutation: `context-hold-not-rechecked`.
+- **N4 — term-index crowd-out.** The term index joins the item table and filters inside the query,
+  before the LIMIT: live status and integrity for memory and canonical truth, and readable scope for
+  knowledge. Dead or unreadable items can no longer push a live one out of the bounded pool.
+  Mutation: `term-limit-before-filter`.
+- **N1 — compaction across markets.** Only market-neutral memories are compacted; market-bound ones
+  are always served one by one, subject to the market filter. Mutation: `compaction-crosses-markets`.
+- **N2 — breaches hidden by failing.** A refused action is scored (`AUTHORITY_COMPLIANCE`) even when
+  the attempt's work failed or never completed, so the critical failure fails the attempt. Only an
+  attempt with no refusal and no completed work is VOID. Mutation: `failed-attempt-hides-breach`.
+- **Minor fixes:**
+  - A pending shared promotion of a lesson that contradicts new Canonical Truth is rejected
+    (`CONTRADICTS_CANONICAL`).
+  - Durable step results never store secret material.
+  - Re-evaluating every open gap is deterministic and unbounded (no `LIMIT 1000`).
+- **Minor items left to Product:**
+  - After EXTEND, the next review may use the same epoch's cases. A new Founder decision is still
+    required, but the number of additional cases is a Product value.
+  - During RETRY, a practice (SIMULATION) attempt may still be started.
 
 ## D-C3-17 — Questions for the Product Owner (not decided by C3)
 

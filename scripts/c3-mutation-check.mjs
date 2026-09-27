@@ -92,6 +92,7 @@ const MUTATIONS = [
     gate: 'Founder-only / restricted knowledge needs exact authority (SQL filter and code re-check)',
     edits: [
       { file: `${STORE}/mind-writes.js`, search: "          OR (scope = 'RESTRICTED' AND scope_ref IN (SELECT value FROM json_each(?))))", replace: "          OR (scope IN ('RESTRICTED', 'FOUNDER_ONLY') AND ? IS NOT NULL))" },
+      { file: `${STORE}/mind-writes.js`, search: "          OR (x.scope = 'RESTRICTED' AND x.scope_ref IN (SELECT value FROM json_each(?))))", replace: "          OR (x.scope IN ('RESTRICTED', 'FOUNDER_ONLY') AND ? IS NOT NULL))" },
       { file: `${STORE}/mind-writes.js`, search: '        if (!knowledgeReadable(k, access))\n            continue; // defence in depth: re-checked in code\n', replace: '        /* mutation: knowledge re-check removed */\n' },
     ],
     runs: [STORAGE],
@@ -100,7 +101,8 @@ const MUTATIONS = [
     id: 'memory-other-employee-visible',
     gate: 'an Employee\'s memory pool is its own (term index owner and row owner)',
     edits: [
-      { file: `${STORE}/mind-writes.js`, search: 'WHERE item_kind = ? AND owner_key = ? AND term IN', replace: 'WHERE item_kind = ? AND (owner_key = ? OR 1) AND term IN' },
+      { file: `${STORE}/mind-writes.js`, search: 'WHERE t.item_kind = ? AND t.owner_key = ? AND t.term IN', replace: 'WHERE t.item_kind = ? AND (t.owner_key = ? OR 1) AND t.term IN' },
+      { file: `${STORE}/mind-writes.js`, search: "x.employee_id = ? AND x.integrity", replace: "(x.employee_id = ? OR 1) AND x.integrity" },
       { file: `${STORE}/mind-writes.js`, search: "AND employee_id = ? AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE')`", replace: "AND (employee_id = ? OR 1) AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE')`" },
     ],
     runs: [STORAGE],
@@ -144,7 +146,11 @@ const MUTATIONS = [
   {
     id: 'conflict-resolution-no-wake',
     gate: 'resolving a memory conflict wakes the work held for it',
-    edits: [{ file: `${STORE}/memory.js`, search: "        wakeEmployeeWaits(ctx, owner, ['MEMORY_CONFLICT_REVIEW'], 'memory.conflict_resolved');", replace: '        void owner; /* mutation: conflict wake removed */' }],
+    edits: [
+      { file: `${STORE}/memory.js`, search: "        wakeEmployeeWaits(ctx, owner, ['MEMORY_CONFLICT_REVIEW'], 'memory.conflict_resolved');", replace: '        void owner; /* mutation: conflict wake removed */' },
+      // Defence in depth: a held memory leaving live state wakes too — remove both.
+      { file: `${STORE}/mind-core.js`, search: "wakeEmployeeWaits(ctx, m.employeeId, ['MEMORY_CONFLICT_REVIEW'], 'memory.conflict_member_retired');", replace: 'void 0; /* mutation: member wake removed */' },
+    ],
     runs: [STORAGE_FIXES],
   },
   {
@@ -194,6 +200,33 @@ const MUTATIONS = [
     gate: 'recovery decides memory candidates left by a crash',
     edits: [{ file: 'packages/runtime/dist/src/recovery.js', search: '        const n = decidePendingCandidates(store, supervisor, BATCH);', replace: '        const n = 0; /* mutation: candidate recovery removed */' }],
     runs: [CRASH],
+  },
+  {
+    id: 'context-hold-not-rechecked',
+    gate: 'a conflict resolved before the park is re-checked at the WAIT settle',
+    edits: [{ file: `${STORE}/runtime-authority.js`, search: 'txRecheckContextHold(ctx, wi, result.reasonCode);', replace: 'void 0; /* mutation: hold re-check removed */' }],
+    runs: [STORAGE_FIXES],
+  },
+  {
+    id: 'term-limit-before-filter',
+    gate: 'the term index filters to live items before its limit',
+    edits: [{ file: `${STORE}/mind-writes.js`, search: 'AND (${live.where})', replace: 'AND (${live.where} OR 1)' }],
+    runs: [STORAGE_FIXES],
+  },
+  {
+    id: 'compaction-crosses-markets',
+    gate: 'compaction never summarizes market-bound memories',
+    edits: [
+      { file: `${STORE}/mind-writes.js`, search: 'x.c.marketRef === null && x.c.status', replace: 'x.c.status' },
+      { file: `${STORE}/mind-writes.js`, search: 'AND market_ref IS NULL AND (review_at', replace: 'AND (review_at' },
+    ],
+    runs: [STORAGE_FIXES],
+  },
+  {
+    id: 'failed-attempt-hides-breach',
+    gate: 'a refused action is scored even when the attempt fails',
+    edits: [{ file: `${STORE}/academy.js`, search: 'if (denials > 0) {', replace: 'if (false) {' }],
+    runs: [STORAGE_FIXES],
   },
 ];
 

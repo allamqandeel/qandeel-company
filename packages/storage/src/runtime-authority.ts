@@ -72,6 +72,7 @@ import {
   txAssembleContext,
   txDecideMemoryCandidate,
   txRecheckCapabilityWait,
+  txRecheckContextHold,
   txRecordStepResult,
   txRefuseCandidate,
   txSubmitMemoryCandidate,
@@ -181,9 +182,11 @@ export function settle(store: CompanyStore, fence: Fence, result: ProcessorResul
   return fenced(store, 'settle', fence, (ctx) => {
     const out = txSettle(ctx, fence, result, options);
     // C3: a capability gap may have closed while the run was settling — re-check in the same transaction.
-    if (result.type === 'WAIT' && result.reasonCode === 'CAPABILITY_GAP') {
-      const wi = ctx.db.get<{ w: string }>('SELECT work_item_id AS w FROM queue_jobs WHERE id = ?', fence.jobId)?.w;
-      if (wi) txRecheckCapabilityWait(ctx, wi as Id);
+    // Likewise a memory / skill conflict resolved between the held assembly and this park.
+    if (result.type === 'WAIT' && ['CAPABILITY_GAP', 'MEMORY_CONFLICT_REVIEW', 'SKILL_CONFLICT_REVIEW'].includes(result.reasonCode)) {
+      const wi = ctx.db.get<{ w: string }>('SELECT work_item_id AS w FROM queue_jobs WHERE id = ?', fence.jobId)?.w as Id | undefined;
+      if (wi && result.reasonCode === 'CAPABILITY_GAP') txRecheckCapabilityWait(ctx, wi);
+      else if (wi) txRecheckContextHold(ctx, wi, result.reasonCode as 'MEMORY_CONFLICT_REVIEW' | 'SKILL_CONFLICT_REVIEW');
     }
     return out;
   });

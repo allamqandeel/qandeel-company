@@ -139,6 +139,12 @@ function applyCanonicalClaim(ctx: StoreContext, canonicalId: Id, claimKey: strin
     ctx.db.run(`UPDATE lessons SET stage = 'REJECTED', decided_by_ref = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, actorRef, at, l.id, l.version);
     lessonHistory(ctx, l, 'REJECTED', 'CONTRADICTS_CANONICAL', actorRef);
   }
+  // A pending promotion of a validated lesson that contradicts the truth is decided now (REJECTED), never
+  // left waiting on a review that could only fail.
+  for (const r of ctx.db.all<{ id: string; lesson_id: string }>(`SELECT p.id, p.lesson_id FROM lesson_promotions p JOIN lessons l ON l.id = p.lesson_id WHERE p.state = 'PENDING_REVIEW' AND l.claim_key = ? AND l.claim_value <> ?`, claimKey, claimValue)) {
+    ctx.db.run(`UPDATE lesson_promotions SET state = 'REJECTED', decided_by_ref = ?, reason_code = 'CONTRADICTS_CANONICAL', decided_at = ? WHERE id = ? AND state = 'PENDING_REVIEW'`, actorRef, at, r.id);
+    appendAudit(ctx, 'learning.promotion_decided', 'lesson', r.lesson_id as Id, { actorRef }, 'OK', 'CONTRADICTS_CANONICAL', { promotionId: r.id, decision: 'REJECT' });
+  }
 }
 
 /** A resolved conflict wakes its Employee's work held for memory-conflict review (same transaction). */

@@ -65,6 +65,10 @@ export function setMemoryStatus(ctx: StoreContext, m: MemoryRecord, to: MemoryRe
   if (changed !== 1) throw new QandeelError('VERSION_CONFLICT', 'memory changed concurrently', { memoryId: m.id });
   memoryHistory(ctx, m.id, m.version + 1, m.status, to, reasonCode, actorRef);
   appendAudit(ctx, 'memory.status', 'memory', m.id, { actorRef }, 'OK', reasonCode, { from: m.status, to, employeeId: m.employeeId });
+  // A held memory that stops being live (stale, incorrect, superseded…) may lift a conflict hold: wake it.
+  if (to !== 'ACTIVE' && to !== 'LOW_CONFIDENCE' && ctx.db.get(`SELECT 1 AS x FROM memory_conflicts WHERE state = 'OPEN' AND (memory_a_id = ? OR memory_b_id = ?)`, m.id, m.id)) {
+    wakeEmployeeWaits(ctx, m.employeeId, ['MEMORY_CONFLICT_REVIEW'], 'memory.conflict_member_retired');
+  }
   return getMemoryRow(ctx, m.id);
 }
 
