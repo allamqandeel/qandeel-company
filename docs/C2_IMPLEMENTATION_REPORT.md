@@ -128,9 +128,27 @@ Proof markers (verifier `c2-proofs-present`): `C2-PROOF: governance-kernel`,
   from 4 to 5 because the governed recovery is also supervisor-fenced.
 - **Verifier:** 8 new rules (D-C2-11). The self-test proves every rule can fail.
 
-## 8. Results
+## 8. Results (code SHA `19de117`; Node 24.21.0 / SQLite 3.53.4, Linux Cloud)
 
-Filled in with the final validated head in §14 (test counts, mutation, verifier, CI, fresh clone).
+| Suite | Files | Tests | Result |
+|---|---|---|---|
+| bootstrap-contract (C0) | 1 | 5 | pass |
+| domain (C1) | 2 | 22 | pass |
+| governance (C2 kernel) | 1 | 24 | pass |
+| storage (C1 + C2, incl. multi-process) | 12 | 134 (C2: 22) | pass |
+| runtime (C1 + C2, incl. fault matrices) | 8 | 52 (C2: 17) | pass |
+| **Total** | 24 | **237** (C1 174 + C2 63) | **0 failed, 0 skipped** |
+
+- `npm run c1:mutation`: **6/6** caught. `npm run c2:mutation`: **15/15** caught.
+- `npm run verify`: self-test proves all 39 rules can fail; **40/40** rules pass (39 + workspace
+  resolution).
+- `npm run c1:acceptance`: **PASS** (6 steps). `npm run c2:acceptance`: **PASS** (7 steps).
+- `git diff --check`: clean.
+- **Fresh-clone proof:** a clean `git clone` of the pushed branch at `19de117`, then `npm ci` and
+  `npm run ci`, passed with the same counts.
+- **Exact-head CI (Windows + Ubuntu):** recorded on PR #3 for the final head. The earlier failed runs
+  (`35a248d`, `1ed5d4d`) failed only in the C1 mutation check's guard count; every test passed on
+  both OSes in them. Fixed in `19de117` (D-C2-12).
 
 ## 9. Security and privacy
 
@@ -177,7 +195,19 @@ On the Founder Windows host, at the exact final SHA:
 
 ## 12. Skills used
 
-Recorded in §14 with their concrete effect.
+- **Inspected and not used:**
+  - The repository has no project skills.
+  - `claude-api` was deliberately not used: C2 chooses no provider, and the task forbids choosing
+    one to finish.
+  - `session-start-hook`, `update-config`, the artifact / document skills and `init` were not
+    relevant.
+- **Used, as subagents:**
+  - Four focused, read-only review subagents (§14): authority / security, budget, model / tool
+    boundary, scope.
+  - Effect: 1 BLOCKER, 7 MAJOR and a set of MINOR findings, all in scope and fixed in `19de117`,
+    plus the Product Owner list in §13.
+- **`code-review` / `security-review`:** not invoked as skills. Their lenses were covered by the
+  dedicated reviewers above, run against the exact commit `4178d88`.
 
 ## 13. Interpretations to surface to the Product Owner
 
@@ -216,3 +246,34 @@ decision; the Product Owner may confirm or change each one.
   recommendation / risk, Stage 3 §3). Likely C5.
 - **Stuck R2 work.** R2 work parks as `AWAITING_INDEPENDENT_REVIEW` with no wake until C4.
 - **Engineering constants:** circuit 3 failures / 5 min; router-policy bounds.
+
+## 14. Internal review (read-only, exact commit `4178d88`) and dispositions
+
+| # | Lens | Finding | Severity | Disposition |
+|---|---|---|---|---|
+| 1 | Boundary | Processor-mutable run context: D4 → external provider; ceiling raise | **BLOCKER** | Fixed: frozen context + durable re-derivation per call / reservation; test + mutation |
+| 2 | Security | Tool results carry higher-class data into model context | MAJOR | Fixed: `result_data_class`, effective class; test + mutation |
+| 3 | Security + Scope | Invalid declared data class silently became D1 | MAJOR | Fixed: invalid → D4 / `INVALID_TASK_INPUT`; tests |
+| 4 | Budget | Interrupted tool intent's reservation released although the driver may have run | MAJOR | Fixed: charged (fixed per-call cost), UNSAFE held; test |
+| 5 | Budget | A retry superseded a live intent (fence takeover / lost result) | MAJOR | Fixed: `IN_FLIGHT`; dead intents classified like recovery |
+| 6 | Scope | `academy:` refs looked like certification | MAJOR | Fixed: reserved kinds refused; Founder-attestation refs; surfaced |
+| 7 | Scope | Ordinary model mistakes paused employees | MAJOR | Fixed: containment signals only; test |
+| 8 | Budget | Recovery batching could release an UNSAFE reservation | MINOR | Fixed: tool reservations only via invocations |
+| 9 | Budget | Parent cap could drop below child caps | MINOR | Fixed + invariant |
+| 10 | Budget | Overrun slack hid later overruns | MINOR | Fixed: per-settlement flag |
+| 11 | Budget | Invariants missed several corruptions | MINOR | Fixed: 5 more invariants |
+| 12 | Budget | Late usage after release lost | NIT | Fixed: discrepancy audit |
+| 13 | Security | Retries skipped re-authorization / egress re-check | MINOR | Fixed: re-authorize per attempt; reservation re-checks gates |
+| 14 | Security | Model-written names in audit (Rule A) | MINOR | Fixed: registered IDs only; test |
+| 15 | Security + Scope | `txDeploymentOutcome` without fence | MINOR | Fixed: run + token required; test |
+| 16 | Boundary | Idempotency step from processor unvalidated | MINOR | Fixed: validated. The loop uses the checkpointed step |
+| 17 | Boundary | Driver received mutable caller args | MINOR | Fixed: validated, frozen intent args |
+| 18 | Boundary | Context-overflow re-escalation from the wrong class | MINOR | Fixed: at most one escalation |
+| 19 | Boundary | Lexical confinement rules evadable | MINOR | Fixed: ESLint AST rule (dot / computed / destructuring). Verifier keeps the lexical tripwire |
+| 20 | Scope | External mutation allowed at R2 | MINOR | Fixed: R3 / R4 only (kernel + CHECK) |
+| 21 | Scope | Founder could not approve a request they filed | MINOR | Fixed: only the subject is excluded; surfaced |
+| 22 | Security / Scope | Founder identity is a bearer reference (CLI) | NIT | Deferred to C5 (documented, D-C2-04) |
+| 23 | Scope | Egress approvals permanent / unconditioned; qualification without a suite; cheapest-price routing; R2 parks forever; R3 explanation text | MINOR / NIT | Surfaced to the Product Owner (§13); not invented |
+
+No C3–C7 functionality was found, the C1 guarantees were verified intact, and no secrets or App
+references were found.
