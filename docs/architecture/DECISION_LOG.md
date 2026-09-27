@@ -1098,14 +1098,18 @@ FOUNDER_ONLY and filtered **in SQL at retrieval time** (and re-checked in code).
   other value (`CONTEXT_NOT_ASSEMBLED`) before authorization, routing or reservation.
 - Layers and precedence: L1 AUTHORITY (preamble, Canonical Truth) > L2 WORK (instructions, Academy
   scenario) > L3 SKILL (pinned, eligible, relevant) > L4 KNOWLEDGE > L5 MEMORY (own memory, compaction
-  summaries) > L6 RECENT (bounded loop results). Canonical claims bind over lower layers.
+  summaries) > L6 RECENT (the Work Item's durable step results, recorded by the runtime's own
+  services — never processor-supplied text; only the newest is required). Canonical claims bind over
+  every lower layer structurally, whether or not the canonical statement itself is relevant or loaded.
 - Hard budget (default 24 000 tokens; frame reserve 512; layer shares 20 / 25 / 20 / 15 / 12 / 8 %;
   12 items per layer; per-Work-Item `contextBudgetTokens` 1 024..64 000). Required items that do not
   fit give `CONTEXT_BUDGET_EXHAUSTED`, never silent truncation.
 - Retrieval is deterministic and lexical (Arabic-normalized terms, integer scoring over relevance,
-  scope, freshness, confidence and authority; stable id tie-breaks) over bounded, relevance-ordered
-  metadata pools (memory 300, knowledge 200, canonical 200) — never the full history. FTS5 and
-  embeddings are not used.
+  scope, freshness, confidence and authority; stable id tie-breaks). Pools are read through a term
+  index (`mind_terms`: item kind, owner, term, item) joined with the task's query terms, bounded
+  (memory 300, knowledge 200, canonical 200) and ordered by matched terms — never a scan of the full
+  history. Canonical records whose claims a candidate asserts are always added. FTS5 and embeddings
+  are not used.
 - The stable prefix (L1 + L3) is rendered first; its SHA-256 is recorded. The manifest records
   selected / rejected item IDs, versions, hashes, classes, provenance and reason codes — never
   content — and is written even for refused assemblies.
@@ -1131,9 +1135,11 @@ summarized. Summaries are never truth: they rank as memory, below knowledge and 
 BENCHMARKED → COMPARED → APPROVED` (or REJECTED with its reason kept).
 - Inspection and the license / dependency check are deterministic system steps; every other step is
   Founder authority with evidence references (SANDBOXED requires a security pass).
-- Licenses: MIT, Apache-2.0, BSD-2/3-Clause, ISC, 0BSD, CC0-1.0, CC-BY-4.0, Unlicense are clear-free;
-  copyleft / share-alike needs review; unknown or missing is rejected; QANDEEL-native skills are
-  QANDEEL-owned. A paid dependency makes the version `FREE_SKILL_PAID_DEPENDENCY`: approval waits for
+- Licences: MIT, Apache-2.0, BSD-2/3-Clause, ISC, 0BSD, CC0-1.0, Unlicense are clear-free;
+  licences with further obligations (CC-BY-4.0, copyleft, share-alike) wait at
+  LICENSE_DEPENDENCY_CHECKED for a recorded licence review (`reviewLicense`: CLEAR with permission
+  evidence → `CLEARED_BY_REVIEW`, or REJECT); unknown or missing is rejected; QANDEEL-native skills
+  are QANDEEL-owned. The licence policy is an engineering default for Product Owner / legal review. A paid dependency makes the version `FREE_SKILL_PAID_DEPENDENCY`: approval waits for
   an explicit Founder acknowledgement. No paid Skill pack or marketplace exists.
 - Production loads only a pinned version id through the one loader, and only when the version is
   eligible (approved, clear license, security-cleared, no findings, not on security hold / retired)
@@ -1208,9 +1214,10 @@ action is allowed (`ACADEMY_CONSTRAINED`).
 `mind-telemetry-content-free`, `activation-gate-present`, `c3-proofs-present`,
 `c3-not-claimed-closed`; `c1-migrations-frozen` becomes `released-migrations-frozen` (0001–0004);
 `no-later-scope-leakage` now forbids C4–C7 schema / packages only; `mind` joins `ALLOWED_PACKAGES`.
-`scripts/c3-mutation-check.mjs` removes 19 C3 gates from the compiled output and requires the proofs
+`scripts/c3-mutation-check.mjs` removes 26 C3 gates from the compiled output and requires the proofs
 to fail; it runs in `npm run ci`. `scripts/c3-acceptance.mjs` runs in CI on Windows and Ubuntu. The C1
-mutation check now expects six supervisor-verification guards (the C3 candidate recovery adds one);
+mutation check now expects eight supervisor-verification guards (the C3 candidate recovery adds three:
+list, decide, refuse — each its own supervisor-fenced transaction);
 the C2 mutation search strings follow the C3 edits of the same gates.
 
 ## D-C3-15 — Official-source check (2026-09-27)
@@ -1221,3 +1228,67 @@ partial and unique indexes, `json_valid` / `json_each`, deferrable foreign keys)
 reachable from the Cloud session (as in C1 / C2). FTS5 is compiled into the bundled SQLite 3.53.4 but
 is deliberately not used: lexical retrieval is portable, deterministic and needs no FTS index
 maintenance; a better retriever can replace it later without changing Memory identity or provenance.
+
+## D-C3-16 — Internal review round (five focused reviews) and fixes
+
+**Context.** Five read-only reviews ran on the candidate (memory / knowledge conformance, Academy /
+Skills conformance, context assembly, authority / fail-closed, storage / runtime invariants). They
+reported one BLOCKER and about twenty MAJOR findings. Every in-scope BLOCKER / MAJOR was fixed in
+this task, each with a regression proof (`packages/storage/test/c3-review-fixes.test.ts`,
+`C3-PROOF: review-fixes`, plus kernel and runtime proofs) and, for the most important gates, a C3
+mutation.
+
+**Decisions taken in the fixes.**
+- **Wake-ups (the BLOCKER).** Resolving a memory conflict (Founder correction, canonical truth) wakes
+  that Employee's work waiting `MEMORY_CONFLICT_REVIEW` in the same transaction; passport, freshness,
+  rollout and rollback changes wake `SKILL_CONFLICT_REVIEW` and capability-gap waits of the affected
+  Employees; approving a skill re-evaluates open gaps. The WAIT settle of a capability gap re-runs the
+  gate in its own transaction (closing the window between gap and park). A Founder-cancelled gap
+  wakes the work to end it (`CAPABILITY_GAP_CANCELLED`, audited, never re-routed).
+- **Recovery isolation.** Pending memory candidates are decided one per transaction; an undecidable
+  one is refused `POLICY_ERROR`; a candidate whose stored bytes no longer match their hash is refused
+  `INTEGRITY_FAILED`.
+- **Context.** L6 comes from `context_step_results` recorded by the runtime's Tool Executor / memory
+  path wrappers (never the processor); only the newest result is required. Pools use the term index;
+  canonical binding is structural; the conflict notice is planned and budgeted; a grant-based
+  knowledge scope counts one use per assembly and stops at its limit, restricted use is audited like
+  cross-department use; the preamble is labelled at the Work Item's declared class.
+- **Compaction.** Summary sources are the topic's most recent live, claim-free, full-confidence
+  memories (independent of the query), so a summary is reused across tasks and invalidated only when
+  a source changes; any status change or corruption of a source invalidates the summaries built from
+  it.
+- **Memory.** Memories and lessons keep the Work Item's market; exact re-observation of a STALE memory
+  re-validates it (the Founder can too); every memory / knowledge insert re-checks canonical truth,
+  and canonical truth rejects contradicting pending lessons.
+- **Data classes (fail-closed defaults for Product review).** D4 context is never retained as memory
+  or learning (`DATA_CLASS_NOT_RETAINED`); shared promotion of D3 / D4 lessons is refused
+  (`DATA_CLASS_NOT_SHAREABLE`).
+- **Academy.** Evidence windows: a probation FAIL diagnoses a remediation, opens a new evidence epoch
+  and returns through RETRY to new shadow work; EXTEND returns to SHADOW_WORK and opens a new review
+  round; an activation REJECT closes the enrollment (WITHDRAWN) so the Employee may enroll again;
+  `withdrawEnrollment` exists. Attempts that never completed are VOID (never scored). The rubric and
+  shadow evidence count every refusal (`authority.denied`, `tool.refused`, `tool.review_required`).
+  Assessment / holdout scenarios need a non-zero budget. Certification pins the passport's current
+  version or the newest pinnable version not held by an unfinished update. An unchanged blueprint does
+  not trigger recertification; a TARGETED skill update re-tests the skill (passport) but keeps the
+  role certification VALID; PARTIAL / FULL mark it REVIEW_DUE.
+- **Schema.** 0005 / 0006 were edited before release (never applied outside this branch) and re-pinned;
+  0001–0004 are untouched.
+
+## D-C3-17 — Questions for the Product Owner (not decided by C3)
+
+1. **Consequence of losing certification.** A REVOKED / EXPIRED / REVIEW_DUE certification blocks work
+   that declares a CERTIFICATION requirement, but an ACTIVE Employee otherwise keeps executing. Should
+   an ACTIVE Employee without a live role certification be moved to RETRAINING (or blocked)? The
+   authority does not say.
+2. **Approver identity.** Activation, evaluation and probation decisions are Founder-only in Strong v1
+   (the schema requires `founder:*` for the activation decision and forbids `employee:*` evaluators).
+   C4 (Review Pool / Directors) will need a migration to widen this; which roles may approve?
+3. **Licence policy.** The clear-free list and the review-required list (D-C3-08) need Product /
+   legal confirmation.
+4. **REVIEW_DUE semantics and recertification scope** per impact level (TARGETED / PARTIAL / FULL).
+5. **D3 / D4 retention and sharing** (fail-closed defaults above).
+6. **Numeric defaults**: confidence caps, review horizons, near-duplicate threshold, context budget and
+   layer shares, compaction threshold, probation defaults, certification validity.
+7. **Founder Calibration placement**: C3 requires it (when the program demands it) before
+   certification; Stage 6 §10 names it before Active Duty.
