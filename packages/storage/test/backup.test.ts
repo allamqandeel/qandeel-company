@@ -34,7 +34,7 @@ describe('online backup and isolated verification', () => {
       assert.equal(m.counts.workItems, 1);
       assert.equal(m.artifacts.count, 1);
       assert.match(m.snapshot.sha256, /^[0-9a-f]{64}$/);
-      assert.deepEqual(listBackups(h.store.workspace.backupsDir), [result.backupId]);
+      assert.deepEqual(listBackups(h.store), [result.backupId]);
       assert.equal(h.store.healthCounts().lastBackup?.id, result.backupId);
 
       const v = verifyBackup(result.directory, { liveDatabasePath: h.store.workspace.databasePath, artifactObjectsDir: h.store.workspace.objectsDir });

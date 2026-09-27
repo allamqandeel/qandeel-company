@@ -60,6 +60,10 @@
 - `fs.watch` is only a wake hint (D-C1-23). Any new transaction that makes work actionable must
   advance the durable wake generation in the same transaction (the `queue_jobs` triggers do this
   for queue changes). Never add a queue-polling loop to compensate.
+- A backup is canonical only once `backup_records` holds it (D-C1-24). Only the small final record
+  transaction is retried (bounded, delays outside any transaction); never raise the global busy
+  timeout to hide contention, never `INSERT OR REPLACE` a backup record, and discover backups
+  through the records, not the directory listing.
 
 ## Before your final response
 - Run `npm ci` and `npm run ci`; all must pass. Do not claim a check passed unless it ran.

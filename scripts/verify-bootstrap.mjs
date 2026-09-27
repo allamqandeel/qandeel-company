@@ -129,7 +129,7 @@ const STORAGE_SUBPATH_IMPORT = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequ
 const STORAGE_INTERNALS_IMPORT = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)['"][^'"]*\/storage\/(?:src|dist)\/[^'"]*['"]/;
 const AUTHORITY_METHODS = ['claimNext', 'claimJob', 'acquireSupervisor', 'renewSupervisor', 'releaseSupervisor', 'settle', 'checkpoint', 'renewLease', 'interruptClaim'];
 // D-C1-20..23: the remediation proofs CI must keep executing (found by marker, not by file name).
-const C1_PROOF_MARKERS = ['C1-PROOF: supervisor-claim-authority', 'C1-PROOF: lost-wake-reconciliation', 'C1-PROOF: product-decisions-d-c1-08-09'];
+const C1_PROOF_MARKERS = ['C1-PROOF: supervisor-claim-authority', 'C1-PROOF: lost-wake-reconciliation', 'C1-PROOF: product-decisions-d-c1-08-09', 'C1-PROOF: backup-finalization-contention'];
 const MUTATION_CHECK = 'scripts/c1-mutation-check.mjs';
 const pkgOf = (f) => f.split('/')[1];
 const isTestPath = (f) => /^packages\/[^/]+\/test\//.test(f);
@@ -625,6 +625,7 @@ function syntheticRepo(overrides = {}) {
     'packages/runtime/test/integration/lost-wake.test.ts': `// ${C1_PROOF_MARKERS[1]}\n`,
     'packages/storage/test/supervisor-authority.test.ts': `// ${C1_PROOF_MARKERS[0]}\n`,
     'packages/storage/test/product-decisions.test.ts': `// ${C1_PROOF_MARKERS[2]}\n`,
+    'packages/storage/test/backup-finalization.test.ts': `// ${C1_PROOF_MARKERS[3]}\n`,
     [MUTATION_CHECK]: '',
     // Legitimate code that mentions the words without opening a network path must stay clean.
     'packages/runtime/src/wake.ts': "// no fetch here; a 'net' income is not a socket\nexport const prefetched = 1;",
@@ -743,6 +744,7 @@ const VIOLATIONS = {
     { remove: ['packages/runtime/test/integration/lost-wake.test.ts'] },
     { contents: { 'packages/storage/test/supervisor-authority.test.ts': '// no marker\n' } },
     { remove: ['packages/storage/test/product-decisions.test.ts'] },
+    { contents: { 'packages/storage/test/backup-finalization.test.ts': '// marker removed\n' } },
     { remove: [MUTATION_CHECK] },
     { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test' } }) } },
   ],

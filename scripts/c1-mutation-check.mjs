@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// C1 mutation check (D-C1-22 / D-C1-23): proves the remediation proofs are not vacuous.
+// C1 mutation check (D-C1-22 / D-C1-23 / D-C1-24): proves the remediation proofs are not vacuous.
 //
 // Each mutation removes one guard from the COMPILED output (packages/*/dist), runs the proof tests
 // that must catch it, requires them to FAIL, and restores the original file (always, in `finally`).
@@ -47,6 +47,36 @@ const MUTATIONS = [
     expectedCount: 1,
     cwd: 'packages/runtime',
     tests: ['dist/test/integration/lost-wake.test.js'],
+  },
+  {
+    id: 'backup-finalization-without-retry',
+    finding: 'D-C1-24',
+    file: 'packages/storage/dist/src/backup.js',
+    search: 'if (attempt >= policy.maxAttempts) {',
+    replace: 'if (true) { /* mutation: a single attempt (the 71f2edf behaviour) */',
+    expectedCount: 1,
+    cwd: 'packages/storage',
+    tests: ['dist/test/backup-finalization.test.js'],
+  },
+  {
+    id: 'backup-failure-leaves-attempt',
+    finding: 'D-C1-24',
+    file: 'packages/storage/dist/src/backup.js',
+    search: '        discard(directory);',
+    replace: '        /* mutation: failed attempt not removed */',
+    expectedCount: 1,
+    cwd: 'packages/storage',
+    tests: ['dist/test/backup-finalization.test.js'],
+  },
+  {
+    id: 'backup-record-not-idempotent',
+    finding: 'D-C1-24',
+    file: 'packages/storage/dist/src/backup.js',
+    search: "return 'ALREADY_RECORDED';",
+    replace: 'void 0; /* mutation: an identical replay falls through to the conflict path */',
+    expectedCount: 1,
+    cwd: 'packages/storage',
+    tests: ['dist/test/backup-finalization.test.js'],
   },
 ];
 

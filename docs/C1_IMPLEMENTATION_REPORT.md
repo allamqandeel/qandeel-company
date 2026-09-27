@@ -4,9 +4,80 @@
 C1 is NOT CLOSED.** C1 closes only after independent review, Founder-host local acceptance,
 exact-head CI and merge approval. **C2 is not started.**
 
-**Status:** `C1 — REMEDIATED CLOUD IMPLEMENTATION CANDIDATE — READY FOR FOUNDER-HOST + FINAL
-INDEPENDENT REVIEW` (the final remediation is in §0; §1–§25 describe the original candidate, updated
-where the remediation changed them). **FOUNDER-HOST VALIDATION REQUIRED. NOT APPROVED FOR MERGE.**
+**Status:** `C1 — BACKUP CONTENTION REMEDIATED — READY FOR FOUNDER-HOST RE-VALIDATION` (the backup
+finalization remediation is in §0A; the earlier final remediation is in §0; §1–§25 describe the
+original candidate, updated where a remediation changed them). **FOUNDER-HOST RE-VALIDATION
+REQUIRED. NOT APPROVED FOR MERGE.** Founder-host acceptance has **not passed**: it must be re-run on
+the new exact SHA.
+
+## 0A. Backup finalization contention remediation (2026-09-27)
+
+A focused remediation of one real defect found by Founder-host local acceptance. Decision: D-C1-24.
+
+**Truth gate.** PR #2 was open, Draft, unmerged and `clean`; its head was exactly
+`71f2edf35ee25499ede91c0d5a03f0b37ece7d95`; the base was `main` at `deef86c`; exact-head CI run
+36279964805 was green on Windows and Ubuntu; the working tree was clean.
+
+**Founder-host evidence.**
+- Command: the storage suite inside `npm run ci` (multi-process tests), on exact SHA `71f2edf`.
+- Test: `online backup while another process writes continuously: every snapshot verifies and is
+  transactionally consistent`. It passed twice and failed once, after about 5.8 s.
+- Error: `STORAGE_BUSY: database lock not acquired within the busy timeout during record backup`.
+
+**Root cause.** A concurrency defect with environment-sensitive timing, not a Windows-only one.
+- `createBackup` wrote and fsynced a verified snapshot and manifest, then ran a single final
+  `BEGIN IMMEDIATE` to insert `backup_records`.
+- A process that writes continuously leaves the write lock free only in short gaps, so one
+  acquisition can exhaust its 5 s busy timeout. The Cloud container measured p99 1.8 s at 5 s (and
+  10% failures at 250 ms) against the real writer fixture.
+- The function then threw after the files existed, and `listBackups(backupsDir)` listed the
+  unrecorded directory as a backup.
+- Reproduced deterministically at `71f2edf`: a lock held by a second connection gives exactly the
+  Founder-host message, with 2 listed backups for 1 recorded.
+
+**Official-source research.**
+- Node 24 `node:sqlite` was read: `timeout` is the maximum time SQLite waits for a lock before
+  returning an error.
+- `sqlite.org` (`rescode.html`, `backup.html`, `c3ref/backup_finish.html`) is **blocked by the Cloud
+  egress proxy** and was not read in this pass. A Node 24.21.0 / SQLite 3.53.4 probe confirmed the
+  facts the design relies on: `BEGIN IMMEDIATE` returns BUSY (5) after the timeout while another
+  connection holds the lock; WAL readers keep reading; `COMMIT` after a successful
+  `BEGIN IMMEDIATE` does not return BUSY. The Founder-host re-read (D-C1-05) remains required.
+
+**Change** (`packages/storage/src/backup.ts`; no schema change):
+- `finalizeBackupRecord` retries **only** the small record transaction and **only** on
+  `STORAGE_BUSY`, with a delay awaited outside any transaction.
+  - Default: 4 attempts, delays `min(1000, 100 × 2^(n−1))` ms jittered to [0.5, 1].
+  - Worst case ≈ 21 s (4 × the unchanged 5 s busy timeout + ≤ 0.7 s), then a bounded `STORAGE_BUSY`
+    with the attempt count.
+  - The busy timeout itself is unchanged.
+- `recordBackupOnce` is idempotent: identical row → `ALREADY_RECORDED` (no write, no audit);
+  a conflicting row under the same ID → `STORAGE_INVARIANT`, the row is never modified.
+- Any failure removes this attempt's own directory. A cleanup failure keeps the original error
+  (`attemptDiscarded: false`).
+- `listBackups(store)` is record-based. The CLI and health already required or read the record.
+- The crash window (death after durable files, before the record) can leave an unrecorded
+  directory. It is never canonical and is not swept automatically.
+
+**Tests.** The new `packages/storage/test/backup-finalization.test.ts` (8 tests; marker
+`C1-PROOF: backup-finalization-contention`) makes BUSY deterministic: a second connection holds the
+write lock, the store's busy timeout is 50 ms, and the lock is released only inside the injected
+retry delay.
+- BUSY then success: attempts = 2, one record, hashes equal the files on disk, `verifyBackup`
+  with the live record passes, and no orphan remains.
+- Exhaustion: STORAGE_BUSY after 3 attempts in bounded time. No record, the directory is removed,
+  it is not listed, the earlier backup is byte-identical and verifies, and live integrity is `ok`.
+- Replay and conflict: by API (five differing fields) and by a produced attempt, which is not
+  blessed.
+- Cleanup failure, policy bounds, and no retry of non-busy errors.
+- **Multi-process:** a new cross-process locker test. The continuous-writer proof is unchanged in
+  pressure, now also checks each backup against its live record, and reports finalization attempts.
+- **Mutations:** `c1:mutation` adds three (single attempt = `71f2edf` behaviour, no cleanup, no
+  idempotency). 6/6 are caught.
+
+**Repeated continuous-writer runs, CI, reviews.** See §0A-results below.
+
+**Founder-host acceptance status: NOT PASSED** until re-run on the new exact SHA.
 
 ## 0. Final remediation (2026-09-27)
 

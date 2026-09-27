@@ -6,7 +6,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import { ExponentialBackoff, assertId, isQandeelError, newId } from '@qandeel-company/domain';
 
-import { CompanyStore, createBackup, verifyBackup } from '../../src/index.js';
+import { createBackupInternal } from '../../src/backup.js';
+import { CompanyStore, createBackup, listBackups, verifyBackup } from '../../src/index.js';
 import { KINDS, TEST_SUPERVISOR_TTL_MS, owner, removeRoot, tempRoot } from '../helpers.js';
 import { fixture, spawnScript } from '../process-harness.js';
 import { acquireSupervisor, claimNext, interruptClaim, settle } from '../../src/runtime-authority.js';
@@ -119,26 +120,62 @@ describe('multi-process proofs (independent OS processes, independent SQLite con
     }
   });
 
-  test('online backup while another process writes continuously: every snapshot verifies and is transactionally consistent', async () => {
+  test('online backup while another process writes continuously: every snapshot verifies and is transactionally consistent', async (t) => {
     const root = tempRoot('mp-backup');
     const store = CompanyStore.open(root);
     const writer = spawnScript(fixture('writer'), [root]);
     try {
       await writer.waitFor((l) => l === 'WROTE 50');
       const results = [];
-      for (let i = 0; i < 3; i++) results.push(await createBackup(store));
+      for (let i = 0; i < 3; i++) {
+        const started = Date.now();
+        const r = await createBackup(store);
+        t.diagnostic(`backup ${i + 1}: ${Date.now() - started} ms, finalization attempts ${r.finalization.attempts}`);
+        results.push(r);
+      }
       await writer.waitFor((l) => l.startsWith('WROTE') && Number(l.split(' ')[1]) >= 100);
       writer.process.kill('SIGKILL');
       await writer.exited();
       for (const r of results) {
-        const v = verifyBackup(r.directory, { liveDatabasePath: store.workspace.databasePath });
+        const record = store.backupRecord(r.backupId);
+        assert.ok(record, 'every backup is recorded by the live Company');
+        const v = verifyBackup(r.directory, { liveDatabasePath: store.workspace.databasePath, expected: record });
         assert.equal(v.integrity, 'ok');
         assert.ok(v.counts.workItems >= 50);
         assert.equal(v.counts.jobs, v.counts.workItems, 'each committed item arrives with its job, never half a transaction');
       }
+      assert.deepEqual(listBackups(store), results.map((r) => r.backupId).sort());
       assert.ok(store.quickCheck() === 'ok', 'live database intact after the writer was killed mid-stream');
     } finally {
       writer.process.kill('SIGKILL');
+      store.close();
+      removeRoot(root);
+    }
+  });
+
+  test('backup finalization across processes: another process holds the write lock; the bounded retry records the backup after it releases', async () => {
+    const root = tempRoot('mp-backup-lock');
+    CompanyStore.open(root).close();
+    const store = CompanyStore.open(root, { busyTimeoutMs: 250 });
+    try {
+      const earlier = await createBackup(store);
+      const locker = spawnScript(fixture('locker'), [store.workspace.databasePath, '2000']);
+      await locker.waitFor((l) => l === 'LOCKED');
+      const started = Date.now();
+      // Envelope far larger than the 2 s hold (10 attempts x 250 ms + capped delays): the outcome
+      // does not depend on timing, only the attempt count does.
+      const r = await createBackupInternal(store, {}, { policy: { maxAttempts: 10, random: () => 1 } });
+      const elapsed = Date.now() - started;
+      await locker.waitFor((l) => l === 'RELEASED');
+      assert.equal(await locker.exited(), 0);
+      assert.ok(r.finalization.attempts >= 2, `the first attempt met the other process's lock (attempts ${r.finalization.attempts})`);
+      assert.ok(elapsed < 15_000, `bounded: ${elapsed} ms`);
+      const record = store.backupRecord(r.backupId);
+      assert.ok(record);
+      assert.equal(verifyBackup(r.directory, { liveDatabasePath: store.workspace.databasePath, expected: record }).ok, true);
+      assert.deepEqual(listBackups(store), [earlier.backupId, r.backupId].sort());
+      assert.equal(store.auditByAction('backup.created').length, 2);
+    } finally {
       store.close();
       removeRoot(root);
     }

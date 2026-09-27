@@ -303,7 +303,20 @@ crash window:
    - integrity `ok`;
    - the row counts;
    - the READY-artifact manifest and its SHA-256;
-5. records `backup_records` in the live DB.
+5. records `backup_records` in the live DB (D-C1-24):
+   - only this small transaction is retried on `STORAGE_BUSY`: a fresh `BEGIN IMMEDIATE` each
+     time, bounded by the store's unchanged busy timeout, with a jittered delay awaited outside any
+     transaction (default 4 attempts; worst case about 21 s);
+   - the record is idempotent: an identical row is `ALREADY_RECORDED`; a different row under the
+     same ID fails closed with `STORAGE_INVARIANT` and is never modified;
+   - any failure removes this attempt's own directory, never another backup's. If that removal
+     fails, the original error is kept (`attemptDiscarded: false`).
+
+A backup is **canonical only once it is recorded**. `listBackups(store)` lists recorded backups
+whose directory holds a manifest; verification against the record, restore-check and health read
+`backup_records`. A directory left by a process crash between durable files and the record is
+therefore never treated as a backup; it is not swept automatically (a sweep could race another
+process's in-flight backup).
 
 The active database file is never copied directly.
 

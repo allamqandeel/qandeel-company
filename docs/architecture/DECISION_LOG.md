@@ -604,3 +604,91 @@ So `fs.watch` cannot be the sole correctness mechanism.
   - The same holds with no watcher at all, and for a cross-process cancellation of running work.
   - The mutation check removes the reconciliation (the `d57b51f` behaviour) and requires the proof
     to fail.
+
+## D-C1-24 — Backup finalization under write contention (Founder-host failure on `71f2edf`)
+
+**Evidence.** Founder-host local acceptance of exact SHA `71f2edf` ran the storage multi-process
+suite three times: it passed twice and failed once, after about 5.8 s, in
+`online backup while another process writes continuously: every snapshot verifies and is
+transactionally consistent`, with
+`STORAGE_BUSY: database lock not acquired within the busy timeout during record backup`.
+Exact-head GitHub CI (Windows and Ubuntu) did not expose it.
+
+**Root cause (concurrency, not "Windows only").**
+- `createBackup` produced the snapshot, verified it, wrote and fsynced the manifest, and then ran
+  one final `BEGIN IMMEDIATE` to insert the `backup_records` row.
+- Against a process that writes continuously, the write lock is free only in the short gaps
+  between that process's transactions. SQLite's busy handler polls with growing sleeps, so one
+  acquisition can miss every gap until its busy timeout (5 s) expires. The other writer's pace and
+  the host's scheduling decide how often that happens.
+- Measured in the Cloud container against the real writer fixture: p50 21 ms, p90 534 ms, p99
+  1.8 s per acquisition at a 5 s timeout, and 10% of acquisitions failing at a 250 ms timeout.
+- The function then threw after the files existed. `listBackups(backupsDir)` enumerated
+  UUID-named directories with a manifest, so the unrecorded attempt was listed as a backup.
+  Reproduced deterministically at `71f2edf`: the exact Founder-host message, and 2 listed
+  backups for 1 recorded.
+
+**Official sources (2026-09-27).**
+- Node 24 `node:sqlite` (read): `timeout` is "the maximum amount of time that SQLite will wait for
+  a database lock to be released before returning an error".
+- `sqlite.org/rescode.html`, `backup.html` and `c3ref/backup_finish.html` are blocked by the Cloud
+  egress proxy (HTTP 403, and the fetch tool reports `EGRESS_BLOCKED`). They were **not read in this
+  pass**. The design relies only on the cited facts (BUSY at `BEGIN IMMEDIATE` when another
+  connection owns the write lock; after a successful `BEGIN IMMEDIATE` no later statement of that
+  transaction returns BUSY; BUSY/LOCKED are retryable in the backup API). The runtime probe
+  confirms them on Node 24.21.0 / SQLite 3.53.4:
+  - `BEGIN IMMEDIATE` against a held lock → errcode 5 after the timeout;
+  - a WAL reader keeps reading;
+  - `COMMIT` after a successful `BEGIN IMMEDIATE` with a concurrent reader succeeds.
+- The Founder-host re-read of these pages (D-C1-05) remains required.
+
+**Decision.**
+- **Snapshot unchanged.** Online Backup API on a dedicated connection, isolated
+  `integrity_check` and `foreign_key_check`, manifest, hash binding, fsync before record. The
+  snapshot is never redone on BUSY.
+- **Bounded retry of the record transaction only** (`finalizeBackupRecord`):
+  - only `STORAGE_BUSY` (SQLITE_BUSY/SQLITE_LOCKED at write-lock acquisition) is retried; every
+    other error, including a conflicting record, fails immediately;
+  - each attempt is a fresh short `BEGIN IMMEDIATE`, bounded by the store's **unchanged** busy
+    timeout (`DEFAULT_BUSY_TIMEOUT_MS` = 5 s);
+  - between attempts, control is released completely and a delay is awaited outside any
+    transaction: `min(1000, 100 × 2^(n−1))` ms, jittered to [0.5, 1] of that;
+  - **default 4 attempts**: worst case 4 × 5 s + ≤ 0.7 s ≈ 21 s, then `STORAGE_BUSY` "…within its
+    bounded retry envelope" with `attempts`;
+  - the policy is internal (tests inject delays); it is validated (1–10 attempts, delays ≤ 5 s)
+    and not part of the public API.
+- **No global busy-timeout inflation.**
+- **Idempotent record** (`recordBackupOnce`):
+  - no row → insert plus one `backup.created` audit row;
+  - an identical row (ID, time, schema, both hashes, integrity, artifact count) →
+    `ALREADY_RECORDED`, nothing written;
+  - the same ID with any differing field → `STORAGE_INVARIANT`, the row is never modified (no
+    `INSERT OR REPLACE`).
+- **No canonical orphan.**
+  - Any failure after the attempt directory is created removes **that attempt's own directory**:
+    `<backups>/<backupId>` for an ID this call generated and created with a non-recursive `mkdir`,
+    so an earlier backup is never touched.
+  - If removal fails, the original error is kept (`attemptDiscarded: false`), not masked.
+  - **Discovery is record-based:** `listBackups(store)` returns only IDs recorded in
+    `backup_records` whose directory holds a manifest. The CLI `verify-backup`/`restore-check`
+    already refuse an unrecorded backup; health `lastBackup` reads `backup_records`.
+- **Crash window (documented, not eliminated).** If the process dies after the files are durable
+  and before the record commits, or during cleanup, an unrecorded directory can remain on disk. It
+  is never canonical: listing, verification-against-record, restore-check and health all ignore
+  it. It is not swept automatically, because a sweep could race another process's in-flight
+  backup. Retention/cleanup of such leftovers belongs with backup scheduling (C6).
+- **No exactly-once claim.** A backup is recorded at most once per ID. A caller that sees a failure
+  may run a new backup, which gets a new ID.
+- **Proofs** (`packages/storage/test/backup-finalization.test.ts`, marker
+  `C1-PROOF: backup-finalization-contention`):
+  - BUSY on the first attempt, released during the retry delay, then recorded exactly once;
+  - a lock held past the whole envelope, failing boundedly with nothing canonical left and the
+    earlier backup byte-identical;
+  - identical replay; conflicting same ID, by API and by a produced attempt;
+  - cleanup failure; policy bounds; no retry of non-busy errors.
+  - A cross-process variant against the locker fixture is in the multi-process suite.
+  - The continuous-writer proof is kept at full pressure, and now also checks each backup against
+    its live record and record-based listing.
+  - Three new mutations in `npm run c1:mutation` (single attempt = the `71f2edf` behaviour; no
+    cleanup; no idempotency) must each be caught.
+- **Founder-host re-validation of the new exact SHA is still required.**
