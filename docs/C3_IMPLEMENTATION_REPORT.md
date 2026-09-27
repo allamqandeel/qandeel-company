@@ -442,8 +442,9 @@ redesigned, and C4 / C5 were not started.
   - `decideActivation` refuses a designated role without this enrollment's APPROVED calibration
     (`CALIBRATION_PENDING`, `CALIBRATION_REJECTED` or `CALIBRATION_MISSING`), and records the approved
     calibration on the request.
-  - The `employees_activation_gate` trigger in 0006 also requires it. 0006 is amended and re-pinned;
-    it is unreleased because PR #4 is unmerged.
+  - The `employees_activation_gate` trigger in 0006 also requires it. At this point in the recorded
+    history, 0006 had been amended and re-pinned but was still unreleased because PR #4 had not yet
+    merged.
 - **D-C3-20 — EXTEND:**
   - The EXTEND review row is the durable boundary.
   - The next review needs a higher positive-evidence count in the same epoch. Until then the
