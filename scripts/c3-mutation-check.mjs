@@ -261,6 +261,12 @@ const MUTATIONS = [
     runs: [FOUNDER],
   },
   {
+    id: 'role-reassignment-without-cert-keeps-active',
+    gate: 'ACTIVE duty never carries into a different role without a VALID target-role certification',
+    edits: [{ file: `${STORE}/governance.js`, search: "    if (e.state === 'ACTIVE' && roleRef !== e.roleRef && !liveCertifications(ctx, id, true).some((cert) => cert.roleRef === roleRef && cert.status === 'VALID')) {", replace: '    if (false) {' }],
+    runs: [FOUNDER],
+  },
+  {
     id: 'calibration-not-required-at-activation',
     gate: 'Activation Approval refuses a designated role without an approved Founder Calibration',
     edits: [{ file: `${STORE}/academy.js`, search: 'if (calibrationGap !== null)', replace: 'if (false)' }],
