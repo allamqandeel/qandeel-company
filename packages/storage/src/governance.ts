@@ -146,7 +146,7 @@ function catalogHistory(ctx: StoreContext, entityType: string, entityId: string,
 }
 
 /** Founder authority for an administrative act; `subjectRef` detects self-escalation. */
-function founder(ctx: StoreContext, actorRef: string, subjectRef: string | null, what: string): Principal {
+export function founder(ctx: StoreContext, actorRef: string, subjectRef: string | null, what: string): Principal {
   const p = resolvePrincipal(ctx, actorRef);
   assertGovernanceAuthority(p.kind, p.ref, subjectRef, what);
   return p;
@@ -294,6 +294,34 @@ export const founderSurfaceInternals = Object.freeze({
   },
 });
 
+/**
+ * The one Founder-authority write path shared by the C2 and C3 stores (storage-internal; the package
+ * index does not export it). An administrative refusal rolls its transaction back; the refusal itself
+ * is audited in its own transaction (content-free) so misuse attempts stay visible (D14-E.1).
+ */
+export function founderAdminWrite<T>(store: CompanyStore, operation: string, actorRef: string, fn: (ctx: StoreContext) => T): T {
+  const write = <R>(op: string, f: (ctx: StoreContext) => R): R => {
+    const ctx = storeContext(store);
+    return ctx.db.immediate(op, () => f(ctx));
+  };
+  try {
+    // Before anything else: a caller-supplied ref is never authentication (D-C2-13).
+    if (!founderSurfaceArmed(store)) {
+      throw new QandeelError('FOUNDER_SURFACE_UNAVAILABLE', 'Founder authority requires the authenticated Founder surface (C5); a Founder reference is not authentication', { operation: operation.slice(0, 64) });
+    }
+    return write(operation, fn);
+  } catch (error) {
+    if (error instanceof QandeelError && ['FOUNDER_SURFACE_UNAVAILABLE', 'FOUNDER_ONLY', 'SELF_ESCALATION_REFUSED', 'AUTHORITY_DENIED'].includes(error.code)) {
+      try {
+        write('audit refusal', (ctx) => appendAudit(ctx, 'governance.refused', 'governance', 'admin', { actorRef: String(actorRef).slice(0, 161) }, 'REJECTED', error.code, { operation: operation.slice(0, 64) }));
+      } catch {
+        // Auditing a refusal never masks the refusal itself.
+      }
+    }
+    throw error;
+  }
+}
+
 export class GovernanceStore {
   readonly #store: CompanyStore;
 
@@ -325,22 +353,7 @@ export class GovernanceStore {
    * transaction (content-free) so misuse attempts stay visible (D14-E.1).
    */
   #admin<T>(operation: string, actorRef: string, fn: (ctx: StoreContext) => T): T {
-    try {
-      // Before anything else: a caller-supplied ref is never authentication (D-C2-13).
-      if (!founderSurfaceArmed(this.#store)) {
-        throw new QandeelError('FOUNDER_SURFACE_UNAVAILABLE', 'Founder authority requires the authenticated Founder surface (C5); a Founder reference is not authentication', { operation: operation.slice(0, 64) });
-      }
-      return this.#write(operation, fn);
-    } catch (error) {
-      if (error instanceof QandeelError && ['FOUNDER_SURFACE_UNAVAILABLE', 'FOUNDER_ONLY', 'SELF_ESCALATION_REFUSED', 'AUTHORITY_DENIED'].includes(error.code)) {
-        try {
-          this.#write('audit refusal', (ctx) => appendAudit(ctx, 'governance.refused', 'governance', 'admin', { actorRef: String(actorRef).slice(0, 161) }, 'REJECTED', error.code, { operation: operation.slice(0, 64) }));
-        } catch {
-          // Auditing a refusal never masks the refusal itself.
-        }
-      }
-      throw error;
-    }
+    return founderAdminWrite(this.#store, operation, actorRef, fn);
   }
 
   // --- Principals & organization ------------------------------------------------------------------

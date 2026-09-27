@@ -1,0 +1,303 @@
+/**
+ * Storage-internal C3 transaction helpers shared by the Memory / Skill / Academy stores and the
+ * fenced runtime writes. Every helper runs inside a transaction opened by its caller.
+ *
+ * Content is loaded only through the loaders here, and every load verifies the stored SHA-256: a
+ * mismatch quarantines the row (integrity = CORRUPT, audited) and returns nothing — corruption fails
+ * closed. Skill instructions load only for a pinned, production-eligible version.
+ */
+import { QandeelError, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
+import { dataRank, grantCovers, maxDataClass, type DataClass } from '@qandeel-company/governance';
+import {
+  certificationStatusAt,
+  productionEligibility,
+  terms as termsOf,
+  type CertificationView,
+  type EligibilitySnapshot,
+  type InspectionFinding,
+  type PassportView,
+  type SkillVersionView,
+} from '@qandeel-company/mind';
+
+import { getEmployeeRow } from './governance-core.js';
+import { mapGrant, type EmployeeRecord } from './governance-records.js';
+import { appendAudit, ts, type StoreContext } from './internal.js';
+import {
+  mapCertification,
+  mapKnowledge,
+  mapMemory,
+  mapPassport,
+  mapSkillVersion,
+  type CertificationRecord,
+  type KnowledgeRecord,
+  type MemoryRecord,
+  type SkillVersionRecord,
+} from './mind-records.js';
+
+export const SYSTEM_MIND_REF = 'system:runtime';
+
+// --- Memory -------------------------------------------------------------------------------------
+
+export function getMemoryRow(ctx: StoreContext, id: Id): MemoryRecord {
+  const r = ctx.db.get('SELECT * FROM memory_records WHERE id = ?', id);
+  if (!r) throw new QandeelError('NOT_FOUND', 'memory not found', { memoryId: id });
+  return mapMemory(r);
+}
+
+export function memoryHistory(ctx: StoreContext, memoryId: Id, version: number, from: string | null, to: string, reasonCode: string, actorRef: string): void {
+  ctx.db.run('INSERT INTO memory_history (memory_id, version, from_status, to_status, reason_code, actor_ref, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?)', memoryId, version, from, to, reasonCode, actorRef, ts(ctx));
+}
+
+/** One status change: version + 1, history row and a content-free audit row, together. */
+export function setMemoryStatus(ctx: StoreContext, m: MemoryRecord, to: MemoryRecord['status'], reasonCode: string, actorRef: string, extra: { supersededById?: Id; validatedAt?: Timestamp } = {}): MemoryRecord {
+  const changed = ctx.db.run(
+    'UPDATE memory_records SET status = ?, superseded_by_id = COALESCE(?, superseded_by_id), last_validated_at = COALESCE(?, last_validated_at), version = version + 1, updated_at = ? WHERE id = ? AND version = ?',
+    to,
+    extra.supersededById ?? null,
+    extra.validatedAt ?? null,
+    ts(ctx),
+    m.id,
+    m.version,
+  ).changes;
+  if (changed !== 1) throw new QandeelError('VERSION_CONFLICT', 'memory changed concurrently', { memoryId: m.id });
+  memoryHistory(ctx, m.id, m.version + 1, m.status, to, reasonCode, actorRef);
+  appendAudit(ctx, 'memory.status', 'memory', m.id, { actorRef }, 'OK', reasonCode, { from: m.status, to, employeeId: m.employeeId });
+  return getMemoryRow(ctx, m.id);
+}
+
+export interface NewMemory {
+  readonly employeeId: Id;
+  readonly memoryClass: MemoryRecord['memoryClass'];
+  readonly topic: string;
+  readonly claimKey: string | null;
+  readonly claimValue: string | null;
+  readonly content: string;
+  readonly fingerprint: string;
+  readonly terms: readonly string[];
+  readonly dataClass: DataClass;
+  readonly marketRef: string | null;
+  readonly projectRef: string | null;
+  readonly provenanceKind: string;
+  readonly provenanceRef: string;
+  readonly sourceVersion: number | null;
+  readonly sourceSha256: string | null;
+  readonly evidenceRefs: readonly string[];
+  readonly confidencePct: number;
+  readonly status: 'ACTIVE' | 'LOW_CONFIDENCE';
+  readonly retentionPolicy: string;
+  readonly reviewAt: Timestamp | null;
+  readonly candidateId: Id | null;
+  readonly supersedesId: Id | null;
+  readonly validatedAt: Timestamp | null;
+}
+
+export function insertMemory(ctx: StoreContext, m: NewMemory, actorRef: string, reasonCode: string): Id {
+  const id = newId();
+  const at = ts(ctx);
+  ctx.db.run(
+    `INSERT INTO memory_records (id, employee_id, memory_class, scope, topic, claim_key, claim_value, content, content_sha256, fingerprint, terms_json, data_class, market_ref, project_ref,
+       provenance_kind, provenance_ref, source_version, source_sha256, evidence_refs_json, confidence_pct, status, integrity, retention_policy, review_at, last_validated_at, candidate_id, supersedes_id, version, created_at, updated_at)
+     VALUES (?, ?, ?, 'PERSONAL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OK', ?, ?, ?, ?, ?, 1, ?, ?)`,
+    id, m.employeeId, m.memoryClass, m.topic, m.claimKey, m.claimValue, m.content, sha256Hex(m.content), m.fingerprint, JSON.stringify(m.terms), m.dataClass, m.marketRef, m.projectRef,
+    m.provenanceKind, m.provenanceRef, m.sourceVersion, m.sourceSha256, JSON.stringify(m.evidenceRefs), m.confidencePct, m.status, m.retentionPolicy, m.reviewAt, m.validatedAt, m.candidateId, m.supersedesId, at, at,
+  );
+  memoryHistory(ctx, id, 1, null, m.status, reasonCode, actorRef);
+  appendAudit(ctx, 'memory.stored', 'memory', id, { actorRef }, 'OK', reasonCode, { employeeId: m.employeeId, memoryClass: m.memoryClass, dataClass: m.dataClass, provenance: m.provenanceKind });
+  return id;
+}
+
+type ContentTable = 'memory_records' | 'knowledge_items' | 'canonical_truth' | 'skill_versions' | 'context_summaries' | 'academy_scenarios';
+const CONTENT_COLUMNS: Readonly<Record<ContentTable, { text: string; sha: string; integrity: boolean; entity: string }>> = {
+  memory_records: { text: 'content', sha: 'content_sha256', integrity: true, entity: 'memory' },
+  knowledge_items: { text: 'content', sha: 'content_sha256', integrity: true, entity: 'knowledge' },
+  canonical_truth: { text: 'statement', sha: 'statement_sha256', integrity: true, entity: 'canonical_truth' },
+  skill_versions: { text: 'instructions', sha: 'instructions_sha256', integrity: true, entity: 'skill_version' },
+  context_summaries: { text: 'content', sha: 'content_sha256', integrity: false, entity: 'context_summary' },
+  academy_scenarios: { text: 'content', sha: 'content_sha256', integrity: false, entity: 'academy_scenario' },
+};
+
+/**
+ * Loads one content payload and verifies its hash. A mismatch quarantines the row (CORRUPT, audited)
+ * and returns null: corrupt content is never used.
+ */
+export function loadVerified(ctx: StoreContext, table: ContentTable, id: string): string | null {
+  const c = CONTENT_COLUMNS[table];
+  const row = ctx.db.get<{ t: string; s: string; v: number | null }>(`SELECT ${c.text} AS t, ${c.sha} AS s, ${c.integrity ? 'version' : 'NULL'} AS v FROM ${table} WHERE id = ?`, id);
+  if (!row) return null;
+  if (sha256Hex(String(row.t)) === row.s) return String(row.t);
+  if (c.integrity) {
+    ctx.db.run(`UPDATE ${table} SET integrity = 'CORRUPT', version = version + 1, updated_at = ? WHERE id = ? AND integrity = 'OK'`, ts(ctx), id);
+  } else if (table === 'context_summaries') {
+    ctx.db.run(`UPDATE context_summaries SET status = 'INVALIDATED', invalidation_reason = 'INTEGRITY_FAILED', invalidated_at = ? WHERE id = ? AND status = 'VALID'`, ts(ctx), id);
+  }
+  appendAudit(ctx, `${c.entity}.integrity_failed`, c.entity, id, { actorRef: SYSTEM_MIND_REF }, 'ERROR', 'CONTENT_HASH_MISMATCH', {});
+  return null;
+}
+
+/** Whether a record's recorded source has changed since it was derived (stale by source version / hash). */
+export function sourceChanged(ctx: StoreContext, kind: string, ref: string, version: number | null, sha: string | null): boolean {
+  if (version === null && sha === null) return false;
+  const id = ref.slice(ref.indexOf(':') + 1);
+  const probe = (sql: string): { v: number; s: string; st: string } | undefined => ctx.db.get<{ v: number; s: string; st: string }>(sql, id);
+  let cur: { v: number; s: string; st: string } | undefined;
+  if (kind === 'KNOWLEDGE') cur = probe('SELECT version AS v, content_sha256 AS s, status AS st FROM knowledge_items WHERE id = ?');
+  else if (kind === 'CANONICAL') cur = probe('SELECT version AS v, statement_sha256 AS s, status AS st FROM canonical_truth WHERE id = ?');
+  else if (kind === 'SKILL_VERSION') cur = probe(`SELECT version AS v, instructions_sha256 AS s, CASE WHEN freshness IN ('SECURITY_HOLD', 'RETIRED', 'DEPRECATED') THEN 'STALE' ELSE 'ACTIVE' END AS st FROM skill_versions WHERE id = ?`);
+  else return false;
+  if (!cur) return true;
+  if (sha !== null && cur.s !== sha) return true;
+  // A pinned skill version's identity is its payload hash; knowledge / canonical rows also version by status.
+  if (version !== null && kind !== 'SKILL_VERSION' && cur.v !== version) return true;
+  return !['ACTIVE', 'LOW_CONFIDENCE'].includes(cur.st);
+}
+
+// --- Knowledge access (re-evaluated at every use, Stage 14 D14-C.6) ------------------------------
+
+export interface KnowledgeAccess {
+  readonly departmentScopes: readonly string[];
+  readonly roleRef: string;
+  readonly marketRef: string | null;
+  readonly restrictedScopes: readonly string[];
+  /** Cross-department grants by department scope ref (grant id for attribution). */
+  readonly crossDepartmentGrants: ReadonlyMap<string, Id>;
+  readonly restrictedGrants: ReadonlyMap<string, Id>;
+}
+
+/**
+ * Scopes an Employee may read now: Company-wide, its own Department and Role, the Work Item's market,
+ * plus Departments / Restricted scopes named by an ACTIVE, unexpired, exact grant. Founder-only
+ * knowledge is never readable by an Employee. Department membership alone grants no restricted scope.
+ */
+export function knowledgeAccess(ctx: StoreContext, e: EmployeeRecord, marketRef: string | null, dataClass: DataClass): KnowledgeAccess {
+  const at = ts(ctx);
+  const grants = ctx.db.all(`SELECT * FROM permission_grants WHERE employee_id = ? AND status = 'ACTIVE' AND capability IN ('knowledge.read', 'knowledge.restricted')`, e.id).map(mapGrant);
+  const cross = new Map<string, Id>();
+  const restricted = new Map<string, Id>();
+  for (const g of grants) {
+    // Exact scopes only: a wildcard never opens every Department or every Restricted scope.
+    if (g.resourceScope === '*') continue;
+    if (!grantCovers(g, { capability: g.capability, resource: g.resourceScope, risk: 'R0', dataClass, at })) continue;
+    (g.capability === 'knowledge.read' ? cross : restricted).set(g.resourceScope, g.id);
+  }
+  return { departmentScopes: [`department:${e.departmentId}`, ...cross.keys()], roleRef: e.roleRef, marketRef, restrictedScopes: [...restricted.keys()], crossDepartmentGrants: cross, restrictedGrants: restricted };
+}
+
+export function knowledgeReadable(k: Pick<KnowledgeRecord, 'scope' | 'scopeRef'>, a: KnowledgeAccess): boolean {
+  switch (k.scope) {
+    case 'COMPANY':
+      return true;
+    case 'DEPARTMENT':
+      return k.scopeRef !== null && a.departmentScopes.includes(k.scopeRef);
+    case 'ROLE':
+      return k.scopeRef === a.roleRef;
+    case 'MARKET':
+      return k.scopeRef !== null && k.scopeRef === a.marketRef;
+    case 'RESTRICTED':
+      return k.scopeRef !== null && a.restrictedScopes.includes(k.scopeRef);
+    case 'FOUNDER_ONLY':
+      return false;
+  }
+}
+
+export function getKnowledgeRow(ctx: StoreContext, id: Id): KnowledgeRecord {
+  const r = ctx.db.get('SELECT * FROM knowledge_items WHERE id = ?', id);
+  if (!r) throw new QandeelError('NOT_FOUND', 'knowledge not found', { knowledgeId: id });
+  return mapKnowledge(r);
+}
+
+// --- Skills ---------------------------------------------------------------------------------------
+
+export function getSkillVersionRow(ctx: StoreContext, id: Id): SkillVersionRecord {
+  const r = ctx.db.get('SELECT * FROM skill_versions WHERE id = ?', id);
+  if (!r) throw new QandeelError('NOT_FOUND', 'skill version not found', { skillVersionId: id });
+  return mapSkillVersion(r);
+}
+
+export function skillVersionView(v: SkillVersionRecord, skillType: SkillVersionView['skillType']): SkillVersionView {
+  return {
+    id: v.id,
+    skillType,
+    pipelineState: v.pipelineState,
+    freshness: v.freshness,
+    licenseStatus: v.licenseStatus,
+    paidDependency: v.paidDependency,
+    paidDependencyAcknowledged: v.paidDependencyAcknowledged,
+    securityCleared: v.securityStatus === 'CLEARED',
+    // Not yet inspected counts as a finding: an uninspected payload is never production-eligible.
+    inspectionFindings: (v.inspectionFindings ?? ['EXECUTABLE_CONTENT']) as InspectionFinding[],
+    integrityOk: v.integrity === 'OK',
+  };
+}
+
+export function versionEligibility(ctx: StoreContext, v: SkillVersionRecord): ReturnType<typeof productionEligibility> {
+  const type = ctx.db.get<{ t: string }>('SELECT skill_type AS t FROM skills WHERE id = ?', v.skillId)?.t as SkillVersionView['skillType'];
+  return productionEligibility(skillVersionView(v, type));
+}
+
+/**
+ * THE Skill payload loader. Production resolves only a pinned version id (never "latest"), and loads
+ * its instructions only when that version is production-eligible and its hash verifies.
+ */
+export function loadPinnedSkillInstructions(ctx: StoreContext, skillVersionId: Id): { readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: string } {
+  const v = getSkillVersionRow(ctx, skillVersionId);
+  const e = versionEligibility(ctx, v);
+  if (!e.eligible) return { ok: false, reason: e.reasons[0] ?? 'NOT_APPROVED' };
+  const text = loadVerified(ctx, 'skill_versions', v.id);
+  if (text === null) return { ok: false, reason: 'INTEGRITY_FAILED' };
+  return { ok: true, text };
+}
+
+// --- Capability eligibility snapshot --------------------------------------------------------------
+
+/** Certification status at now, materializing EXPIRED (history + audit) when a write transaction is open. */
+export function liveCertifications(ctx: StoreContext, employeeId: Id, materialize: boolean): CertificationRecord[] {
+  const now = ts(ctx);
+  const out: CertificationRecord[] = [];
+  for (const c of ctx.db.all(`SELECT * FROM certifications WHERE employee_id = ? AND status IN ('VALID', 'REVIEW_DUE')`, employeeId).map(mapCertification)) {
+    if (certificationStatusAt(c, now) === 'EXPIRED' && materialize) {
+      ctx.db.run(`UPDATE certifications SET status = 'EXPIRED', reason_code = 'VALIDITY_ENDED', version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, now, c.id, c.version);
+      ctx.db.run('INSERT INTO certification_history (certification_id, version, from_status, to_status, reason_code, actor_ref, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?)', c.id, c.version + 1, c.status, 'EXPIRED', 'VALIDITY_ENDED', SYSTEM_MIND_REF, now);
+      out.push({ ...c, status: 'EXPIRED' });
+    } else out.push({ ...c, status: certificationStatusAt(c, now) });
+  }
+  return out;
+}
+
+export function eligibilitySnapshot(ctx: StoreContext, employeeId: Id, materialize: boolean): EligibilitySnapshot {
+  const now = ts(ctx);
+  const passport: PassportView[] = ctx.db.all('SELECT * FROM passport_entries WHERE employee_id = ?', employeeId).map(mapPassport).filter((p) => p.status !== 'REVOKED').map((p) => {
+    const v = getSkillVersionRow(ctx, p.skillVersionId);
+    const skill = ctx.db.get<{ market_code: string | null; status: string }>('SELECT market_code, status FROM skills WHERE id = ?', p.skillId);
+    return {
+      skillId: p.skillId,
+      versionId: p.skillVersionId,
+      proficiency: p.proficiency,
+      status: p.status as PassportView['status'],
+      versionEligible: skill?.status === 'ACTIVE' && versionEligibility(ctx, v).eligible,
+      marketCode: skill?.market_code ?? null,
+    };
+  });
+  const certifications: CertificationView[] = liveCertifications(ctx, employeeId, materialize).map((c) => ({ roleRef: c.roleRef, status: c.status, validUntil: c.validUntil }));
+  const grants = ctx.db.all(`SELECT * FROM permission_grants WHERE employee_id = ? AND status = 'ACTIVE' AND capability GLOB 'tool:*'`, employeeId).map(mapGrant);
+  const grantedToolCapabilities = [...new Set(grants.filter((g) => (g.expiresAt === null || g.expiresAt > now) && (g.maxUses === null || g.uses < g.maxUses)).map((g) => g.capability))];
+  const skillsWithEligibleVersion = ctx.db
+    .all<{ id: string }>(`SELECT DISTINCT s.id FROM skills s JOIN skill_versions v ON v.skill_id = s.id WHERE s.status = 'ACTIVE' AND v.pipeline_state IN ('APPROVED', 'TARGETED_LEARNING', 'ROLLED_OUT') AND v.freshness NOT IN ('SECURITY_HOLD', 'RETIRED') AND v.integrity = 'OK'`)
+    .map((r) => r.id);
+  return { passport, certifications, grantedToolCapabilities, skillsWithEligibleVersion, now };
+}
+
+// --- Misc -----------------------------------------------------------------------------------------
+
+export function employeeOf(ctx: StoreContext, id: Id): EmployeeRecord {
+  return getEmployeeRow(ctx, id);
+}
+
+/** Terms of a topic code plus text (for retrieval indexing at write time). */
+export const indexTerms = (topic: string, text: string): string[] => termsOf(`${topic.replace(/[.-]/g, ' ')} ${text}`);
+
+export const higherClass = (a: DataClass, b: DataClass): DataClass => maxDataClass(a, b);
+export const classAbove = (a: DataClass, ceiling: DataClass): boolean => dataRank(a) > dataRank(ceiling);
+
+export function certificationsOf(ctx: StoreContext, employeeId: Id): CertificationRecord[] {
+  return ctx.db.all('SELECT * FROM certifications WHERE employee_id = ? ORDER BY issued_at, id', employeeId).map(mapCertification);
+}

@@ -7,7 +7,7 @@ import { describe, test } from 'node:test';
 
 import { isQandeelError, type Id } from '@qandeel-company/domain';
 
-import { CompanyStore, GovernanceStore } from '../src/index.js';
+import { CompanyStore, GovernanceStore, type Fence } from '../src/index.js';
 import {
   authorizeModelCall,
   recordDeploymentOutcome,
@@ -23,7 +23,7 @@ import {
 } from '../src/runtime-authority.js';
 import { storeContext } from '../src/store.js';
 import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
-import { C2_KINDS, claimGoverned, governedItem, hire, seed } from './c2-helpers.js';
+import { C2_KINDS, claimGoverned, governedItem, hire, seed, testManifest } from './c2-helpers.js';
 import { harness } from './helpers.js';
 
 const code = (c: string) => (e: unknown): boolean => isQandeelError(e) && e.code === c;
@@ -320,7 +320,8 @@ describe('C2 tools: authority path before any driver', () => {
 });
 
 describe('C2 budgets: reserve before spend, settle actual, hard refusal, coherent after crashes', () => {
-  const modelReserve = (s: ReturnType<typeof seed>, money: number, tokens = 100) => ({ purpose: 'MODEL_CALL' as const, attemptKind: 'PRIMARY' as const, deploymentId: s.deploymentId, priceCardId: s.priceCardId, routePolicyId: s.policyId, money, tokens });
+  // C3: a model reservation names its run's OK Context Manifest (test-only minimal manifest; see c2-helpers).
+  const modelReserve = (h: ReturnType<typeof harness>, fence: Fence, s: ReturnType<typeof seed>, money: number, tokens = 100) => ({ purpose: 'MODEL_CALL' as const, attemptKind: 'PRIMARY' as const, deploymentId: s.deploymentId, priceCardId: s.priceCardId, routePolicyId: s.policyId, money, tokens, contextManifestId: testManifest(h, fence, s.employee.id) });
 
   test('reserve → settle actual (unused released) → invariants hold at every level', () => {
     const h = harness();
@@ -328,7 +329,7 @@ describe('C2 budgets: reserve before spend, settle actual, hard refusal, coheren
       const s = seed(h.store);
       governedItem(h, s);
       const { claim } = claimGoverned(h);
-      const r = reserveBudget(h.store, claim.fence, modelReserve(s, 5_000, 1_000));
+      const r = reserveBudget(h.store, claim.fence, modelReserve(h, claim.fence, s, 5_000, 1_000));
       assert.ok(r.ok);
       if (!r.ok) return;
       const company = () => s.gov.budgetFor('COMPANY', 'company');
@@ -363,8 +364,8 @@ describe('C2 budgets: reserve before spend, settle actual, hard refusal, coheren
       governedItem(h, s, s.employee, { cap: 8_000 });
       const a = claimGoverned(h, 'w1');
       const b = claimGoverned(h, 'w2');
-      assert.ok(reserveBudget(h.store, a.claim.fence, modelReserve(s, 5_000)).ok);
-      const refused = reserveBudget(h.store, b.claim.fence, modelReserve(s, 5_000));
+      assert.ok(reserveBudget(h.store, a.claim.fence, modelReserve(h, a.claim.fence, s, 5_000)).ok);
+      const refused = reserveBudget(h.store, b.claim.fence, modelReserve(h, b.claim.fence, s, 5_000));
       assert.deepEqual(refused, { ok: false, code: 'BUDGET_EXHAUSTED', detail: 'EMPLOYEE:MONEY' }, 'the shared Employee level refuses although the second Work Item has headroom');
       assert.equal(s.gov.budgetFor('COMPANY', 'company')?.reservedMoney, 5_000, 'a refused reservation reserves nothing anywhere');
       assert.ok(h.store.audit(b.claim.fence.runId).some((x) => x.action === 'budget.refused' && x.reasonCode === 'BUDGET_EXHAUSTED'));
@@ -373,7 +374,7 @@ describe('C2 budgets: reserve before spend, settle actual, hard refusal, coheren
       const c2 = claimNext(h.store, { ...h.claimOpts('w3', 60_000), kinds: C2_KINDS });
       assert.ok(c2 && c2.workItem.id === workItem.id);
       beginGovernedRun(h.store, c2.fence);
-      assert.deepEqual(reserveBudget(h.store, c2.fence, modelReserve(s, 1)), { ok: false, code: 'BUDGET_MISSING', detail: 'WORK_ITEM_CHAIN' });
+      assert.deepEqual(reserveBudget(h.store, c2.fence, modelReserve(h, c2.fence, s, 1)), { ok: false, code: 'BUDGET_MISSING', detail: 'WORK_ITEM_CHAIN' });
       assert.deepEqual(s.gov.accountingInvariants(), []);
     } finally {
       h.close();
@@ -386,13 +387,13 @@ describe('C2 budgets: reserve before spend, settle actual, hard refusal, coheren
       const s = seed(h.store);
       governedItem(h, s, s.employee, { cap: 100_000, runCap: 12_000 });
       const { claim } = claimGoverned(h);
-      assert.ok(reserveBudget(h.store, claim.fence, modelReserve(s, 10_000)).ok);
-      assert.deepEqual(reserveBudget(h.store, claim.fence, modelReserve(s, 5_000)), { ok: false, code: 'BUDGET_EXHAUSTED', detail: 'RUN:MONEY' });
-      const overhead = reserveBudget(h.store, claim.fence, { ...modelReserve(s, 1_000), attemptKind: 'RETRY' });
+      assert.ok(reserveBudget(h.store, claim.fence, modelReserve(h, claim.fence, s, 10_000)).ok);
+      assert.deepEqual(reserveBudget(h.store, claim.fence, modelReserve(h, claim.fence, s, 5_000)), { ok: false, code: 'BUDGET_EXHAUSTED', detail: 'RUN:MONEY' });
+      const overhead = reserveBudget(h.store, claim.fence, { ...modelReserve(h, claim.fence, s, 1_000), attemptKind: 'RETRY' });
       assert.ok(overhead.ok, 'overhead within the policy ceiling (50 000)');
-      const esc1 = reserveBudget(h.store, claim.fence, { ...modelReserve(s, 100), attemptKind: 'ESCALATION' });
+      const esc1 = reserveBudget(h.store, claim.fence, { ...modelReserve(h, claim.fence, s, 100), attemptKind: 'ESCALATION' });
       assert.ok(esc1.ok);
-      assert.deepEqual(reserveBudget(h.store, claim.fence, { ...modelReserve(s, 100), attemptKind: 'ESCALATION' }), { ok: false, code: 'RUN_LIMIT', detail: 'ESCALATION_DEPTH' });
+      assert.deepEqual(reserveBudget(h.store, claim.fence, { ...modelReserve(h, claim.fence, s, 100), attemptKind: 'ESCALATION' }), { ok: false, code: 'RUN_LIMIT', detail: 'ESCALATION_DEPTH' });
       if (overhead.ok) releaseReservation(h.store, claim.fence, overhead.reservation.id, 'test');
       assert.deepEqual(s.gov.accountingInvariants(), []);
     } finally {
@@ -407,7 +408,7 @@ describe('C2 budgets: reserve before spend, settle actual, hard refusal, coheren
       const s = seed(h.store);
       governedItem(h, s);
       const { claim } = claimGoverned(h);
-      const r = reserveBudget(h.store, claim.fence, modelReserve(s, 5_000, 1_000));
+      const r = reserveBudget(h.store, claim.fence, modelReserve(h, claim.fence, s, 5_000, 1_000));
       assert.ok(r.ok);
       if (!r.ok) return;
       failSettle = true;
@@ -453,10 +454,10 @@ describe('C2 budgets: reserve before spend, settle actual, hard refusal, coheren
       const s = seed(h.store);
       governedItem(h, s);
       const { claim } = claimGoverned(h);
-      const r = reserveBudget(h.store, claim.fence, modelReserve(s, 1_000));
+      const r = reserveBudget(h.store, claim.fence, modelReserve(h, claim.fence, s, 1_000));
       assert.ok(r.ok);
       interruptClaim(h.store, h.supervisor, claim.fence.jobId, 'TEST');
-      assert.throws(() => reserveBudget(h.store, claim.fence, modelReserve(s, 1_000)), code('STALE_LEASE'));
+      assert.throws(() => reserveBudget(h.store, claim.fence, modelReserve(h, claim.fence, s, 1_000)), code('STALE_LEASE'));
       if (r.ok) settleReservation(h.store, claim.fence, r.reservation.id, { inputTokens: 1, outputTokens: 1, withinBounds: true, sessionId: null, outcome: 'OK' });
       assert.deepEqual(s.gov.accountingInvariants(), []);
     } finally {
@@ -484,7 +485,7 @@ describe('C2 schema: history is durable', () => {
   test('released migration 4 is applied; C1 tables are unchanged in role', () => {
     const h = harness();
     try {
-      assert.equal(h.store.schemaVersion, 4);
+      assert.ok(h.store.schemaVersion >= 4, 'migration 4 is applied (later released migrations may follow)');
       assert.equal(CompanyStore.name, 'CompanyStore');
     } finally {
       h.close();
@@ -551,7 +552,7 @@ describe('C2 authority remediation (D-C2-13): no bearer Founder authority, no fa
       const card = s.gov.addPriceCard(s.founder, d.id, { currency: 'USD', billingMode: 'METERED', billedInputPerMTok: 1, billedOutputPerMTok: 1, billedPerCall: 0, economicInputPerMTok: 1, economicOutputPerMTok: 1, economicPerCall: 0 });
       governedItem(h, s, s.employee, { dataClass: 'D3' });
       const { claim } = claimGoverned(h);
-      const r = reserveBudget(h.store, claim.fence, { purpose: 'MODEL_CALL', attemptKind: 'PRIMARY', deploymentId: d.id, priceCardId: card.id, routePolicyId: s.policyId, money: 100, tokens: 20 });
+      const r = reserveBudget(h.store, claim.fence, { purpose: 'MODEL_CALL', attemptKind: 'PRIMARY', deploymentId: d.id, priceCardId: card.id, routePolicyId: s.policyId, money: 100, tokens: 20, contextManifestId: testManifest(h, claim.fence, s.employee.id) });
       assert.deepEqual(r.ok ? 'reserved' : [r.code, r.detail], ['ROUTE_NO_LONGER_ELIGIBLE', 'D3_EXTERNAL_DENIED']);
     } finally {
       h.close();

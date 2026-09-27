@@ -9,6 +9,7 @@
     "packages/bootstrap-contract",
     "packages/domain",
     "packages/governance",
+    "packages/mind",
     "packages/storage",
     "packages/runtime"
   ],

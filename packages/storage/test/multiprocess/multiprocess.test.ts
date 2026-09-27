@@ -7,7 +7,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { ExponentialBackoff, assertId, isQandeelError, newId } from '@qandeel-company/domain';
 
 import { createBackupInternal } from '../../src/backup.js';
-import { CompanyStore, createBackup, listBackups, verifyBackup } from '../../src/index.js';
+import { CURRENT_SCHEMA_VERSION, CompanyStore, createBackup, listBackups, verifyBackup } from '../../src/index.js';
 import { KINDS, TEST_SUPERVISOR_TTL_MS, owner, removeRoot, tempRoot } from '../helpers.js';
 import { fixture, spawnScript } from '../process-harness.js';
 import { acquireSupervisor, claimNext, interruptClaim, settle } from '../../src/runtime-authority.js';
@@ -53,8 +53,8 @@ describe('multi-process proofs (independent OS processes, independent SQLite con
       const children = Array.from({ length: 4 }, () => spawnScript(fixture('opener'), [root, String(startAt)]));
       const results = await Promise.all(children.map(async (c) => JSON.parse(await c.waitFor((l) => l.startsWith('{'))) as { ok: boolean; schemaVersion?: number; applied?: number[]; code?: string }));
       await Promise.all(children.map((c) => c.exited()));
-      assert.ok(results.every((r) => r.ok && r.schemaVersion === 4), JSON.stringify(results));
-      assert.deepEqual(results.flatMap((r) => r.applied ?? []).sort(), [1, 2, 3, 4], 'each migration applied exactly once across all processes');
+      assert.ok(results.every((r) => r.ok && r.schemaVersion === CURRENT_SCHEMA_VERSION), JSON.stringify(results));
+      assert.deepEqual((results.flatMap((r) => r.applied ?? []) as number[]).sort((a, b) => a - b), Array.from({ length: CURRENT_SCHEMA_VERSION }, (_, i) => i + 1), 'each migration applied exactly once across all processes');
     } finally {
       removeRoot(root);
     }

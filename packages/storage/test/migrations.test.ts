@@ -32,7 +32,7 @@ describe('versioned migrations', () => {
     const root = tempRoot('mig');
     try {
       const s1 = CompanyStore.open(root, { clock });
-      assert.deepEqual(s1.migration, { fromVersion: 0, toVersion: CURRENT_SCHEMA_VERSION, applied: [1, 2, 3, 4] });
+      assert.deepEqual(s1.migration, { fromVersion: 0, toVersion: CURRENT_SCHEMA_VERSION, applied: Array.from({ length: CURRENT_SCHEMA_VERSION }, (_, i) => i + 1) });
       assert.equal(s1.schemaVersion, CURRENT_SCHEMA_VERSION);
       assert.ok(tables(s1).includes('work_items') && tables(s1).includes('queue_jobs') && tables(s1).includes('schema_migrations'));
       s1.close();
@@ -99,7 +99,7 @@ describe('versioned migrations', () => {
       const { workItem } = old.createWorkItem({ objective: 'created on schema v1', ownerRef: owner, initialState: 'READY' });
       old.close();
       const current = CompanyStore.open(root, { clock });
-      assert.deepEqual(current.migration.applied, [2, 3, 4]);
+      assert.deepEqual(current.migration.applied, Array.from({ length: CURRENT_SCHEMA_VERSION - 1 }, (_, i) => i + 2));
       assert.equal(current.getWorkItem(workItem.id).objective, 'created on schema v1');
       assert.equal(current.history(workItem.id).length, 1);
       current.close();

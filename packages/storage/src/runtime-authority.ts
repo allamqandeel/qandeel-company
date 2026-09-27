@@ -13,7 +13,7 @@
  * rebuilt from the publicly readable lease row is refused. Every worker write presents its job fence. Recovery writes that take a claim away
  * from a worker also present the supervisor fence.
  */
-import { isQandeelError, type Id, type JsonValue, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
+import { QandeelError, isQandeelError, type Id, type JsonValue, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
 import type { DataClass, ProviderFailureClass } from '@qandeel-company/governance';
 
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
@@ -44,6 +44,7 @@ import {
   type InstanceState,
 } from './runtime-state.js';
 import type { SettleUsage } from './governance-core.js';
+import type { MemoryCandidateRecord } from './mind-records.js';
 import {
   txAuthorizeModelCall,
   txBeginGovernedRun,
@@ -65,6 +66,7 @@ import {
   type ToolIntentInput,
 } from './governed-writes.js';
 import { userVersion } from './migrations.js';
+import { txAssembleContext, txDecideMemoryCandidate, txDecidePendingCandidates, txSubmitMemoryCandidate, type AssembleRequest, type AssembleResult, type CandidateProposal, type SubmitResult } from './mind-writes.js';
 import { storeContext, type CompanyStore } from './store.js';
 import { txRequestCancellation, txSupersede } from './work-items.js';
 import type { TerminationOutcome } from './work-core.js';
@@ -272,5 +274,42 @@ export function recoverGovernedOrphans(store: CompanyStore, supervisor: Supervis
   return write(store, 'recover governed orphans', (ctx) => {
     verifySupervisor(ctx, supervisor);
     return txRecoverGovernedOrphans(ctx, limit);
+  });
+}
+
+// --- C3 governed Context Assembly and memory candidates (job fence mandatory; runtime only) --------
+
+export type { AssembleRequest, AssembleResult, CandidateProposal, SubmitResult } from './mind-writes.js';
+export type { MemoryCandidateRecord } from './mind-records.js';
+
+/**
+ * Governed Context Assembly for one inference: durable reads, hard budget, integrity-verified content
+ * for the selection only, and the Context Manifest — in one transaction. The only producer of model input.
+ */
+export function assembleContext(store: CompanyStore, fence: Fence, request: AssembleRequest): AssembleResult {
+  return fenced(store, 'assemble context', fence, (ctx) => txAssembleContext(ctx, fence, request));
+}
+
+/** Records a structured memory CANDIDATE from the run (provenance, evidence and class floor set here, never by the model). */
+export function submitMemoryCandidate(store: CompanyStore, fence: Fence, step: number, proposal: CandidateProposal): SubmitResult {
+  const r = fenced(store, 'submit memory candidate', fence, (ctx) => txSubmitMemoryCandidate(ctx, fence, step, proposal));
+  if (r.kind === 'SUBMITTED') storeContext(store).fault('memoryCandidate.afterCommit');
+  return r;
+}
+
+/** The runtime-owned Memory Write Policy decides one candidate (its own transaction, after submission). */
+export function decideMemoryCandidate(store: CompanyStore, fence: Fence, candidateId: Id): MemoryCandidateRecord {
+  return write(store, 'decide memory candidate', (ctx) => {
+    const c = ctx.db.get<{ run_id: string }>('SELECT run_id FROM memory_candidates WHERE id = ?', candidateId);
+    if (!c || c.run_id !== fence.runId) throw new QandeelError('STALE_LEASE', 'this candidate belongs to another run', { candidateId });
+    return txDecideMemoryCandidate(ctx, candidateId);
+  });
+}
+
+/** Recovery (supervisor fence mandatory): decide candidates whose run died between submission and decision. */
+export function decidePendingCandidates(store: CompanyStore, supervisor: SupervisorFence, limit = 100): number {
+  return write(store, 'decide pending candidates', (ctx) => {
+    verifySupervisor(ctx, supervisor);
+    return txDecidePendingCandidates(ctx, limit);
   });
 }

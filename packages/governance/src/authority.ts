@@ -20,11 +20,15 @@ export type PrincipalKind = (typeof PRINCIPAL_KINDS)[number];
 const RISK_RANK: Readonly<Record<RiskLevel, number>> = { R0: 0, R1: 1, R2: 2, R3: 3, R4: 4 };
 export const riskRank = (r: RiskLevel): number => RISK_RANK[r];
 
-/** Capability codes: `model.invoke` or `tool:<tool>.<action>`. */
-export const CAPABILITY = /^(?:model\.invoke|tool:[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){1,4})$/;
+/**
+ * Capability codes: `model.invoke`, `tool:<tool>.<action>`, or (C3) knowledge access beyond the
+ * Employee's own scopes: `knowledge.read` (another Department's knowledge, resource = department
+ * code) and `knowledge.restricted` (a Restricted knowledge scope, resource = its scope code).
+ */
+export const CAPABILITY = /^(?:model\.invoke|knowledge\.(?:read|restricted)|tool:[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){1,4})$/;
 
 export function assertCapability(v: unknown, field = 'capability'): string {
-  if (typeof v !== 'string' || v.length > 128 || !CAPABILITY.test(v)) throw new QandeelError('VALIDATION_FAILED', 'capability must be "model.invoke" or "tool:<tool>.<action>"', { field });
+  if (typeof v !== 'string' || v.length > 128 || !CAPABILITY.test(v)) throw new QandeelError('VALIDATION_FAILED', 'capability must be "model.invoke", "knowledge.read", "knowledge.restricted" or "tool:<tool>.<action>"', { field });
   return v;
 }
 
