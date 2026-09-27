@@ -40,6 +40,12 @@ export const EVENT_TYPES = [
   'artifact.ready',
   'artifact.quarantined',
   'runtime.recovered',
+  // C2 (content-free: IDs, codes, amounts only).
+  'work_item.approval_requested',
+  'work_item.approved',
+  'run.attributed',
+  'run.usage_settled',
+  'run.tool_invocation',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

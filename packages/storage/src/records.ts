@@ -41,6 +41,8 @@ export interface WorkItemRecord {
   readonly terminationReason: string | null;
   readonly supersededBy: Id | null;
   readonly dedupeKey: string | null;
+  /** C2: the Founder approval this Work Item was released with (approval-gated work only). */
+  readonly approvalId: Id | null;
   readonly correlationId: Id;
   readonly createdAt: Timestamp;
   readonly updatedAt: Timestamp;

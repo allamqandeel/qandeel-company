@@ -32,7 +32,7 @@ describe('versioned migrations', () => {
     const root = tempRoot('mig');
     try {
       const s1 = CompanyStore.open(root, { clock });
-      assert.deepEqual(s1.migration, { fromVersion: 0, toVersion: CURRENT_SCHEMA_VERSION, applied: [1, 2, 3] });
+      assert.deepEqual(s1.migration, { fromVersion: 0, toVersion: CURRENT_SCHEMA_VERSION, applied: [1, 2, 3, 4] });
       assert.equal(s1.schemaVersion, CURRENT_SCHEMA_VERSION);
       assert.ok(tables(s1).includes('work_items') && tables(s1).includes('queue_jobs') && tables(s1).includes('schema_migrations'));
       s1.close();
@@ -49,10 +49,11 @@ describe('versioned migrations', () => {
     try {
       const base = loadReleasedMigrations();
       CompanyStore.open(root, { clock }).close();
-      const broken = fixture(4, 'broken', 'CREATE TABLE half_done (x INTEGER) STRICT;\nINSERT INTO no_such_table VALUES (1);\n');
-      assert.throws(() => openStoreForTests(root, { clock, migrations: [...base, broken] }), (e) => isQandeelError(e, 'MIGRATION_FAILED') && e.details.version === 4);
+      const next = CURRENT_SCHEMA_VERSION + 1;
+      const broken = fixture(next, 'broken', 'CREATE TABLE half_done (x INTEGER) STRICT;\nINSERT INTO no_such_table VALUES (1);\n');
+      assert.throws(() => openStoreForTests(root, { clock, migrations: [...base, broken] }), (e) => isQandeelError(e, 'MIGRATION_FAILED') && e.details.version === next);
       const again = CompanyStore.open(root, { clock });
-      assert.equal(again.schemaVersion, 3);
+      assert.equal(again.schemaVersion, CURRENT_SCHEMA_VERSION);
       assert.ok(!tables(again).includes('half_done'), 'DDL of the failed migration was rolled back');
       again.close();
     } finally {
@@ -98,7 +99,7 @@ describe('versioned migrations', () => {
       const { workItem } = old.createWorkItem({ objective: 'created on schema v1', ownerRef: owner, initialState: 'READY' });
       old.close();
       const current = CompanyStore.open(root, { clock });
-      assert.deepEqual(current.migration.applied, [2, 3]);
+      assert.deepEqual(current.migration.applied, [2, 3, 4]);
       assert.equal(current.getWorkItem(workItem.id).objective, 'created on schema v1');
       assert.equal(current.history(workItem.id).length, 1);
       current.close();
@@ -115,7 +116,7 @@ describe('versioned migrations', () => {
       assert.ok(!tables(v2).includes('runtime_wake'));
       const { workItem } = v2.createWorkItem({ objective: 'queued on schema v2', ownerRef: owner, processorKind: 'test.noop', initialState: 'READY' });
       v2.close();
-      const v3 = CompanyStore.open(root, { clock });
+      const v3 = openStoreForTests(root, { clock, migrations: loadReleasedMigrations(3) });
       assert.deepEqual(v3.migration, { fromVersion: 2, toVersion: 3, applied: [3] });
       assert.equal(v3.getWorkItem(workItem.id).state, 'READY');
       assert.equal(v3.jobsFor(workItem.id)[0]?.state, 'QUEUED', 'the v2 job survives the upgrade');

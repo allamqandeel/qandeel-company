@@ -53,8 +53,8 @@ describe('multi-process proofs (independent OS processes, independent SQLite con
       const children = Array.from({ length: 4 }, () => spawnScript(fixture('opener'), [root, String(startAt)]));
       const results = await Promise.all(children.map(async (c) => JSON.parse(await c.waitFor((l) => l.startsWith('{'))) as { ok: boolean; schemaVersion?: number; applied?: number[]; code?: string }));
       await Promise.all(children.map((c) => c.exited()));
-      assert.ok(results.every((r) => r.ok && r.schemaVersion === 3), JSON.stringify(results));
-      assert.deepEqual(results.flatMap((r) => r.applied ?? []).sort(), [1, 2, 3], 'each migration applied exactly once across all processes');
+      assert.ok(results.every((r) => r.ok && r.schemaVersion === 4), JSON.stringify(results));
+      assert.deepEqual(results.flatMap((r) => r.applied ?? []).sort(), [1, 2, 3, 4], 'each migration applied exactly once across all processes');
     } finally {
       removeRoot(root);
     }

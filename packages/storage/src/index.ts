@@ -30,3 +30,35 @@ export { CompanyStore, DEFAULT_BUSY_TIMEOUT_MS, STORAGE_VERSION, type CompanyRea
 export { DEFAULT_MAX_ATTEMPTS, MAX_LINEAGE_DEPTH, defaultPropagationPolicy, type PropagationPolicy, type TerminationMode, type TerminationOutcome } from './work-core.js';
 export { IDEMPOTENCY_SCOPE_CREATE, type CreateOptions, type CreateResult, type CreateWorkItemInput, type TerminationInput, type TransitionInput } from './work-items.js';
 export { DATABASE_FILE, assertLocalPathSyntax, layoutFor, openWorkspace, workspaceFreeBytes, type WorkspaceLayout } from './workspace.js';
+// C2 governance administration and inspection (Founder authority; no execution, no claims).
+export {
+  GovernanceStore,
+  assertCredentialRef,
+  workItemDataClass,
+  type CreateBudgetInput,
+  type CreateEmployeeInput,
+  type GovernanceHealth,
+  type GrantInput,
+  type PriceCardInput,
+  type ReconcileDecision,
+  type RegisterDeploymentInput,
+  type RegisterToolActionInput,
+} from './governance.js';
+export type {
+  ApprovalRecord,
+  BudgetRecord,
+  DepartmentRecord,
+  DeploymentRecord,
+  EmployeeHistoryRecord,
+  EmployeeRecord,
+  GrantRecord,
+  PriceCardRecord,
+  PrincipalRecord,
+  ProviderRecord,
+  ReservationRecord,
+  RunAttributionRecord,
+  ToolActionRecord,
+  ToolInvocationRecord,
+  ToolRecord,
+  UsageRecord,
+} from './governance-records.js';

@@ -8,6 +8,7 @@
   "workspaces": [
     "packages/bootstrap-contract",
     "packages/domain",
+    "packages/governance",
     "packages/storage",
     "packages/runtime"
   ],

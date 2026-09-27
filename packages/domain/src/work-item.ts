@@ -109,6 +109,11 @@ export interface TransitionSubject {
   readonly reviewRequired: boolean;
   readonly approvalRequired: boolean;
   readonly riskLevel: RiskLevel;
+  /**
+   * C2: the Work Item is bound to a Founder-approved `work_item.execute` approval (storage verifies
+   * the binding and a database trigger re-checks it). Absent or false → the fail-closed gate holds.
+   */
+  readonly approvalId?: string | null;
 }
 
 export interface TransitionRequest {
@@ -119,8 +124,9 @@ export interface TransitionRequest {
 
 /**
  * Stage 1 §1 / Stage 3 §3: sensitive work fails closed when the approval path cannot decide.
- * R3/R4 work always requires approval; explicit `approvalRequired` does too. C1 has no approval
- * engine (C2), so such work may be recorded but can never be released for execution.
+ * R3/R4 work always requires approval; explicit `approvalRequired` does too. Such work is released
+ * for execution only when it is bound to a Founder approval (C2 approval engine); R4 work is
+ * Founder-only sovereign action and is never released to the Company runtime.
  */
 export function requiresApproval(subject: Pick<TransitionSubject, 'approvalRequired' | 'riskLevel'>): boolean {
   return subject.approvalRequired || subject.riskLevel === 'R3' || subject.riskLevel === 'R4';
@@ -140,11 +146,12 @@ export function assertTransition(subject: TransitionSubject, request: Transition
     throw new QandeelError('INVALID_TRANSITION', `${from} -> ${to} is not an allowed transition`, { from, to });
   }
   if (requiresApproval(subject) && (to === 'READY' || to === 'IN_PROGRESS' || to === 'ASSIGNED')) {
-    throw new QandeelError(
-      'APPROVAL_PATH_UNAVAILABLE',
-      'work requiring approval cannot be released for execution: no approval path exists in C1',
-      { from, to, riskLevel: subject.riskLevel },
-    );
+    if (subject.approvalId === undefined || subject.approvalId === null) {
+      throw new QandeelError('APPROVAL_PATH_UNAVAILABLE', 'work requiring approval is released only through a Founder approval bound to it', { from, to, riskLevel: subject.riskLevel });
+    }
+    if (subject.riskLevel === 'R4') {
+      throw new QandeelError('FOUNDER_ONLY', 'R4 work is a Founder-only sovereign action and is never released to the Company runtime', { from, to, riskLevel: subject.riskLevel });
+    }
   }
   if (from === 'COMPLETED' && to === 'CLOSED' && subject.reviewRequired) {
     throw new QandeelError('INVALID_TRANSITION', 'work that requires review cannot close before it is reviewed', { from, to });
