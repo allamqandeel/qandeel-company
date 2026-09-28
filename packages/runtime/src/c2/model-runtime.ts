@@ -32,7 +32,7 @@ import {
   type RouteRequest,
 } from '@qandeel-company/governance';
 import { GovernanceStore, type CompanyStore, type Fence } from '@qandeel-company/storage';
-import { authorizeModelCall, holdReservation, recordDeploymentOutcome, releaseReservation, reserveBudget, settleReservation, type GovernedRunContext } from '@qandeel-company/storage/runtime-authority';
+import { authorizeModelCall, containProviderFault, holdReservation, recordDeploymentOutcome, releaseReservation, reserveBudget, settleReservation, type GovernedRunContext } from '@qandeel-company/storage/runtime-authority';
 
 import { isAssembledContext, type AssembledContext } from '../c3/context-assembler.js';
 import type { ModelCallOutcome, ModelCallRequest } from './types.js';
@@ -46,6 +46,12 @@ export class GovernedModelRuntime {
   readonly #adapters: ReadonlyMap<string, ProviderAdapter>;
   readonly #timeoutMs: number;
   #calls = 0;
+  /**
+   * Deployments whose provider fault is known but whose containment the store refused to write
+   * together with the money (R1-09): never routed by this process, and contained at the next route
+   * boundary. Empty whenever the store accepts writes.
+   */
+  readonly #uncontained = new Set<string>();
 
   constructor(adapters: readonly ProviderAdapter[], timeoutMs = DEFAULT_MODEL_CALL_TIMEOUT_MS) {
     const map = new Map<string, ProviderAdapter>();
@@ -77,6 +83,15 @@ export class GovernedModelRuntime {
     // a revoked grant or a context raised by a tool result or by assembled context applies at once.
     const auth = authorizeModelCall(store, fence, { taskClass: req.taskClass, dataClass: maxDataClass(run.dataClass, context.dataClass) });
     if (!auth.ok) return { kind: 'DENIED', code: auth.code };
+    for (const id of this.#uncontained) {
+      try {
+        recordDeploymentOutcome(store, fence, id as Id, 'CONTRACT_VIOLATION');
+        this.#uncontained.delete(id);
+      } catch {
+        // Still refused: it stays out of this process's routing until it is written.
+      }
+    }
+    const routable = <T extends { readonly id: string }>(ds: readonly T[]): readonly T[] => (this.#uncontained.size === 0 ? ds : ds.filter((x) => !this.#uncontained.has(x.id)));
     const governance = GovernanceStore.for(store);
     const snapshot = governance.routingSnapshot(req.taskClass);
     const policy = snapshot.policy;
@@ -103,7 +118,7 @@ export class GovernedModelRuntime {
       employeeCeiling: profile.ceilingClass,
       currency,
     };
-    let decision: RouteDecision = route(routeReq, policy, snapshot.deployments, store.now());
+    let decision: RouteDecision = route(routeReq, policy, routable(snapshot.deployments), store.now());
     if (decision.kind === 'NO_LLM') return { kind: 'NO_LLM' };
     if (decision.kind === 'NONE') return { kind: 'UNAVAILABLE', code: decision.code };
     let attemptKind: AttemptKind = firstKind;
@@ -156,7 +171,7 @@ export class GovernedModelRuntime {
           try {
             settled = this.#account(store, fence, d, reservationId, sessionId, outcome, routeReq.inputTokensUpperBound, req.maxOutputTokens, attempt, context.manifestId);
           } catch {
-            return containAccountingFailure(store, fence, reservationId, d.deployment.id as Id, providerFault);
+            return this.#containAccountingFailure(store, fence, reservationId, d.deployment.id, providerFault);
           }
           if ('done' in settled) return settled.done;
           const failure = settled.failure;
@@ -174,7 +189,7 @@ export class GovernedModelRuntime {
       }
       // Fallback: another prequalified route, same quality/privacy contract, no costlier envelope.
       const fresh = governance.routingSnapshot(req.taskClass);
-      const fallback = planFallback(d, routeReq, policy, fresh.deployments, failed, store.now());
+      const fallback = planFallback(d, routeReq, policy, routable(fresh.deployments), failed, store.now());
       if (fallback.kind !== 'ROUTE') return { kind: 'UNAVAILABLE', code: fallback.kind === 'NONE' && fallback.rejected.some((x) => x.code === 'COST_CEILING') ? 'FALLBACK_REFUSED_COST' : `PROVIDER_${lastFailure}` };
       decision = fallback;
       attemptKind = 'FALLBACK';
@@ -207,16 +222,17 @@ export class GovernedModelRuntime {
         usage = normalizeUsage(outcome.response.usage, { inputUpperBound, maxOutputTokens });
       } catch {
         // Unusable usage report: the provider answered but broke the contract. Hold the full
-        // reservation (spend is uncertain), hold the deployment, never retry blindly.
-        holdReservation(store, fence, reservationId, 'USAGE_UNREPORTED');
-        recordHealth(store, fence, deploymentId, 'CONTRACT_VIOLATION');
+        // reservation (spend is uncertain) and contain the deployment in one transaction; never retry
+        // blindly. A store failure here escapes to the caller's containment.
+        containProviderFault(store, fence, reservationId, 'USAGE_UNREPORTED');
         return { done: { kind: 'UNCERTAIN', failure: 'CONTRACT_VIOLATION' } };
       }
+      // Usage outside the enforced bounds contains the deployment inside this same settle transaction.
       settleReservation(store, fence, reservationId, { inputTokens: usage.usage.inputTokens, outputTokens: usage.usage.outputTokens, withinBounds: usage.withinBounds, sessionId, outcome: 'OK' });
-      recordHealth(store, fence, deploymentId, usage.withinBounds ? null : 'CONTRACT_VIOLATION');
+      if (usage.withinBounds) recordHealth(store, fence, deploymentId, null);
       return { done: { kind: 'OK', proposal: parseProposal(outcome.response.outputText), usage: usage.usage, deploymentId: d.deployment.id, reasoningClass: d.reasoningClass, attempts: attempt, manifestId } };
     }
-    const failure = outcome.failure;
+    let failure = outcome.failure;
     const disp = FAILURE_DISPOSITIONS[failure];
     if (outcome.usage) {
       // Billed despite failing: charged truthfully, never hidden.
@@ -226,8 +242,20 @@ export class GovernedModelRuntime {
       } catch {
         u = null;
       }
-      if (u) settleReservation(store, fence, reservationId, { inputTokens: u.usage.inputTokens, outputTokens: u.usage.outputTokens, withinBounds: u.withinBounds, sessionId, outcome: 'FAILED_CHARGED' });
-      else holdReservation(store, fence, reservationId, failure);
+      if (u) {
+        settleReservation(store, fence, reservationId, { inputTokens: u.usage.inputTokens, outputTokens: u.usage.outputTokens, withinBounds: u.withinBounds, sessionId, outcome: 'FAILED_CHARGED' });
+        // Usage outside the bounds was contained with the settle: the provider broke the contract,
+        // whatever failure class it also reported (no retry of the same route).
+        failure = u.withinBounds ? failure : 'CONTRACT_VIOLATION';
+      } else {
+        containProviderFault(store, fence, reservationId, failure);
+        return { failure: 'CONTRACT_VIOLATION' };
+      }
+    } else if (failure === 'CONTRACT_VIOLATION') {
+      // A malformed answer: possibly billed AND the provider's fault — money held and deployment
+      // contained in one transaction.
+      containProviderFault(store, fence, reservationId, failure);
+      return { failure };
     } else if (disp.sent === 'UNKNOWN') {
       holdReservation(store, fence, reservationId, failure);
     } else {
@@ -235,6 +263,32 @@ export class GovernedModelRuntime {
     }
     recordHealth(store, fence, deploymentId, failure);
     return { failure };
+  }
+
+  /**
+   * A call that may have been billed whose bookkeeping failed (R1-09): the reservation is held for
+   * reconciliation (never left RESERVED, never released), so the same route is never called again
+   * blindly. Only a failure the provider's answer caused contains the deployment — in the same
+   * transaction as the money hold; a local store failure of any kind (busy, I/O, invariant) is never
+   * blamed on the provider (R1 re-review). If the store refuses even that write, nothing durable names
+   * the provider: this process keeps the deployment out of routing until the containment is written
+   * (next route boundary), and the run-settle backstop / startup recovery hold the reservation.
+   */
+  #containAccountingFailure(store: CompanyStore, fence: Fence, reservationId: Id, deploymentId: string, providerFault: boolean): ModelCallOutcome {
+    if (providerFault) {
+      try {
+        containProviderFault(store, fence, reservationId, 'SETTLEMENT_FAILED');
+        return { kind: 'UNCERTAIN', failure: 'CONTRACT_VIOLATION' };
+      } catch {
+        this.#uncontained.add(deploymentId);
+      }
+    }
+    try {
+      holdReservation(store, fence, reservationId, 'SETTLEMENT_FAILED');
+    } catch {
+      // Already final or the store is unavailable: the backstop holds it.
+    }
+    return { kind: 'UNCERTAIN', failure: providerFault ? 'CONTRACT_VIOLATION' : 'UNKNOWN' };
   }
 
   /** One bounded adapter call; any adapter misbehaviour is normalized, never propagated. */
@@ -262,29 +316,11 @@ export class GovernedModelRuntime {
 }
 
 /**
- * A call that may have been billed whose bookkeeping failed (R1-09): the reservation is held for
- * reconciliation (never left RESERVED, never released) and the deployment is held as a contract
- * violation, so no retry calls the same route blindly. Each step is best effort — if the store itself
- * is unavailable, the run-settle backstop and startup recovery hold the reservation instead.
- */
-function containAccountingFailure(store: CompanyStore, fence: Fence, reservationId: Id, deploymentId: Id, providerFault: boolean): ModelCallOutcome {
-  try {
-    holdReservation(store, fence, reservationId, 'SETTLEMENT_FAILED');
-  } catch {
-    // Already final or the store is unavailable: the backstop holds it.
-  }
-  // Only a failure the provider's answer caused holds the deployment; a local store failure of any
-  // kind (busy, I/O, invariant) is never blamed on the provider (R1 re-review).
-  if (!providerFault) return { kind: 'UNCERTAIN', failure: 'UNKNOWN' };
-  recordHealth(store, fence, deploymentId, 'CONTRACT_VIOLATION');
-  return { kind: 'UNCERTAIN', failure: 'CONTRACT_VIOLATION' };
-}
-
-/**
  * The provider broke the usage contract: an unusable usage report, or reported usage whose cost is
  * outside the accounting range. Decided from the answer alone (pure; no store access).
  */
 function providerBrokeContract(outcome: CallResult, d: Extract<RouteDecision, { kind: 'ROUTE' }>, inputUpperBound: number, maxOutputTokens: number): boolean {
+  if (!outcome.ok && outcome.failure === 'CONTRACT_VIOLATION') return true;
   const reported = outcome.ok ? outcome.response.usage : outcome.usage;
   if (!outcome.ok && !reported) return false;
   try {
@@ -299,8 +335,10 @@ function providerBrokeContract(outcome: CallResult, d: Extract<RouteDecision, { 
 }
 
 /**
- * Deployment health is observability for routing, recorded after the money write has committed: a
- * failure to record it (e.g. a busy store) never discards a paid, valid answer or blames the provider.
+ * Deployment health of an answer the provider did NOT break is observability for routing, recorded
+ * after the money write has committed: a failure to record it (e.g. a busy store) never discards a
+ * paid, valid answer or blames the provider. A known provider fault is never recorded here — it is
+ * contained inside the money transaction (R1-09, Technical Lead follow-up).
  */
 function recordHealth(store: CompanyStore, fence: Fence, deploymentId: Id, failure: ProviderFailureClass | null): void {
   try {

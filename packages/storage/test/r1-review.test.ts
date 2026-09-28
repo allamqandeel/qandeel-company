@@ -7,10 +7,10 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { isQandeelError, type Id } from '@qandeel-company/domain';
+import { QandeelError, isQandeelError, type Id } from '@qandeel-company/domain';
 
 import { AcademyStore, MemoryStore } from '../src/index.js';
-import { beginGovernedRun, claimJob, recordStepResult, recordToolIntent, recordToolResult, reserveBudget, settle, type Claim } from '../src/runtime-authority.js';
+import { beginGovernedRun, claimJob, containProviderFault, recordStepResult, recordToolIntent, recordToolResult, reserveBudget, settle, settleReservation, type Claim } from '../src/runtime-authority.js';
 import { storeContext } from '../src/store.js';
 import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
 import { C2_KINDS, GOVERNED_KIND, claimGoverned, governedItem, seed, testManifest, type Seed } from './c2-helpers.js';
@@ -361,6 +361,68 @@ describe('R1-09: no model-call reservation outlives its run as RESERVED', () => 
       assert.equal(s.gov.reservations(claim.fence.runId)[0]?.state, 'RECONCILIATION_REQUIRED');
       assert.equal(s.gov.budgetFor('COMPANY', 'company')?.reservedMoney, 5_000, 'possibly billed: held, never released');
     });
+  });
+});
+
+describe('R1-09 (Technical Lead follow-up): a provider fault and its money record commit together or not at all', () => {
+  test('usage outside the bounds contains the deployment in the settle transaction; a failed containment write rolls the money back too', () => {
+    let failContainment = false;
+    const h = harness({ fault: (p) => { if (p === 'deploymentOutcome.beforeCommit' && failContainment) throw new QandeelError('STORAGE_BUSY', 'simulated contention at the containment write'); } });
+    try {
+      const s = seed(h.store);
+      governedItem(h, s);
+      const { claim } = claimGoverned(h);
+      const manifest = testManifest(h, claim.fence, s.employee.id);
+      const reserve = () => reserveBudget(h.store, claim.fence, { purpose: 'MODEL_CALL', attemptKind: 'PRIMARY', deploymentId: s.deploymentId, priceCardId: s.priceCardId, routePolicyId: s.policyId, money: 5_000, tokens: 1_000, contextManifestId: manifest });
+      const first = reserve();
+      assert.ok(first.ok);
+      if (!first.ok) return;
+      // Never half-written: the refused containment leaves no usage row and a still-RESERVED reservation.
+      failContainment = true;
+      assert.throws(() => settleReservation(h.store, claim.fence, first.reservation.id, { inputTokens: 10, outputTokens: 900, withinBounds: false, sessionId: null, outcome: 'OK' }));
+      assert.equal(s.gov.reservations(claim.fence.runId)[0]?.state, 'RESERVED');
+      assert.deepEqual(s.gov.usage({ runId: claim.fence.runId }), []);
+      assert.equal(s.gov.deployment(s.deploymentId).status, 'ACTIVE');
+      // Committed: the out-of-bounds usage row and the deployment HOLD exist together.
+      failContainment = false;
+      settleReservation(h.store, claim.fence, first.reservation.id, { inputTokens: 10, outputTokens: 900, withinBounds: false, sessionId: null, outcome: 'OK' });
+      assert.equal(s.gov.usage({ runId: claim.fence.runId })[0]?.withinBounds, false);
+      assert.equal(s.gov.deployment(s.deploymentId).status, 'HOLD');
+      // Routing consequence at the durable gate: the contained deployment is never reserved again.
+      assert.deepEqual(reserve(), { ok: false, code: 'ROUTE_NO_LONGER_ELIGIBLE', detail: 'deployment' });
+      assert.deepEqual(s.gov.accountingInvariants(), []);
+    } finally {
+      h.close();
+    }
+  });
+
+  test('an unsettleable provider fault holds the money and contains the deployment atomically; a healthy settle never contains it', () => {
+    let failContainment = false;
+    const h = harness({ fault: (p) => { if (p === 'deploymentOutcome.beforeCommit' && failContainment) throw new QandeelError('STORAGE_BUSY', 'simulated contention at the containment write'); } });
+    try {
+      const s = seed(h.store);
+      governedItem(h, s);
+      const { claim } = claimGoverned(h);
+      const manifest = testManifest(h, claim.fence, s.employee.id);
+      const reserve = () => reserveBudget(h.store, claim.fence, { purpose: 'MODEL_CALL', attemptKind: 'PRIMARY', deploymentId: s.deploymentId, priceCardId: s.priceCardId, routePolicyId: s.policyId, money: 5_000, tokens: 1_000, contextManifestId: manifest });
+      const healthy = reserve();
+      assert.ok(healthy.ok);
+      if (!healthy.ok) return;
+      settleReservation(h.store, claim.fence, healthy.reservation.id, { inputTokens: 10, outputTokens: 10, withinBounds: true, sessionId: null, outcome: 'OK' });
+      assert.equal(s.gov.deployment(s.deploymentId).status, 'ACTIVE', 'a healthy settle never touches deployment health');
+      const faulty = reserve();
+      assert.ok(faulty.ok);
+      if (!faulty.ok) return;
+      failContainment = true;
+      assert.throws(() => containProviderFault(h.store, claim.fence, faulty.reservation.id, 'USAGE_UNREPORTED'));
+      assert.equal(s.gov.reservations(claim.fence.runId).find((r) => r.id === faulty.reservation.id)?.state, 'RESERVED', 'the money hold rolled back with the refused containment');
+      failContainment = false;
+      containProviderFault(h.store, claim.fence, faulty.reservation.id, 'USAGE_UNREPORTED');
+      assert.equal(s.gov.reservations(claim.fence.runId).find((r) => r.id === faulty.reservation.id)?.state, 'RECONCILIATION_REQUIRED');
+      assert.equal(s.gov.deployment(s.deploymentId).status, 'HOLD');
+    } finally {
+      h.close();
+    }
   });
 });
 

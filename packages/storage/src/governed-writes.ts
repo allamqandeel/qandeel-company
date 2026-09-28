@@ -365,6 +365,10 @@ function ownReservation(ctx: StoreContext, fence: Fence, reservationId: Id): Res
 
 export function txSettle(ctx: StoreContext, fence: Fence, reservationId: Id, usage: SettleUsage): Id | null {
   const r = ownReservation(ctx, fence, reservationId);
+  // Usage outside the enforced bounds is a provider contract violation: the deployment is contained in
+  // THIS transaction, so the money record and the containment commit together or not at all — a failed
+  // health write can never leave a known violator routable (R1-09, Technical Lead follow-up).
+  if (r.purpose === 'MODEL_CALL' && r.deploymentId !== null && !usage.withinBounds) txDeploymentOutcome(ctx, fence, r.deploymentId, 'CONTRACT_VIOLATION');
   if (r.state === 'SETTLED' || r.state === 'RELEASED') {
     // Already reconciled by the Founder: the worker's actual usage is still recorded, as a discrepancy.
     appendAudit(ctx, 'budget.late_usage_discrepancy', 'reservation', r.id, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', 'ALREADY_FINAL', { state: r.state, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens });
@@ -373,6 +377,17 @@ export function txSettle(ctx: StoreContext, fence: Fence, reservationId: Id, usa
   const id = settleReservationTx(ctx, r, usage, SYSTEM_RUNTIME_REF);
   ctx.fault('settlement.beforeCommit');
   return id;
+}
+
+/**
+ * A provider answer that itself broke the contract, when its usage cannot be settled: the money is held
+ * for reconciliation (if still reserved) and the reservation's own deployment is contained, in one
+ * transaction (R1-09, Technical Lead follow-up). The deployment comes from the reservation, never the caller.
+ */
+export function txContainProviderFault(ctx: StoreContext, fence: Fence, reservationId: Id, reasonCode: string): void {
+  const r = ownReservation(ctx, fence, reservationId);
+  holdReservationTx(ctx, r, reasonCode);
+  if (r.purpose === 'MODEL_CALL' && r.deploymentId !== null) txDeploymentOutcome(ctx, fence, r.deploymentId, 'CONTRACT_VIOLATION');
 }
 
 export function txRelease(ctx: StoreContext, fence: Fence, reservationId: Id, reasonCode: string): void {
@@ -400,6 +415,7 @@ export function txDeploymentOutcome(ctx: StoreContext, fence: Fence, deploymentI
   };
   if (failure === null) {
     if (Number(d.circuit_failures) !== 0 || d.circuit_open_until !== null) ctx.db.run('UPDATE deployments SET circuit_failures = 0, circuit_open_until = NULL, version = version + 1, updated_at = ? WHERE id = ?', now, deploymentId);
+    ctx.fault('deploymentOutcome.beforeCommit');
     return;
   }
   const disp = FAILURE_DISPOSITIONS[failure];
@@ -417,6 +433,7 @@ export function txDeploymentOutcome(ctx: StoreContext, fence: Fence, deploymentI
     ctx.db.run(`UPDATE deployments SET status = 'HOLD', hold_reason = ?, version = version + 1, updated_at = ? WHERE id = ?`, failure, now, deploymentId);
     history('deployment', deploymentId, 'HOLD', 'HOLD', failure);
   }
+  ctx.fault('deploymentOutcome.beforeCommit');
 }
 
 // --- Tools ----------------------------------------------------------------------------------------

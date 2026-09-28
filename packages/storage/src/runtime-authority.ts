@@ -49,6 +49,7 @@ import type { MemoryCandidateRecord } from './mind-records.js';
 import {
   txAuthorizeModelCall,
   txBeginGovernedRun,
+  txContainProviderFault,
   txDeploymentOutcome,
   txHold,
   txHoldUnsettledModelCalls,
@@ -288,6 +289,11 @@ export function releaseReservation(store: CompanyStore, fence: Fence, reservatio
 
 export function holdReservation(store: CompanyStore, fence: Fence, reservationId: Id, reasonCode: string): void {
   write(store, 'hold reservation', (ctx) => txHold(ctx, fence, reservationId, reasonCode));
+}
+
+/** Holds the money of a provider answer that broke the contract and contains its deployment, atomically (R1-09). */
+export function containProviderFault(store: CompanyStore, fence: Fence, reservationId: Id, reasonCode: string): void {
+  write(store, 'contain provider fault', (ctx) => txContainProviderFault(ctx, fence, reservationId, reasonCode));
 }
 
 export function recordDeploymentOutcome(store: CompanyStore, fence: Fence, deploymentId: Id, failure: ProviderFailureClass | null): void {

@@ -96,13 +96,37 @@ const MUTATIONS = [
   {
     id: 'r1-09-store-contention-blamed-on-provider',
     finding: 'R1-09',
-    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'if (!providerFault)', replace: 'if (false)', expectedCount: 1 }],
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'if (providerFault) {', replace: 'if (true) {', expectedCount: 1 }],
     runs: [RUNTIME],
   },
   {
     id: 'r1-09-over-bounds-usage-not-blamed',
     finding: 'R1-09',
     edits: [{ file: `${R}/c2/model-runtime.js`, search: 'if (!u.withinBounds)', replace: 'if (false)', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    // Technical Lead exact-head follow-up: restores the 0ac427e split (money settled in one transaction,
+    // the CONTRACT_VIOLATION hold written best effort in another).
+    id: 'r1-09-provider-fault-hold-not-durable',
+    finding: 'R1-09',
+    edits: [
+      { file: `${S}/governed-writes.js`, search: "if (r.purpose === 'MODEL_CALL' && r.deploymentId !== null && !usage.withinBounds)", replace: 'if (false)', expectedCount: 1 },
+      { file: `${R}/c2/model-runtime.js`, search: 'if (usage.withinBounds)', replace: 'if (true)', expectedCount: 1 },
+      { file: `${R}/c2/model-runtime.js`, search: 'recordHealth(store, fence, deploymentId, null);', replace: "recordHealth(store, fence, deploymentId, usage.withinBounds ? null : 'CONTRACT_VIOLATION');", expectedCount: 1 },
+    ],
+    runs: [STORAGE, RUNTIME],
+  },
+  {
+    id: 'r1-09-malformed-answer-hold-split',
+    finding: 'R1-09',
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'containProviderFault(store, fence, reservationId, failure);', replace: "holdReservation(store, fence, reservationId, failure); recordHealth(store, fence, deploymentId, 'CONTRACT_VIOLATION');", expectedCount: 2 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'r1-09-uncontained-violator-routable',
+    finding: 'R1-09',
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'this.#uncontained.add(deploymentId);', replace: '/* mutation: an uncontained violator stays routable */', expectedCount: 1 }],
     runs: [RUNTIME],
   },
   {
@@ -141,7 +165,7 @@ const MUTATIONS = [
   {
     id: 'r1-09-accounting-failure-escapes',
     finding: 'R1-09',
-    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'return containAccountingFailure(store, fence, reservationId, d.deployment.id, providerFault);', replace: "throw new Error('mutation: accounting failure escapes');", expectedCount: 1 }],
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'return this.#containAccountingFailure(store, fence, reservationId, d.deployment.id, providerFault);', replace: "throw new Error('mutation: accounting failure escapes');", expectedCount: 1 }],
     runs: [RUNTIME],
   },
   {

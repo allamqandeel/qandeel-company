@@ -114,6 +114,136 @@ describe('R1-09 attribution: local store contention is never blamed on the provi
   });
 });
 
+describe('R1-09 (Technical Lead follow-up): a known provider fault stays contained across the accounting → health boundary', () => {
+  const contention = (): QandeelError => new QandeelError('STORAGE_BUSY', 'simulated write-lock contention at the deployment-health write');
+  const cloudReservation = (rt: Runtime, w: C2World, id: Id): string | undefined =>
+    rt.view
+      .runsForWorkItem(id)
+      .flatMap((r) => rt.governance.reservations(r.id))
+      .find((r) => r.deploymentId === w.deployments.cloudE1)?.state;
+
+  test('money settles, the provider fault is known, the HOLD write fails once: the violator is never reusable — now, at the next route, after a restart', async () => {
+    const root = tempRoot('r1-tl-contain');
+    const w = seedWorld(root);
+    const f = fakes();
+    let fired = 0;
+    const rt = governedRuntime(root, f, {
+      storageFault: (p) => {
+        if (p === 'deploymentOutcome.beforeCommit' && fired === 0) {
+          fired++;
+          throw contention();
+        }
+      },
+    });
+    try {
+      await rt.start();
+      // One token over the step's maxOutputTokens (256): the provider's own answer breaks the contract.
+      f.cloud.reportUsage('cloud-e1', { inputTokens: 100, outputTokens: 257 });
+      const first = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+      assert.equal(await settled(rt, first, ['COMPLETED', 'FAILED']), 'COMPLETED', 'the work is served by another qualified route');
+      assert.equal(fired, 1, 'the deployment-health / HOLD write failed once');
+      assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'the violating deployment was not called again');
+      assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD', 'contained although the health write failed');
+      assert.equal(cloudReservation(rt, w, first), 'RECONCILIATION_REQUIRED', 'not an ordinary settled call: possibly billed, held for reconciliation, never released');
+      // The next route boundary: a new Work Item is never routed to the violator.
+      const second = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('again')) });
+      assert.equal(await settled(rt, second, ['COMPLETED', 'FAILED']), 'COMPLETED');
+      assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'routing never selects the contained deployment');
+      assert.equal(cloudReservation(rt, w, second), undefined, 'not even reserved');
+    } finally {
+      await rt.stop().catch(() => undefined);
+    }
+    // Restart: the containment is durable state, not process memory.
+    const rt2 = governedRuntime(root, f);
+    try {
+      await rt2.start();
+      assert.equal(rt2.governance.deployment(w.deployments.cloudE1).status, 'HOLD');
+      const third = submitTask(rt2, w, { dataClass: 'D1', instructions: script(final('after.restart')) });
+      assert.equal(await settled(rt2, third, ['COMPLETED', 'FAILED']), 'COMPLETED');
+      assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'still never selected after the restart');
+    } finally {
+      await rt2.stop().catch(() => undefined);
+      removeRoot(root);
+    }
+  });
+
+  test('a healthy provider whose health write fails locally is never held or blamed', async () => {
+    let fired = 0;
+    await withWorld(
+      'r1-tl-healthy',
+      async ({ w, f, rt }) => {
+        const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+        assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED']), 'COMPLETED');
+        assert.equal(fired, 1, 'the health write failed once');
+        assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'the paid, valid answer was used');
+        assert.equal(cloudReservation(rt, w, id), 'SETTLED', 'the money write is unaffected');
+        const dep = rt.governance.deployment(w.deployments.cloudE1);
+        assert.equal(dep.status, 'ACTIVE', 'no false HOLD');
+        assert.equal(rt.governance.provider(w.providers.cloud).status, 'ACTIVE');
+        const next = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('again')) });
+        assert.equal(await settled(rt, next, ['COMPLETED', 'FAILED']), 'COMPLETED');
+        assert.equal(f.cloud.calls.get('cloud-e1'), 2, 'still routable');
+      },
+      {
+        storageFault: (p) => {
+          if (p === 'deploymentOutcome.beforeCommit' && fired === 0) {
+            fired++;
+            throw contention();
+          }
+        },
+      },
+    );
+  });
+
+  test('a malformed answer (contract violation without usage) holds the money and contains the deployment together, even when that write fails once', async () => {
+    let fired = 0;
+    await withWorld(
+      'r1-tl-malformed',
+      async ({ w, f, rt }) => {
+        f.cloud.failNext('cloud-e1', 'CONTRACT_VIOLATION');
+        const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+        await settled(rt, id, ['COMPLETED', 'FAILED']);
+        assert.equal(fired, 1, 'the containment write failed once');
+        assert.equal(f.cloud.calls.get('cloud-e1'), 1);
+        assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD', 'a known violator never stays routable');
+        assert.equal(cloudReservation(rt, w, id), 'RECONCILIATION_REQUIRED', 'possibly billed: held');
+      },
+      {
+        storageFault: (p) => {
+          if (p === 'deploymentOutcome.beforeCommit' && fired === 0) {
+            fired++;
+            throw contention();
+          }
+        },
+      },
+    );
+  });
+
+  test('when the store refuses the money write AND the containment, the violator is kept out of routing until the containment is written', async () => {
+    let fired = 0;
+    await withWorld(
+      'r1-tl-uncontained',
+      async ({ w, f, rt }) => {
+        f.cloud.reportUsage('cloud-e1', { inputTokens: 100, outputTokens: 257 });
+        const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+        assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED']), 'COMPLETED');
+        assert.equal(fired, 2, 'the settle-with-containment and the hold-with-containment were both refused');
+        assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'the violator was not called again meanwhile');
+        assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD', 'contained at the next route boundary');
+        assert.equal(cloudReservation(rt, w, id), 'RECONCILIATION_REQUIRED', 'possibly billed: held');
+      },
+      {
+        storageFault: (p) => {
+          if (p === 'deploymentOutcome.beforeCommit' && fired < 2) {
+            fired++;
+            throw contention();
+          }
+        },
+      },
+    );
+  });
+});
+
 describe('R1 B-F4: a FINAL decision survives a crash before the settle', () => {
   test('resuming from the FINAL checkpoint completes without another model call or action', async () => {
     let fired = false;
