@@ -19,6 +19,8 @@ governed and auditable.
 | `C1` Company Foundation & Durable Runtime | CLOSED / MERGED / CANONICAL (`main` @ `419ee4f`) |
 | `C2` Employees + Models + Tools + Cost Governance | CLOSED / MERGED / CANONICAL (PR #3, `d374001`) |
 | `C3` Memory + Context + Skills + Academy | CLOSED / MERGED / CANONICAL (PR #4, `4592b52`) |
+| `R1` Independent Core Review | CLOSED / MERGED / CANONICAL (PR #6, `bd18614`) |
+| `C4` Organization + CEO + Directors + Delegation + Review Pool | READY / NOT STARTED |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
@@ -72,7 +74,7 @@ credential. Details: `docs/C2_IMPLEMENTATION_REPORT.md`, decisions D-C2-01 to D-
 C3 adds no external vector database, embedding service or paid memory service. Details:
 `docs/C3_IMPLEMENTATION_REPORT.md`, decisions D-C3-01 onward.
 
-Still out of scope: Directors / Review Pool / organization (C4), the Founder Command Center (C5),
+Next authorized implementation package: C4 Organization + CEO + Directors + Delegation + Review Pool. Still out of scope until C4 starts: the Founder Command Center (C5),
 reporting / learning dashboards (C6), APP-OPS (C7) and any QANDEEL App integration.
 
 | Package | Role |
