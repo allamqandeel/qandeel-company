@@ -103,6 +103,15 @@ export const FAILURE_DISPOSITIONS: Readonly<Record<ProviderFailureClass, Failure
   UNKNOWN: D(false, false, null, true, 'UNKNOWN'),
 });
 
+/**
+ * The disposition of a failure class by an own-key lookup only: a value such as `constructor`,
+ * `__proto__` or `toString` can never select an `Object.prototype` member; anything unlisted gets the
+ * UNKNOWN disposition (possibly sent: held, never released or retried) (R1-09).
+ */
+export function failureDisposition(failure: string): FailureDisposition {
+  return Object.hasOwn(FAILURE_DISPOSITIONS, failure) ? FAILURE_DISPOSITIONS[failure as ProviderFailureClass] : FAILURE_DISPOSITIONS.UNKNOWN;
+}
+
 /** Consecutive circuit-counted failures that open a deployment's circuit, and for how long. */
 export const CIRCUIT_THRESHOLD = 3;
 export const CIRCUIT_OPEN_MS = 5 * 60_000;
@@ -121,9 +130,14 @@ export class ProviderError extends Error {
   }
 }
 
-/** Anything an adapter throws that is not a ProviderError is UNKNOWN (possibly sent). */
+/**
+ * Anything an adapter throws that is not a ProviderError is UNKNOWN (possibly sent). The class is read
+ * exactly once and only a listed class is returned: the value validated is the value used (R1-09).
+ */
 export function classifyProviderError(error: unknown): ProviderFailureClass {
-  return error instanceof ProviderError && (PROVIDER_FAILURE_CLASSES as readonly string[]).includes(error.failure) ? error.failure : 'UNKNOWN';
+  if (!(error instanceof ProviderError)) return 'UNKNOWN';
+  const failure: unknown = error.failure;
+  return typeof failure === 'string' && (PROVIDER_FAILURE_CLASSES as readonly string[]).includes(failure) ? (failure as ProviderFailureClass) : 'UNKNOWN';
 }
 
 /** Validates reported usage against the enforced bounds; a violation is a contract failure. */

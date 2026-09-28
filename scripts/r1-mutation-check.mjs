@@ -102,7 +102,7 @@ const MUTATIONS = [
   {
     id: 'r1-09-over-bounds-usage-not-blamed',
     finding: 'R1-09',
-    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'if (!u.withinBounds)', replace: 'if (false)', expectedCount: 1 }],
+    edits: [{ file: `${R}/c2/provider-boundary.js`, search: "if (u.state === 'UNUSABLE' || !u.withinBounds)", replace: "if (u.state === 'UNUSABLE')", expectedCount: 1 }],
     runs: [RUNTIME],
   },
   {
@@ -112,8 +112,9 @@ const MUTATIONS = [
     finding: 'R1-09',
     edits: [
       { file: `${S}/governed-writes.js`, search: "if (r.purpose === 'MODEL_CALL' && r.deploymentId !== null && (!usage.withinBounds || providerFault))", replace: 'if (false)', expectedCount: 1 },
-      { file: `${R}/c2/model-runtime.js`, search: 'if (usage.withinBounds)', replace: 'if (true)', expectedCount: 1 },
-      { file: `${R}/c2/model-runtime.js`, search: 'recordHealth(store, fence, deploymentId, null);', replace: "recordHealth(store, fence, deploymentId, usage.withinBounds ? null : 'CONTRACT_VIOLATION');", expectedCount: 1 },
+      { file: `${R}/c2/model-runtime.js`, search: "outcome: 'OK' }, s.providerFault);", replace: "outcome: 'OK' });", expectedCount: 1 },
+      { file: `${R}/c2/model-runtime.js`, search: 'if (!s.providerFault)', replace: 'if (true)', expectedCount: 1 },
+      { file: `${R}/c2/model-runtime.js`, search: 'recordHealth(store, fence, deploymentId, null);', replace: "recordHealth(store, fence, deploymentId, s.providerFault ? 'CONTRACT_VIOLATION' : null);", expectedCount: 1 },
     ],
     runs: [STORAGE, RUNTIME],
   },
@@ -137,33 +138,60 @@ const MUTATIONS = [
     runs: [RUNTIME],
   },
   {
-    // Final re-review of b0ac2b7: the usage values are snapshotted (not only the object reference).
-    id: 'r1-09-usage-snapshot-shallow',
+    // Provider-boundary hardening (Technical Lead): one boundary reads every provider-controlled field
+    // exactly once. This mutation re-reads a usage field after capture (the b0ac2b7 / 8064fc9 family).
+    id: 'r1-09-boundary-field-read-twice',
     finding: 'R1-09',
-    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'usage = snapshotUsage(result?.usage);', replace: 'usage = result?.usage;', expectedCount: 1 }],
+    edits: [{ file: `${R}/c2/provider-boundary.js`, search: 'return { inputTokens, outputTokens };', replace: 'return { inputTokens, outputTokens: r.outputTokens };', expectedCount: 1 }],
     runs: [RUNTIME],
   },
   {
-    // Final re-review of 8064fc9: a thrown failure's usage is snapshotted to values as well.
-    id: 'r1-09-thrown-usage-snapshot-shallow',
+    // The thrown class is validated as a listed value before use (the b309b11 family).
+    id: 'r1-09-boundary-class-unlisted',
     finding: 'R1-09',
-    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'snapshotUsage(error.usage)', replace: 'error.usage', expectedCount: 1 }],
+    edits: [{ file: `${R}/c2/provider-boundary.js`, search: "listedFailureClass(failure) ?? 'UNKNOWN'", replace: 'failure', expectedCount: 1 }],
     runs: [RUNTIME],
   },
   {
+    // Disposition lookup is own-key only: prototype keys never select a disposition.
+    id: 'r1-09-disposition-prototype-key',
+    finding: 'R1-09',
+    edits: [{ file: `${G}/providers.js`, search: 'Object.hasOwn(FAILURE_DISPOSITIONS, failure)', replace: 'failure in FAILURE_DISPOSITIONS', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    // A thrown failure class is read once in the exported classifier as well.
+    id: 'r1-09-failure-class-read-twice',
+    finding: 'R1-09',
+    edits: [{ file: `${G}/providers.js`, search: "? failure : 'UNKNOWN'", replace: "? error.failure : 'UNKNOWN'", expectedCount: 1 }],
+    runs: [GOV],
+  },
+  {
+    // Technical Lead decision: a charged (FAILED_CHARGED) attempt is never retried on the same deployment.
+    id: 'r1-09-charged-attempt-retried',
+    finding: 'R1-09',
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: "if (settled.accounting === 'UNBILLED' && mayRetry(disp.retry, retries, policy)) {", replace: "if (settled.accounting !== 'HELD' && mayRetry(disp.retry, retries, policy)) {", expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    // Boundary sweep: runtime-control outcomes are private markers a provider answer can never equal.
+    id: 'r1-09-control-marker-forgeable',
+    finding: 'R1-09',
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'if (result === TIMED_OUT || result === CANCELLED) {', replace: "if (result === TIMED_OUT || result === CANCELLED || result === 'TIMEOUT' || result === 'CANCELLED') {", expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    // A provider field read that throws escapes the boundary instead of becoming a contract violation.
     id: 'r1-09-lazy-answer-read-escapes',
     finding: 'R1-09',
-    edits: [
-      { file: `${R}/c2/model-runtime.js`, search: 'usage = snapshotUsage(result?.usage);', replace: '/* mutation: the answer is not snapshotted */', expectedCount: 1 },
-      { file: `${R}/c2/model-runtime.js`, search: 'return { ok: true, response: { outputText, usage } };', replace: 'return { ok: true, response: result };', expectedCount: 1 },
-    ],
+    edits: [{ file: `${R}/c2/provider-boundary.js`, search: "return failureSnapshot('CONTRACT_VIOLATION');", replace: "throw new Error('mutation: a provider read escapes the boundary');", expectedCount: 3 }],
     runs: [RUNTIME],
   },
   {
     // Focused re-review: the provider-fault verdict of a charged failure is not carried into the settle.
     id: 'r1-09-charged-violation-verdict-dropped',
     finding: 'R1-09',
-    edits: [{ file: `${R}/c2/model-runtime.js`, search: "outcome: 'FAILED_CHARGED' }, providerFault);", replace: "outcome: 'FAILED_CHARGED' }, false);", expectedCount: 1 }],
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: "outcome: 'FAILED_CHARGED' }, s.providerFault);", replace: "outcome: 'FAILED_CHARGED' }, false);", expectedCount: 1 }],
     runs: [RUNTIME],
   },
   {
@@ -217,7 +245,7 @@ const MUTATIONS = [
   {
     id: 'r1-09-accounting-failure-escapes',
     finding: 'R1-09',
-    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'return this.#containAccountingFailure(store, fence, reservationId, d.deployment.id, providerFault);', replace: "throw new Error('mutation: accounting failure escapes');", expectedCount: 1 }],
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'return this.#containAccountingFailure(store, fence, reservationId, d.deployment.id, provided.providerFault);', replace: "throw new Error('mutation: accounting failure escapes');", expectedCount: 1 }],
     runs: [RUNTIME],
   },
   {

@@ -12,13 +12,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import { newId, type Id } from '@qandeel-company/domain';
 import {
-  FAILURE_DISPOSITIONS,
-  ProviderError,
+  failureDisposition,
   maxDataClass,
-  classifyProviderError,
-  costOf,
   mayRetry,
-  normalizeUsage,
   parseProposal,
   planEscalation,
   planFallback,
@@ -35,14 +31,25 @@ import { GovernanceStore, type CompanyStore, type Fence } from '@qandeel-company
 import { authorizeModelCall, containProviderFault, holdReservation, recordDeploymentOutcome, releaseReservation, reserveBudget, settleReservation, type GovernedRunContext } from '@qandeel-company/storage/runtime-authority';
 
 import { isAssembledContext, type AssembledContext } from '../c3/context-assembler.js';
+import { answerSnapshot, errorSnapshot, failureSnapshot, type ProviderSnapshot, type SnapshotBounds } from './provider-boundary.js';
 import type { ModelCallOutcome, ModelCallRequest } from './types.js';
 
 export const DEFAULT_MODEL_CALL_TIMEOUT_MS = 120_000;
 
-type ProviderAnswer = Awaited<ReturnType<ProviderAdapter['generate']>>;
+/**
+ * What a failed attempt's accounting actually recorded: provably not billed (reservation released),
+ * charged (settled FAILED_CHARGED), or possibly billed (held for reconciliation). Only an UNBILLED
+ * attempt may be retried on the same deployment.
+ */
+type AttemptAccounting = 'UNBILLED' | 'CHARGED' | 'HELD';
+interface AttemptFailure {
+  readonly failure: ProviderFailureClass;
+  readonly accounting: AttemptAccounting;
+}
 
-/** The normalized result of one adapter call. */
-type CallResult = { ok: true; response: ProviderAnswer } | { ok: false; failure: ProviderFailureClass; usage: ProviderError['usage'] };
+/** Module-private runtime-control markers for the adapter race (never comparable to provider data). */
+const TIMED_OUT: unique symbol = Symbol('model-call.timed-out');
+const CANCELLED: unique symbol = Symbol('model-call.cancelled');
 
 export class GovernedModelRuntime {
   readonly #adapters: ReadonlyMap<string, ProviderAdapter>;
@@ -161,25 +168,34 @@ export class GovernedModelRuntime {
           const reservationId = reserved.reservation.id;
           const sessionId = newId();
           this.#calls++;
-          const outcome = await this.#call(adapter, { providerCode: d.deployment.providerCode, modelCode: d.deployment.modelCode, deploymentCode: d.deployment.code, messages: context.messages, maxOutputTokens: req.maxOutputTokens }, signal);
+          // The provider boundary: the answer or thrown failure is read once into a frozen snapshot of
+          // plain values; everything below decides from the snapshot only (R1-09).
+          const provided = await this.#call(
+            adapter,
+            { providerCode: d.deployment.providerCode, modelCode: d.deployment.modelCode, deploymentCode: d.deployment.code, messages: context.messages, maxOutputTokens: req.maxOutputTokens },
+            { inputUpperBound: routeReq.inputTokensUpperBound, maxOutputTokens: req.maxOutputTokens, priceCard: (d.deployment.priceCard as PriceCard | undefined) ?? null },
+            signal,
+          );
           // From here on the call may have been billed. Bookkeeping that fails (an out-of-range usage
           // report, a busy store) never escapes as a processor error that would retry the same route:
           // the money stays held for reconciliation and the deployment is held as a contract violation
           // (R1-09, D13-F.1/.8, D-C2-07). The run-settle backstop holds anything still reserved.
-          let settled: { readonly done: ModelCallOutcome } | { readonly failure: ProviderFailureClass };
-          // Whether the PROVIDER broke the contract is decided from its answer before any store write,
-          // never inferred from whichever local error the store throws (R1 re-review).
-          const providerFault = providerBrokeContract(outcome, d, routeReq.inputTokensUpperBound, req.maxOutputTokens);
+          let settled: { readonly done: ModelCallOutcome } | AttemptFailure;
           try {
-            settled = this.#account(store, fence, d, reservationId, sessionId, outcome, routeReq.inputTokensUpperBound, req.maxOutputTokens, attempt, context.manifestId);
+            settled = this.#account(store, fence, d, reservationId, sessionId, provided, attempt, context.manifestId);
           } catch {
-            return this.#containAccountingFailure(store, fence, reservationId, d.deployment.id, providerFault);
+            // Whether the PROVIDER broke the contract was decided at the boundary, never inferred from
+            // whichever local error the store threw (R1 re-review).
+            return this.#containAccountingFailure(store, fence, reservationId, d.deployment.id, provided.providerFault);
           }
           if ('done' in settled) return settled.done;
           const failure = settled.failure;
           lastFailure = failure;
-          const disp = FAILURE_DISPOSITIONS[failure];
-          if (mayRetry(disp.retry, retries, policy)) {
+          const disp = failureDisposition(failure);
+          // Same-deployment retry only for an attempt this runtime provably did not pay for: a charged or
+          // held attempt is never retried on the same deployment (the retry contract, R1-09 Technical
+          // Lead decision); fallback to another qualified route stays as the policy allows.
+          if (settled.accounting === 'UNBILLED' && mayRetry(disp.retry, retries, policy)) {
             retries++;
             attemptKind = 'RETRY';
             await sleep(Math.min(2_000, 50 * 2 ** retries), undefined, { signal }).catch(() => undefined);
@@ -211,63 +227,58 @@ export class GovernedModelRuntime {
     d: Extract<RouteDecision, { kind: 'ROUTE' }>,
     reservationId: Id,
     sessionId: Id,
-    outcome: CallResult,
-    inputUpperBound: number,
-    maxOutputTokens: number,
+    s: ProviderSnapshot,
     attempt: number,
     manifestId: Id,
-  ): { readonly done: ModelCallOutcome } | { readonly failure: ProviderFailureClass } {
+  ): { readonly done: ModelCallOutcome } | AttemptFailure {
     const deploymentId = d.deployment.id as Id;
-    if (outcome.ok) {
-      let usage;
-      try {
-        usage = normalizeUsage(outcome.response.usage, { inputUpperBound, maxOutputTokens });
-      } catch {
+    const usage = s.usage;
+    if (s.answered) {
+      if (usage.state !== 'REPORTED') {
         // Unusable usage report: the provider answered but broke the contract. Hold the full
         // reservation (spend is uncertain) and contain the deployment in one transaction; never retry
         // blindly. A store failure here escapes to the caller's containment.
         containProviderFault(store, fence, reservationId, 'USAGE_UNREPORTED');
         return { done: { kind: 'UNCERTAIN', failure: 'CONTRACT_VIOLATION' } };
       }
-      // Usage outside the enforced bounds contains the deployment inside this same settle transaction.
-      settleReservation(store, fence, reservationId, { inputTokens: usage.usage.inputTokens, outputTokens: usage.usage.outputTokens, withinBounds: usage.withinBounds, sessionId, outcome: 'OK' });
-      if (usage.withinBounds) recordHealth(store, fence, deploymentId, null);
-      return { done: { kind: 'OK', proposal: parseProposal(outcome.response.outputText), usage: usage.usage, deploymentId: d.deployment.id, reasoningClass: d.reasoningClass, attempts: attempt, manifestId } };
+      // A provider fault (usage outside the bounds / the accounting range) contains the deployment
+      // inside this same settle transaction; only a healthy answer's health is best effort.
+      settleReservation(store, fence, reservationId, { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, withinBounds: usage.withinBounds, sessionId, outcome: 'OK' }, s.providerFault);
+      if (!s.providerFault) recordHealth(store, fence, deploymentId, null);
+      return { done: { kind: 'OK', proposal: parseProposal(s.outputText), usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }, deploymentId: d.deployment.id, reasoningClass: d.reasoningClass, attempts: attempt, manifestId } };
     }
-    const failure = outcome.failure;
-    const disp = FAILURE_DISPOSITIONS[failure];
-    if (outcome.usage) {
-      // Billed despite failing: charged truthfully, never hidden.
-      let u;
-      try {
-        u = normalizeUsage(outcome.usage, { inputUpperBound, maxOutputTokens });
-      } catch {
-        u = null;
-      }
-      if (u) {
-        // The provider broke the contract (usage outside the bounds, or a failure it classified as a
-        // contract violation): the deployment is contained inside the settle transaction, never by a
-        // separate best-effort write, and the same route is not retried.
-        const providerFault = !u.withinBounds || failure === 'CONTRACT_VIOLATION';
-        settleReservation(store, fence, reservationId, { inputTokens: u.usage.inputTokens, outputTokens: u.usage.outputTokens, withinBounds: u.withinBounds, sessionId, outcome: 'FAILED_CHARGED' }, providerFault);
-        if (providerFault) return { failure: 'CONTRACT_VIOLATION' };
-      } else {
-        // A failed call whose reported usage is unusable: the provider broke the contract.
-        containProviderFault(store, fence, reservationId, 'USAGE_UNUSABLE');
-        return { failure: 'CONTRACT_VIOLATION' };
-      }
-    } else if (failure === 'CONTRACT_VIOLATION') {
+    const failure = s.failure ?? 'UNKNOWN';
+    const disp = failureDisposition(failure);
+    if (usage.state === 'REPORTED') {
+      // Billed despite failing: charged truthfully, never hidden. A provider fault (usage outside the
+      // bounds, or a failure it classified as a contract violation) contains the deployment inside the
+      // settle transaction, never by a separate best-effort write, and the same route is not retried.
+      settleReservation(store, fence, reservationId, { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, withinBounds: usage.withinBounds, sessionId, outcome: 'FAILED_CHARGED' }, s.providerFault);
+      if (s.providerFault) return { failure: 'CONTRACT_VIOLATION', accounting: 'CHARGED' };
+      recordHealth(store, fence, deploymentId, failure);
+      return { failure, accounting: 'CHARGED' };
+    }
+    if (usage.state === 'UNUSABLE') {
+      // A failed call whose reported usage is unusable: the provider broke the contract.
+      containProviderFault(store, fence, reservationId, 'USAGE_UNUSABLE');
+      return { failure: 'CONTRACT_VIOLATION', accounting: 'HELD' };
+    }
+    if (failure === 'CONTRACT_VIOLATION') {
       // A malformed answer: possibly billed AND the provider's fault — money held and deployment
       // contained in one transaction.
       containProviderFault(store, fence, reservationId, failure);
-      return { failure };
-    } else if (disp.sent === 'UNKNOWN') {
+      return { failure, accounting: 'HELD' };
+    }
+    let accounting: AttemptAccounting;
+    if (disp.sent === 'UNKNOWN') {
       holdReservation(store, fence, reservationId, failure);
+      accounting = 'HELD';
     } else {
       releaseReservation(store, fence, reservationId, failure);
+      accounting = 'UNBILLED';
     }
     recordHealth(store, fence, deploymentId, failure);
-    return { failure };
+    return { failure, accounting };
   }
 
   /**
@@ -296,70 +307,31 @@ export class GovernedModelRuntime {
     return { kind: 'UNCERTAIN', failure: providerFault ? 'CONTRACT_VIOLATION' : 'UNKNOWN' };
   }
 
-  /** One bounded adapter call; any adapter misbehaviour is normalized, never propagated. */
-  async #call(adapter: ProviderAdapter, request: Parameters<ProviderAdapter['generate']>[0], runSignal: AbortSignal): Promise<CallResult> {
+  /**
+   * One bounded adapter call, returned as the provider-boundary snapshot: any adapter misbehaviour is
+   * normalized there, never propagated, and the raw answer / error is not read again.
+   */
+  async #call(adapter: ProviderAdapter, request: Parameters<ProviderAdapter['generate']>[0], bounds: SnapshotBounds, runSignal: AbortSignal): Promise<ProviderSnapshot> {
     const controller = new AbortController();
     const onAbort = (): void => controller.abort();
     runSignal.addEventListener('abort', onAbort, { once: true });
     const timer = new AbortController();
     try {
-      const timeout = sleep(this.#timeoutMs, 'TIMEOUT' as const, { signal: timer.signal }).catch(() => 'CANCELLED' as const);
-      const result = await Promise.race([adapter.generate(request, controller.signal), timeout]);
-      if (result === 'TIMEOUT' || result === 'CANCELLED') {
+      // Runtime-control outcomes are private markers no provider value can equal (R1-09 sweep): any
+      // value the adapter resolves with — even the string 'TIMEOUT' — goes through the boundary.
+      const timeout = sleep(this.#timeoutMs, TIMED_OUT, { signal: timer.signal }).catch(() => CANCELLED);
+      const result: unknown = await Promise.race([adapter.generate(request, controller.signal), timeout]);
+      if (result === TIMED_OUT || result === CANCELLED) {
         controller.abort();
-        return { ok: false, failure: 'TIMEOUT_AFTER_SEND', usage: null };
+        return failureSnapshot('TIMEOUT_AFTER_SEND');
       }
-      // Snapshot the answer once, here, down to the usage VALUES: a misbehaving answer object (a
-      // throwing or shifting getter) is the provider's contract violation, and nothing later reads the
-      // adapter's objects again — the fault check and the settlement see the same numbers.
-      let outputText: unknown;
-      let usage: unknown;
-      try {
-        outputText = result?.outputText;
-        usage = snapshotUsage(result?.usage);
-      } catch {
-        return { ok: false, failure: 'CONTRACT_VIOLATION', usage: null };
-      }
-      if (typeof outputText !== 'string') return { ok: false, failure: 'CONTRACT_VIOLATION', usage: null };
-      return { ok: true, response: { outputText, usage } as ProviderAnswer };
+      return answerSnapshot(result, bounds);
     } catch (error) {
-      // A thrown failure's usage is snapshotted to VALUES too (the same single read as an answer's); a
-      // failure object that cannot be read is the provider's contract violation.
-      try {
-        return { ok: false, failure: classifyProviderError(error), usage: error instanceof ProviderError ? (snapshotUsage(error.usage) as ProviderError['usage']) : null };
-      } catch {
-        return { ok: false, failure: 'CONTRACT_VIOLATION', usage: null };
-      }
+      return errorSnapshot(error, bounds);
     } finally {
       timer.abort();
       runSignal.removeEventListener('abort', onAbort);
     }
-  }
-}
-
-/** The reported usage as plain values, each field read exactly once (anything else is left for validation to refuse). */
-function snapshotUsage(u: unknown): unknown {
-  if (typeof u !== 'object' || u === null) return u;
-  const r = u as { inputTokens?: unknown; outputTokens?: unknown };
-  return { inputTokens: r.inputTokens, outputTokens: r.outputTokens };
-}
-
-/**
- * The provider broke the usage contract: an unusable usage report, or reported usage whose cost is
- * outside the accounting range. Decided from the answer alone (pure; no store access).
- */
-function providerBrokeContract(outcome: CallResult, d: Extract<RouteDecision, { kind: 'ROUTE' }>, inputUpperBound: number, maxOutputTokens: number): boolean {
-  if (!outcome.ok && outcome.failure === 'CONTRACT_VIOLATION') return true;
-  const reported = outcome.ok ? outcome.response.usage : outcome.usage;
-  if (!outcome.ok && !reported) return false;
-  try {
-    const u = normalizeUsage(reported, { inputUpperBound, maxOutputTokens });
-    // Usage beyond the enforced bounds is a contract violation too (normalizeUsage's own contract).
-    if (!u.withinBounds) return true;
-    if (d.deployment.priceCard) costOf(d.deployment.priceCard as PriceCard, u.usage.inputTokens, u.usage.outputTokens);
-    return false;
-  } catch {
-    return true;
   }
 }
 

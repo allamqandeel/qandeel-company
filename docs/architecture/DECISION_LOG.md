@@ -1653,6 +1653,39 @@ snapshotted to values by the same single, guarded read (an unreadable failure ob
 violation). The guard also closes the thrown-error-getter residual. Proof + mutation
 `r1-09-thrown-usage-snapshot-shallow`; the gate was re-run.
 
+The final re-review of `b309b11` reproduced one more MAJOR, predating R1: `classifyProviderError` read
+a thrown failure's class twice, validating the first read and using the second. A shifting getter
+could therefore index an `Object.prototype` member of the dispositions table and release
+possibly-billed money. Decision: **every field of a provider's answer or thrown failure is read exactly
+once, and the value validated is the value used.** The class is read once and only a listed class is
+returned (proof + mutation `r1-09-failure-class-read-twice`).
+
+**Provider boundary (Technical Lead direction, engineering decision).** The repeated R1-09 findings are
+one defect family, so the fix is architectural: `packages/runtime/src/c2/provider-boundary.ts` is the
+only code that reads a provider's answer or thrown failure. It reads every provider-controlled field
+exactly once, inside a guard, validates the values, and returns a frozen snapshot of plain values
+(answered, text, listed failure class, usage state and values, provider-fault verdict). Money, retry,
+health and containment decisions use only the snapshot. Failure classes are validated by set
+membership, and dispositions are looked up by own key only (`failureDisposition`, also used by
+storage). One centralized invariant proof, with hostile Proxies, and three boundary mutations protect
+it. Two mutations of the removed per-path snapshot code were retired; the boundary invariant covers
+them.
+
+The boundary sweep found one MAJOR: the adapter race compared a provider's raw value with the
+timeout strings. Runtime-control outcomes are now module-private `unique symbol` markers, so no
+provider value can equal them (mutation `r1-09-control-marker-forgeable`).
+
+**Retry after a charged attempt (Technical Lead decision, MAJOR).** The retry contract allows a
+same-deployment retry only for transient failures that were not billed. The runtime keyed the retry on
+the failure class alone, so a TRANSIENT failure that reported usage was settled `FAILED_CHARGED` and
+then retried on the same deployment.
+
+Decision: the observed accounting of the specific attempt constrains retry eligibility. `#account`
+returns `UNBILLED` (released), `CHARGED` (settled `FAILED_CHARGED`) or `HELD` (held for
+reconciliation), and only an `UNBILLED` attempt may be retried on the same deployment. Fallback
+policy and the failure taxonomy are unchanged. Proof covers both sides; mutation
+`r1-09-charged-attempt-retried`.
+
 **Documentation note (R1 B-F6).** D-C2-07's first bullet list says an orphaned NONE / IDEMPOTENT tool
 intent's reservation "is released". D-C2-12 (MAJOR, "interrupted tool intents released money that may
 have been spent") amended that to "charged (`FAILED_CHARGED`), never released", and the code follows

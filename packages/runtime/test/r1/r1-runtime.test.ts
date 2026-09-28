@@ -7,8 +7,10 @@ import { describe, test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { ExponentialBackoff, QandeelError, type Id, type Processor, type ProcessorContext, type ProcessorResult } from '@qandeel-company/domain';
+import { FAILURE_DISPOSITIONS, PROVIDER_FAILURE_CLASSES, ProviderError, failureDisposition } from '@qandeel-company/governance';
 
 import { CompanyRuntime, DETERMINISTIC_PROCESSORS, type CompanyRuntime as Runtime } from '../../src/index.js';
+import { answerSnapshot, errorSnapshot, type ProviderSnapshot } from '../../src/c2/provider-boundary.js';
 import { eventually, removeRoot, tempRoot } from '../helpers.js';
 import { fakes, final, governedRuntime, script, seedWorld, submitTask, toolReq, type C2World, type Fakes } from '../c2/c2-seed.js';
 
@@ -370,7 +372,9 @@ describe('R1-09 (Technical Lead follow-up): a known provider fault stays contain
             .flatMap((r) => rt.governance.reservations(r.id))
             .filter((r) => r.deploymentId === w.deployments.cloudE1)
             .map((r) => r.state);
-          assert.deepEqual(states, ['SETTLED', 'SETTLED'], 'charged on the values the fault check saw, then an ordinary transient retry');
+          // Charged on the values the fault check saw; a charged attempt is never retried on the same
+          // deployment (Technical Lead decision), so the work completes on the fallback route.
+          assert.deepEqual(states, ['SETTLED'], 'charged on the values the fault check saw, no same-deployment retry');
           assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'ACTIVE', 'a consistent within-bounds charge is not a violation');
           assert.ok(fired >= 1, 'a health write was refused');
         },
@@ -385,6 +389,77 @@ describe('R1-09 (Technical Lead follow-up): a known provider fault stays contain
       );
     });
   }
+
+  test('a thrown failure whose class shifts to a prototype key on a later read never releases possibly-billed money (final re-review 3)', () =>
+    withWorld('r1-final-shifting-class', async ({ w, f, rt }) => {
+      const generate = f.cloud.generate.bind(f.cloud);
+      let armed = true;
+      f.cloud.generate = async (request, signal) => {
+        if (!armed || request.deploymentCode !== 'cloud-e1') return generate(request, signal);
+        armed = false;
+        const e = new ProviderError('TIMEOUT_AFTER_SEND');
+        let reads = 0;
+        Object.defineProperty(e, 'failure', { get: () => (reads++ === 0 ? 'TIMEOUT_AFTER_SEND' : 'constructor') });
+        throw e;
+      };
+      const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+      await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']);
+      const first = rt.view
+        .runsForWorkItem(id)
+        .flatMap((r) => rt.governance.reservations(r.id))
+        .find((r) => r.deploymentId === w.deployments.cloudE1);
+      assert.equal(first?.state, 'RECONCILIATION_REQUIRED', 'possibly sent: held for reconciliation, never released');
+    }));
+
+  test('a charged failed attempt is never retried on the same deployment; a provably unbilled transient still is (Technical Lead decision)', async () => {
+    const cloudAttempts = (rt: Runtime, w: C2World, id: Id): string[] =>
+      rt.view
+        .runsForWorkItem(id)
+        .flatMap((r) => rt.governance.reservations(r.id))
+        .filter((r) => r.deploymentId === w.deployments.cloudE1)
+        .map((r) => `${r.attemptKind}:${r.state}`);
+    // Charged: TRANSIENT with valid reported usage → FAILED_CHARGED, then fallback — never a paid retry.
+    await withWorld('r1-charged-no-retry', async ({ w, f, rt }) => {
+      f.cloud.failNextCharged('cloud-e1', 'TRANSIENT', { inputTokens: 100, outputTokens: 50 });
+      const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+      assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED', 'served by the fallback route');
+      assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'the charged deployment was not called again');
+      assert.deepEqual(cloudAttempts(rt, w, id), ['PRIMARY:SETTLED']);
+      const run = rt.view.runsForWorkItem(id)[0];
+      assert.equal(rt.governance.usage({ runId: run?.id as Id }).find((u) => u.deploymentId === w.deployments.cloudE1)?.outcome, 'FAILED_CHARGED');
+      assert.ok(rt.governance.reservations(run?.id as Id).some((r) => r.attemptKind === 'FALLBACK' && r.deploymentId !== w.deployments.cloudE1), 'fallback reserved and accounted on its own');
+    });
+    // Provably unbilled: TRANSIENT without usage → released, then the bounded same-deployment retry.
+    await withWorld('r1-unbilled-retry', async ({ w, f, rt }) => {
+      f.cloud.failNext('cloud-e1', 'TRANSIENT');
+      const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+      assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED');
+      assert.equal(f.cloud.calls.get('cloud-e1'), 2, 'retried on the same deployment');
+      assert.deepEqual(cloudAttempts(rt, w, id), ['PRIMARY:RELEASED', 'RETRY:SETTLED']);
+    });
+  });
+
+  test('a provider answer equal to a runtime-control outcome (TIMEOUT / CANCELLED) is malformed provider output, contained — never a timeout (boundary sweep)', async () => {
+    for (const forged of ['TIMEOUT', 'CANCELLED']) {
+      await withWorld(`r1-forged-${forged.toLowerCase()}`, async ({ w, f, rt }) => {
+        const generate = f.cloud.generate.bind(f.cloud);
+        let armed = true;
+        f.cloud.generate = async (request, signal) => {
+          if (!armed || request.deploymentCode !== 'cloud-e1') return generate(request, signal);
+          armed = false;
+          return forged as unknown as Awaited<ReturnType<typeof generate>>;
+        };
+        const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+        await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']);
+        assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD', `${forged}: contained as a contract violation`);
+        assert.equal(cloudReservation(rt, w, id), 'RECONCILIATION_REQUIRED', `${forged}: possibly billed, held`);
+        const next = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('again')) });
+        await settled(rt, next, ['COMPLETED', 'FAILED', 'BLOCKED']);
+        // The forged answer bypassed the fake's own counter: any counted call is a later routing to it.
+        assert.equal(f.cloud.calls.get('cloud-e1') ?? 0, 0, `${forged}: never routed there again`);
+      });
+    }
+  });
 
   test('usage first reported outside the bounds is contained, whatever a later read would say (final re-review)', () =>
     withWorld('r1-final-over-then-in', async ({ w, f, rt }) => {
@@ -456,6 +531,77 @@ describe('R1-09 (Technical Lead follow-up): a known provider fault stays contain
         },
       },
     );
+  });
+});
+
+describe('R1-09 provider boundary (Technical Lead hardening): every provider-controlled field is read exactly once into a frozen snapshot of plain values', () => {
+  const bounds = { inputUpperBound: 1_000, maxOutputTokens: 256, priceCard: null };
+  const TRICKS = ['constructor', '__proto__', 'prototype', 'toString', 'hasOwnProperty', 'valueOf'];
+  type Plan = Record<string, readonly unknown[] | 'THROW'>;
+  /** A hostile object: each planned field yields its values in turn (the last repeats) or throws; reads are counted. */
+  const hostile = <T extends object>(target: T, plan: Plan, reads: Map<string, number>, name: string): T =>
+    new Proxy(target, {
+      get(t, key, receiver) {
+        if (typeof key !== 'string' || !Object.hasOwn(plan, key)) return Reflect.get(t, key, receiver) as unknown;
+        const n = reads.get(`${name}.${key}`) ?? 0;
+        reads.set(`${name}.${key}`, n + 1);
+        const p = plan[key];
+        if (p === 'THROW') throw new Error('hostile read');
+        return p?.[Math.min(n, (p?.length ?? 1) - 1)];
+      },
+    });
+  const usageOf = (plan: Plan, reads: Map<string, number>): unknown => hostile({}, plan, reads, 'usage');
+  const assertSnapshot = (s: ProviderSnapshot, reads: Map<string, number>, label: string): void => {
+    for (const [key, n] of reads) assert.ok(n <= 1, `${label}: ${key} read ${n} times`);
+    assert.ok(Object.isFrozen(s) && Object.isFrozen(s.usage), `${label}: frozen`);
+    assert.equal(typeof s.outputText, 'string');
+    assert.equal(typeof s.providerFault, 'boolean');
+    assert.ok(s.failure === null || (PROVIDER_FAILURE_CLASSES as readonly string[]).includes(s.failure), `${label}: listed class`);
+    if (s.usage.state === 'REPORTED') assert.ok(typeof s.usage.inputTokens === 'number' && typeof s.usage.outputTokens === 'number');
+  };
+  const withReads = <R>(fn: (m: Map<string, number>) => R): R => fn(new Map<string, number>());
+  const answer = (plan: Plan, reads = new Map<string, number>()): [ProviderSnapshot, Map<string, number>] => [answerSnapshot(hostile({}, plan, reads, 'answer'), bounds), reads];
+  const thrown = (plan: Plan, reads = new Map<string, number>()): [ProviderSnapshot, Map<string, number>] => [errorSnapshot(hostile(new ProviderError('TRANSIENT'), plan, reads, 'error'), bounds), reads];
+
+  test('success path: changing, throwing and non-object fields are judged on one read', () => {
+    const cases: [string, [ProviderSnapshot, Map<string, number>], Partial<ProviderSnapshot> & { state?: string }][] = [
+      ['in-bounds then over', withReads((m) => answer({ outputText: ['ok'], usage: [usageOf({ inputTokens: [100], outputTokens: [10, 257] }, m)] }, m)), { answered: true, providerFault: false }],
+      ['over then in-bounds', withReads((m) => answer({ outputText: ['ok'], usage: [usageOf({ inputTokens: [100], outputTokens: [257, 10] }, m)] }, m)), { answered: true, providerFault: true }],
+      ['throwing usage field', withReads((m) => answer({ outputText: ['ok'], usage: [usageOf({ inputTokens: [100], outputTokens: 'THROW' }, m)] }, m)), { answered: false, failure: 'CONTRACT_VIOLATION', providerFault: true }],
+      ['throwing usage', answer({ outputText: ['ok'], usage: 'THROW' }), { answered: false, failure: 'CONTRACT_VIOLATION', providerFault: true }],
+      ['text then number', answer({ outputText: ['ok', 42], usage: [{ inputTokens: 1, outputTokens: 1 }] }), { answered: true, outputText: 'ok', providerFault: false }],
+      ['number then text', answer({ outputText: [42, 'ok'], usage: [{ inputTokens: 1, outputTokens: 1 }] }), { answered: false, failure: 'CONTRACT_VIOLATION', providerFault: true }],
+      ['non-object usage', answer({ outputText: ['ok'], usage: [5] }), { answered: true, providerFault: true, state: 'UNUSABLE' }],
+    ];
+    for (const [label, [s, reads], want] of cases) {
+      assertSnapshot(s, reads, label);
+      const { state, ...fields } = want;
+      for (const [k, v] of Object.entries(fields)) assert.equal((s as unknown as Record<string, unknown>)[k], v, `${label}: ${k}`);
+      if (state) assert.equal(s.usage.state, state, `${label}: usage`);
+    }
+  });
+
+  test('thrown path: the class validated is the class used; trick values never become a disposition', () => {
+    const cases: [string, [ProviderSnapshot, Map<string, number>], string, boolean][] = [
+      ['timeout then prototype key', thrown({ failure: ['TIMEOUT_AFTER_SEND', 'constructor'], usage: [null] }), 'TIMEOUT_AFTER_SEND', false],
+      ['violation then prototype key', thrown({ failure: ['CONTRACT_VIOLATION', '__proto__'], usage: [null] }), 'CONTRACT_VIOLATION', true],
+      ['throwing class', thrown({ failure: 'THROW' }), 'CONTRACT_VIOLATION', true],
+      ['throwing usage', thrown({ failure: ['TRANSIENT'], usage: 'THROW' }), 'CONTRACT_VIOLATION', true],
+      ['charged, in-bounds then over', withReads((m) => thrown({ failure: ['TRANSIENT'], usage: [usageOf({ inputTokens: [100], outputTokens: [10, 257] }, m)] }, m)), 'TRANSIENT', false],
+      ['charged, over then in-bounds', withReads((m) => thrown({ failure: ['TRANSIENT'], usage: [usageOf({ inputTokens: [100], outputTokens: [257, 10] }, m)] }, m)), 'TRANSIENT', true],
+      ...TRICKS.map((t): [string, [ProviderSnapshot, Map<string, number>], string, boolean] => [`trick class ${t}`, thrown({ failure: [t], usage: [null] }), 'UNKNOWN', false]),
+    ];
+    for (const [label, [s, reads], failure, fault] of cases) {
+      assertSnapshot(s, reads, label);
+      assert.equal(s.failure, failure, label);
+      assert.equal(s.providerFault, fault, `${label}: provider fault`);
+    }
+    assert.equal(errorSnapshot(new Error('plain'), bounds).failure, 'UNKNOWN', 'anything else thrown is possibly sent');
+  });
+
+  test('disposition lookup is own-key only: trick values get the held-for-reconciliation disposition', () => {
+    for (const t of TRICKS) assert.equal(failureDisposition(t), FAILURE_DISPOSITIONS.UNKNOWN, t);
+    for (const c of PROVIDER_FAILURE_CLASSES) assert.equal(failureDisposition(c), FAILURE_DISPOSITIONS[c], c);
   });
 });
 

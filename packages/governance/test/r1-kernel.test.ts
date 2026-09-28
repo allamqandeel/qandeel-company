@@ -6,7 +6,7 @@ import { describe, test } from 'node:test';
 
 import { canonicalJson, isQandeelError } from '@qandeel-company/domain';
 
-import { assertArgsSchema, parseProposal, validateArgs } from '../src/index.js';
+import { ProviderError, assertArgsSchema, classifyProviderError, parseProposal, validateArgs } from '../src/index.js';
 
 const schema = assertArgsSchema({ fields: { text: { type: 'string', required: true, maxLength: 200 } } });
 
@@ -34,6 +34,21 @@ describe('R1-02: tool arguments are validated by own schema fields only', () => 
     const b = canonicalJson(JSON.parse('{"a":1}'));
     assert.notEqual(a, b);
     assert.match(a, /__proto__/);
+  });
+});
+
+describe('R1-09 (final re-review 3): a thrown failure class is read once — the class validated is the class used', () => {
+  test('a shifting or prototype-named failure class never escapes classification', () => {
+    const shifting = (...values: string[]): ProviderError => {
+      const e = new ProviderError('TRANSIENT');
+      let i = 0;
+      Object.defineProperty(e, 'failure', { get: () => values[Math.min(i++, values.length - 1)] });
+      return e;
+    };
+    assert.equal(classifyProviderError(shifting('TIMEOUT_AFTER_SEND', 'constructor')), 'TIMEOUT_AFTER_SEND');
+    assert.equal(classifyProviderError(shifting('CONTRACT_VIOLATION', '__proto__')), 'CONTRACT_VIOLATION');
+    for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'BOGUS']) assert.equal(classifyProviderError(shifting(name)), 'UNKNOWN', name);
+    assert.equal(classifyProviderError(new Error('plain')), 'UNKNOWN');
   });
 });
 

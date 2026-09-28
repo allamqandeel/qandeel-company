@@ -18,7 +18,7 @@ import {
   CONTAINMENT_SIGNALS,
   CIRCUIT_OPEN_MS,
   CIRCUIT_THRESHOLD,
-  FAILURE_DISPOSITIONS,
+  failureDisposition,
   addMoney,
   approvalFingerprint,
   approvalUsable,
@@ -419,7 +419,7 @@ export function txDeploymentOutcome(ctx: StoreContext, fence: Fence, deploymentI
     ctx.fault('deploymentOutcome.beforeCommit');
     return;
   }
-  const disp = FAILURE_DISPOSITIONS[failure];
+  const disp = failureDisposition(failure);
   if (disp.circuit) {
     const failures = Number(d.circuit_failures) + 1;
     const open = failures >= CIRCUIT_THRESHOLD ? new Date(Date.parse(now) + CIRCUIT_OPEN_MS).toISOString() : d.circuit_open_until;
