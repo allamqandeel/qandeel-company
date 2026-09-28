@@ -120,7 +120,29 @@ const MUTATIONS = [
   {
     id: 'r1-09-malformed-answer-hold-split',
     finding: 'R1-09',
-    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'containProviderFault(store, fence, reservationId, failure);', replace: "holdReservation(store, fence, reservationId, failure); recordHealth(store, fence, deploymentId, 'CONTRACT_VIOLATION');", expectedCount: 2 }],
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'containProviderFault(store, fence, reservationId, failure);', replace: "holdReservation(store, fence, reservationId, failure); recordHealth(store, fence, deploymentId, 'CONTRACT_VIOLATION');", expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    // Focused re-review of 59449c2: each unusable-usage branch has its own single-branch mutation.
+    id: 'r1-09-unusable-usage-hold-split',
+    finding: 'R1-09',
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: "containProviderFault(store, fence, reservationId, 'USAGE_UNREPORTED');", replace: "holdReservation(store, fence, reservationId, 'USAGE_UNREPORTED'); recordHealth(store, fence, deploymentId, 'CONTRACT_VIOLATION');", expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'r1-09-charged-unusable-usage-not-contained',
+    finding: 'R1-09',
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: "containProviderFault(store, fence, reservationId, 'USAGE_UNUSABLE');", replace: "holdReservation(store, fence, reservationId, 'USAGE_UNUSABLE');", expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'r1-09-lazy-answer-read-escapes',
+    finding: 'R1-09',
+    edits: [
+      { file: `${R}/c2/model-runtime.js`, search: 'usage = result?.usage;', replace: '/* mutation: the answer is not snapshotted */', expectedCount: 1 },
+      { file: `${R}/c2/model-runtime.js`, search: 'return { ok: true, response: { outputText, usage } };', replace: 'return { ok: true, response: result };', expectedCount: 1 },
+    ],
     runs: [RUNTIME],
   },
   {

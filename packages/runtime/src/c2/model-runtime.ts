@@ -39,8 +39,10 @@ import type { ModelCallOutcome, ModelCallRequest } from './types.js';
 
 export const DEFAULT_MODEL_CALL_TIMEOUT_MS = 120_000;
 
+type ProviderAnswer = Awaited<ReturnType<ProviderAdapter['generate']>>;
+
 /** The normalized result of one adapter call. */
-type CallResult = { ok: true; response: Awaited<ReturnType<ProviderAdapter['generate']>> } | { ok: false; failure: ProviderFailureClass; usage: ProviderError['usage'] };
+type CallResult = { ok: true; response: ProviderAnswer } | { ok: false; failure: ProviderFailureClass; usage: ProviderError['usage'] };
 
 export class GovernedModelRuntime {
   readonly #adapters: ReadonlyMap<string, ProviderAdapter>;
@@ -250,7 +252,8 @@ export class GovernedModelRuntime {
         settleReservation(store, fence, reservationId, { inputTokens: u.usage.inputTokens, outputTokens: u.usage.outputTokens, withinBounds: u.withinBounds, sessionId, outcome: 'FAILED_CHARGED' }, providerFault);
         if (providerFault) return { failure: 'CONTRACT_VIOLATION' };
       } else {
-        containProviderFault(store, fence, reservationId, failure);
+        // A failed call whose reported usage is unusable: the provider broke the contract.
+        containProviderFault(store, fence, reservationId, 'USAGE_UNUSABLE');
         return { failure: 'CONTRACT_VIOLATION' };
       }
     } else if (failure === 'CONTRACT_VIOLATION') {
@@ -306,8 +309,18 @@ export class GovernedModelRuntime {
         controller.abort();
         return { ok: false, failure: 'TIMEOUT_AFTER_SEND', usage: null };
       }
-      if (typeof result?.outputText !== 'string') return { ok: false, failure: 'CONTRACT_VIOLATION', usage: null };
-      return { ok: true, response: result };
+      // Snapshot the answer once, here: a misbehaving answer object (a throwing or shifting getter) is
+      // the provider's contract violation, and nothing later reads the adapter's object again.
+      let outputText: unknown;
+      let usage: unknown;
+      try {
+        outputText = result?.outputText;
+        usage = result?.usage;
+      } catch {
+        return { ok: false, failure: 'CONTRACT_VIOLATION', usage: null };
+      }
+      if (typeof outputText !== 'string') return { ok: false, failure: 'CONTRACT_VIOLATION', usage: null };
+      return { ok: true, response: { outputText, usage } as ProviderAnswer };
     } catch (error) {
       return { ok: false, failure: classifyProviderError(error), usage: error instanceof ProviderError ? error.usage : null };
     } finally {

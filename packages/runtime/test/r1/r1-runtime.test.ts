@@ -245,6 +245,57 @@ describe('R1-09 (Technical Lead follow-up): a known provider fault stays contain
     );
   });
 
+  for (const [label, arrange] of [
+    ['an answer whose usage report is unusable', (f: Fakes) => f.cloud.reportUsage('cloud-e1', { inputTokens: -1, outputTokens: 10 })],
+    ['a charged failure whose usage report is unusable', (f: Fakes) => f.cloud.failNextCharged('cloud-e1', 'TRANSIENT', { inputTokens: -1, outputTokens: 10 })],
+  ] as const) {
+    test(`${label}: money held and deployment contained together, even when that write fails once (focused re-review)`, async () => {
+      let fired = 0;
+      await withWorld(
+        'r1-tl-unusable',
+        async ({ w, f, rt }) => {
+          arrange(f);
+          const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+          await settled(rt, id, ['COMPLETED', 'FAILED']);
+          assert.equal(fired, 1, 'the containment write failed once');
+          assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'never called again');
+          assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD');
+          assert.equal(cloudReservation(rt, w, id), 'RECONCILIATION_REQUIRED', 'spend unknown: held');
+        },
+        {
+          storageFault: (p) => {
+            if (p === 'deploymentOutcome.beforeCommit' && fired === 0) {
+              fired++;
+              throw contention();
+            }
+          },
+        },
+      );
+    });
+  }
+
+  test('an answer object whose usage cannot be read is the provider\'s contract violation, never an escaped error that retries the paid route (focused re-review)', () =>
+    withWorld('r1-tl-lazy-answer', async ({ w, f, rt }) => {
+      const generate = f.cloud.generate.bind(f.cloud);
+      let broken = true;
+      f.cloud.generate = async (request, signal) => {
+        const answer = await generate(request, signal);
+        if (!broken || request.deploymentCode !== 'cloud-e1') return answer;
+        broken = false;
+        return {
+          outputText: answer.outputText,
+          get usage(): never {
+            throw new Error('lazy usage read failed');
+          },
+        };
+      };
+      const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+      assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED', 'served by another route');
+      assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'the paid route was not called again');
+      assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD');
+      assert.equal(cloudReservation(rt, w, id), 'RECONCILIATION_REQUIRED', 'possibly billed: held');
+    }));
+
   test('a charged failure reporting usage outside the bounds is contained once (no double circuit count) and never retried on the same route', () =>
     withWorld('r1-tl-charged-over-bounds', async ({ w, f, rt }) => {
       f.cloud.failNextCharged('cloud-e1', 'TRANSIENT', { inputTokens: 100, outputTokens: 257 });

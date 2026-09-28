@@ -1625,7 +1625,13 @@ containment. The runtime's provider-fault verdict is now carried into the settle
 (`settleReservation(…, providerFault)`), so such a failure settles and contains together (proof +
 mutation `r1-09-charged-violation-verdict-dropped`). An over-bounds charged failure is counted once
 toward the circuit, and the in-process routing exclusion has its own proof (mutation
-`r1-09-uncontained-filter-removed`).
+`r1-09-uncontained-filter-removed`). A second focused re-review (`59449c2`) found no BLOCKER / MAJOR.
+Its MINORs were fixed:
+- The adapter's answer is snapshotted once at the adapter boundary. An answer object whose fields
+  cannot be read is the provider's contract violation, never an escaped error that retries a paid
+  route.
+- Each unusable-usage branch has its own proof and single-branch mutation. A failed call with
+  unusable usage holds its money as `USAGE_UNUSABLE`.
 
 **Documentation note (R1 B-F6).** D-C2-07's first bullet list says an orphaned NONE / IDEMPOTENT tool
 intent's reservation "is released". D-C2-12 (MAJOR, "interrupted tool intents released money that may
