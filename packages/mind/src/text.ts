@@ -121,12 +121,12 @@ export const SECRET_LITERALS: readonly RegExp[] = [
   // "Secretary: …", "سياسة كلمة المرور") is never refused (R1 re-review: false positives made legitimate
   // work unrunnable). JSON quoting and `_`-joined names (aws_secret_access_key, password_hash) are
   // allowed, other suffixes (Secretary, Passwords) are not, and a quantity ("12-character") is no value.
-  /(?<![A-Za-z])(?:password|passwd|passphrase|secret|api[_ -]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret)(?:_[A-Za-z0-9]{1,16}){0,3}["']?[ \t]{0,8}[:=][ \t]{0,8}["']?(?!\d{1,4}[- ][A-Za-z])(?=[^\s"',}]{0,256}\d)[^\s"',}]{8,256}/i,
+  /(?<![A-Za-z])(?:password|passwd|passphrase|secret|api[_ -]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret)(?:_[A-Za-z0-9]{1,16}){0,3}["']?[ \t]{0,8}[:=][ \t]{0,8}["']?(?!\d{1,4}[- ]\p{L}{3,}(?=[\s,.;]|$))(?=[^\s"',}]{0,256}\d)[^\s"',}]{8,256}/iu,
   /\b(?:token|bearer)["']?[ \t]{0,8}[:=][ \t]{0,8}["']?(?=[^\s"',}]{0,256}\d)[^\s"',}]{12,256}/i,
   /\b(?:password|passwd|passphrase)[ \t]{1,8}(?:is|was|=)[ \t]{1,8}(?=\S{0,256}\d)\S{6,256}/i,
   // Arabic: the keyword, then ONE bounded separator run (spaces / ':' / '=' / هي / هو), then a token
   // containing a digit.
-  /(?:كلمة[ \t]{0,4}(?:المرور|السر)|الرقم[ \t]{0,4}السري|مفتاح[ \t]{0,4}(?:الواجهة|API))(?:[ \t:=]|هي|هو){1,16}(?!\d{1,4}[- ]\p{L})(?=\S{0,256}\d)\S{6,256}/iu,
+  /(?:كلمة[ \t]{0,4}(?:المرور|السر)|الرقم[ \t]{0,4}السري|مفتاح[ \t]{0,4}(?:الواجهة|API))(?:[ \t:=]|هي|هو){1,16}(?!\d{1,4}[- ]\p{L}{3,}(?=[\s,.;]|$))(?=\S{0,256}\d)\S{6,256}/iu,
 ];
 
 /** A scan never needs more than this much text (the stored forms are all smaller): bounded work per call. */

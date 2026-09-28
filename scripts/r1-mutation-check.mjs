@@ -195,6 +195,13 @@ const MUTATIONS = [
     runs: [STORAGE],
   },
   {
+    // Only conflicts that can hold THIS work belong in the conflict pool (ineligible ones stay evidence).
+    id: 'r1-12-conflict-pool-unrestricted',
+    finding: 'R1-12',
+    edits: [{ file: `${S}/mind-writes.js`, search: 'AND x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND EXISTS (SELECT 1 FROM memory_conflicts', replace: 'AND ? IS NOT NULL AND ? IS NOT NULL AND EXISTS (SELECT 1 FROM memory_conflicts', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
     id: 'r1-13-lower-layer-forges-marker',
     finding: 'R1-13',
     edits: [{ file: `${M}/context.js`, search: "(l === 'KNOWLEDGE' || l === 'MEMORY' || l === 'RECENT' ? neutralizeLayerMarkers(text) : text)", replace: '(void l, text)', expectedCount: 1 }],

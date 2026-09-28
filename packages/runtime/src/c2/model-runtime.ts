@@ -289,6 +289,8 @@ function providerBrokeContract(outcome: CallResult, d: Extract<RouteDecision, { 
   if (!outcome.ok && !reported) return false;
   try {
     const u = normalizeUsage(reported, { inputUpperBound, maxOutputTokens });
+    // Usage beyond the enforced bounds is a contract violation too (normalizeUsage's own contract).
+    if (!u.withinBounds) return true;
     if (d.deployment.priceCard) costOf(d.deployment.priceCard as PriceCard, u.usage.inputTokens, u.usage.outputTokens);
     return false;
   } catch {

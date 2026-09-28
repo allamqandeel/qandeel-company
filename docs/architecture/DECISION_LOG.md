@@ -1591,6 +1591,15 @@ and marker neutralization cover every Unicode format character; the verifier ref
 mutation loop. **Accepted trade-off (recorded, not a Product decision):** credential-keyword values
 must carry a digit, so a digit-free password written in prose (`password: hunter-two-horse`) is no
 longer caught by the text rules (structured results are still guarded by credential-named keys).
+**Confirmation round.** Re-reviews of `805a1f5` found one more MAJOR of the same class: the conflict pool
+admitted conflicted memories of any class / market, which the planner rejects before it considers
+conflicts, so a flood of them could still displace the in-class pair. The conflict pool now holds only
+conflicts that can hold THIS work (class within the ceiling, market-eligible); ineligible conflicted
+memories remain rejection evidence (proof + mutation `r1-12-conflict-pool-unrestricted`). MINOR:
+the item-header neutralization lookahead is bounded and cheap again; a quantity exclusion needs a word
+after the number (`1234-abcd-9876` is still a credential); usage over the enforced bounds counts as a
+provider contract violation.
+
 **Documentation note (R1 B-F6).** D-C2-07's first bullet list says an orphaned NONE / IDEMPOTENT tool
 intent's reservation "is released". D-C2-12 (MAJOR, "interrupted tool intents released money that may
 have been spent") amended that to "charged (`FAILED_CHARGED`), never released", and the code follows

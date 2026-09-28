@@ -129,6 +129,26 @@ describe('R1-12 (final re-review): conflict-held memories can never be crowded o
       assert.equal(assemble(h, held, 0).outcome, 'CONFLICT_HOLD');
     });
   });
+
+  test('a flood of conflicts that CANNOT hold this work (above its class) never hides the in-class conflict', () => {
+    withSeed((h, s) => {
+      let step = 1;
+      for (let b = 0; b < 8; b++) {
+        const c = claimFor(h, workItem(h, s, s.employee, { dataClass: 'D3' })).claim;
+        for (let i = 0; i < 20; i++) {
+          propose(h, c, step++, { memoryClass: 'PROFESSIONAL', topic: `egypt.launch.f${b}x${i}`, content: `Egypt launch timing schedule flood a${b}x${i}.`, claimKey: `flood.claim.b${b}x${i}`, claimValue: 'yes' });
+          propose(h, c, step++, { memoryClass: 'PROFESSIONAL', topic: `egypt.launch.g${b}x${i}`, content: `Egypt launch timing schedule flood b${b}x${i}.`, claimKey: `flood.claim.b${b}x${i}`, claimValue: 'no' });
+        }
+        complete(h, c);
+      }
+      const c = claimFor(h, workItem(h, s, s.employee)).claim;
+      propose(h, c, 1, { content: 'Egypt launch: before Ramadan.', claimKey: 'egypt.launch.timing', claimValue: 'before-ramadan' });
+      propose(h, c, 2, { content: 'Egypt launch: after Ramadan.', claimKey: 'egypt.launch.timing', claimValue: 'after-ramadan' });
+      complete(h, c);
+      const held = claimFor(h, workItem(h, s, s.employee, { instructions: 'Egypt launch timing schedule memo.' }, { requirements: [], importance: 'IMPORTANT', topics: ['egypt.launch'] })).claim;
+      assert.equal(assemble(h, held, 0).outcome, 'CONFLICT_HOLD');
+    });
+  });
 });
 
 describe('R1-06 (re-review): a stale PENDING approval from an earlier job never masks this run\'s decision', () => {

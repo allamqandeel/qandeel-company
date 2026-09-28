@@ -863,10 +863,16 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   const memCurrent = `(x.review_at IS NULL OR x.review_at > ?)`;
   const mEligible = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND ${memEligible} AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });
   const mEvidence = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND NOT (${memEligible}) AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });
-  // Memories held in an OPEN conflict get their OWN bounded pool: the IMPORTANT-work CONFLICT_HOLD and the
-  // WAIT-settle hold re-check depend on them being candidates, so no amount of other rejection evidence
-  // may crowd them out (R1 final re-review).
-  const mConflict = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND ${memCurrent} AND EXISTS (SELECT 1 FROM memory_conflicts c WHERE c.state = 'OPEN' AND (c.memory_a_id = x.id OR c.memory_b_id = x.id))`, params: [e.id, at] });
+  // Memories held in an OPEN conflict that CAN hold this work (class within the ceiling, market-eligible —
+  // the planner rejects any other kind before it looks at conflicts) get their OWN bounded pool: the
+  // IMPORTANT-work CONFLICT_HOLD and the WAIT-settle hold re-check depend on them being candidates, so no
+  // amount of other rejection evidence — including ineligible conflicted memories, which stay in the
+  // evidence pool — may crowd them out (R1 final re-reviews).
+  const mConflict = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, {
+    table: 'memory_records',
+    where: `${memLive} AND ${memCurrent} AND x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND EXISTS (SELECT 1 FROM memory_conflicts c WHERE c.state = 'OPEN' AND (c.memory_a_id = x.id OR c.memory_b_id = x.id))`,
+    params: [e.id, at, p.ceiling, p.caps.marketRef ?? ''],
+  });
   const mMatch = new Map([...mEvidence, ...mConflict, ...mEligible]);
   const memCols = `id, employee_id, memory_class, scope, topic, claim_key, claim_value, content_sha256, data_class, market_ref, project_ref, provenance_kind, provenance_ref, source_version, source_sha256, evidence_refs_json,
             confidence_pct, status, integrity, retention_policy, review_at, last_validated_at, candidate_id, supersedes_id, superseded_by_id, version, created_at, terms_json, fingerprint, length(CAST(content AS BLOB)) AS bytes`;

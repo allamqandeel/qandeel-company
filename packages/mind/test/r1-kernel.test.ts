@@ -102,6 +102,9 @@ describe('R1-01: the secret detector covers the credential formats the review fo
       'Order a basic Arabic2English translation service for the listing.',
     ]) assert.equal(containsSecretMaterial(text), false, text);
     assert.equal(containsSecretMaterial(j('password', '_hash: ', '9f86d081884c7d65')), true, 'underscore-joined credential names still match');
+    // A value that merely starts like a quantity is still a credential.
+    assert.equal(containsSecretMaterial(j('pass', 'word: ', '1234-abcd-9876')), true);
+    assert.equal(containsSecretMaterial(j('Pass', 'word: ', '12-Abc$xyz9')), true);
     assert.equal(containsSecretMaterial(j('Authorization: ', 'Basic ', 'dXNlcjpodW50ZXIyMDI2')), true, 'HTTP Basic credentials are detected');
   });
 });
@@ -134,6 +137,9 @@ describe('R1-13: lower-layer text can never impersonate a higher layer in the re
     const started = Date.now();
     neutralizeLayerMarkers(`\n${'​'.repeat(100_000)}x`);
     neutralizeLayerMarkers(`${'\n '.repeat(50_000)}`);
-    assert.ok(Date.now() - started < 2_000, `took ${Date.now() - started} ms`);
+    // Header-shaped lines full of invisible / non-breaking characters (the final re-review's slow case).
+    neutralizeLayerMarkers(`(memory ${' ​'.repeat(8_000)}`);
+    neutralizeLayerMarkers(Array.from({ length: 2_000 }, () => `(memory ${'​'.repeat(20)}`).join('\n'));
+    assert.ok(Date.now() - started < 1_000, `took ${Date.now() - started} ms`);
   });
 });

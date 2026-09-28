@@ -327,7 +327,7 @@ export function neutralizeLayerMarkers(text: string): string {
     // [L1 … / ［Ｌ１ … / [L١ … (any decimal digit, full-width forms)
     .replace(new RegExp(`${start}(${pad})([\\[［])(?=${pad}[LlＬｌ]${pad}\\p{Nd})`, 'gmu'), (_m, p: string, b: string) => `${p}${swap(b)}`)
     // (memory 1234 v1) — only the real item-header grammar: a known kind, an id, a version
-    .replace(new RegExp(`${start}(${pad})([(（])(?=(?:${kinds})${pad}[ \\t\\p{Zs}]${pad}[^\\s)）]+${pad}[ \\t\\p{Zs}]${pad}v\\p{Nd})`, 'gimu'), (_m, p: string, b: string) => `${p}${swap(b)}`)
+    .replace(new RegExp(`${start}(${pad})([(（])(?=(?:${kinds})[\\t\\p{Zs}\\p{Cf}]{1,8}[^\\s)）]{1,128}[\\t\\p{Zs}\\p{Cf}]{1,8}v\\p{Nd})`, 'gimu'), (_m, p: string, b: string) => `${p}${swap(b)}`)
     // Precedence: …
     .replace(new RegExp(`${start}(${pad}precedence${pad})([:：])`, 'gimu'), (_m, p: string, c: string) => `${p}${swap(c)}`);
 }
