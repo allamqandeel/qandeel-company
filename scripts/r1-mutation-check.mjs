@@ -96,7 +96,7 @@ const MUTATIONS = [
   {
     id: 'r1-09-store-contention-blamed-on-provider',
     finding: 'R1-09',
-    edits: [{ file: `${R}/c2/model-runtime.js`, search: "if (isQandeelError(error, 'STORAGE_BUSY'))", replace: 'if (false)', expectedCount: 1 }],
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'if (!providerFault)', replace: 'if (false)', expectedCount: 1 }],
     runs: [RUNTIME],
   },
   {
@@ -135,7 +135,7 @@ const MUTATIONS = [
   {
     id: 'r1-09-accounting-failure-escapes',
     finding: 'R1-09',
-    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'return containAccountingFailure(store, fence, reservationId, d.deployment.id, error);', replace: "throw new Error('mutation: accounting failure escapes');", expectedCount: 1 }],
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'return containAccountingFailure(store, fence, reservationId, d.deployment.id, providerFault);', replace: "throw new Error('mutation: accounting failure escapes');", expectedCount: 1 }],
     runs: [RUNTIME],
   },
   {
@@ -184,8 +184,15 @@ const MUTATIONS = [
     // The other half of R1-12: ineligible items must still leave their rejection evidence (D-C3-06).
     id: 'r1-12-rejection-evidence-dropped',
     finding: 'R1-12',
-    edits: [{ file: `${S}/mind-writes.js`, search: 'new Map([...mEvidence, ...mEligible])', replace: 'new Map([...mEligible])', expectedCount: 1 }],
+    edits: [{ file: `${S}/mind-writes.js`, search: 'new Map([...mEvidence, ...mConflict, ...mEligible])', replace: 'new Map([...mConflict, ...mEligible])', expectedCount: 1 }],
     runs: [STORAGE, { cwd: 'packages/storage', tests: ['dist/test/c3-review-fixes.test.js'] }],
+  },
+  {
+    // Conflict-held memories must keep their own pool (the IMPORTANT-work CONFLICT_HOLD depends on it).
+    id: 'r1-12-conflict-pool-dropped',
+    finding: 'R1-12',
+    edits: [{ file: `${S}/mind-writes.js`, search: 'new Map([...mEvidence, ...mConflict, ...mEligible])', replace: 'new Map([...mEvidence, ...mEligible])', expectedCount: 1 }],
+    runs: [STORAGE],
   },
   {
     id: 'r1-13-lower-layer-forges-marker',

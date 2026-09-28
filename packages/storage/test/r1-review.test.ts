@@ -83,9 +83,10 @@ describe('R1-01: secret material never enters durable state', () => {
 
 describe('R1-01 (re-review): a step result gets the same credential-named-key guard as the tool record', () => {
   test('a structured result with credential-named keys is withheld from the step results (and so from later context)', () => {
+    // Values the TEXT detector cannot recognise (no digit, no known format): only the key guard catches them.
     withSeed((h, s) => {
       const c = claimFor(h, workItem(h, s, s.employee)).claim;
-      recordStepResult(h.store, c.fence, 0, 'TOOL_RESULT', JSON.stringify({ tool: 'crm', action: 'lookup', result: { authorization: j('Basic ', 'dXNlcjpodW50ZXIyMDI2'), credential: j('hunter2', '-2026') } }));
+      recordStepResult(h.store, c.fence, 0, 'TOOL_RESULT', JSON.stringify({ tool: 'crm', action: 'lookup', result: { credential: j('hunter', '-two-horse'), cookie: j('session', '-alpha-bravo') } }));
       recordStepResult(h.store, c.fence, 1, 'TOOL_RESULT', JSON.stringify({ tool: 'crm', action: 'lookup', result: { customers: 3, note: 'fine' } }));
       const rows = storeContext(h.store).db.all<{ step: number; content: string }>('SELECT step, content FROM context_step_results WHERE work_item_id = ? ORDER BY step', c.workItem.id);
       assert.equal(rows[0]?.content, '[result withheld: secret material]');
@@ -106,6 +107,26 @@ describe('R1-12 (re-review): stale knowledge never crowds an eligible item out, 
       const entries = m.manifestEntries(a.manifestId);
       assert.ok(entries.some((e) => e.itemId === fresh.id), 'the fresh knowledge item is a candidate');
       assert.ok(entries.filter((e) => e.reasonCode === 'STALE').length > 0, 'stale knowledge is still recorded as STALE');
+    });
+  });
+});
+
+describe('R1-12 (final re-review): conflict-held memories can never be crowded out of the assembly', () => {
+  test('300+ relevant rejection-evidence memories never hide an open conflict: IMPORTANT work still gets CONFLICT_HOLD', () => {
+    withSeed((h, s) => {
+      const words = ['kiwi', 'mango', 'papaya', 'guava', 'lychee', 'durian', 'quince', 'medlar', 'loquat', 'sapote', 'feijoa', 'jujube', 'rambutan', 'longan', 'salak', 'tamarind', 'soursop', 'cherimoya', 'pawpaw', 'yuzu'];
+      let step = 1;
+      for (let b = 0; b < 16; b++) {
+        const c = claimFor(h, workItem(h, s, s.employee, { dataClass: 'D3' })).claim;
+        for (let i = 0; i < 20; i++) propose(h, c, step++, { memoryClass: 'PROFESSIONAL', topic: `egypt.launch.b${b}`, content: `Egypt launch timing note ${words[i]} ${words[(i + b) % 20]}${b} code${b}x${i}.` });
+        complete(h, c);
+      }
+      const c = claimFor(h, workItem(h, s, s.employee)).claim;
+      propose(h, c, 1, { content: 'Egypt launch: before Ramadan.', claimKey: 'egypt.launch.timing', claimValue: 'before-ramadan' });
+      propose(h, c, 2, { content: 'Egypt launch: after Ramadan.', claimKey: 'egypt.launch.timing', claimValue: 'after-ramadan' });
+      complete(h, c);
+      const held = claimFor(h, workItem(h, s, s.employee, { instructions: 'Egypt launch timing memo.' }, { requirements: [], importance: 'IMPORTANT', topics: ['egypt.launch'] })).claim;
+      assert.equal(assemble(h, held, 0).outcome, 'CONFLICT_HOLD');
     });
   });
 });

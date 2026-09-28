@@ -320,14 +320,14 @@ export function neutralizeLayerMarkers(text: string): string {
   // Unicode space or invisible formatting character (R1 re-review: NBSP, zero-width, BOM, NEL, VT bypasses).
   const start = '(?<=^|[\\u000b\\u000c\\u0085])';
   // Non-breaking spacing / invisible characters only (never a line break), and bounded: linear time.
-  const pad = '[\\t \\u00a0\\u1680\\u2000-\\u200f\\u202f\\u205f\\u3000\\u2060-\\u2064\\ufeff]{0,64}';
+  const pad = '[\\t\\p{Zs}\\p{Cf}\\u034f\\u180e\\u2800\\u3164]{0,64}';
   const kinds = ITEM_KINDS.map((k) => k.toLowerCase()).join('|');
   const swap = (c: string): string => ({ '[': '{', '［': '｛', '(': '{', '（': '｛', ':': '-', '：': '－' })[c] ?? c;
   return text
     // [L1 … / ［Ｌ１ … / [L١ … (any decimal digit, full-width forms)
     .replace(new RegExp(`${start}(${pad})([\\[［])(?=${pad}[LlＬｌ]${pad}\\p{Nd})`, 'gmu'), (_m, p: string, b: string) => `${p}${swap(b)}`)
     // (memory 1234 v1) — only the real item-header grammar: a known kind, an id, a version
-    .replace(new RegExp(`${start}(${pad})([(（])(?=(?:${kinds})[ \\t]+[^\\s)）]+[ \\t]+v\\p{Nd})`, 'gimu'), (_m, p: string, b: string) => `${p}${swap(b)}`)
+    .replace(new RegExp(`${start}(${pad})([(（])(?=(?:${kinds})${pad}[ \\t\\p{Zs}]${pad}[^\\s)）]+${pad}[ \\t\\p{Zs}]${pad}v\\p{Nd})`, 'gimu'), (_m, p: string, b: string) => `${p}${swap(b)}`)
     // Precedence: …
     .replace(new RegExp(`${start}(${pad}precedence${pad})([:：])`, 'gimu'), (_m, p: string, c: string) => `${p}${swap(c)}`);
 }

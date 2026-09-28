@@ -1562,7 +1562,7 @@ at its root with a proof and a mutation (`r1:mutation` 22 → 28):
   quantifiers; the Arabic separator is one bounded class), a scan reads at most
   `SECRET_SCAN_MAX_CHARS` (16 384; every stored form is smaller), and the credential-keyword rules
   require a credential-shaped value (an explicit separator, then one token containing a digit), so
-  support prose about passwords / keys / PINs in English and Arabic is not refused. HTTP Basic
+  ordinary support prose about passwords / keys / PINs in English and Arabic is not refused (see the final round below for the remaining trade-off). HTTP Basic
   credentials are detected. Step results get the credential-named-key guard the tool invocation
   record already had. A checkpointed FINAL decision is honoured before input validation.
 - **R1-12 was incomplete for knowledge and for conflict-held memory**: knowledge eligibility includes
@@ -1578,6 +1578,19 @@ at its root with a proof and a mutation (`r1:mutation` 22 → 28):
   write, and local store contention is never recorded as a provider `CONTRACT_VIOLATION`.
 - **R1-15**: the verifier also refuses a mutation script that can exit successfully before running
   its mutations or reports PASS before its loop.
+**Final re-review round.** A last pair of re-reviews of `fe45500` found one more MAJOR introduced by
+that commit — moving conflict-held memories into the shared rejection-evidence pool let 300+ other
+rejected memories crowd the conflict pair out, so IMPORTANT work could run without `CONFLICT_HOLD` —
+fixed with a dedicated bounded pool for conflict-held memories (proof + mutation
+`r1-12-conflict-pool-dropped`), and a test-only flake (a proof read "the last job" by a timestamp the
+manual clock makes equal; it now reads the job it claimed). MINOR follow-ups fixed: a provider fault
+is decided from the provider's answer before any store write (never inferred from a local error);
+quantities ("12-character") and look-alike words (Secretary, Passwords) are not credentials, while
+`_`-joined credential names still are; HTTP Basic requires base64 shape; invisible-character folding
+and marker neutralization cover every Unicode format character; the verifier refuses any exit before a
+mutation loop. **Accepted trade-off (recorded, not a Product decision):** credential-keyword values
+must carry a digit, so a digit-free password written in prose (`password: hunter-two-horse`) is no
+longer caught by the text rules (structured results are still guarded by credential-named keys).
 **Documentation note (R1 B-F6).** D-C2-07's first bullet list says an orphaned NONE / IDEMPOTENT tool
 intent's reservation "is released". D-C2-12 (MAJOR, "interrupted tool intents released money that may
 have been spent") amended that to "charged (`FAILED_CHARGED`), never released", and the code follows

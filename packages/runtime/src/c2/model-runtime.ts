@@ -10,12 +10,13 @@
  */
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { isQandeelError, newId, type Id } from '@qandeel-company/domain';
+import { newId, type Id } from '@qandeel-company/domain';
 import {
   FAILURE_DISPOSITIONS,
   ProviderError,
   maxDataClass,
   classifyProviderError,
+  costOf,
   mayRetry,
   normalizeUsage,
   parseProposal,
@@ -24,6 +25,7 @@ import {
   route,
   utf8TokenUpperBound,
   type AttemptKind,
+  type PriceCard,
   type ProviderAdapter,
   type ProviderFailureClass,
   type RouteDecision,
@@ -148,10 +150,13 @@ export class GovernedModelRuntime {
           // the money stays held for reconciliation and the deployment is held as a contract violation
           // (R1-09, D13-F.1/.8, D-C2-07). The run-settle backstop holds anything still reserved.
           let settled: { readonly done: ModelCallOutcome } | { readonly failure: ProviderFailureClass };
+          // Whether the PROVIDER broke the contract is decided from its answer before any store write,
+          // never inferred from whichever local error the store throws (R1 re-review).
+          const providerFault = providerBrokeContract(outcome, d, routeReq.inputTokensUpperBound, req.maxOutputTokens);
           try {
             settled = this.#account(store, fence, d, reservationId, sessionId, outcome, routeReq.inputTokensUpperBound, req.maxOutputTokens, attempt, context.manifestId);
-          } catch (error) {
-            return containAccountingFailure(store, fence, reservationId, d.deployment.id as Id, error);
+          } catch {
+            return containAccountingFailure(store, fence, reservationId, d.deployment.id as Id, providerFault);
           }
           if ('done' in settled) return settled.done;
           const failure = settled.failure;
@@ -262,17 +267,33 @@ export class GovernedModelRuntime {
  * violation, so no retry calls the same route blindly. Each step is best effort — if the store itself
  * is unavailable, the run-settle backstop and startup recovery hold the reservation instead.
  */
-function containAccountingFailure(store: CompanyStore, fence: Fence, reservationId: Id, deploymentId: Id, error: unknown): ModelCallOutcome {
+function containAccountingFailure(store: CompanyStore, fence: Fence, reservationId: Id, deploymentId: Id, providerFault: boolean): ModelCallOutcome {
   try {
     holdReservation(store, fence, reservationId, 'SETTLEMENT_FAILED');
   } catch {
     // Already final or the store is unavailable: the backstop holds it.
   }
-  // Only a failure the provider's answer caused (e.g. an out-of-range usage report) holds the
-  // deployment; local store contention is never blamed on the provider (R1 re-review).
-  if (isQandeelError(error, 'STORAGE_BUSY')) return { kind: 'UNCERTAIN', failure: 'UNKNOWN' };
+  // Only a failure the provider's answer caused holds the deployment; a local store failure of any
+  // kind (busy, I/O, invariant) is never blamed on the provider (R1 re-review).
+  if (!providerFault) return { kind: 'UNCERTAIN', failure: 'UNKNOWN' };
   recordHealth(store, fence, deploymentId, 'CONTRACT_VIOLATION');
   return { kind: 'UNCERTAIN', failure: 'CONTRACT_VIOLATION' };
+}
+
+/**
+ * The provider broke the usage contract: an unusable usage report, or reported usage whose cost is
+ * outside the accounting range. Decided from the answer alone (pure; no store access).
+ */
+function providerBrokeContract(outcome: CallResult, d: Extract<RouteDecision, { kind: 'ROUTE' }>, inputUpperBound: number, maxOutputTokens: number): boolean {
+  const reported = outcome.ok ? outcome.response.usage : outcome.usage;
+  if (!outcome.ok && !reported) return false;
+  try {
+    const u = normalizeUsage(reported, { inputUpperBound, maxOutputTokens });
+    if (d.deployment.priceCard) costOf(d.deployment.priceCard as PriceCard, u.usage.inputTokens, u.usage.outputTokens);
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 /**

@@ -213,7 +213,7 @@ const MUTATION_PINS = {
       'r1-01-tool-result-secret-stored', 'r1-01-step-result-bounded-before-scan', 'r1-01-step-result-key-guard-dropped', 'r1-06-stale-pending-masks-decision', 'r1-12-stale-knowledge-eligible', 'r1-01-secret-instructions-sent', 'r1-01-detector-misses-hyphenated-keys', 'r1-02-tool-args-inherited-field', 'r1-03-step-base-ignored', 'r1-03-step-range-unbounded', 'r1-09-store-contention-blamed-on-provider',
       'r1-04-governed-reconciliation-unauthenticated', 'r1-05-approval-releases-unresolved-dependencies', 'r1-06-c2-wait-not-rechecked', 'r1-07-grant-does-not-wake-gap', 'r1-08-active-runs-keyed-by-job', 'r1-09-accounting-failure-escapes',
       'r1-09-settle-backstop-removed', 'r1-10-new-attempt-voids-refusal', 'r1-10-withdrawal-voids-refusal', 'r1-10-cancelled-shadow-refusal-skipped', 'r1-11-paused-reassignment-keeps-duty', 'r1-11-on-leave-reassignment-unchecked',
-      'r1-12-eligibility-after-limit', 'r1-12-rejection-evidence-dropped', 'r1-13-lower-layer-forges-marker', 'r1-final-decision-not-checkpointed', 'r1-unbounded-proposal-code',
+      'r1-12-eligibility-after-limit', 'r1-12-rejection-evidence-dropped', 'r1-12-conflict-pool-dropped', 'r1-13-lower-layer-forges-marker', 'r1-final-decision-not-checkpointed', 'r1-unbounded-proposal-code',
     ],
   },
 };
@@ -785,8 +785,9 @@ export const RULES = [
         const text = read(f) ?? '';
         for (const re of MUTATION_MACHINERY) if (!re.test(text)) problems.push(`${f} lost its mutation machinery (${re.source})`);
         // A mutation check that can succeed without running its mutations is vacuous (R1 re-review).
-        if (/process\.exit\(\s*0\s*\)|process\.exitCode\s*=\s*0/.test(text)) problems.push(`${f} can exit successfully without running its mutations`);
         const loop = text.indexOf('for (const m of MUTATIONS)');
+        const earlyExit = text.search(/process\s*(?:\.\s*exit|\[\s*['"]exit['"]\s*\])\s*\(|reallyExit/);
+        if (/process\.exitCode\s*=/.test(text) || (earlyExit >= 0 && (loop < 0 || earlyExit < loop))) problems.push(`${f} can exit before running its mutations`);
         const pass = text.search(/mutation: PASS/);
         if (loop < 0 || (pass >= 0 && pass < loop)) problems.push(`${f} reports PASS before (or without) its mutation loop`);
         for (const id of pin.ids) if (!text.includes(`id: '${id}'`)) problems.push(`${f} no longer carries the recorded mutation "${id}"`);
@@ -1268,6 +1269,8 @@ const VIOLATIONS = {
     { remove: [MUTATION_CHECK] },
     // An early successful exit (the re-review's bypass): the machinery is present but never runs.
     { contents: { [R1_MUTATION_CHECK]: `process.exit(0);\n${synthMutationScript(MUTATION_PINS[R1_MUTATION_CHECK].ids)}` } },
+    { contents: { [R1_MUTATION_CHECK]: `process.exit();\n${synthMutationScript(MUTATION_PINS[R1_MUTATION_CHECK].ids)}` } },
+    { contents: { [R1_MUTATION_CHECK]: `if (!process.env.X) { process['exit'](0); }\n${synthMutationScript(MUTATION_PINS[R1_MUTATION_CHECK].ids)}` } },
   ],
   'c3-not-claimed-closed': [
     { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS') } },
