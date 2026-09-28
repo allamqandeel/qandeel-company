@@ -1821,3 +1821,26 @@ separate governed decisions.
 
 This amendment is binding for C4 and later implementation and should be reflected in C5 organization
 visibility and C6 Department-performance reporting.
+
+
+## D-R1-06 — Organization scaling is an operational workflow, not a code change (Product Owner amendment)
+
+**Direct Product Owner requirement, 2026-09-28.**
+
+C4 must make post-C4 workforce sizing a normal governed company operation rather than an engineering
+change. Founder will initially work with CEO and Department Directors to determine the justified
+Positions/headcount after the executive structure is present.
+
+Therefore, after C4:
+- adding, pausing, retiring or re-opening a Position inside an existing governed organization must not
+  require a schema migration, source-code change or application redeploy merely because headcount
+  changed;
+- creating a Staffing Request, approving a Position, assigning an Employee, transferring/reassigning an
+  Employee, and changing acting/permanent coverage are durable data/workflow operations;
+- organization history and prior Work/Run attribution must remain intact after current staffing changes;
+- authority, budget, Academy/certification and lifecycle gates still apply: operational simplicity must
+  not become a bypass.
+
+The initial expected management flow is Founder → CEO → Directors: discuss actual workload/capability
+needs first, then decide justified Positions and Employee count. C4 builds the generic organization
+mechanism; it must not hard-code a fixed Employee count per Department.
