@@ -76,9 +76,10 @@ The canonical sequence remains **C4 → C5 → C6 → R2 → C7 → L1 → Contr
 The implementation intent is now explicit so each stage is designed as part of one Company system:
 
 - **C4** builds the real organization foundation: a persistent **CEO executive Employee** between Founder
-  and Directors; Directors / Positions; the canonical Strong-v1 Departments / Charters; staffing
-  requests; bounded delegation / handoff; and the qualified Review Pool, while extending — not
-  duplicating — C1–C3 runtime, authority, memory, skills and Academy mechanisms. CEO title grants no
+  and Directors; Directors / Positions; the canonical Strong-v1 Departments / Charters — **Strategic
+  Market Intelligence, Growth, Brand & Creative, Product, and Engineering** — staffing requests;
+  bounded delegation / handoff; and the qualified Review Pool, while extending — not duplicating —
+  C1–C3 runtime, authority, memory, skills and Academy mechanisms. CEO title grants no
   authority by itself; initial staffing approval remains Founder-controlled until explicitly delegated.
 - **C5** consumes C4 to build the Founder Command Center: the high-frequency Founder↔CEO operating
   relationship, organization visibility, approvals / delegation controls and the Company Calendar
