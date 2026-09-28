@@ -188,6 +188,7 @@ D-C2-12 (decision log note).
 | N-DB | Append-only guarantees rely on triggers (REPLACE would bypass them; not used anywhere); three small tables have no append-only trigger; backup verify → restore copy is not re-hashed; a backup is recorded before its full verification. |
 | N-WORK | Optional-review rework after dependents were released is not guarded. |
 | N-RETRY | (Re-sweep of the charged-attempt retry decision: 0 BLOCKER / 0 MAJOR; MINORs recorded, not fixed.) **M1:** "no same-deployment retry after a charge" holds per call, not per job. If every route is charged and exhausted, the call returns UNAVAILABLE, and the C1 job retry (existing C2 design) starts a new run that may route to the same deployment again. In that scenario one more fallback attempt is charged than before (3 paid calls instead of 2). **Whether the rule applies at job scope is a Technical Lead / Product question.** **M2:** a reported `{0,0}` usage settles `FAILED_CHARGED` at zero cost and counts as charged (conservative: no same-deployment retry). **M3:** the retry-guard mutation replaces `=== 'UNBILLED'` with `!== 'HELD'`; the HELD half is not mutated on its own (currently redundant: every HELD path has a no-retry disposition). **M4:** `releaseReservation` has no fault point; by code reading, a failure there goes to the accounting containment (UNCERTAIN, no retry). Also recorded: the tool executor still compares a driver's raw result with the string markers `'TIMEOUT'` / `'CANCELLED'` (no outcome difference; a driver string reaches the unknown-outcome path either way); the Node/Promise machinery reads the answer's `then` before the boundary (a throwing `then` becomes UNKNOWN: held, not retried); `classifyProviderError` is now used only by tests; no mutation re-reads the error snapshot's `usage` / `failure` directly. |
+| N-FINAL | (Final focused review of `1dfe795`: 0 BLOCKER / 0 MAJOR; MINORs recorded, not fixed.) **m1:** a healthy answer that was already in flight on a deployment, and that settles after another run has contained that deployment, resets its circuit counters. The `HOLD` is kept and routing still excludes the deployment; only the circuit evidence is erased (observability). **m2 (pre-existing C2):** a local run cancellation that aborts the adapter surfaces as TRANSIENT / UNKNOWN and counts toward the deployment circuit. This is a temporary circuit count, never a HOLD. |
 | N-ADAPTER | (Final re-review F3, MINOR — closed as a side effect of the MAJOR fix in final re-review 2, whose guarded snapshot of a thrown failure makes an unreadable failure object a contract violation.) (F4, MINOR, by design.) An in-process exclusion whose containment the store refused is lost on a crash before the next route boundary; nothing durable recorded the violation. Recorded under the closure-cycle rule: MINOR, no code change in this cycle. |
 | N-PROOF | Linearity proofs use wall-clock limits (500 ms / 1 000 ms; ~250 ms measured) and could flake on a heavily loaded host; mutation catch = any listed test failing; acceptance "no CLI command" checks exit code only; acceptances are not in `npm run ci` (they are in GitHub CI); race tests do not prove overlap; the mutation pin is lexical. |
 
@@ -227,27 +228,31 @@ or Stage 16 reconstruction.
 
 ## 10. Final validation
 
-Founder host (Windows 11, Node 24.19.0, npm 11.17.0), on the final branch head (the commit that adds
-this validation; its code equals `621d107` plus one R1-09 proof and one mutation). `621d107` itself
-also passed the full `npm run ci` twice (Founder host and re-review B's own worktree: 424 tests, R1
-30/30) and the three acceptances.
+Exact-head full validation, run once on the consolidated Technical Lead follow-up head
+`1dfe7958853ebb58cb37bbad8de57947157bdc36` (Founder host: Windows 11, Node 24.19.0, npm 11.17.0).
+Later commits on the branch change documentation only: they record these results and the final
+review. The previous Technical Lead-reviewed head `0ac427e` had passed 425 tests and R1 31/31.
 
 | Gate | Result |
 |---|---|
 | `npm ci` | exit 0, 0 vulnerabilities |
 | `npm run ci` | **PASS** (build, typecheck, lint, tests, C1 / C2 / C3 / R1 mutations, verifier) |
-| Tests | **425 passed**, 0 failed / skipped / todo — bootstrap 5, domain 22, governance 36, mind 53, storage 241, runtime 68 |
-| Mutations | C1 6/6, C2 19/19, C3 40/40, **R1 31/31** |
-| Verifier | 221 files, 50/50 rules passed; self-test: 49 rules each proved able to fail |
+| Tests | **448 passed**, 0 failed / skipped / todo — bootstrap 5, domain 22, governance 37, mind 53, storage 243, runtime 88 |
+| Mutations | C1 6/6, C2 19/19, C3 40/40, **R1 45/45** |
+| Verifier | 222 files, 50/50 rules passed; self-test: 49 rules each proved able to fail |
 | C1 acceptance | **PASS** — 6 steps (external workspace outside any git tree) |
 | C2 acceptance | **PASS** — 8 steps |
 | C3 acceptance | **PASS** — 9 steps |
 | `git diff --check` | clean |
 
-Count changes vs the C3 reference (352 / storage 212 / 6 / 19 / 40 / 49): +73 tests (governance +11,
-mind +26, storage +29, runtime +7 — all new R1 proofs); R1 mutation suite added (31); verifier +1 rule
-(`mutation-checks-pinned`). No existing test was weakened; one C3 mutation was re-targeted to the R1-11
-form of the same gate.
+Count changes vs the C3 reference (352 / storage 212 / 6 / 19 / 40 / 49):
+- **+96 tests**, all new R1 proofs: governance +12, mind +26, storage +31, runtime +27.
+- **R1 mutation suite added** (45).
+- **Verifier +1 rule** (`mutation-checks-pinned`).
+- **Test expectations changed:**
+  - No existing C1/C2/C3 test was weakened.
+  - One C3 mutation was re-targeted to the R1-11 form of the same gate.
+  - Two R1 proofs from an earlier follow-up round had asserted a charged same-deployment retry. They now assert its absence, per the Technical Lead retry decision.
 
 ## 11. Official-source check
 
@@ -263,7 +268,19 @@ trigger interaction (N-DB; no `REPLACE` exists in the code).
 
 **R1 INDEPENDENT CORE REVIEW — CLOSURE CANDIDATE / NOT CLOSED**
 
-No unresolved BLOCKER, no unresolved MAJOR, no blocking Product decision. The final independent
-re-review round (A and B) on the exact remediation head `621d107` found no BLOCKER or MAJOR; the only
-later code change is one added proof and its mutation. R1 is not closed; C4 is not
-started; Technical Lead exact-head review is required.
+No unresolved BLOCKER, no unresolved MAJOR, and no blocking Product decision.
+
+The Technical Lead's exact-head review of `0ac427e` found one MAJOR under R1-09. It was resolved by:
+- atomic containment;
+- one provider boundary;
+- private control markers;
+- no same-deployment retry after a charged attempt (Technical Lead decision).
+
+On the consolidated head `1dfe795`:
+- the focused sweeps found 0 BLOCKER / 0 MAJOR;
+- the exact-head full validation passed once (§10);
+- the final focused adversarial review found **0 BLOCKER / 0 MAJOR**.
+
+Its MINORs are recorded as residuals (N-FINAL, N-RETRY). The job-scope question is open for the
+Technical Lead as P-07. R1 is not closed, and C4 is not started. Technical Lead exact-head re-review is
+required.
