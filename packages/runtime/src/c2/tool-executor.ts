@@ -56,7 +56,7 @@ export class ToolExecutor {
       case 'APPROVAL_REQUIRED':
         return { kind: 'APPROVAL_REQUIRED', approvalId: intent.approvalId };
       case 'REVIEW_REQUIRED':
-        return { kind: 'REVIEW_REQUIRED' };
+        return { kind: 'REVIEW_REQUIRED', code: intent.code };
       case 'BUDGET':
         return { kind: 'BUDGET', code: intent.code };
       case 'RECONCILIATION_REQUIRED':

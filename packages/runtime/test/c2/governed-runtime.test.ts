@@ -14,6 +14,7 @@ import { CompanyStore, GovernanceStore } from '@qandeel-company/storage';
 import { employeeTaskProcessor, runtimeHealth, type CompanyRuntime, type GovernedProcessor } from '../../src/index.js';
 import { eventually, removeRoot, tempRoot } from '../helpers.js';
 import { fakes, final, governedRuntime, hireActive, script, seedWorld, submitTask, toolReq, type C2World, type Fakes } from './c2-seed.js';
+import { certifyAndPromote, plan, seedReviewer, submitTaskWithPlan } from '../c4/c4-seed.js';
 
 async function withWorld(label: string, fn: (ctx: { root: string; w: C2World; f: Fakes; rt: CompanyRuntime }) => Promise<void>): Promise<void> {
   const root = tempRoot(label);
@@ -117,22 +118,28 @@ describe('C2 runtime: tools never bypass authority', () => {
       const audit = rt.view.audit(rt.view.runsForWorkItem(id)[0]?.id as Id);
       assert.deepEqual(audit.filter((a) => a.action === 'authority.denied').map((a) => a.reasonCode), ['FOUNDER_ONLY']);
       assert.deepEqual(audit.filter((a) => a.action === 'tool.refused').map((a) => a.reasonCode), ['UNKNOWN_TOOL']);
+      // R2 is default-deny like everything else; granted, it still needs an independent review (C4) — with no
+      // Review Plan it fails closed and waits, never executes.
+      rt.governance.grant(w.founder, { employeeId: w.employee.id, capability: 'tool:review.merge', riskCeiling: 'R3', dataClassCeiling: 'D3', reasonCode: 'seed' });
       const r2 = submitTask(rt, w, { instructions: script(toolReq('review', 'merge', { text: 'x' }), final()) });
       assert.equal(await settled(rt, r2), 'WAITING');
       assert.equal(rt.view.jobsFor(r2)[0]?.waitReason, 'AWAITING_INDEPENDENT_REVIEW');
       assert.equal(f.drivers.review.invocations.length, 0);
     }));
 
-  test('R3 tool: parks without tokens until the Founder approves (across a restart), then executes exactly once', async () => {
+  test('R3 tool: an independent review first, then it parks without tokens until the Founder approves (across a restart), then executes exactly once', async () => {
     const root = tempRoot('c2-r3');
     const w = seedWorld(root);
+    const rw = seedReviewer(root, w);
     const f = fakes();
     let rt = governedRuntime(root, f);
     try {
       await rt.start();
-      const id = submitTask(rt, w, { instructions: script(toolReq('publisher', 'publish', { text: 'launch notes' }), final('published')) });
-      assert.equal(await settled(rt, id), 'WAITING');
-      assert.equal(rt.view.jobsFor(id)[0]?.waitReason, 'AWAITING_APPROVAL');
+      await certifyAndPromote(rt, w, rw);
+      // C4 (Stage 3 §4): R3 needs independent review AND Founder approval. The reviewer's own run decides.
+      const id = submitTaskWithPlan(rt, w, script(toolReq('publisher', 'publish', { text: 'launch notes' }), final('published')), plan('ACTIONS', 'PASS'));
+      await eventually(() => rt.view.jobsFor(id).at(-1)?.waitReason === 'AWAITING_APPROVAL', 30_000, 'the review to pass and the approval to be requested');
+      assert.equal(rt.org.review.requests({ workItemId: id }).find((r) => r.subjectKind === 'ACTION')?.state, 'SATISFIED');
       assert.equal(f.drivers.publisher.invocations.length, 0);
       const calls = f.cloud.totalCalls + f.local.totalCalls;
       const [pending] = rt.governance.listApprovals('PENDING');

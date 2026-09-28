@@ -53,7 +53,9 @@ import {
   txDeploymentOutcome,
   txHold,
   txHoldUnsettledModelCalls,
+  GOVERNED_WAITS,
   txRecheckGovernedWait,
+  type GovernedWait,
   txRecoverGovernedOrphans,
   txRelease,
   txReserve,
@@ -85,6 +87,9 @@ import {
   type StepResultKind,
   type SubmitResult,
 } from './mind-writes.js';
+import { materializeExpiredActing } from './org-core.js';
+import { txOrgAct, txReviewDecision, type OrgActResult, type ReviewDecisionResult } from './org-writes.js';
+import { sweepReviews } from './review-core.js';
 import { storeContext, type CompanyStore } from './store.js';
 import { txRequestCancellation, txSupersede } from './work-items.js';
 import type { TerminationOutcome } from './work-core.js';
@@ -195,9 +200,10 @@ export function settle(store: CompanyStore, fence: Fence, result: ProcessorResul
     }
     // C2 waits have the same window (R1-06): an approval decided or a cap raised while the job was
     // still claimed found no WAITING job to wake — re-check in this same transaction.
-    if (result.type === 'WAIT' && (result.reasonCode === 'AWAITING_APPROVAL' || result.reasonCode === 'BUDGET_EXHAUSTED')) {
+    // C4 waits (independent review, delegation, clarification, escalation) share the window and the remedy.
+    if (result.type === 'WAIT' && (GOVERNED_WAITS as readonly string[]).includes(result.reasonCode)) {
       const wi = ctx.db.get<{ w: string }>('SELECT work_item_id AS w FROM queue_jobs WHERE id = ?', fence.jobId)?.w as Id | undefined;
-      if (wi) txRecheckGovernedWait(ctx, wi, fence.runId, result.reasonCode);
+      if (wi) txRecheckGovernedWait(ctx, wi, fence.runId, result.reasonCode as GovernedWait);
     }
     return out;
   });
@@ -385,4 +391,26 @@ export function decidePendingCandidates(store: CompanyStore, supervisor: Supervi
     }
   }
   return ids.length;
+}
+
+// --- C4 organizational acts and review decisions (job fence mandatory; runtime only) ------------------
+
+export type { OrgActAfter, OrgActResult, ReviewDecisionResult } from './org-writes.js';
+
+/** One organizational act of the run's Employee at a Work-Item-global step (idempotent per step). */
+export function recordOrgAct(store: CompanyStore, fence: Fence, step: number, action: unknown, args: unknown): OrgActResult {
+  return fenced(store, 'organization act', fence, (ctx) => txOrgAct(ctx, fence, step, action, args));
+}
+
+/** The reviewer's decision from inside its own review Work Item (re-checked at this boundary). */
+export function recordReviewDecision(store: CompanyStore, fence: Fence, input: { outcome: unknown; reasonCode: string; rationale: string | null; evidenceRefs: readonly string[] }): ReviewDecisionResult {
+  return fenced(store, 'review decision', fence, (ctx) => txReviewDecision(ctx, fence, input));
+}
+
+/** Recovery (supervisor fence mandatory): bounded reconciliation of review state and expired acting coverage. */
+export function reconcileOrganization(store: CompanyStore, supervisor: SupervisorFence, limit = 100): number {
+  return write(store, 'reconcile organization', (ctx) => {
+    verifySupervisor(ctx, supervisor);
+    return materializeExpiredActing(ctx) + sweepReviews(ctx, limit);
+  });
 }

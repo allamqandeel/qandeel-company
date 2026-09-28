@@ -67,16 +67,19 @@ import {
   AcademyStore,
   CapabilityStore,
   MemoryStore,
+  OrganizationStore,
+  ReviewStore,
   SkillStore,
 } from '@qandeel-company/storage';
 import type { ProviderAdapter, ToolDriver } from '@qandeel-company/governance';
 
 import { GovernedModelRuntime } from './c2/model-runtime.js';
 import { ToolExecutor } from './c2/tool-executor.js';
-import { isGovernedProcessor, type GovernedRunServices, type MemoryProposal, type ModelCallOutcome, type ModelCallRequest, type ToolRequest } from './c2/types.js';
+import { isGovernedProcessor, type GovernedRunServices, type MemoryProposal, type ModelCallOutcome, type ModelCallRequest, type OrgActProposal, type ReviewDecisionProposal, type ToolRequest } from './c2/types.js';
 import { assembleGovernedContext } from './c3/context-assembler.js';
 import { c3HealthOf, type C3Health } from './c3/health.js';
 import { proposeMemory } from './c3/memory-proposals.js';
+import { c4HealthOf, type C4Health } from './c4/health.js';
 import {
   GOVERNED_STEP_SPAN,
   acquireSupervisor,
@@ -89,6 +92,8 @@ import {
   releaseSupervisor,
   renewLease,
   renewSupervisor,
+  recordOrgAct,
+  recordReviewDecision,
   recordStepResult,
   settle,
   updateInstance,
@@ -157,6 +162,11 @@ export interface MindAdmin {
   readonly skills: SkillStore;
   readonly academy: AcademyStore;
   readonly capability: CapabilityStore;
+}
+/** C4 administration: the organization and the Review Pool (Founder writes fail closed until C5). */
+export interface OrgAdmin {
+  readonly organization: OrganizationStore;
+  readonly review: ReviewStore;
 }
 
 const recoverGovernedOrphansCount = (g: { reservationsHeld: number; reservationsReleased: number; invocationsRetryable: number; invocationsHeld: number }): number =>
@@ -233,6 +243,7 @@ export class CompanyRuntime {
   readonly #tools: ToolExecutor;
   #governanceAdmin: GovernanceAdmin | undefined;
   #mindAdmin: MindAdmin | undefined;
+  #orgAdmin: OrgAdmin | undefined;
 
   #state: RuntimeState = 'CREATED';
   #store: CompanyStore | undefined;
@@ -633,6 +644,39 @@ export class CompanyRuntime {
     return this.#mindAdmin;
   }
 
+  /**
+   * C4 administration: Positions, assignments, acting coverage, staffing, authority delegation, charters,
+   * Review Plans and the Review Pool. A capability object like `mind`: it executes and claims nothing, and
+   * every call signals the dispatcher (a review decision or handoff answer can make parked work actionable).
+   */
+  get org(): OrgAdmin {
+    if (!this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
+    if (!this.#orgAdmin) {
+      const wake = (): void => this.#wake.signal();
+      const wrap = <T extends object>(target: T): T =>
+        new Proxy(target, {
+          get(t, prop, receiver) {
+            const v = Reflect.get(t, prop, receiver) as unknown;
+            if (typeof v !== 'function') return v;
+            return (...args: unknown[]) => {
+              try {
+                return (v as (...a: unknown[]) => unknown).apply(t, args);
+              } finally {
+                wake();
+              }
+            };
+          },
+        });
+      this.#orgAdmin = Object.freeze({ organization: wrap(OrganizationStore.for(this.#store)), review: wrap(ReviewStore.for(this.#store)) });
+    }
+    return this.#orgAdmin;
+  }
+
+  /** C4 health counts (content-free). */
+  orgHealth(): C4Health {
+    if (!this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
+    return c4HealthOf(this.#store);
+  }
   /** C3 health counts (content-free). */
   mindHealth(): C3Health {
     if (!this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
@@ -1007,6 +1051,21 @@ export class CompanyRuntime {
         else if (out.kind === 'DENIED' && !out.paused) recordStepResult(store, claim.fence, g, 'TOOL_REFUSED', JSON.stringify({ tool: request.tool, action: request.action, denied: out.code }));
         return out;
       },
+      // C4: organizational acts and review decisions pass the fenced authority path; their outcome (codes and
+      // references only) is recorded for later context like a tool result.
+      orgAct: (proposal: OrgActProposal, step: number) => {
+        const g = globalStep(step);
+        const out = recordOrgAct(store, claim.fence, g, proposal.action, proposal.args);
+        if (!out.paused) recordStepResult(store, claim.fence, g, out.outcome === 'DONE' ? 'TOOL_RESULT' : 'TOOL_REFUSED', JSON.stringify({ orgAction: proposal.action, outcome: out.outcome, code: out.code, ref: out.resultRef }));
+        return { outcome: out.outcome, code: out.code, after: out.after, paused: out.paused };
+      },
+      submitReviewDecision: (proposal: ReviewDecisionProposal, step: number) => {
+        const g = globalStep(step);
+        const out = recordReviewDecision(store, claim.fence, { outcome: proposal.outcome, reasonCode: proposal.reasonCode, rationale: proposal.rationale, evidenceRefs: proposal.evidenceRefs });
+        recordStepResult(store, claim.fence, g, out.outcome === 'RECORDED' ? 'TOOL_RESULT' : 'TOOL_REFUSED', JSON.stringify({ reviewDecision: out.outcome, code: out.code }));
+        return { outcome: out.outcome, code: out.code };
+      },
+      openHandoffs: () => OrganizationStore.for(store).workDelegations({ parentWorkItemId: run.workItemId }).filter((d) => d.state === 'OFFERED' || d.state === 'ACCEPTED' || d.state === 'CLARIFICATION_REQUESTED' || d.state === 'ESCALATED').length,
     });
     return processor.runGoverned(context, services);
   }

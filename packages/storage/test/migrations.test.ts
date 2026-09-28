@@ -108,6 +108,46 @@ describe('versioned migrations', () => {
     }
   });
 
+  test('C4-PROOF: real released v6 → v8 preserves every C2 organization / money row and adopts existing Departments by code', () => {
+    const root = tempRoot('mig-v6-v8');
+    try {
+      const v6 = openStoreForTests(root, { clock, migrations: loadReleasedMigrations(6) });
+      const db = storeContext(v6).db;
+      const at = '2026-01-01T00:00:00.000Z';
+      const id = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+      db.immediate('v6 fixture', () => {
+        db.run(`INSERT INTO departments (id, code, name, status, created_at, updated_at) VALUES (?, 'growth', 'Growth (pre-C4)', 'ACTIVE', ?, ?)`, id(1), at, at);
+        db.run(`INSERT INTO departments (id, code, name, status, created_at, updated_at) VALUES (?, 'finance', 'Finance', 'ACTIVE', ?, ?)`, id(2), at, at);
+        db.run(
+          `INSERT INTO employees (id, given_name, family_name, name_origin, profile_json, cognitive_profile_json, role_ref, position_ref, department_id, manager_ref, state, version, created_at, updated_at)
+           VALUES (?, 'Nour', 'Hassan', 'EG', '{}', '{"ceilingClass":"E2","costDiscipline":"BALANCED","defaultClass":"E1"}', 'role:analyst', 'position:p1', ?, 'founder:x', 'CANDIDATE', 1, ?, ?)`,
+          id(3), id(1), at, at,
+        );
+        db.run(`INSERT INTO budgets (id, scope, scope_id, parent_id, currency, cap_money, cap_tokens, version, created_by_ref, created_at, updated_at) VALUES (?, 'COMPANY', 'company', NULL, 'USD', 1000, 1000, 1, 'founder:x', ?, ?)`, id(4), at, at);
+        db.run(`INSERT INTO budgets (id, scope, scope_id, parent_id, currency, cap_money, cap_tokens, version, created_by_ref, created_at, updated_at) VALUES (?, 'DEPARTMENT', ?, ?, 'USD', 500, 500, 1, 'founder:x', ?, ?)`, id(5), id(1), id(4), at, at);
+        db.run(`INSERT INTO budgets (id, scope, scope_id, parent_id, currency, cap_money, cap_tokens, version, created_by_ref, created_at, updated_at) VALUES (?, 'EMPLOYEE', ?, ?, 'USD', 100, 100, 1, 'founder:x', ?, ?)`, id(6), id(3), id(5), at, at);
+      });
+      v6.close();
+      const v8 = CompanyStore.open(root, { clock });
+      try {
+      assert.deepEqual(v8.migration.applied, [7, 8]);
+      const d8 = storeContext(v8).db;
+      const growth = d8.get<{ id: string; name: string }>(`SELECT id, name FROM departments WHERE code = 'growth'`);
+      assert.deepEqual({ ...growth }, { id: id(1), name: 'Growth (pre-C4)' }, 'an existing Department is adopted by code, never duplicated or renamed');
+      assert.equal(d8.get<{ n: number }>(`SELECT COUNT(*) AS n FROM departments`)?.n, 6, 'the four missing canonical Departments are added; the extra one is kept');
+      assert.deepEqual({ ...d8.get(`SELECT department_id, org_scope, role_ref, state FROM employees WHERE id = ?`, id(3)) }, { department_id: id(1), org_scope: 'DEPARTMENT', role_ref: 'role:analyst', state: 'CANDIDATE' });
+      assert.deepEqual(d8.all<{ id: string; status: string }>(`SELECT id, status FROM budgets ORDER BY id`).map((b) => [b.id, b.status]), [[id(4), 'OPEN'], [id(5), 'OPEN'], [id(6), 'OPEN']]);
+      assert.equal(d8.get<{ id: string }>(`SELECT director_position_id AS id FROM department_charters WHERE department_id = ?`, id(1))?.id !== undefined, true, 'the adopted Department gets its baseline charter and Director seat');
+      assert.deepEqual(d8.all('PRAGMA foreign_key_check'), []);
+      assert.equal(v8.quickCheck(), 'ok');
+      } finally {
+        v8.close();
+      }
+    } finally {
+      removeRoot(root);
+    }
+  });
+
   test('real released v2 → v3 (durable wake generation): data kept, generation starts at 0 and advances with queued work', () => {
     const root = tempRoot('mig-v2-v3');
     try {
@@ -167,7 +207,22 @@ describe('versioned migrations', () => {
   test('migration files carry no destructive statements against history tables', () => {
     for (const pin of RELEASED_MIGRATIONS) {
       const sql = readFileSync(new URL(`../../migrations/${pin.file}`, import.meta.url), 'utf8');
-      assert.doesNotMatch(sql, /\bDROP\s+TABLE\b|\bDELETE\s+FROM\b|ON\s+DELETE\s+CASCADE/i, pin.file);
+      assert.doesNotMatch(sql, /\bDELETE\s+FROM\b|ON\s+DELETE\s+CASCADE/i, pin.file);
+      // The only DROP TABLE a migration may contain is the row-preserving rebuild of D-C4-01: the table is
+      // first copied whole into a TEMP table, re-created, every row copied back, then the TEMP copy dropped.
+      const drops = [...sql.matchAll(/\bDROP\s+TABLE\s+([A-Za-z0-9_.]+)/gi)].map((m) => String(m[1]));
+      for (const target of drops) {
+        const temp = /^temp\.(c4_copy_[a-z0-9_]+)$/.exec(target);
+        if (temp) {
+          assert.ok(new RegExp(`CREATE TEMP TABLE ${temp[1]} AS SELECT \\* FROM main\\.`).test(sql), `${pin.file}: ${target} is a rebuild copy`);
+          continue;
+        }
+        const main = /^main\.([a-z_]+)$/.exec(target);
+        assert.ok(main, `${pin.file}: DROP TABLE ${target} is not part of a row-preserving rebuild`);
+        const t = String(main?.[1]);
+        assert.match(sql, new RegExp(`CREATE TEMP TABLE c4_copy_${t} AS SELECT \\* FROM main\\.${t};\\s*DROP TABLE main\\.${t};\\s*CREATE TABLE ${t} \\(`), `${pin.file}: ${t} is copied whole before it is re-created`);
+        assert.match(sql, new RegExp(`INSERT INTO ${t} \\([^)]*\\)\\s*SELECT [^;]* FROM temp\\.c4_copy_${t};`), `${pin.file}: every row of ${t} is copied back`);
+      }
     }
   });
 });

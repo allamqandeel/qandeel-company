@@ -7,7 +7,7 @@ import { describe, test } from 'node:test';
 
 import { isQandeelError, type Id } from '@qandeel-company/domain';
 
-import { CompanyStore, GovernanceStore, type Fence } from '../src/index.js';
+import { CompanyStore, GovernanceStore, ReviewStore, type Fence } from '../src/index.js';
 import {
   authorizeModelCall,
   recordDeploymentOutcome,
@@ -24,6 +24,7 @@ import {
 import { storeContext } from '../src/store.js';
 import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
 import { C2_KINDS, claimGoverned, governedItem, hire, seed, testManifest } from './c2-helpers.js';
+import { activeReviewer, decideActionReview, reviewPlan } from './c4-helpers.js';
 import { harness } from './helpers.js';
 
 const code = (c: string) => (e: unknown): boolean => isQandeelError(e) && e.code === c;
@@ -186,7 +187,7 @@ describe('C2 authority: default deny, no self-escalation, Founder approvals', ()
 });
 
 describe('C2 tools: authority path before any driver', () => {
-  test('R1 permitted; R2 fails closed (review); R4 refused; unknown tool refused; only authority signals count toward containment', () => {
+  test('R1 permitted; R2 without a review plan fails closed (review); R4 refused; unknown tool refused; only authority signals count toward containment', () => {
     const h = harness();
     try {
       const s = seed(h.store);
@@ -260,12 +261,18 @@ describe('C2 tools: authority path before any driver', () => {
     }
   });
 
-  test('R3 tool: scoped Founder approval for exact arguments; changed arguments need a new approval', () => {
+  test('R3 tool: independent review of the exact action, then a scoped Founder approval for exact arguments; changed arguments need a new review and approval', () => {
     const h = harness();
     try {
       const s = seed(h.store);
-      const wi = governedItem(h, s);
+      activeReviewer(h, s);
+      const wi = governedItem(h, s, s.employee, { reviewPlan: reviewPlan({ appliesTo: 'ACTIONS' }) });
       const { claim } = claimGoverned(h);
+      // C4 (Stage 3 §4): R3 needs independent review AND Founder approval — the review comes first.
+      const unreviewed = recordToolIntent(h.store, claim.fence, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'v1' }, idempotencyKey: 'wi:test:s1' });
+      assert.deepEqual(unreviewed.kind === 'REVIEW_REQUIRED' && unreviewed.code, 'REVIEW_PENDING');
+      assert.equal(s.gov.listApprovals('PENDING').length, 0, 'no approval is asked before the review');
+      decideActionReview(h, wi, 'PASS');
       const first = recordToolIntent(h.store, claim.fence, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'v1' }, idempotencyKey: 'wi:test:s1' });
       assert.equal(first.kind, 'APPROVAL_REQUIRED');
       if (first.kind !== 'APPROVAL_REQUIRED') return;
@@ -275,12 +282,13 @@ describe('C2 tools: authority path before any driver', () => {
       assert.equal(a.argsSha256.length, 64, 'the approval stores an argument digest, never the arguments');
       s.gov.decideApproval(s.founder, a.id, { decision: 'APPROVE', reasonCode: 'founder.ok', expiresAt: '2026-09-27T12:00:00.000Z' });
       const changed = recordToolIntent(h.store, claim.fence, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'v2' }, idempotencyKey: 'wi:test:s2' });
-      assert.equal(changed.kind, 'APPROVAL_REQUIRED', 'materially changed arguments are not covered');
+      assert.equal(changed.kind, 'REVIEW_REQUIRED', 'materially changed arguments are covered by neither the review nor the approval');
       const exact = recordToolIntent(h.store, claim.fence, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'v1' }, idempotencyKey: 'wi:test:s1' });
       assert.equal(exact.kind, 'EXECUTE');
       assert.equal(s.gov.getApproval(a.id).state, 'CONSUMED', 'single use');
+      assert.ok(ReviewStore.for(h.store).requests({ workItemId: wi }).some((r) => r.state === 'CONSUMED'), 'the review is used by the one intent it authorized');
       const reuse = recordToolIntent(h.store, claim.fence, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'v1' }, idempotencyKey: 'wi:test:s9' });
-      assert.equal(reuse.kind, 'APPROVAL_REQUIRED', 'a consumed approval authorizes nothing else');
+      assert.equal(reuse.kind, 'REVIEW_REQUIRED', 'a consumed review and approval authorize nothing else');
     } finally {
       h.close();
     }

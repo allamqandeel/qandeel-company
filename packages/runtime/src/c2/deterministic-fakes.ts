@@ -57,11 +57,18 @@ export class DeterministicFakeProvider implements ProviderAdapter {
     let script: unknown[] = [];
     for (const m of request.messages) {
       if (m.role !== 'user') continue;
-      try {
-        const parsed = JSON.parse(m.content) as { script?: unknown };
-        if (Array.isArray(parsed.script)) script = parsed.script;
-      } catch {
-        // Plain text instructions: no script.
+      // The whole message, or (C4) any one line of it: a review Work Item's instructions are the plan's
+      // reviewer instructions followed by the subject, so a scripted reviewer puts its script on one line.
+      for (const candidate of [m.content, ...m.content.split('\n')]) {
+        try {
+          const parsed = JSON.parse(candidate) as { script?: unknown };
+          if (Array.isArray(parsed.script)) {
+            script = parsed.script;
+            break;
+          }
+        } catch {
+          // Plain text instructions: no script.
+        }
       }
     }
     const entry = script[turn] ?? { type: 'FINAL', summaryCode: 'fake.done' };

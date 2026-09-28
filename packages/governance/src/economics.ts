@@ -126,6 +126,16 @@ export const BUDGET_SCOPES = ['COMPANY', 'DEPARTMENT', 'EMPLOYEE', 'WORK_ITEM', 
 export type BudgetScope = (typeof BUDGET_SCOPES)[number];
 export const PARENT_SCOPE: Readonly<Record<BudgetScope, BudgetScope | null>> = { COMPANY: null, DEPARTMENT: 'COMPANY', EMPLOYEE: 'DEPARTMENT', WORK_ITEM: 'EMPLOYEE', RUN: 'WORK_ITEM' };
 
+/**
+ * C4 (D-C4-02): the parent scope of a budget given the owning Employee's organizational scope. A
+ * company-scoped executive (the CEO seat) belongs to no Department, so its EMPLOYEE budget hangs directly
+ * under the Company budget — never under a fake Department — and every Company cap still applies.
+ */
+export function parentScopeFor(scope: BudgetScope, orgScope: 'COMPANY' | 'DEPARTMENT'): BudgetScope | null {
+  if (scope === 'EMPLOYEE' && orgScope === 'COMPANY') return 'COMPANY';
+  return PARENT_SCOPE[scope];
+}
+
 export interface BudgetLevel {
   readonly id: string;
   readonly scope: BudgetScope;

@@ -46,6 +46,7 @@ import {
   applyBudgetDelta,
   budgetChain,
   budgetFor,
+  chargedExclusions,
   employeeIdFromRef,
   getEmployeeRow,
   getReservationRow,
@@ -61,8 +62,10 @@ import { routingSnapshotTx, upsertApprovalRequest, workItemDataClass } from './g
 import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { enforceRoleCertification } from './mind-core.js';
 import { academyExecutionMode, academyRun, constrainedRun, contextClassOf, manifestForReservation, txCapabilityGate } from './mind-writes.js';
+import { acceptDelegationOnStart, materializeExpiredActing, snapshotRunOrganization } from './org-core.js';
 import { verifyFence } from './queue.js';
 import type { Fence } from './records.js';
+import { actionReviewGate, consumeActionReview, recheckReviewWait } from './review-core.js';
 
 export const SYSTEM_RUNTIME_REF = 'system:runtime';
 
@@ -71,7 +74,9 @@ export interface GovernedRunContext {
   readonly workItemId: Id;
   readonly employeeId: Id;
   readonly employeeRef: string;
-  readonly departmentId: Id;
+  /** Null for a company-scoped executive run (the CEO seat belongs to no Department, D-C4-02). */
+  readonly departmentId: Id | null;
+  readonly orgScope: 'DEPARTMENT' | 'COMPANY';
   readonly cognitiveProfile: CognitiveProfile;
   /** Highest data class of this run's context (declared on the Work Item; the model cannot lower it). */
   readonly dataClass: DataClass;
@@ -140,8 +145,14 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
     return { ok: false, code: 'STEP_RANGE_EXHAUSTED', state: e.state };
   }
   if (!ctx.db.get('SELECT 1 AS ok FROM run_attributions WHERE run_id = ?', fence.runId)) {
-    ctx.db.run('INSERT INTO run_attributions (run_id, work_item_id, employee_id, department_id, created_at) VALUES (?, ?, ?, ?, ?)', fence.runId, item.id, e.id, e.departmentId, ts(ctx));
-    appendEvent(ctx, 'run.attributed', 'run', fence.runId, { correlationId: item.correlationId }, { employeeId: e.id, departmentId: e.departmentId, workItemId: item.id });
+    // A company-scoped executive's run is attributed to no Department (D-C4-02); every other run to its own.
+    ctx.db.run('INSERT INTO run_attributions (run_id, work_item_id, employee_id, department_id, org_scope, created_at) VALUES (?, ?, ?, ?, ?, ?)', fence.runId, item.id, e.id, e.departmentId, e.orgScope, ts(ctx));
+    appendEvent(ctx, 'run.attributed', 'run', fence.runId, { correlationId: item.correlationId }, { employeeId: e.id, departmentId: e.departmentId, orgScope: e.orgScope, workItemId: item.id });
+    // C4: acting coverage past its end no longer counts, the run's organization is snapshotted immutably
+    // (time-correct attribution, C6 seam), and starting a delegated Work Item is its delegate's acceptance.
+    materializeExpiredActing(ctx);
+    snapshotRunOrganization(ctx, fence.runId, e);
+    acceptDelegationOnStart(ctx, fence.runId, item.id, e.id);
   }
   // Deeply immutable: the processor holds this object, and nothing it does to it can lower the data
   // class or raise the ceiling (the model path also re-derives both from durable state per call).
@@ -151,6 +162,7 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
     employeeId: e.id,
     employeeRef: e.ref,
     departmentId: e.departmentId,
+    orgScope: e.orgScope,
     cognitiveProfile: Object.freeze({ ...assertCognitiveProfile(e.cognitiveProfile) }),
     dataClass: workItemDataClass(item.processorInput),
     executionMode: academyMode ?? 'ACTIVE',
@@ -173,24 +185,25 @@ export function effectiveDataClass(ctx: StoreContext, workItemId: Id): DataClass
 }
 
 /** The lifecycle state the authority kernel sees: a constrained Academy / shadow run acts as eligible. */
-function actingState(ctx: StoreContext, runId: Id, e: ReturnType<typeof getEmployeeRow>): ReturnType<typeof getEmployeeRow>['state'] {
+export function actingState(ctx: StoreContext, runId: Id, e: ReturnType<typeof getEmployeeRow>): ReturnType<typeof getEmployeeRow>['state'] {
   return canExecute(e.state) || constrainedRun(ctx, runId, e) ? 'ACTIVE' : e.state;
 }
 
 interface Attributed {
   readonly employeeId: Id;
-  readonly departmentId: Id;
+  /** Null for a company-scoped run (no Department). */
+  readonly departmentId: Id | null;
   readonly workItemId: Id;
 }
 
-function attributed(ctx: StoreContext, fence: Fence): Attributed {
-  const a = ctx.db.get<{ employee_id: string; department_id: string; work_item_id: string }>('SELECT employee_id, department_id, work_item_id FROM run_attributions WHERE run_id = ?', fence.runId);
+export function attributed(ctx: StoreContext, fence: Fence): Attributed {
+  const a = ctx.db.get<{ employee_id: string; department_id: string | null; work_item_id: string }>('SELECT employee_id, department_id, work_item_id FROM run_attributions WHERE run_id = ?', fence.runId);
   if (!a) throw new QandeelError('AUTHORITY_DENIED', 'the run was not attributed to an eligible employee', { runId: fence.runId, reason: 'RUN_NOT_ATTRIBUTED' });
-  return { employeeId: a.employee_id as Id, departmentId: a.department_id as Id, workItemId: a.work_item_id as Id };
+  return { employeeId: a.employee_id as Id, departmentId: a.department_id as Id | null, workItemId: a.work_item_id as Id };
 }
 
 /** Counts this run's authority denials and pauses the employee at the containment threshold. */
-function recordDenial(ctx: StoreContext, fence: Fence, employeeId: Id, code: string, details: Record<string, string | number | boolean | null>): { paused: boolean } {
+export function recordDenial(ctx: StoreContext, fence: Fence, employeeId: Id, code: string, details: Record<string, string | number | boolean | null>): { paused: boolean } {
   // Ordinary failures (unknown tool, invalid arguments, a Founder rejection) are audited but never
   // counted toward containment; only authority / bypass signals are (Stage 3 §9).
   if (!CONTAINMENT_SIGNALS.has(code)) {
@@ -209,7 +222,7 @@ function recordDenial(ctx: StoreContext, fence: Fence, employeeId: Id, code: str
 
 export type AuthorizeResult = { readonly ok: true; readonly grantId: Id; readonly dataClass: DataClass } | { readonly ok: false; readonly code: string; readonly paused: boolean };
 
-function consumeGrant(ctx: StoreContext, grantId: Id): void {
+export function consumeGrant(ctx: StoreContext, grantId: Id): void {
   ctx.db.run(`UPDATE permission_grants SET uses = uses + 1 WHERE id = ? AND status = 'ACTIVE' AND (max_uses IS NULL OR uses < max_uses)`, grantId);
 }
 
@@ -234,13 +247,18 @@ export type ReserveInput =
 
 export type ReserveResult = { readonly ok: true; readonly reservation: ReservationRecord } | { readonly ok: false; readonly code: 'BUDGET_MISSING' | 'BUDGET_EXHAUSTED' | 'EMPLOYEE_NOT_ELIGIBLE' | 'ROUTE_NO_LONGER_ELIGIBLE' | 'RUN_LIMIT' | 'CONTEXT_MANIFEST_REQUIRED'; readonly detail: string };
 
-/** The Work Item budget and its chain, verified to hang under this employee and department. */
+/**
+ * The Work Item budget and its chain, verified to hang under this employee and its department — or, for a
+ * company-scoped run (the CEO seat, D-C4-02), directly under the Company budget. Never a fake Department.
+ */
 function workItemChain(ctx: StoreContext, a: Attributed): BudgetRecord[] | null {
   const wi = budgetFor(ctx, 'WORK_ITEM', a.workItemId);
   if (!wi) return null;
   const chain = budgetChain(ctx, wi.id);
   const [, emp, dept] = chain;
-  if (emp?.scope !== 'EMPLOYEE' || emp.scopeId !== a.employeeId || dept?.scope !== 'DEPARTMENT' || dept.scopeId !== a.departmentId) return null;
+  if (emp?.scope !== 'EMPLOYEE' || emp.scopeId !== a.employeeId) return null;
+  if (a.departmentId === null) return dept?.scope === 'COMPANY' ? chain : null;
+  if (dept?.scope !== 'DEPARTMENT' || dept.scopeId !== a.departmentId) return null;
   return chain;
 }
 
@@ -293,6 +311,9 @@ export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput):
       input.deploymentId,
     );
     if (!d || d.status !== 'ACTIVE' || d.provider_status !== 'ACTIVE' || d.price_card_id !== input.priceCardId || (d.circuit_open_until !== null && d.circuit_open_until > ts(ctx))) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'deployment');
+    // P-07 (D-R1-03 / D-C4-07): a deployment that charged (or may have billed) a failed attempt for this
+    // Work Item — in ANY earlier run — is not selected again for it without an evidenced Founder release.
+    if (chargedExclusions(ctx, a.workItemId).includes(input.deploymentId)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'CHARGED_FAILURE_EXCLUDED');
     const policy = policyById(ctx, input.routePolicyId);
     // C3: the reservation pays for one assembled inference; its manifest's class and input bound bind it.
     const manifest = manifestForReservation(ctx, fence.runId, input.contextManifestId);
@@ -454,8 +475,8 @@ export type ToolIntent =
   | { readonly kind: 'REPLAY'; readonly invocationId: Id; readonly result: unknown }
   | { readonly kind: 'DENIED'; readonly code: string; readonly paused: boolean }
   | { readonly kind: 'APPROVAL_REQUIRED'; readonly approvalId: Id }
-  /** R2: independent review is required and the Review Pool (C4) does not exist — fail closed, not a violation. */
-  | { readonly kind: 'REVIEW_REQUIRED' }
+  /** R2 / R3: independent review of this exact action is pending (or has no plan / reviewer) — fail closed, not a violation. */
+  | { readonly kind: 'REVIEW_REQUIRED'; readonly code: string; readonly reviewRequestId: Id | null }
   | { readonly kind: 'BUDGET'; readonly code: string }
   | { readonly kind: 'RECONCILIATION_REQUIRED'; readonly invocationId: Id }
   | { readonly kind: 'FAILED'; readonly invocationId: Id; readonly code: string };
@@ -493,13 +514,9 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
   const grants = ctx.db.all(`SELECT * FROM permission_grants WHERE employee_id = ? AND status = 'ACTIVE'`, e.id).map(mapGrant);
   const decision = decideEmployeeAction('EMPLOYEE', actingState(ctx, fence.runId, e), grants, { capability, resource: input.toolCode, risk: action.risk, dataClass, at: ts(ctx) });
   // Academy attempts and shadow work: internal, reversible, non-external actions only (Stage 6 §11) —
-  // refused before any review path, so no external action of a trainee ever waits to be approved.
-  if (decision.effect === 'ALLOW' || decision.code === 'REVIEW_PATH_UNAVAILABLE') {
+  // refused before any review path, so no external action of a trainee ever waits to be reviewed or approved.
+  if (decision.effect === 'ALLOW') {
     if ((!canExecute(e.state) || academyRun(ctx, fence.runId)) && (String(row.tool_egress) === 'EXTERNAL' || action.mutatesExternal || action.risk === 'R3')) return deny('ACADEMY_CONSTRAINED', { toolActionId: action.id, risk: action.risk });
-  }
-  if (decision.effect === 'DENY' && decision.code === 'REVIEW_PATH_UNAVAILABLE') {
-    appendAudit(ctx, 'tool.review_required', 'run', fence.runId, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', 'REVIEW_PATH_UNAVAILABLE', { toolActionId: action.id });
-    return { kind: 'REVIEW_REQUIRED' };
   }
   if (decision.effect === 'DENY') return deny(decision.code, { toolActionId: action.id, risk: action.risk });
   const argsSha256 = sha256Hex(canonicalJson(args));
@@ -520,10 +537,28 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
       if (next === 'RECONCILIATION_REQUIRED') return { kind: 'RECONCILIATION_REQUIRED', invocationId: existing.id };
     }
   }
+  const scope = { subjectRef: e.ref, action: capability, resourceRef: `tool_action:${action.id}`, workItemId: item.id, argsSha256, dataClass, risk: action.risk, limits: { maxCostMicros: action.costPerCallMicros } };
+  // R2 / R3: independent review of exactly this action (its scope fingerprint) under the Work Item's
+  // declared Review Plan, BEFORE any approval is asked (C4, Stage 3 §4, Stage 11). Execute ≠ Review ≠
+  // Approve: a satisfied review never approves anything, and a missing plan or reviewer fails closed.
+  let reviewRequestId: Id | null = null;
+  if (decision.review === 'INDEPENDENT') {
+    const actionText = `Subject: the proposed action ${input.toolCode}.${input.actionCode} (risk ${action.risk}, data class ${dataClass}) in Work Item ${item.id}, with arguments ${canonicalJson(args).slice(0, 3000)}`;
+    const reviewGate = actionReviewGate(ctx, { item, fingerprint: approvalFingerprint(scope), subjectRef: `tool_action:${action.id}`, dataClass, risk: action.risk, actionText });
+    if (reviewGate.kind === 'REWORK') {
+      // A reviewer rejected exactly this action: refused (not an authority violation); a changed action is a new subject.
+      appendAudit(ctx, 'tool.review_rejected', 'run', fence.runId, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', 'REVIEW_REJECTED', { toolActionId: action.id, reviewRequestId: reviewGate.requestId });
+      return { kind: 'DENIED', code: 'REVIEW_REJECTED', paused: false };
+    }
+    if (reviewGate.kind === 'WAIT') {
+      appendAudit(ctx, 'tool.review_required', 'run', fence.runId, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', reviewGate.code, { toolActionId: action.id, reviewRequestId: reviewGate.requestId });
+      return { kind: 'REVIEW_REQUIRED', code: reviewGate.code, reviewRequestId: reviewGate.requestId };
+    }
+    reviewRequestId = reviewGate.requestId;
+  }
   // R3: scoped, durable Founder approval for exactly these arguments (Stage 3 §3/§5).
   let usable: ReturnType<typeof mapApproval> | undefined;
   if (decision.approval === 'FOUNDER') {
-    const scope = { subjectRef: e.ref, action: capability, resourceRef: `tool_action:${action.id}`, workItemId: item.id, argsSha256, dataClass, risk: action.risk, limits: { maxCostMicros: action.costPerCallMicros } };
     const now = ts(ctx);
     for (const x of ctx.db.all(`SELECT * FROM approvals WHERE work_item_id = ? AND state = 'APPROVED' AND expires_at IS NOT NULL AND expires_at <= ?`, item.id, now).map(mapApproval)) {
       ctx.db.run(`UPDATE approvals SET state = 'EXPIRED', version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, now, x.id, x.version);
@@ -568,6 +603,8 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
       invocationId, action.id, input.idempotencyKey, argsSha256, item.id, e.id, fence.runId, fence.fencingToken, decision.grantId, approvalId, reservationId, at, at,
     );
   }
+  // The review is used by the one intent it authorized (single use, like an approval).
+  if (reviewRequestId !== null) consumeActionReview(ctx, reviewRequestId, invocationId);
   appendEvent(ctx, 'run.tool_invocation', 'run', fence.runId, { correlationId: item.correlationId }, { invocationId, toolActionId: action.id, state: 'INTENT_RECORDED', risk: action.risk });
   appendAudit(ctx, 'tool.intent', 'tool_invocation', invocationId, { actorRef: e.ref, correlationId: item.correlationId }, 'OK', null, { runId: fence.runId, toolActionId: action.id, risk: action.risk, approvalId, grantId: decision.grantId });
   return { kind: 'EXECUTE', invocationId, reservationId, driverCode: String(row.driver_code), actionCode: action.code, sideEffects: action.sideEffects, args };
@@ -645,7 +682,37 @@ export function txHoldUnsettledModelCalls(ctx: StoreContext, runId: Id): number 
  *   (exactly the event whose targeted wake could have been missed).
  * A spurious wake is harmless: the next run re-checks every gate before any spend.
  */
-export function txRecheckGovernedWait(ctx: StoreContext, workItemId: Id, runId: Id, reason: 'AWAITING_APPROVAL' | 'BUDGET_EXHAUSTED'): void {
+export const GOVERNED_WAITS = ['AWAITING_APPROVAL', 'BUDGET_EXHAUSTED', 'AWAITING_INDEPENDENT_REVIEW', 'AWAITING_DELEGATION', 'AWAITING_CLARIFICATION', 'AWAITING_ESCALATION'] as const;
+export type GovernedWait = (typeof GOVERNED_WAITS)[number];
+
+/**
+ * C4 waits (the same lost-wake window, the same remedy). A wake is due only for an event that needs the
+ * waiter — never merely for the handoff this run itself offered — so a re-check cannot loop the model:
+ * - AWAITING_DELEGATION: a delegation of this Work Item was answered or closed during the run, or none is open;
+ * - AWAITING_CLARIFICATION / AWAITING_ESCALATION: this Work Item's handoff left that state.
+ */
+function recheckHandoffWait(ctx: StoreContext, workItemId: Id, runId: Id, reason: 'AWAITING_DELEGATION' | 'AWAITING_CLARIFICATION' | 'AWAITING_ESCALATION'): void {
+  const started = ctx.db.get<{ s: string }>('SELECT started_at AS s FROM runs WHERE id = ?', runId)?.s;
+  if (started === undefined) return;
+  if (reason === 'AWAITING_DELEGATION') {
+    const answered = ctx.db.get(`SELECT 1 AS x FROM work_delegations WHERE parent_work_item_id = ? AND state IN ('REFUSED', 'CLARIFICATION_REQUESTED', 'ESCALATED', 'COMPLETED', 'FAILED', 'CANCELLED', 'SUPERSEDED') AND updated_at >= ? LIMIT 1`, workItemId, started);
+    const open = ctx.db.get(`SELECT 1 AS x FROM work_delegations WHERE parent_work_item_id = ? AND state IN ('OFFERED', 'ACCEPTED') LIMIT 1`, workItemId);
+    if (answered || !open) wakeWorkItemJob(ctx, workItemId, ['AWAITING_DELEGATION'], 'handoff.rechecked');
+    return;
+  }
+  const state = reason === 'AWAITING_CLARIFICATION' ? 'CLARIFICATION_REQUESTED' : 'ESCALATED';
+  if (!ctx.db.get('SELECT 1 AS x FROM work_delegations WHERE child_work_item_id = ? AND state = ?', workItemId, state)) wakeWorkItemJob(ctx, workItemId, [reason], 'handoff.rechecked');
+}
+
+export function txRecheckGovernedWait(ctx: StoreContext, workItemId: Id, runId: Id, reason: GovernedWait): void {
+  if (reason === 'AWAITING_INDEPENDENT_REVIEW') {
+    recheckReviewWait(ctx, workItemId, runId);
+    return;
+  }
+  if (reason === 'AWAITING_DELEGATION' || reason === 'AWAITING_CLARIFICATION' || reason === 'AWAITING_ESCALATION') {
+    recheckHandoffWait(ctx, workItemId, runId, reason);
+    return;
+  }
   const started = ctx.db.get<{ s: string }>('SELECT started_at AS s FROM runs WHERE id = ?', runId)?.s;
   if (reason === 'AWAITING_APPROVAL') {
     // The wait no longer holds when no tool approval of this Work Item is pending, OR when one was

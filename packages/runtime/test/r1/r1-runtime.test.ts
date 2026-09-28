@@ -425,6 +425,9 @@ describe('R1-09 (Technical Lead follow-up): a known provider fault stays contain
       assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED', 'served by the fallback route');
       assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'the charged deployment was not called again');
       assert.deepEqual(cloudAttempts(rt, w, id), ['PRIMARY:SETTLED']);
+      // The runtime itself never attempts the paid retry: the C4 P-07 reservation refusal is only the backstop.
+      const refused = rt.view.runsForWorkItem(id).flatMap((r) => rt.view.audit(r.id)).filter((a) => a.action === 'budget.refused');
+      assert.deepEqual(refused, [], 'no same-deployment retry was even attempted');
       const run = rt.view.runsForWorkItem(id)[0];
       assert.equal(rt.governance.usage({ runId: run?.id as Id }).find((u) => u.deploymentId === w.deployments.cloudE1)?.outcome, 'FAILED_CHARGED');
       assert.ok(rt.governance.reservations(run?.id as Id).some((r) => r.attemptKind === 'FALLBACK' && r.deploymentId !== w.deployments.cloudE1), 'fallback reserved and accounted on its own');

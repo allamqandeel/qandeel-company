@@ -1861,3 +1861,180 @@ mechanism; it must not hard-code a fixed Employee count per Department.
 For the Company's normal merge-commit flow, the post-merge integrity gate should compare the canonical merge commit tree with the validated PR-head parent tree (for example via Git tree hashes). Equality inherits the exact tested code/content; inequality requires revalidation.
 
 This optimization changes **validation duplication**, not quality gates. No merge occurs unless the PR exact-head full gate, Technical Lead review and required Founder-host-specific checks already pass.
+
+
+## D-C4-01 — C4 lives in the existing packages; no second engine (Technical Lead, C4)
+
+**Decision.** C4 adds no package and no policy engine. Pure, deterministic rules live in `governance`
+(`organization.ts`, `review.ts`, the `ORG_ACTION` / `REVIEW_DECISION` proposals, the R2 / R3 review
+decision in `authority.ts`); durable state and every write live in `storage` (`org-core`, `organization`,
+`org-writes`, `review-core`, `review`, migrations 0007 / 0008); orchestration lives in `runtime` (the
+employee loop, the services, P-07 routing, health, the read-only CLI). OpenFGA / Casbin / a policy server
+are not needed: the existing default-deny grant model expresses every C4 authority, including Founder →
+CEO staffing delegation (a scoped, capped, expiring, revocable grant plus a delegation record with
+policy limits). **Why:** one authority model, one budget engine, one accounting truth (R1 lesson: two
+places that decide the same thing drift).
+
+## D-C4-02 — Company-scoped executives: C2 schema evolution, not a fake Department (Technical Lead, C4)
+
+**Context.** The Legacy Organization Dependency Census (`docs/C4_IMPLEMENTATION_REPORT.md` §2) found
+`department_id NOT NULL` in `employees`, `run_attributions`, `budget_reservations` and `usage_records`,
+a budget-chain check that required `RUN → WORK_ITEM → EMPLOYEE → DEPARTMENT → COMPANY`, and a budgets
+design (one Employee budget forever, immutable parent) that made a transfer or a promotion into the
+CEO seat unbudgetable.
+
+**Decision.** Migration 0007 rebuilds those five tables inside its single transaction (TEMP copy →
+drop → re-create verbatim → copy every row back → re-create every index and trigger; parent references
+deferred to COMMIT, so a dangling reference fails the migration). `department_id` becomes nullable under
+an explicit `org_scope` invariant (`(org_scope = 'DEPARTMENT') = (department_id IS NOT NULL)`); a
+company-scoped run reserves through `WORK_ITEM → EMPLOYEE → COMPANY` (every Company cap still applies);
+Employee budgets become per-placement envelopes (`status OPEN/CLOSED`, one OPEN per Employee): a
+placement that changes the parent closes the old envelope — its spend history stays where it was spent
+— and opens a successor capped by both. No Executive Department, sentinel row or Department budget is
+created for the CEO. The five canonical Departments are seeded, adopting an existing row with the same
+code (never duplicated or renamed). Proven on real v6 workspaces (rows, foreign keys and
+`integrity_check` identical) and by a v6 → v8 upgrade test. The migration-hygiene test now forbids any
+`DROP TABLE` except this exact row-preserving pattern (and still any `DELETE FROM` / `ON DELETE CASCADE`).
+
+## D-C4-03 — Positions and effective-dated assignments are canonical organization truth (Technical Lead, C4)
+
+**Decision.** `org_positions` (seats: CEO / DIRECTOR / MANAGER / LEAD / SPECIALIST; a title is a label)
+and `position_assignments` (PRIMARY or ACTING, effective-dated, never rewritten) are the organization's
+truth. One rule answers "who holds a seat at T": a valid ACTING assignment at T, else the PRIMARY one at
+T, else vacant. Partial unique indexes keep one live CEO seat, one Director seat per Department, one
+active PRIMARY per seat, one active ACTING per seat and one PRIMARY seat per Employee (proven under a
+five-process race). `employees.department_id / position_ref / manager_ref / org_scope` are a projection
+rewritten by the one C2 reassignment path — so the role-change certification rule (D-C3-24 / P-01)
+applies unchanged — and an organization-managed Employee can no longer be moved behind the
+organization's back (`ORG_MANAGED_EMPLOYEE`). Acting coverage is bounded (≤ 90 days, tunable policy),
+ends by time without any write, is materialized EXPIRED at the next run start / recovery, and authority
+delegated for it is revoked with it. Every governed run gets an immutable `run_org_snapshots` row (C6
+seam). Headcount is data: Positions are added, paused, re-opened and retired without code (D-R1-06).
+The Founder stays a principal: the CEO seat's manager is the Founder principal, never an Employee.
+
+## D-C4-04 — Employees act on the organization only through governed runs; the Founder alone delegates authority (Technical Lead, C4)
+
+**Decision.** An Employee's organizational act (staffing request, CEO synthesis, delegated staffing
+decision and hire, work delegation, cross-Department support request, reprioritization, handoff
+refusal / clarification / escalation, Review Plan declaration) is a typed model proposal (`ORG_ACTION`)
+executed by the runtime through one fenced write (`recordOrgAct`). The actor is the run's attributed
+Employee; each act needs its explicit grant (default deny) AND Position eligibility from the
+assignments (Title ≠ Authority: a seat without the grant, or the grant without the seat, is refused);
+acts are idempotent per (Work Item, Work-Item-global step) and replayed on resume. Authority is delegated
+by the Founder only (`delegateAuthority`: an org capability grant + a delegation record whose limits —
+cost, roles, seat kinds, Departments — bind every delegated decision); R2 / R4 and approval authority are
+never delegable; an Employee cannot delegate (no self-escalation). Work delegation grants the delegate
+nothing, goes down the reporting line only (across Departments it is a support request to the target
+Director seat's holder), is bounded (depth 3, fan-out 5 — tunable) and acyclic, and the child is an
+ordinary C1 Work Item in the parent's lineage, funded from the delegate's existing envelope and never
+above the parent Work Item's cap. A delegator cannot FINAL while a handoff is open: it waits at zero
+tokens and is woken by a trigger in the same transaction as the child's end, by an answer, or — closing
+the lost-wake window — by the WAIT-settle re-check (which never wakes on its own offer, so it cannot loop
+the model). Handoff messages are local governed content shown only to the two parties' governed context.
+
+## D-C4-05 — Independent review: designed before execution, bound to the exact subject (Technical Lead, C4)
+
+**Decision.** A Work Item's Review Plan (domain, applies-to, 1–3 keys with at least one independent
+SPECIALIST key, independence rules, rubric, reviewer instructions, review budget, deadline) is declared
+before its first run (datastore trigger) and versioned (a new version supersedes; open requests under
+the old one go STALE). A review request is bound to a subject fingerprint — the exact output (Work Item,
+judged run, content hashes) or the exact action (the approval-scope fingerprint) — so a materially
+different output or action is a new review. Reviewer selection decides every eligibility condition in
+SQL BEFORE the ranking LIMIT (R1-12 family): ACTIVE Employee, VALID reviewer-role certification, no held
+/ retired / corrupt pinned Skill, no Quality Hold, data class, capacity, independence (never the
+executor, never the delegation chain, never one reviewer on two keys — also a datastore index). Each
+reviewer reviews through its own governed review Work Item; the decision is re-checked at the decision
+boundary (eligibility, subject freshness, plan version). One deterministic evaluation: all PASS →
+SATISFIED; all FAIL → REWORK; a mix → an explicit Review Conflict (never averaged); UNCERTAIN /
+INSUFFICIENT_EVIDENCE / ESCALATE → ESCALATED; NEEDS_SPECIALIST → reassigned to a stronger reviewer.
+Conflicts and escalations are resolved by the Founder. R2 executes after a satisfied action review; R3
+needs the review AND the Founder approval (review first); a satisfied action review authorizes exactly
+one intent; a rejected exact action stays rejected; R4 stays Founder-only and a review request can never
+be satisfied for R4 (datastore CHECK). A reviewer's rationale reaches the reworking executor's governed
+context (never telemetry). Execute ≠ Review ≠ Approve.
+
+## D-C4-06 — Reviewer qualification is C3 evidence; the Review Pool is not a Department (Technical Lead, C4)
+
+**Decision.** A reviewer is an Employee whose role is the domain's reviewer role, certified by the
+Academy (C3 certifies an Employee for its current role, D-C3-24): its clean holdout attempts are its Gold
+cases. It enters the domain's Review Pool in CALIBRATION (shadow reviews that never count), earns
+calibration evidence (shadow decision vs the authoritative outcome — or, while a domain has no
+independent reviewer yet, the Founder's own judgement; counted once per decision), and is promoted to
+ACTIVE (independent authority) by the Founder only with Gold cases AND calibration agreement ≥ 80 %;
+seniority and titles play no part. Suspension withdraws its open keys; reinstatement returns it to
+CALIBRATION (trust is rebuilt, never decreed). The Review Pool is a registry of qualification records
+spanning Departments — no Department, seat or reporting line (verifier rule `review-pool-not-department`).
+No second certification or Skill-status system: a held / retired pinned Skill already makes the reviewer
+ineligible (P-03).
+
+## D-C4-07 — P-07 implemented: a charged-failure deployment is excluded for the same Work Item across runs (Technical Lead, C4)
+
+**Decision (implements D-R1-03).** A deployment that produced a FAILED_CHARGED attempt, or a possibly
+billed one (held for a sent-UNKNOWN failure class, USAGE_UNREPORTED or USAGE_UNUSABLE), for a Work Item is
+not selected again for that Work Item in any later call, run or job: the router never proposes it and
+the reserving transaction refuses it (`ROUTE_NO_LONGER_ELIGIBLE` / `CHARGED_FAILURE_EXCLUDED`),
+computed from the durable money records alone (no second accounting state). Only an explicit, evidenced
+Founder release lifts it, and a release covers exactly the charged / possibly billed attempts that
+existed when it was recorded (a count, not a timestamp: two events in one millisecond can never make a
+release cover the future); a later such attempt excludes again. Other Work Items are unaffected.
+
+## D-C4-08 — CI: one stable gate, docs fast path, sharded full proof set with parity, post-merge integrity (Technical Lead, C4; implements D-R1-07)
+
+**Decision.** `.github/workflows/ci.yml` classifies each change (`scripts/ci/classify-changes.mjs`,
+self-tested, fail-closed: an empty diff, any non-docs path or any error means FULL). Docs-only changes
+run install + build + verifier on Ubuntu (no Windows suite). Every other change runs the FULL proof set
+on Windows AND Ubuntu as parallel jobs — static (build, typecheck, lint, verifier), tests (every
+workspace test), mutation (each check split into disjoint `--shard i/n` slices), acceptance (C1–C4). The
+single required status `quality-gate` (`if: always()`) passes only when every job the mode requires
+succeeded AND the shard reports prove that each recorded mutation of every check ran exactly once on each
+OS (proof parity: parallelism never deletes coverage). A push to `main` whose merge-commit tree equals
+the tree a green PR run recorded (`tested-tree` artifact) takes a fast integrity path (build, typecheck,
+verifier, C1 acceptance on both OSes); anything else — no PR, no green run, a different tree, a non-merge
+commit, any API or git error — runs the FULL set. `workflow_dispatch` always runs the FULL set (manual
+full-main escape hatch). Every action is SHA-pinned; default permissions `contents: read`. The verifier
+pins this contract (`ci-contract`, `ci-classifier-fails-closed`). Branch protection / rulesets are
+**not** changed by C4 (recommendation only: require `quality-gate`; the Free private plan returns 403 for
+the protection API).
+
+## D-C4-09 — Independent Oversight never satisfies or bypasses a gate (Technical Lead, C4)
+
+**Decision.** Oversight (Stage 11 §27–§32) is a separate request kind on a completed output, assigned to
+a reviewer independent of the executor AND of the required review's reviewers. A PASS changes nothing; a
+FAIL opens an oversight finding (forward-only loop: OPEN → ROOT_CAUSED → CORRECTIVE_ACTION → VERIFIED →
+CLOSED) and, where the required review had passed, an explicit Review Conflict for the Founder. Quality
+Holds (reviewer / qualification / domain / rubric) are Founder-placed and stop reliance at selection and
+at the decision boundary; Skill holds remain C3's own Skill freshness.
+
+## D-C4-10 — C4 health and visibility (Technical Lead, C4)
+
+**Decision.** Health gains a content-free `organization` component (seats, vacancies, acting coverage,
+staffing queues, handoffs, delegations; the Review Pool, waiting reviews, conflicts, escalations, holds,
+findings). Acting coverage past its end, a review with no eligible reviewer and a review-required output
+without a plan need ATTENTION; pending decisions and conflicts DEGRADE. Vacant canonical seats are
+reported but change no status: the Founder staffs the skeleton; no identity or headcount is invented.
+The read-only CLI gains `organization` and `reviews` (IDs, codes, states, counts only).
+
+## D-C4-11 — Guard evolutions made by C4 (Technical Lead, C4)
+
+**Decision.** (1) The later-scope verifier rule now guards C5 / C6 / C7 (Command Center, Founder ↔ CEO
+conversation, dashboards, APP-OPS); C4 owns organization / review / delegation. (2) The budget-writer rule
+exempts test files (a real released-schema upgrade proof seeds rows); production writers are unchanged.
+(3) The C1 supervisor-verification mutation now removes nine checks (the C4 organization reconciliation is
+a supervisor-fenced recovery write too, with its own stale-supervisor proof). (4) New rules:
+`c4-proofs-present`, `c4-not-claimed-closed`, `organization-writes-confined`, `c4-telemetry-content-free`,
+`r4-never-review-satisfied`, `review-pool-not-department`, `ci-contract`, `ci-classifier-fails-closed`,
+each with violation scenarios. (5) R2 is default-deny like every action: a grant is needed before the
+review gate (the C2 runtime proof now grants it).
+
+## D-C4-12 — Open Product questions surfaced by C4 (not decided here)
+
+Recorded for the Product Owner; C4 implements the fail-closed reading in each case.
+1. **Multi-role reviewers.** C3 certifies only an Employee's current role, so a reviewer holds the
+   reviewer role. Should a Specialist also be able to review its domain (a second certified role)?
+2. **Bootstrap calibration subjects.** The first reviewer of a domain calibrates on real outputs whose
+   counting key it cannot then take (it shadowed them); those outputs wait for a second independent
+   reviewer or a Founder decision. Should the Founder be able to decide such an output directly?
+3. **Acting-coverage and delegation bounds** (90 days, depth 3, fan-out 5) are engineering defaults; the
+   Product Owner may set policy values.
+4. **Charter completion.** Baseline charters carry Product-authority mission / scope only; outcomes,
+   measures, risks and budget envelopes await Founder versions (`publishCharter`).

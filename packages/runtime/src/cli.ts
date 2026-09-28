@@ -24,6 +24,11 @@
  *   capability-gaps --workspace <dir>                      open capability gaps (work item, employee, missing codes)
  *   context-manifest --workspace <dir> --manifest <id>     one context manifest: selected / rejected IDs, versions, hashes
  *
+ * C4 read-only commands (content-free: IDs, codes, states, counts — never staffing evidence, handoff
+ * messages, reviewer instructions or rationale):
+ *   organization    --workspace <dir>                      seats, holders, departments, executive queues, health
+ *   reviews         --workspace <dir>                      review requests, conflicts, holds, Review Pool health
+ *
  * There is deliberately no Founder write command (no register-founder, approve or reject): a
  * Founder reference typed on a command line is not authentication. Founder authority arrives with
  * the authenticated Founder surface (C5); until then R3 work stays WAITING_APPROVAL (D-C2-13).
@@ -34,7 +39,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { assertCode, assertId, isQandeelError } from '@qandeel-company/domain';
-import { ArtifactStore, CapabilityStore, CompanyStore, GovernanceStore, MemoryStore, createBackup, restoreToIsolatedWorkspace, verifyBackup } from '@qandeel-company/storage';
+import { ArtifactStore, CapabilityStore, CompanyStore, GovernanceStore, MemoryStore, OrganizationStore, ReviewStore, createBackup, restoreToIsolatedWorkspace, verifyBackup } from '@qandeel-company/storage';
 
 import { c3HealthOf } from './c3/health.js';
 import { DETERMINISTIC_PROCESSORS } from './deterministic-processors.js';
@@ -43,7 +48,7 @@ import { Logger, jsonLinesSink } from './logger.js';
 import { CompanyRuntime, RUNTIME_VERSION } from './runtime.js';
 import { notifyRuntime } from './wake.js';
 
-const USAGE = 'usage: qandeel-company <init|start|health|submit|cancel|backup|verify-backup|restore-check|verify-artifacts|governance|approvals|mind|capability-gaps|context-manifest> --workspace <dir> [options]';
+const USAGE = 'usage: qandeel-company <init|start|health|submit|cancel|backup|verify-backup|restore-check|verify-artifacts|governance|approvals|mind|capability-gaps|context-manifest|organization|reviews> --workspace <dir> [options]';
 
 function out(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -245,7 +250,31 @@ export async function main(argv: readonly string[]): Promise<void> {
       }
       return;
     }
-    default:
+    case 'organization': {
+      const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
+      try {
+        const org = OrganizationStore.for(store);
+        const seats = org.positions().map((p) => {
+          const h = org.seatHolder(p.id);
+          return { positionId: p.id, code: p.code, kind: p.kind, scope: p.scope, departmentId: p.departmentId, status: p.status, reportsToPositionId: p.reportsToPositionId, holderEmployeeId: h.holder?.employeeId ?? null, holderKind: h.holder?.kind ?? null };
+        });
+        out({ ok: true, command, departments: org.departments(), seats, queues: org.executiveQueues(), health: org.health() });
+      } finally {
+        store.close();
+      }
+      return;
+    }
+    case 'reviews': {
+      const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
+      try {
+        const rv = ReviewStore.for(store);
+        const live = rv.requests().filter((r) => ['OPEN', 'CONFLICT', 'ESCALATED'].includes(r.state)).map((r) => ({ requestId: r.id, kind: r.kind, workItemId: r.workItemId, subjectKind: r.subjectKind, risk: r.riskLevel, state: r.state, waitingReason: r.waitingReason }));
+        out({ ok: true, command, live, conflicts: rv.conflicts('OPEN').map((c) => ({ conflictId: c.id, requestId: c.requestId, origin: c.origin })), holds: rv.holds().map((h) => ({ holdId: h.id, targetKind: h.targetKind, reasonCode: h.reasonCode })), health: rv.health() });
+      } finally {
+        store.close();
+      }
+      return;
+    }    default:
       fail('USAGE', USAGE, 2);
   }
 }

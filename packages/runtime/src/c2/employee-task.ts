@@ -11,7 +11,7 @@ import { assertIntInRange, boundedText, type JsonValue, type ProcessorContext, t
 import { assertTaskClass, isDataClass, isReasoningClass, type ModelProposal, type ReasoningClass } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
-import type { GovernedProcessor, GovernedRunServices, ToolRequest } from './types.js';
+import type { GovernedProcessor, GovernedRunServices, OrgActProposal, ReviewDecisionProposal, ToolRequest } from './types.js';
 
 export const EMPLOYEE_TASK_KIND = 'c2.employee-task';
 
@@ -29,9 +29,11 @@ export interface EmployeeTaskInput {
 interface LoopState {
   readonly turn: number;
   /** FINAL: the model already decided to finish (R1 B-F4) — a resume completes without another call. */
-  readonly phase: 'MODEL' | 'TOOL' | 'FINAL';
+  readonly phase: 'MODEL' | 'TOOL' | 'ORG' | 'FINAL';
   readonly summaryCode?: string | null;
   readonly pending: ToolRequest | null;
+  /** C4: a checkpointed organizational act or review decision (resume replays the recorded outcome). */
+  readonly pendingOrg?: OrgActProposal | ReviewDecisionProposal | null;
   readonly modelCalls: number;
   readonly invalid: number;
 }
@@ -60,8 +62,8 @@ function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasonin
 function readState(ctx: ProcessorContext): LoopState {
   const s = ctx.resumeFrom?.state as Partial<LoopState> | null | undefined;
   if (ctx.resumeFrom?.kind !== 'employee-loop' || typeof s !== 'object' || s === null || typeof s.turn !== 'number') return { turn: 0, phase: 'MODEL', pending: null, modelCalls: 0, invalid: 0 };
-  const phase = s.phase === 'TOOL' ? 'TOOL' : s.phase === 'FINAL' ? 'FINAL' : 'MODEL';
-  return { turn: s.turn, phase, pending: (s.pending ?? null) as ToolRequest | null, modelCalls: Number(s.modelCalls ?? 0), invalid: Number(s.invalid ?? 0), summaryCode: typeof s.summaryCode === 'string' ? s.summaryCode : null };
+  const phase = s.phase === 'TOOL' ? 'TOOL' : s.phase === 'ORG' ? 'ORG' : s.phase === 'FINAL' ? 'FINAL' : 'MODEL';
+  return { turn: s.turn, phase, pending: (s.pending ?? null) as ToolRequest | null, pendingOrg: (s.pendingOrg ?? null) as OrgActProposal | ReviewDecisionProposal | null, modelCalls: Number(s.modelCalls ?? 0), invalid: Number(s.invalid ?? 0), summaryCode: typeof s.summaryCode === 'string' ? s.summaryCode : null };
 }
 
 const save = (ctx: ProcessorContext, s: LoopState): Promise<void> => ctx.checkpoint('employee-loop', s as unknown as JsonValue);
@@ -90,6 +92,26 @@ export const employeeTaskProcessor: GovernedProcessor = {
     let escalated = false;
     while (s.turn < cfg.maxTurns) {
       if (ctx.signal.aborted) return { type: 'CANCELLED' };
+      if (s.phase === 'ORG' && s.pendingOrg) {
+        const p = s.pendingOrg;
+        const next: LoopState = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null, pendingOrg: null };
+        if (p.type === 'REVIEW_DECISION') {
+          const out = gov.submitReviewDecision(p, s.turn);
+          await save(ctx, next);
+          // A recorded decision is the review Work Item's deliverable; a refusal is context for the next turn.
+          if (out.outcome === 'RECORDED') return { type: 'COMPLETED', evidence: { reviewDecision: p.outcome, turns: s.turn, modelCalls: s.modelCalls } };
+          s = next;
+          continue;
+        }
+        const out = gov.orgAct(p, s.turn);
+        await save(ctx, next);
+        if (out.paused) return { type: 'PERMANENT_FAILURE', code: 'EMPLOYEE_CONTAINED' };
+        if (out.outcome === 'DONE' && out.after === 'END_REFUSED') return { type: 'PERMANENT_FAILURE', code: 'HANDOFF_REFUSED' };
+        if (out.outcome === 'DONE' && out.after === 'WAIT_CLARIFICATION') return { type: 'WAIT', reasonCode: 'AWAITING_CLARIFICATION' };
+        if (out.outcome === 'DONE' && out.after === 'WAIT_ESCALATION') return { type: 'WAIT', reasonCode: 'AWAITING_ESCALATION' };
+        s = next;
+        continue;
+      }
       if (s.phase === 'TOOL' && s.pending) {
         const out = await gov.executeTool(s.pending, s.turn);
         switch (out.kind) {
@@ -161,6 +183,12 @@ export const employeeTaskProcessor: GovernedProcessor = {
       s = { ...s, modelCalls: s.modelCalls + 1 };
       const proposal: ModelProposal = out.proposal;
       if (proposal.type === 'FINAL') {
+        // Accountability stays with the delegator (Stage 8 §23): work with open handoffs does not finish; it
+        // waits (zero tokens) and resumes when a delegate answers or its work ends.
+        if (gov.openHandoffs() > 0) {
+          await save(ctx, { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null });
+          return { type: 'WAIT', reasonCode: 'AWAITING_DELEGATION' };
+        }
         await save(ctx, { ...s, phase: 'FINAL', pending: null, summaryCode: proposal.summaryCode });
         return { type: 'COMPLETED', evidence: { summaryCode: proposal.summaryCode, turns: s.turn, modelCalls: s.modelCalls, reasoningClass: out.reasoningClass } };
       }
@@ -176,6 +204,12 @@ export const employeeTaskProcessor: GovernedProcessor = {
         s = { ...s, invalid: s.invalid + 1 };
         if (s.invalid >= 2 || escalated) return { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_INVALID' };
         escalateFrom = { fromClass: out.reasoningClass, evidence: 'OUTPUT_FAILED_VALIDATION' };
+        continue;
+      }
+      if (proposal.type === 'ORG_ACTION' || proposal.type === 'REVIEW_DECISION') {
+        // Checkpointed before its effect, like a tool request: resume replays it at the same step.
+        s = { ...s, phase: 'ORG', pending: null, pendingOrg: proposal };
+        await save(ctx, s);
         continue;
       }
       // Checkpoint the planned action before any side effect: resume re-presents the same request.

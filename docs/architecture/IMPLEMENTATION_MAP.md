@@ -8,7 +8,7 @@ Founder-host validation), at C3 start (2026-09-27, from `main` @ `f9bd7d4`), and
 (2026-09-27; `docs/C3_CLOSURE_RECORD.md`; candidate `4284337221706f08aebe65fadb64c881c8ed9470`
 passed independent review, GitHub CI and Founder-host validation), and at C3 merge (2026-09-27: PR #4
 merged at closure head `e4fdaa119eeef4cb612e349f962adb38108a62f8` into `main` as
-`4592b525bdc4937dd130dac452a7dc8fc29de909`, so C3 is CLOSED / MERGED / CANONICAL), and at R1 closure (2026-09-28: PR #6 merged into `main` as `bd18614d1fc49d3c03ace2289e19accd67aa1838`; exact-head PR CI run #60 and post-merge `main` CI run #62 passed on Windows and Ubuntu; `docs/R1_CLOSURE_RECORD.md`). R1 is CLOSED / MERGED / CANONICAL. C4 is READY / NOT STARTED.
+`4592b525bdc4937dd130dac452a7dc8fc29de909`, so C3 is CLOSED / MERGED / CANONICAL), and at R1 closure (2026-09-28: PR #6 merged into `main` as `bd18614d1fc49d3c03ace2289e19accd67aa1838`; exact-head PR CI run #60 and post-merge `main` CI run #62 passed on Windows and Ubuntu; `docs/R1_CLOSURE_RECORD.md`). R1 is CLOSED / MERGED / CANONICAL. C4 started on 2026-09-28 from `main` @ `a60cc3e` (branch `c4/organization-directors-delegation-review-pool`) and is an IMPLEMENTATION CANDIDATE, NOT CLOSED (`docs/C4_IMPLEMENTATION_REPORT.md`); C5 is not started.
 
 This is **sequencing, not evidence**. A stage listed here is not implemented until its own work
 package is merged to `main` with green CI and the required review. The implementation packages
@@ -22,7 +22,7 @@ below are not the Product / Architecture Stages 0–18 in `docs/authority/compan
 | `C2` | Employees + Models + Tools + Cost Governance | Cloud Mega-Task | CLOSED / MERGED / CANONICAL (PR #3, `d374001`) |
 | `C3` | Memory + Context + Skills + Academy | Cloud Mega-Task | CLOSED / MERGED / CANONICAL (PR #4, `main` @ `4592b52`) |
 | `R1` | Independent Core Review | Review | CLOSED / MERGED / CANONICAL (PR #6, `main` @ `bd18614`) |
-| `C4` | Organization + CEO + Directors + Delegation + Review Pool | Cloud Mega-Task | READY / Not started |
+| `C4` | Organization + CEO + Directors + Delegation + Review Pool | Cloud Mega-Task | IN PROGRESS — Cloud implementation candidate, NOT CLOSED (Draft PR; exact-head review and gates control merge) |
 | `C5` | Founder Command Center | Cloud Mega-Task | Not started |
 | `C6` | Reporting + Learning + Evaluation + Resilience | Cloud Mega-Task | Not started |
 | `R2` | Full Strong-v1 Independent Review | Review | Not started |

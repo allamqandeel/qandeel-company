@@ -203,8 +203,19 @@ function failed(r) {
   return r.status !== 0 && (/^# fail [1-9]/m.test(r.stdout ?? '') || /^ℹ fail [1-9]/m.test(r.stdout ?? ''));
 }
 
+// --shard i/n (1-based) runs a disjoint slice (CI parallelism); --report <file> records the ids this
+// invocation ran, so the CI quality gate can prove that every recorded mutation ran exactly once (parity).
+const shardArg = process.argv.includes('--shard') ? String(process.argv[process.argv.indexOf('--shard') + 1]) : '1/1';
+const reportFile = process.argv.includes('--report') ? String(process.argv[process.argv.indexOf('--report') + 1]) : null;
+const [shardIndex, shardCount] = shardArg.split('/').map(Number);
+if (!(Number.isInteger(shardIndex) && Number.isInteger(shardCount) && shardCount >= 1 && shardIndex >= 1 && shardIndex <= shardCount)) throw new Error(`--shard must be i/n with 1 <= i <= n (got ${shardArg})`);
+const ran = [];
 let failures = 0;
+let index = -1;
 for (const m of MUTATIONS) {
+  index++;
+  if (index % shardCount !== shardIndex - 1) continue;
+  ran.push(m.id);
   const file = path.join(ROOT, m.file);
   const original = readFileSync(file, 'utf8');
   const count = original.split(m.search).length - 1;
@@ -226,8 +237,9 @@ for (const m of MUTATIONS) {
     writeFileSync(file, original);
   }
 }
+if (reportFile) writeFileSync(reportFile, `${JSON.stringify({ script: 'c2:mutation', shard: shardArg, total: MUTATIONS.length, ran }, null, 2)}\n`);
 if (failures) {
-  console.log(`c2-mutation: FAIL — ${failures} of ${MUTATIONS.length} mutation(s) not caught`);
+  console.log(`c2-mutation: FAIL — ${failures} of ${ran.length} mutation(s) not caught`);
   process.exit(1);
 }
-console.log(`c2-mutation: PASS — ${MUTATIONS.length}/${MUTATIONS.length} mutations caught`);
+console.log(`c2-mutation: PASS — ${ran.length}/${ran.length} mutations caught (shard ${shardArg}, ${MUTATIONS.length} total)`);

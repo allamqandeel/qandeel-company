@@ -57,6 +57,12 @@ export const ERROR_CODES = [
   'CURRENCY_MISMATCH',
   'TOOL_DENIED',
   'RECONCILIATION_REQUIRED',
+  // C4 organization, delegation and review.
+  'ORG_NOT_ELIGIBLE',
+  'ORG_MANAGED_EMPLOYEE',
+  'REVIEW_REQUIRED',
+  'REVIEW_STALE',
+  'REVIEWER_NOT_ELIGIBLE',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

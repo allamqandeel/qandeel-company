@@ -93,3 +93,25 @@ export type {
   SkillVersionRecord,
   SummaryRecord,
 } from './mind-records.js';
+// C4 Organization (Founder → CEO seat → Directors → Department seats; assignments are canonical), work
+// and authority delegation, the dynamic Review Pool and Independent Oversight. Founder writes fail closed
+// until C5 (D-C2-13); Employees act only through fenced runtime-authority acts.
+export { OrganizationStore, type CharterInput, type CreatePositionInput, type DelegateAuthorityInput, type EmployeeOrganization, type HireInput, type OrganizationHealth } from './organization.js';
+export { ReviewStore, type ReviewHealth } from './review.js';
+export type {
+  AssignmentRecord,
+  AuthorityDelegationRecord,
+  CharterRecord,
+  OversightFindingRecord,
+  PositionRecord,
+  QualityHoldRecord,
+  ReviewAssignmentRecord,
+  ReviewConflictRecord,
+  ReviewDecisionRecord,
+  ReviewPlanRecord,
+  ReviewRequestRecord,
+  ReviewerQualificationRecord,
+  RunOrgSnapshotRecord,
+  StaffingRequestRecord,
+  WorkDelegationRecord,
+} from './org-records.js';

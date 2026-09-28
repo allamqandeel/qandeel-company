@@ -109,7 +109,8 @@ await step('seed-company-skills-academy-via-test-seam', () => {
     const gov = GovernanceStore.for(store);
     const founder = gov.registerFounder().ref;
     gov.createBudget(founder, { scope: 'COMPANY', scopeId: 'company', capMoney: 20_000_000, capTokens: 20_000_000, currency: 'USD', reasonCode: 'acceptance' });
-    const dept = gov.createDepartment(founder, { code: 'growth', name: 'Growth' });
+    // C4: the canonical Departments are release-seeded (D-C4-02); fixtures adopt them by code.
+    const dept = gov.departmentByCode('growth');
     gov.createBudget(founder, { scope: 'DEPARTMENT', scopeId: dept.id, capMoney: 10_000_000, capTokens: 10_000_000, reasonCode: 'acceptance' });
     const p = gov.registerProvider(founder, { code: 'fake-local', locality: 'LOCAL' });
     const d = gov.registerDeployment(founder, { code: 'local-e1', modelId: gov.registerModel(founder, { providerId: p.id, code: 'fake-small' }).id, pinnedRevision: 'r1', reasoningClass: 'E1', contextWindowTokens: 100_000, maxOutputTokens: 2_048, taskClasses: ['draft.memo'] });
