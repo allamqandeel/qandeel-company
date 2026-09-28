@@ -263,7 +263,8 @@ const MUTATIONS = [
   {
     id: 'role-reassignment-without-cert-keeps-active',
     gate: 'ACTIVE duty never carries into a different role without a VALID target-role certification',
-    edits: [{ file: `${STORE}/governance.js`, search: "    if (e.state === 'ACTIVE' && roleRef !== e.roleRef && !liveCertifications(ctx, id, true).some((cert) => cert.roleRef === roleRef && cert.status === 'VALID')) {", replace: '    if (false) {' }],
+    // R1-11 extended the same demotion gate to PAUSED (and factored the target-certification check).
+    edits: [{ file: `${STORE}/governance.js`, search: "    if ((e.state === 'ACTIVE' || e.state === 'PAUSED') && roleChanged && !targetCertified()) {", replace: '    if (false) {' }],
     runs: [FOUNDER],
   },
   {

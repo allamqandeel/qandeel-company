@@ -10,7 +10,7 @@
  */
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { newId, type Id } from '@qandeel-company/domain';
+import { isQandeelError, newId, type Id } from '@qandeel-company/domain';
 import {
   FAILURE_DISPOSITIONS,
   ProviderError,
@@ -150,8 +150,8 @@ export class GovernedModelRuntime {
           let settled: { readonly done: ModelCallOutcome } | { readonly failure: ProviderFailureClass };
           try {
             settled = this.#account(store, fence, d, reservationId, sessionId, outcome, routeReq.inputTokensUpperBound, req.maxOutputTokens, attempt, context.manifestId);
-          } catch {
-            return containAccountingFailure(store, fence, reservationId, d.deployment.id as Id);
+          } catch (error) {
+            return containAccountingFailure(store, fence, reservationId, d.deployment.id as Id, error);
           }
           if ('done' in settled) return settled.done;
           const failure = settled.failure;
@@ -204,11 +204,11 @@ export class GovernedModelRuntime {
         // Unusable usage report: the provider answered but broke the contract. Hold the full
         // reservation (spend is uncertain), hold the deployment, never retry blindly.
         holdReservation(store, fence, reservationId, 'USAGE_UNREPORTED');
-        recordDeploymentOutcome(store, fence, deploymentId, 'CONTRACT_VIOLATION');
+        recordHealth(store, fence, deploymentId, 'CONTRACT_VIOLATION');
         return { done: { kind: 'UNCERTAIN', failure: 'CONTRACT_VIOLATION' } };
       }
       settleReservation(store, fence, reservationId, { inputTokens: usage.usage.inputTokens, outputTokens: usage.usage.outputTokens, withinBounds: usage.withinBounds, sessionId, outcome: 'OK' });
-      recordDeploymentOutcome(store, fence, deploymentId, usage.withinBounds ? null : 'CONTRACT_VIOLATION');
+      recordHealth(store, fence, deploymentId, usage.withinBounds ? null : 'CONTRACT_VIOLATION');
       return { done: { kind: 'OK', proposal: parseProposal(outcome.response.outputText), usage: usage.usage, deploymentId: d.deployment.id, reasoningClass: d.reasoningClass, attempts: attempt, manifestId } };
     }
     const failure = outcome.failure;
@@ -228,7 +228,7 @@ export class GovernedModelRuntime {
     } else {
       releaseReservation(store, fence, reservationId, failure);
     }
-    recordDeploymentOutcome(store, fence, deploymentId, failure);
+    recordHealth(store, fence, deploymentId, failure);
     return { failure };
   }
 
@@ -262,16 +262,27 @@ export class GovernedModelRuntime {
  * violation, so no retry calls the same route blindly. Each step is best effort — if the store itself
  * is unavailable, the run-settle backstop and startup recovery hold the reservation instead.
  */
-function containAccountingFailure(store: CompanyStore, fence: Fence, reservationId: Id, deploymentId: Id): ModelCallOutcome {
+function containAccountingFailure(store: CompanyStore, fence: Fence, reservationId: Id, deploymentId: Id, error: unknown): ModelCallOutcome {
   try {
     holdReservation(store, fence, reservationId, 'SETTLEMENT_FAILED');
   } catch {
     // Already final or the store is unavailable: the backstop holds it.
   }
-  try {
-    recordDeploymentOutcome(store, fence, deploymentId, 'CONTRACT_VIOLATION');
-  } catch {
-    // Best effort; the uncertain outcome still ends this call.
-  }
+  // Only a failure the provider's answer caused (e.g. an out-of-range usage report) holds the
+  // deployment; local store contention is never blamed on the provider (R1 re-review).
+  if (isQandeelError(error, 'STORAGE_BUSY')) return { kind: 'UNCERTAIN', failure: 'UNKNOWN' };
+  recordHealth(store, fence, deploymentId, 'CONTRACT_VIOLATION');
   return { kind: 'UNCERTAIN', failure: 'CONTRACT_VIOLATION' };
+}
+
+/**
+ * Deployment health is observability for routing, recorded after the money write has committed: a
+ * failure to record it (e.g. a busy store) never discards a paid, valid answer or blames the provider.
+ */
+function recordHealth(store: CompanyStore, fence: Fence, deploymentId: Id, failure: ProviderFailureClass | null): void {
+  try {
+    recordDeploymentOutcome(store, fence, deploymentId, failure);
+  } catch {
+    // Best effort by design (see above).
+  }
 }

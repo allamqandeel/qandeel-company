@@ -111,12 +111,15 @@ export const SECRET_LITERALS: readonly RegExp[] = [
   // Credentials inside a URL: scheme://user:password@host.
   /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s@/]+@/i,
   /\bAccountKey=[A-Za-z0-9+/=]{20,}/,
-  // key = value / "key": "value" for credential-named keys (JSON quoting and prefixes allowed).
-  // (No leading `\w*`: the keyword is found anywhere and only a bounded suffix follows — linear time.)
-  /(?:password|passwd|passphrase|secret|api[_ -]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key)[A-Za-z0-9_]{0,24}["']?\s*[:=]\s*["']?[^\s"',}]{6,}/i,
-  /\b(?:token|bearer)["']?\s*[:=]\s*["']?[^\s"',}]{12,}/i,
-  /\b(?:password|passwd|passphrase)\s+(?:is|was|=)\s+\S{6,}/i,
-  /(?:كلمة\s*(?:المرور|السر)|الرقم\s*السري|مفتاح\s*(?:الواجهة|API))\s*(?:هي|هو)?\s*[:=]?\s*\S{4,}/iu,
+  // Credential-named key + VALUE. The value must be credential-shaped — one token containing a digit —
+  // so ordinary prose about passwords / keys / tokens ("Reset the password: follow the runbook",
+  // "Secretary: …", "سياسة كلمة المرور") is never refused (R1 re-review: false positives made legitimate
+  // work unrunnable). JSON quoting and `_`-prefixed names (aws_secret_access_key) are allowed; the
+  // keyword is found anywhere and only bounded / single-token parts follow — linear time.
+  /(?<![A-Za-z])(?:password|passwd|passphrase|secret|api[_ -]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret)[A-Za-z0-9_]{0,24}["']?\s*[:=]\s*["']?(?=[^\s"',}]*\d)[^\s"',}]{8,}/i,
+  /\b(?:token|bearer)["']?\s*[:=]\s*["']?(?=[^\s"',}]*\d)[^\s"',}]{12,}/i,
+  /\b(?:password|passwd|passphrase)\s+(?:is|was|=)\s+(?=\S*\d)\S{6,}/i,
+  /(?:كلمة\s*(?:المرور|السر)|الرقم\s*السري|مفتاح\s*(?:الواجهة|API))\s*(?:هي|هو)?\s*[:=]\s*(?=\S*\d)\S{6,}/iu,
 ];
 
 // Zero-width and invisible formatting characters used to split a secret past a pattern.

@@ -70,6 +70,18 @@ const MUTATIONS = [
     runs: [RUNTIME],
   },
   {
+    id: 'r1-03-step-range-unbounded',
+    finding: 'R1-03',
+    edits: [{ file: `${S}/governed-writes.js`, search: 'if (stepBase + GOVERNED_STEP_SPAN - 1 > MAX_GOVERNED_STEP) {', replace: 'if (false) {', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r1-09-store-contention-blamed-on-provider',
+    finding: 'R1-09',
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: "if (isQandeelError(error, 'STORAGE_BUSY'))", replace: 'if (false)', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
     id: 'r1-04-governed-reconciliation-unauthenticated',
     finding: 'R1-04',
     edits: [{ file: `${S}/store.js`, search: 'if (this.#read((ctx) => isGovernedJob(ctx, jobId)))', replace: 'if (false)', expectedCount: 1 }],

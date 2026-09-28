@@ -22,7 +22,7 @@ describe('R1-01: the secret detector covers the credential formats the review fo
     'Authorization bearer header': j('Authorization: ', 'Bearer ', body(32)),
     'OAuth access token': j('ya', '29.', body(40)),
     'URL credentials': j('postgres://', 'admin', ':', 'hunter2hunter2', '@db.internal:5432/app'),
-    'JSON-quoted password': j('{"pass', 'word": "', 'correct-horse-battery"}'),
+    'JSON-quoted password': j('{"pass', 'word": "', 'correct-horse-7battery"}'),
     'JSON access_token': j('{"access', '_token":"', body(30), '"}'),
     'token assignment': j('tok', 'en=', body(24)),
     'api key with a space': j('api', ' key: ', body(20)),
@@ -45,6 +45,20 @@ describe('R1-01: the secret detector covers the credential formats the review fo
       'السوق المصري يفضل الدفع عند الاستلام، ونسبة التحويل ارتفعت هذا الشهر.',
       'Use the api key from the vault reference vault:publisher-token, never inline.',
       'https://qandeel.example/pricing?plan=pro',
+    ]) assert.equal(containsSecretMaterial(text), false, text);
+  });
+
+  test('prose ABOUT passwords, keys and tokens is legitimate work, never refused (R1 re-review false positives)', () => {
+    for (const text of [
+      "Reset the customer's password: follow the runbook in the support playbook.",
+      'Explain that the password is expired and must be changed at next sign-in.',
+      'Summarize the API key: rotation policy for the engineering team.',
+      'Secretary: Mohamed will schedule the review with the growth team.',
+      'Passwords: minimum twelve characters, and never reused across services.',
+      'Draft a memo on token: authentication rollout for the Egypt launch.',
+      'اشرح سياسة كلمة المرور للفريق',
+      'أرسل للمستخدم رابط إعادة تعيين كلمة المرور الجديدة',
+      'كلمة المرور: يجب أن تكون طويلة ومعقدة',
     ]) assert.equal(containsSecretMaterial(text), false, text);
   });
 

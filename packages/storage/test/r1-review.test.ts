@@ -116,6 +116,22 @@ describe('R1-03: a new job of the same Work Item gets its own step range', () =>
   });
 });
 
+describe('R1-03 bound: a job past the durable step range is refused before anything executes', () => {
+  test('after 1000 earlier jobs of the same Work Item, the next run is refused with a typed code (no attribution, no effect)', () => {
+    withSeed((h, s) => {
+      const wi = governedItem(h, s);
+      for (let i = 0; i < 1000; i++) {
+        h.store.transitionWorkItem(wi, { to: 'BLOCKED', reasonCode: 'hold', blockedReason: 'MANUAL' });
+        h.store.transitionWorkItem(wi, { to: 'READY', reasonCode: 'release' });
+      }
+      assert.equal(h.store.jobsFor(wi).length, 1001);
+      const { claim, begun } = claimGoverned(h);
+      assert.deepEqual(begun, { ok: false, code: 'STEP_RANGE_EXHAUSTED', state: 'ACTIVE' });
+      assert.equal(s.gov.runAttribution(claim.fence.runId), null, 'refused before the run was attributed');
+    });
+  });
+});
+
 describe('R1-04: governed reconciliation is Founder authority, after the tool decision', () => {
   function heldGovernedJob(h: Harness, s: Seed): { wi: Id; jobId: Id; invocationId: Id } {
     const tool = s.gov.registerTool(s.founder, { code: 'syncer', driverCode: 'fake-syncer', egress: 'NONE' });

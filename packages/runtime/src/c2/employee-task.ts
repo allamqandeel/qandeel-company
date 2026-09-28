@@ -76,17 +76,18 @@ export const employeeTaskProcessor: GovernedProcessor = {
   maxRunMs: 10 * 60_000,
   run: () => Promise.resolve({ type: 'PERMANENT_FAILURE', code: 'GOVERNANCE_REQUIRED' }),
   async runGoverned(ctx: ProcessorContext, gov: GovernedRunServices): Promise<ProcessorResult> {
+    let s = readState(ctx);
+    // A FINAL decision checkpointed before a crash is honoured on resume first: the work already
+    // finished, so nothing about its input is re-judged and no new model call or action happens.
+    if (s.phase === 'FINAL') return { type: 'COMPLETED', evidence: { summaryCode: s.summaryCode ?? 'final', turns: s.turn, modelCalls: s.modelCalls, resumed: true } };
     let cfg;
     try {
       cfg = readInput(ctx.input);
     } catch {
       return { type: 'PERMANENT_FAILURE', code: 'INVALID_TASK_INPUT' };
     }
-    let s = readState(ctx);
     let escalateFrom: { fromClass: ReasoningClass; evidence: 'OUTPUT_FAILED_VALIDATION' | 'CONTEXT_OVERFLOW' } | null = null;
     let escalated = false;
-    // A FINAL decision checkpointed before a crash is honoured on resume: no new model call, no new action.
-    if (s.phase === 'FINAL') return { type: 'COMPLETED', evidence: { summaryCode: s.summaryCode ?? 'final', turns: s.turn, modelCalls: s.modelCalls, resumed: true } };
     while (s.turn < cfg.maxTurns) {
       if (ctx.signal.aborted) return { type: 'CANCELLED' };
       if (s.phase === 'TOOL' && s.pending) {

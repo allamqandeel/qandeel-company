@@ -90,9 +90,12 @@ export interface GovernedRunContext {
 /** Steps one governed job may use (the employee loop allows at most 32 turns). */
 export const GOVERNED_STEP_SPAN = 100;
 
+/** The durable step bound (migration 0005 CHECKs, the Tool Executor's limit). */
+export const MAX_GOVERNED_STEP = 100_000;
+
 export type BeginResult =
   | { readonly ok: true; readonly context: GovernedRunContext }
-  | { readonly ok: false; readonly code: 'EMPLOYEE_NOT_ELIGIBLE' | 'NOT_EMPLOYEE_OWNED' | 'CAPABILITY_GAP_CANCELLED'; readonly state: string | null }
+  | { readonly ok: false; readonly code: 'EMPLOYEE_NOT_ELIGIBLE' | 'NOT_EMPLOYEE_OWNED' | 'CAPABILITY_GAP_CANCELLED' | 'STEP_RANGE_EXHAUSTED'; readonly state: string | null }
   /** C3: the owning Employee does not meet the Work Item's capability requirements (durable gap, work parked). */
   | { readonly ok: false; readonly code: 'CAPABILITY_GAP'; readonly state: string | null; readonly gapId: Id };
 
@@ -128,6 +131,14 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
     }
     return { ok: false, code: 'CAPABILITY_GAP', state: e.state, gapId: gate.gapId };
   }
+  // R1-03: this job's Work-Item-global step range (insertion order of the item's jobs is durable and
+  // immutable — jobs are never deleted). A range past the durable step bound (0..100000) is refused
+  // with a typed code before anything executes, never mid-run after an effect.
+  const stepBase = GOVERNED_STEP_SPAN * Number(ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM queue_jobs WHERE work_item_id = ? AND rowid < (SELECT rowid FROM queue_jobs WHERE id = ?)', item.id, fence.jobId)?.n ?? 0);
+  if (stepBase + GOVERNED_STEP_SPAN - 1 > MAX_GOVERNED_STEP) {
+    denyAudit(ctx, fence.runId, 'run.not_governed', 'STEP_RANGE_EXHAUSTED', { workItemId: item.id });
+    return { ok: false, code: 'STEP_RANGE_EXHAUSTED', state: e.state };
+  }
   if (!ctx.db.get('SELECT 1 AS ok FROM run_attributions WHERE run_id = ?', fence.runId)) {
     ctx.db.run('INSERT INTO run_attributions (run_id, work_item_id, employee_id, department_id, created_at) VALUES (?, ?, ?, ?, ?)', fence.runId, item.id, e.id, e.departmentId, ts(ctx));
     appendEvent(ctx, 'run.attributed', 'run', fence.runId, { correlationId: item.correlationId }, { employeeId: e.id, departmentId: e.departmentId, workItemId: item.id });
@@ -143,8 +154,7 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
     cognitiveProfile: Object.freeze({ ...assertCognitiveProfile(e.cognitiveProfile) }),
     dataClass: workItemDataClass(item.processorInput),
     executionMode: academyMode ?? 'ACTIVE',
-    // Insertion order of the Work Item's jobs is durable and immutable (jobs are never deleted).
-    stepBase: GOVERNED_STEP_SPAN * Number(ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM queue_jobs WHERE work_item_id = ? AND rowid < (SELECT rowid FROM queue_jobs WHERE id = ?)', item.id, fence.jobId)?.n ?? 0),
+    stepBase,
   });
   return { ok: true, context };
 }

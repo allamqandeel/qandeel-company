@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { ExponentialBackoff, type Id, type Processor, type ProcessorContext, type ProcessorResult } from '@qandeel-company/domain';
+import { ExponentialBackoff, QandeelError, type Id, type Processor, type ProcessorContext, type ProcessorResult } from '@qandeel-company/domain';
 
 import { CompanyRuntime, DETERMINISTIC_PROCESSORS, type CompanyRuntime as Runtime } from '../../src/index.js';
 import { eventually, removeRoot, tempRoot } from '../helpers.js';
@@ -60,6 +60,32 @@ describe('R1-09: a provider answer whose accounting fails is contained', () => {
       assert.equal(rt.governance.reservations(first?.id as Id)[0]?.state, 'RECONCILIATION_REQUIRED', 'possibly billed: held, never left RESERVED');
       assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD');
     }));
+});
+
+describe('R1-09 attribution: local store contention is never blamed on the provider', () => {
+  test('a busy store at the settlement commit holds the money but not the healthy deployment; the work completes on retry', async () => {
+    let fired = false;
+    await withWorld(
+      'r1-busy',
+      async ({ w, f, rt }) => {
+        const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+        assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED']), 'COMPLETED');
+        assert.ok(fired, 'the contention was injected');
+        const first = rt.view.runsForWorkItem(id)[0];
+        assert.equal(rt.governance.reservations(first?.id as Id)[0]?.state, 'RECONCILIATION_REQUIRED', 'possibly billed: held');
+        assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'ACTIVE', 'the provider is not held for a local failure');
+        assert.equal(f.cloud.calls.get('cloud-e1'), 2, 'the retry used the same healthy route');
+      },
+      {
+        storageFault: (p) => {
+          if (p === 'settlement.beforeCommit' && !fired) {
+            fired = true;
+            throw new QandeelError('STORAGE_BUSY', 'simulated write-lock contention at the settlement commit');
+          }
+        },
+      },
+    );
+  });
 });
 
 describe('R1 B-F4: a FINAL decision survives a crash before the settle', () => {
