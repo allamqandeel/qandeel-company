@@ -1693,3 +1693,49 @@ D-C2-12. D-C2-07 is read with that amendment; it is not rewritten here.
 
 **State.** R1 is a closure candidate awaiting Technical Lead exact-head review; it is **not closed**.
 C4 is not started.
+
+
+## D-R1-02 — Cross-stage integration and bounded validation (Product Owner / Technical Lead)
+
+**Problem exposed by R1.** C1, C2 and C3 each passed their own closure gates, but R1 found cross-layer
+defects that only appeared when the core was exercised as one system. The Product Owner requires every
+later stage to be designed and reviewed as an extension of the whole Company, not as an isolated feature.
+
+**Decision.** From C4 onward every implementation task must include:
+- a **Backward Integration Gate** over every closed-stage contract / invariant it touches;
+- a **Forward Integration Gate** over the known next-stage / Product requirements so current contracts
+  preserve the required extension seams without inventing unknown future behaviour;
+- **boundary-first design** for authority, money, durable lifecycle, recovery, privacy, routing and
+  external / mutable-data boundaries, with focused adversarial proofs during implementation;
+- **R1 defect-family non-regression**: prevent the root anti-pattern where relevant, not only the literal
+  regression; repeated same-root failures are an architecture signal;
+- a **bounded validation workflow**: fast / focused checks while building, one complete closure gate on
+  the real final candidate, MINORs after that gate are recorded without restarting it, and a
+  BLOCKER / MAJOR returns to Technical Lead disposition instead of opening an autonomous fix loop;
+- at most **two correction cycles for one root-cause family**; a third recurrence requires architecture
+  review before more coding;
+- a closure **Integration Matrix** recording prior-stage contracts touched, proof they remain valid, new
+  contracts exposed to the next stage, residual / deferred decisions and confirmation of no scope leak.
+
+This is a process / integration correction, not a new stage and not authority to split the roadmap into
+extra micro-phases.
+
+**Roadmap intent.** C4 builds Organization / CEO / Directors / Positions / staffing / delegation /
+Review Pool on the existing C1–C3 mechanisms. C5 consumes that foundation for the Founder Command
+Center, Founder↔CEO operating relationship, approvals / delegation controls and Company Calendar
+foundation. C6 consumes real work lineage for employee / department performance, reporting, learning,
+evaluation, resilience and outcome analytics. C7 connects governed Company operations to APP-OPS /
+Pilot instrumentation and external outcome data without weakening privacy, authority, accounting or
+recovery boundaries.
+
+## D-R1-03 — P-07: charged-deployment exclusion extends to the logical job (Product Owner / Technical Lead)
+
+**Decision.** Once a deployment has produced a **charged failed attempt**, that deployment must not be
+automatically selected again for the same logical job / Work Item merely because execution crossed a
+call or run boundary. A later use requires explicit new authority / evidence / policy rather than an
+automatic job retry.
+
+R1 already enforces the rule within one model call. The remaining job-scope enforcement identified by
+N-RETRY M1 is **non-blocking for R1** and is deferred to the next appropriate implementation stage,
+but it must be implemented **before any paid Pilot operation**. Every charge remains recorded truthfully
+in the meantime.
