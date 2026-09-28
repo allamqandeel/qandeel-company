@@ -1844,3 +1844,21 @@ Therefore, after C4:
 The initial expected management flow is Founder → CEO → Directors: discuss actual workload/capability
 needs first, then decide justified Positions and Employee count. C4 builds the generic organization
 mechanism; it must not hard-code a fixed Employee count per Department.
+
+
+## D-R1-07 — Single heavy CI gate with conditional post-merge revalidation (Product Owner / Technical Lead)
+
+**Problem.** The current GitHub workflow runs the same full Windows + Ubuntu matrix on both `pull_request` and `push` to `main`. Together with Founder-host validation this can repeat the same heavy Windows proof two or three times, adding hours without proportionate new evidence.
+
+**Decision.** From C4 onward use a single-heavy-gate closure model:
+
+1. **Development:** focused fast checks only.
+2. **Founder host:** run only host-specific evidence that GitHub Windows cannot prove efficiently (Smart App Control / local workspace / Arabic-path / actual local-runtime acceptance and other explicitly host-specific checks). Do not duplicate the whole portable test+mutation suite merely because the machine is Windows.
+3. **PR exact-head:** this is the single authoritative full CI gate. Run the complete Windows + Ubuntu matrix, full tests, mutations, verifier and required acceptances once on the real closure candidate.
+4. **Post-merge `main`:** do NOT automatically repeat the full Windows + Ubuntu suite when the canonical merge tree is byte-for-byte the already-green PR tree. Run a fast merge-integrity / canonical-state check instead.
+5. **Fallback:** if the merge tree differs from the validated PR tree, the merge method is not the expected merge-commit form, relevant CI/workflow semantics changed in a way not covered by the PR gate, or integrity cannot be proven, run the full post-merge CI fail-closed.
+6. **Scheduled/manual safety:** a periodic/manual full-main CI remains available for drift/toolchain detection without blocking every normal merge.
+
+For the Company's normal merge-commit flow, the post-merge integrity gate should compare the canonical merge commit tree with the validated PR-head parent tree (for example via Git tree hashes). Equality inherits the exact tested code/content; inequality requires revalidation.
+
+This optimization changes **validation duplication**, not quality gates. No merge occurs unless the PR exact-head full gate, Technical Lead review and required Founder-host-specific checks already pass.
