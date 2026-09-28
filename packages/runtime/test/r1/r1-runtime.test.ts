@@ -296,6 +296,64 @@ describe('R1-09 (Technical Lead follow-up): a known provider fault stays contain
       assert.equal(cloudReservation(rt, w, id), 'RECONCILIATION_REQUIRED', 'possibly billed: held');
     }));
 
+  // Final re-review (b0ac2b7): the usage VALUES are snapshotted once, so the fault check and the
+  // settlement can never see different numbers from a shifting getter.
+  const shiftingUsage = (f: Fakes, first: { inputTokens: number; outputTokens: number }, second: () => number): void => {
+    const generate = f.cloud.generate.bind(f.cloud);
+    let armed = true;
+    f.cloud.generate = async (request, signal) => {
+      const answer = await generate(request, signal);
+      if (!armed || request.deploymentCode !== 'cloud-e1') return answer;
+      armed = false;
+      let reads = 0;
+      return {
+        outputText: answer.outputText,
+        usage: {
+          get inputTokens(): number {
+            return first.inputTokens;
+          },
+          get outputTokens(): number {
+            return reads++ === 0 ? first.outputTokens : second();
+          },
+        },
+      };
+    };
+  };
+
+  test('usage fields that change between reads are read once: a single refused write cannot turn the answer into an uncontained, re-paid fault (final re-review)', async () => {
+    let fired = 0;
+    await withWorld(
+      'r1-final-shifting',
+      async ({ w, f, rt }) => {
+        shiftingUsage(f, { inputTokens: 100, outputTokens: 10 }, () => {
+          throw new Error('second read fails');
+        });
+        const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+        assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED');
+        assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'one consistent answer: never called (and paid) again');
+        assert.equal(cloudReservation(rt, w, id), 'SETTLED', 'settled on the values the fault check saw');
+        assert.ok(fired >= 1, 'the health write was refused');
+      },
+      {
+        storageFault: (p) => {
+          if (p === 'deploymentOutcome.beforeCommit' && fired === 0) {
+            fired++;
+            throw contention();
+          }
+        },
+      },
+    );
+  });
+
+  test('usage first reported outside the bounds is contained, whatever a later read would say (final re-review)', () =>
+    withWorld('r1-final-over-then-in', async ({ w, f, rt }) => {
+      shiftingUsage(f, { inputTokens: 100, outputTokens: 257 }, () => 10);
+      const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+      await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']);
+      assert.equal(f.cloud.calls.get('cloud-e1'), 1);
+      assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD', 'the violation the provider reported is contained');
+    }));
+
   test('a charged failure reporting usage outside the bounds is contained once (no double circuit count) and never retried on the same route', () =>
     withWorld('r1-tl-charged-over-bounds', async ({ w, f, rt }) => {
       f.cloud.failNextCharged('cloud-e1', 'TRANSIENT', { inputTokens: 100, outputTokens: 257 });

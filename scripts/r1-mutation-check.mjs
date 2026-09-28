@@ -137,10 +137,17 @@ const MUTATIONS = [
     runs: [RUNTIME],
   },
   {
+    // Final re-review of b0ac2b7: the usage values are snapshotted (not only the object reference).
+    id: 'r1-09-usage-snapshot-shallow',
+    finding: 'R1-09',
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'usage = snapshotUsage(result?.usage);', replace: 'usage = result?.usage;', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
     id: 'r1-09-lazy-answer-read-escapes',
     finding: 'R1-09',
     edits: [
-      { file: `${R}/c2/model-runtime.js`, search: 'usage = result?.usage;', replace: '/* mutation: the answer is not snapshotted */', expectedCount: 1 },
+      { file: `${R}/c2/model-runtime.js`, search: 'usage = snapshotUsage(result?.usage);', replace: '/* mutation: the answer is not snapshotted */', expectedCount: 1 },
       { file: `${R}/c2/model-runtime.js`, search: 'return { ok: true, response: { outputText, usage } };', replace: 'return { ok: true, response: result };', expectedCount: 1 },
     ],
     runs: [RUNTIME],

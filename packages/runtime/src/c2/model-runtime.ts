@@ -309,13 +309,14 @@ export class GovernedModelRuntime {
         controller.abort();
         return { ok: false, failure: 'TIMEOUT_AFTER_SEND', usage: null };
       }
-      // Snapshot the answer once, here: a misbehaving answer object (a throwing or shifting getter) is
-      // the provider's contract violation, and nothing later reads the adapter's object again.
+      // Snapshot the answer once, here, down to the usage VALUES: a misbehaving answer object (a
+      // throwing or shifting getter) is the provider's contract violation, and nothing later reads the
+      // adapter's objects again — the fault check and the settlement see the same numbers.
       let outputText: unknown;
       let usage: unknown;
       try {
         outputText = result?.outputText;
-        usage = result?.usage;
+        usage = snapshotUsage(result?.usage);
       } catch {
         return { ok: false, failure: 'CONTRACT_VIOLATION', usage: null };
       }
@@ -328,6 +329,13 @@ export class GovernedModelRuntime {
       runSignal.removeEventListener('abort', onAbort);
     }
   }
+}
+
+/** The reported usage as plain values, each field read exactly once (anything else is left for validation to refuse). */
+function snapshotUsage(u: unknown): unknown {
+  if (typeof u !== 'object' || u === null) return u;
+  const r = u as { inputTokens?: unknown; outputTokens?: unknown };
+  return { inputTokens: r.inputTokens, outputTokens: r.outputTokens };
 }
 
 /**
