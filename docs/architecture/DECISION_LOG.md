@@ -1691,8 +1691,7 @@ intent's reservation "is released". D-C2-12 (MAJOR, "interrupted tool intents re
 have been spent") amended that to "charged (`FAILED_CHARGED`), never released", and the code follows
 D-C2-12. D-C2-07 is read with that amendment; it is not rewritten here.
 
-**State.** R1 is a closure candidate awaiting Technical Lead exact-head review; it is **not closed**.
-C4 is not started.
+**State.** Technical Lead exact-head review passed with 0 BLOCKER / 0 MAJOR. PR #6 merged into canonical `main` as `bd18614d1fc49d3c03ace2289e19accd67aa1838`; exact-head PR CI run #60 and post-merge `main` CI run #62 passed on Windows and Ubuntu. R1 is **CLOSED / MERGED / CANONICAL**. C4 is READY / NOT STARTED pending this docs-sync merge.
 
 
 ## D-R1-02 — Cross-stage integration and bounded validation (Product Owner / Technical Lead)
