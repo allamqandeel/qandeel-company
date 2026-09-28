@@ -1599,6 +1599,10 @@ memories remain rejection evidence (proof + mutation `r1-12-conflict-pool-unrest
 the item-header neutralization lookahead is bounded and cheap again; a quantity exclusion needs a word
 after the number (`1234-abcd-9876` is still a credential); usage over the enforced bounds counts as a
 provider contract violation.
+**Last confirmation round.** Re-reviews of `621d107` found no BLOCKER / MAJOR. One MINOR was closed:
+the over-bounds attribution line had no committed proof (only the older out-of-range proof, which a
+different path catches); it now has one (one token over the step bound plus contention at the settle →
+the deployment is held on the first attempt) and mutation `r1-09-over-bounds-usage-not-blamed`.
 
 **Documentation note (R1 B-F6).** D-C2-07's first bullet list says an orphaned NONE / IDEMPOTENT tool
 intent's reservation "is released". D-C2-12 (MAJOR, "interrupted tool intents released money that may

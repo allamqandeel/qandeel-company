@@ -100,6 +100,12 @@ const MUTATIONS = [
     runs: [RUNTIME],
   },
   {
+    id: 'r1-09-over-bounds-usage-not-blamed',
+    finding: 'R1-09',
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'if (!u.withinBounds)', replace: 'if (false)', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
     id: 'r1-04-governed-reconciliation-unauthenticated',
     finding: 'R1-04',
     edits: [{ file: `${S}/store.js`, search: 'if (this.#read((ctx) => isGovernedJob(ctx, jobId)))', replace: 'if (false)', expectedCount: 1 }],

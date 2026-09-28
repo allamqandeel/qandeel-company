@@ -53,7 +53,10 @@ No imported authority was edited. **No AUTHORITY CONFLICT** was found.
    fix and must be caught (`scripts/r1-mutation-check.mjs`, run by `npm run ci`, pinned by the verifier).
 6. **Independent adversarial re-reviews** of the remediation on exact commits, repeated until a round
    found no BLOCKER / MAJOR: `2ec51f9` (A, B) → `fe45500` (A, B) → `805a1f5` (A, B) → `621d107`
-   (A, B). Every defect the re-reviews found was fixed the same way (proof + mutation).
+   (A, B). Every defect the re-reviews found was fixed the same way (proof + mutation). The last round
+   found no BLOCKER / MAJOR; its one proof gap (the over-bounds attribution line had no committed
+   proof) was closed with a proof and a mutation (`r1-09-over-bounds-usage-not-blamed`), which only
+   adds a test and a mutation to that head.
 
 ## 5. Reviewed code surface
 
@@ -79,7 +82,7 @@ mutation checks, verifier, test runner, C1 / C2 / C3 acceptance harnesses); `.gi
 | R1-I Skills / capability | **Holds** after R1-07 | Pipeline order enforced + DB CHECK; pinned loads with hash verification; SECURITY_HOLD blocks at once; gaps durable, never re-routed. |
 | R1-J Academy | **Holds** after R1-10, R1-11 | Critical dimensions not averaged; holdouts never practice; deterministic rubric not overridable; certification never restores ACTIVE by itself. |
 | R1-K Privacy / security | **Holds** after R1-01, R1-02 | Logger content-free by construction; failures become fixed codes; audit / event CHECK bounds; no SQL injection (all interpolations are constant identifiers); no listener, no network, no APP-OPS path; Rules A / B / C hold (see P-06). |
-| R1-L Proof quality | **Holds** after R1-15 | Per-file vacuity, pinned mutation lists, 30 R1 mutations; remaining lexical limits recorded. |
+| R1-L Proof quality | **Holds** after R1-15 | Per-file vacuity, pinned mutation lists, 31 R1 mutations; remaining lexical limits recorded. |
 
 ## 7. Mandatory adversarial scenarios
 
@@ -114,7 +117,7 @@ it and it was fixed before this report (see R1-01).
 
 ### 8.2 MAJOR — all VERIFIED FIXED
 
-Mutations are in `scripts/r1-mutation-check.mjs` (each must be caught; 30 / 30 caught).
+Mutations are in `scripts/r1-mutation-check.mjs` (each must be caught; 31 / 31 caught).
 
 | ID | Finding | Root cause | Fix | Proof / mutation | Re-review |
 |---|---|---|---|---|---|
@@ -126,7 +129,7 @@ Mutations are in `scripts/r1-mutation-check.mjs` (each must be caught; 30 / 30 c
 | R1-06 | Approval / budget decided while the job was still CLAIMED: work parked forever (lost wake) | C2 waits lacked the settle re-check C3 waits have | WAIT settle re-checks the durable predicate (no pending approval, or one decided during the run; a cap raised since the run began) | storage proofs; `r1-06-*` (2) | Re-review refined the approval predicate (stale PENDING from an earlier job). Holds. |
 | R1-07 | Issuing the missing grant never woke a `TOOL_ACCESS_MISSING` gap | Grant write not wired to the gap wake | Grant wakes the Employee's open gaps in the same transaction | storage proof; `r1-07-grant-does-not-wake-gap` | Holds. |
 | R1-08 | After an in-process lease loss the re-claimed run's registry entry was deleted by the old run: live processor escaped cap / cancel / stop | Registry keyed by job | Keyed by run; interrupted local run fenced before re-claim; shutdown interrupts only claims it still holds | runtime proof; `r1-08-active-runs-keyed-by-job` | Holds. |
-| R1-09 | A post-call accounting error escaped the model runtime: reservation left RESERVED, deployment not held, same route retried | No containment after the provider answered | Containment holds the money; provider fault decided from the answer (never from a local error); best-effort health writes; settle backstop holds any RESERVED model reservation | runtime + storage proofs; `r1-09-*` (3) | Re-reviews refined attribution (local contention not blamed; over-bounds usage blamed). Holds. |
+| R1-09 | A post-call accounting error escaped the model runtime: reservation left RESERVED, deployment not held, same route retried | No containment after the provider answered | Containment holds the money; provider fault decided from the answer (never from a local error); best-effort health writes; settle backstop holds any RESERVED model reservation | runtime + storage proofs; `r1-09-*` (4) | Re-reviews refined attribution (local contention not blamed; over-bounds usage blamed, with its own proof). Holds. |
 | R1-10 | Academy refusals hidden by voiding (new attempt / withdrawal) and by cancelled shadow work | Refusal scoring existed in one of three closure paths | One closure helper scores refusals first; cancelled / superseded shadow refusals collected; closed attempts' work cancelled | storage proofs; `r1-10-*` (3) | Holds. |
 | R1-11 | A PAUSED / ON_LEAVE Employee reassigned to an uncertified role resumed ACTIVE duty in it | D-C3-24 demotion only for ACTIVE | PAUSED → RETRAINING (existing transition); ON_LEAVE role change without the target certification refused (fail closed; **P-01**) | storage proofs; `r1-11-*` (2) | Holds. |
 | R1-12 | Ineligible memories / knowledge crowded eligible ones out of the bounded pool | Eligibility applied after the SQL `LIMIT` | Separate bounded pools: eligible (decided before the LIMIT), rejection evidence (keeps `DATA_CLASS_ABOVE_CONTEXT` / `MARKET_MISMATCH` / `STALE` / `CONFLICT_UNRESOLVED` in the manifest, D-C3-06), and conflicts that can hold the work | storage proofs (floods of every kind, CONFLICT_HOLD under floods); `r1-12-*` (6) | A first version dropped rejection evidence (3 C3 proofs failed — treated as a regression and fixed, no test changed); re-reviews found knowledge staleness and two conflict-pool crowd-outs (MAJOR — fixed). Final round: none. |
@@ -150,7 +153,7 @@ D-C2-12 (decision log note).
 | N-NEUT | Neutralization bounds: ≤ 64 prefix characters, 1–8 separators and ≤ 128-character ids in item headers; compatibility letters, look-alike brackets (`【` `〔`), full-width header words; reference context still uses the `system` role. |
 | N-POOL | When more than 300 more-relevant in-class conflict pairs exist, the manifest may not name a specific pair (the hold still triggers). |
 | N-KEYS | A pre-R1 governed job that is not its Work Item's first job and is in flight across the upgrade would present new keys (no such workspace exists; only validation workspaces). |
-| N-HEALTH | Deployment-health write failures are not logged; under a busy store a provider fault may be recorded only after one more call. |
+| N-HEALTH | Deployment-health write failures are not logged; under a busy store a provider fault may be recorded only after one more call. A failed (e.g. `TRANSIENT`) call that reports over-bounds usage is recorded as `TRANSIENT` and retried when the settle succeeds, but held as `CONTRACT_VIOLATION` when the settle hits contention (attribution only; the money is correct either way). |
 | N-SEAM | The test seam's load guard reads `NODE_OPTIONS` and its arm internals are a module export (in-process defence in depth). |
 | N-ART | A run artifact fence can be rebuilt from the ordinary API; `putRunArtifact(jobId)` is public. |
 | N-MIND | Memory / context writes are not refused after a mid-run lifecycle withdrawal (nothing leaves the process or is spent). |
@@ -159,7 +162,7 @@ D-C2-12 (decision log note).
 | N-COST | Storage does not recompute a model reservation's worst case from the price card; escalation evidence is asserted by the (runtime-owned) processor; escalation "from" uses the configured, not the routed, class. |
 | N-DB | Append-only guarantees rely on triggers (REPLACE would bypass them; not used anywhere); three small tables have no append-only trigger; backup verify → restore copy is not re-hashed; a backup is recorded before its full verification. |
 | N-WORK | Optional-review rework after dependents were released is not guarded. |
-| N-PROOF | Mutation catch = any listed test failing; acceptance "no CLI command" checks exit code only; acceptances are not in `npm run ci` (they are in GitHub CI); race tests do not prove overlap; the mutation pin is lexical. |
+| N-PROOF | Linearity proofs use wall-clock limits (500 ms / 1 000 ms; ~250 ms measured) and could flake on a heavily loaded host; mutation catch = any listed test failing; acceptance "no CLI command" checks exit code only; acceptances are not in `npm run ci` (they are in GitHub CI); race tests do not prove overlap; the mutation pin is lexical. |
 
 ### 8.4 PRODUCT OWNER DECISION REQUIRED
 
@@ -187,7 +190,7 @@ designated-role Employee; whether post-EXTEND evidence must come from post-exten
 | Storage | `governed-writes.ts`, `runtime-authority.ts`, `mind-writes.ts`, `governance.ts`, `store.ts`, `academy.ts`, `backup.ts` |
 | Runtime | `runtime.ts` (global steps, run-keyed registry, shutdown), `c2/model-runtime.ts` (accounting containment, provider-fault attribution), `c2/employee-task.ts` (FINAL checkpoint, secret instructions) |
 | Proofs | `governance/test/r1-kernel.test.ts`, `mind/test/r1-kernel.test.ts`, `storage/test/r1-review.test.ts`, `runtime/test/r1/r1-runtime.test.ts` |
-| Proof machinery | `scripts/r1-mutation-check.mjs` (30 mutations), `scripts/run-node-tests.mjs` + `scripts/test-file-counter.mjs` (per-file vacuity), `scripts/verify-bootstrap.mjs` (0005 / 0006 frozen, `mutation-checks-pinned`), `scripts/c3-mutation-check.mjs` (one mutation re-targeted to the R1-11 form of the same gate), `package.json` (`r1:mutation` in `ci`), `packages/bootstrap-contract/package.json` |
+| Proof machinery | `scripts/r1-mutation-check.mjs` (31 mutations), `scripts/run-node-tests.mjs` + `scripts/test-file-counter.mjs` (per-file vacuity), `scripts/verify-bootstrap.mjs` (0005 / 0006 frozen, `mutation-checks-pinned`), `scripts/c3-mutation-check.mjs` (one mutation re-targeted to the R1-11 form of the same gate), `package.json` (`r1:mutation` in `ci`), `packages/bootstrap-contract/package.json` |
 | Docs | this report; `DECISION_LOG.md` D-R1-01; `IMPLEMENTATION_MAP.md` (R1 row only) |
 
 No migration was added or edited. No dependency was added. No C4–C7 scope, APP integration, Pilot work
@@ -195,23 +198,25 @@ or Stage 16 reconstruction.
 
 ## 10. Final validation
 
-Founder host (Windows 11, Node 24.19.0, npm 11.17.0), on the final code head `621d107`. The later
-commit changes documentation only and was re-validated with `npm run ci`.
+Founder host (Windows 11, Node 24.19.0, npm 11.17.0), on the final branch head (the commit that adds
+this validation; its code equals `621d107` plus one R1-09 proof and one mutation). `621d107` itself
+also passed the full `npm run ci` twice (Founder host and re-review B's own worktree: 424 tests, R1
+30/30) and the three acceptances.
 
 | Gate | Result |
 |---|---|
 | `npm ci` | exit 0, 0 vulnerabilities |
 | `npm run ci` | **PASS** (build, typecheck, lint, tests, C1 / C2 / C3 / R1 mutations, verifier) |
-| Tests | **424 passed**, 0 failed / skipped / todo — bootstrap 5, domain 22, governance 36, mind 53, storage 241, runtime 67 |
-| Mutations | C1 6/6, C2 19/19, C3 40/40, **R1 30/30** |
+| Tests | **425 passed**, 0 failed / skipped / todo — bootstrap 5, domain 22, governance 36, mind 53, storage 241, runtime 68 |
+| Mutations | C1 6/6, C2 19/19, C3 40/40, **R1 31/31** |
 | Verifier | 221 files, 50/50 rules passed; self-test: 49 rules each proved able to fail |
 | C1 acceptance | **PASS** — 6 steps (external workspace outside any git tree) |
 | C2 acceptance | **PASS** — 8 steps |
 | C3 acceptance | **PASS** — 9 steps |
 | `git diff --check` | clean |
 
-Count changes vs the C3 reference (352 / storage 212 / 6 / 19 / 40 / 49): +72 tests (governance +11,
-mind +26, storage +29, runtime +6 — all new R1 proofs); R1 mutation suite added (30); verifier +1 rule
+Count changes vs the C3 reference (352 / storage 212 / 6 / 19 / 40 / 49): +73 tests (governance +11,
+mind +26, storage +29, runtime +7 — all new R1 proofs); R1 mutation suite added (31); verifier +1 rule
 (`mutation-checks-pinned`). No existing test was weakened; one C3 mutation was re-targeted to the R1-11
 form of the same gate.
 
@@ -230,5 +235,6 @@ trigger interaction (N-DB; no `REPLACE` exists in the code).
 **R1 INDEPENDENT CORE REVIEW — CLOSURE CANDIDATE / NOT CLOSED**
 
 No unresolved BLOCKER, no unresolved MAJOR, no blocking Product decision. The final independent
-re-review round on the exact remediation head found no BLOCKER or MAJOR. R1 is not closed; C4 is not
+re-review round (A and B) on the exact remediation head `621d107` found no BLOCKER or MAJOR; the only
+later code change is one added proof and its mutation. R1 is not closed; C4 is not
 started; Technical Lead exact-head review is required.

@@ -86,6 +86,32 @@ describe('R1-09 attribution: local store contention is never blamed on the provi
       },
     );
   });
+
+  test('usage over the enforced bounds is the provider\'s fault even when the settle also hits contention (R1 re-review)', async () => {
+    let fired = false;
+    await withWorld(
+      'r1-over-bounds',
+      async ({ w, f, rt }) => {
+        // One token over the step's maxOutputTokens (256): a range-valid, priceable report that breaks the bound.
+        f.cloud.reportUsage('cloud-e1', { inputTokens: 100, outputTokens: 257 });
+        const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+        await settled(rt, id, ['COMPLETED', 'FAILED']);
+        assert.ok(fired, 'the contention was injected');
+        assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'the over-bounds deployment was not called again');
+        const first = rt.view.runsForWorkItem(id)[0];
+        assert.equal(rt.governance.reservations(first?.id as Id)[0]?.state, 'RECONCILIATION_REQUIRED', 'possibly billed: held');
+        assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD', 'held on the first attempt');
+      },
+      {
+        storageFault: (p) => {
+          if (p === 'settlement.beforeCommit' && !fired) {
+            fired = true;
+            throw new QandeelError('STORAGE_BUSY', 'simulated write-lock contention at the settlement commit');
+          }
+        },
+      },
+    );
+  });
 });
 
 describe('R1 B-F4: a FINAL decision survives a crash before the settle', () => {
