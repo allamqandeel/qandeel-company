@@ -221,7 +221,11 @@ timeout.
 `static` × 2, `tests` × 2, `mutation` × 14 shards (Windows 9, Ubuntu 5), `acceptance` × 2 → `quality-gate`.
 Every job fits the Free plan's 20 concurrent jobs.
 
-__CI_TIMING__
+**After — measured timings.** Recorded from the single authoritative PR gate run of this PR's exact head
+(per-job durations, total wall-clock, Windows vs Ubuntu), in the PR conversation and the final delivery
+report, not in this file: committing them here would change the head the gate proved. Expected shape: the
+wall-clock is bounded by the longest shard (a Windows R1 quarter or C3 half) instead of the sum of every
+Windows proof. Local full `npm run ci` on the Founder-class host (sequential): 32.3 minutes.
 
 **Proof parity.** Nothing was deleted: each OS still runs every test, every verifier rule, the C1–C4
 acceptances and every recorded mutation (C1 6, C2 19, C3 40, R1 45, C4 25 = 135). The shard specs are a
