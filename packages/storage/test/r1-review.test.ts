@@ -126,7 +126,8 @@ describe('R1-06 (re-review): a stale PENDING approval from an earlier job never 
       s.gov.decideApproval(s.founder, intent.approvalId, { decision: 'APPROVE', reasonCode: 'founder.ok' }); // job still CLAIMED
       assert.equal(s.gov.listApprovals('PENDING').length, 1, 'the older request is still pending');
       settle(h.store, second.claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_APPROVAL' }, { backoff });
-      assert.equal(jobState(h, wi), 'QUEUED');
+      // Read the second job itself: both jobs share a manual-clock timestamp, so "last by created_at" is not defined.
+      assert.equal(h.store.getJob(second.claim.fence.jobId).state, 'QUEUED');
     });
   });
 });
