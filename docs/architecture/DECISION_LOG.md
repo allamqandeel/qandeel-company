@@ -1739,3 +1739,44 @@ R1 already enforces the rule within one model call. The remaining job-scope enfo
 N-RETRY M1 is **non-blocking for R1** and is deferred to the next appropriate implementation stage,
 but it must be implemented **before any paid Pilot operation**. Every charge remains recorded truthfully
 in the meantime.
+
+
+## D-R1-04 — CEO executive layer and progressive staffing delegation (Product Owner amendment)
+
+**Direct Product Owner decision, 2026-09-28.** The Company will have a persistent **CEO** as the senior
+executive Employee under Founder and above Department Directors. This is a deliberate refinement of the
+Stage 10 Strong-v1 default hierarchy (Founder → Directors): implementation from C4 onward uses
+
+Founder → CEO → Directors → justified Managers / Leads → Employees.
+
+This does not transfer Founder sovereignty to the CEO and does not change Stage 3's core authority
+principle: **title ≠ authority**. CEO is an Employee with persistent identity, Role / Position,
+certification and governed authority. R4 remains Founder-only.
+
+**Initial trust-building.**
+- Founder expects high-frequency direct conversation with the CEO, implemented in C5's Founder Command
+  Center rather than C4.
+- Directors identify Department staffing / capacity needs and create governed Staffing Requests.
+- CEO synthesizes, challenges and prioritizes those requests into decision-ready proposals.
+- Permanent Employee creation remains Founder-approved initially.
+
+**Progressive delegation.** Founder may later grant the CEO explicit, scoped, capped, auditable and
+revocable staffing / hiring authority. A delegation may constrain Department, role families, headcount,
+budget, cost, duration, risk and other policy dimensions. CEO title alone never grants hiring authority.
+Director requests do not authorize hiring by themselves. R4 and any non-delegated R3 authority remain
+with Founder.
+
+**Department / headcount clarification.** Stage 10 already fixes the Strong-v1 Department Map as:
+Strategic Market Intelligence, Growth, Brand & Creative, and Product, subject to its Department
+Creation Rule and later evidence-driven growth / shrinkage. It does **not** fix a uniform headcount;
+Department size, Positions and direct reports remain evidence-driven. Low-frequency functions may stay
+Capabilities / Temporary Specialists as Stage 10 specifies.
+
+**Forward contracts.** C4 must preserve durable organization / staffing / attribution state for:
+- C5: Founder↔CEO operating conversation, approvals, delegation controls and Company Calendar;
+- C6: outcome-based CEO / Director / employee / Department performance analysis;
+- C7 / Pilots: external outcome instrumentation such as campaign, content, SEO, traffic and conversion
+  evidence where those sources are explicitly integrated.
+
+C4 builds only the foundation and may not implement the C5 UI / conversation surface, C6 analytics
+engine or C7 external integrations.
