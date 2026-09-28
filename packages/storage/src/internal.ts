@@ -30,6 +30,7 @@ export type FaultPoint =
   | 'artifact.afterRename'
   | 'reservation.afterCommit'
   | 'settlement.beforeCommit'
+  | 'deploymentOutcome.beforeCommit'
   | 'toolIntent.afterCommit'
   | 'memoryCandidate.afterCommit';
 

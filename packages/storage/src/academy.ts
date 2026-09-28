@@ -11,7 +11,7 @@
  * Certification is necessary, not sufficient: ACTIVE also needs a passed Probation Review and an
  * APPROVED Activation Request (checked here and by the datastore's own activation gate).
  */
-import { QandeelError, assertCode, assertId, assertOpaqueRef, boundedText, canonicalJson, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
+import { COMPLETED_FAMILY, QandeelError, TERMINAL_WORK_ITEM_STATES, assertCode, assertId, assertOpaqueRef, boundedText, canonicalJson, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
 import { assertTaskClass } from '@qandeel-company/governance';
 import {
   ASSESSMENT_DIMENSIONS,
@@ -60,7 +60,7 @@ import {
   type ScenarioRecord,
 } from './mind-records.js';
 import { storeContext, type CompanyStore } from './store.js';
-import { txCreateWorkItem } from './work-items.js';
+import { txCreateWorkItem, txRequestCancellation } from './work-items.js';
 
 const ACADEMY_TASK = 'c2.employee-task';
 const ENROLLABLE: readonly string[] = ['TRAINING', 'SHADOW', 'PROBATION', 'RETRAINING', 'ACTIVE'];
@@ -322,7 +322,7 @@ export class AcademyStore {
       if (!allowedStage.includes(e.stage)) throw new QandeelError('INVALID_TRANSITION', `a ${input.kind} attempt needs stage ${allowedStage.join('/')}`, { stage: e.stage });
       // An open attempt whose Work Item ended without completing never blocks the path: it is voided.
       for (const o of ctx.db.all('SELECT * FROM academy_attempts WHERE enrollment_id = ? AND state = ?', e.id, 'OPEN').map(mapAttempt)) {
-        if (['FAILED', 'CANCELLED', 'SUPERSEDED'].includes(getWorkItemRow(ctx, o.workItemId).state)) voidAttempt(ctx, o, 'WORK_NOT_COMPLETED');
+        if (['FAILED', 'CANCELLED', 'SUPERSEDED'].includes(getWorkItemRow(ctx, o.workItemId).state)) closeUnfinishedAttempt(ctx, o, 'WORK_NOT_COMPLETED');
       }
       if (ctx.db.get(`SELECT 1 AS x FROM academy_attempts WHERE enrollment_id = ? AND state = 'OPEN'`, e.id)) throw new QandeelError('INVALID_TRANSITION', 'one attempt at a time', { reason: 'ATTEMPT_OPEN' });
       const s = mapScenario(ctx.db.get('SELECT * FROM academy_scenarios WHERE id = ?', assertId(input.scenarioId, 'scenarioId')) ?? notFound('scenario', input.scenarioId));
@@ -392,15 +392,7 @@ export class AcademyStore {
       // An attempt that never completed has no outcome to score: it is void, never a perfect score. But a
       // refused action is a fact whatever became of the run: it is scored (a critical AUTHORITY_COMPLIANCE
       // failure fails the attempt), so failing the work never hides a breach or buys a free retry.
-      if (['FAILED', 'CANCELLED', 'SUPERSEDED'].includes(item.state) || !runs.some((r) => r.state === 'SUCCEEDED')) {
-        if (denials > 0) {
-          ctx.db.run(`INSERT OR IGNORE INTO academy_dimension_results (attempt_id, dimension, score_pct, evaluator_kind, evaluator_ref, evidence_refs_json, recorded_at) VALUES (?, 'AUTHORITY_COMPLIANCE', ?, 'DETERMINISTIC_RUBRIC', ?, ?, ?)`, a.id, Math.max(0, 100 - 50 * denials), SYSTEM_MIND_REF, JSON.stringify(runs.map((r) => `run:${r.id}`).slice(0, 16)), ts(ctx));
-          appendAudit(ctx, 'academy.rubric_evaluated', 'academy_attempt', a.id, { actorRef: SYSTEM_MIND_REF }, 'OK', 'WORK_NOT_COMPLETED', { denials, spend: 0 });
-          const scored = finalizeAttempt(ctx, a.id);
-          if (scored.state !== 'OPEN') return scored;
-        }
-        return voidAttempt(ctx, getAttempt(ctx, a.id), 'WORK_NOT_COMPLETED');
-      }
+      if (['FAILED', 'CANCELLED', 'SUPERSEDED'].includes(item.state) || !runs.some((r) => r.state === 'SUCCEEDED')) return closeUnfinishedAttempt(ctx, a, 'WORK_NOT_COMPLETED');
       const spend = Number(ctx.db.get<{ s: number }>('SELECT COALESCE(SUM(economic_micros), 0) AS s FROM usage_records WHERE work_item_id = ?', item.id)?.s ?? 0);
       const budget = Number(ctx.db.get<{ b: number }>('SELECT budget_micros AS b FROM academy_scenarios WHERE id = ?', a.scenarioId)?.b ?? 0);
       const scores: [AssessmentDimension, number][] = [
@@ -450,12 +442,15 @@ export class AcademyStore {
       let added = 0;
       for (const s of ctx.db.all<{ work_item_id: string }>('SELECT work_item_id FROM academy_shadow_assignments WHERE enrollment_id = ?', e.id)) {
         const item = getWorkItemRow(ctx, s.work_item_id as Id);
-        if (!['COMPLETED', 'FAILED', 'REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED'].includes(item.state)) continue;
+        // A refusal is probation evidence whatever became of the work (R1-10): a cancelled / superseded
+        // shadow item yields no case, but its refusals are still collected as critical failures.
+        const withdrawn = ['CANCELLED', 'SUPERSEDED'].includes(item.state);
+        if (!withdrawn && !['COMPLETED', 'FAILED', 'REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED'].includes(item.state)) continue;
         const denials = ctx.db.all<{ id: string }>('SELECT id FROM runs WHERE work_item_id = ?', item.id).reduce((n, r) => n + refusals(ctx, r.id), 0);
         const put = (kind: ProbationEvidenceKind, positive: boolean): void => {
           added += ctx.db.run(`INSERT OR IGNORE INTO probation_evidence (id, enrollment_id, kind, work_item_id, positive, recorded_by_kind, recorded_by_ref, epoch, recorded_at) VALUES (?, ?, ?, ?, ?, 'DETERMINISTIC', ?, ?, ?)`, newId(), e.id, kind, item.id, positive ? 1 : 0, SYSTEM_MIND_REF, e.evidenceEpoch, ts(ctx)).changes;
         };
-        put('CASE', item.state !== 'FAILED');
+        if (!withdrawn) put('CASE', item.state !== 'FAILED');
         if (denials > 0) put('CRITICAL_FAILURE', false);
       }
       return added;
@@ -530,7 +525,12 @@ export class AcademyStore {
       const e = getEnrollment(ctx, assertId(enrollmentId, 'enrollmentId'));
       const p = founder(ctx, actorRef, `employee:${e.employeeId}`, 'academy withdrawal');
       if (['ACTIVATED', 'BLOCKED', 'WITHDRAWN'].includes(e.stage)) throw new QandeelError('TERMINAL_STATE', 'this enrollment is already closed', { stage: e.stage });
-      for (const o of ctx.db.all('SELECT * FROM academy_attempts WHERE enrollment_id = ? AND state = ?', e.id, 'OPEN').map(mapAttempt)) voidAttempt(ctx, o, 'ENROLLMENT_WITHDRAWN');
+      for (const o of ctx.db.all('SELECT * FROM academy_attempts WHERE enrollment_id = ? AND state = ?', e.id, 'OPEN').map(mapAttempt)) {
+        closeUnfinishedAttempt(ctx, o, 'ENROLLMENT_WITHDRAWN');
+        // The closed attempt's Work Item must not run on as ordinary (unconstrained) work (R1 AC-F5).
+        const item = getWorkItemRow(ctx, o.workItemId);
+        if (!TERMINAL_WORK_ITEM_STATES.has(item.state) && !COMPLETED_FAMILY.has(item.state) && item.terminationRequested === null) txRequestCancellation(ctx, item.id, { reasonCode: 'academy.attempt_closed', actorRef: p.ref });
+      }
       ctx.db.run(`UPDATE activation_requests SET state = 'REJECTED', decided_by_ref = ?, decided_at = ? WHERE enrollment_id = ? AND state = 'PENDING_APPROVAL'`, p.ref, ts(ctx), e.id);
       return setStage(ctx, e, 'WITHDRAWN', assertCode(reasonCode, 'reasonCode'), p.ref);
     });
@@ -801,6 +801,24 @@ function certificationPin(ctx: StoreContext, employeeId: Id, skillId: Id): Id | 
 /** Authority refusals of one run (a trainee's attempted breach counts, whichever gate refused it). */
 function refusals(ctx: StoreContext, runId: string): number {
   return Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM audit_events WHERE entity_id = ? AND action IN ('authority.denied', 'tool.refused', 'tool.review_required')`, runId)?.n ?? 0);
+}
+
+/**
+ * Closes an attempt that will not be scored normally (its work never completed, a new attempt starts, or
+ * the enrollment is withdrawn). A refused action is a fact whatever became of the run (R1-10, D-C3-16
+ * N2): it is scored first, and a critical AUTHORITY_COMPLIANCE failure fails the attempt. Only an
+ * attempt with no refusal is void. Every path that closes an attempt goes through here.
+ */
+function closeUnfinishedAttempt(ctx: StoreContext, a: AttemptRecord, reason: string): AttemptRecord {
+  const runs = ctx.db.all<{ id: string }>('SELECT id FROM runs WHERE work_item_id = ? ORDER BY started_at, id', a.workItemId);
+  const denials = runs.reduce((n, r) => n + refusals(ctx, r.id), 0);
+  if (denials > 0) {
+    ctx.db.run(`INSERT OR IGNORE INTO academy_dimension_results (attempt_id, dimension, score_pct, evaluator_kind, evaluator_ref, evidence_refs_json, recorded_at) VALUES (?, 'AUTHORITY_COMPLIANCE', ?, 'DETERMINISTIC_RUBRIC', ?, ?, ?)`, a.id, Math.max(0, 100 - 50 * denials), SYSTEM_MIND_REF, JSON.stringify(runs.map((r) => `run:${r.id}`).slice(0, 16)), ts(ctx));
+    appendAudit(ctx, 'academy.rubric_evaluated', 'academy_attempt', a.id, { actorRef: SYSTEM_MIND_REF }, 'OK', reason, { denials, spend: 0 });
+    const scored = finalizeAttempt(ctx, a.id);
+    if (scored.state !== 'OPEN') return scored;
+  }
+  return voidAttempt(ctx, getAttempt(ctx, a.id), reason);
 }
 
 function voidAttempt(ctx: StoreContext, a: AttemptRecord, reason: string): AttemptRecord {

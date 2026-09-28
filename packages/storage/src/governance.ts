@@ -126,8 +126,9 @@ import {
 } from './governance-records.js';
 import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { liveCertifications } from './mind-core.js';
+import { wakeCapabilityGaps } from './mind-writes.js';
 import { storeContext, type CompanyStore } from './store.js';
-import { applyTransition, enqueueJob } from './work-core.js';
+import { applyTransition, dependencyStatus, enqueueJob, reevaluateDependencyBlock } from './work-core.js';
 
 const at = (ctx: StoreContext): Timestamp => ts(ctx);
 
@@ -323,6 +324,29 @@ export function founderAdminWrite<T>(store: CompanyStore, operation: string, act
   }
 }
 
+/** A job is governed when any of its runs was attributed to an Employee (C2 execution). */
+export function isGovernedJob(ctx: StoreContext, jobId: Id): boolean {
+  return ctx.db.get('SELECT 1 AS x FROM run_attributions a JOIN runs r ON r.id = a.run_id WHERE r.job_id = ? LIMIT 1', jobId) !== undefined;
+}
+
+/**
+ * Job-level reconciliation of GOVERNED work (R1-04). Reconciliation is Founder authority (D-C2-04),
+ * fail-closed without the authenticated Founder surface (D-C2-13) — the C1 operator entry point's
+ * opaque actor reference is not authority. The uncertain tool invocations of the Work Item are resolved
+ * first (`resolveToolInvocation`), so the job decision can never overtake the tool decision: a governed
+ * Work Item is never completed while its invocation and money are still held.
+ */
+export function resolveGovernedReconciliation<T>(store: CompanyStore, jobId: Id, actorRef: string, decide: (ctx: StoreContext, trace: { actorRef: string }) => T): T {
+  return founderAdminWrite(store, 'resolve reconciliation', actorRef, (ctx) => {
+    const p = founder(ctx, actorRef, null, 'job reconciliation');
+    const workItemId = ctx.db.get<{ w: string }>('SELECT work_item_id AS w FROM queue_jobs WHERE id = ?', jobId)?.w;
+    if (workItemId !== undefined && ctx.db.get(`SELECT 1 AS x FROM tool_invocations WHERE work_item_id = ? AND state = 'RECONCILIATION_REQUIRED' LIMIT 1`, workItemId)) {
+      throw new QandeelError('INVALID_TRANSITION', 'resolve the uncertain tool invocation first (resolveToolInvocation)', { jobId });
+    }
+    return decide(ctx, { actorRef: p.ref });
+  });
+}
+
 export class GovernanceStore {
   readonly #store: CompanyStore;
 
@@ -462,6 +486,15 @@ export class GovernanceStore {
       const managerRef = input.managerRef === undefined ? e.managerRef : assertOpaqueRef(input.managerRef, 'managerRef');
       if (managerRef === e.ref) throw new QandeelError('VALIDATION_FAILED', 'an employee cannot manage itself', { field: 'managerRef' });
       const departmentId = input.departmentId === undefined ? e.departmentId : assertId(input.departmentId, 'departmentId');
+      // D-C3-24 (R1-11): Active duty carries into a changed role only with a time-current VALID
+      // certification for that role. PAUSED / ON_LEAVE resume straight to ACTIVE, so the rule applies to
+      // them at this same boundary. ON_LEAVE has no RETRAINING transition (a Product decision, P-01):
+      // until one is made, a role change without the target certification is refused (fail closed).
+      const roleChanged = roleRef !== e.roleRef;
+      const targetCertified = (): boolean => liveCertifications(ctx, id, true).some((cert) => cert.roleRef === roleRef && cert.status === 'VALID');
+      if (roleChanged && e.state === 'ON_LEAVE' && !targetCertified()) {
+        throw new QandeelError('EMPLOYEE_NOT_ELIGIBLE', 'an Employee on leave is not reassigned to a role it is not certified for (no RETRAINING path from ON_LEAVE; Product decision pending)', { reason: 'ROLE_CHANGE_WHILE_ON_LEAVE', employeeId: id });
+      }
       ctx.db.run(`UPDATE employees SET role_ref = ?, position_ref = ?, department_id = ?, manager_ref = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, roleRef, positionRef, departmentId, managerRef, at(ctx), id, e.version);
       let next = getEmployeeRow(ctx, id);
       writeEmployeeHistory(ctx, next, 'ASSIGNMENT', e.roleRef, roleRef, assertCode(input.reasonCode, 'reasonCode'), p.ref, { departmentId, previousDepartmentId: e.departmentId });
@@ -469,7 +502,7 @@ export class GovernanceStore {
       // D-C3-24: assignment is allowed, but ACTIVE duty never carries into a different role unless
       // the Employee already holds a currently VALID certification for that target role. The role
       // change and any demotion are one atomic Founder-authority write; identity and history stay.
-      if (e.state === 'ACTIVE' && roleRef !== e.roleRef && !liveCertifications(ctx, id, true).some((cert) => cert.roleRef === roleRef && cert.status === 'VALID')) {
+      if ((e.state === 'ACTIVE' || e.state === 'PAUSED') && roleChanged && !targetCertified()) {
         next = setEmployeeState(ctx, next, 'RETRAINING', 'ROLE_REASSIGNMENT_REQUIRES_CERTIFICATION', p.ref);
       }
       return next;
@@ -792,6 +825,11 @@ export class GovernanceStore {
         at(ctx),
       );
       appendAudit(ctx, 'grant.created', 'grant', id, { actorRef: p.ref }, 'OK', input.reasonCode, { employeeId, riskCeiling: input.riskCeiling, dataClassCeiling: input.dataClassCeiling });
+      // A TOOL capability requirement is satisfied by a grant (C3 gate): the grant makes parked work
+      // actionable, so it wakes this Employee's capability-gap waits in the same transaction (D-C1-23,
+      // D-C3-09; R1-07). The gate re-runs at run start before any model call; a gap it does not
+      // resolve simply parks again at zero tokens.
+      wakeCapabilityGaps(ctx, employeeId as Id, 'grant.created');
       return mapGrant(ctx.db.get('SELECT * FROM permission_grants WHERE id = ?', id) ?? {});
     });
   }
@@ -1198,6 +1236,15 @@ function releaseApprovedWorkItem(ctx: StoreContext, workItemId: Id, approvalId: 
   const released = applyTransition(ctx, bound, 'READY', { reasonCode: 'approval.granted', trace });
   appendEvent(ctx, 'work_item.approved', 'work_item', item.id, trace, { approvalId });
   appendAudit(ctx, 'work_item.approved', 'work_item', item.id, trace, 'OK', 'approval.granted', { approvalId });
+  // D-C1-21 (R1-05): an approval releases the work from the approval gate only. Unresolved
+  // dependencies still hold it BLOCKED, exactly as the ordinary release path refuses to release it;
+  // the approval stays bound, and dependency resolution releases it later (targeted wake).
+  const deps = dependencyStatus(ctx, item.id);
+  if (deps.unresolved > 0) {
+    const blocked = applyTransition(ctx, released, 'BLOCKED', { reasonCode: 'approval.granted', trace, blockedReason: 'DEPENDENCY', blockerRef: deps.firstBlocker ? `work_item:${deps.firstBlocker}` : null });
+    reevaluateDependencyBlock(ctx, blocked, trace);
+    return;
+  }
   enqueueJob(ctx, released, trace);
 }
 

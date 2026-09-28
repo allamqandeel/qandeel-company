@@ -10,7 +10,7 @@
  * every hash), and writes the manifest in the same transaction. The model reservation is then bound
  * to that manifest (migration 0005 trigger).
  */
-import { QandeelError, isQandeelError, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
+import { QandeelError, hasSecretNamedKey, isQandeelError, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
 import { assertDataClass, dataRank, isDataClass, maxDataClass, type DataClass } from '@qandeel-company/governance';
 import {
   ACADEMY_EXECUTION_STAGES,
@@ -277,7 +277,8 @@ export function txSubmitMemoryCandidate(ctx: StoreContext, fence: Fence, step: n
   const floor = contextClassOf(ctx, a.workItemId);
   const at = ts(ctx);
   const provenance = { kind: 'RUN' as const, ref: `run:${fence.runId}` };
-  if (typeof p.content === 'string' && containsSecretMaterial(p.content)) {
+  // Every model-written text field is scanned (R1-01: the claim fields were not).
+  if ([p.content, p.claimKey, p.claimValue].some((f) => typeof f === 'string' && containsSecretMaterial(f))) {
     // Refused without keeping the content: secrets never enter ordinary SQLite state.
     const id = newId();
     ctx.db.run(
@@ -358,7 +359,9 @@ export function txDecideMemoryCandidate(ctx: StoreContext, candidateId: Id): Mem
   if (sha256Hex(content) !== String(row.content_sha256)) return decide('REFUSED', 'INTEGRITY_FAILED');
   // D4 (sovereign / secret) context is never retained as memory or learning until the Product Owner
   // defines how it may be (Stage 14: secrets stay out of ordinary memory) — fail closed.
-  if (cand.dataClass === 'D4') return decide('REFUSED', 'DATA_CLASS_NOT_RETAINED');
+  // The decision runs at the context's CURRENT class (it may have risen since submission, e.g. across a
+  // crash): D4 at either point is never retained (R1 G-4).
+  if (cand.dataClass === 'D4' || contextClassOf(ctx, cand.workItemId) === 'D4') return decide('REFUSED', 'DATA_CLASS_NOT_RETAINED');
   if (cand.kind === 'OBSERVATION') {
     const lessonId = insertLesson(ctx, { employeeId: cand.employeeId, kind: 'OBSERVATION', observationId: null, eventRef: `work_item:${cand.workItemId}`, topic: String(row.topic), claimKey: null, claimValue: null, content, dataClass: cand.dataClass, marketRef, candidateId });
     return decide('ROUTED_TO_LEARNING', 'OBSERVATION_RECORDED', { lessonId });
@@ -468,13 +471,26 @@ export type StepResultKind = 'TOOL_RESULT' | 'TOOL_REFUSED' | 'MEMORY_DECISION';
  * (a resumed run re-presenting the step keeps the first record). Bounded; classified at the context's
  * effective class.
  */
+/** True when a JSON result names credential material in any key; non-JSON text is left to the text detector. */
+function keyedSecret(text: string): boolean {
+  try {
+    return hasSecretNamedKey(JSON.parse(text));
+  } catch {
+    return false;
+  }
+}
+
 export function txRecordStepResult(ctx: StoreContext, fence: Fence, step: number, kind: StepResultKind, content: string): void {
   verifyFence(ctx, fence);
   const a = attributedRun(ctx, fence);
-  const raw = String(content).slice(0, RECENT_RESULT_CHARS);
-  if (raw.length === 0) return;
-  // Secret material is never stored durably (the step is recorded, its content withheld).
-  const text = containsSecretMaterial(raw) ? '[result withheld: secret material]' : raw;
+  const full = String(content);
+  if (full.length === 0) return;
+  // Secret material is never stored durably (the step is recorded, its content withheld). The WHOLE
+  // result is scanned before it is bounded (R1-01): a key straddling the bound must not survive as a
+  // prefix, and a bounded result says so explicitly (no silent truncation).
+  // A structured (JSON) result also gets the credential-named-key guard the tool invocation record uses
+  // (R1 re-review: `{"authorization": "Basic …"}` was withheld there but kept here and sent onward).
+  const text = keyedSecret(full) || containsSecretMaterial(full) ? '[result withheld: secret material]' : full.length > RECENT_RESULT_CHARS ? `${full.slice(0, RECENT_RESULT_CHARS - 13)} [truncated]` : full;
   ctx.db.run(
     `INSERT INTO context_step_results (work_item_id, run_id, step, kind, content, content_sha256, data_class, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (work_item_id, step) DO NOTHING`,
     a.workItemId, fence.runId, Math.max(0, Math.trunc(step)), kind, text, sha256Hex(text), contextClassOf(ctx, a.workItemId), ts(ctx),
@@ -784,17 +800,26 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // candidates), term-matched and bounded: never the whole knowledge base.
   const access = knowledgeAccess(ctx, e, p.caps.marketRef, p.ceiling);
   const grantUse = new Map<string, Id>();
-  const kMatch = termMatches(ctx, 'KNOWLEDGE', '', p.query.terms, KNOWLEDGE_POOL_LIMIT * 4, {
-    table: 'knowledge_items',
-    where: `x.integrity = 'OK' AND x.status IN ('ACTIVE', 'LOW_CONFIDENCE')
-        AND (x.scope = 'COMPANY'
+  // R1-12 — two bounded pools, so both invariants hold at once:
+  // - ELIGIBLE: class within the ceiling and market-neutral or the Work Item's market, decided in SQL
+  //   BEFORE the LIMIT — an ineligible item can never crowd an eligible one out (D-C3-16 N4);
+  // - REJECTION EVIDENCE: readable but ineligible items (class above the ceiling, other market) keep
+  //   their own bounded pool and stay candidates, so the planner still records DATA_CLASS_ABOVE_CONTEXT /
+  //   MARKET_MISMATCH in the manifest (D-C3-06). Unreadable scopes are never candidates (D-C3-04).
+  const kScope = `(x.scope = 'COMPANY'
           OR (x.scope = 'DEPARTMENT' AND x.scope_ref IN (SELECT value FROM json_each(?)))
           OR (x.scope = 'ROLE' AND x.scope_ref = ?)
           OR (x.scope = 'MARKET' AND x.scope_ref = ?)
-          OR (x.scope = 'RESTRICTED' AND x.scope_ref IN (SELECT value FROM json_each(?))))`,
-    params: [JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes)],
-  });
-  const kRows = kMatch.size === 0 ? [] : ctx.db.all(
+          OR (x.scope = 'RESTRICTED' AND x.scope_ref IN (SELECT value FROM json_each(?))))`;
+  const kScopeParams = [JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes)];
+  const kLive = `x.integrity = 'OK' AND x.status IN ('ACTIVE', 'LOW_CONFIDENCE')`;
+  // Eligible also means within its review horizon: stale knowledge is rejection evidence (STALE), never
+  // an eligible slot (R1 re-review).
+  const kEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND (x.review_at IS NULL OR x.review_at > ?)`;
+  const kEligibleParams = [p.ceiling, p.caps.marketRef ?? '', at];
+  const kMatch = termMatches(ctx, 'KNOWLEDGE', '', p.query.terms, KNOWLEDGE_POOL_LIMIT * 4, { table: 'knowledge_items', where: `${kLive} AND ${kEligible} AND ${kScope}`, params: [...kEligibleParams, ...kScopeParams] });
+  const kEvidence = termMatches(ctx, 'KNOWLEDGE', '', p.query.terms, KNOWLEDGE_POOL_LIMIT * 4, { table: 'knowledge_items', where: `${kLive} AND NOT (${kEligible}) AND ${kScope}`, params: [...kEligibleParams, ...kScopeParams] });
+  const knowledgeRows = (ids: Map<string, number>) => ids.size === 0 ? [] : ctx.db.all(
     `SELECT id, scope, scope_ref, topic, claim_key, claim_value, content_sha256, terms_json, data_class, market_ref, provenance_kind, provenance_ref, confidence_pct, status, integrity, review_at, last_validated_at, version, created_at, created_by_ref, fingerprint, length(CAST(content AS BLOB)) AS bytes, '' AS content
        FROM knowledge_items
       WHERE id IN (SELECT value FROM json_each(?)) AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE')
@@ -803,11 +828,12 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
           OR (scope = 'ROLE' AND scope_ref = ?)
           OR (scope = 'MARKET' AND scope_ref = ?)
           OR (scope = 'RESTRICTED' AND scope_ref IN (SELECT value FROM json_each(?))))`,
-    inList(kMatch.keys()), JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes),
+    inList(ids.keys()), JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes),
   );
   const rank = (m: Map<string, number>) => (a: Readonly<Record<string, unknown>>, b: Readonly<Record<string, unknown>>): number =>
     (m.get(String(b.id)) ?? 0) - (m.get(String(a.id)) ?? 0) || (String(b.created_at) < String(a.created_at) ? -1 : String(b.created_at) > String(a.created_at) ? 1 : 0) || (String(a.id) < String(b.id) ? -1 : 1);
-  for (const r of kRows.sort(rank(kMatch)).slice(0, KNOWLEDGE_POOL_LIMIT)) {
+  const kRows = [...knowledgeRows(kMatch).sort(rank(kMatch)).slice(0, KNOWLEDGE_POOL_LIMIT), ...knowledgeRows(kEvidence).sort(rank(kEvidence)).slice(0, KNOWLEDGE_POOL_LIMIT)];
+  for (const r of kRows) {
     const k = mapKnowledge(r);
     if (!knowledgeReadable(k, access)) continue; // defence in depth: re-checked in code
     // A grant-based scope is used at most once per assembly and never past its limit (attributed per use).
@@ -826,9 +852,39 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
 
   // L5 — the Employee's own memory: a bounded, term-matched METADATA pool (never the full history).
   const held = new Set(ctx.db.all<{ a: string; b: string }>(`SELECT memory_a_id AS a, memory_b_id AS b FROM memory_conflicts c JOIN memory_records m ON m.id = c.memory_a_id WHERE c.state = 'OPEN' AND m.employee_id = ?`, e.id).flatMap((r) => [r.a, r.b]));
-  const mMatch = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `x.employee_id = ? AND x.integrity = 'OK' AND x.status IN ('ACTIVE', 'LOW_CONFIDENCE')`, params: [e.id] });
+  // R1-12 — the same two bounded pools as knowledge (see above): ELIGIBLE memories (class within the
+  // ceiling — D-classes sort as text —, market-neutral or the Work Item's market, review horizon not
+  // passed) decided before the LIMIT, and a separate REJECTION-EVIDENCE pool of live memories that are
+  // ineligible by class or market, which stay candidates so the manifest keeps their reason codes.
+  const memLive = `x.employee_id = ? AND x.integrity = 'OK' AND x.status IN ('ACTIVE', 'LOW_CONFIDENCE')`;
+  // A memory held in an OPEN conflict is never usable: it is rejection evidence (CONFLICT_UNRESOLVED —
+  // the WAIT-settle hold re-check reads it), never an eligible slot.
+  const memEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND NOT EXISTS (SELECT 1 FROM memory_conflicts c WHERE c.state = 'OPEN' AND (c.memory_a_id = x.id OR c.memory_b_id = x.id))`;
+  const memCurrent = `(x.review_at IS NULL OR x.review_at > ?)`;
+  const mEligible = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND ${memEligible} AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });
+  const mEvidence = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND NOT (${memEligible}) AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });
+  // Memories held in an OPEN conflict that CAN hold this work (class within the ceiling, market-eligible —
+  // the planner rejects any other kind before it looks at conflicts) get their OWN bounded pool: the
+  // IMPORTANT-work CONFLICT_HOLD and the WAIT-settle hold re-check depend on them being candidates, so no
+  // amount of other rejection evidence — including ineligible conflicted memories, which stay in the
+  // evidence pool — may crowd them out (R1 final re-reviews).
+  const mConflict = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, {
+    table: 'memory_records',
+    where: `${memLive} AND ${memCurrent} AND x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND EXISTS (SELECT 1 FROM memory_conflicts c WHERE c.state = 'OPEN' AND (c.memory_a_id = x.id OR c.memory_b_id = x.id))`,
+    params: [e.id, at, p.ceiling, p.caps.marketRef ?? ''],
+  });
+  const mMatch = new Map([...mEvidence, ...mConflict, ...mEligible]);
   const memCols = `id, employee_id, memory_class, scope, topic, claim_key, claim_value, content_sha256, data_class, market_ref, project_ref, provenance_kind, provenance_ref, source_version, source_sha256, evidence_refs_json,
             confidence_pct, status, integrity, retention_policy, review_at, last_validated_at, candidate_id, supersedes_id, superseded_by_id, version, created_at, terms_json, fingerprint, length(CAST(content AS BLOB)) AS bytes`;
+  // Relevant memories that reached their review horizon take no pool slot: they are marked STALE durably
+  // (bounded, decay is not deletion) and recorded as rejected, exactly as before.
+  const dueMatch = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND x.review_at IS NOT NULL AND x.review_at <= ?`, params: [e.id, at] });
+  if (dueMatch.size > 0) {
+    for (const r of ctx.db.all(`SELECT ${memCols} FROM memory_records WHERE id IN (SELECT value FROM json_each(?)) AND employee_id = ?`, inList(dueMatch.keys()), e.id)) {
+      const m = setMemoryStatus(ctx, mapMemory(r), 'STALE', 'REVIEW_HORIZON_OR_SOURCE_CHANGED', SYSTEM_MIND_REF);
+      preRejected.push({ candidate: baseCandidate({ key: `memory:${m.id}`, kind: 'MEMORY', layer: 'MEMORY', itemId: m.id, version: m.version, sha256: m.contentSha256, provenanceRef: m.provenanceRef, status: m.status, stale: true, dataClass: m.dataClass, marketRef: m.marketRef, terms: JSON.parse(String(r.terms_json)) as string[], createdAt: m.createdAt, estTokens: Number(r.bytes) + itemEstimate('') }, at), score: 0, reason: 'STALE' });
+    }
+  }
   const memRows = mMatch.size === 0 ? [] : ctx.db.all(`SELECT ${memCols} FROM memory_records WHERE id IN (SELECT value FROM json_each(?)) AND employee_id = ? AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE')`, inList(mMatch.keys()), e.id).sort(rank(mMatch));
   const memCandidates: { c: ContextCandidate; topic: string; eligible: boolean }[] = [];
   for (const r of memRows) {

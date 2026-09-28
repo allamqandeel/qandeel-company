@@ -1490,3 +1490,206 @@ validation passed on candidate `4284337221706f08aebe65fadb64c881c8ed9470`; the f
 head was `e4fdaa119eeef4cb612e349f962adb38108a62f8`; PR #4 merged to `main` on 2026-09-27 as
 `4592b525bdc4937dd130dac452a7dc8fc29de909`. The closure is recorded in `docs/C3_CLOSURE_RECORD.md`.
 R1 and C4 remain NOT STARTED.
+
+## D-R1-01 — R1 Independent Core Review: engineering remediation (no Product decision)
+
+**Context.** R1 reviewed the canonical C1 + C2 + C3 core at `c6a17c3` as one system (ten independent
+adversarial angles plus the reviewer's own verification; `docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md`).
+It found no BLOCKER and 15 MAJOR engineering defects, each inside already-approved authority. Every one
+was fixed at its root cause with a regression proof and a mutation (`npm run r1:mutation`, in `ci`).
+No imported authority was edited and no Product decision was taken; the questions the review could not
+decide are surfaced as `PRODUCT OWNER DECISION REQUIRED` in the report.
+
+**Engineering decisions taken in the fixes.**
+- **Work-Item-global steps (R1-03).** A governed job's loop step counts per job (checkpoints are per
+  job), while idempotency keys, step results and memory candidates are keyed per Work Item. The runtime
+  now adds a durable per-job base (`job ordinal × GOVERNED_STEP_SPAN`, span 100; the loop allows 32
+  turns) before anything keyed per Work Item is written. The first job's base is 0, so every existing
+  key is unchanged; a resumed run of the same job presents the same keys (D-C2-07 unchanged); a new
+  job of a re-released / reworked Work Item can no longer collide with an earlier job's keys (a false
+  `IDEMPOTENCY_CONFLICT` that counted toward the authority pause, or a silent stale REPLAY).
+- **Governed reconciliation (R1-04).** The C1 job-level `resolveReconciliation` stays the operator
+  decision for plain C1 work. For governed (Employee-attributed) work it is Founder authority through
+  the shared Founder-authority write (fail closed, `FOUNDER_SURFACE_UNAVAILABLE`, until C5) and is
+  refused while the Work Item still has an uncertain tool invocation (`resolveToolInvocation` first).
+- **C2 wait re-check at the settle (R1-06).** As C3 already did for its waits, the WAIT settle of
+  `AWAITING_APPROVAL` / `BUDGET_EXHAUSTED` re-checks its durable predicate in the same transaction (no
+  pending tool approval left; a cap on the Work Item's budget chain changed since the run began) and
+  wakes the job if the wait no longer holds. A spurious wake costs nothing: every gate re-runs.
+- **Grants wake capability gaps (R1-07)**; **approval release honours dependencies (R1-05)**.
+- **Model-call accounting is contained (R1-09).** Post-call bookkeeping that fails holds the
+  reservation (`SETTLEMENT_FAILED`) and holds the deployment (`CONTRACT_VIOLATION`); every run settle
+  also holds any model-call reservation of that run still `RESERVED` (`RUN_ENDED_UNSETTLED`).
+- **In-process active runs are keyed by run (R1-08)**; a run whose claim was interrupted is fenced
+  before its job can be re-claimed; shutdown interrupts only claims this process still holds.
+- **Every attempt closure scores refusals (R1-10)**; a cancelled / superseded shadow item's refusals
+  are collected as critical failures; a closed attempt's unfinished Work Item is cancelled.
+- **Reassignment at the duty boundary (R1-11).** D-C3-24's rule ("Active duty carries into a changed
+  role only with a VALID target-role certification") also applies to `PAUSED` (which resumes straight
+  to ACTIVE; `PAUSED → RETRAINING` is an existing transition). `ON_LEAVE` has no RETRAINING transition:
+  until the Product Owner decides (P-01), a role change of an `ON_LEAVE` Employee without the target
+  certification is refused (fail closed; nothing new is invented).
+- **Retrieval eligibility before the LIMIT, rejection evidence kept (R1-12).** Memory and knowledge
+  each use two bounded term-matched pools: an ELIGIBLE pool (class within the ceiling, market-neutral
+  or the Work Item's market, review horizon not passed — decided in SQL before the LIMIT, so nothing
+  ineligible can crowd an eligible item out, D-C3-16 N4) and a separate REJECTION-EVIDENCE pool of
+  readable but ineligible items, which stay candidates so the manifest still records
+  `DATA_CLASS_ABOVE_CONTEXT` / `MARKET_MISMATCH` (D-C3-06); unreadable scopes are never candidates
+  (D-C3-04). Memories past their horizon take no pool slot and are marked STALE and recorded as
+  rejected. (A first version filtered the ineligible items out entirely; three C3 proofs caught the
+  lost rejection evidence, and the two-pool form replaced it.)
+- **Lower layers are data (R1-13)**: knowledge / memory / recent-result text is rendered with any
+  line that would open like a layer marker, item header or precedence line neutralized (same UTF-8
+  length, so budgets stay exact).
+- **Secret material (R1-01)**: the detector covers the formats the review found passing (hyphenated
+  provider keys, payment keys, fine-grained GitHub tokens, JWTs, OAuth tokens, `Bearer`, URL
+  credentials, JSON-quoted pairs, "password is …", Arabic) on NFKC / zero-width-folded text, in linear
+  time; results are scanned before they are bounded; claim fields are scanned; a secret-bearing tool
+  result is stored as a digest only; secret-bearing instructions never reach a provider.
+- **Tool arguments by own fields only (R1-02)**; proposal codes are length-bounded (K4); a FINAL
+  decision is checkpointed as FINAL and honoured on resume (B-F4); D4 retention uses the class at the
+  decision too (G-4); a malformed backup manifest keeps the stable error code (C-F5).
+- **Proof integrity (R1-14, R1-15).** Released migrations 0005 / 0006 are frozen by content; the test
+  runner requires a passing test in EVERY test file (a proof file emptied to its marker now fails); the
+  verifier pins every recorded mutation and the mutation machinery (`mutation-checks-pinned`); the
+  bootstrap workspace uses the vacuity-checked runner.
+
+**Independent re-review of the remediation.** Two fresh adversarial re-reviews of the remediation
+commit found defects that the first remediation itself introduced or left incomplete; each was fixed
+at its root with a proof and a mutation (`r1:mutation` 22 → 28):
+- **The widened secret detector (R1-01) was super-linear on crafted input and over-matched prose.**
+  Every pattern that can fail after reading a long run is now bounded (no adjacent unbounded
+  quantifiers; the Arabic separator is one bounded class), a scan reads at most
+  `SECRET_SCAN_MAX_CHARS` (16 384; every stored form is smaller), and the credential-keyword rules
+  require a credential-shaped value (an explicit separator, then one token containing a digit), so
+  ordinary support prose about passwords / keys / PINs in English and Arabic is not refused (see the final round below for the remaining trade-off). HTTP Basic
+  credentials are detected. Step results get the credential-named-key guard the tool invocation
+  record already had. A checkpointed FINAL decision is honoured before input validation.
+- **R1-12 was incomplete for knowledge and for conflict-held memory**: knowledge eligibility includes
+  the review horizon, memory eligibility excludes memories held in an OPEN conflict; both stay
+  rejection evidence (STALE / CONFLICT_UNRESOLVED) in the separate bounded pool.
+- **R1-13 neutralization** also recognises Unicode spacing / invisible prefixes, VT / FF / NEL line
+  starts, full-width brackets / letters and any decimal digit, only for the real item-header grammar,
+  still length-preserving and linear.
+- **R1-06** also wakes when a tool approval of the Work Item was decided during the run (a stale
+  PENDING request of an earlier job no longer masks it).
+- **R1-03** refuses a job whose step range would pass the durable bound (`STEP_RANGE_EXHAUSTED`,
+  before anything executes). **R1-09**: deployment health is recorded best effort after the money
+  write, and local store contention is never recorded as a provider `CONTRACT_VIOLATION`.
+- **R1-15**: the verifier also refuses a mutation script that can exit successfully before running
+  its mutations or reports PASS before its loop.
+**Final re-review round.** A last pair of re-reviews of `fe45500` found one more MAJOR introduced by
+that commit — moving conflict-held memories into the shared rejection-evidence pool let 300+ other
+rejected memories crowd the conflict pair out, so IMPORTANT work could run without `CONFLICT_HOLD` —
+fixed with a dedicated bounded pool for conflict-held memories (proof + mutation
+`r1-12-conflict-pool-dropped`), and a test-only flake (a proof read "the last job" by a timestamp the
+manual clock makes equal; it now reads the job it claimed). MINOR follow-ups fixed: a provider fault
+is decided from the provider's answer before any store write (never inferred from a local error);
+quantities ("12-character") and look-alike words (Secretary, Passwords) are not credentials, while
+`_`-joined credential names still are; HTTP Basic requires base64 shape; invisible-character folding
+and marker neutralization cover every Unicode format character; the verifier refuses any exit before a
+mutation loop. **Accepted trade-off (recorded, not a Product decision):** credential-keyword values
+must carry a digit, so a digit-free password written in prose (`password: hunter-two-horse`) is no
+longer caught by the text rules (structured results are still guarded by credential-named keys).
+**Confirmation round.** Re-reviews of `805a1f5` found one more MAJOR of the same class: the conflict pool
+admitted conflicted memories of any class / market, which the planner rejects before it considers
+conflicts, so a flood of them could still displace the in-class pair. The conflict pool now holds only
+conflicts that can hold THIS work (class within the ceiling, market-eligible); ineligible conflicted
+memories remain rejection evidence (proof + mutation `r1-12-conflict-pool-unrestricted`). MINOR:
+the item-header neutralization lookahead is bounded and cheap again; a quantity exclusion needs a word
+after the number (`1234-abcd-9876` is still a credential); usage over the enforced bounds counts as a
+provider contract violation.
+**Last confirmation round.** Re-reviews of `621d107` found no BLOCKER / MAJOR. One MINOR was closed:
+the over-bounds attribution line had no committed proof (only the older out-of-range proof, which a
+different path catches); it now has one (one token over the step bound plus contention at the settle →
+the deployment is held on the first attempt) and mutation `r1-09-over-bounds-usage-not-blamed`.
+
+**Technical Lead exact-head review (MAJOR follow-up under R1-09; engineering, not a Product
+decision).** At `0ac427e` a provider usage contract violation was contained non-durably: the money
+settlement and the deployment `CONTRACT_VIOLATION` hold were separate transactions, the second best
+effort, so a failed health write left a known violator `ACTIVE` and routable. Decision: **a known
+provider fault and its money record commit in one fenced transaction.** A model-call settle whose usage
+is outside the enforced bounds contains the reservation's own deployment inside the settle transaction;
+`containProviderFault` holds the money and contains the deployment atomically (unusable usage,
+malformed answer, containment after a failed settle). Healthy-answer health stays best effort, so local
+contention never holds or blames a healthy provider. When the store refuses even the containment,
+nothing durable names the provider; the process keeps the deployment out of its routing and writes the
+containment at the next route boundary (the money is held by the existing hold / backstop / recovery).
+A failed call reporting over-bounds usage is a contract violation (no same-route retry). No new table,
+migration or routing mechanism. Proofs: 4 runtime + 2 storage; mutations
+`r1-09-provider-fault-hold-not-durable`, `r1-09-malformed-answer-hold-split`,
+`r1-09-uncontained-violator-routable`; two R1-09 mutations re-targeted to the moved containment method.
+The focused re-review of that fix (`3aa458d`) found one more MAJOR on the same boundary: a charged
+failure the provider classified `CONTRACT_VIOLATION` (within-bounds usage) settled without the
+containment. The runtime's provider-fault verdict is now carried into the settle transaction
+(`settleReservation(…, providerFault)`), so such a failure settles and contains together (proof +
+mutation `r1-09-charged-violation-verdict-dropped`). An over-bounds charged failure is counted once
+toward the circuit, and the in-process routing exclusion has its own proof (mutation
+`r1-09-uncontained-filter-removed`). A second focused re-review (`59449c2`) found no BLOCKER / MAJOR.
+Its MINORs were fixed:
+- The adapter's answer is snapshotted once at the adapter boundary. An answer object whose fields
+  cannot be read is the provider's contract violation, never an escaped error that retries a paid
+  route.
+- Each unusable-usage branch has its own proof and single-branch mutation. A failed call with
+  unusable usage holds its money as `USAGE_UNUSABLE`.
+
+**Closure-cycle rule (Product / Technical Lead).** Once an exact-head full validation has passed (`npm
+ci`, `npm run ci`, C1/C2/C3 acceptances, `git diff --check`), the final focused adversarial re-review
+decides the outcome:
+- A BLOCKER or MAJOR is fixed, the gate is invalidated, and validation is re-run.
+- A MINOR is recorded as a residual, with no code change and no new full validation in this cycle.
+
+R1 closure requires zero unresolved BLOCKER and zero unresolved MAJOR.
+
+The final re-review of `b0ac2b7` reproduced one MAJOR. The answer snapshot copied the usage object by
+reference, so a shifting getter plus one refused write left a violator routable and paid again. The
+usage values are now snapshotted once at the adapter boundary (proof + mutation
+`r1-09-usage-snapshot-shallow`), and the gate was re-run. Its MINORs are residuals (report N-ADAPTER):
+an unguarded read of a thrown error's own getters, and loss on crash of an in-process exclusion.
+
+The final re-review of `8064fc9` reproduced one more MAJOR with the same root cause, on the thrown-failure
+path: a charged `ProviderError`'s usage object was read live twice. The thrown failure's usage is now
+snapshotted to values by the same single, guarded read (an unreadable failure object is a contract
+violation). The guard also closes the thrown-error-getter residual. Proof + mutation
+`r1-09-thrown-usage-snapshot-shallow`; the gate was re-run.
+
+The final re-review of `b309b11` reproduced one more MAJOR, predating R1: `classifyProviderError` read
+a thrown failure's class twice, validating the first read and using the second. A shifting getter
+could therefore index an `Object.prototype` member of the dispositions table and release
+possibly-billed money. Decision: **every field of a provider's answer or thrown failure is read exactly
+once, and the value validated is the value used.** The class is read once and only a listed class is
+returned (proof + mutation `r1-09-failure-class-read-twice`).
+
+**Provider boundary (Technical Lead direction, engineering decision).** The repeated R1-09 findings are
+one defect family, so the fix is architectural: `packages/runtime/src/c2/provider-boundary.ts` is the
+only code that reads a provider's answer or thrown failure. It reads every provider-controlled field
+exactly once, inside a guard, validates the values, and returns a frozen snapshot of plain values
+(answered, text, listed failure class, usage state and values, provider-fault verdict). Money, retry,
+health and containment decisions use only the snapshot. Failure classes are validated by set
+membership, and dispositions are looked up by own key only (`failureDisposition`, also used by
+storage). One centralized invariant proof, with hostile Proxies, and three boundary mutations protect
+it. Two mutations of the removed per-path snapshot code were retired; the boundary invariant covers
+them.
+
+The boundary sweep found one MAJOR: the adapter race compared a provider's raw value with the
+timeout strings. Runtime-control outcomes are now module-private `unique symbol` markers, so no
+provider value can equal them (mutation `r1-09-control-marker-forgeable`).
+
+**Retry after a charged attempt (Technical Lead decision, MAJOR).** The retry contract allows a
+same-deployment retry only for transient failures that were not billed. The runtime keyed the retry on
+the failure class alone, so a TRANSIENT failure that reported usage was settled `FAILED_CHARGED` and
+then retried on the same deployment.
+
+Decision: the observed accounting of the specific attempt constrains retry eligibility. `#account`
+returns `UNBILLED` (released), `CHARGED` (settled `FAILED_CHARGED`) or `HELD` (held for
+reconciliation), and only an `UNBILLED` attempt may be retried on the same deployment. Fallback
+policy and the failure taxonomy are unchanged. Proof covers both sides; mutation
+`r1-09-charged-attempt-retried`.
+
+**Documentation note (R1 B-F6).** D-C2-07's first bullet list says an orphaned NONE / IDEMPOTENT tool
+intent's reservation "is released". D-C2-12 (MAJOR, "interrupted tool intents released money that may
+have been spent") amended that to "charged (`FAILED_CHARGED`), never released", and the code follows
+D-C2-12. D-C2-07 is read with that amendment; it is not rewritten here.
+
+**State.** R1 is a closure candidate awaiting Technical Lead exact-head review; it is **not closed**.
+C4 is not started.

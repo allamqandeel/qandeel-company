@@ -11,13 +11,14 @@
  * risk ladder, approvals, egress and budgets are read inside the same transaction that records the
  * intent or the reservation.
  */
-import { QandeelError, canonicalJson, isQandeelError, newId, sha256Hex, type Id, type JsonObject, type Timestamp } from '@qandeel-company/domain';
+import { QandeelError, canonicalJson, hasSecretNamedKey, isQandeelError, newId, sha256Hex, type Id, type JsonObject, type Timestamp } from '@qandeel-company/domain';
+import { containsSecretMaterial } from '@qandeel-company/mind';
 import {
   AUTO_PAUSE_DENIALS_PER_RUN,
   CONTAINMENT_SIGNALS,
   CIRCUIT_OPEN_MS,
   CIRCUIT_THRESHOLD,
-  FAILURE_DISPOSITIONS,
+  failureDisposition,
   addMoney,
   approvalFingerprint,
   approvalUsable,
@@ -52,6 +53,7 @@ import {
   releaseReservationTx,
   setEmployeeState,
   settleReservationTx,
+  wakeWorkItemJob,
   type SettleUsage,
 } from './governance-core.js';
 import { mapApproval, mapGrant, mapReservation, mapToolAction, mapToolInvocation, type BudgetRecord, type ReservationRecord, type ToolInvocationRecord } from './governance-records.js';
@@ -75,11 +77,25 @@ export interface GovernedRunContext {
   readonly dataClass: DataClass;
   /** ACTIVE duty, or constrained Academy / shadow execution by a non-ACTIVE Employee (C3, Stage 6 §11). */
   readonly executionMode: 'ACTIVE' | 'ACADEMY_ATTEMPT' | 'SHADOW_WORK';
+  /**
+   * R1-03: the first Work-Item-global step of this job. A processor's loop step counts per job (its
+   * checkpoints are per job), but idempotency keys, step results and memory candidates are keyed per
+   * Work Item. The runtime adds this durable base (job ordinal × GOVERNED_STEP_SPAN) so a re-released
+   * Work Item's new job can never collide with — or silently replay — an earlier job's actions, while a
+   * resumed run of the SAME job still presents the same keys. The first job's base is 0.
+   */
+  readonly stepBase: number;
 }
+
+/** Steps one governed job may use (the employee loop allows at most 32 turns). */
+export const GOVERNED_STEP_SPAN = 100;
+
+/** The durable step bound (migration 0005 CHECKs, the Tool Executor's limit). */
+export const MAX_GOVERNED_STEP = 100_000;
 
 export type BeginResult =
   | { readonly ok: true; readonly context: GovernedRunContext }
-  | { readonly ok: false; readonly code: 'EMPLOYEE_NOT_ELIGIBLE' | 'NOT_EMPLOYEE_OWNED' | 'CAPABILITY_GAP_CANCELLED'; readonly state: string | null }
+  | { readonly ok: false; readonly code: 'EMPLOYEE_NOT_ELIGIBLE' | 'NOT_EMPLOYEE_OWNED' | 'CAPABILITY_GAP_CANCELLED' | 'STEP_RANGE_EXHAUSTED'; readonly state: string | null }
   /** C3: the owning Employee does not meet the Work Item's capability requirements (durable gap, work parked). */
   | { readonly ok: false; readonly code: 'CAPABILITY_GAP'; readonly state: string | null; readonly gapId: Id };
 
@@ -115,6 +131,14 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
     }
     return { ok: false, code: 'CAPABILITY_GAP', state: e.state, gapId: gate.gapId };
   }
+  // R1-03: this job's Work-Item-global step range (insertion order of the item's jobs is durable and
+  // immutable — jobs are never deleted). A range past the durable step bound (0..100000) is refused
+  // with a typed code before anything executes, never mid-run after an effect.
+  const stepBase = GOVERNED_STEP_SPAN * Number(ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM queue_jobs WHERE work_item_id = ? AND rowid < (SELECT rowid FROM queue_jobs WHERE id = ?)', item.id, fence.jobId)?.n ?? 0);
+  if (stepBase + GOVERNED_STEP_SPAN - 1 > MAX_GOVERNED_STEP) {
+    denyAudit(ctx, fence.runId, 'run.not_governed', 'STEP_RANGE_EXHAUSTED', { workItemId: item.id });
+    return { ok: false, code: 'STEP_RANGE_EXHAUSTED', state: e.state };
+  }
   if (!ctx.db.get('SELECT 1 AS ok FROM run_attributions WHERE run_id = ?', fence.runId)) {
     ctx.db.run('INSERT INTO run_attributions (run_id, work_item_id, employee_id, department_id, created_at) VALUES (?, ?, ?, ?, ?)', fence.runId, item.id, e.id, e.departmentId, ts(ctx));
     appendEvent(ctx, 'run.attributed', 'run', fence.runId, { correlationId: item.correlationId }, { employeeId: e.id, departmentId: e.departmentId, workItemId: item.id });
@@ -130,6 +154,7 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
     cognitiveProfile: Object.freeze({ ...assertCognitiveProfile(e.cognitiveProfile) }),
     dataClass: workItemDataClass(item.processorInput),
     executionMode: academyMode ?? 'ACTIVE',
+    stepBase,
   });
   return { ok: true, context };
 }
@@ -338,8 +363,13 @@ function ownReservation(ctx: StoreContext, fence: Fence, reservationId: Id): Res
   return r;
 }
 
-export function txSettle(ctx: StoreContext, fence: Fence, reservationId: Id, usage: SettleUsage): Id | null {
+export function txSettle(ctx: StoreContext, fence: Fence, reservationId: Id, usage: SettleUsage, providerFault = false): Id | null {
   const r = ownReservation(ctx, fence, reservationId);
+  // Usage outside the enforced bounds, or an answer the runtime already classified as the provider's
+  // contract violation, contains the deployment in THIS transaction: the money record and the
+  // containment commit together or not at all — a failed health write can never leave a known violator
+  // routable (R1-09, Technical Lead follow-up).
+  if (r.purpose === 'MODEL_CALL' && r.deploymentId !== null && (!usage.withinBounds || providerFault)) txDeploymentOutcome(ctx, fence, r.deploymentId, 'CONTRACT_VIOLATION');
   if (r.state === 'SETTLED' || r.state === 'RELEASED') {
     // Already reconciled by the Founder: the worker's actual usage is still recorded, as a discrepancy.
     appendAudit(ctx, 'budget.late_usage_discrepancy', 'reservation', r.id, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', 'ALREADY_FINAL', { state: r.state, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens });
@@ -348,6 +378,17 @@ export function txSettle(ctx: StoreContext, fence: Fence, reservationId: Id, usa
   const id = settleReservationTx(ctx, r, usage, SYSTEM_RUNTIME_REF);
   ctx.fault('settlement.beforeCommit');
   return id;
+}
+
+/**
+ * A provider answer that itself broke the contract, when its usage cannot be settled: the money is held
+ * for reconciliation (if still reserved) and the reservation's own deployment is contained, in one
+ * transaction (R1-09, Technical Lead follow-up). The deployment comes from the reservation, never the caller.
+ */
+export function txContainProviderFault(ctx: StoreContext, fence: Fence, reservationId: Id, reasonCode: string): void {
+  const r = ownReservation(ctx, fence, reservationId);
+  holdReservationTx(ctx, r, reasonCode);
+  if (r.purpose === 'MODEL_CALL' && r.deploymentId !== null) txDeploymentOutcome(ctx, fence, r.deploymentId, 'CONTRACT_VIOLATION');
 }
 
 export function txRelease(ctx: StoreContext, fence: Fence, reservationId: Id, reasonCode: string): void {
@@ -375,9 +416,10 @@ export function txDeploymentOutcome(ctx: StoreContext, fence: Fence, deploymentI
   };
   if (failure === null) {
     if (Number(d.circuit_failures) !== 0 || d.circuit_open_until !== null) ctx.db.run('UPDATE deployments SET circuit_failures = 0, circuit_open_until = NULL, version = version + 1, updated_at = ? WHERE id = ?', now, deploymentId);
+    ctx.fault('deploymentOutcome.beforeCommit');
     return;
   }
-  const disp = FAILURE_DISPOSITIONS[failure];
+  const disp = failureDisposition(failure);
   if (disp.circuit) {
     const failures = Number(d.circuit_failures) + 1;
     const open = failures >= CIRCUIT_THRESHOLD ? new Date(Date.parse(now) + CIRCUIT_OPEN_MS).toISOString() : d.circuit_open_until;
@@ -392,6 +434,7 @@ export function txDeploymentOutcome(ctx: StoreContext, fence: Fence, deploymentI
     ctx.db.run(`UPDATE deployments SET status = 'HOLD', hold_reason = ?, version = version + 1, updated_at = ? WHERE id = ?`, failure, now, deploymentId);
     history('deployment', deploymentId, 'HOLD', 'HOLD', failure);
   }
+  ctx.fault('deploymentOutcome.beforeCommit');
 }
 
 // --- Tools ----------------------------------------------------------------------------------------
@@ -547,7 +590,10 @@ export function txToolResult(ctx: StoreContext, fence: Fence, invocationId: Id, 
     let json: string;
     try {
       json = canonicalJson(outcome.result);
-      if (Buffer.byteLength(json, 'utf8') > 4096) json = canonicalJson({ truncated: true, sha256: sha256Hex(json) });
+      // Secret material in a driver's result never enters ordinary SQLite state (Stage 12 §23, Stage 14;
+      // R1-01): the invocation keeps only a digest, exactly as the step result already did.
+      if (hasSecretNamedKey(outcome.result) || containsSecretMaterial(json)) json = canonicalJson({ withheld: 'SECRET_MATERIAL', sha256: sha256Hex(json) });
+      else if (Buffer.byteLength(json, 'utf8') > 4096) json = canonicalJson({ truncated: true, sha256: sha256Hex(json) });
     } catch {
       json = canonicalJson({ invalid: true });
     }
@@ -572,6 +618,49 @@ export function txToolResult(ctx: StoreContext, fence: Fence, invocationId: Id, 
   appendEvent(ctx, 'run.tool_invocation', 'run', fence.runId, { correlationId: getWorkItemRow(ctx, inv.workItemId).correlationId }, { invocationId, state });
   appendAudit(ctx, 'tool.result', 'tool_invocation', invocationId, { actorRef: SYSTEM_RUNTIME_REF }, 'OK', outcome.ok ? null : outcome.code.slice(0, 64), { state, runId: fence.runId });
   return state;
+}
+
+/**
+ * Backstop at the run's settle (R1-09): a model call's reservation must never outlive its run as
+ * RESERVED. The model runtime settles, holds or releases every reservation it makes; if its bookkeeping
+ * could not (the call may have been billed), the reservation is held for reconciliation here, in the
+ * run's settle transaction — not only at the next startup recovery.
+ */
+export function txHoldUnsettledModelCalls(ctx: StoreContext, runId: Id): number {
+  const open = ctx.db.all(`SELECT * FROM budget_reservations WHERE run_id = ? AND purpose = 'MODEL_CALL' AND state = 'RESERVED'`, runId).map(mapReservation);
+  for (const r of open) holdReservationTx(ctx, r, 'RUN_ENDED_UNSETTLED');
+  return open.length;
+}
+
+// --- WAIT re-check (lost-wake window) ------------------------------------------------------------------
+
+/**
+ * Closes the lost-wake window of the C2 waits (R1-06, D-C1-23), as the C3 waits already do: the run
+ * learns APPROVAL_REQUIRED / BUDGET_EXHAUSTED in one transaction but parks only when it settles. A
+ * Founder decision or cap raise committed in between found the job still CLAIMED, so its targeted wake
+ * did nothing. The WAIT settle therefore re-checks, in its own transaction, whether the wait still
+ * holds, and wakes the job at once if it does not:
+ * - AWAITING_APPROVAL holds while this Work Item still has a PENDING tool approval;
+ * - BUDGET_EXHAUSTED holds unless a cap on this Work Item's budget chain changed since the run began
+ *   (exactly the event whose targeted wake could have been missed).
+ * A spurious wake is harmless: the next run re-checks every gate before any spend.
+ */
+export function txRecheckGovernedWait(ctx: StoreContext, workItemId: Id, runId: Id, reason: 'AWAITING_APPROVAL' | 'BUDGET_EXHAUSTED'): void {
+  const started = ctx.db.get<{ s: string }>('SELECT started_at AS s FROM runs WHERE id = ?', runId)?.s;
+  if (reason === 'AWAITING_APPROVAL') {
+    // The wait no longer holds when no tool approval of this Work Item is pending, OR when one was
+    // decided while this run was in flight (a stale PENDING request from an earlier job must not mask
+    // this run's decided approval — R1 re-review). A spurious wake costs nothing: every gate re-runs.
+    const pending = ctx.db.get(`SELECT 1 AS x FROM approvals WHERE work_item_id = ? AND action <> 'work_item.execute' AND state = 'PENDING' LIMIT 1`, workItemId);
+    const decidedDuringRun = started !== undefined && ctx.db.get(`SELECT 1 AS x FROM approvals WHERE work_item_id = ? AND action <> 'work_item.execute' AND decided_at IS NOT NULL AND decided_at >= ? LIMIT 1`, workItemId, started);
+    if (!pending || decidedDuringRun) wakeWorkItemJob(ctx, workItemId, ['AWAITING_APPROVAL'], 'approval.rechecked');
+    return;
+  }
+  const wi = budgetFor(ctx, 'WORK_ITEM', workItemId);
+  if (started === undefined || !wi) return;
+  const chain = budgetChain(ctx, wi.id).map((b) => b.id);
+  const raised = ctx.db.get(`SELECT 1 AS x FROM budget_history WHERE change_kind = 'CAP_CHANGED' AND occurred_at >= ? AND budget_id IN (SELECT value FROM json_each(?)) LIMIT 1`, started, JSON.stringify(chain));
+  if (raised) wakeWorkItemJob(ctx, workItemId, ['BUDGET_EXHAUSTED'], 'budget.rechecked');
 }
 
 // --- Recovery ---------------------------------------------------------------------------------------

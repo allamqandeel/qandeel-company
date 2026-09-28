@@ -49,8 +49,11 @@ import type { MemoryCandidateRecord } from './mind-records.js';
 import {
   txAuthorizeModelCall,
   txBeginGovernedRun,
+  txContainProviderFault,
   txDeploymentOutcome,
   txHold,
+  txHoldUnsettledModelCalls,
+  txRecheckGovernedWait,
   txRecoverGovernedOrphans,
   txRelease,
   txReserve,
@@ -181,12 +184,20 @@ export function checkpoint(store: CompanyStore, fence: Fence, kind: string, stat
 export function settle(store: CompanyStore, fence: Fence, result: ProcessorResult, options: SettleOptions): SettleOutcome {
   return fenced(store, 'settle', fence, (ctx) => {
     const out = txSettle(ctx, fence, result, options);
+    // R1-09 backstop: no model-call reservation outlives its run as RESERVED (possibly billed → held).
+    txHoldUnsettledModelCalls(ctx, fence.runId);
     // C3: a capability gap may have closed while the run was settling — re-check in the same transaction.
     // Likewise a memory / skill conflict resolved between the held assembly and this park.
     if (result.type === 'WAIT' && ['CAPABILITY_GAP', 'MEMORY_CONFLICT_REVIEW', 'SKILL_CONFLICT_REVIEW'].includes(result.reasonCode)) {
       const wi = ctx.db.get<{ w: string }>('SELECT work_item_id AS w FROM queue_jobs WHERE id = ?', fence.jobId)?.w as Id | undefined;
       if (wi && result.reasonCode === 'CAPABILITY_GAP') txRecheckCapabilityWait(ctx, wi);
       else if (wi) txRecheckContextHold(ctx, wi, result.reasonCode as 'MEMORY_CONFLICT_REVIEW' | 'SKILL_CONFLICT_REVIEW');
+    }
+    // C2 waits have the same window (R1-06): an approval decided or a cap raised while the job was
+    // still claimed found no WAITING job to wake — re-check in this same transaction.
+    if (result.type === 'WAIT' && (result.reasonCode === 'AWAITING_APPROVAL' || result.reasonCode === 'BUDGET_EXHAUSTED')) {
+      const wi = ctx.db.get<{ w: string }>('SELECT work_item_id AS w FROM queue_jobs WHERE id = ?', fence.jobId)?.w as Id | undefined;
+      if (wi) txRecheckGovernedWait(ctx, wi, fence.runId, result.reasonCode);
     }
     return out;
   });
@@ -249,6 +260,7 @@ export function abandonStaleInstances(store: CompanyStore, supervisor: Superviso
 // --- C2 governed execution writes (job fence mandatory; runtime only) -----------------------------
 
 export type { BeginResult, GovernedRecoverySummary, GovernedRunContext, ReserveInput, ReserveResult, ToolDriverOutcome, ToolIntent, ToolIntentInput, AuthorizeResult } from './governed-writes.js';
+export { GOVERNED_STEP_SPAN } from './governed-writes.js';
 export type { SettleUsage } from './governance-core.js';
 
 /** Binds the run to its eligible Employee (and Department). */
@@ -267,8 +279,12 @@ export function reserveBudget(store: CompanyStore, fence: Fence, input: ReserveI
   return r;
 }
 
-export function settleReservation(store: CompanyStore, fence: Fence, reservationId: Id, usage: SettleUsage): Id | null {
-  return write(store, 'settle reservation', (ctx) => txSettleReservation(ctx, fence, reservationId, usage));
+/**
+ * Settles actual usage. `providerFault` (the runtime's verdict from the provider's own answer) contains
+ * the reservation's deployment in the same transaction; usage outside the bounds always does (R1-09).
+ */
+export function settleReservation(store: CompanyStore, fence: Fence, reservationId: Id, usage: SettleUsage, providerFault = false): Id | null {
+  return write(store, 'settle reservation', (ctx) => txSettleReservation(ctx, fence, reservationId, usage, providerFault));
 }
 
 export function releaseReservation(store: CompanyStore, fence: Fence, reservationId: Id, reasonCode: string): void {
@@ -277,6 +293,11 @@ export function releaseReservation(store: CompanyStore, fence: Fence, reservatio
 
 export function holdReservation(store: CompanyStore, fence: Fence, reservationId: Id, reasonCode: string): void {
   write(store, 'hold reservation', (ctx) => txHold(ctx, fence, reservationId, reasonCode));
+}
+
+/** Holds the money of a provider answer that broke the contract and contains its deployment, atomically (R1-09). */
+export function containProviderFault(store: CompanyStore, fence: Fence, reservationId: Id, reasonCode: string): void {
+  write(store, 'contain provider fault', (ctx) => txContainProviderFault(ctx, fence, reservationId, reasonCode));
 }
 
 export function recordDeploymentOutcome(store: CompanyStore, fence: Fence, deploymentId: Id, failure: ProviderFailureClass | null): void {

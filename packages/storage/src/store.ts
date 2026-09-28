@@ -5,6 +5,7 @@
  */
 import { QandeelError, assertCode, isId, isQandeelError, systemClock, type BackoffPolicy, type Clock, type Id, type Timestamp } from '@qandeel-company/domain';
 
+import { isGovernedJob, resolveGovernedReconciliation } from './governance.js';
 import { appendAudit, getJobRow, getWorkItemRow, mapCheckpoint, mapJob, mapRun, mapWorkItem, ts, type FaultHook, type StoreContext } from './internal.js';
 import { CURRENT_SCHEMA_VERSION, appliedMigrations, loadReleasedMigrations, migrate, userVersion, type Migration, type MigrationFaultHook, type MigrationReport } from './migrations.js';
 import {
@@ -269,6 +270,11 @@ export class CompanyStore {
   }
 
   resolveReconciliation(jobId: Id, decision: ReconciliationDecision, reasonCode: string, actorRef?: string): SettleOutcome {
+    // Governed (Employee-attributed) work is reconciled only through Founder authority, after its
+    // uncertain tool invocations (R1-04); plain C1 work keeps the C1 operator decision.
+    if (this.#read((ctx) => isGovernedJob(ctx, jobId))) {
+      return resolveGovernedReconciliation(this, jobId, actorRef ?? '', (ctx, trace) => txResolveReconciliation(ctx, jobId, decision, reasonCode, trace));
+    }
     return this.#write('resolve reconciliation', (ctx) => txResolveReconciliation(ctx, jobId, decision, reasonCode, { actorRef: actorRef ?? null }));
   }
 

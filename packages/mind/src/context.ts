@@ -309,6 +309,30 @@ export function itemHeader(c: ContextCandidate): string {
 }
 
 /**
+ * Lower-layer text is data, never structure (R1-13, D14-A.6): a line of knowledge, memory or a recent
+ * result that would open like a section marker (`[L1 …`), an item header (`(kind id vN`) or the
+ * precedence line is neutralized, so a lower layer can never impersonate a higher one in the rendered
+ * context. The substitution keeps the exact UTF-8 length (`[`→`{`, `(`→`{`, `:`→`-`), so every budget
+ * estimate stays exact.
+ */
+export function neutralizeLayerMarkers(text: string): string {
+  // A "line start" is a real line start or a vertical tab / form feed / NEL; the prefix may hold any
+  // Unicode space or invisible formatting character (R1 re-review: NBSP, zero-width, BOM, NEL, VT bypasses).
+  const start = '(?<=^|[\\u000b\\u000c\\u0085])';
+  // Non-breaking spacing / invisible characters only (never a line break), and bounded: linear time.
+  const pad = '[\\t\\p{Zs}\\p{Cf}\\u034f\\u180e\\u2800\\u3164]{0,64}';
+  const kinds = ITEM_KINDS.map((k) => k.toLowerCase()).join('|');
+  const swap = (c: string): string => ({ '[': '{', '［': '｛', '(': '{', '（': '｛', ':': '-', '：': '－' })[c] ?? c;
+  return text
+    // [L1 … / ［Ｌ１ … / [L١ … (any decimal digit, full-width forms)
+    .replace(new RegExp(`${start}(${pad})([\\[［])(?=${pad}[LlＬｌ]${pad}\\p{Nd})`, 'gmu'), (_m, p: string, b: string) => `${p}${swap(b)}`)
+    // (memory 1234 v1) — only the real item-header grammar: a known kind, an id, a version
+    .replace(new RegExp(`${start}(${pad})([(（])(?=(?:${kinds})[\\t\\p{Zs}\\p{Cf}]{1,8}[^\\s)）]{1,128}[\\t\\p{Zs}\\p{Cf}]{1,8}v\\p{Nd})`, 'gimu'), (_m, p: string, b: string) => `${p}${swap(b)}`)
+    // Precedence: …
+    .replace(new RegExp(`${start}(${pad}precedence${pad})([:：])`, 'gimu'), (_m, p: string, c: string) => `${p}${swap(c)}`);
+}
+
+/**
  * Renders the selected items. The stable prefix (preamble, canonical truth, skills) comes first as
  * system messages; the Work Item instructions stay one verbatim user message; knowledge and memory
  * follow as labelled reference context; recent results are tool messages. No provider cache saving is
@@ -316,10 +340,12 @@ export function itemHeader(c: ContextCandidate): string {
  */
 export function renderContext(items: readonly RenderItem[]): RenderedContext {
   const inLayer = (l: ContextLayer): RenderItem[] => items.filter((i) => i.candidate.layer === l);
+  // Only L1–L3 are governed / approved text; everything below is neutralized data.
+  const asData = (l: ContextLayer, text: string): string => (l === 'KNOWLEDGE' || l === 'MEMORY' || l === 'RECENT' ? neutralizeLayerMarkers(text) : text);
   const section = (l: ContextLayer): string | null => {
     const xs = inLayer(l);
     if (xs.length === 0) return null;
-    return [SECTION[l], ...xs.map((i) => `${itemHeader(i.candidate)}\n${i.text}`)].join('\n');
+    return [SECTION[l], ...xs.map((i) => `${itemHeader(i.candidate)}\n${asData(l, i.text)}`)].join('\n');
   };
   const prefixText = [section('AUTHORITY'), section('SKILL')].filter((s): s is string => s !== null).join('\n\n');
   const messages: ProviderMessage[] = [];
@@ -328,7 +354,7 @@ export function renderContext(items: readonly RenderItem[]): RenderedContext {
   const reference = [section('KNOWLEDGE'), section('MEMORY')].filter((s): s is string => s !== null).join('\n\n');
   if (reference) messages.push({ role: 'system', content: reference });
   // Recent results are rendered in the order they happened (keys carry the zero-padded step).
-  for (const r of [...inLayer('RECENT')].sort((a, b) => (a.candidate.key < b.candidate.key ? -1 : a.candidate.key > b.candidate.key ? 1 : 0))) messages.push({ role: 'tool', content: r.text });
+  for (const r of [...inLayer('RECENT')].sort((a, b) => (a.candidate.key < b.candidate.key ? -1 : a.candidate.key > b.candidate.key ? 1 : 0))) messages.push({ role: 'tool', content: asData('RECENT', r.text) });
   return { messages, estimatedTokens: utf8TokenUpperBound(messages), prefixText };
 }
 
