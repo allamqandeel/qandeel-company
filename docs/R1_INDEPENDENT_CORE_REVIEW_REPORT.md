@@ -194,7 +194,9 @@ D-C2-12 (decision log note).
 
 ### 8.4 PRODUCT OWNER DECISION REQUIRED
 
-None of these is decided by R1. Each keeps the current fail-closed or bounded behaviour until decided.
+P-01 through P-06 remain open and keep their current fail-closed or bounded behaviour until decided.
+P-07 was decided by the Product Owner / Technical Lead after the charged-retry re-sweep; its job-scope
+implementation is deferred and non-blocking for R1, but is required before paid Pilot operation.
 
 | ID | Question | Current behaviour | Blocks R1? |
 |---|---|---|---|
@@ -205,7 +207,7 @@ None of these is decided by R1. Each keeps the current fail-closed or bounded be
 | P-05 | Does an IMPORTANT memory-conflict hold also gate a pending tool execution (not only inference)? | Only inference is gated; tool execution passes the full authority path | **Non-blocking** — authority is still enforced at the action boundary. |
 | P-06 | Are unsalted content hashes in local operational records (artifact SHA-256 in audit; context-manifest item hashes in CLI output) content-free under Rule A? | Kept; no telemetry leaves the machine (no APP-OPS path, C7) | **Non-blocking** for R1; must be decided before C7 / any telemetry export. |
 
-| P-07 | Does the Technical Lead rule "a charged attempt is never retried on the same deployment" apply at **job** scope as well as call scope? Today, after a charged, exhausted call returns UNAVAILABLE, the C1 job retry (C2 design) may start a new run on the same deployment (N-RETRY M1). | Per-call rule enforced; the job-level retry is unchanged; the money is truthful (every charge settled, nothing hidden) | **Recorded as MINOR by the re-sweep; the Technical Lead decides.** Not changed in this cycle. |
+| P-07 | **DECIDED (Product Owner / Technical Lead, 2026-09-28):** "no same-deployment retry after a charged attempt" applies across the same logical job / Work Item, not only within one call. | R1 enforces the per-call rule; job-scope enforcement is deferred to the next appropriate implementation stage. Money remains truthful meanwhile. | **Non-blocking for R1; implementation required before any paid Pilot operation.** |
 
 Carried from C3 (already recorded as open, D-C3-23 #2 / #3): calibration at recertification of an ACTIVE
 designated-role Employee; whether post-EXTEND evidence must come from post-extension work. Non-blocking.
