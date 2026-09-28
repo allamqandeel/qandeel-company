@@ -316,10 +316,20 @@ export function itemHeader(c: ContextCandidate): string {
  * estimate stays exact.
  */
 export function neutralizeLayerMarkers(text: string): string {
+  // A "line start" is a real line start or a vertical tab / form feed / NEL; the prefix may hold any
+  // Unicode space or invisible formatting character (R1 re-review: NBSP, zero-width, BOM, NEL, VT bypasses).
+  const start = '(?<=^|[\\u000b\\u000c\\u0085])';
+  // Non-breaking spacing / invisible characters only (never a line break), and bounded: linear time.
+  const pad = '[\\t \\u00a0\\u1680\\u2000-\\u200f\\u202f\\u205f\\u3000\\u2060-\\u2064\\ufeff]{0,64}';
+  const kinds = ITEM_KINDS.map((k) => k.toLowerCase()).join('|');
+  const swap = (c: string): string => ({ '[': '{', '［': '｛', '(': '{', '（': '｛', ':': '-', '：': '－' })[c] ?? c;
   return text
-    .replace(/^([ \t]*)\[(?=[ \t]*L[ \t]*\d)/gimu, '$1{')
-    .replace(/^([ \t]*)\((?=[a-z_]+ [^\s)]+ v\d)/gimu, '$1{')
-    .replace(/^([ \t]*precedence[ \t]*):/gimu, '$1-');
+    // [L1 … / ［Ｌ１ … / [L١ … (any decimal digit, full-width forms)
+    .replace(new RegExp(`${start}(${pad})([\\[［])(?=${pad}[LlＬｌ]${pad}\\p{Nd})`, 'gmu'), (_m, p: string, b: string) => `${p}${swap(b)}`)
+    // (memory 1234 v1) — only the real item-header grammar: a known kind, an id, a version
+    .replace(new RegExp(`${start}(${pad})([(（])(?=(?:${kinds})[ \\t]+[^\\s)）]+[ \\t]+v\\p{Nd})`, 'gimu'), (_m, p: string, b: string) => `${p}${swap(b)}`)
+    // Precedence: …
+    .replace(new RegExp(`${start}(${pad}precedence${pad})([:：])`, 'gimu'), (_m, p: string, c: string) => `${p}${swap(c)}`);
 }
 
 /**

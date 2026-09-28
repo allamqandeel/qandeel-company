@@ -105,28 +105,39 @@ export const SECRET_LITERALS: readonly RegExp[] = [
   /\bxox[abprs]-[A-Za-z0-9-]{10,}/,
   /\bAIza[0-9A-Za-z_-]{35}\b/,
   /\bya29\.[A-Za-z0-9_-]{20,}/,
+  // Every pattern below can FAIL after reading a long run, so each run is bounded ({…,N}) and no two
+  // unbounded quantifiers are adjacent: the scan is linear in the input (R1 re-review: catastrophic
+  // backtracking on long whitespace / token runs).
   // JSON Web Token (header.payload.signature, base64url).
-  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,
-  /\bbearer\s+[A-Za-z0-9._~+/=-]{16,}/i,
+  /\beyJ[A-Za-z0-9_-]{8,2048}\.[A-Za-z0-9_-]{8,4096}\.[A-Za-z0-9_-]{8,}/,
+  /\bbearer[ \t]{1,8}[A-Za-z0-9._~+/=-]{16,}/i,
+  // HTTP Basic credentials: base64 carrying a digit or base64 punctuation (not the English "basic …").
+  /\bbasic[ \t]{1,8}(?=[A-Za-z0-9+/]{0,512}[0-9+/=])[A-Za-z0-9+/]{12,512}={0,2}(?![A-Za-z0-9+/])/i,
   // Credentials inside a URL: scheme://user:password@host.
-  /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s@/]+@/i,
+  /\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s:/@]{1,256}:[^\s@/]{1,256}@/i,
   /\bAccountKey=[A-Za-z0-9+/=]{20,}/,
   // Credential-named key + VALUE. The value must be credential-shaped — one token containing a digit —
   // so ordinary prose about passwords / keys / tokens ("Reset the password: follow the runbook",
   // "Secretary: …", "سياسة كلمة المرور") is never refused (R1 re-review: false positives made legitimate
-  // work unrunnable). JSON quoting and `_`-prefixed names (aws_secret_access_key) are allowed; the
-  // keyword is found anywhere and only bounded / single-token parts follow — linear time.
-  /(?<![A-Za-z])(?:password|passwd|passphrase|secret|api[_ -]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret)[A-Za-z0-9_]{0,24}["']?\s*[:=]\s*["']?(?=[^\s"',}]*\d)[^\s"',}]{8,}/i,
-  /\b(?:token|bearer)["']?\s*[:=]\s*["']?(?=[^\s"',}]*\d)[^\s"',}]{12,}/i,
-  /\b(?:password|passwd|passphrase)\s+(?:is|was|=)\s+(?=\S*\d)\S{6,}/i,
-  /(?:كلمة\s*(?:المرور|السر)|الرقم\s*السري|مفتاح\s*(?:الواجهة|API))\s*(?:هي|هو)?\s*[:=]\s*(?=\S*\d)\S{6,}/iu,
+  // work unrunnable). JSON quoting and `_`-prefixed names (aws_secret_access_key) are allowed.
+  /(?<![A-Za-z])(?:password|passwd|passphrase|secret|api[_ -]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret)[A-Za-z0-9_]{0,24}["']?[ \t]{0,8}[:=][ \t]{0,8}["']?(?=[^\s"',}]{0,256}\d)[^\s"',}]{8,256}/i,
+  /\b(?:token|bearer)["']?[ \t]{0,8}[:=][ \t]{0,8}["']?(?=[^\s"',}]{0,256}\d)[^\s"',}]{12,256}/i,
+  /\b(?:password|passwd|passphrase)[ \t]{1,8}(?:is|was|=)[ \t]{1,8}(?=\S{0,256}\d)\S{6,256}/i,
+  // Arabic: the keyword, then ONE bounded separator run (spaces / ':' / '=' / هي / هو), then a token
+  // containing a digit.
+  /(?:كلمة[ \t]{0,4}(?:المرور|السر)|الرقم[ \t]{0,4}السري|مفتاح[ \t]{0,4}(?:الواجهة|API))(?:[ \t:=]|هي|هو){1,16}(?=\S{0,256}\d)\S{6,256}/iu,
 ];
+
+/** A scan never needs more than this much text (the stored forms are all smaller): bounded work per call. */
+export const SECRET_SCAN_MAX_CHARS = 16_384;
 
 // Zero-width and invisible formatting characters used to split a secret past a pattern.
 const INVISIBLE = /[\u00ad\u200b-\u200f\u2060-\u2064\ufeff]/g;
 
-export function containsSecretMaterial(s: string): boolean {
-  if (typeof s !== 'string' || s.length === 0) return false;
+export function containsSecretMaterial(input: string): boolean {
+  if (typeof input !== 'string' || input.length === 0) return false;
+  // Bounded work: callers that store more than this (e.g. an oversize tool result) store only a digest.
+  const s = input.length > SECRET_SCAN_MAX_CHARS ? input.slice(0, SECRET_SCAN_MAX_CHARS) : input;
   const folded = s.normalize('NFKC').replace(INVISIBLE, '');
   return SECRET_LITERALS.some((re) => re.test(s) || re.test(folded));
 }

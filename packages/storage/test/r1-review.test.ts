@@ -81,6 +81,56 @@ describe('R1-01: secret material never enters durable state', () => {
   });
 });
 
+describe('R1-01 (re-review): a step result gets the same credential-named-key guard as the tool record', () => {
+  test('a structured result with credential-named keys is withheld from the step results (and so from later context)', () => {
+    withSeed((h, s) => {
+      const c = claimFor(h, workItem(h, s, s.employee)).claim;
+      recordStepResult(h.store, c.fence, 0, 'TOOL_RESULT', JSON.stringify({ tool: 'crm', action: 'lookup', result: { authorization: j('Basic ', 'dXNlcjpodW50ZXIyMDI2'), credential: j('hunter2', '-2026') } }));
+      recordStepResult(h.store, c.fence, 1, 'TOOL_RESULT', JSON.stringify({ tool: 'crm', action: 'lookup', result: { customers: 3, note: 'fine' } }));
+      const rows = storeContext(h.store).db.all<{ step: number; content: string }>('SELECT step, content FROM context_step_results WHERE work_item_id = ? ORDER BY step', c.workItem.id);
+      assert.equal(rows[0]?.content, '[result withheld: secret material]');
+      assert.match(rows[1]?.content ?? '', /"customers":3/, 'ordinary structured results are kept');
+    });
+  });
+});
+
+describe('R1-12 (re-review): stale knowledge never crowds an eligible item out, and keeps its STALE evidence', () => {
+  test('205 relevant knowledge items past their review horizon do not hide one fresh relevant item', () => {
+    withSeed((h, s) => {
+      const words = ['kiwi', 'mango', 'papaya', 'guava', 'lychee', 'durian', 'quince', 'medlar', 'loquat', 'sapote', 'feijoa', 'jujube', 'rambutan', 'longan', 'salak', 'tamarind', 'soursop', 'cherimoya', 'pawpaw', 'yuzu'];
+      const m = MemoryStore.for(h.store);
+      for (let i = 0; i < 205; i++) m.recordKnowledge(s.founder, { scope: 'COMPANY', topic: `ops.k${i}`, content: `Cairo logistics warehouse rule ${words[i % 20]} ${words[(i * 7) % 20]}${i} code${i}.`, dataClass: 'D1', reviewAfterDays: 1 });
+      days(h, 3);
+      const fresh = m.recordKnowledge(s.founder, { scope: 'COMPANY', topic: 'ops.fresh', content: 'Cairo warehouse opens at dawn now.', dataClass: 'D1' });
+      const a = assemble(h, claimFor(h, workItem(h, s, s.employee, { instructions: 'Cairo logistics warehouse memo.' })).claim, 0);
+      const entries = m.manifestEntries(a.manifestId);
+      assert.ok(entries.some((e) => e.itemId === fresh.id), 'the fresh knowledge item is a candidate');
+      assert.ok(entries.filter((e) => e.reasonCode === 'STALE').length > 0, 'stale knowledge is still recorded as STALE');
+    });
+  });
+});
+
+describe('R1-06 (re-review): a stale PENDING approval from an earlier job never masks this run\'s decision', () => {
+  test('an approval decided during the run wakes the work even while an older request is still pending', () => {
+    withSeed((h, s) => {
+      const wi = governedItem(h, s);
+      const first = claimGoverned(h);
+      assert.equal(recordToolIntent(h.store, first.claim.fence, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'v1' }, idempotencyKey: `wi:${wi}:s0` }).kind, 'APPROVAL_REQUIRED');
+      settle(h.store, first.claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_APPROVAL' }, { backoff });
+      // Re-released: a new job proposes different arguments; the first request stays PENDING.
+      h.store.transitionWorkItem(wi, { to: 'BLOCKED', reasonCode: 'hold', blockedReason: 'MANUAL' });
+      h.store.transitionWorkItem(wi, { to: 'READY', reasonCode: 'release' });
+      const second = claimGoverned(h);
+      const intent = recordToolIntent(h.store, second.claim.fence, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'v2' }, idempotencyKey: `wi:${wi}:s100` });
+      if (intent.kind !== 'APPROVAL_REQUIRED') throw new Error(intent.kind);
+      s.gov.decideApproval(s.founder, intent.approvalId, { decision: 'APPROVE', reasonCode: 'founder.ok' }); // job still CLAIMED
+      assert.equal(s.gov.listApprovals('PENDING').length, 1, 'the older request is still pending');
+      settle(h.store, second.claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_APPROVAL' }, { backoff });
+      assert.equal(jobState(h, wi), 'QUEUED');
+    });
+  });
+});
+
 describe('R1-02: model-proposed tool arguments cannot use inherited field names', () => {
   test('an argument named after an Object.prototype member is INVALID_ARGS, never executed', () => {
     withSeed((h, s) => {

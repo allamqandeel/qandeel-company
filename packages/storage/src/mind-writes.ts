@@ -10,7 +10,7 @@
  * every hash), and writes the manifest in the same transaction. The model reservation is then bound
  * to that manifest (migration 0005 trigger).
  */
-import { QandeelError, isQandeelError, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
+import { QandeelError, hasSecretNamedKey, isQandeelError, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
 import { assertDataClass, dataRank, isDataClass, maxDataClass, type DataClass } from '@qandeel-company/governance';
 import {
   ACADEMY_EXECUTION_STAGES,
@@ -471,6 +471,15 @@ export type StepResultKind = 'TOOL_RESULT' | 'TOOL_REFUSED' | 'MEMORY_DECISION';
  * (a resumed run re-presenting the step keeps the first record). Bounded; classified at the context's
  * effective class.
  */
+/** True when a JSON result names credential material in any key; non-JSON text is left to the text detector. */
+function keyedSecret(text: string): boolean {
+  try {
+    return hasSecretNamedKey(JSON.parse(text));
+  } catch {
+    return false;
+  }
+}
+
 export function txRecordStepResult(ctx: StoreContext, fence: Fence, step: number, kind: StepResultKind, content: string): void {
   verifyFence(ctx, fence);
   const a = attributedRun(ctx, fence);
@@ -479,7 +488,9 @@ export function txRecordStepResult(ctx: StoreContext, fence: Fence, step: number
   // Secret material is never stored durably (the step is recorded, its content withheld). The WHOLE
   // result is scanned before it is bounded (R1-01): a key straddling the bound must not survive as a
   // prefix, and a bounded result says so explicitly (no silent truncation).
-  const text = containsSecretMaterial(full) ? '[result withheld: secret material]' : full.length > RECENT_RESULT_CHARS ? `${full.slice(0, RECENT_RESULT_CHARS - 13)} [truncated]` : full;
+  // A structured (JSON) result also gets the credential-named-key guard the tool invocation record uses
+  // (R1 re-review: `{"authorization": "Basic …"}` was withheld there but kept here and sent onward).
+  const text = keyedSecret(full) || containsSecretMaterial(full) ? '[result withheld: secret material]' : full.length > RECENT_RESULT_CHARS ? `${full.slice(0, RECENT_RESULT_CHARS - 13)} [truncated]` : full;
   ctx.db.run(
     `INSERT INTO context_step_results (work_item_id, run_id, step, kind, content, content_sha256, data_class, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (work_item_id, step) DO NOTHING`,
     a.workItemId, fence.runId, Math.max(0, Math.trunc(step)), kind, text, sha256Hex(text), contextClassOf(ctx, a.workItemId), ts(ctx),
@@ -802,8 +813,10 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
           OR (x.scope = 'RESTRICTED' AND x.scope_ref IN (SELECT value FROM json_each(?))))`;
   const kScopeParams = [JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes)];
   const kLive = `x.integrity = 'OK' AND x.status IN ('ACTIVE', 'LOW_CONFIDENCE')`;
-  const kEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?)`;
-  const kEligibleParams = [p.ceiling, p.caps.marketRef ?? ''];
+  // Eligible also means within its review horizon: stale knowledge is rejection evidence (STALE), never
+  // an eligible slot (R1 re-review).
+  const kEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND (x.review_at IS NULL OR x.review_at > ?)`;
+  const kEligibleParams = [p.ceiling, p.caps.marketRef ?? '', at];
   const kMatch = termMatches(ctx, 'KNOWLEDGE', '', p.query.terms, KNOWLEDGE_POOL_LIMIT * 4, { table: 'knowledge_items', where: `${kLive} AND ${kEligible} AND ${kScope}`, params: [...kEligibleParams, ...kScopeParams] });
   const kEvidence = termMatches(ctx, 'KNOWLEDGE', '', p.query.terms, KNOWLEDGE_POOL_LIMIT * 4, { table: 'knowledge_items', where: `${kLive} AND NOT (${kEligible}) AND ${kScope}`, params: [...kEligibleParams, ...kScopeParams] });
   const knowledgeRows = (ids: Map<string, number>) => ids.size === 0 ? [] : ctx.db.all(
@@ -844,7 +857,9 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // passed) decided before the LIMIT, and a separate REJECTION-EVIDENCE pool of live memories that are
   // ineligible by class or market, which stay candidates so the manifest keeps their reason codes.
   const memLive = `x.employee_id = ? AND x.integrity = 'OK' AND x.status IN ('ACTIVE', 'LOW_CONFIDENCE')`;
-  const memEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?)`;
+  // A memory held in an OPEN conflict is never usable: it is rejection evidence (CONFLICT_UNRESOLVED —
+  // the WAIT-settle hold re-check reads it), never an eligible slot.
+  const memEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND NOT EXISTS (SELECT 1 FROM memory_conflicts c WHERE c.state = 'OPEN' AND (c.memory_a_id = x.id OR c.memory_b_id = x.id))`;
   const memCurrent = `(x.review_at IS NULL OR x.review_at > ?)`;
   const mEligible = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND ${memEligible} AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });
   const mEvidence = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND NOT (${memEligible}) AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });

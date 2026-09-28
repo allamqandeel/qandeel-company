@@ -55,6 +55,24 @@ const MUTATIONS = [
     runs: [KERNEL],
   },
   {
+    id: 'r1-01-step-result-key-guard-dropped',
+    finding: 'R1-01',
+    edits: [{ file: `${S}/mind-writes.js`, search: 'return hasSecretNamedKey(JSON.parse(text));', replace: 'return false;', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r1-06-stale-pending-masks-decision',
+    finding: 'R1-06',
+    edits: [{ file: `${S}/governed-writes.js`, search: 'if (!pending || decidedDuringRun)', replace: 'if (!pending)', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r1-12-stale-knowledge-eligible',
+    finding: 'R1-12',
+    edits: [{ file: `${S}/mind-writes.js`, search: 'const kEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND (x.review_at IS NULL OR x.review_at > ?)`;', replace: 'const kEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND ? IS NOT NULL`;', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
     id: 'r1-02-tool-args-inherited-field',
     finding: 'R1-02',
     edits: [
@@ -117,7 +135,7 @@ const MUTATIONS = [
   {
     id: 'r1-09-accounting-failure-escapes',
     finding: 'R1-09',
-    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'return containAccountingFailure(store, fence, reservationId, d.deployment.id);', replace: "throw new Error('mutation: accounting failure escapes');", expectedCount: 1 }],
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'return containAccountingFailure(store, fence, reservationId, d.deployment.id, error);', replace: "throw new Error('mutation: accounting failure escapes');", expectedCount: 1 }],
     runs: [RUNTIME],
   },
   {

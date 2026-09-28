@@ -1554,6 +1554,30 @@ decide are surfaced as `PRODUCT OWNER DECISION REQUIRED` in the report.
   verifier pins every recorded mutation and the mutation machinery (`mutation-checks-pinned`); the
   bootstrap workspace uses the vacuity-checked runner.
 
+**Independent re-review of the remediation.** Two fresh adversarial re-reviews of the remediation
+commit found defects that the first remediation itself introduced or left incomplete; each was fixed
+at its root with a proof and a mutation (`r1:mutation` 22 → 28):
+- **The widened secret detector (R1-01) was super-linear on crafted input and over-matched prose.**
+  Every pattern that can fail after reading a long run is now bounded (no adjacent unbounded
+  quantifiers; the Arabic separator is one bounded class), a scan reads at most
+  `SECRET_SCAN_MAX_CHARS` (16 384; every stored form is smaller), and the credential-keyword rules
+  require a credential-shaped value (an explicit separator, then one token containing a digit), so
+  support prose about passwords / keys / PINs in English and Arabic is not refused. HTTP Basic
+  credentials are detected. Step results get the credential-named-key guard the tool invocation
+  record already had. A checkpointed FINAL decision is honoured before input validation.
+- **R1-12 was incomplete for knowledge and for conflict-held memory**: knowledge eligibility includes
+  the review horizon, memory eligibility excludes memories held in an OPEN conflict; both stay
+  rejection evidence (STALE / CONFLICT_UNRESOLVED) in the separate bounded pool.
+- **R1-13 neutralization** also recognises Unicode spacing / invisible prefixes, VT / FF / NEL line
+  starts, full-width brackets / letters and any decimal digit, only for the real item-header grammar,
+  still length-preserving and linear.
+- **R1-06** also wakes when a tool approval of the Work Item was decided during the run (a stale
+  PENDING request of an earlier job no longer masks it).
+- **R1-03** refuses a job whose step range would pass the durable bound (`STEP_RANGE_EXHAUSTED`,
+  before anything executes). **R1-09**: deployment health is recorded best effort after the money
+  write, and local store contention is never recorded as a provider `CONTRACT_VIOLATION`.
+- **R1-15**: the verifier also refuses a mutation script that can exit successfully before running
+  its mutations or reports PASS before its loop.
 **Documentation note (R1 B-F6).** D-C2-07's first bullet list says an orphaned NONE / IDEMPOTENT tool
 intent's reservation "is released". D-C2-12 (MAJOR, "interrupted tool intents released money that may
 have been spent") amended that to "charged (`FAILED_CHARGED`), never released", and the code follows

@@ -628,12 +628,16 @@ export function txHoldUnsettledModelCalls(ctx: StoreContext, runId: Id): number 
  * A spurious wake is harmless: the next run re-checks every gate before any spend.
  */
 export function txRecheckGovernedWait(ctx: StoreContext, workItemId: Id, runId: Id, reason: 'AWAITING_APPROVAL' | 'BUDGET_EXHAUSTED'): void {
+  const started = ctx.db.get<{ s: string }>('SELECT started_at AS s FROM runs WHERE id = ?', runId)?.s;
   if (reason === 'AWAITING_APPROVAL') {
+    // The wait no longer holds when no tool approval of this Work Item is pending, OR when one was
+    // decided while this run was in flight (a stale PENDING request from an earlier job must not mask
+    // this run's decided approval — R1 re-review). A spurious wake costs nothing: every gate re-runs.
     const pending = ctx.db.get(`SELECT 1 AS x FROM approvals WHERE work_item_id = ? AND action <> 'work_item.execute' AND state = 'PENDING' LIMIT 1`, workItemId);
-    if (!pending) wakeWorkItemJob(ctx, workItemId, ['AWAITING_APPROVAL'], 'approval.rechecked');
+    const decidedDuringRun = started !== undefined && ctx.db.get(`SELECT 1 AS x FROM approvals WHERE work_item_id = ? AND action <> 'work_item.execute' AND decided_at IS NOT NULL AND decided_at >= ? LIMIT 1`, workItemId, started);
+    if (!pending || decidedDuringRun) wakeWorkItemJob(ctx, workItemId, ['AWAITING_APPROVAL'], 'approval.rechecked');
     return;
   }
-  const started = ctx.db.get<{ s: string }>('SELECT started_at AS s FROM runs WHERE id = ?', runId)?.s;
   const wi = budgetFor(ctx, 'WORK_ITEM', workItemId);
   if (started === undefined || !wi) return;
   const chain = budgetChain(ctx, wi.id).map((b) => b.id);
