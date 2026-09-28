@@ -20,7 +20,7 @@ governed and auditable.
 | `C2` Employees + Models + Tools + Cost Governance | CLOSED / MERGED / CANONICAL (PR #3, `d374001`) |
 | `C3` Memory + Context + Skills + Academy | CLOSED / MERGED / CANONICAL (PR #4, `4592b52`) |
 | `R1` Independent Core Review | CLOSED / MERGED / CANONICAL (PR #6, `bd18614`) |
-| `C4` Organization + CEO + Directors + Delegation + Review Pool | IN PROGRESS — implementation candidate, NOT CLOSED (Draft PR) |
+| `C4` Organization + CEO + Directors + Delegation + Review Pool | CLOSED / MERGED / CANONICAL (PR #8, `595083a`) |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
@@ -74,7 +74,7 @@ credential. Details: `docs/C2_IMPLEMENTATION_REPORT.md`, decisions D-C2-01 to D-
 C3 adds no external vector database, embedding service or paid memory service. Details:
 `docs/C3_IMPLEMENTATION_REPORT.md`, decisions D-C3-01 onward.
 
-**C4 (implementation candidate, not closed) adds the organization.** It covers:
+**C4 (closed / merged / canonical) adds the organization.** It covers:
 - the canonical Strong-v1 skeleton, release-seeded and vacant: Founder → a company-scoped **CEO seat** (no
   Department, never a fake Executive Department) → five **Director seats** (Strategic Market Intelligence,
   Growth, Brand & Creative, Product, **Engineering**) with baseline charters; no identity or headcount
