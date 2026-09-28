@@ -222,6 +222,29 @@ const ciJob = (wf, id) => {
   const next = rest.search(/^ {2}[\w-]+:\s*$/m);
   return next < 0 ? jobs.slice(start) : jobs.slice(start, start + 1 + next);
 };
+/**
+ * A workflow that does not parse runs NOTHING: GitHub cannot read `on:`, records a failed zero-job run for
+ * any push and never creates the pull_request gate (C4 run 36484710639). Its commonest cause is a plain
+ * (unquoted) value containing ': ', which YAML reads as a nested mapping. Block scalars (`|`, `>`) and
+ * trailing comments are exempt; quoted values and flow collections are not plain.
+ */
+const yamlPlainScalarErrors = (text) => {
+  const problems = [];
+  let blockIndent = -1;
+  text.split('\n').forEach((line, i) => {
+    const indent = line.search(/\S/);
+    if (blockIndent >= 0) {
+      if (indent === -1 || indent > blockIndent) return;
+      blockIndent = -1;
+    }
+    const m = /^\s*(?:-\s+)?[A-Za-z_][\w-]*:\s+(.*)$/.exec(line);
+    if (!m) return;
+    const value = m[1].replace(/\s+#.*$/, '').trimEnd();
+    if (/^[|>]/.test(value)) blockIndent = indent;
+    else if (value !== '' && !/^["'[{&*!#]/.test(value) && (/:\s/.test(value) || value.endsWith(':'))) problems.push(`${CI_WORKFLOW}:${i + 1}: a plain value contains ': ' (YAML reads a nested mapping; the workflow would not parse) — quote it or reword it`);
+  });
+  return problems;
+};
 // R1-15: the mutation checks are pinned. Every recorded mutation must stay in its script (a script may
 // only grow), the script must keep the machinery that makes a mutation meaningful (the exact-count
 // guard, the run of the proof tests, the restore, the failing exit) and the root "ci" script must run it.
@@ -955,7 +978,7 @@ export const RULES = [
     check: ({ files, read }) => {
       const wf = read(CI_WORKFLOW);
       if (wf === undefined) return [`missing ${CI_WORKFLOW}`];
-      const problems = [];
+      const problems = [...yamlPlainScalarErrors(wf)];
       for (const need of [CI_CLASSIFIER, CI_GATE, CI_POST_MERGE]) if (!files.includes(need)) problems.push(`missing ${need}`);
       if (!/^\s+pull_request:\s*\n\s+branches:\s*\[main\]/m.test(wf) || !/^\s+push:\s*\n\s+branches:\s*\[main\]/m.test(wf) || !/^\s+workflow_dispatch:/m.test(wf)) problems.push('the workflow must run on pull_request / push to main and allow a manual (workflow_dispatch) full run');
       if (!/^permissions:\s*\n\s+contents:\s*read\s*$/m.test(wf)) problems.push('the workflow default permissions must be contents: read');
@@ -1454,6 +1477,8 @@ const VIOLATIONS = {
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace(/os: \[windows-latest, ubuntu-latest\]/g, 'os: [ubuntu-latest]') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('  workflow_dispatch:\n', '') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('npm run c4:acceptance', 'echo c4') } },
+    // The C4 run 36484710639 defect: an unquoted step name with ': ' — the workflow does not parse.
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('name: Classifier self-test (fails closed)', 'name: Classifier self-test (fails closed): no skip') } },
     { remove: [CI_GATE] },
   ],
   'ci-classifier-fails-closed': [

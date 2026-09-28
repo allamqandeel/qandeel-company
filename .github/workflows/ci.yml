@@ -108,7 +108,7 @@ jobs:
           node-version-file: .nvmrc
           package-manager-cache: false
       - run: npm ci
-      - name: Post-merge integrity (the merged tree is the proven tree): build, typecheck, verifier, C1 acceptance
+      - name: Post-merge integrity — the merged tree is the proven tree (build, typecheck, verifier, C1 acceptance)
         run: |
           npm run build
           npm run typecheck

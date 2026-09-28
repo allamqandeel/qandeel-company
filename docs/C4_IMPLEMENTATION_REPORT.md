@@ -227,6 +227,16 @@ report, not in this file: committing them here would change the head the gate pr
 wall-clock is bounded by the longest shard (a Windows R1 quarter or C3 half) instead of the sum of every
 Windows proof. Local full `npm run ci` on the Founder-class host (sequential): 32.3 minutes.
 
+**Correction — workflow did not parse (Technical Lead BLOCKER, run `36484710639`).** At head `46144e1` GitHub
+recorded a failed zero-job `push` run and created no `pull_request` run. Root cause: a YAML syntax error on
+`ci.yml` line 111 — the unquoted step name `Post-merge integrity (the merged tree is the proven tree): build, …`
+contains `): `, which YAML reads as a nested mapping inside a plain scalar (`yaml` 2.9.0:
+`BLOCK_AS_IMPLICIT_KEY — Nested mappings are not allowed in compact mappings at line 111, column 15`; Prettier's
+YAML parser reports the same position). An unparseable workflow has no readable `on:`, so GitHub attributes
+a failed run to the branch push and never starts the PR gate. Fix: the step name was reworded (no semantic
+change); `ci-contract` now refuses any unquoted workflow value containing `': '` (self-test case added), so this
+defect family fails `npm run verify` locally and in every CI path before GitHub sees it.
+
 **Proof parity.** Nothing was deleted: each OS still runs every test, every verifier rule, the C1–C4
 acceptances and every recorded mutation (C1 6, C2 19, C3 40, R1 45, C4 25 = 135). The shard specs are a
 verifier-checked exact partition per OS and script, and the gate proves from the shards' reports that each
@@ -265,6 +275,9 @@ D-C4-12: (1) multi-role reviewers; (2) bootstrap calibration subjects that wait 
    (visible as `REVIEWER_UNAVAILABLE`) — see D-C4-12 (2).
 4. `security-review` skill could not execute in this environment (see §13).
 5. Branch protection cannot be set on the current plan (§12).
+6. The verifier's workflow guard is a zero-dependency structural check for the `': '`-in-plain-scalar family,
+   not a full YAML / GitHub-schema validator (no YAML dependency is added to the repository); GitHub itself
+   remains the final validator of the workflow.
 
 ## 16. Not in C4
 
