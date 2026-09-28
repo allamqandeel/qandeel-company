@@ -381,7 +381,10 @@ describe('R1-12: ineligible memories never crowd an eligible one out of the boun
       flood(h, s, {}, { requirements: [], marketRef: 'market:eg' });
       const id = fresh(h, s);
       const a = assemble(h, claimFor(h, workItem(h, s, s.employee, { instructions: 'Cairo logistics warehouse memo.' }, { requirements: [], marketRef: 'market:sa' })).claim, 0);
-      assert.ok(MemoryStore.for(h.store).manifestEntries(a.manifestId).some((e) => e.itemId === id), 'the eligible neutral memory is a candidate');
+      const entries = MemoryStore.for(h.store).manifestEntries(a.manifestId);
+      assert.ok(entries.some((e) => e.itemId === id), 'the eligible neutral memory is a candidate');
+      // Both invariants at once: the ineligible memories still leave their rejection evidence (D-C3-06).
+      assert.ok(entries.filter((e) => e.reasonCode === 'MARKET_MISMATCH').length > 0, 'other-market memories are recorded as MARKET_MISMATCH');
     });
   });
 
@@ -390,7 +393,9 @@ describe('R1-12: ineligible memories never crowd an eligible one out of the boun
       flood(h, s, { dataClass: 'D3' });
       const id = fresh(h, s);
       const a = assemble(h, claimFor(h, workItem(h, s, s.employee, { instructions: 'Cairo logistics warehouse memo.' })).claim, 0);
-      assert.ok(MemoryStore.for(h.store).manifestEntries(a.manifestId).some((e) => e.itemId === id), 'the eligible D1 memory is a candidate');
+      const entries = MemoryStore.for(h.store).manifestEntries(a.manifestId);
+      assert.ok(entries.some((e) => e.itemId === id), 'the eligible D1 memory is a candidate');
+      assert.ok(entries.filter((e) => e.reasonCode === 'DATA_CLASS_ABOVE_CONTEXT').length > 0, 'the D3 memories are recorded as DATA_CLASS_ABOVE_CONTEXT');
     });
   });
 

@@ -147,8 +147,15 @@ const MUTATIONS = [
   {
     id: 'r1-12-eligibility-after-limit',
     finding: 'R1-12',
-    edits: [{ file: `${S}/mind-writes.js`, search: 'AND x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND (x.review_at IS NULL OR x.review_at > ?)', replace: 'AND ? IS NOT NULL AND ? IS NOT NULL AND ? IS NOT NULL', expectedCount: 1 }],
+    edits: [{ file: `${S}/mind-writes.js`, search: 'AND ${memEligible} AND ${memCurrent}', replace: 'AND ? IS NOT NULL AND ? IS NOT NULL AND ? IS NOT NULL', expectedCount: 1 }],
     runs: [STORAGE],
+  },
+  {
+    // The other half of R1-12: ineligible items must still leave their rejection evidence (D-C3-06).
+    id: 'r1-12-rejection-evidence-dropped',
+    finding: 'R1-12',
+    edits: [{ file: `${S}/mind-writes.js`, search: 'new Map([...mEvidence, ...mEligible])', replace: 'new Map([...mEligible])', expectedCount: 1 }],
+    runs: [STORAGE, { cwd: 'packages/storage', tests: ['dist/test/c3-review-fixes.test.js'] }],
   },
   {
     id: 'r1-13-lower-layer-forges-marker',

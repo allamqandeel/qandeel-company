@@ -789,18 +789,24 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // candidates), term-matched and bounded: never the whole knowledge base.
   const access = knowledgeAccess(ctx, e, p.caps.marketRef, p.ceiling);
   const grantUse = new Map<string, Id>();
-  const kMatch = termMatches(ctx, 'KNOWLEDGE', '', p.query.terms, KNOWLEDGE_POOL_LIMIT * 4, {
-    table: 'knowledge_items',
-    // R1-12: class ceiling and market decided before the LIMIT (as for memory).
-    where: `x.integrity = 'OK' AND x.status IN ('ACTIVE', 'LOW_CONFIDENCE') AND x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?)
-        AND (x.scope = 'COMPANY'
+  // R1-12 — two bounded pools, so both invariants hold at once:
+  // - ELIGIBLE: class within the ceiling and market-neutral or the Work Item's market, decided in SQL
+  //   BEFORE the LIMIT — an ineligible item can never crowd an eligible one out (D-C3-16 N4);
+  // - REJECTION EVIDENCE: readable but ineligible items (class above the ceiling, other market) keep
+  //   their own bounded pool and stay candidates, so the planner still records DATA_CLASS_ABOVE_CONTEXT /
+  //   MARKET_MISMATCH in the manifest (D-C3-06). Unreadable scopes are never candidates (D-C3-04).
+  const kScope = `(x.scope = 'COMPANY'
           OR (x.scope = 'DEPARTMENT' AND x.scope_ref IN (SELECT value FROM json_each(?)))
           OR (x.scope = 'ROLE' AND x.scope_ref = ?)
           OR (x.scope = 'MARKET' AND x.scope_ref = ?)
-          OR (x.scope = 'RESTRICTED' AND x.scope_ref IN (SELECT value FROM json_each(?))))`,
-    params: [p.ceiling, p.caps.marketRef ?? '', JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes)],
-  });
-  const kRows = kMatch.size === 0 ? [] : ctx.db.all(
+          OR (x.scope = 'RESTRICTED' AND x.scope_ref IN (SELECT value FROM json_each(?))))`;
+  const kScopeParams = [JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes)];
+  const kLive = `x.integrity = 'OK' AND x.status IN ('ACTIVE', 'LOW_CONFIDENCE')`;
+  const kEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?)`;
+  const kEligibleParams = [p.ceiling, p.caps.marketRef ?? ''];
+  const kMatch = termMatches(ctx, 'KNOWLEDGE', '', p.query.terms, KNOWLEDGE_POOL_LIMIT * 4, { table: 'knowledge_items', where: `${kLive} AND ${kEligible} AND ${kScope}`, params: [...kEligibleParams, ...kScopeParams] });
+  const kEvidence = termMatches(ctx, 'KNOWLEDGE', '', p.query.terms, KNOWLEDGE_POOL_LIMIT * 4, { table: 'knowledge_items', where: `${kLive} AND NOT (${kEligible}) AND ${kScope}`, params: [...kEligibleParams, ...kScopeParams] });
+  const knowledgeRows = (ids: Map<string, number>) => ids.size === 0 ? [] : ctx.db.all(
     `SELECT id, scope, scope_ref, topic, claim_key, claim_value, content_sha256, terms_json, data_class, market_ref, provenance_kind, provenance_ref, confidence_pct, status, integrity, review_at, last_validated_at, version, created_at, created_by_ref, fingerprint, length(CAST(content AS BLOB)) AS bytes, '' AS content
        FROM knowledge_items
       WHERE id IN (SELECT value FROM json_each(?)) AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE')
@@ -809,11 +815,12 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
           OR (scope = 'ROLE' AND scope_ref = ?)
           OR (scope = 'MARKET' AND scope_ref = ?)
           OR (scope = 'RESTRICTED' AND scope_ref IN (SELECT value FROM json_each(?))))`,
-    inList(kMatch.keys()), JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes),
+    inList(ids.keys()), JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes),
   );
   const rank = (m: Map<string, number>) => (a: Readonly<Record<string, unknown>>, b: Readonly<Record<string, unknown>>): number =>
     (m.get(String(b.id)) ?? 0) - (m.get(String(a.id)) ?? 0) || (String(b.created_at) < String(a.created_at) ? -1 : String(b.created_at) > String(a.created_at) ? 1 : 0) || (String(a.id) < String(b.id) ? -1 : 1);
-  for (const r of kRows.sort(rank(kMatch)).slice(0, KNOWLEDGE_POOL_LIMIT)) {
+  const kRows = [...knowledgeRows(kMatch).sort(rank(kMatch)).slice(0, KNOWLEDGE_POOL_LIMIT), ...knowledgeRows(kEvidence).sort(rank(kEvidence)).slice(0, KNOWLEDGE_POOL_LIMIT)];
+  for (const r of kRows) {
     const k = mapKnowledge(r);
     if (!knowledgeReadable(k, access)) continue; // defence in depth: re-checked in code
     // A grant-based scope is used at most once per assembly and never past its limit (attributed per use).
@@ -832,15 +839,16 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
 
   // L5 — the Employee's own memory: a bounded, term-matched METADATA pool (never the full history).
   const held = new Set(ctx.db.all<{ a: string; b: string }>(`SELECT memory_a_id AS a, memory_b_id AS b FROM memory_conflicts c JOIN memory_records m ON m.id = c.memory_a_id WHERE c.state = 'OPEN' AND m.employee_id = ?`, e.id).flatMap((r) => [r.a, r.b]));
-  // R1-12: every eligibility rule SQL can decide is decided BEFORE the LIMIT — data class within the
-  // context ceiling (D-classes sort as text), market-neutral or the Work Item's market, review horizon not
-  // passed — so ineligible memories never crowd an eligible one out of the bounded pool.
+  // R1-12 — the same two bounded pools as knowledge (see above): ELIGIBLE memories (class within the
+  // ceiling — D-classes sort as text —, market-neutral or the Work Item's market, review horizon not
+  // passed) decided before the LIMIT, and a separate REJECTION-EVIDENCE pool of live memories that are
+  // ineligible by class or market, which stay candidates so the manifest keeps their reason codes.
   const memLive = `x.employee_id = ? AND x.integrity = 'OK' AND x.status IN ('ACTIVE', 'LOW_CONFIDENCE')`;
-  const mMatch = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, {
-    table: 'memory_records',
-    where: `${memLive} AND x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND (x.review_at IS NULL OR x.review_at > ?)`,
-    params: [e.id, p.ceiling, p.caps.marketRef ?? '', at],
-  });
+  const memEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?)`;
+  const memCurrent = `(x.review_at IS NULL OR x.review_at > ?)`;
+  const mEligible = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND ${memEligible} AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });
+  const mEvidence = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND NOT (${memEligible}) AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });
+  const mMatch = new Map([...mEvidence, ...mEligible]);
   const memCols = `id, employee_id, memory_class, scope, topic, claim_key, claim_value, content_sha256, data_class, market_ref, project_ref, provenance_kind, provenance_ref, source_version, source_sha256, evidence_refs_json,
             confidence_pct, status, integrity, retention_policy, review_at, last_validated_at, candidate_id, supersedes_id, superseded_by_id, version, created_at, terms_json, fingerprint, length(CAST(content AS BLOB)) AS bytes`;
   // Relevant memories that reached their review horizon take no pool slot: they are marked STALE durably

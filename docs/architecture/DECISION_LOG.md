@@ -1529,8 +1529,15 @@ decide are surfaced as `PRODUCT OWNER DECISION REQUIRED` in the report.
   to ACTIVE; `PAUSED → RETRAINING` is an existing transition). `ON_LEAVE` has no RETRAINING transition:
   until the Product Owner decides (P-01), a role change of an `ON_LEAVE` Employee without the target
   certification is refused (fail closed; nothing new is invented).
-- **Retrieval eligibility before the LIMIT (R1-12)**: data-class ceiling, market and review horizon
-  are decided in SQL; memories past their horizon take no pool slot and are still marked STALE.
+- **Retrieval eligibility before the LIMIT, rejection evidence kept (R1-12).** Memory and knowledge
+  each use two bounded term-matched pools: an ELIGIBLE pool (class within the ceiling, market-neutral
+  or the Work Item's market, review horizon not passed — decided in SQL before the LIMIT, so nothing
+  ineligible can crowd an eligible item out, D-C3-16 N4) and a separate REJECTION-EVIDENCE pool of
+  readable but ineligible items, which stay candidates so the manifest still records
+  `DATA_CLASS_ABOVE_CONTEXT` / `MARKET_MISMATCH` (D-C3-06); unreadable scopes are never candidates
+  (D-C3-04). Memories past their horizon take no pool slot and are marked STALE and recorded as
+  rejected. (A first version filtered the ineligible items out entirely; three C3 proofs caught the
+  lost rejection evidence, and the two-pool form replaced it.)
 - **Lower layers are data (R1-13)**: knowledge / memory / recent-result text is rendered with any
   line that would open like a layer marker, item header or precedence line neutralized (same UTF-8
   length, so budgets stay exact).
