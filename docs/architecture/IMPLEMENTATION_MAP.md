@@ -46,3 +46,44 @@ implementation package. Its record is `docs/PRE_C1_AUTHORITY_SYNC_CLOSURE.md`.
 - The map is refined only when a real engineering dependency requires it, not to create more tasks.
 - Strong v1 closes only on real controlled Pilot evidence (see
   `docs/authority/COMPANY_CANONICAL_BASELINE.md` §7).
+
+- **Cross-stage integration is mandatory from C4 onward (D-R1-02).** A stage is never designed or
+  reviewed as an isolated feature:
+  - **Backward integration gate:** read and preserve every closed-stage contract / invariant the
+    stage touches; map its reads, writes, authority checks, retries, accounting, lifecycle transitions
+    and durable state to the existing canonical mechanisms; never create a parallel mechanism where a
+    canonical one should be extended.
+  - **Forward integration gate:** read the known next-stage / Product requirements before implementation
+    and preserve the extension seams they already require, without inventing unknown future behaviour.
+  - **Boundary-first design:** identify high-risk cross-stage boundaries before coding and state the
+    invariant plus preferred architecture in the task itself. Authority, money, durable lifecycle,
+    recovery, privacy, routing and external / mutable-data boundaries get focused adversarial proofs
+    during implementation, not only at a later mega-review.
+  - **R1 non-regression:** R1 findings are defect-family lessons, not literal one-off patches. A repeated
+    root-cause family is an architecture signal and stops autonomous patch loops.
+  - **Bounded validation:** implementation uses fast / focused gates. The complete CI + mutation +
+    verifier + acceptance suite runs once on the real closure-candidate exact head. A post-full-gate
+    MINOR is recorded without restarting the gate; a BLOCKER / MAJOR stops for Technical Lead
+    disposition. Two correction cycles are the maximum for one root-cause family; a third recurrence
+    requires architecture review before more coding.
+  - **Cross-stage closure evidence:** each closure records the prior-stage contracts touched, evidence
+    they remain valid, the new contracts exposed to the next stage, residuals / deferred Product
+    decisions, and confirmation that no later-stage scope leaked in.
+
+## Roadmap intent clarification after R1
+
+The canonical sequence remains **C4 → C5 → C6 → R2 → C7 → L1 → Controlled Pilots → Strong v1**.
+The implementation intent is now explicit so each stage is designed as part of one Company system:
+
+- **C4** builds the real organization foundation: CEO / Directors / Positions, Departments / Charters,
+  staffing requests, bounded delegation / handoff and the qualified Review Pool, while extending —
+  not duplicating — C1–C3 runtime, authority, memory, skills and Academy mechanisms.
+- **C5** consumes C4 to build the Founder Command Center: the Founder↔CEO operating relationship,
+  organization visibility, approvals / delegation controls and the Company Calendar foundation.
+- **C6** consumes real work lineage from C1–C5 for employee / department performance, reporting,
+  learning, evaluation, resilience and outcome analytics (including campaign / content / traffic
+  performance once those external result sources exist).
+- **C7** connects governed Company operations to APP-OPS / Pilot instrumentation and external outcome
+  data without weakening the earlier privacy, authority, accounting or recovery boundaries.
+
+C4 must not start until R1 is **CLOSED / MERGED / CANONICAL** and the required post-merge CI is green.
