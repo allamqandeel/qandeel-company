@@ -219,6 +219,71 @@ describe('R1-09 (Technical Lead follow-up): a known provider fault stays contain
     );
   });
 
+  test('a charged failure the provider classified as a contract violation settles and contains together; the violator is never paid again (focused re-review)', async () => {
+    let fired = 0;
+    await withWorld(
+      'r1-tl-charged-violation',
+      async ({ w, f, rt }) => {
+        // A failed call that still reports (within-bounds, billable) usage.
+        f.cloud.failNextCharged('cloud-e1', 'CONTRACT_VIOLATION', { inputTokens: 100, outputTokens: 10 });
+        const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+        assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED']), 'COMPLETED');
+        assert.equal(fired, 1, 'the containment write failed once');
+        assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'the violator was not called (and paid) again');
+        assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD');
+        assert.notEqual(cloudReservation(rt, w, id), 'RESERVED');
+        assert.notEqual(cloudReservation(rt, w, id), 'RELEASED', 'possibly billed: never silently released');
+      },
+      {
+        storageFault: (p) => {
+          if (p === 'deploymentOutcome.beforeCommit' && fired === 0) {
+            fired++;
+            throw contention();
+          }
+        },
+      },
+    );
+  });
+
+  test('a charged failure reporting usage outside the bounds is contained once (no double circuit count) and never retried on the same route', () =>
+    withWorld('r1-tl-charged-over-bounds', async ({ w, f, rt }) => {
+      f.cloud.failNextCharged('cloud-e1', 'TRANSIENT', { inputTokens: 100, outputTokens: 257 });
+      const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+      assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED']), 'COMPLETED');
+      assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'a transient class does not buy a retry once the usage broke the contract');
+      const dep = rt.governance.deployment(w.deployments.cloudE1);
+      assert.equal(dep.status, 'HOLD');
+      assert.equal(dep.circuitFailures, 1, 'one call, one circuit count');
+      assert.equal(cloudReservation(rt, w, id), 'SETTLED', 'charged truthfully');
+    }));
+
+  test('while even the next-route containment write is refused, routing still never selects the violator', async () => {
+    let fired = 0;
+    await withWorld(
+      'r1-tl-flush-refused',
+      async ({ w, f, rt }) => {
+        f.cloud.reportUsage('cloud-e1', { inputTokens: 100, outputTokens: 257 });
+        const first = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+        assert.equal(await settled(rt, first, ['COMPLETED', 'FAILED']), 'COMPLETED');
+        assert.equal(fired, 3, 'settle-with-containment, hold-with-containment and the first next-route containment were all refused');
+        assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'excluded from routing although the store still says ACTIVE');
+        // The store accepts writes again: the next route boundary writes the containment.
+        const second = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('again')) });
+        assert.equal(await settled(rt, second, ['COMPLETED', 'FAILED']), 'COMPLETED');
+        assert.equal(f.cloud.calls.get('cloud-e1'), 1);
+        assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD');
+      },
+      {
+        storageFault: (p) => {
+          if (p === 'deploymentOutcome.beforeCommit' && fired < 3) {
+            fired++;
+            throw contention();
+          }
+        },
+      },
+    );
+  });
+
   test('when the store refuses the money write AND the containment, the violator is kept out of routing until the containment is written', async () => {
     let fired = 0;
     await withWorld(

@@ -16,7 +16,7 @@ import { ProviderError, type ProviderAdapter, type ProviderFailureClass, type Pr
  */
 export class DeterministicFakeProvider implements ProviderAdapter {
   readonly providerCode: string;
-  readonly #failures = new Map<string, ProviderFailureClass[]>();
+  readonly #failures = new Map<string, { failure: ProviderFailureClass; usage: ProviderError['usage'] }[]>();
   readonly #usageOverride = new Map<string, { inputTokens: number; outputTokens: number }>();
   /** Calls received, by deployment code (idle / fallback proofs). */
   readonly calls = new Map<string, number>();
@@ -31,7 +31,13 @@ export class DeterministicFakeProvider implements ProviderAdapter {
 
   /** Queue failures for a deployment's next calls. */
   failNext(deploymentCode: string, ...failures: ProviderFailureClass[]): this {
-    this.#failures.set(deploymentCode, [...(this.#failures.get(deploymentCode) ?? []), ...failures]);
+    this.#failures.set(deploymentCode, [...(this.#failures.get(deploymentCode) ?? []), ...failures.map((failure) => ({ failure, usage: null }))]);
+    return this;
+  }
+
+  /** Queue a failure that still reports (billable) usage for the deployment's next call. */
+  failNextCharged(deploymentCode: string, failure: ProviderFailureClass, usage: { inputTokens: number; outputTokens: number }): this {
+    this.#failures.set(deploymentCode, [...(this.#failures.get(deploymentCode) ?? []), { failure, usage }]);
     return this;
   }
 
@@ -46,7 +52,7 @@ export class DeterministicFakeProvider implements ProviderAdapter {
     if (signal.aborted) throw new ProviderError('TRANSIENT');
     const queued = this.#failures.get(request.deploymentCode);
     const injected = queued?.shift();
-    if (injected) throw new ProviderError(injected);
+    if (injected) throw new ProviderError(injected.failure, injected.usage);
     const turn = request.messages.filter((m) => m.role === 'tool').length;
     let script: unknown[] = [];
     for (const m of request.messages) {

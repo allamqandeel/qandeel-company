@@ -363,12 +363,13 @@ function ownReservation(ctx: StoreContext, fence: Fence, reservationId: Id): Res
   return r;
 }
 
-export function txSettle(ctx: StoreContext, fence: Fence, reservationId: Id, usage: SettleUsage): Id | null {
+export function txSettle(ctx: StoreContext, fence: Fence, reservationId: Id, usage: SettleUsage, providerFault = false): Id | null {
   const r = ownReservation(ctx, fence, reservationId);
-  // Usage outside the enforced bounds is a provider contract violation: the deployment is contained in
-  // THIS transaction, so the money record and the containment commit together or not at all — a failed
-  // health write can never leave a known violator routable (R1-09, Technical Lead follow-up).
-  if (r.purpose === 'MODEL_CALL' && r.deploymentId !== null && !usage.withinBounds) txDeploymentOutcome(ctx, fence, r.deploymentId, 'CONTRACT_VIOLATION');
+  // Usage outside the enforced bounds, or an answer the runtime already classified as the provider's
+  // contract violation, contains the deployment in THIS transaction: the money record and the
+  // containment commit together or not at all — a failed health write can never leave a known violator
+  // routable (R1-09, Technical Lead follow-up).
+  if (r.purpose === 'MODEL_CALL' && r.deploymentId !== null && (!usage.withinBounds || providerFault)) txDeploymentOutcome(ctx, fence, r.deploymentId, 'CONTRACT_VIOLATION');
   if (r.state === 'SETTLED' || r.state === 'RELEASED') {
     // Already reconciled by the Founder: the worker's actual usage is still recorded, as a discrepancy.
     appendAudit(ctx, 'budget.late_usage_discrepancy', 'reservation', r.id, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', 'ALREADY_FINAL', { state: r.state, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens });

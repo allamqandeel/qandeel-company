@@ -279,8 +279,12 @@ export function reserveBudget(store: CompanyStore, fence: Fence, input: ReserveI
   return r;
 }
 
-export function settleReservation(store: CompanyStore, fence: Fence, reservationId: Id, usage: SettleUsage): Id | null {
-  return write(store, 'settle reservation', (ctx) => txSettleReservation(ctx, fence, reservationId, usage));
+/**
+ * Settles actual usage. `providerFault` (the runtime's verdict from the provider's own answer) contains
+ * the reservation's deployment in the same transaction; usage outside the bounds always does (R1-09).
+ */
+export function settleReservation(store: CompanyStore, fence: Fence, reservationId: Id, usage: SettleUsage, providerFault = false): Id | null {
+  return write(store, 'settle reservation', (ctx) => txSettleReservation(ctx, fence, reservationId, usage, providerFault));
 }
 
 export function releaseReservation(store: CompanyStore, fence: Fence, reservationId: Id, reasonCode: string): void {

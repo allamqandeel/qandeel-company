@@ -1604,6 +1604,29 @@ the over-bounds attribution line had no committed proof (only the older out-of-r
 different path catches); it now has one (one token over the step bound plus contention at the settle →
 the deployment is held on the first attempt) and mutation `r1-09-over-bounds-usage-not-blamed`.
 
+**Technical Lead exact-head review (MAJOR follow-up under R1-09; engineering, not a Product
+decision).** At `0ac427e` a provider usage contract violation was contained non-durably: the money
+settlement and the deployment `CONTRACT_VIOLATION` hold were separate transactions, the second best
+effort, so a failed health write left a known violator `ACTIVE` and routable. Decision: **a known
+provider fault and its money record commit in one fenced transaction.** A model-call settle whose usage
+is outside the enforced bounds contains the reservation's own deployment inside the settle transaction;
+`containProviderFault` holds the money and contains the deployment atomically (unusable usage,
+malformed answer, containment after a failed settle). Healthy-answer health stays best effort, so local
+contention never holds or blames a healthy provider. When the store refuses even the containment,
+nothing durable names the provider; the process keeps the deployment out of its routing and writes the
+containment at the next route boundary (the money is held by the existing hold / backstop / recovery).
+A failed call reporting over-bounds usage is a contract violation (no same-route retry). No new table,
+migration or routing mechanism. Proofs: 4 runtime + 2 storage; mutations
+`r1-09-provider-fault-hold-not-durable`, `r1-09-malformed-answer-hold-split`,
+`r1-09-uncontained-violator-routable`; two R1-09 mutations re-targeted to the moved containment method.
+The focused re-review of that fix (`3aa458d`) found one more MAJOR on the same boundary: a charged
+failure the provider classified `CONTRACT_VIOLATION` (within-bounds usage) settled without the
+containment. The runtime's provider-fault verdict is now carried into the settle transaction
+(`settleReservation(…, providerFault)`), so such a failure settles and contains together (proof +
+mutation `r1-09-charged-violation-verdict-dropped`). An over-bounds charged failure is counted once
+toward the circuit, and the in-process routing exclusion has its own proof (mutation
+`r1-09-uncontained-filter-removed`).
+
 **Documentation note (R1 B-F6).** D-C2-07's first bullet list says an orphaned NONE / IDEMPOTENT tool
 intent's reservation "is released". D-C2-12 (MAJOR, "interrupted tool intents released money that may
 have been spent") amended that to "charged (`FAILED_CHARGED`), never released", and the code follows

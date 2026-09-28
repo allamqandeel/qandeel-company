@@ -232,7 +232,7 @@ export class GovernedModelRuntime {
       if (usage.withinBounds) recordHealth(store, fence, deploymentId, null);
       return { done: { kind: 'OK', proposal: parseProposal(outcome.response.outputText), usage: usage.usage, deploymentId: d.deployment.id, reasoningClass: d.reasoningClass, attempts: attempt, manifestId } };
     }
-    let failure = outcome.failure;
+    const failure = outcome.failure;
     const disp = FAILURE_DISPOSITIONS[failure];
     if (outcome.usage) {
       // Billed despite failing: charged truthfully, never hidden.
@@ -243,10 +243,12 @@ export class GovernedModelRuntime {
         u = null;
       }
       if (u) {
-        settleReservation(store, fence, reservationId, { inputTokens: u.usage.inputTokens, outputTokens: u.usage.outputTokens, withinBounds: u.withinBounds, sessionId, outcome: 'FAILED_CHARGED' });
-        // Usage outside the bounds was contained with the settle: the provider broke the contract,
-        // whatever failure class it also reported (no retry of the same route).
-        failure = u.withinBounds ? failure : 'CONTRACT_VIOLATION';
+        // The provider broke the contract (usage outside the bounds, or a failure it classified as a
+        // contract violation): the deployment is contained inside the settle transaction, never by a
+        // separate best-effort write, and the same route is not retried.
+        const providerFault = !u.withinBounds || failure === 'CONTRACT_VIOLATION';
+        settleReservation(store, fence, reservationId, { inputTokens: u.usage.inputTokens, outputTokens: u.usage.outputTokens, withinBounds: u.withinBounds, sessionId, outcome: 'FAILED_CHARGED' }, providerFault);
+        if (providerFault) return { failure: 'CONTRACT_VIOLATION' };
       } else {
         containProviderFault(store, fence, reservationId, failure);
         return { failure: 'CONTRACT_VIOLATION' };

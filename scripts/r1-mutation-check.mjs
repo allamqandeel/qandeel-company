@@ -111,7 +111,7 @@ const MUTATIONS = [
     id: 'r1-09-provider-fault-hold-not-durable',
     finding: 'R1-09',
     edits: [
-      { file: `${S}/governed-writes.js`, search: "if (r.purpose === 'MODEL_CALL' && r.deploymentId !== null && !usage.withinBounds)", replace: 'if (false)', expectedCount: 1 },
+      { file: `${S}/governed-writes.js`, search: "if (r.purpose === 'MODEL_CALL' && r.deploymentId !== null && (!usage.withinBounds || providerFault))", replace: 'if (false)', expectedCount: 1 },
       { file: `${R}/c2/model-runtime.js`, search: 'if (usage.withinBounds)', replace: 'if (true)', expectedCount: 1 },
       { file: `${R}/c2/model-runtime.js`, search: 'recordHealth(store, fence, deploymentId, null);', replace: "recordHealth(store, fence, deploymentId, usage.withinBounds ? null : 'CONTRACT_VIOLATION');", expectedCount: 1 },
     ],
@@ -121,6 +121,22 @@ const MUTATIONS = [
     id: 'r1-09-malformed-answer-hold-split',
     finding: 'R1-09',
     edits: [{ file: `${R}/c2/model-runtime.js`, search: 'containProviderFault(store, fence, reservationId, failure);', replace: "holdReservation(store, fence, reservationId, failure); recordHealth(store, fence, deploymentId, 'CONTRACT_VIOLATION');", expectedCount: 2 }],
+    runs: [RUNTIME],
+  },
+  {
+    // Focused re-review: the provider-fault verdict of a charged failure is not carried into the settle.
+    id: 'r1-09-charged-violation-verdict-dropped',
+    finding: 'R1-09',
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: "outcome: 'FAILED_CHARGED' }, providerFault);", replace: "outcome: 'FAILED_CHARGED' }, false);", expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'r1-09-uncontained-filter-removed',
+    finding: 'R1-09',
+    edits: [
+      { file: `${R}/c2/model-runtime.js`, search: 'routable(snapshot.deployments)', replace: 'snapshot.deployments', expectedCount: 1 },
+      { file: `${R}/c2/model-runtime.js`, search: 'routable(fresh.deployments)', replace: 'fresh.deployments', expectedCount: 1 },
+    ],
     runs: [RUNTIME],
   },
   {
