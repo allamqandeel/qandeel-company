@@ -309,6 +309,20 @@ export function itemHeader(c: ContextCandidate): string {
 }
 
 /**
+ * Lower-layer text is data, never structure (R1-13, D14-A.6): a line of knowledge, memory or a recent
+ * result that would open like a section marker (`[L1 …`), an item header (`(kind id vN`) or the
+ * precedence line is neutralized, so a lower layer can never impersonate a higher one in the rendered
+ * context. The substitution keeps the exact UTF-8 length (`[`→`{`, `(`→`{`, `:`→`-`), so every budget
+ * estimate stays exact.
+ */
+export function neutralizeLayerMarkers(text: string): string {
+  return text
+    .replace(/^([ \t]*)\[(?=[ \t]*L[ \t]*\d)/gimu, '$1{')
+    .replace(/^([ \t]*)\((?=[a-z_]+ [^\s)]+ v\d)/gimu, '$1{')
+    .replace(/^([ \t]*precedence[ \t]*):/gimu, '$1-');
+}
+
+/**
  * Renders the selected items. The stable prefix (preamble, canonical truth, skills) comes first as
  * system messages; the Work Item instructions stay one verbatim user message; knowledge and memory
  * follow as labelled reference context; recent results are tool messages. No provider cache saving is
@@ -316,10 +330,12 @@ export function itemHeader(c: ContextCandidate): string {
  */
 export function renderContext(items: readonly RenderItem[]): RenderedContext {
   const inLayer = (l: ContextLayer): RenderItem[] => items.filter((i) => i.candidate.layer === l);
+  // Only L1–L3 are governed / approved text; everything below is neutralized data.
+  const asData = (l: ContextLayer, text: string): string => (l === 'KNOWLEDGE' || l === 'MEMORY' || l === 'RECENT' ? neutralizeLayerMarkers(text) : text);
   const section = (l: ContextLayer): string | null => {
     const xs = inLayer(l);
     if (xs.length === 0) return null;
-    return [SECTION[l], ...xs.map((i) => `${itemHeader(i.candidate)}\n${i.text}`)].join('\n');
+    return [SECTION[l], ...xs.map((i) => `${itemHeader(i.candidate)}\n${asData(l, i.text)}`)].join('\n');
   };
   const prefixText = [section('AUTHORITY'), section('SKILL')].filter((s): s is string => s !== null).join('\n\n');
   const messages: ProviderMessage[] = [];
@@ -328,7 +344,7 @@ export function renderContext(items: readonly RenderItem[]): RenderedContext {
   const reference = [section('KNOWLEDGE'), section('MEMORY')].filter((s): s is string => s !== null).join('\n\n');
   if (reference) messages.push({ role: 'system', content: reference });
   // Recent results are rendered in the order they happened (keys carry the zero-padded step).
-  for (const r of [...inLayer('RECENT')].sort((a, b) => (a.candidate.key < b.candidate.key ? -1 : a.candidate.key > b.candidate.key ? 1 : 0))) messages.push({ role: 'tool', content: r.text });
+  for (const r of [...inLayer('RECENT')].sort((a, b) => (a.candidate.key < b.candidate.key ? -1 : a.candidate.key > b.candidate.key ? 1 : 0))) messages.push({ role: 'tool', content: asData('RECENT', r.text) });
   return { messages, estimatedTokens: utf8TokenUpperBound(messages), prefixText };
 }
 

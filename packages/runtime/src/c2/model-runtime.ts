@@ -37,6 +37,9 @@ import type { ModelCallOutcome, ModelCallRequest } from './types.js';
 
 export const DEFAULT_MODEL_CALL_TIMEOUT_MS = 120_000;
 
+/** The normalized result of one adapter call. */
+type CallResult = { ok: true; response: Awaited<ReturnType<ProviderAdapter['generate']>> } | { ok: false; failure: ProviderFailureClass; usage: ProviderError['usage'] };
+
 export class GovernedModelRuntime {
   readonly #adapters: ReadonlyMap<string, ProviderAdapter>;
   readonly #timeoutMs: number;
@@ -140,40 +143,20 @@ export class GovernedModelRuntime {
           const sessionId = newId();
           this.#calls++;
           const outcome = await this.#call(adapter, { providerCode: d.deployment.providerCode, modelCode: d.deployment.modelCode, deploymentCode: d.deployment.code, messages: context.messages, maxOutputTokens: req.maxOutputTokens }, signal);
-          if (outcome.ok) {
-            let usage;
-            try {
-              usage = normalizeUsage(outcome.response.usage, { inputUpperBound: routeReq.inputTokensUpperBound, maxOutputTokens: req.maxOutputTokens });
-            } catch {
-              // Unusable usage report: the provider answered but broke the contract. Hold the full
-              // reservation (spend is uncertain), hold the deployment, never retry blindly.
-              holdReservation(store, fence, reservationId, 'USAGE_UNREPORTED');
-              recordDeploymentOutcome(store, fence, d.deployment.id as Id, 'CONTRACT_VIOLATION');
-              return { kind: 'UNCERTAIN', failure: 'CONTRACT_VIOLATION' };
-            }
-            settleReservation(store, fence, reservationId, { inputTokens: usage.usage.inputTokens, outputTokens: usage.usage.outputTokens, withinBounds: usage.withinBounds, sessionId, outcome: 'OK' });
-            recordDeploymentOutcome(store, fence, d.deployment.id as Id, usage.withinBounds ? null : 'CONTRACT_VIOLATION');
-            return { kind: 'OK', proposal: parseProposal(outcome.response.outputText), usage: usage.usage, deploymentId: d.deployment.id, reasoningClass: d.reasoningClass, attempts: attempt, manifestId: context.manifestId };
+          // From here on the call may have been billed. Bookkeeping that fails (an out-of-range usage
+          // report, a busy store) never escapes as a processor error that would retry the same route:
+          // the money stays held for reconciliation and the deployment is held as a contract violation
+          // (R1-09, D13-F.1/.8, D-C2-07). The run-settle backstop holds anything still reserved.
+          let settled: { readonly done: ModelCallOutcome } | { readonly failure: ProviderFailureClass };
+          try {
+            settled = this.#account(store, fence, d, reservationId, sessionId, outcome, routeReq.inputTokensUpperBound, req.maxOutputTokens, attempt, context.manifestId);
+          } catch {
+            return containAccountingFailure(store, fence, reservationId, d.deployment.id as Id);
           }
-          const failure = outcome.failure;
+          if ('done' in settled) return settled.done;
+          const failure = settled.failure;
           lastFailure = failure;
           const disp = FAILURE_DISPOSITIONS[failure];
-          if (outcome.usage) {
-            // Billed despite failing: charged truthfully, never hidden.
-            let u;
-            try {
-              u = normalizeUsage(outcome.usage, { inputUpperBound: routeReq.inputTokensUpperBound, maxOutputTokens: req.maxOutputTokens });
-            } catch {
-              u = null;
-            }
-            if (u) settleReservation(store, fence, reservationId, { inputTokens: u.usage.inputTokens, outputTokens: u.usage.outputTokens, withinBounds: u.withinBounds, sessionId, outcome: 'FAILED_CHARGED' });
-            else holdReservation(store, fence, reservationId, failure);
-          } else if (disp.sent === 'UNKNOWN') {
-            holdReservation(store, fence, reservationId, failure);
-          } else {
-            releaseReservation(store, fence, reservationId, failure);
-          }
-          recordDeploymentOutcome(store, fence, d.deployment.id as Id, failure);
           if (mayRetry(disp.retry, retries, policy)) {
             retries++;
             attemptKind = 'RETRY';
@@ -195,8 +178,62 @@ export class GovernedModelRuntime {
     return { kind: 'UNAVAILABLE', code: 'ATTEMPTS_EXHAUSTED' };
   }
 
+  /**
+   * Accounts for one sent call: settle actual usage (the unused reservation is released), hold it when
+   * the spend is uncertain, release it only when the call provably was not sent; then record the
+   * deployment's health. Returns the finished outcome, or the failure class that drives retry / fallback.
+   */
+  #account(
+    store: CompanyStore,
+    fence: Fence,
+    d: Extract<RouteDecision, { kind: 'ROUTE' }>,
+    reservationId: Id,
+    sessionId: Id,
+    outcome: CallResult,
+    inputUpperBound: number,
+    maxOutputTokens: number,
+    attempt: number,
+    manifestId: Id,
+  ): { readonly done: ModelCallOutcome } | { readonly failure: ProviderFailureClass } {
+    const deploymentId = d.deployment.id as Id;
+    if (outcome.ok) {
+      let usage;
+      try {
+        usage = normalizeUsage(outcome.response.usage, { inputUpperBound, maxOutputTokens });
+      } catch {
+        // Unusable usage report: the provider answered but broke the contract. Hold the full
+        // reservation (spend is uncertain), hold the deployment, never retry blindly.
+        holdReservation(store, fence, reservationId, 'USAGE_UNREPORTED');
+        recordDeploymentOutcome(store, fence, deploymentId, 'CONTRACT_VIOLATION');
+        return { done: { kind: 'UNCERTAIN', failure: 'CONTRACT_VIOLATION' } };
+      }
+      settleReservation(store, fence, reservationId, { inputTokens: usage.usage.inputTokens, outputTokens: usage.usage.outputTokens, withinBounds: usage.withinBounds, sessionId, outcome: 'OK' });
+      recordDeploymentOutcome(store, fence, deploymentId, usage.withinBounds ? null : 'CONTRACT_VIOLATION');
+      return { done: { kind: 'OK', proposal: parseProposal(outcome.response.outputText), usage: usage.usage, deploymentId: d.deployment.id, reasoningClass: d.reasoningClass, attempts: attempt, manifestId } };
+    }
+    const failure = outcome.failure;
+    const disp = FAILURE_DISPOSITIONS[failure];
+    if (outcome.usage) {
+      // Billed despite failing: charged truthfully, never hidden.
+      let u;
+      try {
+        u = normalizeUsage(outcome.usage, { inputUpperBound, maxOutputTokens });
+      } catch {
+        u = null;
+      }
+      if (u) settleReservation(store, fence, reservationId, { inputTokens: u.usage.inputTokens, outputTokens: u.usage.outputTokens, withinBounds: u.withinBounds, sessionId, outcome: 'FAILED_CHARGED' });
+      else holdReservation(store, fence, reservationId, failure);
+    } else if (disp.sent === 'UNKNOWN') {
+      holdReservation(store, fence, reservationId, failure);
+    } else {
+      releaseReservation(store, fence, reservationId, failure);
+    }
+    recordDeploymentOutcome(store, fence, deploymentId, failure);
+    return { failure };
+  }
+
   /** One bounded adapter call; any adapter misbehaviour is normalized, never propagated. */
-  async #call(adapter: ProviderAdapter, request: Parameters<ProviderAdapter['generate']>[0], runSignal: AbortSignal): Promise<{ ok: true; response: Awaited<ReturnType<ProviderAdapter['generate']>> } | { ok: false; failure: ProviderFailureClass; usage: ProviderError['usage'] }> {
+  async #call(adapter: ProviderAdapter, request: Parameters<ProviderAdapter['generate']>[0], runSignal: AbortSignal): Promise<CallResult> {
     const controller = new AbortController();
     const onAbort = (): void => controller.abort();
     runSignal.addEventListener('abort', onAbort, { once: true });
@@ -217,4 +254,24 @@ export class GovernedModelRuntime {
       runSignal.removeEventListener('abort', onAbort);
     }
   }
+}
+
+/**
+ * A call that may have been billed whose bookkeeping failed (R1-09): the reservation is held for
+ * reconciliation (never left RESERVED, never released) and the deployment is held as a contract
+ * violation, so no retry calls the same route blindly. Each step is best effort — if the store itself
+ * is unavailable, the run-settle backstop and startup recovery hold the reservation instead.
+ */
+function containAccountingFailure(store: CompanyStore, fence: Fence, reservationId: Id, deploymentId: Id): ModelCallOutcome {
+  try {
+    holdReservation(store, fence, reservationId, 'SETTLEMENT_FAILED');
+  } catch {
+    // Already final or the store is unavailable: the backstop holds it.
+  }
+  try {
+    recordDeploymentOutcome(store, fence, deploymentId, 'CONTRACT_VIOLATION');
+  } catch {
+    // Best effort; the uncertain outcome still ends this call.
+  }
+  return { kind: 'UNCERTAIN', failure: 'CONTRACT_VIOLATION' };
 }

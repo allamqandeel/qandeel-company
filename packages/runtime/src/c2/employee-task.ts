@@ -9,6 +9,7 @@
  */
 import { assertIntInRange, boundedText, type JsonValue, type ProcessorContext, type ProcessorResult } from '@qandeel-company/domain';
 import { assertTaskClass, isDataClass, isReasoningClass, type ModelProposal, type ReasoningClass } from '@qandeel-company/governance';
+import { containsSecretMaterial } from '@qandeel-company/mind';
 
 import type { GovernedProcessor, GovernedRunServices, ToolRequest } from './types.js';
 
@@ -27,7 +28,9 @@ export interface EmployeeTaskInput {
 
 interface LoopState {
   readonly turn: number;
-  readonly phase: 'MODEL' | 'TOOL';
+  /** FINAL: the model already decided to finish (R1 B-F4) — a resume completes without another call. */
+  readonly phase: 'MODEL' | 'TOOL' | 'FINAL';
+  readonly summaryCode?: string | null;
   readonly pending: ToolRequest | null;
   readonly modelCalls: number;
   readonly invalid: number;
@@ -42,9 +45,12 @@ function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasonin
   // C3 context controls are validated up front (a typed refusal, never a failure inside assembly).
   if (o.contextDataClassCeiling !== undefined && !isDataClass(o.contextDataClassCeiling)) throw new Error('invalid contextDataClassCeiling');
   if (o.contextBudgetTokens !== undefined) assertIntInRange(o.contextBudgetTokens, 'contextBudgetTokens', 1_024, 64_000);
+  const instructions = boundedText(o.instructions, 'instructions', 12_000);
+  // Instructions are sent to a provider: secret material never enters a prompt (Stage 14, R1-01).
+  if (containsSecretMaterial(instructions)) throw new Error('instructions carry secret material');
   return {
     taskClass: assertTaskClass(o.taskClass),
-    instructions: boundedText(o.instructions, 'instructions', 12_000),
+    instructions,
     maxTurns: o.maxTurns === undefined ? 8 : assertIntInRange(o.maxTurns, 'maxTurns', 1, 32),
     maxOutputTokens: o.maxOutputTokens === undefined ? 512 : assertIntInRange(o.maxOutputTokens, 'maxOutputTokens', 1, 32_768),
     reasoningClass: isReasoningClass(o.reasoningClass) ? o.reasoningClass : null,
@@ -54,7 +60,8 @@ function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasonin
 function readState(ctx: ProcessorContext): LoopState {
   const s = ctx.resumeFrom?.state as Partial<LoopState> | null | undefined;
   if (ctx.resumeFrom?.kind !== 'employee-loop' || typeof s !== 'object' || s === null || typeof s.turn !== 'number') return { turn: 0, phase: 'MODEL', pending: null, modelCalls: 0, invalid: 0 };
-  return { turn: s.turn, phase: s.phase === 'TOOL' ? 'TOOL' : 'MODEL', pending: (s.pending ?? null) as ToolRequest | null, modelCalls: Number(s.modelCalls ?? 0), invalid: Number(s.invalid ?? 0) };
+  const phase = s.phase === 'TOOL' ? 'TOOL' : s.phase === 'FINAL' ? 'FINAL' : 'MODEL';
+  return { turn: s.turn, phase, pending: (s.pending ?? null) as ToolRequest | null, modelCalls: Number(s.modelCalls ?? 0), invalid: Number(s.invalid ?? 0), summaryCode: typeof s.summaryCode === 'string' ? s.summaryCode : null };
 }
 
 const save = (ctx: ProcessorContext, s: LoopState): Promise<void> => ctx.checkpoint('employee-loop', s as unknown as JsonValue);
@@ -78,6 +85,8 @@ export const employeeTaskProcessor: GovernedProcessor = {
     let s = readState(ctx);
     let escalateFrom: { fromClass: ReasoningClass; evidence: 'OUTPUT_FAILED_VALIDATION' | 'CONTEXT_OVERFLOW' } | null = null;
     let escalated = false;
+    // A FINAL decision checkpointed before a crash is honoured on resume: no new model call, no new action.
+    if (s.phase === 'FINAL') return { type: 'COMPLETED', evidence: { summaryCode: s.summaryCode ?? 'final', turns: s.turn, modelCalls: s.modelCalls, resumed: true } };
     while (s.turn < cfg.maxTurns) {
       if (ctx.signal.aborted) return { type: 'CANCELLED' };
       if (s.phase === 'TOOL' && s.pending) {
@@ -151,7 +160,7 @@ export const employeeTaskProcessor: GovernedProcessor = {
       s = { ...s, modelCalls: s.modelCalls + 1 };
       const proposal: ModelProposal = out.proposal;
       if (proposal.type === 'FINAL') {
-        await save(ctx, { ...s, phase: 'MODEL', pending: null });
+        await save(ctx, { ...s, phase: 'FINAL', pending: null, summaryCode: proposal.summaryCode });
         return { type: 'COMPLETED', evidence: { summaryCode: proposal.summaryCode, turns: s.turn, modelCalls: s.modelCalls, reasoningClass: out.reasoningClass } };
       }
       if (proposal.type === 'MEMORY_CANDIDATE' || proposal.type === 'OBSERVATION') {

@@ -1490,3 +1490,67 @@ validation passed on candidate `4284337221706f08aebe65fadb64c881c8ed9470`; the f
 head was `e4fdaa119eeef4cb612e349f962adb38108a62f8`; PR #4 merged to `main` on 2026-09-27 as
 `4592b525bdc4937dd130dac452a7dc8fc29de909`. The closure is recorded in `docs/C3_CLOSURE_RECORD.md`.
 R1 and C4 remain NOT STARTED.
+
+## D-R1-01 — R1 Independent Core Review: engineering remediation (no Product decision)
+
+**Context.** R1 reviewed the canonical C1 + C2 + C3 core at `c6a17c3` as one system (ten independent
+adversarial angles plus the reviewer's own verification; `docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md`).
+It found no BLOCKER and 15 MAJOR engineering defects, each inside already-approved authority. Every one
+was fixed at its root cause with a regression proof and a mutation (`npm run r1:mutation`, in `ci`).
+No imported authority was edited and no Product decision was taken; the questions the review could not
+decide are surfaced as `PRODUCT OWNER DECISION REQUIRED` in the report.
+
+**Engineering decisions taken in the fixes.**
+- **Work-Item-global steps (R1-03).** A governed job's loop step counts per job (checkpoints are per
+  job), while idempotency keys, step results and memory candidates are keyed per Work Item. The runtime
+  now adds a durable per-job base (`job ordinal × GOVERNED_STEP_SPAN`, span 100; the loop allows 32
+  turns) before anything keyed per Work Item is written. The first job's base is 0, so every existing
+  key is unchanged; a resumed run of the same job presents the same keys (D-C2-07 unchanged); a new
+  job of a re-released / reworked Work Item can no longer collide with an earlier job's keys (a false
+  `IDEMPOTENCY_CONFLICT` that counted toward the authority pause, or a silent stale REPLAY).
+- **Governed reconciliation (R1-04).** The C1 job-level `resolveReconciliation` stays the operator
+  decision for plain C1 work. For governed (Employee-attributed) work it is Founder authority through
+  the shared Founder-authority write (fail closed, `FOUNDER_SURFACE_UNAVAILABLE`, until C5) and is
+  refused while the Work Item still has an uncertain tool invocation (`resolveToolInvocation` first).
+- **C2 wait re-check at the settle (R1-06).** As C3 already did for its waits, the WAIT settle of
+  `AWAITING_APPROVAL` / `BUDGET_EXHAUSTED` re-checks its durable predicate in the same transaction (no
+  pending tool approval left; a cap on the Work Item's budget chain changed since the run began) and
+  wakes the job if the wait no longer holds. A spurious wake costs nothing: every gate re-runs.
+- **Grants wake capability gaps (R1-07)**; **approval release honours dependencies (R1-05)**.
+- **Model-call accounting is contained (R1-09).** Post-call bookkeeping that fails holds the
+  reservation (`SETTLEMENT_FAILED`) and holds the deployment (`CONTRACT_VIOLATION`); every run settle
+  also holds any model-call reservation of that run still `RESERVED` (`RUN_ENDED_UNSETTLED`).
+- **In-process active runs are keyed by run (R1-08)**; a run whose claim was interrupted is fenced
+  before its job can be re-claimed; shutdown interrupts only claims this process still holds.
+- **Every attempt closure scores refusals (R1-10)**; a cancelled / superseded shadow item's refusals
+  are collected as critical failures; a closed attempt's unfinished Work Item is cancelled.
+- **Reassignment at the duty boundary (R1-11).** D-C3-24's rule ("Active duty carries into a changed
+  role only with a VALID target-role certification") also applies to `PAUSED` (which resumes straight
+  to ACTIVE; `PAUSED → RETRAINING` is an existing transition). `ON_LEAVE` has no RETRAINING transition:
+  until the Product Owner decides (P-01), a role change of an `ON_LEAVE` Employee without the target
+  certification is refused (fail closed; nothing new is invented).
+- **Retrieval eligibility before the LIMIT (R1-12)**: data-class ceiling, market and review horizon
+  are decided in SQL; memories past their horizon take no pool slot and are still marked STALE.
+- **Lower layers are data (R1-13)**: knowledge / memory / recent-result text is rendered with any
+  line that would open like a layer marker, item header or precedence line neutralized (same UTF-8
+  length, so budgets stay exact).
+- **Secret material (R1-01)**: the detector covers the formats the review found passing (hyphenated
+  provider keys, payment keys, fine-grained GitHub tokens, JWTs, OAuth tokens, `Bearer`, URL
+  credentials, JSON-quoted pairs, "password is …", Arabic) on NFKC / zero-width-folded text, in linear
+  time; results are scanned before they are bounded; claim fields are scanned; a secret-bearing tool
+  result is stored as a digest only; secret-bearing instructions never reach a provider.
+- **Tool arguments by own fields only (R1-02)**; proposal codes are length-bounded (K4); a FINAL
+  decision is checkpointed as FINAL and honoured on resume (B-F4); D4 retention uses the class at the
+  decision too (G-4); a malformed backup manifest keeps the stable error code (C-F5).
+- **Proof integrity (R1-14, R1-15).** Released migrations 0005 / 0006 are frozen by content; the test
+  runner requires a passing test in EVERY test file (a proof file emptied to its marker now fails); the
+  verifier pins every recorded mutation and the mutation machinery (`mutation-checks-pinned`); the
+  bootstrap workspace uses the vacuity-checked runner.
+
+**Documentation note (R1 B-F6).** D-C2-07's first bullet list says an orphaned NONE / IDEMPOTENT tool
+intent's reservation "is released". D-C2-12 (MAJOR, "interrupted tool intents released money that may
+have been spent") amended that to "charged (`FAILED_CHARGED`), never released", and the code follows
+D-C2-12. D-C2-07 is read with that amendment; it is not rewritten here.
+
+**State.** R1 is a closure candidate awaiting Technical Lead exact-head review; it is **not closed**.
+C4 is not started.

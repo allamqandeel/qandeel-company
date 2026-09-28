@@ -164,13 +164,16 @@ const SECRET_LITERALS = [
   /\bAIza[0-9A-Za-z_-]{35}\b/,
 ];
 const SECRET_COLUMN = /(?:^|[(,])\s*"?(\w*(?:password|passwd|secret|api_?key|private_?key|access_?token|refresh_?token|bearer)\w*)"?\s+(?:TEXT|BLOB|ANY)\b/im;
-// Released canonical migrations (C1 0001–0003, C2 0004) are frozen by content, independently of the
-// registry pins: editing one and re-pinning it is still refused.
+// Released canonical migrations (C1 0001–0003, C2 0004, C3 0005–0006) are frozen by content,
+// independently of the registry pins: editing one and re-pinning it is still refused (R1-14: C3's
+// were released with PR #4 and had not been added).
 const FROZEN_MIGRATIONS = [
   { file: '0001_work_foundation.sql', sha256: '3022ed5ed626f9394cfa9a7e897d2ed4e7bcb9b94c8de7a9a4bde7c0c658436e' },
   { file: '0002_queue_runs_artifacts.sql', sha256: 'b3060a1ea7a3e57e8bf0f76a4edba437c9f1b8d2886ef97ff5ca2b6920b0a7c2' },
   { file: '0003_runtime_wake_generation.sql', sha256: 'f47cf341f677585d762672929bdf2f41eeb4bf7440463b68846bac0c777762e4' },
   { file: '0004_c2_governance.sql', sha256: '51dd9a38df306751eace1dc6cf82e231b92e487b7e913b061f336e8c25a0066c' },
+  { file: '0005_c3_memory_context.sql', sha256: '2c2f0d8092f108de2596c15e795ba6ba8d17b316761d0ac59e45d8845409e44a' },
+  { file: '0006_c3_skills_academy.sql', sha256: 'a4b8709915fbad924212e3278b64d2f58d4d1e40c5ba1ff937cb7c50637d57d8' },
 ];
 // C4 / C5 / C7 subsystems must not appear as C3 schema or packages (Memory / Skills / Academy are C3's own).
 const LATER_SCOPE_TABLE = /\bCREATE\s+(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(\w*(?:review_pool|reviewer|director|delegation|org_chart|founder_ui|command_center|app_ops)\w*)/i;
@@ -183,6 +186,40 @@ const C3_CLOSURE = /^docs\/C3_[^/]*CLOSURE[^/]*\.md$/i;
 const C3_REPORT = 'docs/C3_IMPLEMENTATION_REPORT.md';
 const C3_PROOF_MARKERS = ['C3-PROOF: mind-kernel', 'C3-PROOF: storage-mind', 'C3-PROOF: runtime-mind', 'C3-PROOF: memory-crash-recovery', 'C3-PROOF: concurrent-certification', 'C3-PROOF: review-fixes', 'C3-PROOF: founder-decisions'];
 const C3_MUTATION_CHECK = 'scripts/c3-mutation-check.mjs';
+// R1-15: the mutation checks are pinned. Every recorded mutation must stay in its script (a script may
+// only grow), the script must keep the machinery that makes a mutation meaningful (the exact-count
+// guard, the run of the proof tests, the restore, the failing exit) and the root "ci" script must run it.
+const R1_MUTATION_CHECK = 'scripts/r1-mutation-check.mjs';
+const MUTATION_PINS = {
+  [MUTATION_CHECK]: { script: 'c1:mutation', ids: ['claim-without-supervisor-verification', 'recovery-without-supervisor-verification', 'heartbeat-without-wake-reconciliation', 'backup-finalization-without-retry', 'backup-failure-leaves-attempt', 'backup-record-not-idempotent'] },
+  [C2_MUTATION_CHECK]: {
+    script: 'c2:mutation',
+    ids: ['authority-no-default-deny', 'authority-r4-not-founder-only', 'authority-r3-without-founder-approval', 'governance-admin-not-founder-only', 'approval-self-decision-allowed', 'reservation-without-headroom-check', 'ineligible-employee-can-run', 'denied-tool-reaches-driver', 'idempotent-replay-removed', 'call-despite-refused-reservation', 'd4-external-egress-allowed', 'silent-expensive-fallback', 'processor-can-widen-egress', 'tool-result-does-not-raise-class', 'escalation-on-self-reported-uncertainty', 'founder-ref-is-authentication', 'activation-without-certification', 'd3-external-egress-allowed', 'd3-external-reservation-allowed'],
+  },
+  [C3_MUTATION_CHECK]: {
+    script: 'c3:mutation',
+    ids: [
+      'memory-secret-stored', 'memory-contradicts-canonical', 'memory-model-sets-confidence', 'context-budget-soft', 'critical-dimension-compensated', 'skill-license-unclear-eligible', 'skill-paid-dependency-silent', 'skill-executable-content-passes',
+      'reservation-without-manifest', 'knowledge-scope-leak', 'memory-other-employee-visible', 'corrupt-content-used', 'unpinned-skill-loads', 'capability-gate-bypassed', 'academy-authority-unconstrained', 'holdout-reused', 'evaluator-sets-run-facts',
+      'conflict-resolution-no-wake', 'capability-wait-not-rechecked', 'processor-supplied-recent-results', 'canonical-binds-only-if-relevant', 'probation-fail-no-new-epoch', 'rubric-ignores-refused-actions', 'licence-review-skipped', 'model-accepts-foreign-context',
+      'pending-candidates-not-recovered', 'context-hold-not-rechecked', 'term-limit-before-filter', 'compaction-crosses-markets', 'failed-attempt-hides-breach', 'role-cert-loss-ignored', 'role-cert-loss-not-at-run-start', 'role-cert-loss-not-at-authorization',
+      'role-cert-loss-not-at-reservation', 'role-cert-loss-not-at-tool-intent', 'role-reassignment-without-cert-keeps-active', 'calibration-not-required-at-activation', 'calibration-gates-certification', 'extension-evidence-not-required', 'unlicense-auto-clears',
+    ],
+  },
+  // R1 Independent Core Review: one mutation per fixed finding (docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md).
+  [R1_MUTATION_CHECK]: {
+    script: 'r1:mutation',
+    ids: [
+      'r1-01-tool-result-secret-stored', 'r1-01-step-result-bounded-before-scan', 'r1-01-secret-instructions-sent', 'r1-01-detector-misses-hyphenated-keys', 'r1-02-tool-args-inherited-field', 'r1-03-step-base-ignored',
+      'r1-04-governed-reconciliation-unauthenticated', 'r1-05-approval-releases-unresolved-dependencies', 'r1-06-c2-wait-not-rechecked', 'r1-07-grant-does-not-wake-gap', 'r1-08-active-runs-keyed-by-job', 'r1-09-accounting-failure-escapes',
+      'r1-09-settle-backstop-removed', 'r1-10-new-attempt-voids-refusal', 'r1-10-withdrawal-voids-refusal', 'r1-10-cancelled-shadow-refusal-skipped', 'r1-11-paused-reassignment-keeps-duty', 'r1-11-on-leave-reassignment-unchecked',
+      'r1-12-eligibility-after-limit', 'r1-13-lower-layer-forges-marker', 'r1-final-decision-not-checkpointed', 'r1-unbounded-proposal-code',
+    ],
+  },
+};
+// The machinery every mutation script keeps: an exact occurrence guard, a run of the named proofs, the
+// restore of every mutated file and a failing exit when a mutation is not caught.
+const MUTATION_MACHINERY = [/\bconst\s+MUTATIONS\s*=\s*\[/, /\bexpectedCount\b/, /spawnSync\(\s*process\.execPath,\s*\[\s*'--test'/, /\bfinally\s*\{[^}]*writeFileSync\(/, /process\.exit\(1\)/];
 // Every inference is fed by the governed Context Assembler: the runtime module that mints the
 // context, the model runtime that accepts only a minted context, and the request type without messages.
 const CONTEXT_ASSEMBLER = 'packages/runtime/src/c3/context-assembler.ts';
@@ -674,8 +711,8 @@ export const RULES = [
   },
   {
     id: 'released-migrations-frozen',
-    // Canonical migrations 0001–0004 (C1, C2) are frozen by content: editing one and re-pinning it is
-    // still refused. C3 adds new migrations from 0005.
+    // Canonical migrations 0001–0006 (C1, C2, C3) are frozen by content: editing one and re-pinning it
+    // is still refused. A later change adds new migrations from 0007.
     check: ({ files, read }) =>
       FROZEN_MIGRATIONS.flatMap(({ file, sha256 }) => {
         const f = `${MIGRATIONS_DIR}${file}`;
@@ -730,6 +767,26 @@ export const RULES = [
       if (!files.includes(C3_MUTATION_CHECK)) problems.push(`missing ${C3_MUTATION_CHECK}`);
       const ci = json(read('package.json'))?.scripts?.ci ?? '';
       if (!/\bc3:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c3:mutation');
+      return problems;
+    },
+  },
+  {
+    id: 'mutation-checks-pinned',
+    // R1-15: a mutation check replaced by a comment, or a recorded mutation removed together with its
+    // gate, must fail CI. Scripts may only grow; each keeps the machinery that makes a catch meaningful.
+    check: ({ files, read }) => {
+      const problems = [];
+      const ci = json(read('package.json'))?.scripts?.ci ?? '';
+      for (const [f, pin] of Object.entries(MUTATION_PINS)) {
+        if (!files.includes(f)) {
+          problems.push(`missing ${f}`);
+          continue;
+        }
+        const text = read(f) ?? '';
+        for (const re of MUTATION_MACHINERY) if (!re.test(text)) problems.push(`${f} lost its mutation machinery (${re.source})`);
+        for (const id of pin.ids) if (!text.includes(`id: '${id}'`)) problems.push(`${f} no longer carries the recorded mutation "${id}"`);
+        if (!new RegExp(`\\b${pin.script}\\b`).test(ci)) problems.push(`the root "ci" script does not run ${pin.script}`);
+      }
       return problems;
     },
   },
@@ -927,7 +984,17 @@ const SYNTH_MODEL_RUNTIME = [
 const SYNTH_TYPES = 'export interface ModelCallRequest {\n  readonly taskClass: string;\n  readonly step: number;\n}\n';
 const SYNTH_BASELINE = `## 5. Data and privacy\n\n- **Rule A — ${PRIVACY_RULES[0]}**\n- **Rule B — ${PRIVACY_RULES[1].replace('private user content', 'private user\n  content')}**\n- **Rule C — ${PRIVACY_RULES[2]}**\n\n## 2. Operating principles\n\n- Event-driven by default.\n`;
 
-const SYNTH_QUEUE = "export interface ClaimOptions {\n  readonly workerId: string;\n  readonly supervisor: SupervisorFence;\n}\n";
+// A minimal mutation script that keeps the pinned machinery and IDs (the synthetic repository is clean).
+const synthMutationScript = (ids) =>
+  [
+    'const MUTATIONS = [',
+    ...ids.map((id) => `  { id: '${id}', expectedCount: 1 },`),
+    '];',
+    "for (const m of MUTATIONS) { try { spawnSync(process.execPath, ['--test', ...m.tests]); } finally { writeFileSync(file, original); } }",
+    'if (failures) process.exit(1);',
+    '',
+  ].join('\n');
+const SYNTH_QUEUE ="export interface ClaimOptions {\n  readonly workerId: string;\n  readonly supervisor: SupervisorFence;\n}\n";
 const SYNTH_STORE = 'export class CompanyStore {\n  static open(root: string): CompanyStore {\n    return new CompanyStore();\n  }\n  wake(id: string): boolean {\n    return true;\n  }\n  readView(): CompanyReadView {\n    return view;\n  }\n}\n';
 const SYNTH_RUNTIME = [
   "import { CompanyStore, type CompanyReadView } from '@qandeel-company/storage';",
@@ -952,7 +1019,7 @@ function syntheticRepo(overrides = {}) {
     [AUTHORITY_INDEX]: `## Missing\n\n**${STAGE_16_MISSING}.**\n`,
     [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT)),
     [SYNTH_SOURCE]: SYNTH_SOURCE_TEXT,
-    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation' } }),
+    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation' } }),
     'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'node --test dist/test' } }),
     'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'packages/bootstrap-contract': {}, 'node_modules/tar': { version: '7.0.0' } } }),
     '.gitattributes': '* text=auto eol=lf\n*.sh text eol=lf\n*.ps1 text eol=crlf\n*.png binary\n',
@@ -975,7 +1042,7 @@ function syntheticRepo(overrides = {}) {
     'packages/storage/test/supervisor-authority.test.ts': `// ${C1_PROOF_MARKERS[0]}\n`,
     'packages/storage/test/product-decisions.test.ts': `// ${C1_PROOF_MARKERS[2]}\n`,
     'packages/storage/test/backup-finalization.test.ts': `// ${C1_PROOF_MARKERS[3]}\n`,
-    [MUTATION_CHECK]: '',
+    [MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[MUTATION_CHECK].ids),
     // Legitimate code that mentions the words without opening a network path must stay clean.
     'packages/runtime/src/wake.ts': "// no fetch here; a 'net' income is not a socket\nexport const prefetched = 1;",
     'packages/storage/test/labels.test.ts': "const root = tempRoot('sqlite');",
@@ -988,11 +1055,12 @@ function syntheticRepo(overrides = {}) {
     'packages/storage/src/credentials.ts': "const credentialRef = 'vault:publisher-token';",
     [`${MIGRATIONS_DIR}0004_c2.sql`]: SYNTH_C2_SQL,
     'packages/runtime/test/c2/proofs.test.ts': C2_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
-    [C2_MUTATION_CHECK]: '',
+    [C2_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C2_MUTATION_CHECK].ids),
     // C3: proofs, the minting assembler, a model runtime that accepts only minted context, a request
     // type without messages, the one skill loader, the pure kernel and the activation gate.
     'packages/runtime/test/c3/proofs.test.ts': C3_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
-    [C3_MUTATION_CHECK]: '',
+    [C3_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C3_MUTATION_CHECK].ids),
+    [R1_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[R1_MUTATION_CHECK].ids),
     [CONTEXT_ASSEMBLER]: SYNTH_ASSEMBLER,
     [MODEL_RUNTIME]: SYNTH_MODEL_RUNTIME,
     [RUNTIME_TYPES]: SYNTH_TYPES,
@@ -1160,6 +1228,9 @@ const VIOLATIONS = {
     { remove: [`${MIGRATIONS_DIR}0003_runtime_wake_generation.sql`] },
     // The C2 migration is canonical too: C3 never edits it.
     { contents: { [`${MIGRATIONS_DIR}0004_c2_governance.sql`]: `${C1_MIGRATION_TEXT['0004_c2_governance.sql']}ALTER TABLE employees ADD COLUMN memory_json TEXT;\n` } },
+    // R1-14: the released C3 migrations are canonical too.
+    { contents: { [`${MIGRATIONS_DIR}0006_c3_skills_academy.sql`]: `${C1_MIGRATION_TEXT['0006_c3_skills_academy.sql']}-- edited after release\n` } },
+    { remove: [`${MIGRATIONS_DIR}0005_c3_memory_context.sql`] },
   ],
   'no-later-scope-leakage': [
     { contents: { [`${MIGRATIONS_DIR}0005_c3.sql`]: `${SYNTH_C3_SQL}CREATE TABLE director_assignments (id TEXT) STRICT;\n` } },
@@ -1181,6 +1252,15 @@ const VIOLATIONS = {
     { contents: { 'packages/runtime/test/c3/proofs.test.ts': '// markers removed\n' } },
     { remove: [C3_MUTATION_CHECK] },
     { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation' } }) } },
+  ],
+  'mutation-checks-pinned': [
+    // The whole script replaced by a comment (the R1-15 evidence): exits 0, proves nothing.
+    { contents: { [C2_MUTATION_CHECK]: '// C2 mutation check\n' } },
+    // A recorded mutation removed (typically together with the gate it proved).
+    { contents: { [C3_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C3_MUTATION_CHECK].ids.filter((id) => id !== 'term-limit-before-filter')) } },
+    // The restore / failing exit removed: a mutated dist could leak, or a miss could exit 0.
+    { contents: { [MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[MUTATION_CHECK].ids).replace('if (failures) process.exit(1);', 'if (failures) console.log(failures);') } },
+    { remove: [MUTATION_CHECK] },
   ],
   'c3-not-claimed-closed': [
     { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS') } },
@@ -1220,7 +1300,8 @@ const VIOLATIONS = {
     { contents: { 'packages/runtime/src/c3/memory-proposals.ts': "this.log.info('memory.proposed', { topic, content });" } },
   ],
   'activation-gate-present': [
-    { contents: { [`${MIGRATIONS_DIR}0005_c3.sql`]: 'CREATE TABLE memory_records (id TEXT) STRICT;\n' } },
+    // The synthetic repository carries the real (frozen) 0006, which holds the gate: drop it as well.
+    { contents: { [`${MIGRATIONS_DIR}0005_c3.sql`]: 'CREATE TABLE memory_records (id TEXT) STRICT;\n' }, remove: [`${MIGRATIONS_DIR}0006_c3_skills_academy.sql`] },
     { contents: { 'packages/storage/src/academy.ts': "setEmployeeState(ctx, e, 'ACTIVE', 'CERTIFIED', ref, [`test-seam:${id}`]);" } },
   ],
   'local-core-longpaths': { longpaths: undefined },
@@ -1260,6 +1341,8 @@ const MUST_PASS = [
   // A C2 candidate that is explicitly not closed; C2 closed together with its record.
   { id: 'c2-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / MERGED / CANONICAL', 'IN PROGRESS — implementation candidate, not closed'), [C2_REPORT]: '# Report\n\nC2 is NOT CLOSED.\n' } } },
   { id: 'c2-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS'), 'docs/C2_CLOSURE_RECORD.md': '' } } },
+  // A mutation script may grow: a new mutation added next to the recorded ones is accepted.
+  { id: 'mutation-checks-pinned', scenario: { contents: { [C3_MUTATION_CHECK]: synthMutationScript([...MUTATION_PINS[C3_MUTATION_CHECK].ids, 'a-new-gate-removed']) } } },
   // CRLF checkouts of the frozen canonical migrations are the same content.
   { id: 'released-migrations-frozen', scenario: { contents: { [`${MIGRATIONS_DIR}0001_work_foundation.sql`]: C1_MIGRATION_TEXT['0001_work_foundation.sql'].replace(/\n/g, '\r\n') } } },
   // Tests (and the acceptance harness) may import the test-only Founder seam.

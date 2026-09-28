@@ -78,6 +78,7 @@ import { assembleGovernedContext } from './c3/context-assembler.js';
 import { c3HealthOf, type C3Health } from './c3/health.js';
 import { proposeMemory } from './c3/memory-proposals.js';
 import {
+  GOVERNED_STEP_SPAN,
   acquireSupervisor,
   beginGovernedRun,
   checkpoint,
@@ -225,6 +226,7 @@ export class CompanyRuntime {
   readonly #supervisorTtlMs: number;
   readonly #jobLeaseMs: number;
   readonly #wake: WakeSignal;
+  /** Active runs of this process, keyed by run ID (a job may briefly have a fenced old run and a new one). */
   readonly #active = new Map<Id, ActiveRun>();
   readonly #handlers = new Set<EventHandler>();
   readonly #models: GovernedModelRuntime;
@@ -441,9 +443,14 @@ export class CompanyRuntime {
       sleep(grace, undefined, { signal: graceTimer.signal }).catch(() => undefined),
     ]);
     graceTimer.abort(); // never leave a timer holding the process open
+    const interrupted = new Set<Id>();
     for (const run of this.#active.values()) {
-      // Did not settle within the grace period: fence and classify it now (as recovery would).
+      // Did not settle within the grace period: fence and classify it now (as recovery would). A run
+      // that was already fenced no longer holds its claim (it may be another run's now): leave it.
+      const wasFenced = run.fenced;
       run.fenced = true;
+      if (wasFenced || interrupted.has(run.claim.fence.jobId)) continue;
+      interrupted.add(run.claim.fence.jobId);
       try {
         if (this.#fence) interruptClaim(store, this.#fence, run.claim.fence.jobId, 'SHUTDOWN_TIMEOUT');
       } catch (error) {
@@ -503,8 +510,8 @@ export class CompanyRuntime {
 
   #signalTermination(out: TerminationOutcome): void {
     for (const jobId of out.signalJobIds) {
-      const run = this.#active.get(jobId);
-      if (run) {
+      for (const run of this.#runsOfJob(jobId)) {
+        if (run.fenced) continue;
         run.reason = 'CANCEL';
         run.controller.abort();
       }
@@ -716,7 +723,13 @@ export class CompanyRuntime {
         this.#noticeCrossProcessCancellation(store);
         let interrupted = 0;
         for (const jobId of store.expiredClaims(this.#concurrency)) {
-          if (this.#active.has(jobId)) this.#active.get(jobId)?.controller.abort();
+          // The local run (if any) lost its claim: fence it before the job can be re-claimed, so it never
+          // writes again and a new run of the same job is tracked on its own (R1-08).
+          for (const local of this.#runsOfJob(jobId)) {
+            local.fenced = true;
+            if (local.reason === null) local.reason = 'LEASE_LOST';
+            local.controller.abort();
+          }
           interruptClaim(store, this.#fence, jobId, 'LEASE_EXPIRED');
           interrupted++;
         }
@@ -760,8 +773,8 @@ export class CompanyRuntime {
 
   /** A cancellation requested by another process is durable; notice it for local active runs. */
   #noticeCrossProcessCancellation(store: CompanyStore): void {
-    for (const [jobId, run] of this.#active) {
-      if (run.reason === null && store.getJob(jobId).cancelRequested) {
+    for (const run of this.#active.values()) {
+      if (!run.fenced && run.reason === null && store.getJob(run.claim.fence.jobId).cancelRequested) {
         run.reason = 'CANCEL';
         run.controller.abort();
       }
@@ -812,15 +825,21 @@ export class CompanyRuntime {
 
   // --- execution ------------------------------------------------------------------------------------
 
+  #runsOfJob(jobId: Id): ActiveRun[] {
+    return [...this.#active.values()].filter((r) => r.claim.fence.jobId === jobId);
+  }
+
   #startRun(claim: Claim): void {
     const processor = this.#registry.get(claim.job.processorKind);
     if (!processor) return; // unreachable: claims are filtered by registered kinds
     const run: ActiveRun = { claim, processor, controller: new AbortController(), reason: null, fenced: false, settled: false, done: Promise.resolve() };
-    this.#active.set(claim.fence.jobId, run);
+    // Keyed by RUN (R1-08): a job re-claimed while its previous, fenced processor is still in its abort
+    // grace gets a separate entry; the old run's completion can never remove the new run's entry.
+    this.#active.set(claim.fence.runId, run);
     this.#maxObservedActive = Math.max(this.#maxObservedActive, this.#active.size);
     this.#log.info('run.started', { jobId: claim.fence.jobId, runId: claim.fence.runId, workItemId: claim.workItem.id, kind: processor.kind, attempt: claim.run.attempt, fencingToken: claim.fence.fencingToken });
     run.done = this.#execute(run).finally(() => {
-      this.#active.delete(claim.fence.jobId);
+      this.#active.delete(claim.fence.runId);
       this.#wake.signal(); // a slot is free
     });
   }
@@ -959,25 +978,33 @@ export class CompanyRuntime {
       return { type: 'PERMANENT_FAILURE', code: begun.code };
     }
     const run = begun.context;
+    // R1-03: the processor's loop step counts per job; every Work-Item-keyed record (idempotency keys,
+    // step results, memory candidates, manifests) uses the Work-Item-global step = job base + step.
+    const globalStep = (step: number): number => {
+      if (!Number.isSafeInteger(step) || step < 0 || step >= GOVERNED_STEP_SPAN) throw new QandeelError('VALIDATION_FAILED', `a governed step is 0..${GOVERNED_STEP_SPAN - 1}`, { field: 'step' });
+      return run.stepBase + step;
+    };
     const services: GovernedRunServices = Object.freeze({
       context: run,
       // Every inference goes through governed Context Assembly first (C3): the processor names the
       // step, the runtime builds, budgets and records the context; the model runtime accepts only that.
       invokeModel: async (request: ModelCallRequest): Promise<ModelCallOutcome> => {
-        const assembled = assembleGovernedContext(store, claim.fence, { step: request.step });
+        const assembled = assembleGovernedContext(store, claim.fence, { step: globalStep(request.step) });
         if (assembled.kind !== 'OK') return { kind: 'CONTEXT', code: assembled.code };
         return this.#models.call(store, claim.fence, run, request, assembled.context, signal);
       },
       // The runtime (not the processor) records each step's outcome for later context (layer L6).
       proposeMemory: (proposal: MemoryProposal, step: number) => {
-        const out = proposeMemory(store, claim.fence, proposal, step);
-        recordStepResult(store, claim.fence, step, 'MEMORY_DECISION', JSON.stringify(out.kind === 'DECIDED' ? { memory: out.state, reason: out.reasonCode } : { memory: out.kind, reason: out.code }));
+        const g = globalStep(step);
+        const out = proposeMemory(store, claim.fence, proposal, g);
+        recordStepResult(store, claim.fence, g, 'MEMORY_DECISION', JSON.stringify(out.kind === 'DECIDED' ? { memory: out.state, reason: out.reasonCode } : { memory: out.kind, reason: out.code }));
         return out;
       },
       executeTool: async (request: ToolRequest, step: number) => {
-        const out = await this.#tools.execute(store, claim.fence, run, request, step, signal);
-        if (out.kind === 'SUCCEEDED') recordStepResult(store, claim.fence, step, 'TOOL_RESULT', JSON.stringify({ tool: request.tool, action: request.action, result: out.result }));
-        else if (out.kind === 'DENIED' && !out.paused) recordStepResult(store, claim.fence, step, 'TOOL_REFUSED', JSON.stringify({ tool: request.tool, action: request.action, denied: out.code }));
+        const g = globalStep(step);
+        const out = await this.#tools.execute(store, claim.fence, run, request, g, signal);
+        if (out.kind === 'SUCCEEDED') recordStepResult(store, claim.fence, g, 'TOOL_RESULT', JSON.stringify({ tool: request.tool, action: request.action, result: out.result }));
+        else if (out.kind === 'DENIED' && !out.paused) recordStepResult(store, claim.fence, g, 'TOOL_REFUSED', JSON.stringify({ tool: request.tool, action: request.action, denied: out.code }));
         return out;
       },
     });
@@ -991,8 +1018,8 @@ export class CompanyRuntime {
    * first, so a replaced worker cannot attach artifacts to work it no longer owns.
    */
   putRunArtifact(claimJobId: Id, content: Uint8Array | string, mediaType: string, label?: string): ArtifactRecord {
-    const run = this.#active.get(claimJobId);
-    if (!run || run.fenced || run.settled) throw new QandeelError('STALE_LEASE', 'no active run owns this job', { jobId: claimJobId });
+    const run = this.#runsOfJob(claimJobId).find((r) => !r.fenced && !r.settled);
+    if (!run) throw new QandeelError('STALE_LEASE', 'no active run owns this job', { jobId: claimJobId });
     // The fence is verified inside the same transactions that stage and promote the artifact.
     if (!this.#artifacts || !this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
     return this.#artifacts.put({ content, mediaType, workItemId: run.claim.workItem.id, runId: run.claim.fence.runId, fence: run.claim.fence, ...(label !== undefined ? { label } : {}) });

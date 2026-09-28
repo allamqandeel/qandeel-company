@@ -349,6 +349,8 @@ function readManifest(directory: string): BackupManifest {
   } catch (error) {
     throw new QandeelError('BACKUP_INTEGRITY', 'backup manifest is not valid JSON', {}, { cause: error });
   }
+  // A non-object manifest (e.g. `null`) is an integrity failure with the stable code, never a raw TypeError (R1 C-F5).
+  if (typeof manifest !== 'object' || manifest === null || Array.isArray(manifest)) throw new QandeelError('BACKUP_INTEGRITY', 'backup manifest is not an object');
   if (manifest.format !== BACKUP_FORMAT || manifest.snapshot?.file !== DATABASE_FILE) throw new QandeelError('BACKUP_INTEGRITY', 'unknown backup format');
   assertId(manifest.backupId, 'backupId');
   if (path.basename(directory) !== manifest.backupId) throw new QandeelError('BACKUP_INTEGRITY', 'backup directory does not match its manifest');

@@ -84,19 +84,48 @@ export function firstSentence(s: string, maxChars: number): string {
   return sentence.length > maxChars ? `${sentence.slice(0, Math.max(0, maxChars - 1))}…` : sentence;
 }
 
-/** Secret-shaped literals that never enter Memory, Knowledge, Skill payloads or Academy content (Stage 14). */
+/**
+ * Secret-shaped material that never enters Memory, Knowledge, Skill payloads, Academy content, durable
+ * step / tool results or a provider-bound instruction (Stage 12 §23, Stage 14 D14-A.4 / D-6).
+ *
+ * A denylist can never prove a value is not secret, so the rule stays "callers never put secrets in
+ * Company state"; this is the deterministic defence in depth. R1-01 widened it after the review
+ * showed common formats passing: provider keys whose body contains `-` (Anthropic), payment keys,
+ * fine-grained GitHub tokens, JWTs, OAuth access tokens, `Bearer <token>`, URL credentials, JSON-quoted
+ * key / value pairs, "password is …" and the Arabic equivalents.
+ */
 export const SECRET_LITERALS: readonly RegExp[] = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/,
   /\bsk-(?:live|proj|ant|test)?-?[A-Za-z0-9_]{20,}/,
+  /\bsk-ant-[A-Za-z0-9_-]{20,}/,
+  /\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}/,
   /\bAKIA[0-9A-Z]{16}\b/,
   /\bgh[pousr]_[A-Za-z0-9]{30,}/,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/,
   /\bxox[abprs]-[A-Za-z0-9-]{10,}/,
   /\bAIza[0-9A-Za-z_-]{35}\b/,
-  /\b(?:password|passwd|api[_-]?key|secret|bearer)\s*[:=]\s*\S{6,}/i,
+  /\bya29\.[A-Za-z0-9_-]{20,}/,
+  // JSON Web Token (header.payload.signature, base64url).
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,
+  /\bbearer\s+[A-Za-z0-9._~+/=-]{16,}/i,
+  // Credentials inside a URL: scheme://user:password@host.
+  /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s@/]+@/i,
+  /\bAccountKey=[A-Za-z0-9+/=]{20,}/,
+  // key = value / "key": "value" for credential-named keys (JSON quoting and prefixes allowed).
+  // (No leading `\w*`: the keyword is found anywhere and only a bounded suffix follows — linear time.)
+  /(?:password|passwd|passphrase|secret|api[_ -]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key)[A-Za-z0-9_]{0,24}["']?\s*[:=]\s*["']?[^\s"',}]{6,}/i,
+  /\b(?:token|bearer)["']?\s*[:=]\s*["']?[^\s"',}]{12,}/i,
+  /\b(?:password|passwd|passphrase)\s+(?:is|was|=)\s+\S{6,}/i,
+  /(?:كلمة\s*(?:المرور|السر)|الرقم\s*السري|مفتاح\s*(?:الواجهة|API))\s*(?:هي|هو)?\s*[:=]?\s*\S{4,}/iu,
 ];
 
+// Zero-width and invisible formatting characters used to split a secret past a pattern.
+const INVISIBLE = /[\u00ad\u200b-\u200f\u2060-\u2064\ufeff]/g;
+
 export function containsSecretMaterial(s: string): boolean {
-  return SECRET_LITERALS.some((re) => re.test(s));
+  if (typeof s !== 'string' || s.length === 0) return false;
+  const folded = s.normalize('NFKC').replace(INVISIBLE, '');
+  return SECRET_LITERALS.some((re) => re.test(s) || re.test(folded));
 }
 
 /** Topic / claim keys: short dotted lower-case codes (e.g. `egypt.payments.preferred-method`). */

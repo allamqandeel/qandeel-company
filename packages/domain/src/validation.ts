@@ -17,6 +17,13 @@ const isSecretKey = (key: string): boolean => {
   return k === 'token' || k === 'pat' || SECRET_KEY.test(k);
 };
 
+/** True when any object key at any depth names credential material (the `boundedJson` key guard, as a test). */
+export function hasSecretNamedKey(value: unknown, depth = 0): boolean {
+  if (depth > 16 || value === null || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some((v) => hasSecretNamedKey(v, depth + 1));
+  return Object.keys(value).some((k) => isSecretKey(k) || hasSecretNamedKey((value as Record<string, unknown>)[k], depth + 1));
+}
+
 export function boundedText(value: unknown, field: string, maxLength: number, { allowEmpty = false } = {}): string {
   if (typeof value !== 'string') throw new QandeelError('VALIDATION_FAILED', `${field} must be a string`, { field });
   if (!allowEmpty && value.trim().length === 0) throw new QandeelError('VALIDATION_FAILED', `${field} must not be empty`, { field });
@@ -72,7 +79,9 @@ function normalize(value: unknown, path: string, depth: number, guardSecrets: bo
   }
   if (Array.isArray(value)) return value.map((v, i) => normalize(v, `${path}[${i}]`, depth + 1, guardSecrets));
   if (typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
-    const out: Record<string, JsonValue> = {};
+    // Null prototype: a `__proto__` key stays data (it is hashed and bounded like any other key)
+    // instead of silently re-prototyping the copy and vanishing from the fingerprint (R1-02).
+    const out = Object.create(null) as Record<string, JsonValue>;
     for (const key of Object.keys(value).sort()) {
       if (guardSecrets && isSecretKey(key)) {
         throw new QandeelError('VALIDATION_FAILED', 'JSON key names credential material; secrets never enter Company state', { field: path });

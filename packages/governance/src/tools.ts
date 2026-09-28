@@ -40,7 +40,7 @@ export function assertArgsSchema(v: unknown): ArgsSchema {
   const names = Object.keys(s.fields);
   if (names.length > 32) throw new QandeelError('VALIDATION_FAILED', 'too many argument fields', { field: 'argsSchema' });
   for (const n of names) {
-    if (!/^[a-z][A-Za-z0-9]{0,31}$/.test(n)) throw new QandeelError('VALIDATION_FAILED', 'argument names are short identifiers', { field: 'argsSchema' });
+    if (!/^[a-z][A-Za-z0-9]{0,31}$/.test(n) || n in Object.prototype) throw new QandeelError('VALIDATION_FAILED', 'argument names are short identifiers', { field: 'argsSchema' });
     const f = (s.fields as Record<string, ArgField>)[n] as ArgField;
     if (!['string', 'integer', 'boolean'].includes(f.type)) throw new QandeelError('VALIDATION_FAILED', 'argument types are string, integer or boolean', { field: `argsSchema.${n}` });
   }
@@ -48,19 +48,23 @@ export function assertArgsSchema(v: unknown): ArgsSchema {
   return { fields: s.fields };
 }
 
-/** Strict argument validation: unknown keys, wrong types and oversize values are refused. */
+/**
+ * Strict argument validation: unknown keys, wrong types and oversize values are refused. Field lookup
+ * is by OWN property only (R1-02): a model-proposed key named after an `Object.prototype` member
+ * (`constructor`, `toString`, `__proto__`, …) is an unknown argument, never an inherited "field".
+ */
 export function validateArgs(schema: ArgsSchema, args: unknown): JsonObject {
   if (typeof args !== 'object' || args === null || Array.isArray(args)) throw new QandeelError('VALIDATION_FAILED', 'tool arguments must be an object', { field: 'args' });
   const out: Record<string, JsonValue> = {};
   for (const [k, v] of Object.entries(args)) {
-    const f = schema.fields[k];
-    if (!f) throw new QandeelError('VALIDATION_FAILED', 'unknown tool argument', { field: `args.${k.slice(0, 32)}` });
+    const f = Object.hasOwn(schema.fields, k) ? schema.fields[k] : undefined;
+    if (!f || typeof f !== 'object') throw new QandeelError('VALIDATION_FAILED', 'unknown tool argument', { field: `args.${k.slice(0, 32)}` });
     if (f.type === 'string' && !(typeof v === 'string' && v.length <= (f.maxLength ?? 1024))) throw new QandeelError('VALIDATION_FAILED', 'string argument invalid', { field: `args.${k}` });
     if (f.type === 'integer' && !(typeof v === 'number' && Number.isSafeInteger(v) && v >= (f.min ?? -Number.MAX_SAFE_INTEGER) && v <= (f.max ?? Number.MAX_SAFE_INTEGER))) throw new QandeelError('VALIDATION_FAILED', 'integer argument invalid', { field: `args.${k}` });
     if (f.type === 'boolean' && typeof v !== 'boolean') throw new QandeelError('VALIDATION_FAILED', 'boolean argument invalid', { field: `args.${k}` });
     out[k] = v as JsonValue;
   }
-  for (const [k, f] of Object.entries(schema.fields)) if (f.required && !(k in out)) throw new QandeelError('VALIDATION_FAILED', 'required tool argument missing', { field: `args.${k}` });
+  for (const [k, f] of Object.entries(schema.fields)) if (f.required && !Object.hasOwn(out, k)) throw new QandeelError('VALIDATION_FAILED', 'required tool argument missing', { field: `args.${k}` });
   boundedJson(out, 'args', 8192);
   return out;
 }
