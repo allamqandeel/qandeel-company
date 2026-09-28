@@ -1780,3 +1780,44 @@ Capabilities / Temporary Specialists as Stage 10 specifies.
 
 C4 builds only the foundation and may not implement the C5 UI / conversation surface, C6 analytics
 engine or C7 external integrations.
+
+
+## D-R1-05 — Engineering is a permanent C4 Department from day one (Product Owner amendment)
+
+**Direct Product Owner decision, 2026-09-28.**
+
+Stage 10 originally allowed Engineering to remain a capability until after the first successful company
+pilot / until durable workload and management responsibility justified a formal Department.
+
+The Product Owner explicitly supersedes that timing choice for implementation:
+
+> **Engineering is a permanent Strong-v1 Department from C4 onward, present from the beginning alongside
+> Strategic Market Intelligence, Growth, Brand & Creative, and Product.**
+
+Therefore the C4 Strong-v1 Department Map is:
+
+1. Strategic Market Intelligence
+2. Growth
+3. Brand & Creative
+4. Product
+5. Engineering
+
+This changes **department timing**, not the existing authority model:
+- Engineering Director title grants no authority by itself.
+- Production, merge, deployment, security, budget and tool authority still come only from explicit
+  grants/policies and the Stage 3 risk/approval model.
+- Founder retains Founder-level authority and R4 sovereignty.
+- Engineering staffing/headcount remains evidence-driven; this decision creates the Department, not a
+  fixed number of Employees or seats.
+
+**Engineering Department responsibility in C4.** Its durable Charter must support ownership of
+software engineering delivery, architecture quality, implementation reliability, code/repository
+health, testing/release engineering, production-readiness coordination and technical debt/risk
+management, while respecting Product authority and cross-department ownership boundaries.
+
+C4 must create the Engineering Department and Director Position as first-class organization state.
+Actual staffing, individual Employee identities and delegated production/merge authority remain
+separate governed decisions.
+
+This amendment is binding for C4 and later implementation and should be reflected in C5 organization
+visibility and C6 Department-performance reporting.
