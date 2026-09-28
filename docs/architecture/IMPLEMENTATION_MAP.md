@@ -75,14 +75,19 @@ implementation package. Its record is `docs/PRE_C1_AUTHORITY_SYNC_CLOSURE.md`.
 The canonical sequence remains **C4 → C5 → C6 → R2 → C7 → L1 → Controlled Pilots → Strong v1**.
 The implementation intent is now explicit so each stage is designed as part of one Company system:
 
-- **C4** builds the real organization foundation: CEO / Directors / Positions, Departments / Charters,
-  staffing requests, bounded delegation / handoff and the qualified Review Pool, while extending —
-  not duplicating — C1–C3 runtime, authority, memory, skills and Academy mechanisms.
-- **C5** consumes C4 to build the Founder Command Center: the Founder↔CEO operating relationship,
-  organization visibility, approvals / delegation controls and the Company Calendar foundation.
-- **C6** consumes real work lineage from C1–C5 for employee / department performance, reporting,
-  learning, evaluation, resilience and outcome analytics (including campaign / content / traffic
-  performance once those external result sources exist).
+- **C4** builds the real organization foundation: a persistent **CEO executive Employee** between Founder
+  and Directors; Directors / Positions; the canonical Strong-v1 Departments / Charters; staffing
+  requests; bounded delegation / handoff; and the qualified Review Pool, while extending — not
+  duplicating — C1–C3 runtime, authority, memory, skills and Academy mechanisms. CEO title grants no
+  authority by itself; initial staffing approval remains Founder-controlled until explicitly delegated.
+- **C5** consumes C4 to build the Founder Command Center: the high-frequency Founder↔CEO operating
+  relationship, organization visibility, approvals / delegation controls and the Company Calendar
+  foundation. The CEO must be able to synthesize Department needs and bring decision-ready staffing /
+  priority proposals to Founder.
+- **C6** consumes real work lineage from C1–C5 for CEO / Director / employee / Department performance,
+  reporting, learning, evaluation, resilience and outcome analytics. Performance is outcome- and
+  attribution-based, not activity-count based; campaign / content / traffic performance becomes visible
+  when those external result sources exist.
 - **C7** connects governed Company operations to APP-OPS / Pilot instrumentation and external outcome
   data without weakening the earlier privacy, authority, accounting or recovery boundaries.
 
