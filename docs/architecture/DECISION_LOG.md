@@ -1647,6 +1647,12 @@ usage values are now snapshotted once at the adapter boundary (proof + mutation
 `r1-09-usage-snapshot-shallow`), and the gate was re-run. Its MINORs are residuals (report N-ADAPTER):
 an unguarded read of a thrown error's own getters, and loss on crash of an in-process exclusion.
 
+The final re-review of `8064fc9` reproduced one more MAJOR with the same root cause, on the thrown-failure
+path: a charged `ProviderError`'s usage object was read live twice. The thrown failure's usage is now
+snapshotted to values by the same single, guarded read (an unreadable failure object is a contract
+violation). The guard also closes the thrown-error-getter residual. Proof + mutation
+`r1-09-thrown-usage-snapshot-shallow`; the gate was re-run.
+
 **Documentation note (R1 B-F6).** D-C2-07's first bullet list says an orphaned NONE / IDEMPOTENT tool
 intent's reservation "is released". D-C2-12 (MAJOR, "interrupted tool intents released money that may
 have been spent") amended that to "charged (`FAILED_CHARGED`), never released", and the code follows

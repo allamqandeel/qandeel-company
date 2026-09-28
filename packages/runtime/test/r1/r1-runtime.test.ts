@@ -345,6 +345,47 @@ describe('R1-09 (Technical Lead follow-up): a known provider fault stays contain
     );
   });
 
+  for (const [label, second] of [
+    ['throws', (): number => { throw new Error('second read fails'); }],
+    ['moves outside the bounds', (): number => 257],
+  ] as const) {
+    test(`a charged failure whose usage ${label} on a later read is judged on one snapshot: never a held-but-uncontained split (final re-review 2)`, async () => {
+      let fired = 0;
+      await withWorld(
+        'r1-final-thrown-shifting',
+        async ({ w, f, rt }) => {
+          let reads = 0;
+          f.cloud.failNextCharged('cloud-e1', 'TRANSIENT', {
+            get inputTokens(): number {
+              return 100;
+            },
+            get outputTokens(): number {
+              return reads++ === 0 ? 10 : second();
+            },
+          });
+          const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+          assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED');
+          const states = rt.view
+            .runsForWorkItem(id)
+            .flatMap((r) => rt.governance.reservations(r.id))
+            .filter((r) => r.deploymentId === w.deployments.cloudE1)
+            .map((r) => r.state);
+          assert.deepEqual(states, ['SETTLED', 'SETTLED'], 'charged on the values the fault check saw, then an ordinary transient retry');
+          assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'ACTIVE', 'a consistent within-bounds charge is not a violation');
+          assert.ok(fired >= 1, 'a health write was refused');
+        },
+        {
+          storageFault: (p) => {
+            if (p === 'deploymentOutcome.beforeCommit' && fired === 0) {
+              fired++;
+              throw contention();
+            }
+          },
+        },
+      );
+    });
+  }
+
   test('usage first reported outside the bounds is contained, whatever a later read would say (final re-review)', () =>
     withWorld('r1-final-over-then-in', async ({ w, f, rt }) => {
       shiftingUsage(f, { inputTokens: 100, outputTokens: 257 }, () => 10);

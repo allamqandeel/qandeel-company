@@ -323,7 +323,13 @@ export class GovernedModelRuntime {
       if (typeof outputText !== 'string') return { ok: false, failure: 'CONTRACT_VIOLATION', usage: null };
       return { ok: true, response: { outputText, usage } as ProviderAnswer };
     } catch (error) {
-      return { ok: false, failure: classifyProviderError(error), usage: error instanceof ProviderError ? error.usage : null };
+      // A thrown failure's usage is snapshotted to VALUES too (the same single read as an answer's); a
+      // failure object that cannot be read is the provider's contract violation.
+      try {
+        return { ok: false, failure: classifyProviderError(error), usage: error instanceof ProviderError ? (snapshotUsage(error.usage) as ProviderError['usage']) : null };
+      } catch {
+        return { ok: false, failure: 'CONTRACT_VIOLATION', usage: null };
+      }
     } finally {
       timer.abort();
       runSignal.removeEventListener('abort', onAbort);

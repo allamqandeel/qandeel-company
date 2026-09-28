@@ -144,6 +144,13 @@ const MUTATIONS = [
     runs: [RUNTIME],
   },
   {
+    // Final re-review of 8064fc9: a thrown failure's usage is snapshotted to values as well.
+    id: 'r1-09-thrown-usage-snapshot-shallow',
+    finding: 'R1-09',
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: 'snapshotUsage(error.usage)', replace: 'error.usage', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
     id: 'r1-09-lazy-answer-read-escapes',
     finding: 'R1-09',
     edits: [
