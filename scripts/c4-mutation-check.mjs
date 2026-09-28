@@ -1,0 +1,248 @@
+#!/usr/bin/env node
+// C4 mutation check: proves the C4 Organization / Delegation / Review / P-07 gates are not vacuous.
+//
+// Each mutation removes (or bypasses) one gate in the COMPILED output (packages/*/dist) — some need two
+// coordinated edits where the gate is enforced twice — runs the proof tests that must catch it, requires
+// them to FAIL, and restores every file (always, in `finally`). Sources are never touched. Run after
+// `npm run build`:
+//
+//   npm run c4:mutation                          all mutations
+//   npm run c4:mutation -- --shard 2/3           the second of three disjoint shards (CI parallelism)
+//   npm run c4:mutation -- --report <file.json>  also write the ids run / caught (CI proof parity)
+//
+// A mutation the tests do not catch — or one that no longer applies because the guarded code moved — fails
+// this script.
+
+import { spawnSync } from 'node:child_process';
+import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Proof tests resolve the test-only Founder seam through the `qandeel-test` condition (D-C2-13).
+const TEST_ENV = { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --conditions=qandeel-test`.trim() };
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const KERNEL = { cwd: 'packages/governance', tests: ['dist/test/c4-kernel.test.js'] };
+const ORG = { cwd: 'packages/storage', tests: ['dist/test/c4-organization.test.js'] };
+const REVIEW = { cwd: 'packages/storage', tests: ['dist/test/c4-review.test.js'] };
+const C2GOV = { cwd: 'packages/storage', tests: ['dist/test/c2-governance.test.js'] };
+const RUNTIME = { cwd: 'packages/runtime', tests: ['dist/test/c4/c4-runtime.test.js'] };
+
+const GOV = 'packages/governance/dist/src';
+const STORE = 'packages/storage/dist/src';
+const RT = 'packages/runtime/dist/src';
+
+const MUTATIONS = [
+  {
+    id: 'c4-org-act-grant-bypassed',
+    gate: 'Title ≠ Authority: an organizational act needs an explicit grant, whatever the seat',
+    edits: [{ file: `${STORE}/org-writes.js`, search: '    if (capability !== null) {', replace: '    if (false) { /* mutation: grant check removed */', expectedCount: 1 }],
+    runs: [ORG],
+  },
+  {
+    id: 'c4-org-seat-eligibility-removed',
+    gate: 'a grant alone is not enough: Directors file for their own Department, only the CEO seat synthesizes / decides / hires',
+    edits: [{ file: `${STORE}/org-writes.js`, search: "refuse('SEAT_NOT_HELD');", replace: 'void 0;', expectedCount: 4 }],
+    runs: [ORG],
+  },
+  {
+    id: 'c4-delegation-limits-ignored',
+    gate: 'a delegated staffing decision stays inside every policy limit of its delegation',
+    edits: [{ file: `${STORE}/org-writes.js`, search: '    if (!verdict.ok)\n        refuse(verdict.reason);\n', replace: '    /* mutation: delegation limits ignored */\n', expectedCount: 1 }],
+    runs: [ORG],
+  },
+  {
+    id: 'c4-delegation-cycle-allowed',
+    gate: 'work never bounces back along its own delegation chain (A → B → A)',
+    edits: [{ file: `${STORE}/org-writes.js`, search: "        refuse('DELEGATION_CYCLE');", replace: '        void 0;', expectedCount: 1 }],
+    runs: [ORG],
+  },
+  {
+    id: 'c4-delegation-outside-reporting-line',
+    gate: 'work is delegated down the reporting line only; across Departments it is a support request',
+    edits: [{ file: `${STORE}/org-writes.js`, search: 'if (!reportsTo(ctx, e.id, delegateId, action))', replace: 'if (false)', expectedCount: 1 }],
+    runs: [ORG],
+  },
+  {
+    id: 'c4-self-review-allowed',
+    gate: 'the executor never reviews its own work',
+    edits: [{ file: `${STORE}/review-core.js`, search: '...(executor ? [executor] : []), ', replace: '', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4-quality-hold-ignored-in-selection',
+    gate: 'reviewer selection excludes held reviewers before the ranking LIMIT',
+    edits: [{ file: `${STORE}/review-core.js`, search: "          AND NOT EXISTS (SELECT 1 FROM quality_holds h WHERE h.state = 'ACTIVE' AND (\n", replace: "          AND NOT EXISTS (SELECT 1 FROM quality_holds h WHERE 0 AND (\n", expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4-decision-not-rechecked',
+    gate: 'a reviewer\'s eligibility is re-checked at the decision boundary',
+    edits: [{ file: `${STORE}/review-core.js`, search: 'if (!reviewerEligibleIgnoringOwnSlot(ctx, a, q.domain,', replace: 'if (false && !reviewerEligibleIgnoringOwnSlot(ctx, a, q.domain,', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4-stale-subject-decision-counts',
+    gate: 'a decision about a subject that has since changed is refused as stale',
+    edits: [{ file: `${STORE}/review-core.js`, search: '    if (stale) {', replace: '    if (false) {', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4-action-review-gate-removed',
+    gate: 'R2 / R3 actions need an independent review of exactly that action',
+    edits: [{ file: `${STORE}/governed-writes.js`, search: "if (decision.review === 'INDEPENDENT') {", replace: 'if (false) {', expectedCount: 1 }],
+    runs: [REVIEW, C2GOV],
+  },
+  {
+    id: 'c4-action-review-reusable',
+    gate: 'a satisfied action review authorizes exactly one intent',
+    edits: [{ file: `${STORE}/governed-writes.js`, search: '        consumeActionReview(ctx, reviewRequestId, invocationId);', replace: '        void reviewRequestId;', expectedCount: 1 }],
+    runs: [C2GOV],
+  },
+  {
+    id: 'c4-rejected-action-rereviewed',
+    gate: 'an action a reviewer rejected stays rejected (it is not re-reviewed until approved)',
+    edits: [{ file: `${STORE}/review-core.js`, search: "        if (rejected)\n            return { kind: 'REWORK', requestId: rejected.id };\n", replace: '        /* mutation: rejection forgotten */\n', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4-review-wait-not-rechecked',
+    gate: 'a review decided while the executor is still claimed is not a lost wake',
+    edits: [{ file: `${STORE}/governed-writes.js`, search: '        recheckReviewWait(ctx, workItemId, runId);\n        return;', replace: '        return;', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4-delegation-wait-free-wake',
+    gate: 'an offered handoff is not an answer: the delegator\'s wait is not a free wake (no model loop)',
+    edits: [{ file: `${STORE}/governed-writes.js`, search: '        if (answered || !open)', replace: '        if (true)', expectedCount: 1 }],
+    runs: [ORG],
+  },
+  {
+    id: 'c4-open-handoff-completes',
+    gate: 'work with an open handoff does not finish; it waits for its delegates',
+    edits: [{ file: `${RT}/c2/employee-task.js`, search: 'if (gov.openHandoffs() > 0) {', replace: 'if (false) {', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'c4-p07-reservation-unchecked',
+    gate: 'P-07: the reserving transaction refuses a charged-failure deployment for the same Work Item',
+    edits: [{ file: `${STORE}/governed-writes.js`, search: 'if (chargedExclusions(ctx, a.workItemId).includes(input.deploymentId))', replace: 'if (false)', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4-p07-router-unfiltered',
+    gate: 'P-07: the router never proposes a charged-failure deployment for the same Work Item',
+    edits: [{ file: `${RT}/c2/model-runtime.js`, search: 'const excluded = new Set(governance.chargedExclusions(run.workItemId));', replace: 'const excluded = new Set();', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'c4-p07-release-covers-future',
+    gate: 'P-07: a Founder release covers only the failures that existed when it was recorded',
+    edits: [{ file: `${STORE}/governance-core.js`, search: 'AND covered_failures >= ? LIMIT 1', replace: 'AND covered_failures >= 0 * ? LIMIT 1', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4-acting-never-expires',
+    gate: 'acting coverage is bounded: it ends by time',
+    edits: [{ file: `${GOV}/organization.js`, search: '    return a.effectiveFrom <= at && (a.effectiveTo === null || at < a.effectiveTo);', replace: '    return a.effectiveFrom <= at;', expectedCount: 1 }],
+    runs: [KERNEL, ORG],
+  },
+  {
+    id: 'c4-acting-authority-outlives-cover',
+    gate: 'authority delegated for acting coverage ends with the coverage',
+    edits: [{ file: `${STORE}/org-core.js`, search: "        revokeActingDelegations(ctx, a.id, 'ACTING_EXPIRED', SYSTEM_ORG_REF);", replace: '        void 0;', expectedCount: 1 }],
+    runs: [ORG],
+  },
+  {
+    id: 'c4-ceo-needs-department',
+    gate: 'a company-scoped executive run is budgeted under the Company, never a fake Department',
+    edits: [{ file: `${STORE}/governed-writes.js`, search: "        return dept?.scope === 'COMPANY' ? chain : null;", replace: '        return null;', expectedCount: 1 }],
+    runs: [ORG],
+  },
+  {
+    id: 'c4-calibration-counted-twice',
+    gate: 'calibration evidence counts once per shadow decision',
+    edits: [{ file: `${STORE}/review-core.js`, search: "    if (ctx.db.get('SELECT 1 AS x FROM review_calibrations WHERE decision_id = ?', decisionId))\n        return 'ALREADY_CALIBRATED';\n", replace: '    /* mutation: calibration once-guard removed */\n', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4-promotion-without-evidence',
+    gate: 'independent review authority needs Gold cases and calibration evidence',
+    edits: [{ file: `${STORE}/review.js`, search: '            if (gaps.length > 0)', replace: '            if (false)', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4-org-managed-reassignable',
+    gate: 'an organization-managed Employee is placed only through Position assignments',
+    edits: [{ file: `${STORE}/governance.js`, search: 'if (isOrgManaged(ctx, id) &&', replace: 'if (false &&', expectedCount: 1 }],
+    runs: [ORG],
+  },
+  {
+    id: 'c4-staffing-alternatives-optional',
+    gate: 'a staffing request must address every Stage 10 alternative before a persistent Employee',
+    edits: [{ file: `${GOV}/organization.js`, search: "            throw new QandeelError('VALIDATION_FAILED', 'every Stage 10 staffing alternative must be addressed before a persistent employee', { field: `alternatives.${k}`, reason: 'STAFFING_EVIDENCE_INCOMPLETE' });", replace: "            return [k, String(v ?? '')];", expectedCount: 1 }],
+    runs: [KERNEL, ORG],
+  },
+];
+
+// --shard i/n (1-based) runs a disjoint slice; --report <file> records the ids run and caught.
+const args = process.argv.slice(2);
+const shardArg = args.includes('--shard') ? String(args[args.indexOf('--shard') + 1]) : '1/1';
+const reportFile = args.includes('--report') ? String(args[args.indexOf('--report') + 1]) : null;
+const [shardIndex, shardCount] = shardArg.split('/').map(Number);
+if (!(Number.isInteger(shardIndex) && Number.isInteger(shardCount) && shardCount >= 1 && shardIndex >= 1 && shardIndex <= shardCount)) throw new Error(`--shard must be i/n with 1 <= i <= n (got ${shardArg})`);
+const inShard = (i) => i % shardCount === shardIndex - 1;
+
+function failed(r) {
+  return r.status !== 0 && (/^# fail [1-9]/m.test(r.stdout ?? '') || /^ℹ fail [1-9]/m.test(r.stdout ?? ''));
+}
+
+let failures = 0;
+const ran = [];
+const caught = [];
+let index = -1;
+for (const m of MUTATIONS) {
+  index++;
+  if (!inShard(index)) continue;
+  ran.push(m.id);
+  const originals = new Map();
+  let applicable = true;
+  for (const e of m.edits) {
+    const file = path.join(ROOT, e.file);
+    const text = originals.get(file) ?? readFileSync(file, 'utf8');
+    originals.set(file, text);
+    const count = text.split(e.search).length - 1;
+    if (count !== (e.expectedCount ?? 1)) {
+      console.log(`c4-mutation: FAIL ${m.id} — expected ${e.expectedCount ?? 1} occurrence(s) of the gate in ${e.file}, found ${count} (rebuild, or update this check with the code)`);
+      applicable = false;
+    }
+  }
+  if (!applicable) {
+    failures++;
+    continue;
+  }
+  try {
+    const mutated = new Map(originals);
+    for (const e of m.edits) {
+      const file = path.join(ROOT, e.file);
+      mutated.set(file, (mutated.get(file) ?? '').split(e.search).join(e.replace));
+    }
+    for (const [file, text] of mutated) writeFileSync(file, text);
+    const caughtBy = m.runs.filter(({ cwd, tests }) => failed(spawnSync(process.execPath, ['--test', '--test-concurrency=1', ...tests], { cwd: path.join(ROOT, cwd), encoding: 'utf8', shell: false, windowsHide: true, timeout: 900_000, env: TEST_ENV })));
+    if (caughtBy.length > 0) {
+      caught.push(m.id);
+      console.log(`c4-mutation: ok   ${m.id} (${m.gate}) — caught by ${caughtBy.map((r) => r.tests.join(',')).join(' + ')}`);
+    } else {
+      console.log(`c4-mutation: FAIL ${m.id} (${m.gate}) — no proof test caught the mutation`);
+      failures++;
+    }
+  } finally {
+    for (const [file, text] of originals) writeFileSync(file, text);
+  }
+}
+if (reportFile) writeFileSync(reportFile, `${JSON.stringify({ script: 'c4:mutation', shard: shardArg, total: MUTATIONS.length, ran, caught }, null, 2)}\n`);
+if (failures) {
+  console.log(`c4-mutation: FAIL — ${failures} of ${ran.length} mutation(s) not caught (shard ${shardArg})`);
+  process.exit(1);
+}
+console.log(`c4-mutation: PASS — ${caught.length}/${ran.length} mutations caught (shard ${shardArg}, ${MUTATIONS.length} total)`);

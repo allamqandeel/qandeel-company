@@ -52,7 +52,9 @@ export function seedWorld(root: string): C2World {
     const gov = GovernanceStore.for(store);
     const founder = gov.registerFounder().ref;
     gov.createBudget(founder, { scope: 'COMPANY', scopeId: 'company', capMoney: 50_000_000, capTokens: 50_000_000, currency: 'USD', reasonCode: 'seed' });
-    const dept = gov.createDepartment(founder, { code: 'growth', name: 'Growth' });
+    // C4: the canonical Departments are release-seeded (D-C4-02); fixtures adopt them by code.
+    const dept = gov.departmentByCode('growth');
+    if (!dept) throw new Error('the canonical Growth Department is release-seeded');
     gov.createBudget(founder, { scope: 'DEPARTMENT', scopeId: dept.id, capMoney: 20_000_000, capTokens: 20_000_000, reasonCode: 'seed' });
     const employee = hireActive(gov, founder, dept.id);
     const local = gov.registerProvider(founder, { code: 'fake-local', locality: 'LOCAL' });

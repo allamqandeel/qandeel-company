@@ -130,7 +130,7 @@ const STORAGE_EXPORTS = ['.', './runtime-authority', './testing'];
 // D-C2-13: the test-only Founder seam resolves only under the `qandeel-test` export condition, and only
 // tests (plus the acceptance harness) may import it.
 const TEST_CONDITION = 'qandeel-test';
-const TEST_SEAM_HARNESSES = ['scripts/c2-acceptance.mjs', 'scripts/c3-acceptance.mjs'];
+const TEST_SEAM_HARNESSES = ['scripts/c2-acceptance.mjs', 'scripts/c3-acceptance.mjs', 'scripts/c4-acceptance.mjs'];
 const FOUNDER_SEAM_FILES = ['packages/storage/src/governance.ts', 'packages/storage/src/testing/founder-seam.ts'];
 const CLI_SOURCE = 'packages/runtime/src/cli.ts';
 const AUTHORITY_SUBPATH = '@qandeel-company/storage/runtime-authority';
@@ -175,9 +175,11 @@ const FROZEN_MIGRATIONS = [
   { file: '0005_c3_memory_context.sql', sha256: '2c2f0d8092f108de2596c15e795ba6ba8d17b316761d0ac59e45d8845409e44a' },
   { file: '0006_c3_skills_academy.sql', sha256: 'a4b8709915fbad924212e3278b64d2f58d4d1e40c5ba1ff937cb7c50637d57d8' },
 ];
-// C4 / C5 / C7 subsystems must not appear as C3 schema or packages (Memory / Skills / Academy are C3's own).
-const LATER_SCOPE_TABLE = /\bCREATE\s+(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(\w*(?:review_pool|reviewer|director|delegation|org_chart|founder_ui|command_center|app_ops)\w*)/i;
-const LATER_SCOPE_PACKAGE = /^(?:review-pool|reviews?|directors?|delegation|organization|command-center|founder-ui|app-ops)$/;
+// C5 / C6 / C7 subsystems must not appear before their work packages: the Founder Command Center and the
+// Founder ↔ CEO conversation (C5), dashboards (C6), APP-OPS (C7). The organization, Review Pool and delegation
+// are C4's own (C4 schema and code live in the existing storage / governance / runtime packages).
+const LATER_SCOPE_TABLE = /\bCREATE\s+(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(\w*(?:founder_ui|command_center|founder_conversation|ceo_conversation|conversation_thread|dashboard|app_ops|appops)\w*)/i;
+const LATER_SCOPE_PACKAGE = /^(?:command-center|founder-ui|founder-surface|dashboards?|app-ops|appops)$/;
 const C2_PROOF_MARKERS = ['C2-PROOF: governance-kernel', 'C2-PROOF: storage-governance', 'C2-PROOF: concurrent-reservations', 'C2-PROOF: governed-runtime', 'C2-PROOF: governed-crash-recovery'];
 const C2_MUTATION_CHECK = 'scripts/c2-mutation-check.mjs';
 
@@ -186,6 +188,63 @@ const C3_CLOSURE = /^docs\/C3_[^/]*CLOSURE[^/]*\.md$/i;
 const C3_REPORT = 'docs/C3_IMPLEMENTATION_REPORT.md';
 const C3_PROOF_MARKERS = ['C3-PROOF: mind-kernel', 'C3-PROOF: storage-mind', 'C3-PROOF: runtime-mind', 'C3-PROOF: memory-crash-recovery', 'C3-PROOF: concurrent-certification', 'C3-PROOF: review-fixes', 'C3-PROOF: founder-decisions'];
 const C3_MUTATION_CHECK = 'scripts/c3-mutation-check.mjs';
+
+// --- C4 boundaries ------------------------------------------------------------------------------
+const C4_CLOSURE = /^docs\/C4_[^/]*CLOSURE[^/]*\.md$/i;
+const C4_REPORT = 'docs/C4_IMPLEMENTATION_REPORT.md';
+const C4_PROOF_MARKERS = ['C4-PROOF: c4-kernel', 'C4-PROOF: storage-organization', 'C4-PROOF: storage-review', 'C4-PROOF: runtime-c4', 'C4-PROOF: concurrent-organization'];
+const C4_MUTATION_CHECK = 'scripts/c4-mutation-check.mjs';
+// Durable organization / delegation / review state changes only in the C4 storage modules.
+const ORG_WRITERS = ['org-core', 'organization', 'org-writes', 'review-core', 'review'].map((m) => `packages/storage/src/${m}.ts`);
+const ORG_WRITE = /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO|DELETE\s+FROM|REPLACE\s+INTO)\s+(?:org_positions|org_position_history|department_charters|position_assignment\w*|staffing_request\w*|authority_delegations|work_delegation\w*|handoff_messages|org_act_records|run_org_snapshots|review_(?:plans|requests|request_history|assignments|decisions|conflicts|calibrations)|reviewer_qualification\w*|quality_holds|oversight_findings)\b/i;
+// Founder organization / review acts: model output never reaches them (runtime code and the CLI never call them).
+const ORG_FOUNDER_CALL = /\.(?:assignPrimary|assignActing|endAssignment|createPosition|setPositionStatus|delegateAuthority|revokeDelegation|decideStaffingRequest|publishCharter|resumeEscalatedHandoff|admitReviewer|promoteReviewer|reinstateReviewer|suspendReviewer|revokeReviewer|calibrateShadowDecision|decideFounderKey|resolveConflict|resolveEscalation|placeQualityHold|liftQualityHold|requestOversight|advanceFinding|declarePlan)\s*\(/;
+// Rule A for C4: staffing evidence, handoff messages, review rationale and reviewer instructions never enter telemetry.
+const C4_CONTENT_IN_TELEMETRY = /\b(?:appendAudit|appendEvent|\.(?:info|warn|error|debug))\s*\([^\n]*[{,]\s*(?:rationale|body|answer|reason|note|objective|instructions|reviewerInstructions|businessNeed|workloadEvidence|skillGap|expectedValue|impactIfNotStaffed|alternatives|content|text)\s*[,:}]/;
+// The canonical Strong-v1 Department map (D-R1-05): Engineering is the permanent fifth Department.
+const CANONICAL_DEPARTMENTS = ['strategic-market-intelligence', 'growth', 'brand-creative', 'product', 'engineering'];
+const R4_REVIEW_CHECK = /CHECK\s*\(\s*risk_level\s*<>\s*'R4'\s+OR\s+state\s+NOT\s+IN\s*\(\s*'SATISFIED'\s*,\s*'CONSUMED'\s*\)\s*\)/;
+const AUTHORITY_KERNEL = 'packages/governance/src/authority.ts';
+// --- CI contract (D-R1-07 / D-C4-08) --------------------------------------------------------------
+const CI_WORKFLOW = '.github/workflows/ci.yml';
+const CI_CLASSIFIER = 'scripts/ci/classify-changes.mjs';
+const CI_GATE = 'scripts/ci/quality-gate.mjs';
+const CI_POST_MERGE = 'scripts/ci/post-merge-mode.mjs';
+const CI_JOBS = ['classify', 'docs-fast', 'integrity', 'static', 'tests', 'mutation', 'acceptance', 'quality-gate'];
+const CI_BOTH_OS_JOBS = ['static', 'tests', 'acceptance', 'integrity'];
+const CI_OPERATING_SYSTEMS = ['windows-latest', 'ubuntu-latest'];
+/** The body of one top-level job of a workflow (two-space job keys under `jobs:`). */
+const ciJob = (wf, id) => {
+  const jobs = wf.slice(wf.search(/^jobs:\s*$/m));
+  const start = jobs.search(new RegExp(`^ {2}${id.replace(/[-]/g, '\\-')}:\\s*$`, 'm'));
+  if (start < 0) return undefined;
+  const rest = jobs.slice(start + 1);
+  const next = rest.search(/^ {2}[\w-]+:\s*$/m);
+  return next < 0 ? jobs.slice(start) : jobs.slice(start, start + 1 + next);
+};
+/**
+ * A workflow that does not parse runs NOTHING: GitHub cannot read `on:`, records a failed zero-job run for
+ * any push and never creates the pull_request gate (C4 run 36484710639). Its commonest cause is a plain
+ * (unquoted) value containing ': ', which YAML reads as a nested mapping. Block scalars (`|`, `>`) and
+ * trailing comments are exempt; quoted values and flow collections are not plain.
+ */
+const yamlPlainScalarErrors = (text) => {
+  const problems = [];
+  let blockIndent = -1;
+  text.split('\n').forEach((line, i) => {
+    const indent = line.search(/\S/);
+    if (blockIndent >= 0) {
+      if (indent === -1 || indent > blockIndent) return;
+      blockIndent = -1;
+    }
+    const m = /^\s*(?:-\s+)?[A-Za-z_][\w-]*:\s+(.*)$/.exec(line);
+    if (!m) return;
+    const value = m[1].replace(/\s+#.*$/, '').trimEnd();
+    if (/^[|>]/.test(value)) blockIndent = indent;
+    else if (value !== '' && !/^["'[{&*!#]/.test(value) && (/:\s/.test(value) || value.endsWith(':'))) problems.push(`${CI_WORKFLOW}:${i + 1}: a plain value contains ': ' (YAML reads a nested mapping; the workflow would not parse) — quote it or reword it`);
+  });
+  return problems;
+};
 // R1-15: the mutation checks are pinned. Every recorded mutation must stay in its script (a script may
 // only grow), the script must keep the machinery that makes a mutation meaningful (the exact-count
 // guard, the run of the proof tests, the restore, the failing exit) and the root "ci" script must run it.
@@ -204,6 +263,15 @@ const MUTATION_PINS = {
       'conflict-resolution-no-wake', 'capability-wait-not-rechecked', 'processor-supplied-recent-results', 'canonical-binds-only-if-relevant', 'probation-fail-no-new-epoch', 'rubric-ignores-refused-actions', 'licence-review-skipped', 'model-accepts-foreign-context',
       'pending-candidates-not-recovered', 'context-hold-not-rechecked', 'term-limit-before-filter', 'compaction-crosses-markets', 'failed-attempt-hides-breach', 'role-cert-loss-ignored', 'role-cert-loss-not-at-run-start', 'role-cert-loss-not-at-authorization',
       'role-cert-loss-not-at-reservation', 'role-cert-loss-not-at-tool-intent', 'role-reassignment-without-cert-keeps-active', 'calibration-not-required-at-activation', 'calibration-gates-certification', 'extension-evidence-not-required', 'unlicense-auto-clears',
+    ],
+  },
+  [C4_MUTATION_CHECK]: {
+    script: 'c4:mutation',
+    ids: [
+      'c4-org-act-grant-bypassed', 'c4-org-seat-eligibility-removed', 'c4-delegation-limits-ignored', 'c4-delegation-cycle-allowed', 'c4-delegation-outside-reporting-line', 'c4-self-review-allowed',
+      'c4-quality-hold-ignored-in-selection', 'c4-decision-not-rechecked', 'c4-stale-subject-decision-counts', 'c4-action-review-gate-removed', 'c4-action-review-reusable', 'c4-rejected-action-rereviewed',
+      'c4-review-wait-not-rechecked', 'c4-delegation-wait-free-wake', 'c4-open-handoff-completes', 'c4-p07-reservation-unchecked', 'c4-p07-router-unfiltered', 'c4-p07-release-covers-future',
+      'c4-acting-never-expires', 'c4-acting-authority-outlives-cover', 'c4-ceo-needs-department', 'c4-calibration-counted-twice', 'c4-promotion-without-evidence', 'c4-org-managed-reassignable', 'c4-staffing-alternatives-optional',
     ],
   },
   // R1 Independent Core Review: one mutation per fixed finding (docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md).
@@ -681,7 +749,7 @@ export const RULES = [
     // storage entry point re-exports them.
     check: ({ files, read }) => {
       const problems = files
-        .filter((f) => isCode(f) && !BUDGET_WRITERS.includes(f) && BUDGET_WRITE.test(read(f) ?? ''))
+        .filter((f) => isCode(f) && !BUDGET_WRITERS.includes(f) && !isTestPath(f) && BUDGET_WRITE.test(read(f) ?? ''))
         .map((f) => `${f} writes budget / reservation / usage rows outside ${BUDGET_WRITERS.join(', ')}`);
       const authority = read('packages/storage/src/runtime-authority.ts');
       if (authority !== undefined) {
@@ -722,8 +790,8 @@ export const RULES = [
   },
   {
     id: 'no-later-scope-leakage',
-    // C3 does not implement Review Pool / Directors / delegation / organization (C4), the Founder UI
-    // (C5) or APP-OPS (C7): no such tables, views or packages.
+    // Nothing implements the Founder Command Center / Founder ↔ CEO conversation (C5), dashboards (C6) or
+    // APP-OPS (C7) before its work package: no such tables, views or packages.
     check: ({ files, read, dirs }) => [
       ...files.filter((f) => f.startsWith(MIGRATIONS_DIR) && f.endsWith('.sql')).flatMap((f) => {
         const m = (read(f) ?? '').match(LATER_SCOPE_TABLE);
@@ -812,6 +880,155 @@ export const RULES = [
         const st = mapState(map, id);
         if (st !== undefined && st !== 'Not started') problems.push(`${id} is ${JSON.stringify(st)} before C3 has a closure record`);
       }
+      return problems;
+    },
+  },
+  {
+    id: 'c4-proofs-present',
+    check: ({ files, read }) => {
+      const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
+      const problems = C4_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
+      if (!files.includes(C4_MUTATION_CHECK)) problems.push(`missing ${C4_MUTATION_CHECK}`);
+      const ci = json(read('package.json'))?.scripts?.ci ?? '';
+      if (!/\bc4:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c4:mutation');
+      return problems;
+    },
+  },
+  {
+    id: 'c4-not-claimed-closed',
+    // C4 is an implementation candidate; it is closed only in the change that adds its record, and C5 / C6 /
+    // C7 do not start before it.
+    check: ({ files, read }) => {
+      if (files.some((f) => C4_CLOSURE.test(f))) return [];
+      const problems = [];
+      const map = read(IMPLEMENTATION_MAP);
+      const c4 = mapState(map, 'C4');
+      if (c4 !== undefined && /\bCLOSED\b/i.test(c4.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`C4 is marked ${JSON.stringify(c4)} but no docs/C4_*CLOSURE*.md record exists`);
+      const report = read(C4_REPORT);
+      if (report !== undefined && /\bC4\s*(?:—|-|:|is)?\s*CLOSED\b/i.test(report.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`${C4_REPORT} claims C4 is closed without a closure record`);
+      for (const id of ['C5', 'C6', 'C7']) {
+        const st = mapState(map, id);
+        if (st !== undefined && st !== 'Not started') problems.push(`${id} is ${JSON.stringify(st)} before C4 has a closure record`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'organization-writes-confined',
+    // Durable C4 state changes only in the C4 storage modules; model output reaches it only through the
+    // fenced runtime-authority acts; runtime code and the CLI never call a Founder organization / review act;
+    // the storage index never re-exports the fenced C4 writes or internals.
+    check: ({ files, read }) => {
+      const problems = files
+        .filter((f) => isCode(f) && !ORG_WRITERS.includes(f) && !isTestPath(f) && ORG_WRITE.test(read(f) ?? ''))
+        .map((f) => `${f} writes organization / delegation / review state outside the C4 storage modules`);
+      for (const f of files.filter((x) => x.startsWith('packages/runtime/src/') && isCode(x))) {
+        if (ORG_FOUNDER_CALL.test(read(f) ?? '')) problems.push(`${f} calls a Founder organization / review act (model output never assigns, delegates authority or decides a review)`);
+      }
+      const index = (read('packages/storage/src/index.ts') ?? '').replace(/^\s*\/\/.*$/gm, '');
+      if (/org-writes|review-core|org-core/.test(index)) problems.push('packages/storage/src/index.ts re-exports the fenced C4 writes or internals');
+      return problems;
+    },
+  },
+  {
+    id: 'c4-telemetry-content-free',
+    // Rule A: C4 audit, events and logs carry IDs, states, counts and codes — never staffing evidence,
+    // handoff messages, review rationale or reviewer instructions.
+    check: ({ files, read }) =>
+      files
+        .filter((f) => (ORG_WRITERS.includes(f) || f === 'packages/storage/src/org-records.ts' || f.startsWith('packages/runtime/src/c4/') || f === 'packages/governance/src/organization.ts' || f === 'packages/governance/src/review.ts') && isCode(f))
+        .filter((f) => C4_CONTENT_IN_TELEMETRY.test(read(f) ?? '') || CONTENT_IN_TELEMETRY.test(read(f) ?? ''))
+        .map((f) => `${f} passes content into audit / events / logs (Rule A)`),
+  },
+  {
+    id: 'r4-never-review-satisfied',
+    // Execute ≠ Review ≠ Approve, R4 sovereign: a review request can never be satisfied or consumed for an R4
+    // subject (datastore CHECK), and the authority kernel keeps R4 Founder-only before any review path.
+    check: ({ files, read }) => {
+      const problems = [];
+      for (const f of files.filter((x) => x.startsWith(MIGRATIONS_DIR) && x.endsWith('.sql'))) {
+        const sql = read(f) ?? '';
+        if (/\bCREATE\s+TABLE\s+review_requests\b/i.test(sql) && !R4_REVIEW_CHECK.test(sql)) problems.push(`${f} creates review_requests without the R4 CHECK (a review never satisfies R4)`);
+      }
+      const kernel = read(AUTHORITY_KERNEL);
+      if (kernel !== undefined && !/if \(req\.risk === 'R4'\) return \{ effect: 'DENY', code: 'FOUNDER_ONLY' \};/.test(kernel)) problems.push(`${AUTHORITY_KERNEL} no longer keeps R4 Founder-only before any review`);
+      return problems;
+    },
+  },
+  {
+    id: 'review-pool-not-department',
+    // The Review Pool is a registry of qualified reviewers, never a Department; the seeded Department map is
+    // exactly the canonical Strong-v1 five (Engineering the permanent fifth).
+    check: ({ files, read }) => {
+      const problems = [];
+      for (const f of files.filter((x) => x.startsWith(MIGRATIONS_DIR) && x.endsWith('.sql'))) {
+        const sql = read(f) ?? '';
+        const seeded = [...sql.matchAll(/INSERT\s+INTO\s+departments\b[^;]*?SELECT\s+'[0-9a-f-]{36}',\s*'([a-z0-9-]+)'/gi)].map((m) => String(m[1]));
+        for (const code of seeded) if (/review|reviewer|pool|oversight/.test(code)) problems.push(`${f} seeds a "${code}" Department (the Review Pool is not a Department)`);
+        if (seeded.length > 0 && [...CANONICAL_DEPARTMENTS].sort().join() !== [...new Set(seeded)].sort().join()) problems.push(`${f} seeds Departments ${JSON.stringify(seeded)}, not the canonical five ${JSON.stringify(CANONICAL_DEPARTMENTS)}`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'ci-contract',
+    // One stable required status; docs-only changes take a fast fail-closed path; every other change runs the
+    // FULL proof set on Windows AND Ubuntu, split into parallel jobs whose mutation shards partition every
+    // recorded mutation check exactly; post-merge and manual full runs exist; every action is SHA-pinned.
+    check: ({ files, read }) => {
+      const wf = read(CI_WORKFLOW);
+      if (wf === undefined) return [`missing ${CI_WORKFLOW}`];
+      const problems = [...yamlPlainScalarErrors(wf)];
+      for (const need of [CI_CLASSIFIER, CI_GATE, CI_POST_MERGE]) if (!files.includes(need)) problems.push(`missing ${need}`);
+      if (!/^\s+pull_request:\s*\n\s+branches:\s*\[main\]/m.test(wf) || !/^\s+push:\s*\n\s+branches:\s*\[main\]/m.test(wf) || !/^\s+workflow_dispatch:/m.test(wf)) problems.push('the workflow must run on pull_request / push to main and allow a manual (workflow_dispatch) full run');
+      if (!/^permissions:\s*\n\s+contents:\s*read\s*$/m.test(wf)) problems.push('the workflow default permissions must be contents: read');
+      for (const line of wf.split('\n').filter((l) => /^\s*(?:-\s*)?uses:/.test(l))) if (!/uses:\s*[\w.-]+\/[\w.-]+@[0-9a-f]{40}\b/.test(line)) problems.push(`action not pinned to a commit SHA: ${line.trim()}`);
+      for (const id of CI_JOBS) if (ciJob(wf, id) === undefined) problems.push(`the workflow has no ${id} job`);
+      const gate = ciJob(wf, 'quality-gate') ?? '';
+      if (!/^\s+if:\s*always\(\)\s*$/m.test(gate)) problems.push('quality-gate must run always() (a skipped or failed job fails the gate, never passes it)');
+      for (const id of CI_JOBS.filter((x) => x !== 'quality-gate')) if (!new RegExp(`needs:\\s*\\[[^\\]]*\\b${id}\\b`).test(gate)) problems.push(`quality-gate does not need ${id}`);
+      if (!/quality-gate\.mjs/.test(gate)) problems.push(`quality-gate does not run ${CI_GATE}`);
+      const classify = ciJob(wf, 'classify') ?? '';
+      if (!/classify-changes\.mjs --self-test/.test(classify)) problems.push('classify must run the classifier self-test');
+      if (!/post-merge-mode\.mjs/.test(classify)) problems.push('classify must decide the post-merge mode (fast integrity or full)');
+      for (const id of ['static', 'tests', 'mutation', 'acceptance']) if (!/needs\.classify\.outputs\.mode == 'full'/.test(ciJob(wf, id) ?? '')) problems.push(`${id} must run exactly on the full path`);
+      for (const id of CI_BOTH_OS_JOBS) {
+        const job = ciJob(wf, id) ?? '';
+        for (const os of CI_OPERATING_SYSTEMS) if (!job.includes(os)) problems.push(`${id} does not run on ${os}`);
+      }
+      const acceptance = ciJob(wf, 'acceptance') ?? '';
+      for (const c of ['c1', 'c2', 'c3', 'c4']) if (!new RegExp(`npm run ${c}:acceptance`).test(acceptance)) problems.push(`acceptance does not run ${c}:acceptance`);
+      const tests = ciJob(wf, 'tests') ?? '';
+      if (!/npm run test\b/.test(tests)) problems.push('tests must run every workspace test');
+      const stat = ciJob(wf, 'static') ?? '';
+      for (const s of ['build', 'typecheck', 'lint', 'verify']) if (!new RegExp(`npm run ${s}\\b`).test(stat)) problems.push(`static does not run ${s}`);
+      // Mutation shards: per OS and script, the shard specs are exactly 1/n … n/n of one n.
+      const mutation = ciJob(wf, 'mutation') ?? '';
+      const entries = [...mutation.matchAll(/os:\s*([\w-]+),[^}]*suite:\s*'([^']+)'/g)].map((m) => ({ os: m[1], specs: m[2].split(/\s+/) }));
+      for (const os of CI_OPERATING_SYSTEMS) {
+        for (const script of Object.values(MUTATION_PINS).map((p) => p.script.split(':')[0])) {
+          const shards = entries.filter((e) => e.os === os).flatMap((e) => e.specs).filter((s) => s.startsWith(`${script}:`)).map((s) => s.slice(script.length + 1));
+          const ns = [...new Set(shards.map((s) => s.split('/')[1]))];
+          const is = shards.map((s) => Number(s.split('/')[0])).sort((a, b) => a - b);
+          const n = Number(ns[0]);
+          if (shards.length === 0) problems.push(`${os} never runs ${script}:mutation`);
+          else if (ns.length !== 1 || is.join() !== Array.from({ length: n }, (_, i) => i + 1).join()) problems.push(`${os} shards of ${script}:mutation (${shards.join(' ')}) are not exactly 1/n … n/n`);
+        }
+      }
+      if (!/--report/.test(mutation) || !/upload-artifact/.test(mutation)) problems.push('mutation shards must report the ids they ran (proof parity)');
+      return problems;
+    },
+  },
+  {
+    id: 'ci-classifier-fails-closed',
+    // The docs-only fast path is decided by a pure classifier that fails closed: an empty diff, any non-docs
+    // path, or anything unexpected means the FULL proof set.
+    check: ({ read }) => {
+      const src = read(CI_CLASSIFIER);
+      if (src === undefined) return [`missing ${CI_CLASSIFIER}`];
+      const problems = [];
+      for (const need of ["return 'full'", 'export function classify', 'SELF_TEST_CASES', "emit('full'"]) if (!src.includes(need)) problems.push(`${CI_CLASSIFIER} lost ${need}`);
+      if (/return\s+'skip'|mode=skip/.test(src)) problems.push(`${CI_CLASSIFIER} can skip the proof set`);
       return problems;
     },
   },
@@ -962,6 +1179,8 @@ const synthMap = (c0 = 'CLOSED / PASS', c1 = 'NEXT — CLOUD MEGA-TASK', c2 = 'N
     '',
   ].join('\n');
 const SYNTH_SQL = 'CREATE TABLE t (x INTEGER) STRICT;\n';
+const REAL_TEXT = (p) => (existsSync(path.join(ROOT, p)) ? readFileSync(path.join(ROOT, p), 'utf8') : '');
+const SYNTH_CI = { [CI_WORKFLOW]: REAL_TEXT(CI_WORKFLOW), [CI_CLASSIFIER]: REAL_TEXT(CI_CLASSIFIER), [CI_GATE]: REAL_TEXT(CI_GATE), [CI_POST_MERGE]: REAL_TEXT(CI_POST_MERGE) };
 // The real, frozen C1 migration texts (read from this checkout) so the synthetic repository is clean.
 const C1_MIGRATION_TEXT = Object.fromEntries(FROZEN_MIGRATIONS.map(({ file }) => [file, readFileSync(path.join(ROOT, MIGRATIONS_DIR, file), 'utf8')]));
 const c1Pins = () => FROZEN_MIGRATIONS.map(({ file }, i) => `  { version: ${i + 2}, name: 'c1-${i}', file: '${file}', sha256: '${migrationSha(C1_MIGRATION_TEXT[file])}' },\n`).join('');
@@ -1025,7 +1244,7 @@ function syntheticRepo(overrides = {}) {
     [AUTHORITY_INDEX]: `## Missing\n\n**${STAGE_16_MISSING}.**\n`,
     [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT)),
     [SYNTH_SOURCE]: SYNTH_SOURCE_TEXT,
-    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation' } }),
+    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation' } }),
     'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'node --test dist/test' } }),
     'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'packages/bootstrap-contract': {}, 'node_modules/tar': { version: '7.0.0' } } }),
     '.gitattributes': '* text=auto eol=lf\n*.sh text eol=lf\n*.ps1 text eol=crlf\n*.png binary\n',
@@ -1067,6 +1286,9 @@ function syntheticRepo(overrides = {}) {
     'packages/runtime/test/c3/proofs.test.ts': C3_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
     [C3_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C3_MUTATION_CHECK].ids),
     [R1_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[R1_MUTATION_CHECK].ids),
+    // C4: proofs and the pinned C4 mutation check.
+    'packages/runtime/test/c4/proofs.test.ts': C4_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
+    [C4_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C4_MUTATION_CHECK].ids),
     [CONTEXT_ASSEMBLER]: SYNTH_ASSEMBLER,
     [MODEL_RUNTIME]: SYNTH_MODEL_RUNTIME,
     [RUNTIME_TYPES]: SYNTH_TYPES,
@@ -1075,6 +1297,7 @@ function syntheticRepo(overrides = {}) {
     'packages/storage/src/memory.ts': "ctx.db.run('INSERT INTO memory_records (id) VALUES (?)', id);\nappendAudit(ctx, 'memory.corrected', 'memory', id, a, 'OK', null, { version: 2 });\n",
     'packages/mind/src/memory.ts': "import { QandeelError } from '@qandeel-company/domain';\nexport const decide = (content: string): string => content.trim();\n",
     [`${MIGRATIONS_DIR}0005_c3.sql`]: SYNTH_C3_SQL,
+    ...SYNTH_CI,
     ...overrides.contents,
   };
   const files = Object.keys(baseContents).filter((f) => !(overrides.remove ?? []).includes(f));
@@ -1239,10 +1462,57 @@ const VIOLATIONS = {
     { remove: [`${MIGRATIONS_DIR}0005_c3_memory_context.sql`] },
   ],
   'no-later-scope-leakage': [
-    { contents: { [`${MIGRATIONS_DIR}0005_c3.sql`]: `${SYNTH_C3_SQL}CREATE TABLE director_assignments (id TEXT) STRICT;\n` } },
-    { contents: { [`${MIGRATIONS_DIR}0004_c2.sql`]: 'CREATE TABLE IF NOT EXISTS review_pool_members (id TEXT) STRICT;\n' } },
-    { dirs: ['bootstrap-contract', 'directors'] },
-    { dirs: ['bootstrap-contract', 'organization'] },
+    { contents: { [`${MIGRATIONS_DIR}0005_c3.sql`]: `${SYNTH_C3_SQL}CREATE TABLE command_center_panels (id TEXT) STRICT;\n` } },
+    { contents: { [`${MIGRATIONS_DIR}0004_c2.sql`]: 'CREATE TABLE IF NOT EXISTS ceo_conversation_threads (id TEXT) STRICT;\n' } },
+    { contents: { [`${MIGRATIONS_DIR}0004_c2.sql`]: 'CREATE TABLE kpi_dashboard_tiles (id TEXT) STRICT;\n' } },
+    { contents: { [`${MIGRATIONS_DIR}0004_c2.sql`]: 'CREATE TABLE app_ops_incidents (id TEXT) STRICT;\n' } },
+    { dirs: ['bootstrap-contract', 'command-center'] },
+    { dirs: ['bootstrap-contract', 'app-ops'] },
+  ],
+  'ci-contract': [
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: r1-4of4, suite: 'r1:4/4' }\n", '') } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace(/- \{ os: ubuntu-latest, label: c4-1of1, suite: 'c4:1\/1' \}\n/, '') } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('acceptance]\n    if: always()\n', 'acceptance]\n    if: success()\n') } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'actions/checkout@v7') } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace(/os: \[windows-latest, ubuntu-latest\]/g, 'os: [ubuntu-latest]') } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('  workflow_dispatch:\n', '') } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('npm run c4:acceptance', 'echo c4') } },
+    // The C4 run 36484710639 defect: an unquoted step name with ': ' — the workflow does not parse.
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('name: Classifier self-test (fails closed)', 'name: Classifier self-test (fails closed): no skip') } },
+    { remove: [CI_GATE] },
+  ],
+  'ci-classifier-fails-closed': [
+    { contents: { [CI_CLASSIFIER]: SYNTH_CI[CI_CLASSIFIER].replace("if (!Array.isArray(files) || files.length === 0) return 'full';", "if (!Array.isArray(files) || files.length === 0) return 'skip';") } },
+    { remove: [CI_CLASSIFIER] },
+  ],
+  'c4-proofs-present': [
+    { contents: { 'packages/runtime/test/c4/proofs.test.ts': '// markers removed\n' } },
+    { remove: [C4_MUTATION_CHECK] },
+    { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation' } }) } },
+  ],
+  'c4-not-claimed-closed': [
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS')}` } },
+    { contents: { [C4_REPORT]: '# Report\n\nC4 — CLOSED.\n' } },
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'IN PROGRESS')}| \`C5\` | Founder | Cloud | IN PROGRESS |\n` } },
+  ],
+  'organization-writes-confined': [
+    { contents: { 'packages/storage/src/store.ts': "ctx.db.run('UPDATE position_assignments SET status = ? WHERE id = ?', s, id);" } },
+    { contents: { 'packages/runtime/src/c2/employee-task.ts': 'rt.org.organization.assignPrimary(founder, input);' } },
+    { contents: { 'packages/runtime/src/runtime.ts': `${SYNTH_RUNTIME}store.review.resolveConflict(founder, id, 'PASS', 'x');\n` } },
+    { contents: { 'packages/storage/src/index.ts': "export { txOrgAct } from './org-writes.js';\n" } },
+  ],
+  'c4-telemetry-content-free': [
+    { contents: { 'packages/storage/src/review-core.ts': "appendAudit(ctx, 'review.decided', 'review_decision', id, a, 'OK', null, { rationale: d.rationale });" } },
+    { contents: { 'packages/storage/src/org-writes.ts': "appendEvent(ctx, 'org.handoff', 'work_delegation', id, t, { body, kind });" } },
+    { contents: { 'packages/storage/src/organization.ts': "appendAudit(ctx, 'org.staffing', 'staffing_request', id, a, 'OK', null, { businessNeed: r.businessNeed });" } },
+  ],
+  'r4-never-review-satisfied': [
+    { contents: { [`${MIGRATIONS_DIR}0008_c4.sql`]: "CREATE TABLE review_requests (id TEXT, risk_level TEXT, state TEXT) STRICT;\n" } },
+    { contents: { [AUTHORITY_KERNEL]: "export function decideEmployeeAction() { return { effect: 'ALLOW' }; }\n" } },
+  ],
+  'review-pool-not-department': [
+    { contents: { [`${MIGRATIONS_DIR}0007_c4.sql`]: "INSERT INTO departments (id, code, name) SELECT 'c4d00000-0000-4000-8000-000000000009', 'review-pool', 'Review Pool' WHERE 1;\n" } },
+    { contents: { [`${MIGRATIONS_DIR}0007_c4.sql`]: ['strategic-market-intelligence', 'growth', 'brand-creative', 'product'].map((c, i) => `INSERT INTO departments (id, code, name) SELECT 'c4d00000-0000-4000-8000-00000000000${i + 1}', '${c}', 'x' WHERE 1;\n`).join('') } },
   ],
   'c2-proofs-present': [
     { contents: { 'packages/runtime/test/c2/proofs.test.ts': '// markers removed\n' } },
@@ -1359,6 +1629,14 @@ const MUST_PASS = [
   { id: 'runtime-authority-confined', scenario: { contents: { 'packages/runtime/test/c2/seed.ts': "import { armFounderTestSurface } from '@qandeel-company/storage/testing';", 'scripts/c2-acceptance.mjs': "await import('@qandeel-company/storage/testing');" } } },
   // Tests may call adapters and drivers directly (fakes); only production src is confined.
   { id: 'model-calls-confined', scenario: { contents: { 'packages/runtime/test/c2/fake.test.ts': 'await provider.generate(req, signal); await driver.invoke(x, s);' } } },
+  // C4 owns the organization, Review Pool and delegation schema (not later-scope leakage).
+  { id: 'no-later-scope-leakage', scenario: { contents: { [`${MIGRATIONS_DIR}0007_c4.sql`]: 'CREATE TABLE org_positions (id TEXT) STRICT;\nCREATE TABLE reviewer_qualifications (id TEXT) STRICT;\nCREATE TABLE work_delegations (id TEXT) STRICT;\nCREATE TABLE authority_delegations (id TEXT) STRICT;\n' } } },
+  // The canonical five Departments seeded; a review request table carrying the R4 CHECK; tests seeding rows.
+  { id: 'review-pool-not-department', scenario: { contents: { [`${MIGRATIONS_DIR}0007_c4.sql`]: CANONICAL_DEPARTMENTS.map((c, i) => `INSERT INTO departments (id, code, name) SELECT 'c4d00000-0000-4000-8000-00000000000${i + 1}', '${c}', 'x' WHERE 1;\n`).join('') } } },
+  { id: 'r4-never-review-satisfied', scenario: { contents: { [`${MIGRATIONS_DIR}0008_c4.sql`]: "CREATE TABLE review_requests (\n  risk_level TEXT,\n  state TEXT,\n  CHECK (risk_level <> 'R4' OR state NOT IN ('SATISFIED', 'CONSUMED'))\n) STRICT;\n", [AUTHORITY_KERNEL]: "  if (req.risk === 'R4') return { effect: 'DENY', code: 'FOUNDER_ONLY' };\n" } } },
+  { id: 'organization-writes-confined', scenario: { contents: { 'packages/storage/src/org-core.ts': "ctx.db.run('UPDATE position_assignments SET status = ? WHERE id = ?', s, id);", 'packages/storage/test/c4.test.ts': "db.run('INSERT INTO review_plans (id) VALUES (?)', id); rt.org.review.declarePlan(founder, id, plan);" } } },
+  { id: 'c4-telemetry-content-free', scenario: { contents: { 'packages/storage/src/review-core.ts': "appendAudit(ctx, 'review.decided', 'review_decision', id, a, 'OK', d.outcome, { requestId, keyKind, counts: true, reasonCode: 'x' });" } } },
+  { id: 'budget-mutation-scoped', scenario: { contents: { 'packages/storage/test/migrations.test.ts': "db.run(`INSERT INTO budgets (id) VALUES (?)`, id);" } } },
   // C3 owns Memory / Skills / Academy / certification schema and the `mind` package (not later-scope leakage).
   { id: 'no-later-scope-leakage', scenario: { contents: { [`${MIGRATIONS_DIR}0005_c3.sql`]: `${SYNTH_C3_SQL}CREATE TABLE academy_enrollments (id TEXT) STRICT;\nCREATE TABLE certifications (id TEXT) STRICT;\nCREATE TABLE knowledge_items (id TEXT) STRICT;\n` }, dirs: ['bootstrap-contract', 'mind'] } },
   // C3 as a cloud implementation candidate, explicitly not closed, R1 / C4 not started; later, C3 closed with its record.

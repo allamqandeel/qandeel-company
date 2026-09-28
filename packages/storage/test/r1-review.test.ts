@@ -14,6 +14,7 @@ import { beginGovernedRun, claimJob, containProviderFault, recordStepResult, rec
 import { storeContext } from '../src/store.js';
 import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
 import { C2_KINDS, GOVERNED_KIND, claimGoverned, governedItem, seed, testManifest, type Seed } from './c2-helpers.js';
+import { activeReviewer, intentThroughReview, reviewPlan } from './c4-helpers.js';
 import { academyWorld, assemble, attempt, claimFor, complete, propose, workItem } from './c3-helpers.js';
 import { TEST_SUPERVISOR_TTL_MS, backoff, harness, type Harness } from './helpers.js';
 import { renewSupervisor } from '../src/runtime-authority.js';
@@ -154,15 +155,16 @@ describe('R1-12 (final re-review): conflict-held memories can never be crowded o
 describe('R1-06 (re-review): a stale PENDING approval from an earlier job never masks this run\'s decision', () => {
   test('an approval decided during the run wakes the work even while an older request is still pending', () => {
     withSeed((h, s) => {
-      const wi = governedItem(h, s);
+      activeReviewer(h, s);
+      const wi = governedItem(h, s, s.employee, { reviewPlan: reviewPlan({ appliesTo: 'ACTIONS' }) });
       const first = claimGoverned(h);
-      assert.equal(recordToolIntent(h.store, first.claim.fence, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'v1' }, idempotencyKey: `wi:${wi}:s0` }).kind, 'APPROVAL_REQUIRED');
+      assert.equal(intentThroughReview(h, first.claim.fence, wi, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'v1' }, idempotencyKey: `wi:${wi}:s0` }).kind, 'APPROVAL_REQUIRED');
       settle(h.store, first.claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_APPROVAL' }, { backoff });
       // Re-released: a new job proposes different arguments; the first request stays PENDING.
       h.store.transitionWorkItem(wi, { to: 'BLOCKED', reasonCode: 'hold', blockedReason: 'MANUAL' });
       h.store.transitionWorkItem(wi, { to: 'READY', reasonCode: 'release' });
       const second = claimGoverned(h);
-      const intent = recordToolIntent(h.store, second.claim.fence, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'v2' }, idempotencyKey: `wi:${wi}:s100` });
+      const intent = intentThroughReview(h, second.claim.fence, wi, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'v2' }, idempotencyKey: `wi:${wi}:s100` });
       if (intent.kind !== 'APPROVAL_REQUIRED') throw new Error(intent.kind);
       s.gov.decideApproval(s.founder, intent.approvalId, { decision: 'APPROVE', reasonCode: 'founder.ok' }); // job still CLAIMED
       assert.equal(s.gov.listApprovals('PENDING').length, 1, 'the older request is still pending');
@@ -293,9 +295,10 @@ describe('R1-05: an approval never releases work whose dependencies are unfinish
 describe('R1-06: a C2 wait decided while the job is still claimed is not lost', () => {
   test('an approval decided before the WAIT settle wakes the work in the settle transaction', () => {
     withSeed((h, s) => {
-      const wi = governedItem(h, s);
+      activeReviewer(h, s);
+      const wi = governedItem(h, s, s.employee, { reviewPlan: reviewPlan({ appliesTo: 'ACTIONS' }) });
       const { claim } = claimGoverned(h);
-      const intent = recordToolIntent(h.store, claim.fence, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'v1' }, idempotencyKey: `wi:${wi}:s0` });
+      const intent = intentThroughReview(h, claim.fence, wi, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'v1' }, idempotencyKey: `wi:${wi}:s0` });
       assert.equal(intent.kind, 'APPROVAL_REQUIRED');
       if (intent.kind !== 'APPROVAL_REQUIRED') return;
       s.gov.decideApproval(s.founder, intent.approvalId, { decision: 'APPROVE', reasonCode: 'founder.ok' }); // job still CLAIMED
@@ -306,9 +309,10 @@ describe('R1-06: a C2 wait decided while the job is still claimed is not lost', 
 
   test('a pending approval still parks the work (the re-check is not a free wake)', () => {
     withSeed((h, s) => {
-      const wi = governedItem(h, s);
+      activeReviewer(h, s);
+      const wi = governedItem(h, s, s.employee, { reviewPlan: reviewPlan({ appliesTo: 'ACTIONS' }) });
       const { claim } = claimGoverned(h);
-      assert.equal(recordToolIntent(h.store, claim.fence, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'v1' }, idempotencyKey: `wi:${wi}:s0` }).kind, 'APPROVAL_REQUIRED');
+      assert.equal(intentThroughReview(h, claim.fence, wi, { toolCode: 'publisher', actionCode: 'publish', args: { text: 'v1' }, idempotencyKey: `wi:${wi}:s0` }).kind, 'APPROVAL_REQUIRED');
       settle(h.store, claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_APPROVAL' }, { backoff });
       assert.equal(jobState(h, wi), 'WAITING');
     });

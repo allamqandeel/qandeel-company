@@ -16,6 +16,7 @@ import { accessSync, constants as fsConstants } from 'node:fs';
 import { CompanyStore, CURRENT_SCHEMA_VERSION, GovernanceStore, workspaceFreeBytes, type CompanyReadView, type GovernanceHealth, type HealthCounts, type WorkspaceLayout } from '@qandeel-company/storage';
 
 import { C3_ATTENTION, C3_DEGRADED, c3HealthOf, c3Reasons, type C3Health } from './c3/health.js';
+import { C4_ATTENTION, C4_DEGRADED, c4HealthOf, c4Reasons, type C4Health } from './c4/health.js';
 import type { CompanyRuntime } from './runtime.js';
 
 export type HealthStatus = 'HEALTHY' | 'DEGRADED' | 'ATTENTION' | 'CRITICAL';
@@ -52,6 +53,8 @@ export interface HealthSnapshot {
     readonly governance: (GovernanceHealth & { readonly toolExecutor: { readonly drivers: readonly string[] | null; readonly missingDrivers: readonly string[] }; readonly providerCalls: number | null }) | null;
     /** C3: memory / knowledge / context, Skills, Academy and capability gaps (content-free counts). */
     readonly mind: C3Health | null;
+    /** C4: organization, delegation and the Review Pool (content-free counts). */
+    readonly organization: C4Health | null;
   };
   readonly reasons: readonly string[];
 }
@@ -77,8 +80,8 @@ function classify(checksReady: boolean, alive: boolean, counts: HealthCounts | n
   }
   if (lowDisk) reasons.push('LOW_DISK');
   let status: HealthStatus = 'HEALTHY';
-  if (reasons.includes('EXPIRED_LEASES') || reasons.includes('WAKE_WATCHER_UNAVAILABLE') || reasons.some((r) => GOVERNANCE_DEGRADED.includes(r) || C3_DEGRADED.includes(r))) status = 'DEGRADED';
-  if (reasons.some((r) => ['DEAD_LETTERS_PRESENT', 'RECONCILIATION_REQUIRED', 'ARTIFACT_INTEGRITY', 'LOW_DISK', ...GOVERNANCE_ATTENTION, ...C3_ATTENTION].includes(r))) status = 'ATTENTION';
+  if (reasons.includes('EXPIRED_LEASES') || reasons.includes('WAKE_WATCHER_UNAVAILABLE') || reasons.some((r) => GOVERNANCE_DEGRADED.includes(r) || C3_DEGRADED.includes(r) || C4_DEGRADED.includes(r))) status = 'DEGRADED';
+  if (reasons.some((r) => ['DEAD_LETTERS_PRESENT', 'RECONCILIATION_REQUIRED', 'ARTIFACT_INTEGRITY', 'LOW_DISK', ...GOVERNANCE_ATTENTION, ...C3_ATTENTION, ...C4_ATTENTION].includes(r))) status = 'ATTENTION';
   if (!alive || !checksReady || reasons.includes('WAL_NOT_ACTIVE') || reasons.includes('SCHEMA_MISMATCH')) status = 'CRITICAL';
   return { status, reasons };
 }
@@ -120,6 +123,7 @@ function snapshotFrom(
   now: number,
   governance: GovernanceInput | null = null,
   mind: C3Health | null = null,
+  organization: C4Health | null = null,
 ): HealthSnapshot {
   const counts = store && !store.isClosed ? store.healthCounts() : null;
   const lease = store && !store.isClosed ? store.supervisorLease() : null;
@@ -144,6 +148,7 @@ function snapshotFrom(
   if (runtime.wakeWatcher === 'UNAVAILABLE') extra.push('WAKE_WATCHER_UNAVAILABLE');
   extra.push(...governanceReasons(governance));
   extra.push(...c3Reasons(mind));
+  extra.push(...c4Reasons(organization));
   const { status, reasons } = classify(ready, alive, counts, lowDisk, extra);
   return {
     status,
@@ -172,6 +177,7 @@ function snapshotFrom(
         ? { ...governance.counts, toolExecutor: { drivers: governance.drivers, missingDrivers: governance.drivers === null ? [] : governance.requiredDrivers.filter((d) => !governance.drivers?.includes(d)) }, providerCalls: governance.providerCalls }
         : null,
       mind,
+      organization,
     },
     reasons,
   };
@@ -204,7 +210,16 @@ export function runtimeHealth(runtime: CompanyRuntime): HealthSnapshot {
     Date.now(),
     governanceOf(runtime),
     mindOf(runtime),
+    orgOf(runtime),
   );
+}
+
+function orgOf(runtime: CompanyRuntime): C4Health | null {
+  try {
+    return runtime.orgHealth();
+  } catch {
+    return null;
+  }
 }
 
 function mindOf(runtime: CompanyRuntime): C3Health | null {
@@ -255,6 +270,7 @@ export function inspectWorkspace(root: string): HealthSnapshot {
         return { counts: g.healthCounts(), requiredDrivers: g.activeToolDriverCodes(), drivers: null, providerCalls: null };
       })(),
       c3HealthOf(store),
+      c4HealthOf(store),
     );
   } finally {
     store.close();

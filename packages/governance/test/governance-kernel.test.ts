@@ -123,7 +123,7 @@ describe('C2 kernel: employees', () => {
 describe('C2 kernel: authority (default deny, risk ladder, no self-escalation)', () => {
   test('default deny: no grant → DENY NO_GRANT; a covering grant → ALLOW', () => {
     assert.deepEqual(decideEmployeeAction('EMPLOYEE', 'ACTIVE', [], action()), { effect: 'DENY', code: 'NO_GRANT' });
-    assert.deepEqual(decideEmployeeAction('EMPLOYEE', 'ACTIVE', [grant()], action()), { effect: 'ALLOW', grantId: 'g1', approval: 'NONE' });
+    assert.deepEqual(decideEmployeeAction('EMPLOYEE', 'ACTIVE', [grant()], action()), { effect: 'ALLOW', grantId: 'g1', approval: 'NONE', review: 'NONE' });
   });
 
   test('every grant dimension must match: capability, resource, risk, data class, expiry, uses, status', () => {
@@ -137,16 +137,16 @@ describe('C2 kernel: authority (default deny, risk ladder, no self-escalation)',
     deny(grant({ status: 'REVOKED' }));
   });
 
-  test('R2 fails closed (Review Pool is C4); R4 is Founder-only; R3 requires Founder approval', () => {
-    assert.deepEqual(decideEmployeeAction('EMPLOYEE', 'ACTIVE', [grant({ riskCeiling: 'R3' })], action({ risk: 'R2' })), { effect: 'DENY', code: 'REVIEW_PATH_UNAVAILABLE' });
+  test('C4-PROOF: R2 needs independent review; R3 needs review AND Founder approval; R4 stays Founder-only', () => {
+    assert.deepEqual(decideEmployeeAction('EMPLOYEE', 'ACTIVE', [grant({ riskCeiling: 'R3' })], action({ risk: 'R2' })), { effect: 'ALLOW', grantId: 'g1', approval: 'NONE', review: 'INDEPENDENT' });
     assert.deepEqual(decideEmployeeAction('EMPLOYEE', 'ACTIVE', [grant({ riskCeiling: 'R3' })], action({ risk: 'R4' })), { effect: 'DENY', code: 'FOUNDER_ONLY' });
-    assert.deepEqual(decideEmployeeAction('EMPLOYEE', 'ACTIVE', [grant({ riskCeiling: 'R3' })], action({ risk: 'R3' })), { effect: 'ALLOW', grantId: 'g1', approval: 'FOUNDER' });
+    assert.deepEqual(decideEmployeeAction('EMPLOYEE', 'ACTIVE', [grant({ riskCeiling: 'R3' })], action({ risk: 'R3' })), { effect: 'ALLOW', grantId: 'g1', approval: 'FOUNDER', review: 'INDEPENDENT' });
     assert.throws(() => assertApprover('EMPLOYEE', 'R3'), (e) => isQandeelError(e, 'FOUNDER_ONLY'));
     assert.throws(() => assertApprover('FOUNDER', 'R4'), (e) => isQandeelError(e, 'FOUNDER_ONLY'));
-    assert.throws(() => assertApprover('FOUNDER', 'R2'), (e) => isQandeelError(e, 'REVIEW_PATH_UNAVAILABLE'));
+    // Execute ≠ Review ≠ Approve: an approval never substitutes for the independent review of R2.
+    assert.throws(() => assertApprover('FOUNDER', 'R2'), (e) => isQandeelError(e, 'REVIEW_REQUIRED'));
     assert.doesNotThrow(() => assertApprover('FOUNDER', 'R3'));
   });
-
   test('ineligible, non-employee and system actors are denied even with grants', () => {
     for (const s of ['SUSPENDED', 'RETIRED', 'PAUSED', 'PROBATION'] as const) assert.deepEqual(decideEmployeeAction('EMPLOYEE', s, [grant()], action()), { effect: 'DENY', code: 'EMPLOYEE_NOT_ELIGIBLE' });
     assert.deepEqual(decideEmployeeAction('SYSTEM', 'ACTIVE', [grant()], action()), { effect: 'DENY', code: 'NOT_AN_EMPLOYEE' });

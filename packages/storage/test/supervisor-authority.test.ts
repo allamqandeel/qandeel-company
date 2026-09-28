@@ -155,6 +155,17 @@ describe('Runtime Supervisor claim authority', () => {
     }
   });
 
+  test('C4: the organization / review reconciliation is a supervisor-fenced recovery write too', () => {
+    const h = harness();
+    try {
+      const stale = { ...h.supervisor, fencingToken: h.supervisor.fencingToken + 1 };
+      assert.throws(() => authority.reconcileOrganization(h.store, stale), notAuthoritative);
+      assert.equal(authority.reconcileOrganization(h.store, h.supervisor), 0, 'nothing to reconcile in a fresh workspace');
+    } finally {
+      h.close();
+    }
+  });
+
   test('worker fencing still independently protects renew, checkpoint, settle and artifact writes', () => {
     const h = harness();
     try {

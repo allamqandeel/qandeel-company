@@ -5,9 +5,10 @@
  *   authority exists only through explicit, scoped, unexpired grants (default deny).
  *
  * Risk ladder (Stage 3 §2):
- *   R0 read/analyze · R1 internal reversible · R2 independent review required (the Review Pool is
- *   C4, so R2 fails closed here) · R3 Founder approval required in Strong-v1 trust-building ·
- *   R4 Founder-only sovereign action (never delegable to an employee, never approvable).
+ *   R0 read/analyze · R1 internal reversible · R2 independent review required (C4 Review Pool) ·
+ *   R3 independent review AND Founder approval in Strong-v1 trust-building (one never substitutes for
+ *   the other) · R4 Founder-only sovereign action (never delegable to an employee, never approvable,
+ *   never made executable by a review).
  */
 import { QandeelError, canonicalJson, sha256Hex, type RiskLevel, type Timestamp } from '@qandeel-company/domain';
 
@@ -23,12 +24,14 @@ export const riskRank = (r: RiskLevel): number => RISK_RANK[r];
 /**
  * Capability codes: `model.invoke`, `tool:<tool>.<action>`, or (C3) knowledge access beyond the
  * Employee's own scopes: `knowledge.read` (another Department's knowledge, resource = department
- * code) and `knowledge.restricted` (a Restricted knowledge scope, resource = its scope code).
+ * code) and `knowledge.restricted` (a Restricted knowledge scope, resource = its scope code), or (C4)
+ * one organizational act (`org.staffing.request`, `org.staffing.decide`, `org.work.delegate`, …;
+ * resource = department code or `*`). A title or Position is never a capability.
  */
-export const CAPABILITY = /^(?:model\.invoke|knowledge\.(?:read|restricted)|tool:[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){1,4})$/;
+export const CAPABILITY = /^(?:model\.invoke|knowledge\.(?:read|restricted)|org\.(?:staffing\.(?:request|review|decide|hire)|work\.(?:delegate|support|reprioritize)|review\.plan)|tool:[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){1,4})$/;
 
 export function assertCapability(v: unknown, field = 'capability'): string {
-  if (typeof v !== 'string' || v.length > 128 || !CAPABILITY.test(v)) throw new QandeelError('VALIDATION_FAILED', 'capability must be "model.invoke", "knowledge.read", "knowledge.restricted" or "tool:<tool>.<action>"', { field });
+  if (typeof v !== 'string' || v.length > 128 || !CAPABILITY.test(v)) throw new QandeelError('VALIDATION_FAILED', 'capability must be "model.invoke", "knowledge.read", "knowledge.restricted", an "org.*" organizational act or "tool:<tool>.<action>"', { field });
   return v;
 }
 
@@ -64,8 +67,13 @@ export type DenyCode =
   | 'REVIEW_PATH_UNAVAILABLE'
   | 'NO_GRANT';
 
+/**
+ * An ALLOW names every further gate the action still has to pass before it executes: `review` — an
+ * independent review satisfied under the Work Item's Review Plan (R2, R3); `approval` — the Founder's
+ * scoped approval (R3). They are separate, cumulative gates: neither substitutes for the other.
+ */
 export type AuthorityDecision =
-  | { readonly effect: 'ALLOW'; readonly grantId: string; readonly approval: 'NONE' | 'FOUNDER' }
+  | { readonly effect: 'ALLOW'; readonly grantId: string; readonly approval: 'NONE' | 'FOUNDER'; readonly review: 'NONE' | 'INDEPENDENT' }
   | { readonly effect: 'DENY'; readonly code: DenyCode };
 
 /** Whether one grant covers the request. Every dimension must match; nothing is inferred. */
@@ -90,12 +98,22 @@ export function decideEmployeeAction(actorKind: PrincipalKind, employeeState: Em
   if (actorKind !== 'EMPLOYEE' || employeeState === null) return { effect: 'DENY', code: 'NOT_AN_EMPLOYEE' };
   if (!canExecute(employeeState)) return { effect: 'DENY', code: 'EMPLOYEE_NOT_ELIGIBLE' };
   if (req.risk === 'R4') return { effect: 'DENY', code: 'FOUNDER_ONLY' };
-  if (req.risk === 'R2') return { effect: 'DENY', code: 'REVIEW_PATH_UNAVAILABLE' };
   // Deterministic choice among covering grants: the narrowest (exact resource first), then id.
   const covering = grants.filter((g) => grantCovers(g, req)).sort((a, b) => Number(a.resourceScope === '*') - Number(b.resourceScope === '*') || a.id.localeCompare(b.id));
   const grant = covering[0];
   if (!grant) return { effect: 'DENY', code: 'NO_GRANT' };
-  return { effect: 'ALLOW', grantId: grant.id, approval: req.risk === 'R3' ? 'FOUNDER' : 'NONE' };
+  // C4: R2 and R3 need a satisfied independent review; R3 also needs the Founder's approval (Stage 3 §4).
+  const review = req.risk === 'R2' || req.risk === 'R3' ? 'INDEPENDENT' : 'NONE';
+  return { effect: 'ALLOW', grantId: grant.id, approval: req.risk === 'R3' ? 'FOUNDER' : 'NONE', review };
+}
+
+/**
+ * An Employee's organizational act (C4): the same default-deny grant decision as any action, at R1
+ * (internal, reversible). The act's own rules (Position eligibility, delegation limits) are checked by
+ * the caller; a Position or title never replaces the grant (Title ≠ Authority).
+ */
+export function decideOrgAct(employeeState: EmployeeState | null, grants: readonly GrantView[], req: { readonly capability: string; readonly resource: string; readonly at: Timestamp }): AuthorityDecision {
+  return decideEmployeeAction('EMPLOYEE', employeeState, grants, { capability: req.capability, resource: req.resource, risk: 'R1', dataClass: 'D1', at: req.at });
 }
 
 /** Stage 1 §1 / Stage 3 §1: nobody changes their own authority, budget, credentials or reviewer role. */
@@ -142,7 +160,7 @@ export function approvalFingerprint(scope: ApprovalScope): string {
 /** Who may decide an approval of a given risk (Strong v1: R3 → Founder; R4 is never approvable). */
 export function assertApprover(approverKind: PrincipalKind, risk: RiskLevel): void {
   if (risk === 'R4') throw new QandeelError('FOUNDER_ONLY', 'R4 actions are Founder-only and cannot be delegated through an approval', { risk });
-  if (risk === 'R2') throw new QandeelError('REVIEW_PATH_UNAVAILABLE', 'R2 needs independent review (Review Pool, C4); an approval does not substitute for it', { risk });
+  if (risk === 'R2') throw new QandeelError('REVIEW_REQUIRED', 'R2 needs independent review (Review Pool); an approval never substitutes for it', { risk });
   if (approverKind !== 'FOUNDER') throw new QandeelError('FOUNDER_ONLY', 'Strong-v1 trust-building: R3 approvals are decided by the Founder', { risk, approverKind });
 }
 

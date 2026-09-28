@@ -100,8 +100,11 @@ export class GovernedModelRuntime {
         // Still refused: it stays out of this process's routing until it is written.
       }
     }
-    const routable = <T extends { readonly id: string }>(ds: readonly T[]): readonly T[] => (this.#uncontained.size === 0 ? ds : ds.filter((x) => !this.#uncontained.has(x.id)));
     const governance = GovernanceStore.for(store);
+    // P-07 (D-R1-03 / D-C4-07): a deployment that charged (or may have billed) a failed attempt for this
+    // Work Item in ANY earlier run is not routed to again for it; the reservation re-checks the same rule.
+    const excluded = new Set<string>(governance.chargedExclusions(run.workItemId));
+    const routable = <T extends { readonly id: string }>(ds: readonly T[]): readonly T[] => (this.#uncontained.size === 0 && excluded.size === 0 ? ds : ds.filter((x) => !this.#uncontained.has(x.id) && !excluded.has(x.id)));
     const snapshot = governance.routingSnapshot(req.taskClass);
     const policy = snapshot.policy;
     if (!policy) return { kind: 'UNAVAILABLE', code: 'NO_ROUTE_POLICY' };

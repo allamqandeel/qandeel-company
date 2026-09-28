@@ -239,7 +239,10 @@ export function knowledgeAccess(ctx: StoreContext, e: EmployeeRecord, marketRef:
     if (!grantCovers(g, { capability: g.capability, resource: g.resourceScope, risk: 'R0', dataClass, at })) continue;
     (g.capability === 'knowledge.read' ? cross : restricted).set(g.resourceScope, g.id);
   }
-  return { departmentScopes: [`department:${e.departmentId}`, ...cross.keys()], roleRef: e.roleRef, marketRef, restrictedScopes: [...restricted.keys()], crossDepartmentGrants: cross, restrictedGrants: restricted };
+  // C4: a company-scoped executive (the CEO seat) belongs to no Department: it reads Company scope and
+  // explicitly granted scopes only — never an implicit Department scope (D-C4-02).
+  const own = e.departmentId === null ? [] : [`department:${e.departmentId}`];
+  return { departmentScopes: [...own, ...cross.keys()], roleRef: e.roleRef, marketRef, restrictedScopes: [...restricted.keys()], crossDepartmentGrants: cross, restrictedGrants: restricted };
 }
 
 export function knowledgeReadable(k: Pick<KnowledgeRecord, 'scope' | 'scopeRef'>, a: KnowledgeAccess): boolean {

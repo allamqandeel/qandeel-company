@@ -237,6 +237,29 @@ export class SqliteConnection {
     }
   }
 
+  /**
+   * A synchronous SAVEPOINT inside the current write transaction: a refusal thrown by `fn` undoes only
+   * `fn`'s writes, so the caller can still record the refusal in the same (outer) transaction.
+   */
+  savepoint<T>(operation: string, fn: () => T): T {
+    if (!this.#inTransaction || !this.#db.isTransaction) throw new QandeelError('STORAGE_INVARIANT', 'a savepoint runs inside a write transaction', { operation });
+    this.#db.exec('SAVEPOINT qandeel_nested');
+    try {
+      const result = fn();
+      if (result !== null && typeof result === 'object' && typeof (result as { then?: unknown }).then === 'function') {
+        throw new QandeelError('ASYNC_IN_TRANSACTION', 'a savepoint callback returned a promise', { operation });
+      }
+      this.#db.exec('RELEASE qandeel_nested');
+      return result;
+    } catch (error) {
+      if (this.#db.isTransaction) {
+        this.#db.exec('ROLLBACK TO qandeel_nested');
+        this.#db.exec('RELEASE qandeel_nested');
+      }
+      throw error;
+    }
+  }
+
   get inTransaction(): boolean {
     return this.#inTransaction;
   }

@@ -47,7 +47,8 @@ export type ToolOutcome =
   | { readonly kind: 'SUCCEEDED'; readonly result: unknown; readonly replayed: boolean }
   | { readonly kind: 'DENIED'; readonly code: string; readonly paused: boolean }
   | { readonly kind: 'APPROVAL_REQUIRED'; readonly approvalId: string }
-  | { readonly kind: 'REVIEW_REQUIRED' }
+  /** Independent review of this exact action is pending, or has no plan / eligible reviewer yet (fail closed). */
+  | { readonly kind: 'REVIEW_REQUIRED'; readonly code: string }
   | { readonly kind: 'BUDGET'; readonly code: string }
   | { readonly kind: 'RECONCILIATION_REQUIRED'; readonly invocationId: string }
   | { readonly kind: 'NOT_EXECUTED'; readonly code: string }
@@ -60,6 +61,23 @@ export type MemoryProposalOutcome =
   | { readonly kind: 'DECIDED'; readonly state: string; readonly reasonCode: string | null }
   | { readonly kind: 'INVALID' | 'REFUSED'; readonly code: string };
 
+/** A model-proposed organizational act (C4): enforced by the runtime's fenced authority path, never trusted. */
+export type OrgActProposal = Extract<ModelProposal, { type: 'ORG_ACTION' }>;
+/** A reviewer's decision proposed from inside its own review Work Item (C4). */
+export type ReviewDecisionProposal = Extract<ModelProposal, { type: 'REVIEW_DECISION' }>;
+
+export interface OrgActOutcome {
+  readonly outcome: 'DONE' | 'REFUSED';
+  readonly code: string;
+  readonly after: 'CONTINUE' | 'END_REFUSED' | 'WAIT_CLARIFICATION' | 'WAIT_ESCALATION';
+  readonly paused: boolean;
+}
+
+export interface ReviewDecisionOutcome {
+  readonly outcome: 'RECORDED' | 'REFUSED';
+  readonly code: string;
+}
+
 export interface GovernedRunServices {
   readonly context: GovernedRunContext;
   invokeModel(request: ModelCallRequest): Promise<ModelCallOutcome>;
@@ -67,6 +85,12 @@ export interface GovernedRunServices {
   proposeMemory(proposal: MemoryProposal, step: number): MemoryProposalOutcome;
   /** `step` is a durable, checkpointed step number: it derives the tool call's idempotency key. */
   executeTool(request: ToolRequest, step: number): Promise<ToolOutcome>;
+  /** C4: one organizational act of this run's Employee (grant + seat + limits enforced by the runtime). */
+  orgAct(proposal: OrgActProposal, step: number): OrgActOutcome;
+  /** C4: the reviewer's decision on the review this run's Work Item was created for. */
+  submitReviewDecision(proposal: ReviewDecisionProposal, step: number): ReviewDecisionOutcome;
+  /** C4: open handoffs this run's Work Item delegated (its work cannot finish while any is open). */
+  openHandoffs(): number;
 }
 
 /**

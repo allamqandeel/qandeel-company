@@ -34,6 +34,7 @@ import {
 } from '@qandeel-company/domain';
 import {
   PARENT_SCOPE,
+  parentScopeFor,
   QUALIFICATION_NEXT,
   RESOURCE_SCOPE,
   approvalFingerprint,
@@ -79,6 +80,8 @@ import {
 import {
   budgetChain,
   budgetFor,
+  chargedExclusions,
+  chargedFailureCounts,
   employeeIdFromRef,
   getBudgetRow,
   getEmployeeRow,
@@ -127,6 +130,7 @@ import {
 import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { liveCertifications } from './mind-core.js';
 import { wakeCapabilityGaps } from './mind-writes.js';
+import { isOrgManaged } from './org-core.js';
 import { storeContext, type CompanyStore } from './store.js';
 import { applyTransition, dependencyStatus, enqueueJob, reevaluateDependencyBlock } from './work-core.js';
 
@@ -324,6 +328,83 @@ export function founderAdminWrite<T>(store: CompanyStore, operation: string, act
   }
 }
 
+/**
+ * Inserts a persistent Employee (CANDIDATE) and its principal in the caller's transaction. A Department
+ * member carries its Department; a company-scoped executive seat (the CEO, D-R1-04) carries none — never a
+ * fake Department (D-C4-02). Nobody becomes ACTIVE here: activation stays the Academy's (C3).
+ */
+export function txCreateEmployee(ctx: StoreContext, actorRef: string, input: Omit<CreateEmployeeInput, 'departmentId'> & { departmentId: Id | null; orgScope: 'DEPARTMENT' | 'COMPANY' }): EmployeeRecord {
+  const name = assertEmployeeName(input.name);
+  const cognitive = assertCognitiveProfile(input.cognitiveProfile);
+  const dept = input.departmentId;
+  if ((input.orgScope === 'DEPARTMENT') !== (dept !== null)) throw new QandeelError('VALIDATION_FAILED', 'a Department member has a Department; a company-scoped seat has none', { field: 'departmentId' });
+  if (dept !== null && !ctx.db.get(`SELECT 1 AS ok FROM departments WHERE id = ? AND status = 'ACTIVE'`, dept)) throw new QandeelError('NOT_FOUND', 'department not found', { departmentId: dept });
+  const id = newId();
+  try {
+    ctx.db.run(
+      `INSERT INTO employees (id, given_name, family_name, name_origin, profile_json, cognitive_profile_json, role_ref, position_ref, department_id, manager_ref, state, version, created_at, updated_at, org_scope)
+       VALUES (?, ?, ?, 'EG', ?, ?, ?, ?, ?, ?, 'CANDIDATE', 1, ?, ?, ?)`,
+      id,
+      name.given,
+      name.family,
+      profileJson(input.profile),
+      canonicalJson(cognitive),
+      assertOpaqueRef(input.roleRef, 'roleRef'),
+      assertOpaqueRef(input.positionRef, 'positionRef'),
+      dept,
+      assertOpaqueRef(input.managerRef, 'managerRef'),
+      at(ctx),
+      at(ctx),
+      input.orgScope,
+    );
+  } catch (error) {
+    if (error instanceof QandeelError && error.code === 'STORAGE_INVARIANT') throw new QandeelError('VALIDATION_FAILED', 'employee names are distinct; this name is already in use', { field: 'name' });
+    throw error;
+  }
+  ctx.db.run(`INSERT INTO principals (id, ref, kind, employee_id, status, created_at) VALUES (?, ?, 'EMPLOYEE', ?, 'ACTIVE', ?)`, newId(), `employee:${id}`, id, at(ctx));
+  const e = getEmployeeRow(ctx, id);
+  writeEmployeeHistory(ctx, e, 'CREATED', null, 'CANDIDATE', 'employee.created', actorRef, { departmentId: dept, orgScope: input.orgScope });
+  appendAudit(ctx, 'employee.created', 'employee', id, { actorRef }, 'OK', null, { departmentId: dept, orgScope: input.orgScope });
+  return e;
+}
+
+/**
+ * The ONE reassignment path (C2 reassignment and C4 seat assignment both use it), in the caller's
+ * transaction, after the caller established authority. Role / Position / Department / Manager change; same
+ * Employee ID; history recorded (Stage 4 §9); the role-change certification rule applies (D-C3-24, R1-11,
+ * P-01) — so a C4 Position change can never bypass it.
+ */
+export function txReassignEmployee(ctx: StoreContext, id: Id, input: { roleRef?: string; positionRef?: string; departmentId?: Id | null; orgScope?: 'DEPARTMENT' | 'COMPANY'; managerRef?: string; reasonCode: string }, actorRef: string): EmployeeRecord {
+  const e = getEmployeeRow(ctx, id);
+  if (e.state === 'RETIRED') throw new QandeelError('TERMINAL_STATE', 'a retired employee is history', { employeeId: id });
+  const roleRef = input.roleRef === undefined ? e.roleRef : assertOpaqueRef(input.roleRef, 'roleRef');
+  const positionRef = input.positionRef === undefined ? e.positionRef : assertOpaqueRef(input.positionRef, 'positionRef');
+  const managerRef = input.managerRef === undefined ? e.managerRef : assertOpaqueRef(input.managerRef, 'managerRef');
+  if (managerRef === e.ref) throw new QandeelError('VALIDATION_FAILED', 'an employee cannot manage itself', { field: 'managerRef' });
+  const departmentId = input.departmentId === undefined ? e.departmentId : input.departmentId;
+  const orgScope = input.orgScope ?? e.orgScope;
+  // D-C3-24 (R1-11): Active duty carries into a changed role only with a time-current VALID
+  // certification for that role. PAUSED / ON_LEAVE resume straight to ACTIVE, so the rule applies to
+  // them at this same boundary. ON_LEAVE has no RETRAINING transition (a Product decision, P-01):
+  // until one is made, a role change without the target certification is refused (fail closed).
+  const roleChanged = roleRef !== e.roleRef;
+  const targetCertified = (): boolean => liveCertifications(ctx, id, true).some((cert) => cert.roleRef === roleRef && cert.status === 'VALID');
+  if (roleChanged && e.state === 'ON_LEAVE' && !targetCertified()) {
+    throw new QandeelError('EMPLOYEE_NOT_ELIGIBLE', 'an Employee on leave is not reassigned to a role it is not certified for (no RETRAINING path from ON_LEAVE; Product decision pending)', { reason: 'ROLE_CHANGE_WHILE_ON_LEAVE', employeeId: id });
+  }
+  ctx.db.run(`UPDATE employees SET role_ref = ?, position_ref = ?, department_id = ?, manager_ref = ?, org_scope = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, roleRef, positionRef, departmentId, managerRef, orgScope, at(ctx), id, e.version);
+  let next = getEmployeeRow(ctx, id);
+  writeEmployeeHistory(ctx, next, 'ASSIGNMENT', e.roleRef, roleRef, assertCode(input.reasonCode, 'reasonCode'), actorRef, { departmentId, previousDepartmentId: e.departmentId });
+  appendAudit(ctx, 'employee.reassigned', 'employee', id, { actorRef }, 'OK', input.reasonCode, { departmentId });
+  // D-C3-24: assignment is allowed, but ACTIVE duty never carries into a different role unless
+  // the Employee already holds a currently VALID certification for that target role. The role
+  // change and any demotion are one atomic Founder-authority write; identity and history stay.
+  if ((e.state === 'ACTIVE' || e.state === 'PAUSED') && roleChanged && !targetCertified()) {
+    next = setEmployeeState(ctx, next, 'RETRAINING', 'ROLE_REASSIGNMENT_REQUIRES_CERTIFICATION', actorRef);
+  }
+  return next;
+}
+
 /** A job is governed when any of its runs was attributed to an Employee (C2 execution). */
 export function isGovernedJob(ctx: StoreContext, jobId: Id): boolean {
   return ctx.db.get('SELECT 1 AS x FROM run_attributions a JOIN runs r ON r.id = a.run_id WHERE r.job_id = ? LIMIT 1', jobId) !== undefined;
@@ -419,37 +500,20 @@ export class GovernanceStore {
   createEmployee(actorRef: string, input: CreateEmployeeInput): EmployeeRecord {
     return this.#admin('create employee', actorRef, (ctx) => {
       const p = founder(ctx, actorRef, null, 'employee creation');
-      const name = assertEmployeeName(input.name);
-      const cognitive = assertCognitiveProfile(input.cognitiveProfile);
-      const dept = assertId(input.departmentId, 'departmentId');
-      if (!ctx.db.get(`SELECT 1 AS ok FROM departments WHERE id = ? AND status = 'ACTIVE'`, dept)) throw new QandeelError('NOT_FOUND', 'department not found', { departmentId: dept });
-      const id = newId();
-      try {
-        ctx.db.run(
-          `INSERT INTO employees (id, given_name, family_name, name_origin, profile_json, cognitive_profile_json, role_ref, position_ref, department_id, manager_ref, state, version, created_at, updated_at)
-           VALUES (?, ?, ?, 'EG', ?, ?, ?, ?, ?, ?, 'CANDIDATE', 1, ?, ?)`,
-          id,
-          name.given,
-          name.family,
-          profileJson(input.profile),
-          canonicalJson(cognitive),
-          assertOpaqueRef(input.roleRef, 'roleRef'),
-          assertOpaqueRef(input.positionRef, 'positionRef'),
-          dept,
-          assertOpaqueRef(input.managerRef, 'managerRef'),
-          at(ctx),
-          at(ctx),
-        );
-      } catch (error) {
-        if (error instanceof QandeelError && error.code === 'STORAGE_INVARIANT') throw new QandeelError('VALIDATION_FAILED', 'employee names are distinct; this name is already in use', { field: 'name' });
-        throw error;
-      }
-      ctx.db.run(`INSERT INTO principals (id, ref, kind, employee_id, status, created_at) VALUES (?, ?, 'EMPLOYEE', ?, 'ACTIVE', ?)`, newId(), `employee:${id}`, id, at(ctx));
-      const e = getEmployeeRow(ctx, id);
-      writeEmployeeHistory(ctx, e, 'CREATED', null, 'CANDIDATE', 'employee.created', p.ref, { departmentId: dept });
-      appendAudit(ctx, 'employee.created', 'employee', id, { actorRef: p.ref }, 'OK', null, { departmentId: dept });
-      return e;
+      return txCreateEmployee(ctx, p.ref, { ...input, departmentId: assertId(input.departmentId, 'departmentId'), orgScope: 'DEPARTMENT' });
     });
+  }
+
+  /** A Department by its code (the canonical Strong-v1 Departments are release-seeded, D-C4-02). */
+  departmentByCode(code: string): DepartmentRecord | null {
+    return this.#read((ctx) => {
+      const r = ctx.db.get('SELECT * FROM departments WHERE code = ?', code);
+      return r ? mapDepartment(r) : null;
+    });
+  }
+
+  listDepartments(): DepartmentRecord[] {
+    return this.#read((ctx) => ctx.db.all('SELECT * FROM departments ORDER BY code').map(mapDepartment));
   }
 
   /**
@@ -474,38 +538,25 @@ export class GovernanceStore {
     });
   }
 
-  /** Role / Position / Department / Manager change: same Employee ID, history recorded (Stage 4 §9). */
+  /**
+   * Role / Position / Department / Manager change: same Employee ID, history recorded (Stage 4 §9). An
+   * Employee that holds a C4 PRIMARY seat is organization-managed: its placement (Position / Department /
+   * Manager) changes only through the organization's assignments (D-C4-02), never behind their back here.
+   */
   reassignEmployee(actorRef: string, employeeId: string, input: { roleRef?: string; positionRef?: string; departmentId?: string; managerRef?: string; reasonCode: string }): EmployeeRecord {
     return this.#admin('reassign employee', actorRef, (ctx) => {
       const id = assertId(employeeId, 'employeeId');
       const p = founder(ctx, actorRef, `employee:${id}`, 'employee assignment');
-      const e = getEmployeeRow(ctx, id);
-      if (e.state === 'RETIRED') throw new QandeelError('TERMINAL_STATE', 'a retired employee is history', { employeeId: id });
-      const roleRef = input.roleRef === undefined ? e.roleRef : assertOpaqueRef(input.roleRef, 'roleRef');
-      const positionRef = input.positionRef === undefined ? e.positionRef : assertOpaqueRef(input.positionRef, 'positionRef');
-      const managerRef = input.managerRef === undefined ? e.managerRef : assertOpaqueRef(input.managerRef, 'managerRef');
-      if (managerRef === e.ref) throw new QandeelError('VALIDATION_FAILED', 'an employee cannot manage itself', { field: 'managerRef' });
-      const departmentId = input.departmentId === undefined ? e.departmentId : assertId(input.departmentId, 'departmentId');
-      // D-C3-24 (R1-11): Active duty carries into a changed role only with a time-current VALID
-      // certification for that role. PAUSED / ON_LEAVE resume straight to ACTIVE, so the rule applies to
-      // them at this same boundary. ON_LEAVE has no RETRAINING transition (a Product decision, P-01):
-      // until one is made, a role change without the target certification is refused (fail closed).
-      const roleChanged = roleRef !== e.roleRef;
-      const targetCertified = (): boolean => liveCertifications(ctx, id, true).some((cert) => cert.roleRef === roleRef && cert.status === 'VALID');
-      if (roleChanged && e.state === 'ON_LEAVE' && !targetCertified()) {
-        throw new QandeelError('EMPLOYEE_NOT_ELIGIBLE', 'an Employee on leave is not reassigned to a role it is not certified for (no RETRAINING path from ON_LEAVE; Product decision pending)', { reason: 'ROLE_CHANGE_WHILE_ON_LEAVE', employeeId: id });
+      if (isOrgManaged(ctx, id) && (input.positionRef !== undefined || input.departmentId !== undefined || input.managerRef !== undefined)) {
+        throw new QandeelError('ORG_MANAGED_EMPLOYEE', 'this Employee holds an organization seat: change its placement through a Position assignment', { employeeId: id });
       }
-      ctx.db.run(`UPDATE employees SET role_ref = ?, position_ref = ?, department_id = ?, manager_ref = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, roleRef, positionRef, departmentId, managerRef, at(ctx), id, e.version);
-      let next = getEmployeeRow(ctx, id);
-      writeEmployeeHistory(ctx, next, 'ASSIGNMENT', e.roleRef, roleRef, assertCode(input.reasonCode, 'reasonCode'), p.ref, { departmentId, previousDepartmentId: e.departmentId });
-      appendAudit(ctx, 'employee.reassigned', 'employee', id, { actorRef: p.ref }, 'OK', input.reasonCode, { departmentId });
-      // D-C3-24: assignment is allowed, but ACTIVE duty never carries into a different role unless
-      // the Employee already holds a currently VALID certification for that target role. The role
-      // change and any demotion are one atomic Founder-authority write; identity and history stay.
-      if ((e.state === 'ACTIVE' || e.state === 'PAUSED') && roleChanged && !targetCertified()) {
-        next = setEmployeeState(ctx, next, 'RETRAINING', 'ROLE_REASSIGNMENT_REQUIRES_CERTIFICATION', p.ref);
-      }
-      return next;
+      return txReassignEmployee(ctx, id, {
+        ...(input.roleRef !== undefined ? { roleRef: input.roleRef } : {}),
+        ...(input.positionRef !== undefined ? { positionRef: input.positionRef } : {}),
+        ...(input.departmentId !== undefined ? { departmentId: assertId(input.departmentId, 'departmentId'), orgScope: 'DEPARTMENT' as const } : {}),
+        ...(input.managerRef !== undefined ? { managerRef: input.managerRef } : {}),
+        reasonCode: input.reasonCode,
+      }, p.ref);
     });
   }
 
@@ -977,6 +1028,7 @@ export class GovernanceStore {
     return this.#admin('change budget cap', actorRef, (ctx) => {
       const b = getBudgetRow(ctx, assertId(budgetId, 'budgetId'));
       founder(ctx, actorRef, budgetSubjectRef(ctx, b), 'budget cap change');
+      if (b.status === 'CLOSED') throw new QandeelError('INVALID_TRANSITION', 'a closed Employee envelope keeps its caps; change the current envelope', { budgetId: b.id });
       const capMoney = assertMoney(input.capMoney, 'capMoney');
       const capTokens = assertTokens(input.capTokens, 'capTokens');
       if (b.parentId !== null) {
@@ -1067,6 +1119,29 @@ export class GovernanceStore {
     });
   }
 
+  /**
+   * P-07 (D-R1-03): a deployment that produced a charged (or possibly billed) failed model-call attempt for a
+   * Work Item is never selected again for it automatically. Only this explicit, evidenced Founder act
+   * releases the exclusion — for exactly that Work Item and deployment, from now on.
+   */
+  releaseChargedExclusion(actorRef: string, input: { workItemId: string; deploymentId: string; reasonCode: string; evidenceRef: string }): void {
+    this.#admin('release charged exclusion', actorRef, (ctx) => {
+      const p = founder(ctx, actorRef, null, 'charged deployment release');
+      const workItemId = getWorkItemRow(ctx, assertId(input.workItemId, 'workItemId')).id;
+      const deploymentId = this.#deployment(ctx, assertId(input.deploymentId, 'deploymentId')).id;
+      if (!chargedExclusions(ctx, workItemId).includes(deploymentId)) throw new QandeelError('INVALID_TRANSITION', 'this deployment is not excluded for this work item', { workItemId, deploymentId });
+      const covered = chargedFailureCounts(ctx, workItemId).get(deploymentId) ?? 0;
+      const id = newId();
+      ctx.db.run('INSERT INTO charged_exclusion_releases (id, work_item_id, deployment_id, covered_failures, released_by_ref, reason_code, evidence_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', id, workItemId, deploymentId, covered, p.ref, assertCode(input.reasonCode, 'reasonCode'), assertOpaqueRef(input.evidenceRef, 'evidenceRef'), at(ctx));
+      appendAudit(ctx, 'deployment.charged_exclusion_released', 'work_item', workItemId, { actorRef: p.ref }, 'OK', input.reasonCode, { deploymentId });
+    });
+  }
+
+  /** Deployments excluded for a Work Item by P-07 (content-free IDs). */
+  chargedExclusions(workItemId: Id): Id[] {
+    return this.#read((ctx) => chargedExclusions(ctx, workItemId));
+  }
+
   // --- Health & invariants -------------------------------------------------------------------------
 
   healthCounts(): GovernanceHealth {
@@ -1145,7 +1220,8 @@ export class GovernanceStore {
       if (succeededUnsettled) violations.push(`${succeededUnsettled} succeeded tool invocation(s) whose reservation is not settled`);
       const wrongLeaf = n(`SELECT COUNT(*) AS n FROM budget_reservations r JOIN budgets b ON b.id = r.budget_id WHERE b.scope <> 'RUN' OR b.scope_id <> r.run_id`);
       if (wrongLeaf) violations.push(`${wrongLeaf} reservation(s) not held against their own Run budget`);
-      const misattributed = n(`SELECT COUNT(*) AS n FROM budget_reservations r JOIN run_attributions a ON a.run_id = r.run_id WHERE a.employee_id <> r.employee_id OR a.department_id <> r.department_id OR a.work_item_id <> r.work_item_id`);
+      // NULL-safe (IS NOT): a company-scoped run and its reservations carry no Department (D-C4-02).
+      const misattributed = n(`SELECT COUNT(*) AS n FROM budget_reservations r JOIN run_attributions a ON a.run_id = r.run_id WHERE a.employee_id IS NOT r.employee_id OR a.department_id IS NOT r.department_id OR a.work_item_id IS NOT r.work_item_id`);
       if (misattributed) violations.push(`${misattributed} reservation(s) attributed differently from their run`);
       const settledWithoutUsage = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM budget_reservations r WHERE r.state = 'SETTLED' AND NOT EXISTS (SELECT 1 FROM usage_records u WHERE u.reservation_id = r.id)`)?.n ?? 0);
       if (settledWithoutUsage) violations.push(`${settledWithoutUsage} settled reservation(s) without a usage record`);
@@ -1255,13 +1331,17 @@ function budgetHistory(ctx: StoreContext, budgetId: Id, kind: 'CREATED' | 'CAP_C
 
 /** The parent budget a new budget of `scope` must hang under (it must already exist). */
 function parentBudgetFor(ctx: StoreContext, scope: BudgetScope, scopeId: Id): BudgetRecord {
-  const parentScope = PARENT_SCOPE[scope];
+  let parentScope = PARENT_SCOPE[scope];
   let parentScopeId: string;
   if (scope === 'DEPARTMENT') {
     if (!ctx.db.get('SELECT 1 AS ok FROM departments WHERE id = ?', scopeId)) throw new QandeelError('NOT_FOUND', 'department not found', { departmentId: scopeId });
     parentScopeId = 'company';
   } else if (scope === 'EMPLOYEE') {
-    parentScopeId = getEmployeeRow(ctx, scopeId).departmentId;
+    // D-C4-02: a company-scoped executive (the CEO seat) has no Department: its Employee budget hangs
+    // directly under the Company budget — never under a fake Department — and every Company cap applies.
+    const e = getEmployeeRow(ctx, scopeId);
+    parentScope = parentScopeFor(scope, e.orgScope);
+    parentScopeId = e.departmentId ?? 'company';
   } else {
     const item = getWorkItemRow(ctx, scopeId);
     const owner = employeeIdFromRef(item.ownerRef);

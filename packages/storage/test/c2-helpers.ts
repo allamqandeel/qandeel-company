@@ -1,7 +1,7 @@
 /** C2 storage test seeding: Founder, department, employee, catalog, tools, grants, budgets. */
 import type { Id, SideEffectClass } from '@qandeel-company/domain';
 
-import { GovernanceStore, type CompanyStore, type EmployeeRecord } from '../src/index.js';
+import { GovernanceStore, ReviewStore, type CompanyStore, type EmployeeRecord } from '../src/index.js';
 import { beginGovernedRun, claimNext } from '../src/runtime-authority.js';
 import { activateEmployeeForTest, armFounderTestSurface } from '../src/testing/founder-seam.js';
 import type { Harness } from './helpers.js';
@@ -45,7 +45,9 @@ export function seed(store: CompanyStore, { companyCap = 10_000_000, employeeCap
   const gov = GovernanceStore.for(store);
   const founder = gov.registerFounder().ref;
   gov.createBudget(founder, { scope: 'COMPANY', scopeId: 'company', capMoney: companyCap, capTokens: 10_000_000, currency: 'USD', reasonCode: 'seed' });
-  const dept = gov.createDepartment(founder, { code: 'product', name: 'Product' });
+  // C4: the canonical Departments are release-seeded (D-C4-02); fixtures adopt them by code.
+  const dept = gov.departmentByCode('product');
+  if (!dept) throw new Error('the canonical Product Department is release-seeded');
   gov.createBudget(founder, { scope: 'DEPARTMENT', scopeId: dept.id, capMoney: companyCap, capTokens: 10_000_000, reasonCode: 'seed' });
   const employee = hire(gov, founder, dept.id);
   gov.createBudget(founder, { scope: 'EMPLOYEE', scopeId: employee.id, capMoney: employeeCap, capTokens: 1_000_000, reasonCode: 'seed' });
@@ -80,9 +82,11 @@ export function grantAll(gov: GovernanceStore, founder: string, employeeId: Id):
 }
 
 /** Creates a governed Work Item owned by `employee` with its own budget, then releases it. */
-export function governedItem(h: Harness, s: Seed, employee: EmployeeRecord = s.employee, { cap = 100_000, runCap, dataClass = 'D1', risk = 'R1' as 'R1' | 'R3' | 'R4' } = {} as { cap?: number; runCap?: number; dataClass?: string; risk?: 'R1' | 'R3' | 'R4' }): Id {
+export function governedItem(h: Harness, s: Seed, employee: EmployeeRecord = s.employee, { cap = 100_000, runCap, dataClass = 'D1', risk = 'R1' as 'R1' | 'R3' | 'R4', reviewPlan } = {} as { cap?: number; runCap?: number; dataClass?: string; risk?: 'R1' | 'R3' | 'R4'; reviewPlan?: Record<string, unknown> }): Id {
   const { workItem } = h.store.createWorkItem({ objective: 'governed work', ownerRef: employee.ref, processorKind: GOVERNED_KIND, processorInput: { taskClass: 'draft.memo', dataClass, instructions: 'x' }, riskLevel: risk });
   s.gov.createBudget(s.founder, { scope: 'WORK_ITEM', scopeId: workItem.id, capMoney: cap, capTokens: 100_000, ...(runCap !== undefined ? { runCapMoney: runCap } : {}), reasonCode: 'seed' });
+  // C4: how the work is independently reviewed is declared before it first runs (Stage 11 §1).
+  if (reviewPlan) ReviewStore.for(h.store).declarePlan(s.founder, workItem.id, reviewPlan);
   h.store.transitionWorkItem(workItem.id, { to: 'READY', reasonCode: 'release' });
   return workItem.id;
 }

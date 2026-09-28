@@ -48,8 +48,10 @@ export interface EmployeeRecord {
   readonly cognitiveProfile: CognitiveProfile;
   readonly roleRef: string;
   readonly positionRef: string;
-  readonly departmentId: Id;
+  /** C2 projection (D-C4-02): null for a company-scoped executive (CEO seat); canonical truth is the Position Assignment. */
+  readonly departmentId: Id | null;
   readonly managerRef: string;
+  readonly orgScope: 'DEPARTMENT' | 'COMPANY';
   readonly state: EmployeeState;
   readonly qualificationRefs: readonly string[];
   readonly version: number;
@@ -72,7 +74,9 @@ export interface RunAttributionRecord {
   readonly runId: Id;
   readonly workItemId: Id;
   readonly employeeId: Id;
-  readonly departmentId: Id;
+  /** Null for a company-scoped run (the CEO seat belongs to no Department). */
+  readonly departmentId: Id | null;
+  readonly orgScope: 'DEPARTMENT' | 'COMPANY';
   readonly createdAt: Timestamp;
 }
 
@@ -196,6 +200,8 @@ export interface BudgetRecord {
   readonly runCapMoney: number | null;
   readonly runCapTokens: number | null;
   readonly version: number;
+  /** C4: an Employee envelope is CLOSED when its placement changed (its history stays where it was spent). */
+  readonly status: 'OPEN' | 'CLOSED';
 }
 
 export interface ReservationRecord {
@@ -206,7 +212,7 @@ export interface ReservationRecord {
   readonly fencingToken: number;
   readonly workItemId: Id;
   readonly employeeId: Id;
-  readonly departmentId: Id;
+  readonly departmentId: Id | null;
   readonly purpose: 'MODEL_CALL' | 'TOOL_CALL';
   readonly attemptKind: AttemptKind;
   readonly deploymentId: Id | null;
@@ -227,7 +233,7 @@ export interface UsageRecord {
   readonly runId: Id;
   readonly workItemId: Id;
   readonly employeeId: Id;
-  readonly departmentId: Id;
+  readonly departmentId: Id | null;
   readonly purpose: 'MODEL_CALL' | 'TOOL_CALL';
   readonly attemptKind: AttemptKind;
   readonly providerId: Id | null;
@@ -277,8 +283,9 @@ export const mapEmployee = (r: Row): EmployeeRecord => ({
   cognitiveProfile: parse(r.cognitive_profile_json) as CognitiveProfile,
   roleRef: str(r.role_ref),
   positionRef: str(r.position_ref),
-  departmentId: str(r.department_id) as Id,
+  departmentId: optStr(r.department_id) as Id | null,
   managerRef: str(r.manager_ref),
+  orgScope: str(r.org_scope) === 'COMPANY' ? 'COMPANY' : 'DEPARTMENT',
   state: str(r.state) as EmployeeState,
   qualificationRefs: parse(r.qualification_refs_json) as string[],
   version: num(r.version),
@@ -297,7 +304,7 @@ export const mapEmployeeHistory = (r: Row): EmployeeHistoryRecord => ({
   occurredAt: str(r.occurred_at) as Timestamp,
 });
 
-export const mapRunAttribution = (r: Row): RunAttributionRecord => ({ runId: str(r.run_id) as Id, workItemId: str(r.work_item_id) as Id, employeeId: str(r.employee_id) as Id, departmentId: str(r.department_id) as Id, createdAt: str(r.created_at) as Timestamp });
+export const mapRunAttribution = (r: Row): RunAttributionRecord => ({ runId: str(r.run_id) as Id, workItemId: str(r.work_item_id) as Id, employeeId: str(r.employee_id) as Id, departmentId: optStr(r.department_id) as Id | null, orgScope: str(r.org_scope) === 'COMPANY' ? 'COMPANY' : 'DEPARTMENT', createdAt: str(r.created_at) as Timestamp });
 
 export const mapProvider = (r: Row): ProviderRecord => ({ id: str(r.id) as Id, code: str(r.code), locality: str(r.locality) as Locality, status: str(r.status) as OperationalStatus, holdReason: optStr(r.hold_reason), credentialRef: optStr(r.credential_ref) });
 
@@ -404,6 +411,7 @@ export const mapBudget = (r: Row): BudgetRecord => ({
   runCapMoney: optNum(r.run_cap_money),
   runCapTokens: optNum(r.run_cap_tokens),
   version: num(r.version),
+  status: str(r.status) === 'CLOSED' ? 'CLOSED' : 'OPEN',
 });
 
 export const mapReservation = (r: Row): ReservationRecord => ({
@@ -414,7 +422,7 @@ export const mapReservation = (r: Row): ReservationRecord => ({
   fencingToken: num(r.fencing_token),
   workItemId: str(r.work_item_id) as Id,
   employeeId: str(r.employee_id) as Id,
-  departmentId: str(r.department_id) as Id,
+  departmentId: optStr(r.department_id) as Id | null,
   purpose: str(r.purpose) as ReservationRecord['purpose'],
   attemptKind: str(r.attempt_kind) as AttemptKind,
   deploymentId: optStr(r.deployment_id) as Id | null,
@@ -434,7 +442,7 @@ export const mapUsage = (r: Row): UsageRecord => ({
   runId: str(r.run_id) as Id,
   workItemId: str(r.work_item_id) as Id,
   employeeId: str(r.employee_id) as Id,
-  departmentId: str(r.department_id) as Id,
+  departmentId: optStr(r.department_id) as Id | null,
   purpose: str(r.purpose) as UsageRecord['purpose'],
   attemptKind: str(r.attempt_kind) as AttemptKind,
   providerId: optStr(r.provider_id) as Id | null,

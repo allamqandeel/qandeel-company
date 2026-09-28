@@ -7,9 +7,10 @@
  * stored as integers; the budget CHECK constraints are a second, independent guard.
  */
 import { QandeelError, newId, type Id, type Timestamp } from '@qandeel-company/domain';
-import { addMoney, addTokens, costOf, subMoney, subTokens, type PriceCard, type PrincipalKind } from '@qandeel-company/governance';
+import { PROVIDER_FAILURE_CLASSES, addMoney, addTokens, costOf, failureDisposition, subMoney, subTokens, type PriceCard, type PrincipalKind } from '@qandeel-company/governance';
 
 import { mapBudget, mapEmployee, mapPriceCard, mapPrincipal, mapReservation, type BudgetRecord, type EmployeeRecord, type PrincipalRecord, type ReservationRecord } from './governance-records.js';
+
 import { appendAudit, appendEvent, ts, type StoreContext } from './internal.js';
 
 export interface Principal {
@@ -78,8 +79,12 @@ export function getBudgetRow(ctx: StoreContext, id: Id): BudgetRecord {
   return mapBudget(row);
 }
 
+/**
+ * The current budget of a scope. Only an Employee envelope can be CLOSED (per placement, D-C4-02); its
+ * successor is the OPEN one. Every other scope has exactly one budget.
+ */
 export function budgetFor(ctx: StoreContext, scope: BudgetRecord['scope'], scopeId: string): BudgetRecord | null {
-  const row = ctx.db.get('SELECT * FROM budgets WHERE scope = ? AND scope_id = ?', scope, scopeId);
+  const row = ctx.db.get(`SELECT * FROM budgets WHERE scope = ? AND scope_id = ? AND status = 'OPEN'`, scope, scopeId);
   return row ? mapBudget(row) : null;
 }
 
@@ -93,6 +98,60 @@ export function budgetChain(ctx: StoreContext, leafId: Id): BudgetRecord[] {
   }
   if (chain.at(-1)?.scope !== 'COMPANY') throw new QandeelError('STORAGE_INVARIANT', 'budget chain does not end at the Company budget', { budgetId: leafId });
   return chain;
+}
+
+/**
+ * C4: the Work Item budget of engine-created work (a delegated / support child, a reviewer's review task).
+ * It hangs under the owner's EXISTING Employee budget and is capped by it (and by the caller's cap, e.g. the
+ * parent Work Item's): no budget is created out of nothing, and every ancestor cap still binds each
+ * reservation (Stage 3 §6 "managers allocate within an approved budget"; Stage 8 §29). Refused, never
+ * improvised, when the owner has no Employee budget.
+ */
+export function txAllocateWorkItemBudget(ctx: StoreContext, workItemId: Id, ownerEmployeeId: Id, cap: { money: number; tokens: number }, actorRef: string, reasonCode: string): BudgetRecord {
+  const existing = budgetFor(ctx, 'WORK_ITEM', workItemId);
+  if (existing) return existing;
+  const parent = budgetFor(ctx, 'EMPLOYEE', ownerEmployeeId);
+  if (!parent) throw new QandeelError('BUDGET_MISSING', 'the owner has no Employee budget to allocate from', { scope: 'EMPLOYEE', employeeId: ownerEmployeeId });
+  const capMoney = Math.min(cap.money, parent.capMoney);
+  const capTokens = Math.min(cap.tokens, parent.capTokens);
+  const id = newId();
+  const at = ts(ctx);
+  ctx.db.run(
+    `INSERT INTO budgets (id, scope, scope_id, parent_id, currency, cap_money, cap_tokens, version, created_by_ref, created_at, updated_at) VALUES (?, 'WORK_ITEM', ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+    id, workItemId, parent.id, parent.currency, capMoney, capTokens, actorRef, at, at,
+  );
+  ctx.db.run('INSERT INTO budget_history (budget_id, change_kind, cap_money, cap_tokens, reason_code, actor_ref, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?)', id, 'CREATED', capMoney, capTokens, reasonCode, actorRef, at);
+  appendAudit(ctx, 'budget.created', 'budget', id, { actorRef }, 'OK', reasonCode, { capMoney, capTokens });
+  return getBudgetRow(ctx, id);
+}
+
+/**
+ * C4 (D-C4-02): an Employee's budget envelope follows its placement. When a seat change moves the Employee
+ * under a different parent level (a transfer, or a promotion into the company-scoped CEO seat), the current
+ * envelope is CLOSED — its history stays where it was spent — and a successor is opened under the new
+ * parent, capped by both. With no parent budget yet, nothing is opened: the Employee cannot spend until the
+ * Founder budgets that level (fail closed). Called in the Founder-authority assignment transaction.
+ */
+export function txFollowPlacementEnvelope(ctx: StoreContext, e: EmployeeRecord, actorRef: string, reasonCode: string): BudgetRecord | null {
+  const current = budgetFor(ctx, 'EMPLOYEE', e.id);
+  if (!current) return null;
+  const parent = e.orgScope === 'COMPANY' ? budgetFor(ctx, 'COMPANY', 'company') : e.departmentId === null ? null : budgetFor(ctx, 'DEPARTMENT', e.departmentId);
+  if (parent !== null && current.parentId === parent.id) return current;
+  const at = ts(ctx);
+  const changed = ctx.db.run(`UPDATE budgets SET status = 'CLOSED', closed_at = ?, closed_reason = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ? AND status = 'OPEN'`, at, reasonCode, at, current.id, current.version).changes;
+  if (changed !== 1) throw new QandeelError('VERSION_CONFLICT', 'budget changed concurrently', { budgetId: current.id });
+  appendAudit(ctx, 'budget.closed', 'budget', current.id, { actorRef }, 'OK', reasonCode, { scope: 'EMPLOYEE', employeeId: e.id });
+  if (parent === null) return null;
+  const id = newId();
+  const capMoney = Math.min(current.capMoney, parent.capMoney);
+  const capTokens = Math.min(current.capTokens, parent.capTokens);
+  ctx.db.run(
+    `INSERT INTO budgets (id, scope, scope_id, parent_id, currency, cap_money, cap_tokens, version, created_by_ref, created_at, updated_at) VALUES (?, 'EMPLOYEE', ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+    id, e.id, parent.id, parent.currency, capMoney, capTokens, actorRef, at, at,
+  );
+  ctx.db.run('INSERT INTO budget_history (budget_id, change_kind, cap_money, cap_tokens, reason_code, actor_ref, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?)', id, 'CREATED', capMoney, capTokens, reasonCode, actorRef, at);
+  appendAudit(ctx, 'budget.created', 'budget', id, { actorRef }, 'OK', reasonCode, { capMoney, capTokens });
+  return getBudgetRow(ctx, id);
 }
 
 export interface BudgetDelta {
@@ -241,6 +300,38 @@ export function holdReservationTx(ctx: StoreContext, r: ReservationRecord, reaso
   appendAudit(ctx, 'budget.reconciliation_required', 'reservation', r.id, {}, 'OK', reasonCode, { runId: r.runId, money: r.money, tokens: r.tokens });
 }
 
+/**
+ * Hold reasons that record a failed call which may have been billed: a failure class whose disposition is
+ * "sent: UNKNOWN", and the provider-fault containments of an unusable answer (R1-09). A crash / backstop
+ * hold (RUN_INTERRUPTED, RUN_ENDED_UNSETTLED, SETTLEMENT_FAILED) is not a failed attempt of the deployment.
+ */
+const POSSIBLY_BILLED_FAILURE_HOLDS: readonly string[] = [...PROVIDER_FAILURE_CLASSES.filter((f) => failureDisposition(f).sent === 'UNKNOWN'), 'USAGE_UNREPORTED', 'USAGE_UNUSABLE'];
+
+/**
+ * P-07 (D-R1-03, D-C4-07): deployments that produced a charged — or possibly billed — failed model-call
+ * attempt for this Work Item, across every run and job of it. Such a deployment is never selected again for
+ * the same logical Work Item automatically; only an explicit Founder release covering every such attempt so far
+ * lifts the exclusion (a later attempt excludes again). Computed from the durable money records alone (no second accounting state).
+ */
+export function chargedFailureCounts(ctx: StoreContext, workItemId: Id): Map<Id, number> {
+  const rows = ctx.db.all<{ d: string; n: number }>(
+    `SELECT r.deployment_id AS d, COUNT(DISTINCT r.id) AS n
+       FROM budget_reservations r LEFT JOIN usage_records u ON u.reservation_id = r.id
+      WHERE r.work_item_id = ? AND r.purpose = 'MODEL_CALL' AND r.deployment_id IS NOT NULL
+        AND (u.outcome = 'FAILED_CHARGED' OR (r.state IN ('RECONCILIATION_REQUIRED', 'SETTLED') AND r.reason_code IN (SELECT value FROM json_each(?))))
+      GROUP BY r.deployment_id`,
+    workItemId,
+    JSON.stringify(POSSIBLY_BILLED_FAILURE_HOLDS),
+  );
+  return new Map(rows.map((x) => [x.d as Id, Number(x.n)]));
+}
+
+export function chargedExclusions(ctx: StoreContext, workItemId: Id): Id[] {
+  return [...chargedFailureCounts(ctx, workItemId).entries()]
+    .filter(([d, n]) => !ctx.db.get('SELECT 1 AS released FROM charged_exclusion_releases WHERE work_item_id = ? AND deployment_id = ? AND covered_failures >= ? LIMIT 1', workItemId, d, n))
+    .map(([d]) => d)
+    .sort();
+}
 /**
  * Wakes the parked job of one Work Item (targeted wake, Stage 8 §18). The existing queue_jobs
  * trigger advances the durable wake generation in this same transaction.

@@ -20,7 +20,7 @@ governed and auditable.
 | `C2` Employees + Models + Tools + Cost Governance | CLOSED / MERGED / CANONICAL (PR #3, `d374001`) |
 | `C3` Memory + Context + Skills + Academy | CLOSED / MERGED / CANONICAL (PR #4, `4592b52`) |
 | `R1` Independent Core Review | CLOSED / MERGED / CANONICAL (PR #6, `bd18614`) |
-| `C4` Organization + CEO + Directors + Delegation + Review Pool | READY / NOT STARTED |
+| `C4` Organization + CEO + Directors + Delegation + Review Pool | IN PROGRESS — implementation candidate, NOT CLOSED (Draft PR) |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
@@ -74,15 +74,35 @@ credential. Details: `docs/C2_IMPLEMENTATION_REPORT.md`, decisions D-C2-01 to D-
 C3 adds no external vector database, embedding service or paid memory service. Details:
 `docs/C3_IMPLEMENTATION_REPORT.md`, decisions D-C3-01 onward.
 
-Next authorized implementation package: C4 Organization + CEO + Directors + Delegation + Review Pool. Still out of scope until C4 starts: the Founder Command Center (C5),
-reporting / learning dashboards (C6), APP-OPS (C7) and any QANDEEL App integration.
+**C4 (implementation candidate, not closed) adds the organization.** It covers:
+- the canonical Strong-v1 skeleton, release-seeded and vacant: Founder → a company-scoped **CEO seat** (no
+  Department, never a fake Executive Department) → five **Director seats** (Strategic Market Intelligence,
+  Growth, Brand & Creative, Product, **Engineering**) with baseline charters; no identity or headcount
+  invented;
+- Positions and effective-dated **assignments** as organization truth (PRIMARY / bounded ACTING coverage),
+  time-correct run attribution, per-placement budget envelopes, headcount as data (seats added, paused,
+  re-opened, retired without code);
+- **staffing** (Director request with Stage 10 evidence → CEO synthesis → Founder decision, or a capped,
+  revocable Founder → CEO delegation → a CANDIDATE hire that the Academy still activates);
+- **work delegation** down the reporting line, cross-Department support, refusal / clarification /
+  escalation handoffs, with bounded depth and no cycles — work delegation never delegates authority;
+- the dynamic **Review Pool** (reviewers qualified by Academy certification, Gold cases and calibration,
+  admitted by the Founder — not a Department), review designed before execution and bound to the exact
+  output or action, R2 = independent review, R3 = review AND Founder approval, R4 Founder-only,
+  conflicts, escalations, Quality Holds and Independent Oversight;
+- **P-07**: a deployment that charged a failed attempt is not routed to again for the same Work Item.
+
+Title ≠ Authority throughout: every organizational act needs an explicit grant and the seat. Details:
+`docs/C4_IMPLEMENTATION_REPORT.md`, decisions D-C4-01 onward. Still out of scope: the Founder Command
+Center and Founder ↔ CEO conversation (C5), reporting / learning dashboards (C6), APP-OPS (C7) and any
+QANDEEL App integration.
 
 | Package | Role |
 |---|---|
 | `@qandeel-company/domain` | Pure contracts: IDs, UTC clock, state machines, retry policy, processor contract |
-| `@qandeel-company/governance` | C2 pure policy kernel: Employee lifecycle, R0–R4 authority, `E0..E4` / `D0..D4`, Router Policy, checked economics, provider / tool contracts, typed proposals |
+| `@qandeel-company/governance` | C2 pure policy kernel: Employee lifecycle, R0–R4 authority, `E0..E4` / `D0..D4`, Router Policy, checked economics, provider / tool contracts, typed proposals; C4 organization, delegation and review rules |
 | `@qandeel-company/mind` | C3 pure kernel: Memory Write Policy, deterministic retrieval and context planning, compaction, Skill pipeline / licensing / inspection, capability evaluation, Academy rules |
-| `@qandeel-company/storage` | Workspace, SQLite/WAL adapter (the only `node:sqlite` user), migrations, repositories, Artifact Store, backup |
+| `@qandeel-company/storage` | Workspace, SQLite/WAL adapter (the only `node:sqlite` user), migrations, repositories, Artifact Store, backup; C4 Organization and Review stores |
 | `@qandeel-company/runtime` | Runtime Supervisor, bounded worker pool, recovery, health, CLI; C2 governed Model Runtime, Tool Executor, `c2.employee-task` loop, deterministic fakes; C3 Context Assembler and memory-proposal path |
 | `@qandeel-company/bootstrap-contract` | C0 toolchain proof (unchanged) |
 
@@ -141,8 +161,10 @@ npm run ci
 | `npm run c2:acceptance -- --workspace <dir>` | C2 local acceptance in a disposable directory (below) |
 | `npm run c3:mutation` | Removes 40 C3 memory / context / skill / academy / Founder-decision gates from the build; their proof tests must fail (after a build) |
 | `npm run c3:acceptance -- --workspace <dir>` | C3 local acceptance in a disposable directory (below) |
+| `npm run c4:mutation` | Removes 25 C4 organization / delegation / review / P-07 gates from the build; their proof tests must fail (after a build). `-- --shard i/n` runs a disjoint slice |
+| `npm run c4:acceptance -- --workspace <dir>` | C4 local acceptance in a disposable directory (below) |
 | `npm run verify` | Repository-contract verifier (`scripts/verify-bootstrap.mjs`) |
-| `npm run ci` | build → typecheck → lint → test → C1 + C2 + C3 mutation checks → verify; the same command CI runs |
+| `npm run ci` | build → typecheck → lint → test → C1 + C2 + C3 + R1 + C4 mutation checks → verify (CI runs the same proofs, split into parallel jobs) |
 
 ### C1 local acceptance (Founder host)
 
@@ -209,6 +231,28 @@ npm run c3:acceptance -- --workspace "D:\QANDEEL-C3-ACCEPTANCE\run-1"
 - **Result and cleanup:** it prints `C3 LOCAL ACCEPTANCE — PASS` and deletes only what it created.
 - **What it needs:** no credentials, no provider keys, no network.
 
+### C4 local acceptance (Founder host)
+
+```bash
+npm run c4:acceptance -- --workspace "D:\QANDEEL-C4-ACCEPTANCE\run-1"
+```
+
+- **What it proves:**
+  - production fail-closed first: no organization / delegation / Review Pool authority act without the
+    authenticated Founder surface, and no C4 write command on the CLI;
+  - the canonical skeleton (five Departments, a company-scoped CEO seat, five Director seats), vacant;
+  - then, through the **test-only** Founder seam: a company-scoped CEO, a Director and a report placed;
+    headcount as data; acting coverage that ends by time;
+  - a reviewer certified by the Academy through real runs, calibrated on real shadow reviews and
+    promoted on evidence;
+  - staffing through Employee runs: Director request → CEO recommendation → delegated decision → a
+    CANDIDATE hire;
+  - work delegation with the delegator parked at zero tokens until the delegate finishes;
+  - output review by the reviewer's own run; R3 = review AND Founder approval, executed exactly once;
+  - P-07 across runs; restart durability; content-free health and read-only CLI.
+- **Result and cleanup:** it prints `C4 LOCAL ACCEPTANCE — PASS` and deletes only what it created.
+- **What it needs:** no credentials, no provider keys, no network.
+
 ### Engineering CLI
 
 After `npm run build`: `node packages/runtime/dist/src/cli.js <command> --workspace <dir>`.
@@ -229,6 +273,8 @@ After `npm run build`: `node packages/runtime/dist/src/cli.js <command> --worksp
 | `mind` | Read-only C3 health: memory / knowledge / context / skills / academy counts |
 | `capability-gaps` | Open capability gaps (Work Item, Employee, missing codes) |
 | `context-manifest --manifest <id>` | One context manifest: selected / rejected IDs, versions, hashes, classes (no content) |
+| `organization` | Read-only C4 organization: Departments, seats and holders, executive queues, health (no evidence text) |
+| `reviews` | Read-only C4 reviews: live requests, conflicts, holds, Review Pool health (no rationale or instructions) |
 
 The CLI has no Founder write command: a Founder reference typed on a command line is not
 authentication. Founder authority arrives with the authenticated Founder surface (C5), and until
@@ -238,8 +284,13 @@ The CLI installs no service, creates no scheduled task and opens no network port
 
 ## Validation
 
-CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm run ci` and the C1, C2 and C3 local acceptances on
-Windows and Linux for every push to `main` and every PR targeting `main`. The verifier first proves that each of its rules can fail,
+CI (`.github/workflows/ci.yml`, D-R1-07 / D-C4-08) classifies each change. A documentation-only change
+takes a fast, fail-closed docs path (install, build, verifier). Every other change runs the FULL proof
+set on Windows AND Linux as parallel jobs (static, tests, sharded mutation checks, C1–C4 acceptances);
+the single required status `quality-gate` passes only when every job succeeded and every recorded
+mutation ran exactly once per operating system. A push to `main` whose tree is exactly the tree a green
+PR run proved takes a fast integrity path; anything else runs the full set. A manual run
+(`workflow_dispatch`) always runs the full set. The verifier first proves that each of its rules can fail,
 then checks the repository: required files and docs, private packages, bounded Node 24 engine, npm
 workspaces and lockfile, no tracked `.env` / secret / `node_modules` / SQLite / native-binary files,
 no App-repository dependency, no `tar` usage, no APP-OPS implementation, no placeholder packages,
@@ -250,9 +301,9 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
 - that the baseline carries the privacy rules and no stale default-with-exception wording;
 - the lifecycle state:
   - `C0` closed;
-  - `C1`, `C2` and `C3` not claimed closed without a closure record;
-  - `C2` not started before C1 closes, `C3` not before C2 closes, and `R1` / `C4` not before C3
-    closes;
+  - `C1`, `C2`, `C3` and `C4` not claimed closed without a closure record;
+  - `C2` not started before C1 closes, `C3` not before C2 closes, `R1` / `C4` not before C3 closes,
+    and `C5` / `C6` / `C7` not before C4 closes;
 - the C1 boundaries: `node:sqlite` only in the storage adapter, no network code in runtime packages,
   no third-party runtime dependencies, released migrations pinned by SHA-256, and the C1 proof tests
   present;
@@ -263,7 +314,7 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
     functions;
   - no plaintext secrets or secret-shaped columns;
   - canonical migrations 0001–0004 frozen by content;
-  - no C4–C7 tables or packages;
+  - no C5–C7 tables or packages (Command Center, Founder ↔ CEO conversation, dashboards, APP-OPS);
   - the test-only Founder seam unreachable from production code, no Founder-attestation
     activation, and no Founder write command on the CLI (D-C2-13);
   - the C2 proofs and the mutation check present;
@@ -279,7 +330,16 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
   - no content in C3 audit / events / logs;
   - the `employees_activation_gate` trigger present and no test-seam activation label in
     production code;
-  - the C3 proofs and the mutation check present.
+  - the C3 proofs and the mutation check present;
+- the C4 boundaries:
+  - organization / delegation / review state written only by the C4 storage modules, and no Founder
+    organization or review act called by runtime code or the CLI;
+  - no staffing evidence, handoff message, review rationale or reviewer instructions in telemetry;
+  - a review never satisfies R4 (datastore CHECK) and the kernel keeps R4 Founder-only;
+  - the Review Pool is not a Department; the seeded Department map is exactly the canonical five;
+  - the C4 proofs and the mutation check present;
+- the CI contract: triggers, SHA-pinned actions, both operating systems, complete mutation shard
+  partitions, the always-running quality gate, and a fail-closed change classifier.
 
 ## Windows notes (Founder host)
 

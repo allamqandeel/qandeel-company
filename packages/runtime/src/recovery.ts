@@ -9,7 +9,7 @@
  */
 import type { Id } from '@qandeel-company/domain';
 import type { ArtifactStore, CompanyStore, SupervisorFence } from '@qandeel-company/storage';
-import { abandonStaleInstances, decidePendingCandidates, interruptClaim, interruptOrphanRun, recoverGovernedOrphans, settleDanglingTermination } from '@qandeel-company/storage/runtime-authority';
+import { abandonStaleInstances, decidePendingCandidates, interruptClaim, interruptOrphanRun, reconcileOrganization, recoverGovernedOrphans, settleDanglingTermination } from '@qandeel-company/storage/runtime-authority';
 
 export interface RecoverySummary {
   [key: string]: number | string | boolean | null;
@@ -38,6 +38,7 @@ export interface RecoverySummary {
   governedInvocationsRetryable: number;
   governedInvocationsHeld: number;
   memoryCandidatesDecided: number;
+  organizationReconciled: number;
 }
 
 const BATCH = 100;
@@ -76,6 +77,7 @@ export function runRecovery(store: CompanyStore, artifacts: ArtifactStore, { ins
     governedInvocationsRetryable: 0,
     governedInvocationsHeld: 0,
     memoryCandidatesDecided: 0,
+    organizationReconciled: 0,
   };
 
   // 1. Claims left by any previous supervisor (expired or not: this supervisor holds the lease, so
@@ -133,6 +135,11 @@ export function runRecovery(store: CompanyStore, artifacts: ArtifactStore, { ins
     summary.memoryCandidatesDecided += n;
     if (n === 0) break;
   }
+
+  // 3d. C4: acting coverage past its end is materialized, output subjects waiting for review get their
+  //     request, and keys of review work that ended without a decision are refilled (one bounded pass;
+  //     the checks are idempotent, and later changes arrive through their own transactions).
+  summary.organizationReconciled = reconcileOrganization(store, supervisor, 500);
 
   // 4. Cross-store artifact boundary.
   const a = artifacts.recover();

@@ -13,9 +13,10 @@
 //   fakes no certification), a provider-neutral catalog (deterministic fake provider — no
 //   commercial provider, no network, no credential), D3 external egress refused, Router Policy,
 //   Tool Registry, explicit grants, hierarchical budgets, a governed run with a permitted R1 tool,
-//   an R3 tool parked for approval (the CLI cannot approve it) and executed once after a seam
-//   approval, a hard budget refusal before any provider call, D4 staying local, accounting
-//   invariants, health and the read-only CLI.
+//   an R3 tool failing closed before its independent review (C4: no approval before review; the CLI
+//   cannot approve; the review → approval → execute-once path is the C4 acceptance's), a hard budget
+//   refusal before any provider call, D4 staying local, accounting invariants, health and the
+//   read-only CLI.
 //
 // At the end it deletes only what it created unless --keep is given.
 
@@ -100,7 +101,8 @@ await step('seed-governance-via-test-seam', () => {
     const gov = GovernanceStore.for(store);
     const founder = gov.registerFounder().ref;
     gov.createBudget(founder, { scope: 'COMPANY', scopeId: 'company', capMoney: 10_000_000, capTokens: 10_000_000, currency: 'USD', reasonCode: 'acceptance' });
-    const dept = gov.createDepartment(founder, { code: 'growth', name: 'Growth' });
+    // C4: the canonical Departments are release-seeded (D-C4-02); fixtures adopt them by code.
+    const dept = gov.departmentByCode('growth');
     gov.createBudget(founder, { scope: 'DEPARTMENT', scopeId: dept.id, capMoney: 5_000_000, capTokens: 5_000_000, reasonCode: 'acceptance' });
     const e = gov.createEmployee(founder, { name: { given: 'نور', family: 'الشريف' }, profile: { personality: 'analytical' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' }, roleRef: 'role:growth-analyst', positionRef: 'position:growth-1', departmentId: dept.id, managerRef: founder });
     gov.transitionEmployee(founder, e.id, { to: 'TRAINING', reasonCode: 'onboarding' });
@@ -182,20 +184,21 @@ try {
     check(runtime.view.audit(run.id).some((a) => a.action === 'authority.denied' && a.reasonCode === 'EGRESS_DENIED'), 'egress denial audited');
     return { denied: 'EGRESS_DENIED' };
   });
-  await step('r3-tool-waits-cli-cannot-approve-seam-approval', async () => {
+  // C4 (Stage 3 §4, D-C4-05): R3 = independent review AND Founder approval. This C2 world has no
+  // Academy-certified reviewer, so R3 must fail closed BEFORE any approval exists; the full path
+  // (reviewer run → approval → executed exactly once) is proven by the C4 acceptance and runtime tests.
+  await step('r3-tool-fails-closed-before-review-cli-cannot-approve', async () => {
     const id = submit({ dataClass: 'D1', instructions: script({ type: 'TOOL_REQUEST', tool: 'publisher', action: 'publish', args: { text: 'release notes' } }, { type: 'FINAL', summaryCode: 'published' }) });
     await until(() => stateOf(id) === 'WAITING', 'R3 parks');
-    check(drivers.publisher.invocations.length === 0, 'R3 driver must not run before approval');
+    const waitReason = runtime.view.jobsFor(id).at(-1)?.waitReason;
+    check(waitReason === 'AWAITING_INDEPENDENT_REVIEW', `R3 waits for independent review first (got ${waitReason})`);
+    check(drivers.publisher.invocations.length === 0, 'R3 driver must not run before review and approval');
     const cli = spawnSync(process.execPath, [CLI, 'approvals', '--workspace', company], { encoding: 'utf8', shell: false, windowsHide: true });
-    const pending = JSON.parse(cli.stdout).pending;
-    check(cli.status === 0 && pending.length === 1 && pending[0].risk === 'R3', 'CLI lists the pending R3 approval');
-    const forged = cliRun('approve', '--workspace', company, '--approval', pending[0].approvalId, '--actor', world.founder);
-    check(forged.status !== 0 && stateOf(id) === 'WAITING' && drivers.publisher.invocations.length === 0, 'the CLI cannot approve with a Founder ref');
-    // Test seam only (armed above): stands in for the authenticated Founder surface C5 will provide.
-    runtime.governance.decideApproval(world.founder, pending[0].approvalId, { decision: 'APPROVE', reasonCode: 'founder.ok' });
-    await until(() => stateOf(id) === 'COMPLETED', 'R3 completes after approval');
-    check(drivers.publisher.invocations.length === 1, 'R3 driver executed exactly once');
-    return { approvalId: pending[0].approvalId };
+    check(cli.status === 0 && JSON.parse(cli.stdout).pending.length === 0, 'no approval is requested before the independent review');
+    check(cliRun('approve', '--workspace', company, '--actor', world.founder).status !== 0 && stateOf(id) === 'WAITING', 'the CLI cannot approve with a Founder ref');
+    await sleep(300);
+    check(stateOf(id) === 'WAITING' && drivers.publisher.invocations.length === 0, 'still parked, never executed');
+    return { waitReason };
   });
   await step('budget-hard-refusal', async () => {
     const before = provider.totalCalls;

@@ -31,6 +31,7 @@ import {
 
 import { appendAudit, appendEvent, getJobRow, getWorkItemRow, mapCheckpoint, mapJob, mapRun, ts, type StoreContext, type TraceContext } from './internal.js';
 import type { CheckpointRecord, Fence, JobRecord, RunRecord, SupervisorFence, WorkItemRecord } from './records.js';
+import { reviewAfterCompletion } from './review-core.js';
 import { applyTransition, defaultPropagationPolicy, failDependents, futureTimestamp, newTerminationOutcome, resolveDependents, terminateNow, type TerminationOutcome } from './work-core.js';
 
 export const CHECKPOINT_MAX_BYTES = 65_536;
@@ -408,6 +409,7 @@ export function txSettle(ctx: StoreContext, fence: Fence, result: ProcessorResul
       setJob(ctx, job, 'DONE', {});
       let wi = applyTransition(ctx, item, 'COMPLETED', { reasonCode: 'run.completed', trace });
       if (wi.reviewRequired) wi = applyTransition(ctx, wi, 'WAITING_REVIEW', { reasonCode: 'review.required', trace });
+      reviewAfterCompletion(ctx, wi);
       const unblocked = resolveDependents(ctx, wi.id, trace);
       appendEvent(ctx, 'run.finished', 'run', fence.runId, trace, { outcome: 'SUCCEEDED', jobId: job.id });
       appendAudit(ctx, 'run.succeeded', 'run', fence.runId, trace, 'OK', null, { jobId: job.id, workItemId: wi.id });
@@ -588,6 +590,7 @@ export function txResolveReconciliation(ctx: StoreContext, jobId: Id, decision: 
     setJob(ctx, job, 'DONE', { bumpToken: true });
     let wi = applyTransition(ctx, item, 'COMPLETED', { reasonCode: 'reconciliation.confirmed_completed', trace: full });
     if (wi.reviewRequired) wi = applyTransition(ctx, wi, 'WAITING_REVIEW', { reasonCode: 'review.required', trace: full });
+    reviewAfterCompletion(ctx, wi);
     const unblocked = resolveDependents(ctx, wi.id, full);
     return { jobState: 'DONE', runState: 'RECONCILIATION_REQUIRED', workItemState: wi.state, unblocked };
   }
