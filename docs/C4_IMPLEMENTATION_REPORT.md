@@ -1,9 +1,8 @@
 # C4 — Organization + CEO + Directors + Delegation + Review Pool — Implementation Report
 
-**Status: C4 — IMPLEMENTATION CANDIDATE / NOT CLOSED**
+**Status: C4 — CLOSED / MERGED / CANONICAL**
 
-C4 is not closed, merged or canonical. This report is evidence for the Technical Lead's exact-head review;
-it does not close C4 (no `C4_CLOSURE_RECORD` exists). C5 is not started.
+PR #8 passed exact-head full CI on Windows + Ubuntu (run #67), merged into `main` as `595083a3a98b4823698ea15eaf3d8efa12965e23`, and post-merge fast-integrity run #68 passed. Closure record: `docs/C4_CLOSURE_RECORD.md`. C5 is not started.
 
 <!-- Sections 1–4 were written BEFORE any C4 code (design gate); later sections record the results. -->
 
