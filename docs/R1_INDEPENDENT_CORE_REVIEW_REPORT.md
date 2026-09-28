@@ -268,7 +268,7 @@ trigger interaction (N-DB; no `REPLACE` exists in the code).
 
 ## 12. Verdict
 
-**R1 INDEPENDENT CORE REVIEW — CLOSURE CANDIDATE / NOT CLOSED**
+**R1 INDEPENDENT CORE REVIEW — CLOSED / MERGED / CANONICAL**
 
 No unresolved BLOCKER, no unresolved MAJOR, and no blocking Product decision.
 
@@ -283,6 +283,4 @@ On the consolidated head `1dfe795`:
 - the exact-head full validation passed once (§10);
 - the final focused adversarial review found **0 BLOCKER / 0 MAJOR**.
 
-Its MINORs are recorded as residuals (N-FINAL, N-RETRY). The job-scope question is open for the
-Technical Lead as P-07. R1 is not closed, and C4 is not started. Technical Lead exact-head re-review is
-required.
+Its MINORs are recorded as residuals (N-FINAL, N-RETRY). P-07 was decided by Product Owner / Technical Lead and remains a non-blocking implementation obligation before paid Pilots. Technical Lead exact-head review passed with 0 BLOCKER / 0 MAJOR. PR #6 merged into canonical `main` as `bd18614d1fc49d3c03ace2289e19accd67aa1838`; post-merge CI run #62 passed on Windows and Ubuntu. R1 is CLOSED / MERGED / CANONICAL. C4 is READY / NOT STARTED.
