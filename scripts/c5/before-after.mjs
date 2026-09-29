@@ -50,7 +50,7 @@ export async function contactSheet(port, { before, after, out, title = 'C5 — T
     const { contentSize } = await page.send('Page.getLayoutMetrics');
     const height = Math.ceil(contentSize.height);
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1600, height, deviceScaleFactor: 1, mobile: false });
-    const { data } = await page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: 1600, height, scale: 1 } });
+    const { data } = await page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: 1600, height, scale: 1 } }, { timeoutMs: 60_000 });
     writeFileSync(out, Buffer.from(data, 'base64'));
     return out;
   } finally {

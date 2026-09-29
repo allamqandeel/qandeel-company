@@ -68,26 +68,47 @@ const frames = [];
 let capturing = false;
 let captureTimer = null;
 
+// Where the harness is: the current step and the helper inside it. Every CDP command carries this as its
+// context, so a command the browser never answers fails as "<method> did not answer within N ms — helper X in
+// step Y" instead of a silent gap until the CI step's own ceiling kills the process.
+let currentStep = '';
+let currentHelper = '';
+const setContext = () => {
+  if (page) page.context = `${currentHelper ? `helper ${currentHelper}` : 'step body'}${currentStep ? ` in step ${currentStep}` : ''}`;
+};
 const step = async (name, fn) => {
   const started = Date.now();
+  currentStep = name;
+  setContext();
   try {
     const detail = (await fn()) ?? {};
     results.steps.push({ step: name, result: 'PASS', ms: Date.now() - started, ...detail });
     console.log(JSON.stringify({ step: name, result: 'PASS', ms: Date.now() - started, ...detail }));
   } catch (error) {
-    results.steps.push({ step: name, result: 'FAIL', ms: Date.now() - started, message: String(error?.message ?? error).slice(0, 300) });
-    console.log(JSON.stringify({ step: name, result: 'FAIL', ms: Date.now() - started, message: String(error?.message ?? error).slice(0, 300) }));
+    const fail = { step: name, result: 'FAIL', ms: Date.now() - started, message: String(error?.message ?? error).slice(0, 400), ...(error?.code ? { code: error.code } : {}) };
+    results.steps.push(fail);
+    console.log(JSON.stringify(fail));
     throw error;
+  } finally {
+    currentStep = '';
+    setContext();
   }
 };
 // QANDEEL_PROOF_TRACE=1 prints how long each helper call takes (tuning the harness, never part of the verdict).
+// Traced or not, a helper names itself in the context of every command it issues.
 const TRACE = process.env.QANDEEL_PROOF_TRACE === '1';
 const traced = (name, fn) => async (...args) => {
   const started = Date.now();
+  const outer = currentHelper;
+  const arg = typeof args[0] === 'string' ? args[0].slice(0, 60) : args[0] === undefined ? undefined : JSON.stringify(args[0]).slice(0, 60);
+  currentHelper = arg === undefined ? name : `${name}(${arg})`;
+  setContext();
   try {
     return await fn(...args);
   } finally {
-    if (TRACE) console.error(JSON.stringify({ trace: name, ms: Date.now() - started, arg: typeof args[0] === 'string' ? args[0].slice(0, 60) : args[0] }));
+    currentHelper = outer;
+    setContext();
+    if (TRACE) console.error(JSON.stringify({ trace: name, ms: Date.now() - started, arg }));
   }
 };
 const shot = traced('shot', async (name) => {
@@ -98,7 +119,7 @@ const shot = traced('shot', async (name) => {
 // A close-up of one element (its box plus a margin): a detail frame for the eye. The live tab is never clipped
 // (a clipped or scaled capture leaves the headless compositor damaged for later frames): the full frame is
 // cropped on a throwaway page.
-const closeUp = async (name, selector, margin = 16) => {
+const closeUp = traced('closeUp', async (name, selector, margin = 16) => {
   const r = await page.evaluate(`(() => { const e = document.querySelector(${JSON.stringify(selector)}); if (!e) return null; const b = e.getBoundingClientRect(); return { x: b.left, y: b.top, width: b.width, height: b.height }; })()`);
   if (!r) throw new Error(`no element ${selector}`);
   const x = Math.max(0, r.x - margin);
@@ -108,27 +129,28 @@ const closeUp = async (name, selector, margin = 16) => {
   const crop = await openPage(browser.port);
   try {
     await crop.send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 1, mobile: false });
-    await crop.evaluate(`new Promise((done) => { document.documentElement.style.margin = '0'; document.body.style.margin = '0'; const img = new Image(); img.onload = () => done(true); img.src = 'data:image/png;base64,${full.toString('base64')}'; document.body.append(img); })`);
-    const { data } = await crop.send('Page.captureScreenshot', { format: 'png', clip });
+    crop.context = `helper closeUp(${name}) crop page`;
+    await crop.evaluate(`new Promise((done) => { document.documentElement.style.margin = '0'; document.body.style.margin = '0'; const img = new Image(); img.onload = () => done(true); img.src = 'data:image/png;base64,${full.toString('base64')}'; document.body.append(img); })`, { timeoutMs: 30_000 });
+    const { data } = await crop.send('Page.captureScreenshot', { format: 'png', clip }, { timeoutMs: 30_000 });
     const file = path.join(out, `${name}.png`);
     writeFileSync(file, Buffer.from(data, 'base64'));
     return { file, width: Math.round(clip.width), height: Math.round(clip.height) };
   } finally {
     await crop.close().catch(() => undefined);
   }
-};
+});
 // The pointer rests on an element (the surface responds to `pointerenter`; `focus` for keyboard parity).
-const hover = async (selector) => {
+const hover = traced('hover', async (selector) => {
   const ok = await page.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false })); return true; })()`);
   if (!ok) throw new Error(`no element ${selector}`);
-};
-const unhover = async (selector) => page.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (el) el.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false })); return true; })()`);
+});
+const unhover = traced('unhover', async (selector) => page.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (el) el.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false })); return true; })()`));
 const startCapture = () => {
   capturing = true;
   const tick = async () => {
     if (!capturing) return;
     try {
-      const { data } = await page.send('Page.captureScreenshot', { format: 'jpeg', quality: 82 });
+      const { data } = await page.send('Page.captureScreenshot', { format: 'jpeg', quality: 82 }, { timeoutMs: 30_000 });
       frames.push(`data:image/jpeg;base64,${data}`);
     } catch {
       // a navigation in flight: skip the frame
@@ -146,13 +168,15 @@ const stopCapture = () => {
 // no render loop of its own (the DOM is still between changes). Requesting animation frames for the settle time
 // gives transitions the frames a visible tab would get for free (no screenshots: painting under software
 // rendering is the slow part; a frame request paints once per frame, nothing more).
+// Each in-page wait has its own fallback timer; the command that carries it is bounded a little beyond that, so
+// a renderer that stops answering fails as that command, never as a hang.
 const settle = traced('settle', async (ms = 700) => {
   if (!page) return sleep(ms);
-  await page.evaluate(`new Promise((done) => { const end = performance.now() + ${Math.round(ms)}; const tick = () => (performance.now() < end ? requestAnimationFrame(tick) : done()); requestAnimationFrame(tick); setTimeout(done, ${Math.round(ms) + 4000}); })`);
+  await page.evaluate(`new Promise((done) => { const end = performance.now() + ${Math.round(ms)}; const tick = () => (performance.now() < end ? requestAnimationFrame(tick) : done()); requestAnimationFrame(tick); setTimeout(done, ${Math.round(ms) + 4000}); })`, { timeoutMs: Math.round(ms) + 12_000 });
 });
 // Waits, frame by frame, until a painted condition holds (a transition has reached its end, for example).
 const untilPainted = traced('untilPainted', async (expression, timeoutMs = 6000) => {
-  const ok = await page.evaluate(`new Promise((done) => { const end = performance.now() + ${timeoutMs}; const tick = () => { let v = false; try { v = !!(${expression}); } catch {} if (v) return done(true); if (performance.now() > end) return done(false); requestAnimationFrame(tick); }; requestAnimationFrame(tick); setTimeout(() => done(false), ${timeoutMs + 3000}); })`);
+  const ok = await page.evaluate(`new Promise((done) => { const end = performance.now() + ${timeoutMs}; const tick = () => { let v = false; try { v = !!(${expression}); } catch {} if (v) return done(true); if (performance.now() > end) return done(false); requestAnimationFrame(tick); }; requestAnimationFrame(tick); setTimeout(() => done(false), ${timeoutMs + 3000}); })`, { timeoutMs: timeoutMs + 12_000 });
   if (!ok) throw new Error(`not painted in time: ${expression}`);
 });
 const click = traced('click', async (selector) => {
@@ -160,23 +184,23 @@ const click = traced('click', async (selector) => {
   if (!ok) throw new Error(`no element ${selector}`);
 });
 const waitUntil = traced('waitUntil', (expression, timeoutMs) => page.waitUntil(expression, timeoutMs));
-const type = async (selector, text) => {
+const type = traced('type', async (selector, text) => {
   await page.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); el.focus(); el.value = ${JSON.stringify(text)}; el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
-};
-const submit = async (selector) => page.evaluate(`(() => { const f = document.querySelector(${JSON.stringify(selector)}); f.requestSubmit(); return true; })()`);
-const escape = async () => {
+});
+const submit = traced('submit', async (selector) => page.evaluate(`(() => { const f = document.querySelector(${JSON.stringify(selector)}); f.requestSubmit(); return true; })()`));
+const escape = traced('escape', async () => {
   await page.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   await settle(400);
-};
-const waitReady = async () => {
+});
+const waitReady = traced('waitReady', async () => {
   await waitUntil(`document.getElementById('app') && !document.getElementById('app').hasAttribute('data-booting') && document.querySelectorAll('.column').length > 0`, 30_000);
   await settle(900);
-};
-const count = (selector) => page.evaluate(`document.querySelectorAll(${JSON.stringify(selector)}).length`);
+});
+const count = traced('count', (selector) => page.evaluate(`document.querySelectorAll(${JSON.stringify(selector)}).length`));
 // The leader (tether) drawn over the surface: exactly one path, and none of its pieces crosses a card, a
 // column head, a goal or a chip (a piece that would is drawn beneath, in the under-layer). Returns the number of
 // crossings, or -1 when there is not exactly one leader over the surface.
-const leaderCrossings = () => page.evaluate(`(() => {
+const leaderCrossings = traced('leaderCrossings', () => page.evaluate(`(() => {
   const paths = [...document.querySelectorAll('.lines-over .line-tether')];
   if (paths.length !== 1) return -1;
   const origin = document.querySelector('.company').getBoundingClientRect();
@@ -188,14 +212,14 @@ const leaderCrossings = () => page.evaluate(`(() => {
     for (const k of blocks) if (l < k.right - 1 && r > k.left + 1 && t < k.bottom - 1 && b > k.top + 1) n++;
   }
   return n;
-})()`);
+})()`));
 // The context sheet and the Founder's "Needs you" chips never overlap; every chip stays whole and in view.
-const chipsClearOfSheet = () => page.evaluate(`(() => {
+const chipsClearOfSheet = traced('chipsClearOfSheet', () => page.evaluate(`(() => {
   const s = document.getElementById('focus');
   if (s.hidden) return true;
   const r = s.getBoundingClientRect();
   return [...document.querySelectorAll('.chip-attention, .dock-head')].every((c) => { const k = c.getBoundingClientRect(); return k.right <= r.left + 1 || k.left >= r.right - 1 || k.bottom <= r.top + 1 || k.top >= r.bottom - 1; });
-})()`);
+})()`));
 
 try {
   await surface.start();
@@ -568,12 +592,14 @@ try {
       // Frames are captured as fast as the headless tab yields them; 4 fps playback keeps the walkthrough watchable.
       const fps = 4;
       // The frames go over in small batches (one DevTools message per ~1 MB), then the page encodes them.
+      enc.context = 'encoder page in step encode-walkthrough';
       await enc.send('Runtime.evaluate', { expression: 'window.__frames = []; true' });
       for (let i = 0; i < frames.length; i += 8) {
-        const batch = await enc.send('Runtime.evaluate', { expression: `window.__frames.push(...${JSON.stringify(frames.slice(i, i + 8))}); window.__frames.length`, returnByValue: true });
+        const batch = await enc.send('Runtime.evaluate', { expression: `window.__frames.push(...${JSON.stringify(frames.slice(i, i + 8))}); window.__frames.length`, returnByValue: true }, { timeoutMs: 60_000 });
         if (batch.exceptionDetails) throw new Error(`frame upload failed: ${batch.exceptionDetails.text ?? 'exception'}`);
       }
-      const b64 = await enc.send('Runtime.evaluate', { expression: `window.encode(window.__frames, ${fps}, ${W}, ${H})`, awaitPromise: true, returnByValue: true });
+      // Encoding is the one long command of the proof: bounded generously, never unbounded.
+      const b64 = await enc.send('Runtime.evaluate', { expression: `window.encode(window.__frames, ${fps}, ${W}, ${H})`, awaitPromise: true, returnByValue: true }, { timeoutMs: 240_000 });
       if (b64.exceptionDetails) throw new Error(`encoder failed: ${b64.exceptionDetails.exception?.description ?? b64.exceptionDetails.text ?? 'exception'}`.slice(0, 300));
       const value = b64.result?.value;
       if (typeof value !== 'string' || value.length < 1000) throw new Error(`encoder produced no video (${JSON.stringify(b64).slice(0, 200)})`);
@@ -594,7 +620,10 @@ try {
   }
   void live;
 } catch (error) {
-  console.error(JSON.stringify({ ok: false, code: error?.code ?? 'ERROR', message: String(error?.message ?? error).slice(0, 400), browserConsole: (results.console ?? []).slice(-12) }));
+  // A command the browser never answered: say exactly which, from where, and whether the browser and the page
+  // still answer at all (every probe bounded), so a CI failure is a diagnosis and never an eight-minute gap.
+  const postMortem = error?.code === 'CDP_TIMEOUT' && page ? await page.postMortem().catch((e) => ({ probeFailed: String(e?.message ?? e).slice(0, 120) })) : undefined;
+  console.error(JSON.stringify({ ok: false, code: error?.code ?? 'ERROR', message: String(error?.message ?? error).slice(0, 400), ...(error?.code === 'CDP_TIMEOUT' ? { method: error.method, timeoutMs: error.timeoutMs, context: error.context, postMortem } : {}), browser: browser ? { exe: path.basename(browser.exe), args: browser.args.filter((a) => !a.startsWith('--user-data-dir')) } : null, browserConsole: (results.console ?? []).slice(-12) }));
   process.exitCode = 1;
 } finally {
   stopCapture();
