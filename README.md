@@ -308,8 +308,11 @@ command on any CLI: a Founder reference is not authentication.
   the frames a presentation-only correction is judged on (no walkthrough, no scale frame);
   `--before <previous proof dir>` adds a before/after board. `npm run c5:spike -- --workspace <dir>` runs only
   the technical smoke checks (the company surface renders — spine, five columns, goals, execution lines;
-  English application with content as written; selection / focus / return; reduced-motion parity; no external
-  asset).
+  English application with content as written; selection / focus / return; the line layer bounded across
+  redraws; reduced-motion parity, state-aware of the runner's own preference; no external asset). Every
+  DevTools command the harness sends is bounded (`QANDEEL_CDP_TIMEOUT_MS`, default 20 s) and a command the
+  browser never answers fails naming the method, the helper and the step; `QANDEEL_BROWSER_ARGS` passes extra
+  browser flags to reproduce a runner locally (for example `--force-prefers-reduced-motion`).
 
 ### Engineering CLI
 

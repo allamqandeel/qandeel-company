@@ -517,9 +517,16 @@ export class TreeView {
     const layout = this.#layout;
     if (!layout) return;
     const origin = this.#company.getBoundingClientRect();
-    const w = Math.max(this.#company.scrollWidth, Math.ceil(origin.width));
+    const band = this.#goalsHost.getBoundingClientRect();
     // The line layer covers the company and the goal band beneath it (the band may be pinned inside the view).
-    const h = Math.max(this.#company.scrollHeight, Math.ceil(origin.height)) + this.#goalsHost.getBoundingClientRect().height + 8;
+    // Its size is read from layout rects only, never from the scroll extent: the layer is itself the company's
+    // largest overflow, so a height derived from `scrollHeight` grew by one band on every redraw without bound
+    // (the surface then crawled). It is also rounded down, never up: a layer that reaches even a fraction of a
+    // pixel past the boxes it covers opens the surface's scrollbars, which shrink the company, which redraws the
+    // layer smaller, which closes them again, an endless redraw at frame rate. The layer paints with
+    // `overflow: visible`, so a line that runs to the very edge of the band is never clipped by this.
+    const w = Math.floor(origin.width);
+    const h = Math.floor(Math.max(origin.height, band.bottom - origin.top));
     for (const svg of [this.#svg, this.#svgTop]) {
       svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
       svg.setAttribute('width', String(w));

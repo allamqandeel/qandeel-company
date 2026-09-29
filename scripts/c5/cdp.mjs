@@ -70,6 +70,8 @@ export async function launchBrowser({ width = 1440, height = 900, headless = tru
     '--force-device-scale-factor=1',
     '--lang=ar',
     ...extraArgs,
+    // Harness-only knobs for reproducing a runner locally (e.g. `--force-prefers-reduced-motion`); never product.
+    ...(process.env.QANDEEL_BROWSER_ARGS ?? '').split(/\s+/).filter(Boolean),
     'about:blank',
   ];
   const proc = spawn(exe, args, { stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true });

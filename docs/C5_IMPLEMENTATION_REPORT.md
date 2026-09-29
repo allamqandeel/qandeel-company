@@ -666,3 +666,110 @@ docked left, Founder ↔ Employee in Arabic on the left with its leader beneath 
 | `emil-design-eng` | used | No new motion: the sheet's shelf change is instant (a position, not a tween), transitions stay on named properties; nothing keyboard-triggered animates |
 | `ui-ux-pro-max` | used by hand | "Focus not obscured": the chips remain visible and reachable while a sheet is open; targets unchanged |
 | `frontend-design`, `animate`, `review-animations`, `dataviz`, `sibawayh:*` | not needed | No new surface, no motion change, no chart or palette change, no Arabic copy touched |
+
+## 24. Windows browser-smoke corrections: a bounded harness, a state-aware reduced-motion smoke, and the line-layer growth defect they uncovered
+
+Three bounded corrections on the frozen Tree of Light, each started at the exact head the Founder named
+(`45a51fcc` → `586ffd10` → this commit). The first two were harness-only; the third is the one Product fix
+this cycle, authorized by the Founder after the investigation proved the defect in the Product itself.
+
+### 24.1 The harness fails bounded (`586ffd10`, QANDEEL_COMPANY_C5_WINDOWS_BROWSER_SMOKE_HANG_CORRECTION)
+
+Windows CI twice sat silent after `spike-no-external-asset` until the step's 8-minute ceiling. The proven cause
+on the harness side: `CdpConnection.send` had no timeout, so a browser that stopped answering left the harness
+waiting forever with no name for what it waited on. Every DevTools command is now bounded
+(`DEFAULT_TIMEOUT_MS` 20 s, `QANDEEL_CDP_TIMEOUT_MS`); an unanswered command rejects with a `CdpTimeoutError`
+(`code: 'CDP_TIMEOUT'`, the method, the timeout, the helper and step that issued it, crash / detach events the
+connection saw, how many other requests were pending) and is removed from the pending map; close and socket
+close reject everything in flight; a timeout in the proof runs a bounded post-mortem (does the browser answer,
+does the page answer). Every proof helper is wrapped (`traced`) so its name and step ride on each command; the
+in-page `settle` / `untilPainted` waits carry their own fallback timers with the command bounded a little beyond
+them. `scripts/c5/cdp.test.mjs` (3 tests, `npm run test:harness`, part of `npm test`) proves the bound, the
+message and the pending map against a WebSocket peer that never answers. With this in place the next Windows run
+showed the truth: selection PASS (47 s, against 3.7 s on Ubuntu), then reduced-motion FAIL, deterministic.
+
+### 24.2 The reduced-motion smoke is state-aware (QANDEEL_COMPANY_C5_REDUCED_MOTION_SMOKE_STATE_AWARE_CORRECTION)
+
+Root cause confirmed exactly as the Founder stated: the Windows runner reports `prefers-reduced-motion: reduce`,
+the application honours it on start (`main.ts`: stored preference, else the media query) and starts `reduced`;
+the smoke clicked the toggle blind expecting `reduced` and got `full`; `drift none` in app full mode is expected
+while the OS still says reduce (the stylesheet's `@media` block honours the OS). The smoke now reads
+`data-motion`, the media query and the toggle's `aria-pressed`, saves the initial mode, drives the real toggle to
+`reduced` only when needed (`setMotion`: one click, then an explicit bounded wait for dataset and `aria-pressed`
+to agree; on failure the error states the initial mode, the target, the OS preference and the observed
+`aria-pressed`), proves parity there (every mark stays; drift none, scroll auto, card tween 0 s), exercises the
+toggle to `full` (marks stay; drift resumes only when the OS does not prefer reduce), and restores the initial
+mode and removes the stored preference it created. `QANDEEL_BROWSER_ARGS` (harness-only) reproduces the runner
+locally with `--force-prefers-reduced-motion`. Initial Windows runner preference observed by the smoke:
+**app `reduced`, OS `reduce`, aria-pressed `true`**.
+
+### 24.3 The Product defect: the line layer grew without bound (authorized Product fix)
+
+Reproducing the runner locally made the reduced-motion step fail as a bounded `CDP_TIMEOUT` in `settle(300)`
+with every command slowing geometrically (1.0 → 1.6 → 2.2 → 2.9 → 5.4 → 7.5 → 9.4 s) until the browser stopped
+answering. A direct measurement of the real surface found the cause in `TreeView.#drawLines`
+(`packages/command-center-ui/src/app/view.ts`): the line layer's height was derived from the company's
+`scrollHeight`, but the layer (absolute, `inset: 0`, sized by its `height` attribute) is itself the company's
+largest overflow, so every redraw read back its own previous height and added one band plus 8 px, a feedback
+loop with no bound. Every live refresh, scroll, resize and selection redraws the layer.
+
+| | old formula | new formula |
+|---|---|---|
+| height | `max(company.scrollHeight, ceil(company.height)) + band.height + 8` | `floor(max(company.height, band.bottom − company.top))` |
+| width | `max(company.scrollWidth, ceil(company.width))` | `floor(company.width)` |
+
+The new size comes from layout rects only (the company box and the goal band it must cover, one rounding of
+the union's edge), so the layer can never feed back into its own measurement. It rounds **down** because the
+investigation found a second, smaller instability once the growth was gone: a layer that reaches even a
+fraction of a pixel past the boxes it covers (the band's bottom edge is fractional, 843.53 px in the proof
+viewport) opens the surface's thin vertical scrollbar, whose 10 px open the horizontal one, which shrinks the
+company by 10 px, which the resize observer answers with a redraw 10 px smaller, which closes both again: an
+endless redraw at frame rate, the layer alternating 844 ↔ 834 (and, on the old formula, 845 ↔ 835 under the
+growth). The layer paints with `overflow: visible`, so its size never clips a line; only the scroll extent it
+creates matters, and it now creates none.
+
+Measured on the real surface at 1440 × 900 (line layer height / company scroll extent / surface scroll extent):
+
+| phase | before (HEAD `586ffd10`) | after |
+|---|---|---|
+| after load | 1 073 / 1 073 / 1 073 | 843 / 843 / 844 |
+| CEO selected | 3 946 / 3 946 / 3 946 | 843 / 843 / 844 |
+| after return (before: sampled 8 s later, idle) | 25 162 / 25 162 / 25 162 | 843 / 843 / 844 |
+| after 20 forced redraws | 30 245 / 30 245 / 30 245 | 843 / 843 / 844 (all 20 redraws: 843) |
+
+This defect explains the original 8-minute Windows hang (the browser crawled, nothing timed out), the 47 s
+selection step on the runner, the local reduced-start timeout, and the "proof extremely slow" symptom recorded
+earlier against the Animation domain. No layout semantics, visual design or motion behaviour changed: the same
+lines are drawn at the same coordinates; the only visible difference is that the surface no longer degrades.
+
+### 24.4 Regression proof
+
+`spike-line-layer-bounded` (in `c5:spike` and the full proof, between selection and reduced motion): reads the
+layer's size attributes, the company's scroll extent, the surface's scroll extent and visible size, and the
+union of the company box and the band at load, after selecting the CEO, after returning, and after twenty
+forced redraws (a scroll event per frame, the way the surface schedules its own draws, each allowed to paint;
+the height recorded after every one). It fails if any redraw produced a different height, if the layer is not
+exactly the rounded-down union, if either scroll extent grew, or if the visible surface changed size (scrollbars
+came and went). Proven red on the previous `view.ts` (the layer 5 935 px at load, 23 615 px after the twenty
+redraws, +221 px on every one of them) and on the intermediate rounded-up formula (844 ↔ 834 alternating),
+green on the committed one.
+
+### 24.5 Files changed
+
+`packages/command-center-ui/src/app/view.ts` (the one formula in `#drawLines`); `scripts/c5-visual-proof.mjs`
+(state-aware reduced-motion parity and J-frame, `motionState` / `setMotion` / `motionStyles`,
+`lineLayerGeometry` / `forceRedraws`, the new step); `scripts/c5/cdp.mjs` (`QANDEEL_BROWSER_ARGS`); `README.md`;
+this report; `DECISION_LOG.md` (D-C5-16). Runtime, storage, governance, authentication, CSS and `main.ts`
+untouched; the quality gate and the Windows matrix leg unchanged (no `continue-on-error`, no raised timeout).
+
+### 24.6 Focused validation
+
+UI build + typecheck + tests 10/10 · `eslint --max-warnings=0` clean · `test:harness` 3/3 · `c5:mutation` 16/16
+· `verify` 63/63 · `c5:spike` PASS in the host's default condition (starts `full`: toggle clicked both ways,
+drift resumes) and PASS with `--force-prefers-reduced-motion` (starts `reduced`, OS reduce: `toReduced:
+already`, toggle to `full` and back, drift stays none; reduced-motion step 1.2 s). GitHub CI on the exact head
+is the full gate.
+
+### 24.7 Residuals
+
+None material. The 4 fps walkthrough (§23.3) stays a proof-only MINOR.

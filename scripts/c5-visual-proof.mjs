@@ -197,6 +197,35 @@ const waitReady = traced('waitReady', async () => {
   await settle(900);
 });
 const count = traced('count', (selector) => page.evaluate(`document.querySelectorAll(${JSON.stringify(selector)}).length`));
+// Motion has two independent layers: the OS / browser preference (`prefers-reduced-motion`, which the application
+// honours on start and the stylesheet honours always) and the explicit application mode (`data-motion`, the
+// toggle). A runner may start in either; the harness reads the state instead of assuming it.
+const motionState = traced('motionState', () => page.evaluate(`(() => { const b = document.getElementById('motion-toggle'); return { mode: document.documentElement.dataset.motion ?? null, osReduce: matchMedia('(prefers-reduced-motion: reduce)').matches, pressed: b ? b.getAttribute('aria-pressed') : null, label: b ? b.textContent.trim() : null }; })()`));
+const describeMotion = (s) => `app ${s.mode}, OS ${s.osReduce ? 'reduce' : 'no-preference'}, aria-pressed ${s.pressed}`;
+// Drives the real toggle to a target application mode (never a blind click): a click only when the mode differs,
+// then an explicit, bounded wait for the dataset and the button's pressed state to agree.
+const setMotion = traced('setMotion', async (target) => {
+  const from = await motionState();
+  if (from.mode === target) return { clicked: false, from, to: from };
+  await click('#motion-toggle');
+  try {
+    await waitUntil(`document.documentElement.dataset.motion === ${JSON.stringify(target)} && document.getElementById('motion-toggle').getAttribute('aria-pressed') === ${JSON.stringify(target === 'reduced' ? 'true' : 'false')}`, 5_000);
+  } catch (error) {
+    const now = await motionState();
+    throw new Error(`the motion toggle did not reach ${target}: initial ${describeMotion(from)}; observed ${describeMotion(now)}`, { cause: error });
+  }
+  await settle(300);
+  return { clicked: true, from, to: await motionState() };
+});
+// The line layer's geometry against the layout it covers: the SVG size attributes, the company's scroll extent, the
+// scroll surface's extent, and the rects the layer must span (the company box plus the goal band). Read only.
+const lineLayerGeometry = traced('lineLayerGeometry', () => page.evaluate(`(() => { const c = document.querySelector('.company'); const u = document.querySelector('.universe'); const g = document.querySelector('.goals-host'); const over = document.querySelector('.lines-over'); const under = document.querySelector('.lines-under'); const cr = c.getBoundingClientRect(); const gr = g.getBoundingClientRect(); return { svgH: Number(over.getAttribute('height')), svgUnderH: Number(under.getAttribute('height')), svgW: Number(over.getAttribute('width')), companyScrollH: c.scrollHeight, companyScrollW: c.scrollWidth, universeScrollH: u.scrollHeight, universeClientH: u.clientHeight, universeClientW: u.clientWidth, companyBoxH: Math.round(cr.height), bandH: Math.round(gr.height), unionH: Math.floor(Math.max(cr.height, gr.bottom - cr.top)), unionW: Math.floor(cr.width), builds: Number(c.dataset.builds) }; })()`));
+// Forces N line redraws the way the surface itself triggers them (a scroll of the surface schedules one draw per
+// frame), lets each one paint before the next, and records the layer's height after every one: a bounded
+// in-page loop, one command. Returns how many ran and the distinct heights seen.
+const forceRedraws = traced('forceRedraws', (n) => page.evaluate(`new Promise((done) => { const u = document.querySelector('.universe'); const s = document.querySelector('.lines-over'); const heights = new Set(); let i = 0; const frame = () => new Promise((r) => { requestAnimationFrame(() => requestAnimationFrame(r)); setTimeout(r, 120); }); const loop = async () => { while (i < ${Number(n)}) { u.dispatchEvent(new Event('scroll')); await frame(); heights.add(Number(s.getAttribute('height'))); i += 1; } done({ ran: i, heights: [...heights] }); }; loop(); setTimeout(() => done({ ran: i, heights: [...heights] }), ${Number(n) * 200 + 2000}); })`, { timeoutMs: Number(n) * 200 + 12_000 }));
+// What the stylesheet does with motion right now: the ambient drift, the surface's scroll behaviour, a card's tween.
+const motionStyles = traced('motionStyles', () => page.evaluate(`({ drift: getComputedStyle(document.querySelector('.stage'), '::before').animationName, scroll: getComputedStyle(document.querySelector('.universe')).scrollBehavior, cardTween: getComputedStyle(document.querySelector('.card')).transitionDuration })`));
 // The leader (tether) drawn over the surface: exactly one path, and none of its pieces crosses a card, a
 // column head, a goal or a chip (a piece that would is drawn beneath, in the under-layer). Returns the number of
 // crossings, or -1 when there is not exactly one leader over the surface.
@@ -319,22 +348,80 @@ try {
     results.spike.selection = { title, lens, back, quieted: quiet, quietOpacity, builds: Number(builds1), tether, sheetClearOfGoals: sheetClear };
     return { title, lens, back, quieted: quiet, quietOpacity, builds: Number(builds1), tether, sheetClearOfGoals: sheetClear };
   });
+  await step('spike-line-layer-bounded', async () => {
+    // Regression proof for the line layer's height: it is read from layout rects (the company box plus the goal
+    // band), never from the scroll extent the layer itself creates. Before the fix every redraw grew the layer by
+    // one band, the company's and the surface's scroll extents followed, and the renderer crawled until the
+    // harness (or the CI step) timed out. Selection, return and twenty forced redraws must leave all three flat.
+    const at = { load: await lineLayerGeometry() };
+    await click(`.card[data-id="employee:${ceo}"]`);
+    await waitUntil(`!document.getElementById('focus').hidden && document.querySelector('.line-tether')`, 10_000);
+    await settle(400);
+    at.selected = await lineLayerGeometry();
+    await escape();
+    at.returned = await lineLayerGeometry();
+    const redraws = await forceRedraws(20);
+    await settle(200);
+    at.redrawn = await lineLayerGeometry();
+    const phases = Object.keys(at);
+    const span = (key) => { const v = phases.map((p) => at[p][key]); return { min: Math.min(...v), max: Math.max(...v) }; };
+    const svg = span('svgH');
+    const company = span('companyScrollH');
+    const universe = span('universeScrollH');
+    const width = span('svgW');
+    const visibleH = span('universeClientH');
+    const visibleW = span('universeClientW');
+    // The layer is exactly the company box with the band beneath it, rounded down (so it never opens a scrollbar
+    // of its own); every one of the twenty redraws produced that same height; no scroll extent grew across the
+    // phases; and the visible surface never changed size (its scrollbars never came and went).
+    const expected = at.redrawn.unionH;
+    const describe = () => phases.map((p) => `${p}: svg ${at[p].svgH}×${at[p].svgW}, company scroll ${at[p].companyScrollH}, surface scroll ${at[p].universeScrollH} in ${at[p].universeClientW}×${at[p].universeClientH} visible, box ${at[p].companyBoxH} + band ${at[p].bandH} = ${at[p].unionW}×${at[p].unionH}`).join('; ');
+    if (redraws.ran !== 20) throw new Error(`only ${redraws.ran} of 20 forced redraws ran (${describe()})`);
+    if (redraws.heights.length !== 1 || svg.max - svg.min > 0 || width.max - width.min > 0) throw new Error(`the line layer is not stable across redraws: heights ${redraws.heights.join(', ')}; by phase ${svg.min} → ${svg.max}, width ${width.min} → ${width.max} (${describe()})`);
+    if (at.redrawn.svgH !== expected || at.redrawn.svgUnderH !== expected || at.redrawn.svgW !== at.redrawn.unionW) throw new Error(`the line layer is ${at.redrawn.svgW}×${at.redrawn.svgH} (under ${at.redrawn.svgUnderH}) but the company box with the band is ${at.redrawn.unionW}×${expected} (${describe()})`);
+    if (company.max - company.min > 0) throw new Error(`the company scroll extent grows across redraws: ${company.min} → ${company.max} (${describe()})`);
+    if (universe.max - universe.min > 0) throw new Error(`the surface scroll extent grows across redraws: ${universe.min} → ${universe.max} (${describe()})`);
+    if (visibleH.max - visibleH.min > 0 || visibleW.max - visibleW.min > 0) throw new Error(`the surface's scrollbars came and went across redraws: visible ${visibleW.min}–${visibleW.max} × ${visibleH.min}–${visibleH.max} (${describe()})`);
+    const detail = { redraws: redraws.ran, redrawHeights: redraws.heights, svgHeight: svg, svgWidth: width, companyScrollHeight: company, surfaceScrollHeight: universe, surfaceVisible: { width: at.redrawn.universeClientW, height: at.redrawn.universeClientH }, expected: { width: at.redrawn.unionW, height: expected }, phases: at };
+    results.spike.lineLayer = detail;
+    return detail;
+  });
   await step('spike-reduced-motion-parity', async () => {
     // Parity of meaning, not of pixels: every card, goal, column name and line that Company Live shows in full
     // motion is still shown in reduced motion; only the tweens and the ambient drift go.
+    // State-aware: the runner may prefer reduced motion at the OS level, and the application honours that on
+    // start, so the smoke reads where it begins, drives the real toggle to `reduced` only when needed, proves
+    // parity there, exercises the toggle back to `full`, and leaves the application as it found it.
     const marksExpr = `[...document.querySelectorAll('.card, .goal, .column-name, .line-exec, .line-bundle, .line-trunk, .line-branch, .chip-attention')].map((e) => e.dataset.id || e.textContent || e.getAttribute('class')).sort()`;
+    const initial = await motionState();
+    if (initial.mode !== 'reduced' && initial.mode !== 'full') throw new Error(`the application has no motion mode: ${describeMotion(initial)}`);
     const before = await page.evaluate(marksExpr);
-    await click('#motion-toggle');
-    await settle(500);
-    const mode = await page.evaluate(`document.documentElement.dataset.motion`);
+    const toReduced = await setMotion('reduced');
+    const reduced = await motionState();
+    const inReduced = await motionStyles();
     const after = await page.evaluate(marksExpr);
-    const drift = await page.evaluate(`getComputedStyle(document.querySelector('.stage'), '::before').animationName`);
     const missing = before.filter((x) => !after.includes(x));
-    if (mode !== 'reduced' || after.length < 20 || missing.length > 0 || drift !== 'none') throw new Error(`reduced motion mode ${mode}; missing ${missing.length} of ${before.length} marks; drift ${drift}`);
-    await click('#motion-toggle');
-    await settle(200);
-    results.spike.reducedMotion = { mode, marks: after.length };
-    return { mode, marks: after.length };
+    // In the application's reduced mode every mark stays and every tween goes, whatever the OS prefers.
+    if (reduced.mode !== 'reduced' || reduced.pressed !== 'true' || !/reduced/i.test(reduced.label ?? '')) throw new Error(`reduced mode not reached: initial ${describeMotion(initial)}; now ${describeMotion(reduced)}`);
+    if (after.length < 20 || missing.length > 0) throw new Error(`reduced motion loses marks: missing ${missing.length} of ${before.length} (${describeMotion(reduced)})`);
+    if (inReduced.drift !== 'none' || inReduced.scroll !== 'auto' || inReduced.cardTween !== '0s') throw new Error(`reduced motion still moves: drift ${inReduced.drift}, scroll ${inReduced.scroll}, card tween ${inReduced.cardTween} (${describeMotion(reduced)})`);
+    // The real toggle in the other direction: the application goes to `full` and keeps every mark. The ambient
+    // drift resumes only when the OS itself does not prefer reduced motion (the stylesheet honours the OS too).
+    const toFull = await setMotion('full');
+    const full = await motionState();
+    const inFull = await motionStyles();
+    const afterFull = await page.evaluate(marksExpr);
+    const missingFull = before.filter((x) => !afterFull.includes(x));
+    if (full.mode !== 'full' || full.pressed !== 'false' || !/full/i.test(full.label ?? '')) throw new Error(`full mode not reached: ${describeMotion(full)}`);
+    if (missingFull.length > 0) throw new Error(`full motion loses marks: missing ${missingFull.length} of ${before.length}`);
+    if (!full.osReduce && (inFull.drift === 'none' || inFull.scroll !== 'smooth')) throw new Error(`full motion did not resume although the OS prefers motion: drift ${inFull.drift}, scroll ${inFull.scroll}`);
+    if (full.osReduce && inFull.drift !== 'none') throw new Error(`the OS prefers reduced motion but the ambient drift runs in app full mode: ${inFull.drift}`);
+    // Leave the application as it was found: its initial mode, and no stored preference the smoke created.
+    const restored = await setMotion(initial.mode);
+    await page.evaluate(`(() => { try { localStorage.removeItem('qandeel.reducedMotion'); } catch {} return true; })()`);
+    const detail = { initial: describeMotion(initial), osPrefersReduced: initial.osReduce, marks: after.length, toReduced: toReduced.clicked ? 'clicked' : 'already', reducedStyles: inReduced, toFull: toFull.clicked ? 'clicked' : 'already', fullStyles: inFull, restoredTo: restored.to.mode };
+    results.spike.reducedMotion = detail;
+    return detail;
   });
   if (values.spike) {
     console.log(JSON.stringify({ verdict: 'C5 TECHNICAL SPIKE — PASS', spike: results.spike }));
@@ -559,11 +646,13 @@ try {
       return { historyEmployees };
     });
     await step('J-reduced-motion', async () => {
-      await click('#motion-toggle');
-      await settle(600);
+      // The frame in the application's reduced mode, then back to where the runner started (state-aware).
+      const initial = await motionState();
+      await setMotion('reduced');
+      await settle(300);
       await shot('12-reduced-motion');
-      await click('#motion-toggle');
-      return { mode: 'reduced → full' };
+      const restored = await setMotion(initial.mode);
+      return { initial: describeMotion(initial), frame: 'reduced', restoredTo: restored.to.mode };
     });
     stopCapture();
     await step('K-scale', async () => {

@@ -2309,3 +2309,32 @@ any card, head, goal or chip it crosses (drawn in the under-layer; `splitLeader`
 sheet docks on the empty left desk, and a right-docked sheet that would meet the "Needs you" chips starts
 beneath them (`--desk-b`, measured live). The walkthrough stays at 4 fps (proof-only MINOR: each headless
 capture is a ~160 ms software paint). The proof gained `--minimal`, leader-crossing and chips-clear checks.
+
+## D-C5-16 — The line layer is sized from layout rects, rounded down, never from the scroll extent it creates; the browser harness fails bounded and reads the runner's motion preference (Technical Lead, C5)
+
+**Context.** Windows CI hung twice in the C5 browser smoke until the step's 8-minute ceiling. Three bounded
+corrections followed, each from an exact head the Founder named (report §24). The harness could wait forever
+on an unanswered DevTools command; the reduced-motion smoke assumed the runner starts in `full` motion; and,
+once the harness could fail with a name, reproducing the runner locally proved a defect in the Product: the
+Tree of Light's line layer (`TreeView.#drawLines`) derived its height from the company's `scrollHeight`, of
+which the layer itself is the largest part, so every redraw grew it by one goal band (1 073 → 30 245 px in
+sixteen seconds) until the browser crawled. The Founder authorized the Product fix in that scope only.
+
+**Decision.** (1) The line layer's size is read from layout rects alone: the company box and the goal band it
+must cover, the union's edge rounded once and **down** (`floor(max(company.height, band.bottom − company.top))`,
+`floor(company.width)`). Never from `scrollHeight` / `scrollWidth`, which the layer feeds; never rounded up,
+because a layer a fraction of a pixel past the boxes it covers opens the surface's scrollbars, which shrink the
+company, which redraws the layer smaller, which closes them: an endless redraw at frame rate. The layer paints
+with `overflow: visible`, so its size clips nothing; it may only never create scroll extent. (2) Every DevTools
+command the harness sends is bounded (`QANDEEL_CDP_TIMEOUT_MS`, default 20 s) and an unanswered one fails
+naming the method, the helper and the step, with the pending map cleared and a bounded post-mortem; the CI
+step's ceiling is the emergency stop, never the diagnosis. (3) The smoke reads the two motion layers (the OS
+preference and the application mode) instead of assuming either, drives the real toggle only when needed, and
+restores what it found. (4) `spike-line-layer-bounded` is a permanent regression proof: selection, return and
+twenty forced redraws leave the layer, both scroll extents and the visible surface unchanged.
+
+**Consequences.** The Windows selection step (47 s) and the 8-minute hangs had one cause in the Product, not
+in the runner; the surface no longer degrades with live refreshes on any host. No layout semantics, visual
+design or motion behaviour changed. Runtime, storage, governance, authentication, CSS and `main.ts` untouched;
+the quality gate and the Windows leg unchanged. C5 remains NOT CLOSED pending exact-head CI, review and merge by
+the Technical Lead.
