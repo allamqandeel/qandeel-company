@@ -16,6 +16,7 @@ import { warrantsFounderAttention, type AttentionLane, type AttentionLevel, type
 import { founder, founderAdminWrite } from './governance.js';
 import { mapAttentionItem, mustRow, type AttentionItemRecord } from './founder-records.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
+import { txResilienceStatus } from './resilience.js';
 import { storeContext, type CompanyStore } from './store.js';
 
 /** Repeated signals about the same open item re-notify at most once per cooldown (Stage 9 §28). */
@@ -74,6 +75,16 @@ export function collectSignals(ctx: StoreContext): Signal[] {
       continue;
     }
     if (warrantsFounderAttention(purpose, level)) out.push({ dedupKey: `thread:${m.thread_id}`, lane: 'THREADS', level, sourceKind: 'THREAD', sourceRef: `thread:${m.thread_id}`, ownerRef: m.sender_ref, changedAt: m.created_at as Timestamp });
+  }
+  // C6: only MATERIAL improvement / recovery exceptions become attention — a systemic finding awaiting the
+  // Founder's decision, a failed restore drill, an off-device backup that is missing its failure domain or its
+  // objective, a rolled-back update. Routine evaluations, reports and lessons never enter.
+  for (const f of ctx.db.all<{ id: string; updated_at: string }>(`SELECT id, updated_at FROM systemic_findings WHERE state = 'CANDIDATE' ORDER BY created_at, id`)) {
+    out.push({ dedupKey: `systemic:${f.id}`, lane: 'NEEDS_ME', level: 'NEEDS_DECISION', sourceKind: 'DECISION_REQUEST', sourceRef: `systemic_finding:${f.id}`, ownerRef: null, changedAt: f.updated_at as Timestamp });
+  }
+  const resilience = txResilienceStatus(ctx, ts(ctx));
+  for (const x of resilience.exceptions.filter((e) => e.material)) {
+    out.push({ dedupKey: `resilience:${x.code}`, lane: 'NEEDS_ME', level: 'NEEDS_ATTENTION', sourceKind: 'DECISION_REQUEST', sourceRef: x.ref, ownerRef: null, changedAt: x.at as Timestamp });
   }
   return out;
 }

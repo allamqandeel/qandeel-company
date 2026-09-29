@@ -4,8 +4,9 @@
  * C1 scope: a live-database snapshot through SQLite's Online Backup API (`node:sqlite`
  * `backup()`), a manifest with checksums, isolated verification, and a restore into an isolated
  * workspace with a dry start. The active database file is never copied directly, and the live
- * database is never replaced. Encrypted off-device copies, generational retention, immutable
- * copies, device-loss promotion and production rollback are deferred to C6/L1.
+ * database is never replaced. C6 extends these primitives (it does not replace them) with encrypted portable
+ * packages, destinations, generational retention, clean-environment restore and update safety (esilience.ts,
+ * maintenance.ts); immutable offline copies and real device-loss rehearsal remain L1 / Pilot.
  */
 import { closeSync, copyFileSync, existsSync, fsyncSync, openSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, constants as fsConstants } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -516,7 +517,8 @@ export function listBackups(store: CompanyStore): Id[] {
   const ctx = storeContext(store);
   const backupsDir = store.workspace.backupsDir;
   return ctx.db
-    .all<{ id: string }>(`SELECT id FROM backup_records WHERE integrity_result = 'ok' ORDER BY id`)
+    // A generation retired by retention (C6, `backup_retirements`) is no longer canonical recovery material.
+    .all<{ id: string }>(`SELECT id FROM backup_records WHERE integrity_result = 'ok' AND id NOT IN (SELECT backup_id FROM backup_retirements) ORDER BY id`)
     .map((r) => r.id)
     .filter((id) => /^[0-9a-f-]{36}$/.test(id) && existsSync(path.join(backupsDir, id, MANIFEST_FILE))) as Id[];
 }

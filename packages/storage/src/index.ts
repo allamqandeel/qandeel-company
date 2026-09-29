@@ -126,3 +126,47 @@ export type {
   StaffingRequestRecord,
   WorkDelegationRecord,
 } from './org-records.js';
+// C6 Company Improvement Engine: the Eval Registry, outcome verification, evaluation, causal attribution,
+// learning signals / interventions / systemic findings / failure cases (over the C3 lesson lifecycle and the
+// C3 Academy), reports with typed claims, profiles without any aggregate score, and Stage 15 resilience
+// (encrypted portable packages, destinations, generational retention, restore drills, update safety).
+export {
+  ImprovementStore,
+  STANDARD_DEFINITION_CODE,
+  SYSTEM_EVALUATOR_REF,
+  SYSTEM_REPORTER_REF,
+  type AttributionRecord,
+  type CalibrationRunRecord,
+  type EvalDefinitionRecord,
+  type EvaluationRecord,
+  type FailureCaseRecord,
+  type InterventionRecord,
+  type LearningSignalRecord,
+  type ReportRecord,
+  type SystemicFindingRecord,
+} from './improvement.js';
+export {
+  DEFAULT_RETENTION,
+  DirectoryDestination,
+  MAX_PORTABLE_PAYLOAD_BYTES,
+  MIN_PASSPHRASE_LENGTH,
+  PORTABLE_FORMAT,
+  RECOVERY_OBJECTIVES,
+  createPortableBackup,
+  planRetention,
+  prunePortableBackups,
+  pruneLocalBackups,
+  resilienceStatus,
+  restorePortableBackup,
+  runRestoreDrill,
+  verifyPortableBackup,
+  type BackupDestination,
+  type CleanRestoreReport,
+  type FailureDomain,
+  type PortableBackupResult,
+  type RecoveryObjective,
+  type ResilienceStatus,
+  type RetentionPolicy,
+} from './resilience.js';
+export { rollbackSchemaUpdate, safeUpgrade, type SafeUpgradeReport } from './maintenance.js';
+export { clearUpdateHold, readUpdateHold, type UpdateHold } from './update-hold.js';

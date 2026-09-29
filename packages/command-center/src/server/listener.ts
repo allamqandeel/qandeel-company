@@ -62,6 +62,13 @@ const ROUTES: readonly Route[] = [
   route('POST', '/api/threads/:id/messages', 'send', (ctx, p, b) => api.sendMessage(ctx, p[0] as string, b)),
   route('POST', '/api/attention/:id/dismiss', 'dismiss', (ctx, p, b) => api.dismissAttention(ctx, p[0] as string, b)),
   route('POST', '/api/goals/propose', 'propose-goal', (ctx, _p, b) => api.proposeGoal(ctx, b)),
+  // C6: exception-first reports, evidence drill-down, profiles and recovery status — reads, plus one idempotent
+  // report generation (a system derivation; it grants and decides nothing).
+  route('GET', '/api/improvement/reports', 'report-latest', (ctx, _p, _b, q) => api.latestReport(ctx, q.get('cadence') ?? 'DAILY')),
+  route('POST', '/api/improvement/reports', 'report-generate', (ctx, _p, b) => api.generateReport(ctx, b)),
+  route('GET', '/api/improvement/inspect', 'inspect', (ctx, _p, _b, q) => api.inspect(ctx, { kind: q.get('kind') ?? 'COMPANY', id: q.get('id') ?? undefined })),
+  route('GET', '/api/improvement/profiles/:id', 'profile', (ctx, p) => api.profile(ctx, p[0] as string)),
+  route('GET', '/api/improvement/resilience', 'resilience', (ctx) => api.resilience(ctx)),
 ];
 
 export class FounderListener {

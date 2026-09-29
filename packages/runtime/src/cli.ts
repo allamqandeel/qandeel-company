@@ -29,7 +29,18 @@
  *   organization    --workspace <dir>                      seats, holders, departments, executive queues, health
  *   reviews         --workspace <dir>                      review requests, conflicts, holds, Review Pool health
  *
- * There is deliberately no Founder write command (no register-founder, approve or reject): a
+ * C6 commands (content-free: IDs, codes, states, counts, checksums — never the recovery passphrase, which is
+ * read from QANDEEL_RECOVERY_PASSPHRASE and used in memory only):
+ *   improvement     --workspace <dir>                      evaluation / learning health and recovery status
+ *   report          --workspace <dir> --cadence <DAILY|WEEKLY|MONTHLY>   generate (idempotently) and print typed claims
+ *   portable-backup --workspace <dir> --destination <dir> [--attest-off-device]   encrypted package outside the workspace
+ *   restore-portable --workspace <new empty dir> --package <file>        clean-environment restore (runtime not started)
+ *   restore-drill   --workspace <dir>                      isolated restore drill of the newest generation
+ *   prune-backups   --workspace <dir> [--keep-last <n>] [--daily <n>] [--weekly <n>] [--monthly <n>]
+ *   safe-upgrade    --workspace <dir>                      Preflight → Backup → Rehearse → Migrate → Verify → Activate
+ *   clear-update-hold --workspace <dir> --reason <code>    operator acknowledgement of an UPDATE_HOLD
+ *   rollback-update --workspace <dir> --update <id>        restore a kept pre-update snapshot (bounded period)
+ * * There is deliberately no Founder write command (no register-founder, approve or reject): a
  * Founder reference typed on a command line is not authentication. Founder authority arrives with
  * the authenticated Founder surface (C5); until then R3 work stays WAITING_APPROVAL (D-C2-13).
  */
@@ -39,7 +50,31 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { assertCode, assertId, isQandeelError } from '@qandeel-company/domain';
-import { ArtifactStore, CapabilityStore, CompanyStore, GovernanceStore, MemoryStore, OrganizationStore, ReviewStore, createBackup, restoreToIsolatedWorkspace, verifyBackup } from '@qandeel-company/storage';
+import { readFileSync } from 'node:fs';
+
+import {
+  ArtifactStore,
+  CapabilityStore,
+  CompanyStore,
+  DEFAULT_RETENTION,
+  DirectoryDestination,
+  GovernanceStore,
+  ImprovementStore,
+  MemoryStore,
+  OrganizationStore,
+  ReviewStore,
+  clearUpdateHold,
+  createBackup,
+  createPortableBackup,
+  pruneLocalBackups,
+  resilienceStatus,
+  restorePortableBackup,
+  restoreToIsolatedWorkspace,
+  rollbackSchemaUpdate,
+  runRestoreDrill,
+  safeUpgrade,
+  verifyBackup,
+} from '@qandeel-company/storage';
 
 import { c3HealthOf } from './c3/health.js';
 import { DETERMINISTIC_PROCESSORS } from './deterministic-processors.js';
@@ -48,7 +83,7 @@ import { Logger, jsonLinesSink } from './logger.js';
 import { CompanyRuntime, RUNTIME_VERSION } from './runtime.js';
 import { notifyRuntime } from './wake.js';
 
-const USAGE = 'usage: qandeel-company <init|start|health|submit|cancel|backup|verify-backup|restore-check|verify-artifacts|governance|approvals|mind|capability-gaps|context-manifest|organization|reviews> --workspace <dir> [options]';
+const USAGE = 'usage: qandeel-company <init|start|health|submit|cancel|backup|verify-backup|restore-check|verify-artifacts|governance|approvals|mind|capability-gaps|context-manifest|organization|reviews|improvement|report|portable-backup|restore-portable|restore-drill|prune-backups|safe-upgrade|clear-update-hold|rollback-update> --workspace <dir> [options]';
 
 function out(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -84,6 +119,15 @@ export async function main(argv: readonly string[]): Promise<void> {
       target: { type: 'string' },
       owner: { type: 'string' },
       manifest: { type: 'string' },
+      cadence: { type: 'string' },
+      destination: { type: 'string' },
+      'attest-off-device': { type: 'boolean' },
+      package: { type: 'string' },
+      'keep-last': { type: 'string' },
+      daily: { type: 'string' },
+      weekly: { type: 'string' },
+      monthly: { type: 'string' },
+      update: { type: 'string' },
     },
   });
   if (command === undefined || values.workspace === undefined) fail('USAGE', USAGE, 2);
@@ -274,7 +318,82 @@ export async function main(argv: readonly string[]): Promise<void> {
         store.close();
       }
       return;
-    }    default:
+    }
+    case 'improvement': {
+      const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
+      try {
+        const im = ImprovementStore.for(store);
+        out({ ok: true, command, health: im.health(), systemic: im.systemicFindings().map((f) => ({ findingId: f.id, state: f.state, targetKind: f.targetKind, cause: f.cause, occurrences: f.occurrences })), resilience: resilienceStatus(store) });
+      } finally {
+        store.close();
+      }
+      return;
+    }
+    case 'report': {
+      const cadence = values.cadence ?? 'DAILY';
+      if (cadence !== 'DAILY' && cadence !== 'WEEKLY' && cadence !== 'MONTHLY') fail('USAGE', '--cadence must be DAILY, WEEKLY or MONTHLY', 2);
+      const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
+      try {
+        const r = ImprovementStore.for(store).generateReport(cadence);
+        out({ ok: true, command, reportId: r.report.id, changed: r.changed, period: { from: r.report.periodFrom, to: r.report.periodTo }, claims: r.report.claims });
+      } finally {
+        store.close();
+      }
+      return;
+    }
+    case 'portable-backup': {
+      if (values.destination === undefined) fail('USAGE', '--destination <directory outside the workspace> is required', 2);
+      const passphrase = process.env.QANDEEL_RECOVERY_PASSPHRASE;
+      if (passphrase === undefined) fail('USAGE', 'set QANDEEL_RECOVERY_PASSPHRASE (the recovery passphrase is never taken from the command line)', 2);
+      const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
+      try {
+        const r = await createPortableBackup(store, { destination: new DirectoryDestination(path.resolve(values.destination), { attestOffDevice: values['attest-off-device'] === true }), passphrase, runtimeVersion: RUNTIME_VERSION });
+        out({ ok: true, command, ...r });
+      } finally {
+        store.close();
+      }
+      return;
+    }
+    case 'restore-portable': {
+      if (values.package === undefined) fail('USAGE', '--package <file> is required (the target is --workspace, a new empty directory)', 2);
+      const passphrase = process.env.QANDEEL_RECOVERY_PASSPHRASE;
+      if (passphrase === undefined) fail('USAGE', 'set QANDEEL_RECOVERY_PASSPHRASE', 2);
+      const r = restorePortableBackup(readFileSync(path.resolve(values.package)), workspace, { passphrase });
+      out({ ok: true, command, ...r });
+      return;
+    }
+    case 'restore-drill': {
+      const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
+      try {
+        out({ ok: true, command, ...runRestoreDrill(store) });
+      } finally {
+        store.close();
+      }
+      return;
+    }
+    case 'prune-backups': {
+      const policy = { keepLast: positiveInt(values['keep-last'], 'keep-last', DEFAULT_RETENTION.keepLast, 1000) || 1, daily: positiveInt(values.daily, 'daily', DEFAULT_RETENTION.daily, 1000), weekly: positiveInt(values.weekly, 'weekly', DEFAULT_RETENTION.weekly, 1000), monthly: positiveInt(values.monthly, 'monthly', DEFAULT_RETENTION.monthly, 1000) };
+      const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
+      try {
+        out({ ok: true, command, policy, ...pruneLocalBackups(store, policy) });
+      } finally {
+        store.close();
+      }
+      return;
+    }
+    case 'safe-upgrade': {
+      out({ ok: true, command, ...(await safeUpgrade(workspace, { runtimeVersion: RUNTIME_VERSION })) });
+      return;
+    }
+    case 'clear-update-hold': {
+      out({ ok: true, command, ...clearUpdateHold(workspace, assertCode(values.reason ?? '', 'reason').toLowerCase()) });
+      return;
+    }
+    case 'rollback-update': {
+      out({ ok: true, command, ...rollbackSchemaUpdate(workspace, assertId(values.update, 'update')) });
+      return;
+    }
+    default:
       fail('USAGE', USAGE, 2);
   }
 }

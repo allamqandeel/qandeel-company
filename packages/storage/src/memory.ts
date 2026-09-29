@@ -32,6 +32,7 @@ import {
 } from '@qandeel-company/mind';
 
 import { founder, founderAdminWrite } from './governance.js';
+import { txLearningValidationGate, txPatternShareGate } from './improvement.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
 import { SYSTEM_MIND_REF, assertNotContradictingCanonical, getKnowledgeRow, getMemoryRow, indexItemTerms, indexTerms, insertMemory, setMemoryStatus, wakeEmployeeWaits } from './mind-core.js';
 import {
@@ -416,6 +417,11 @@ export class MemoryStore {
       const p = founder(ctx, actorRef, `employee:${l.employeeId}`, 'lesson validation');
       if (!['LESSON_CANDIDATE', 'UNDER_REVIEW'].includes(l.stage)) throw new QandeelError('INVALID_TRANSITION', 'only a lesson candidate is validated', { lessonId: l.id, stage: l.stage });
       const to = input.decision === 'VALIDATE' ? 'VALIDATED' : 'REJECTED';
+      // C6: classified learning is validated only on independent evidence (a reflection is a hypothesis).
+      if (to === 'VALIDATED') {
+        const gate = txLearningValidationGate(ctx, l.id);
+        if (!gate.allowed) throw new QandeelError('LEARNING_GATE', 'this learning is not validated without independent evidence', { lessonId: l.id, reason: gate.reason });
+      }
       ctx.db.run(`UPDATE lessons SET stage = ?, review_path = 'FOUNDER', decided_by_ref = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, to, p.ref, ts(ctx), l.id, l.version);
       lessonHistory(ctx, l, to, assertCode(input.reasonCode, 'reasonCode'), p.ref);
       return getLesson(ctx, l.id);
@@ -467,6 +473,9 @@ export class MemoryStore {
         ctx.db.run(`UPDATE lesson_promotions SET state = 'REJECTED', decided_by_ref = ?, reason_code = ?, decided_at = ? WHERE id = ?`, p.ref, reason, at, pr.id);
       } else {
         if (pr.target === 'PERSONAL') throw new QandeelError('INVALID_TRANSITION', 'personal promotion needs no review', { promotionId: pr.id });
+        // C6: a successful pattern becomes shared practice only after verified reuse.
+        const share = txPatternShareGate(ctx, l.id, pr.target);
+        if (!share.allowed) throw new QandeelError('LEARNING_GATE', 'a successful pattern is shared only after verified reuse', { promotionId: pr.id, reason: share.reason });
         // Sharing D3 / D4 work-derived content stays closed until the Product Owner defines it (Rule C / Stage 14).
         const shared = maxDataClass(l.dataClass, input.dataClass ?? 'D0');
         if (shared === 'D3' || shared === 'D4') throw new QandeelError('VALIDATION_FAILED', 'shared promotion of D3 / D4 content is not authorized', { reason: 'DATA_CLASS_NOT_SHAREABLE', promotionId: pr.id });

@@ -112,7 +112,7 @@ export function warrantsFounderAttention(purpose: MessagePurpose, level: Attenti
 // --- Founder command intents ---------------------------------------------------------------------
 
 /** Read intents change attention only; mutating intents become structured previews (explicit confirmation). */
-export const READ_INTENTS = ['OPEN_EMPLOYEE', 'SHOW_DEPARTMENT', 'SHOW_GOAL', 'WHO_WORKS_ON', 'WHAT_IS_BLOCKED', 'NEEDS_MY_APPROVAL', 'SHOW_BRIEFS', 'RETURN_TO_LIVE', 'SHOW_CEO', 'SHOW_TIMELINE'] as const;
+export const READ_INTENTS = ['OPEN_EMPLOYEE', 'SHOW_DEPARTMENT', 'SHOW_GOAL', 'WHO_WORKS_ON', 'WHAT_IS_BLOCKED', 'NEEDS_MY_APPROVAL', 'SHOW_BRIEFS', 'RETURN_TO_LIVE', 'SHOW_CEO', 'SHOW_TIMELINE', 'SHOW_REPORT', 'SHOW_PERFORMANCE'] as const;
 export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK'] as const;
 export type ReadIntent = (typeof READ_INTENTS)[number];
 export type MutatingIntent = (typeof MUTATING_INTENTS)[number];
@@ -178,6 +178,9 @@ const PATTERNS: readonly Pattern[] = [
   { re: new RegExp(String.raw`(?:مين|من)\s+(?:بيشتغل|يشتغل|يعمل|شغال)\s+(?:علي|في)${W}|who(?:'s| is)?\s+working\s+on${W}`), intent: 'WHO_WORKS_ON', kind: 'READ' },
   { re: /(?:ايه|ما|ماذا)\s*(?:اللي|الذي)?\s*(?:ال)?(?:متوقف|معطل|محجوز|blocked)|what(?:'s| is)?\s+blocked/, intent: 'WHAT_IS_BLOCKED', kind: 'READ' },
   { re: /(?:محتاج|يحتاج|بحاجه|في انتظار|ينتظر)\s*(?:ل)?(?:موافقتي|قراري|مني)|needs?\s+my\s+(?:approval|decision)|pending\s+approvals?/, intent: 'NEEDS_MY_APPROVAL', kind: 'READ' },
+  // C6: the Daily / Weekly / Monthly reports and on-demand performance inspection (reads; never an act).
+  { re: /(?:daily|weekly|monthly|يومي|اليومي|اسبوعي|الاسبوعي|شهري|الشهري)\s*(?:company\s+)?(?:report|review|brief|تقرير|مراجعه|موجز)|(?:report|review|brief|تقرير|مراجعه|موجز)\s*(?:ال)?(?:daily|weekly|monthly|يومي|اسبوعي|شهري)/, intent: 'SHOW_REPORT', kind: 'READ' },
+  { re: /(?:performance|اداء)\s+(?:of\s+)?\S|how\s+is\s+.+\s+(?:doing|performing)/, intent: 'SHOW_PERFORMANCE', kind: 'READ' },
   { re: new RegExp(String.raw`(?:اعرض|اظهر|عرض|show|open)${W}.*(?:موجز|ملخصات|briefs?)|^briefs?$|^(?:الموجز|الملخصات)$`), intent: 'SHOW_BRIEFS', kind: 'READ' },
   { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:الزمن|التاريخ|timeline|history)|^timeline$`), intent: 'SHOW_TIMELINE', kind: 'READ' },
   { re: new RegExp(String.raw`(?:افتح|اعرض|اظهر|show|open)${W}.*(?:المدير التنفيذي|الرئيس التنفيذي|ceo)${W}|^ceo$|^(?:المدير التنفيذي|الرئيس التنفيذي)$`), intent: 'SHOW_CEO', kind: 'READ' },
@@ -197,6 +200,8 @@ function argumentOf(normalized: string, intent: ReadIntent | MutatingIntent): st
   }
   if (intent === 'SHOW_GOAL' || intent === 'GOAL_APPROVE' || intent === 'GOAL_STATE' || intent === 'GOAL_PROPOSE') rest = rest.replace(/^(?:هدف|goal)\s*/, '').replace(/\s*(?:هدف|goal)$/, '');
   if (intent === 'SHOW_DEPARTMENT') rest = rest.replace(/^(?:قسم|اداره|إدارة|department)\s*/, '');
+  if (intent === 'SHOW_REPORT') return /weekly|اسبوع/.test(rest) ? 'WEEKLY' : /monthly|شهر/.test(rest) ? 'MONTHLY' : 'DAILY';
+  if (intent === 'SHOW_PERFORMANCE') rest = (/(?:performance|اداء)\s+(?:of\s+)?(.+)$/.exec(rest)?.[1] ?? /how\s+is\s+(.+?)\s+(?:doing|performing)/.exec(rest)?.[1] ?? '').trim();
   rest = rest.replace(FILLERS, '').trim();
   return rest.length > 0 && rest.length <= 120 ? rest : null;
 }

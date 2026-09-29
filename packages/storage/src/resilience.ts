@@ -1,0 +1,650 @@
+/**
+ * C6 resilience (Stage 15, D15-A..D) over the C1 backup machinery — extended, never replaced.
+ *
+ * - Recovery objectives are set by criticality class (Critical / Important / Rebuildable), not one number.
+ *   The defaults are conservative Strong-v1 values, calibrated in the Pilot; they are not production SLAs.
+ * - An encrypted PORTABLE package (application-consistent database snapshot + its manifest + every READY
+ *   artifact object + a re-key list) can be placed outside the laptop failure domain through a destination
+ *   abstraction. Encryption: scrypt-derived key → AES-256-GCM (`node:crypto` only). The passphrase is the
+ *   separately protected recovery material: supplied by the operator, never stored, logged or packaged.
+ * - Generational retention keeps several generations (last N + daily + weekly + monthly) and never the
+ *   latest alone; the database refuses to retire the last live generation.
+ * - Clean-environment restore verifies the package, restores database and artifacts into a NEW workspace,
+ *   runs the migration-compatibility and integrity checks, revokes every Founder session of the lost device
+ *   and reports the credential references that must be re-keyed; the runtime's own startup recovery then
+ *   resumes work and holds uncertain external side effects for reconciliation (never blindly repeated).
+ * - Restore drills are recorded (result, duration): `Backup != Recovery Proof`.
+ *
+ * Nothing here contacts a network; a "destination" is a directory the operator chooses (an external drive,
+ * a mounted encrypted remote folder). CI uses a disposable directory as the external target.
+ */
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
+import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, constants as fsConstants } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import { QandeelError, isQandeelError, newId, sha256Hex, type Clock, type Id, type Timestamp } from '@qandeel-company/domain';
+
+import { createBackup, restoreToIsolatedWorkspace, verifyBackup, type BackupManifest } from './backup.js';
+import { appendAudit, ts, type StoreContext } from './internal.js';
+import { CompanyStore, storeContext } from './store.js';
+import { assertLocalPathSyntax, containedPath, isWithin, layoutFor, openWorkspace } from './workspace.js';
+
+// ---------------------------------------------------------------------------------------------------------
+// Recovery objectives by criticality (D15-A.2 / A.3).
+
+export const CRITICALITY_CLASSES = ['CRITICAL', 'IMPORTANT', 'REBUILDABLE'] as const;
+export type CriticalityClass = (typeof CRITICALITY_CLASSES)[number];
+
+export interface RecoveryObjective {
+  readonly criticality: CriticalityClass;
+  readonly covers: readonly string[];
+  /** Maximum age of the newest verified same-device generation (hours); null = rebuilt, not restored. */
+  readonly localRpoHours: number | null;
+  /** Maximum age of the newest verified package outside the device failure domain (hours). */
+  readonly offDeviceRpoHours: number | null;
+  /** Target time to a controlled restart on a clean environment (hours). */
+  readonly rtoHours: number;
+  readonly calibration: 'STRONG_V1_DEFAULT_PILOT_CALIBRATED';
+}
+
+export const RECOVERY_OBJECTIVES: readonly RecoveryObjective[] = Object.freeze([
+  {
+    criticality: 'CRITICAL',
+    covers: ['work lineage, queue, runs, checkpoints', 'governance, authority, approvals, budgets, usage', 'organization, Goals, Founder decisions', 'memory, knowledge, lessons, Academy, certifications', 'evaluations, attributions, learning, reports', 'audit and outbox'],
+    localRpoHours: 24,
+    offDeviceRpoHours: 168,
+    rtoHours: 8,
+    calibration: 'STRONG_V1_DEFAULT_PILOT_CALIBRATED',
+  },
+  { criticality: 'IMPORTANT', covers: ['artifact objects (content-addressed)'], localRpoHours: 24, offDeviceRpoHours: 168, rtoHours: 24, calibration: 'STRONG_V1_DEFAULT_PILOT_CALIBRATED' },
+  { criticality: 'REBUILDABLE', covers: ['Company Universe projection, profiles and report views (derived)', 'runtime wake signal, artifact staging', 'Founder sessions (re-issued after restore)'], localRpoHours: null, offDeviceRpoHours: null, rtoHours: 1, calibration: 'STRONG_V1_DEFAULT_PILOT_CALIBRATED' },
+]);
+
+const critical = (): RecoveryObjective => {
+  const c = RECOVERY_OBJECTIVES.find((o) => o.criticality === 'CRITICAL');
+  if (!c) throw new QandeelError('STORAGE_INVARIANT', 'the critical recovery objective is missing');
+  return c;
+};
+
+// ---------------------------------------------------------------------------------------------------------
+// Destinations.
+
+export type FailureDomain = 'SAME_VOLUME' | 'SEPARATE_VOLUME' | 'ATTESTED_OFF_DEVICE';
+
+export interface BackupDestination {
+  readonly kind: 'DIRECTORY';
+  /** SHA-256 of the canonical location (the path itself is never recorded). */
+  readonly ref: string;
+  failureDomain(workspaceRoot: string): FailureDomain;
+  put(name: string, bytes: Buffer): void;
+  get(name: string): Buffer;
+  exists(name: string): boolean;
+  remove(name: string): void;
+  list(): string[];
+}
+
+const PACKAGE_NAME = /^[a-z0-9][a-z0-9.-]{0,95}$/;
+
+/**
+ * A directory outside the workspace — an external drive, a mounted encrypted folder. `attestOffDevice` is the
+ * operator's statement that the directory is outside this laptop's failure domain (recorded as such); without
+ * it, a path on another volume is SEPARATE_VOLUME and one on the workspace's volume is SAME_VOLUME, which never
+ * satisfies the off-device objective.
+ */
+export class DirectoryDestination implements BackupDestination {
+  readonly kind = 'DIRECTORY' as const;
+  readonly ref: string;
+  readonly #root: string;
+  readonly #attested: boolean;
+
+  constructor(root: string, options: { attestOffDevice?: boolean } = {}) {
+    assertLocalPathSyntax(root);
+    this.#root = path.resolve(root);
+    this.#attested = options.attestOffDevice === true;
+    this.ref = sha256Hex(this.#root.toLowerCase());
+  }
+
+  failureDomain(workspaceRoot: string): FailureDomain {
+    const ws = path.resolve(workspaceRoot);
+    if (isWithin(ws, this.#root) || isWithin(this.#root, ws)) throw new QandeelError('UNSAFE_WORKSPACE', 'a backup destination is never inside (or around) the live workspace', { reason: 'destination-overlaps-workspace' });
+    if (this.#attested) return 'ATTESTED_OFF_DEVICE';
+    // The device id distinguishes mounted volumes on every platform (on POSIX every path shares the root '/').
+    mkdirSync(this.#root, { recursive: true });
+    if (existsSync(ws)) return statSync(ws).dev === statSync(this.#root).dev ? 'SAME_VOLUME' : 'SEPARATE_VOLUME';
+    return path.parse(ws).root.toLowerCase() === path.parse(this.#root).root.toLowerCase() ? 'SAME_VOLUME' : 'SEPARATE_VOLUME';
+  }
+
+  #file(name: string): string {
+    if (!PACKAGE_NAME.test(name)) throw new QandeelError('VALIDATION_FAILED', 'package names are short lowercase codes', { field: 'name' });
+    return containedPath(this.#root, name);
+  }
+
+  put(name: string, bytes: Buffer): void {
+    mkdirSync(this.#root, { recursive: true });
+    const target = this.#file(name);
+    const partial = `${target}.partial`;
+    writeFileSync(partial, bytes, { flag: 'wx' });
+    const fd = openSync(partial, 'r+');
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    if (existsSync(target)) {
+      rmSync(partial, { force: true });
+      throw new QandeelError('BACKUP_INTEGRITY', 'a package of that name already exists at the destination', { name });
+    }
+    renameSync(partial, target);
+  }
+
+  get(name: string): Buffer {
+    const f = this.#file(name);
+    if (!existsSync(f)) throw new QandeelError('NOT_FOUND', 'package not found at the destination', { name });
+    return readFileSync(f);
+  }
+
+  exists(name: string): boolean {
+    return existsSync(this.#file(name));
+  }
+
+  remove(name: string): void {
+    rmSync(this.#file(name), { force: true });
+  }
+
+  list(): string[] {
+    return existsSync(this.#root) ? readdirSync(this.#root).filter((f) => PACKAGE_NAME.test(f) && f.endsWith('.qcpkg')).sort() : [];
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// The encrypted portable package.
+
+export const PORTABLE_FORMAT = 'qandeel-company-portable/1';
+const MAGIC = Buffer.from('QCPKG1\n', 'ascii');
+const TAG_BYTES = 16;
+/** Payloads above this are refused rather than risking memory exhaustion (streaming is a recorded residual). */
+export const MAX_PORTABLE_PAYLOAD_BYTES = 1_536 * 1024 * 1024;
+export const MIN_PASSPHRASE_LENGTH = 16;
+const KDF = Object.freeze({ name: 'scrypt', N: 32_768, r: 8, p: 1, keyBytes: 32 });
+
+interface PackageHeader {
+  readonly format: typeof PORTABLE_FORMAT;
+  readonly packageId: Id;
+  readonly backupId: Id;
+  readonly createdAt: Timestamp;
+  readonly schemaVersion: number;
+  readonly cipher: 'aes-256-gcm';
+  readonly kdf: { readonly name: 'scrypt'; readonly N: number; readonly r: number; readonly p: number; readonly saltHex: string };
+  readonly ivHex: string;
+}
+
+interface PayloadEntry {
+  readonly path: string;
+  readonly size: number;
+  readonly sha256: string;
+}
+
+function assertPassphrase(passphrase: unknown): string {
+  if (typeof passphrase !== 'string' || passphrase.length < MIN_PASSPHRASE_LENGTH || passphrase.length > 1024) {
+    throw new QandeelError('VALIDATION_FAILED', `the recovery passphrase is at least ${MIN_PASSPHRASE_LENGTH} characters`, { field: 'passphrase' });
+  }
+  return passphrase;
+}
+
+function deriveKey(passphrase: string, kdf: PackageHeader['kdf']): Buffer {
+  if (kdf.name !== 'scrypt' || kdf.N !== KDF.N || kdf.r !== KDF.r || kdf.p !== KDF.p || !/^[0-9a-f]{32}$/.test(kdf.saltHex)) throw new QandeelError('BACKUP_INTEGRITY', 'unsupported key derivation parameters');
+  return scryptSync(passphrase, Buffer.from(kdf.saltHex, 'hex'), KDF.keyBytes, { N: kdf.N, r: kdf.r, p: kdf.p, maxmem: 128 * 1024 * 1024 });
+}
+
+/** payload := <index json>\n<blob 1><blob 2>… (a simple length-indexed container; no external archiver). */
+function buildPayload(entries: readonly { path: string; bytes: Buffer }[]): Buffer {
+  const index: PayloadEntry[] = entries.map((e) => ({ path: e.path, size: e.bytes.length, sha256: sha256Hex(e.bytes) }));
+  const head = Buffer.from(`${JSON.stringify({ entries: index })}\n`, 'utf8');
+  const total = head.length + entries.reduce((s, e) => s + e.bytes.length, 0);
+  if (total > MAX_PORTABLE_PAYLOAD_BYTES) throw new QandeelError('VALIDATION_FAILED', 'the Company is larger than the portable package bound', { reason: 'PACKAGE_TOO_LARGE' });
+  return Buffer.concat([head, ...entries.map((e) => e.bytes)]);
+}
+
+function parsePayload(payload: Buffer): Map<string, Buffer> {
+  const nl = payload.indexOf(0x0a);
+  if (nl < 0) throw new QandeelError('BACKUP_INTEGRITY', 'portable payload has no index');
+  let index: { entries: PayloadEntry[] };
+  try {
+    index = JSON.parse(payload.subarray(0, nl).toString('utf8')) as { entries: PayloadEntry[] };
+  } catch (error) {
+    throw new QandeelError('BACKUP_INTEGRITY', 'portable payload index is unreadable', {}, { cause: error });
+  }
+  const out = new Map<string, Buffer>();
+  let offset = nl + 1;
+  for (const e of index.entries ?? []) {
+    if (typeof e.path !== 'string' || !/^(?:manifest\.json|company\.sqlite3|recovery-notes\.json|artifacts\/[0-9a-f]{64})$/.test(e.path) || !Number.isInteger(e.size) || e.size < 0) throw new QandeelError('BACKUP_INTEGRITY', 'portable payload entry is malformed');
+    const bytes = payload.subarray(offset, offset + e.size);
+    if (bytes.length !== e.size || sha256Hex(bytes) !== e.sha256) throw new QandeelError('BACKUP_INTEGRITY', 'portable payload entry checksum mismatch', { entry: e.path.slice(0, 64) });
+    out.set(e.path, bytes);
+    offset += e.size;
+  }
+  if (offset !== payload.length) throw new QandeelError('BACKUP_INTEGRITY', 'portable payload has trailing bytes');
+  for (const required of ['manifest.json', 'company.sqlite3']) if (!out.has(required)) throw new QandeelError('BACKUP_INTEGRITY', 'portable payload is incomplete', { entry: required });
+  return out;
+}
+
+function entry(entries: ReadonlyMap<string, Buffer>, name: string): Buffer {
+  const e = entries.get(name);
+  if (!e) throw new QandeelError('BACKUP_INTEGRITY', 'portable payload is incomplete', { entry: name });
+  return e;
+}
+
+export function sealPackage(header: Omit<PackageHeader, 'kdf' | 'ivHex' | 'cipher' | 'format'>, payload: Buffer, passphrase: string): { bytes: Buffer; header: PackageHeader } {
+  const full: PackageHeader = {
+    format: PORTABLE_FORMAT,
+    ...header,
+    cipher: 'aes-256-gcm',
+    kdf: { name: 'scrypt', N: KDF.N, r: KDF.r, p: KDF.p, saltHex: randomBytes(16).toString('hex') },
+    ivHex: randomBytes(12).toString('hex'),
+  };
+  const headerBytes = Buffer.from(`${JSON.stringify(full)}\n`, 'utf8');
+  const cipher = createCipheriv('aes-256-gcm', deriveKey(assertPassphrase(passphrase), full.kdf), Buffer.from(full.ivHex, 'hex'));
+  cipher.setAAD(headerBytes);
+  const body = Buffer.concat([cipher.update(payload), cipher.final()]);
+  return { bytes: Buffer.concat([MAGIC, headerBytes, body, cipher.getAuthTag()]), header: full };
+}
+
+/** Opens (authenticates, decrypts, checks every entry) a portable package. Any tampering fails closed. */
+export function openPackage(bytes: Buffer, passphrase: string): { header: PackageHeader; entries: Map<string, Buffer> } {
+  assertPassphrase(passphrase);
+  if (bytes.length < MAGIC.length + TAG_BYTES + 2 || !bytes.subarray(0, MAGIC.length).equals(MAGIC)) throw new QandeelError('BACKUP_INTEGRITY', 'not a portable package');
+  const nl = bytes.indexOf(0x0a, MAGIC.length);
+  if (nl < 0) throw new QandeelError('BACKUP_INTEGRITY', 'portable package header is missing');
+  const headerBytes = bytes.subarray(MAGIC.length, nl + 1);
+  let header: PackageHeader;
+  try {
+    header = JSON.parse(headerBytes.toString('utf8')) as PackageHeader;
+  } catch (error) {
+    throw new QandeelError('BACKUP_INTEGRITY', 'portable package header is unreadable', {}, { cause: error });
+  }
+  if (header?.format !== PORTABLE_FORMAT || header.cipher !== 'aes-256-gcm' || !/^[0-9a-f]{24}$/.test(String(header.ivHex))) throw new QandeelError('BACKUP_INTEGRITY', 'unknown portable package format');
+  const body = bytes.subarray(nl + 1, bytes.length - TAG_BYTES);
+  const decipher = createDecipheriv('aes-256-gcm', deriveKey(passphrase, header.kdf), Buffer.from(header.ivHex, 'hex'));
+  decipher.setAAD(headerBytes);
+  decipher.setAuthTag(bytes.subarray(bytes.length - TAG_BYTES));
+  let payload: Buffer;
+  try {
+    payload = Buffer.concat([decipher.update(body), decipher.final()]);
+  } catch (error) {
+    throw new QandeelError('BACKUP_INTEGRITY', 'portable package failed authentication (tampered, truncated or wrong passphrase)', {}, { cause: error });
+  }
+  const entries = parsePayload(payload);
+  const manifest = JSON.parse(entry(entries, 'manifest.json').toString('utf8')) as BackupManifest;
+  if (manifest.backupId !== header.backupId || sha256Hex(entry(entries, 'company.sqlite3')) !== manifest.snapshot.sha256) throw new QandeelError('BACKUP_INTEGRITY', 'portable package does not match its manifest');
+  for (const a of manifest.artifacts.entries) {
+    const obj = entries.get(`artifacts/${a.sha256}`);
+    if (!obj || sha256Hex(obj) !== a.sha256) throw new QandeelError('BACKUP_INTEGRITY', 'portable package is missing an artifact object', { artifactId: a.id });
+  }
+  return { header, entries };
+}
+
+const packageNameFor = (createdAt: string, packageId: string): string => `qandeel-${createdAt.replace(/[-:.]/g, '').toLowerCase()}-${packageId.slice(0, 8)}.qcpkg`;
+
+export interface PortableBackupResult {
+  readonly packageId: Id;
+  readonly backupId: Id;
+  readonly name: string;
+  readonly packageSha256: string;
+  readonly sizeBytes: number;
+  readonly failureDomain: FailureDomain;
+  readonly artifacts: number;
+  readonly verifiedAt: Timestamp;
+}
+
+/**
+ * Creates a verified local generation (C1 path, recorded), seals it with its artifact objects into an
+ * encrypted package, writes it to the destination, reads it back and opens it (the verification), and only
+ * then records it. A failure leaves no record (and removes the partial package).
+ */
+export async function createPortableBackup(store: CompanyStore, options: { destination: BackupDestination; passphrase: string; runtimeVersion?: string }): Promise<PortableBackupResult> {
+  const passphrase = assertPassphrase(options.passphrase);
+  const failureDomain = options.destination.failureDomain(store.workspace.root);
+  const started = Date.now();
+  const local = await createBackup(store, options.runtimeVersion === undefined ? {} : { runtimeVersion: options.runtimeVersion });
+  const snapshot = readFileSync(path.join(local.directory, 'company.sqlite3'));
+  const manifestBytes = readFileSync(path.join(local.directory, 'manifest.json'));
+  const artifacts = local.manifest.artifacts.entries.map((a) => {
+    const object = containedPath(store.workspace.objectsDir, a.sha256.slice(0, 2), a.sha256.slice(2, 4), a.sha256);
+    const bytes = readFileSync(object);
+    if (sha256Hex(bytes) !== a.sha256) throw new QandeelError('BACKUP_INTEGRITY', 'an artifact object is corrupt; the package is not sealed', { artifactId: a.id });
+    return { path: `artifacts/${a.sha256}`, bytes };
+  });
+  const ctx = storeContext(store);
+  const rekey = ctx.db.snapshot(() => rekeyReferences(ctx));
+  const notes = Buffer.from(`${JSON.stringify({ rekeyRequired: rekey, note: 'credential references only; secrets are never packaged' })}\n`, 'utf8');
+  const unique = new Map(artifacts.map((a) => [a.path, a]));
+  const payload = buildPayload([{ path: 'manifest.json', bytes: manifestBytes }, { path: 'company.sqlite3', bytes: snapshot }, { path: 'recovery-notes.json', bytes: notes }, ...unique.values()]);
+  const packageId = newId();
+  const { bytes, header } = sealPackage({ packageId, backupId: local.backupId, createdAt: store.now(), schemaVersion: local.manifest.schemaVersion }, payload, passphrase);
+  const name = packageNameFor(header.createdAt, packageId);
+  options.destination.put(name, bytes);
+  try {
+    const back = options.destination.get(name);
+    if (sha256Hex(back) !== sha256Hex(bytes)) throw new QandeelError('BACKUP_INTEGRITY', 'the destination did not return the package that was written');
+    openPackage(back, passphrase);
+  } catch (error) {
+    options.destination.remove(name);
+    recordDrill(store, 'BACKUP_VERIFY', `backup:${local.backupId}`, 'FAIL', isQandeelError(error) ? error.code : 'ERROR', Date.now() - started);
+    throw error;
+  }
+  const sha = sha256Hex(bytes);
+  const verifiedAt = store.now();
+  ctx.db.immediate('record portable backup', () => {
+    ctx.db.run(
+      `INSERT INTO portable_backups (id, backup_id, destination_kind, destination_ref, failure_domain, package_name, package_sha256, size_bytes, format, kdf_json, state, verified_at, retired_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'VERIFIED', ?, NULL, ?)`,
+      packageId, local.backupId, options.destination.kind, options.destination.ref, failureDomain, name, sha, bytes.length, PORTABLE_FORMAT, JSON.stringify({ name: 'scrypt', N: KDF.N, r: KDF.r, p: KDF.p }), verifiedAt, header.createdAt,
+    );
+    appendAudit(ctx, 'backup.portable_created', 'portable_backup', packageId, { actorRef: 'system:resilience' }, 'OK', failureDomain, { backupId: local.backupId, sizeBytes: bytes.length, artifacts: unique.size });
+  });
+  recordDrill(store, 'BACKUP_VERIFY', `portable_backup:${packageId}`, 'PASS', 'PACKAGE_OPENED', Date.now() - started);
+  return { packageId, backupId: local.backupId, name, packageSha256: sha, sizeBytes: bytes.length, failureDomain, artifacts: unique.size, verifiedAt };
+}
+
+/** Re-verifies a recorded package at its destination (checksum + authenticated open); records the drill. */
+export function verifyPortableBackup(store: CompanyStore, packageId: Id, destination: BackupDestination, passphrase: string): { ok: boolean; code: string } {
+  const ctx = storeContext(store);
+  const row = ctx.db.get<{ package_name: string; package_sha256: string; state: string; destination_ref: string }>('SELECT package_name, package_sha256, state, destination_ref FROM portable_backups WHERE id = ?', packageId);
+  if (!row) throw new QandeelError('NOT_FOUND', 'portable backup not found', { packageId });
+  const started = Date.now();
+  let code = 'PACKAGE_OPENED';
+  try {
+    if (row.destination_ref !== destination.ref) throw new QandeelError('BACKUP_INTEGRITY', 'this is not the destination the package was written to');
+    const bytes = destination.get(row.package_name);
+    if (sha256Hex(bytes) !== row.package_sha256) throw new QandeelError('BACKUP_INTEGRITY', 'package checksum does not match the record');
+    openPackage(bytes, passphrase);
+  } catch (error) {
+    code = isQandeelError(error) ? error.code : 'ERROR';
+  }
+  const ok = code === 'PACKAGE_OPENED';
+  if (ok) ctx.db.immediate('re-verify portable backup', () => ctx.db.run(`UPDATE portable_backups SET verified_at = ? WHERE id = ? AND state = 'VERIFIED'`, ts(ctx), packageId));
+  recordDrill(store, 'BACKUP_VERIFY', `portable_backup:${packageId}`, ok ? 'PASS' : 'FAIL', code, Date.now() - started);
+  return { ok, code };
+}
+
+/** Credential references a restored Company must re-key on the new device (references only, never secrets). */
+function rekeyReferences(ctx: StoreContext): string[] {
+  const refs = [
+    ...ctx.db.all<{ r: string }>('SELECT DISTINCT credential_ref AS r FROM model_providers WHERE credential_ref IS NOT NULL'),
+    ...ctx.db.all<{ r: string }>('SELECT DISTINCT credential_ref AS r FROM tools WHERE credential_ref IS NOT NULL'),
+  ].map((x) => x.r);
+  return [...new Set(refs)].sort();
+}
+
+export interface CleanRestoreReport {
+  readonly backupId: Id;
+  readonly packageId: Id;
+  readonly workspace: string;
+  readonly schemaVersionBefore: number;
+  readonly schemaVersionAfter: number;
+  readonly quickCheck: string;
+  readonly artifactsRestored: number;
+  readonly foundersSessionsRevoked: number;
+  readonly rekeyRequired: readonly string[];
+  /** Work that the runtime's startup recovery must reconcile before anything repeats (uncertain effects). */
+  readonly reconciliationPending: { readonly jobsHeld: number; readonly toolInvocationsUncertain: number };
+  readonly durationMs: number;
+}
+
+/**
+ * Clean-environment (device-loss) recovery into a NEW, empty workspace: authenticate + decrypt, verify the
+ * snapshot against this release (schema, pins, fingerprint, counts), restore the database and artifact objects,
+ * open (migration compatibility: an older compatible snapshot is migrated forward; a newer one is refused),
+ * integrity-check, revoke the lost device's Founder sessions and report the credential references to re-key.
+ * It never starts the runtime: the operator starts it, and its startup recovery reconciles in-flight work.
+ */
+export function restorePortableBackup(packageBytes: Buffer, targetRoot: string, options: { passphrase: string; clock?: Clock }): CleanRestoreReport {
+  const started = Date.now();
+  assertLocalPathSyntax(targetRoot);
+  const target = layoutFor(path.resolve(targetRoot));
+  if (existsSync(target.root) && readdirSync(target.root).length > 0) throw new QandeelError('UNSAFE_WORKSPACE', 'a clean restore target must be a new or empty directory', { reason: 'not-empty' });
+  const targetExisted = existsSync(target.root);
+  const { header, entries } = openPackage(packageBytes, options.passphrase);
+  const stage = mkdtempSync(path.join(tmpdir(), 'qc-restore-'));
+  try {
+    const dir = path.join(stage, header.backupId);
+    mkdirSync(dir);
+    writeFileSync(path.join(dir, 'manifest.json'), entry(entries, 'manifest.json'), { flag: 'wx' });
+    writeFileSync(path.join(dir, 'company.sqlite3'), entry(entries, 'company.sqlite3'), { flag: 'wx' });
+    const verification = verifyBackup(dir);
+    const layout = openWorkspace(target.root, { create: true });
+    copyFileSync(path.join(dir, 'company.sqlite3'), layout.databasePath, fsConstants.COPYFILE_EXCL);
+    let restoredArtifacts = 0;
+    for (const [p, bytes] of entries) {
+      if (!p.startsWith('artifacts/')) continue;
+      const sha = p.slice('artifacts/'.length);
+      const dest = containedPath(layout.objectsDir, sha.slice(0, 2), sha.slice(2, 4), sha);
+      mkdirSync(path.dirname(dest), { recursive: true });
+      if (!existsSync(dest)) writeFileSync(dest, bytes, { flag: 'wx' });
+      restoredArtifacts++;
+    }
+    const restored = CompanyStore.open(layout.root, options.clock ? { clock: options.clock } : {});
+    try {
+      const quick = restored.quickCheck();
+      if (quick !== 'ok' || restored.foreignKeyViolations() !== 0) throw new QandeelError('BACKUP_INTEGRITY', 'restored workspace failed its integrity checks', { backupId: header.backupId });
+      const ctx = storeContext(restored);
+      const notes = entries.has('recovery-notes.json') ? (JSON.parse(entry(entries, 'recovery-notes.json').toString('utf8')) as { rekeyRequired?: string[] }) : {};
+      const out = ctx.db.immediate('controlled restore', () => {
+        const at = ts(ctx);
+        // The lost device's browser sessions and launch tokens never come back (D15-B.6: credentials not blindly reused).
+        const revoked = ctx.db.run(`UPDATE founder_sessions SET revoked_at = ?, revoke_reason = 'RESTORED_ON_NEW_DEVICE' WHERE revoked_at IS NULL`, at).changes;
+        ctx.db.run(`UPDATE founder_launch_tokens SET consumed_at = ? WHERE consumed_at IS NULL`, at);
+        const jobsHeld = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM queue_jobs WHERE state IN ('CLAIMED', 'RECONCILIATION_HOLD')`)?.n ?? 0);
+        const uncertain = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM tool_invocations WHERE state IN ('INTENT_RECORDED', 'RECONCILIATION_REQUIRED')`)?.n ?? 0);
+        const durationMs = Date.now() - started;
+        ctx.db.run(`INSERT INTO recovery_drills (id, kind, subject_ref, result, code, duration_ms, actor_ref, created_at) VALUES (?, 'PORTABLE_RESTORE', ?, 'PASS', 'CLEAN_RESTORE', ?, 'system:resilience', ?)`, newId(), `portable_backup:${header.packageId}`, durationMs, at);
+        appendAudit(ctx, 'recovery.clean_restore', 'backup', header.backupId, { actorRef: 'system:resilience' }, 'OK', 'CLEAN_RESTORE', { packageId: header.packageId, sessionsRevoked: revoked, artifacts: restoredArtifacts });
+        return { revoked, jobsHeld, uncertain, durationMs };
+      });
+      return {
+        backupId: header.backupId,
+        packageId: header.packageId,
+        workspace: layout.root,
+        schemaVersionBefore: verification.schemaVersion,
+        schemaVersionAfter: restored.schemaVersion,
+        quickCheck: quick,
+        artifactsRestored: restoredArtifacts,
+        foundersSessionsRevoked: out.revoked,
+        rekeyRequired: notes.rekeyRequired ?? rekeyReferences(ctx),
+        reconciliationPending: { jobsHeld: out.jobsHeld, toolInvocationsUncertain: out.uncertain },
+        durationMs: out.durationMs,
+      };
+    } finally {
+      restored.close();
+    }
+  } catch (error) {
+    // A failed restore leaves nothing half-restored behind: the target was verified new or empty, so everything in it
+    // is this attempt's own (and a retry into the same directory stays possible).
+    if (targetExisted) for (const f of existsSync(target.root) ? readdirSync(target.root) : []) rmSync(path.join(target.root, f), { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    else rmSync(target.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    throw error;
+  } finally {
+    rmSync(stage, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Restore drills.
+
+function recordDrill(store: CompanyStore, kind: 'BACKUP_VERIFY' | 'ISOLATED_RESTORE' | 'PORTABLE_RESTORE', subjectRef: string, result: 'PASS' | 'FAIL', code: string, durationMs: number): void {
+  const ctx = storeContext(store);
+  ctx.db.immediate('record restore drill', () => {
+    const id = newId();
+    ctx.db.run(`INSERT INTO recovery_drills (id, kind, subject_ref, result, code, duration_ms, actor_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, 'system:resilience', ?)`, id, kind, subjectRef, result, code.slice(0, 64), Math.max(0, Math.round(durationMs)), ts(ctx));
+    appendAudit(ctx, 'recovery.drill', 'recovery_drill', id, { actorRef: 'system:resilience' }, result === 'PASS' ? 'OK' : 'ERROR', code.slice(0, 64), { kind, durationMs: Math.max(0, Math.round(durationMs)) });
+  });
+}
+
+/** An isolated restore drill of a recorded generation (Validate → Restore isolated → Dry start → Compare). */
+export function runRestoreDrill(store: CompanyStore, options: { backupId?: Id } = {}): { result: 'PASS' | 'FAIL'; code: string; durationMs: number; backupId: Id | null } {
+  const ctx = storeContext(store);
+  const backupId = options.backupId ?? (ctx.db.get<{ id: string }>(`SELECT id FROM backup_records WHERE integrity_result = 'ok' AND id NOT IN (SELECT backup_id FROM backup_retirements) ORDER BY created_at DESC, rowid DESC LIMIT 1`)?.id as Id | undefined) ?? null;
+  const started = Date.now();
+  if (backupId === null) {
+    recordDrill(store, 'ISOLATED_RESTORE', 'backup:none', 'FAIL', 'NO_BACKUP', 0);
+    return { result: 'FAIL', code: 'NO_BACKUP', durationMs: 0, backupId: null };
+  }
+  const expected = store.backupRecord(backupId);
+  const scratch = mkdtempSync(path.join(tmpdir(), 'qc-drill-'));
+  let code = 'RESTORED_AND_VERIFIED';
+  try {
+    restoreToIsolatedWorkspace(path.join(store.workspace.backupsDir, backupId), path.join(scratch, 'ws'), { liveDatabasePath: store.workspace.databasePath, ...(expected ? { expected } : {}) });
+  } catch (error) {
+    code = isQandeelError(error) ? error.code : 'ERROR';
+  } finally {
+    rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+  const durationMs = Date.now() - started;
+  const result = code === 'RESTORED_AND_VERIFIED' ? 'PASS' : 'FAIL';
+  recordDrill(store, 'ISOLATED_RESTORE', `backup:${backupId}`, result, code, durationMs);
+  return { result, code, durationMs, backupId };
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Generational retention (D15-B.2).
+
+export interface RetentionPolicy {
+  readonly keepLast: number;
+  readonly daily: number;
+  readonly weekly: number;
+  readonly monthly: number;
+}
+
+export const DEFAULT_RETENTION: RetentionPolicy = Object.freeze({ keepLast: 3, daily: 7, weekly: 4, monthly: 6 });
+
+export interface Generation {
+  readonly id: string;
+  readonly createdAt: string;
+}
+
+const isoWeek = (d: Date): string => {
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const day = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - day);
+  const y = t.getUTCFullYear();
+  const w = Math.ceil(((t.getTime() - Date.UTC(y, 0, 1)) / 86_400_000 + 1) / 7);
+  return `${y}-W${w}`;
+};
+
+/**
+ * Grandfather-father-son planning: keep the newest `keepLast`, the newest generation of each of the last
+ * `daily` days, `weekly` ISO weeks and `monthly` months. The newest generation is always kept. Pure.
+ */
+export function planRetention(generations: readonly Generation[], policy: RetentionPolicy = DEFAULT_RETENTION): { keep: string[]; prune: string[] } {
+  for (const k of ['keepLast', 'daily', 'weekly', 'monthly'] as const) if (!Number.isInteger(policy[k]) || policy[k] < 0 || policy[k] > 1000) throw new QandeelError('VALIDATION_FAILED', 'retention policy is bounded', { field: k });
+  if (policy.keepLast < 1) throw new QandeelError('VALIDATION_FAILED', 'retention keeps at least the newest generation', { field: 'keepLast' });
+  const ordered = [...generations].sort((a, b) => (a.createdAt > b.createdAt ? -1 : a.createdAt < b.createdAt ? 1 : a.id > b.id ? -1 : 1));
+  const keep = new Set(ordered.slice(0, policy.keepLast).map((g) => g.id));
+  const bucket = (limit: number, key: (d: Date) => string): void => {
+    const seen = new Set<string>();
+    for (const g of ordered) {
+      const k = key(new Date(g.createdAt));
+      if (seen.has(k)) continue;
+      if (seen.size >= limit) break;
+      seen.add(k);
+      keep.add(g.id);
+    }
+  };
+  bucket(policy.daily, (d) => d.toISOString().slice(0, 10));
+  bucket(policy.weekly, isoWeek);
+  bucket(policy.monthly, (d) => d.toISOString().slice(0, 7));
+  return { keep: ordered.filter((g) => keep.has(g.id)).map((g) => g.id), prune: ordered.filter((g) => !keep.has(g.id)).map((g) => g.id) };
+}
+
+/** Retires local generations the policy no longer keeps: record first (the database keeps one live), then files. */
+export function pruneLocalBackups(store: CompanyStore, policy: RetentionPolicy = DEFAULT_RETENTION): { kept: string[]; retired: string[] } {
+  const ctx = storeContext(store);
+  const live = ctx.db.snapshot(() => ctx.db.all<{ id: string; created_at: string }>(`SELECT id, created_at FROM backup_records WHERE integrity_result = 'ok' AND id NOT IN (SELECT backup_id FROM backup_retirements)`));
+  const plan = planRetention(live.map((g) => ({ id: g.id, createdAt: g.created_at })), policy);
+  ctx.db.immediate('retire backup generations', () => {
+    for (const id of plan.prune) {
+      ctx.db.run(`INSERT INTO backup_retirements (backup_id, reason_code, policy_json, actor_ref, retired_at) VALUES (?, 'RETENTION_POLICY', ?, 'system:resilience', ?)`, id, JSON.stringify(policy), ts(ctx));
+      appendAudit(ctx, 'backup.retired', 'backup', id, { actorRef: 'system:resilience' }, 'OK', 'RETENTION_POLICY', {});
+    }
+  });
+  for (const id of plan.prune) rmSync(containedPath(store.workspace.backupsDir, id), { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  return { kept: plan.keep, retired: plan.prune };
+}
+
+/** Retires portable packages the policy no longer keeps (record first; the database keeps one verified). */
+export function prunePortableBackups(store: CompanyStore, destination: BackupDestination, policy: RetentionPolicy = DEFAULT_RETENTION): { kept: string[]; retired: string[] } {
+  const ctx = storeContext(store);
+  const live = ctx.db.snapshot(() => ctx.db.all<{ id: string; created_at: string; package_name: string }>(`SELECT id, created_at, package_name FROM portable_backups WHERE state = 'VERIFIED' AND destination_ref = ?`, destination.ref));
+  const plan = planRetention(live.map((g) => ({ id: g.id, createdAt: g.created_at })), policy);
+  ctx.db.immediate('retire portable packages', () => {
+    for (const id of plan.prune) {
+      ctx.db.run(`UPDATE portable_backups SET state = 'RETIRED', retired_at = ? WHERE id = ?`, ts(ctx), id);
+      appendAudit(ctx, 'backup.portable_retired', 'portable_backup', id, { actorRef: 'system:resilience' }, 'OK', 'RETENTION_POLICY', {});
+    }
+  });
+  for (const id of plan.prune) {
+    const name = live.find((g) => g.id === id)?.package_name;
+    if (name !== undefined) destination.remove(name);
+  }
+  return { kept: plan.keep, retired: plan.prune };
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Recovery health facts (D15 handoff to Stage 17: freshness, verification, drills, reconciliation burden).
+
+export interface ResilienceStatus {
+  readonly objectives: readonly RecoveryObjective[];
+  readonly localBackup: { readonly id: string; readonly at: string; readonly ageHours: number; readonly withinRpo: boolean; readonly liveGenerations: number } | null;
+  readonly portableBackup: { readonly id: string; readonly createdAt: string; readonly verifiedAt: string; readonly ageHours: number; readonly failureDomain: FailureDomain; readonly offDevice: boolean; readonly withinOffDeviceRpo: boolean; readonly liveGenerations: number } | null;
+  readonly lastDrills: readonly { readonly kind: string; readonly id: string; readonly result: string; readonly code: string; readonly durationMs: number; readonly at: string }[];
+  readonly reconciliationBurden: { readonly jobsHeld: number; readonly deadLetters: number; readonly toolInvocationsUncertain: number };
+  readonly lastMaintenance: { readonly id: string; readonly outcome: string; readonly fromVersion: number; readonly toVersion: number; readonly at: string } | null;
+  readonly exceptions: readonly { readonly code: string; readonly ref: string; readonly material: boolean; readonly at: string }[];
+}
+
+export function txResilienceStatus(ctx: StoreContext, now: string): ResilienceStatus {
+  const hours = (at: string): number => Math.max(0, Math.floor((Date.parse(now) - Date.parse(at)) / 3_600_000));
+  const obj = critical();
+  const local = ctx.db.get<{ id: string; created_at: string }>(`SELECT id, created_at FROM backup_records WHERE integrity_result = 'ok' AND id NOT IN (SELECT backup_id FROM backup_retirements) ORDER BY created_at DESC, rowid DESC LIMIT 1`);
+  const liveLocal = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM backup_records WHERE integrity_result = 'ok' AND id NOT IN (SELECT backup_id FROM backup_retirements)`)?.n ?? 0);
+  // The recovery point is the age of the data in the package (created_at); re-verifying an old package never makes it fresh.
+  const portable = ctx.db.get<{ id: string; verified_at: string; created_at: string; failure_domain: string }>(`SELECT id, verified_at, created_at, failure_domain FROM portable_backups WHERE state = 'VERIFIED' AND failure_domain <> 'SAME_VOLUME' ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+    ?? ctx.db.get<{ id: string; verified_at: string; created_at: string; failure_domain: string }>(`SELECT id, verified_at, created_at, failure_domain FROM portable_backups WHERE state = 'VERIFIED' ORDER BY created_at DESC, rowid DESC LIMIT 1`);
+  const livePortable = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM portable_backups WHERE state = 'VERIFIED'`)?.n ?? 0);
+  const drills = ctx.db.all<{ id: string; kind: string; result: string; code: string; duration_ms: number; created_at: string }>(
+    `SELECT d.id, d.kind, d.result, d.code, d.duration_ms, d.created_at FROM recovery_drills d WHERE d.id = (SELECT x.id FROM recovery_drills x WHERE x.kind = d.kind ORDER BY x.created_at DESC, x.rowid DESC LIMIT 1) ORDER BY d.kind`,
+  );
+  const n = (sql: string): number => Number(ctx.db.get<{ n: number }>(sql)?.n ?? 0);
+  const burden = { jobsHeld: n(`SELECT COUNT(*) AS n FROM queue_jobs WHERE state = 'RECONCILIATION_HOLD'`), deadLetters: n(`SELECT COUNT(*) AS n FROM queue_jobs WHERE state = 'DEAD_LETTER'`), toolInvocationsUncertain: n(`SELECT COUNT(*) AS n FROM tool_invocations WHERE state = 'RECONCILIATION_REQUIRED'`) };
+  const maint = ctx.db.get<{ id: string; outcome: string; from_version: number; to_version: number; finished_at: string }>('SELECT id, outcome, from_version, to_version, finished_at FROM maintenance_records ORDER BY finished_at DESC, rowid DESC LIMIT 1');
+  const exceptions: { code: string; ref: string; material: boolean; at: string }[] = [];
+  const localStatus = local ? { id: local.id, at: local.created_at, ageHours: hours(local.created_at), withinRpo: hours(local.created_at) <= (obj.localRpoHours ?? Infinity), liveGenerations: liveLocal } : null;
+  if (localStatus === null) exceptions.push({ code: 'NO_VERIFIED_BACKUP', ref: 'backups:none', material: false, at: now });
+  else if (!localStatus.withinRpo) exceptions.push({ code: 'BACKUP_STALE', ref: `backup:${localStatus.id}`, material: false, at: localStatus.at });
+  const offDevice = portable !== undefined && portable.failure_domain !== 'SAME_VOLUME';
+  const portableStatus = portable
+    ? { id: portable.id, createdAt: portable.created_at, verifiedAt: portable.verified_at, ageHours: hours(portable.created_at), failureDomain: portable.failure_domain as FailureDomain, offDevice, withinOffDeviceRpo: offDevice && hours(portable.created_at) <= (obj.offDeviceRpoHours ?? Infinity), liveGenerations: livePortable }
+    : null;
+  if (portableStatus === null) exceptions.push({ code: 'NO_OFF_DEVICE_BACKUP', ref: 'portable_backups:none', material: false, at: now });
+  else if (!portableStatus.offDevice) exceptions.push({ code: 'OFF_DEVICE_NOT_PROVEN', ref: `portable_backup:${portableStatus.id}`, material: true, at: portableStatus.verifiedAt });
+  else if (!portableStatus.withinOffDeviceRpo) exceptions.push({ code: 'OFF_DEVICE_BACKUP_STALE', ref: `portable_backup:${portableStatus.id}`, material: true, at: portableStatus.createdAt });
+  for (const d of drills) if (d.result === 'FAIL') exceptions.push({ code: 'RESTORE_DRILL_FAILED', ref: `recovery_drill:${d.id}`, material: true, at: d.created_at });
+  if (burden.jobsHeld + burden.toolInvocationsUncertain > 0) exceptions.push({ code: 'RECONCILIATION_PENDING', ref: 'queue:reconciliation', material: false, at: now });
+  if (maint?.outcome === 'ROLLED_BACK_UPDATE_HOLD') exceptions.push({ code: 'UPDATE_ROLLED_BACK', ref: `maintenance:${maint.id}`, material: true, at: maint.finished_at });
+  return {
+    objectives: RECOVERY_OBJECTIVES,
+    localBackup: localStatus,
+    portableBackup: portableStatus,
+    lastDrills: drills.map((d) => ({ kind: d.kind, id: d.id, result: d.result, code: d.code, durationMs: Number(d.duration_ms), at: d.created_at })),
+    reconciliationBurden: burden,
+    lastMaintenance: maint ? { id: maint.id, outcome: maint.outcome, fromVersion: Number(maint.from_version), toVersion: Number(maint.to_version), at: maint.finished_at } : null,
+    exceptions,
+  };
+}
+
+export function resilienceStatus(store: CompanyStore, options: { at?: string } = {}): ResilienceStatus {
+  const ctx = storeContext(store);
+  return ctx.db.snapshot(() => txResilienceStatus(ctx, options.at ?? ts(ctx)));
+}
+

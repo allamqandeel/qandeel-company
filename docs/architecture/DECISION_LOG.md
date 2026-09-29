@@ -2380,3 +2380,103 @@ sync announcing); the browser smoke proves the real surface idle after a selecti
 requests in 3 s, at most one refresh cycle allowed). Store transactions, the auth/security model, migration
 0009, attention and goal semantics, the Tree of Light, layout and motion are unchanged. C5 remains NOT CLOSED
 pending exact-head CI, review and merge by the Technical Lead.
+
+## D-C6-01 — C6 extends the C1–C5 mechanisms; new durable concepts only where none existed (Technical Lead, C6)
+
+**Context.** The C6 brief requires evaluation, attribution, learning closure, reporting and resilience without
+parallel systems. The census (report §3) found the lesson lifecycle, Academy holdouts, Review Pool calibration,
+quality holds, the usage ledger, Goals, Founder Attention, the C5 signalling contract, backup and runtime
+recovery real — and three genuine gaps: nothing reached `OUTCOME_VERIFIED`, no record held verification
+evidence, and backups were same-device, database-only, unencrypted and unretained.
+
+**Decision.** Pure kernel in `@qandeel-company/mind` (`evaluation`, `performance`, `improvement`, `reporting`);
+persistence in `@qandeel-company/storage` (`improvement`, `improvement-core`, `resilience`, `maintenance`,
+`update-hold`) with migration `0010_c6_improvement_engine.sql`; runtime access through `founder.improvement`
+and four resilience methods; the Founder API and command channel extended with reads. New tables only for new
+concepts: the Eval Registry and its calibration runs, outcome verifications, evaluation results, causal
+attributions (+ history), learning signals (a companion that classifies C3 observations — the lesson lifecycle
+stays C3's), learning interventions (+ history), systemic findings (+ history), failure cases (+ history),
+report snapshots, backup retirements, portable backups, restore drills, maintenance records. Two C6 triggers
+guard the existing C3 `lessons` / `lesson_promotions` tables (0005 is untouched). No second Work Item engine,
+Goal model, review system, learning store, cost ledger, recovery scheduler or notification bus.
+
+**Consequences.** Every table is STRICT, append-only or forward-only with history, content-free in audit, and
+documented in the report's schema table (source of truth, writer authority, reader scope, lifecycle,
+idempotency, retention, privacy class).
+
+## D-C6-02 — Completion is not success: the governed outcome verification (Technical Lead, C6)
+
+**Decision.** `ImprovementStore.verifyOutcome` (Founder, through the existing chokepoint) records a verdict
+(`ACHIEVED` / `NOT_ACHIEVED` / `INCONCLUSIVE`) with evidence classes and references and performs the existing
+Work Item transition (`REVIEWED → OUTCOME_VERIFIED` with `ACHIEVED`, `REVIEWED → CLOSED` with `NOT_ACHIEVED`).
+A verification needs a reviewed Work Item (code and trigger); `EXTERNAL_OUTCOME` evidence is refused until a
+governed source exists (C7). A qualified outcome = independently reviewed AND verified achieved (kernel and a
+database trigger). Qualified reviewers verifying outcomes is a later extension (residual R-C6-04).
+
+## D-C6-03 — Evaluation, attribution and the Performance Profile (Technical Lead, C6)
+
+**Decision.** The Eval Registry owns evaluation semantics; a definition is ACTIVE only after the evaluator passes
+its own calibration over five reference-case kinds (known-good, known-bad, ambiguous, non-employee cause, valid
+creative path); `MODEL_GRADER` is a registrable seam with no executable grader (fails closed). The reference
+evaluator reads durable evidence only; activity is observability. Causal attribution is proposed from the
+run's own recorded failure classification (a billed failed call is cost, never by itself a provider cause —
+found by the C6 acceptance, §7 of the report) and validated independently of the subject Employee. The profile
+has eight dimensions with sample, confidence, qualitative level and trend, capability and regression lists,
+cost per qualified outcome and a readiness *signal*; no aggregate score exists in code or schema (verifier rule
+`c6-no-universal-score`). Minimum-sample defaults (3 per dimension, 3 per trend half, 90-day window) are
+conservative Strong-v1 values, calibratable in the Pilot.
+
+## D-C6-04 — Learning closure: reflection is a hypothesis; effects are judged on later evidence (Technical Lead, C6)
+
+**Decision.** An Employee-originated observation is a REFLECTION; a mistake lesson is validated only on a
+VALIDATED attribution that makes the Employee accountable, a successful pattern only on a qualified evaluation,
+a reflected near miss only on a validated attribution (code gate in `validateLesson` + trigger). A successful
+pattern is shared beyond its author only after two verified reuses. Interventions follow validated lessons;
+their effect is NOT_YET_TESTED until later comparable evidence (IMPROVEMENT_OBSERVED needs two qualified,
+recurrence-free follow-ups); one retraining at a time; two ineffective cycles escalate to a systemic finding
+(RETRAINING_EXHAUSTED) instead of a third. Repeated validated causes (≥3, and ≥2 distinct Employees for
+employee-judgement causes) become systemic candidates (double-loop). Failure → regression / Gold cases bind to
+Academy scenarios; a hidden case binds only to a HOLDOUT and is never retraining material.
+
+## D-C6-05 — Reports with typed claims; exception-first attention (Technical Lead, C6)
+
+**Decision.** Reports are composed from facts into claims (`FACT` / `ASSESSMENT` / `TREND` / `RECOMMENDATION`);
+every judgement must cite evidence and carry uncertainty (`assertClaim` refuses otherwise); claim parameters
+never carry a score or rank. Snapshots are idempotent per (cadence, period end, claims hash). Only material
+exceptions (a systemic candidate awaiting the Founder, a failed restore drill, an off-device package missing its
+failure domain or objective, a rolled-back update) join the existing Founder Attention collector as
+`DECISION_REQUEST` sources — no new attention source kind and no rebuild of the C5 table. The Tree of Light is
+unchanged; reports are reachable through the API, the command palette's read intents (`SHOW_REPORT`,
+`SHOW_PERFORMANCE`) and the CLI (a report panel in the Tree of Light is residual R-C6-02).
+
+## D-C6-06 — Resilience: portable encrypted packages, honest failure domains, retention, update safety (Technical Lead, C6)
+
+**Decision.** A portable package = the C1 application-consistent snapshot + its manifest + every READY artifact
+object + a re-key list, in a length-indexed container (no external archiver), sealed with AES-256-GCM under a
+scrypt key derived from an operator passphrase that is never stored; it is written to a destination outside the
+workspace, read back and opened before it is recorded. `DirectoryDestination` labels the failure domain
+honestly (`SAME_VOLUME` never satisfies the off-device objective; `ATTESTED_OFF_DEVICE` is the operator's
+statement). Recovery objectives are set per criticality class (Critical / Important / Rebuildable) as
+Pilot-calibrated defaults. Retention is GFS and the database refuses to retire the last generation.
+Clean-environment restore revokes the lost device's sessions and reports credential references to re-key; the
+runtime's existing startup recovery keeps uncertain effects held. Schema updates run Preflight → Backup →
+Rehearse → Migrate → Verify → Activate; any failure restores the compatible snapshot and places `UPDATE_HOLD`,
+which `CompanyStore.open` refuses until the operator clears it. DPAPI is not used (source code may not spawn
+processes; the passphrase is the portable trust anchor by design, D15-B.4).
+
+## D-C6-07 — The Improvement capability under the C5 change-signalling contract (Technical Lead, C6)
+
+**Decision.** `founder.improvement` is built by `signalling` with an explicit classification: 11 Founder
+decisions announce once after success; 18 reads are silent; `evaluate`, `assessIntervention`, `generateReport`
+announce only when they recorded something new and `planIntervention` only when it planned or escalated.
+Proven by `c6-runtime` tests and two `c6:mutation` gates; the C5 census and signalling proofs are unchanged.
+
+## D-C6-08 — C6 CI, verifier and proof parity (Technical Lead, C6)
+
+**Decision.** `c6:mutation` (27 semantic mutations) joins the mutation matrix on both operating systems
+(Windows two shards, Ubuntu one) and the quality gate's parity set; `c6:acceptance` joins the acceptance job on
+both operating systems; the verifier adds `c6-proofs-present`, `c6-not-claimed-closed`, `c6-no-universal-score`,
+`c6-telemetry-content-free`, `c6-recovery-secret-never-stored` and `c6-external-outcomes-unavailable`, each
+self-tested, and now also pins the two C5 signalling mutations that were recorded in the script but not pinned.
+No job removed, no timeout raised, no `continue-on-error`. The C5 closure record was written at the C6 start
+from GitHub truth (PR #10, runs #81 / #82); C5 is CLOSED / MERGED / CANONICAL.
