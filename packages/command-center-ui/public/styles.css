@@ -254,6 +254,9 @@ time { font-variant-numeric: tabular-nums; }
 .line-relation { stroke-width: 2.2; opacity: 0.9; }
 .line-relation.is-pulsing { stroke-width: 3.4; }
 .line-tether { stroke-width: 1.5; stroke-dasharray: 2 6; opacity: 0.85; }
+/* The pieces of a leader that pass beneath a card, a head, a goal or a chip: drawn in the under-layer, so the
+   object stays whole and the leader reads as running behind it. */
+.line-tether.is-under { opacity: 0.7; }
 .line.is-lit { opacity: 1; filter: drop-shadow(0 0 3px rgba(196, 138, 31, 0.55)); }
 .line.is-quiet { opacity: 0.1; }
 .line-halo.is-quiet, .line-casing.is-quiet { opacity: 0.03; }
@@ -267,6 +270,8 @@ time { font-variant-numeric: tabular-nums; }
 .rail, .focus { position: absolute; top: 12px; width: min(420px, 34vw); background: var(--paper); border: 1px solid rgba(29, 27, 38, 0.1); border-radius: var(--radius); box-shadow: var(--shadow); overflow: auto; padding: 0 0 22px; z-index: 10; display: flex; flex-direction: column; }
 .focus { right: 16px; bottom: calc(var(--goals-h) + 14px); }
 .focus.is-left { right: auto; left: 16px; }
+/* A sheet on the right that would meet the Founder's "Needs you" chips starts beneath them (the desk shelf). */
+.focus.is-below-desk { top: calc(var(--desk-b, 0px) + 10px); }
 .rail { left: calc(50% + 172px); width: min(440px, calc(50% - 190px)); max-height: calc(100% - var(--goals-h) - 26px); transform-origin: top left; }
 .rail[hidden], .focus[hidden] { display: none; }
 .rail, .focus { opacity: 1; transform: translateX(0) scale(1); transition: opacity 220ms var(--ease-out), transform 220ms var(--ease-out); }
@@ -498,7 +503,7 @@ button.chip:hover { background: var(--paper); border-color: rgba(29, 27, 38, 0.2
   .company { padding: 18px 16px 32px; }
   .columns { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .rail, .focus { width: min(92vw, 420px); bottom: 70px; max-height: none; }
-  .focus, .focus.is-left { top: auto; left: auto; right: 16px; max-height: 58vh; }
+  .focus, .focus.is-left, .focus.is-below-desk { top: auto; left: auto; right: 16px; max-height: 58vh; }
   .topbar { grid-template-columns: 1fr auto; }
   .health { display: none; }
   .card-ceo { width: min(300px, 90vw); }

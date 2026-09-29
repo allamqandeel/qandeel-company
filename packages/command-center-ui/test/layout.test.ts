@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
+import { splitLeader } from '../src/app/view.js';
 import { DEPT_LABEL, RANK_ORDER, applyLens, attentionSpotlight, chainNodeIds, layoutUniverse, showsRelations } from '../src/index.js';
 import type { CompanyUniverse } from '../src/model/types.js';
 
@@ -235,5 +236,21 @@ describe('Lenses', () => {
     const none = attentionSpotlight(u, l, 'employee:nobody');
     assert.ok([...none.nodes.values()].every((w) => w === 1), 'a spotlight on nothing changes nothing');
     assert.deepEqual([...applyLens(u, l, { kind: 'LIVE' }).nodes.values()], [...none.nodes.values()], 'the lens itself is untouched');
+  });
+
+  test('C5-PROOF: a leader passes beneath the cards it crosses — the pieces over a block go to the under-layer, the rest stay over, nothing is written across a card', () => {
+    const block = (left: number, top: number, right: number, bottom: number): DOMRect => ({ left, top, right, bottom, width: right - left, height: bottom - top, x: left, y: top, toJSON: () => ({}) }) as DOMRect;
+    // A row leader from x=100 to x=500 at y=50 crossing two cards (200–300 and 304–400, a 4 px gap between).
+    const row = splitLeader([{ x: 100, y: 50 }, { x: 500, y: 50 }], [block(200, 20, 300, 80), block(304, 20, 400, 80), block(0, 200, 600, 260)]);
+    assert.equal(row.over, 'M 100 50 L 197 50 M 403 50 L 500 50', 'over pieces stop 3 px before a block and resume 3 px after');
+    assert.equal(row.under, 'M 197 50 L 403 50', 'the two blocks merge into one piece beneath (the 4 px gap is inside the padding)');
+    // A leader that changes row in the gutter: the vertical piece meets no block, the horizontal piece one card.
+    const step = splitLeader([{ x: 100, y: 50 }, { x: 130, y: 50 }, { x: 130, y: 150 }, { x: 500, y: 150 }], [block(200, 120, 300, 180)]);
+    assert.equal(step.over, 'M 100 50 L 130 50 M 130 50 L 130 150 M 130 150 L 197 150 M 303 150 L 500 150');
+    assert.equal(step.under, 'M 197 150 L 303 150');
+    // A block beside the line (outside its band) never splits it; pieces under 4 px are dropped.
+    const clear = splitLeader([{ x: 0, y: 10 }, { x: 100, y: 10 }], [block(20, 40, 60, 90), block(98, 0, 200, 20)]);
+    assert.equal(clear.over, 'M 0 10 L 95 10');
+    assert.equal(clear.under, 'M 95 10 L 100 10');
   });
 });

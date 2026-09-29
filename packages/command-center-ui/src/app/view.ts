@@ -10,7 +10,8 @@
  * column, orthogonal with rounded turns), the team lane inside a column (the Department's own accent), the
  * gold collector rail of each goal (each serving column drops into it; the bundle enters the goal), the
  * dashed derivation between a company goal and its Department goal, live relations on focus surfaces, and a
- * tether from the selected card to its context sheet (or from an attention item to the person it concerns).
+ * tether from the selected card to its context sheet (or from an attention item to the person it concerns): a
+ * leader, not a work line — it keeps to the subject's row and the gutters, and passes beneath whatever it crosses.
  *
  * Two kinds of motion, kept apart (C5 §7.2): SEMANTIC — the focus scroll, a lit path when a goal or person is
  * selected, an edge pulse when a relation appears, an attention chip arriving, and a light travelling along an
@@ -59,6 +60,57 @@ interface Port {
   readonly departmentId: string;
   readonly count: number;
   readonly flowing: boolean;
+}
+
+interface Pt {
+  readonly x: number;
+  readonly y: number;
+}
+
+/**
+ * Splits an orthogonal leader into the pieces drawn over the surface and the pieces that pass beneath a block
+ * (a card, a column head, a goal, a chip): one path each, as `M … L …` runs. Blocks are padded by 3 px so a
+ * leader never touches an edge; pieces shorter than 4 px are dropped.
+ */
+export function splitLeader(route: readonly Pt[], blocks: readonly DOMRect[]): { over: string; under: string } {
+  const over: string[] = [];
+  const under: string[] = [];
+  const seg = (x0: number, y0: number, x1: number, y1: number): string => `M ${n2(x0)} ${n2(y0)} L ${n2(x1)} ${n2(y1)}`;
+  for (let i = 0; i + 1 < route.length; i++) {
+    const p = route[i] as Pt;
+    const q = route[i + 1] as Pt;
+    const horizontal = Math.abs(p.y - q.y) < Math.abs(p.x - q.x);
+    const from = horizontal ? Math.min(p.x, q.x) : Math.min(p.y, q.y);
+    const to = horizontal ? Math.max(p.x, q.x) : Math.max(p.y, q.y);
+    const at = horizontal ? p.y : p.x;
+    const hits: Array<[number, number]> = [];
+    for (const r of blocks) {
+      const inBand = horizontal ? at >= r.top - 3 && at <= r.bottom + 3 : at >= r.left - 3 && at <= r.right + 3;
+      if (!inBand) continue;
+      const lo = Math.max(from, (horizontal ? r.left : r.top) - 3);
+      const hi = Math.min(to, (horizontal ? r.right : r.bottom) + 3);
+      if (hi > lo) hits.push([lo, hi]);
+    }
+    hits.sort((u, v) => u[0] - v[0]);
+    const merged: Array<[number, number]> = [];
+    for (const h of hits) {
+      const last = merged[merged.length - 1];
+      if (last && h[0] <= last[1]) last[1] = Math.max(last[1], h[1]);
+      else merged.push([h[0], h[1]]);
+    }
+    const emit = (list: string[], s: number, e: number): void => {
+      if (e - s < 4) return;
+      list.push(horizontal ? seg(s, at, e, at) : seg(at, s, at, e));
+    };
+    let cursor = from;
+    for (const [lo, hi] of merged) {
+      emit(over, cursor, lo);
+      emit(under, lo, hi);
+      cursor = hi;
+    }
+    emit(over, cursor, to);
+  }
+  return { over: over.join(' '), under: under.join(' ') };
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -113,15 +165,29 @@ export class TreeView {
     this.#svgTop.setAttribute('aria-hidden', 'true');
     container.append(this.#company, this.#goalsHost);
     this.#observer = new ResizeObserver(() => {
-      // The context sheets and the attention surface stop above the strategic direction: they read its height.
-      (container.parentElement ?? container).style.setProperty('--goals-h', `${Math.round(this.#goalsHost.getBoundingClientRect().height)}px`);
+      this.#measureShelves();
       this.#scheduleLines();
     });
     this.#observer.observe(container);
     this.#observer.observe(this.#goalsHost);
     window.addEventListener('resize', () => this.#scheduleLines());
-    // The goal band stays in view while the columns scroll under it: the lines follow.
-    container.addEventListener('scroll', () => this.#scheduleLines(), { passive: true });
+    // The goal band stays in view while the columns scroll under it: the lines follow (and the desk moves).
+    container.addEventListener('scroll', () => {
+      this.#measureShelves();
+      this.#scheduleLines();
+    }, { passive: true });
+  }
+
+  /**
+   * The context sheets and the attention surface stop above the strategic direction and, on the right, start
+   * beneath the Founder's "Needs you" chips: both shelves are read from the surface, never assumed.
+   */
+  #measureShelves(): void {
+    const stage = this.#container.parentElement ?? this.#container;
+    stage.style.setProperty('--goals-h', `${Math.round(this.#goalsHost.getBoundingClientRect().height)}px`);
+    const dock = this.#company.querySelector('.dock-attention');
+    const desk = dock ? Math.max(0, Math.round(dock.getBoundingClientRect().bottom - stage.getBoundingClientRect().top)) : 0;
+    stage.style.setProperty('--desk-b', `${desk}px`);
   }
 
   setLayout(layout: Layout, universe: CompanyUniverse): void {
@@ -147,6 +213,9 @@ export class TreeView {
     this.#company.append(this.#buildSpine(layout, universe), this.#buildColumns(layout), this.#svg, this.#svgTop);
     this.#goalsHost.replaceChildren(this.#buildGoals(layout, universe));
     this.#container.scrollTop = scrollTop;
+    const dock = this.#company.querySelector('.dock-attention');
+    if (dock) this.#observer?.observe(dock);
+    this.#measureShelves();
     if (this.#emphasis) this.setEmphasis(this.#emphasis);
     this.setSelection(this.#selected);
     this.#scheduleLines();
@@ -467,8 +536,8 @@ export class TreeView {
     // ports, the tether) draws over the pinned goal band so a line visibly enters the goal it serves. A gold line
     // over the band or a card wears a thin paper casing, like a road on a map.
     const OVER: ReadonlySet<Line['kind']> = new Set(['exec', 'bundle', 'derive', 'tether']);
-    const add = (d: string, kind: Line['kind'], attrs: Record<string, string>, meta: Partial<Line> = {}): Line => {
-      const layer = OVER.has(kind) ? this.#svgTop : this.#svg;
+    const add = (d: string, kind: Line['kind'], attrs: Record<string, string>, meta: Partial<Line> = {}, into?: SVGSVGElement): Line => {
+      const layer = into ?? (OVER.has(kind) ? this.#svgTop : this.#svg);
       if ((kind === 'exec' || kind === 'bundle') && !attrs.class) {
         const casing = document.createElementNS(SVG_NS, 'path');
         casing.setAttribute('d', d);
@@ -613,35 +682,106 @@ export class TreeView {
         add(`M ${n2(ax)} ${n2(ay)} C ${n2(ax)} ${n2(ay - bend)} ${n2(bx)} ${n2(by - bend)} ${n2(bx)} ${n2(by)}`, 'relation', { stroke: RELATION_COLORS[e.kind] ?? GOLD }, { a: e.from, b: e.to, edge: e.id });
       }
     }
-    // The tether: from the selected card to its context sheet (or an attention item to its person).
+    // The tether: a leader from the selected card to its context sheet (or from an attention item to its
+    // person). It is not a work relationship, so it never takes the gold system's routes: it leaves the subject
+    // toward the surface's nearest edge, stays on the subject's row, uses the column gutter when it must change
+    // row, and wherever it would cross a card, a column head, a goal or a chip it passes beneath (drawn in the
+    // under-layer), so nothing on the surface is ever written over.
     if (this.#tether && this.#els.has(this.#tether.from) && this.#tether.to.isConnected && !this.#tether.to.hidden) {
+      const subject = this.#els.get(this.#tether.from) as HTMLElement;
       const a = rect(this.#tether.from);
       const b = local(this.#tether.to.getBoundingClientRect());
-      if (a && b.width > 0) {
-        const toRight = b.left >= a.right - 4;
-        const toLeft = b.right <= a.left + 4;
-        if (toRight || toLeft) {
-          const ax = toRight ? a.right : a.left;
-          const ay = a.top + a.height / 2;
-          const bx = toRight ? b.left : b.right;
-          const by = Math.min(Math.max(ay, b.top + 28), b.bottom - 28);
-          const mx = (ax + bx) / 2;
-          add(`M ${n2(ax)} ${n2(ay)} C ${n2(mx)} ${n2(ay)} ${n2(mx)} ${n2(by)} ${n2(bx)} ${n2(by)}`, 'tether', { stroke: GOLD }, { a: this.#tether.from, b: 'sheet' });
-          port(ax, ay, 3, 'line-port port-tether');
-          port(bx, by, 3, 'line-port port-tether');
-        } else {
-          // The surface sits above or below the node: a vertical tether from the nearer edge.
-          const below = b.top >= a.bottom;
-          const ax = a.left + a.width / 2;
-          const ay = below ? a.bottom : a.top;
-          const bx = Math.min(Math.max(ax, b.left + 28), b.right - 28);
-          const by = below ? b.top : b.bottom;
-          add(`M ${n2(ax)} ${n2(ay)} C ${n2(ax)} ${n2((ay + by) / 2)} ${n2(bx)} ${n2((ay + by) / 2)} ${n2(bx)} ${n2(by)}`, 'tether', { stroke: GOLD }, { a: this.#tether.from, b: 'sheet' });
-          port(ax, ay, 3, 'line-port port-tether');
+      const route = a && b.width > 0 ? this.#leaderRoute(this.#tether.from, a, b, layout, columnRects) : null;
+      if (route) {
+        const skip = new Set<Element>([subject, this.#tether.to]);
+        const blocks: DOMRect[] = [];
+        for (const e of this.#els.values()) if (!skip.has(e) && e.isConnected) blocks.push(local(e.getBoundingClientRect()));
+        for (const col of this.#columnEls.values()) {
+          const head = col.querySelector('.column-head');
+          if (head) blocks.push(local(head.getBoundingClientRect()));
         }
+        const { over, under } = splitLeader(route, blocks);
+        if (under) add(under, 'tether', { stroke: GOLD, class: 'line line-tether is-under' }, { a: this.#tether.from, b: 'sheet' }, this.#svg);
+        if (over) add(over, 'tether', { stroke: GOLD }, { a: this.#tether.from, b: 'sheet' });
+        const first = route[0] as Pt;
+        const last = route[route.length - 1] as Pt;
+        port(first.x, first.y, 3, 'line-port port-tether');
+        port(last.x, last.y, 3, 'line-port port-tether');
       }
     }
     this.#applyLineEmphasis();
+  }
+
+  /**
+   * The leader's route as an orthogonal polyline (subject rect `a`, surface rect `b`, both local). A person or
+   * the CEO leaves from the side edge on the surface's side, on their own row; when the surface has no room on
+   * that row (a small chip, a sheet that starts lower) the leader steps over in the nearest gutter first. A goal
+   * leaves from its top edge at the column gutter nearest the sheet (never through the goal beside it) and joins
+   * the sheet's side edge above the rails; a sheet standing over the goal takes a short vertical. Null when no
+   * clean route exists (the surface overlaps the subject).
+   */
+  #leaderRoute(subjectId: string, a: DOMRect, b: DOMRect, layout: Layout, columnRects: Map<string, DOMRect>): Pt[] | null {
+    const node = layout.byId.get(subjectId);
+    const cx = a.left + a.width / 2;
+    const cy = a.top + a.height / 2;
+    const bcx = b.left + b.width / 2;
+    // Every column gutter (between neighbours, and the margin outside the outer columns), left to right.
+    const cols = layout.columns.map((c) => columnRects.get(c.departmentId)).filter((r): r is DOMRect => r !== undefined).sort((p, q) => p.left - q.left);
+    const gutters: number[] = [];
+    cols.forEach((r, i) => {
+      if (i === 0) gutters.push(r.left - 10);
+      const next = cols[i + 1];
+      gutters.push(next ? (r.right + next.left) / 2 : r.right + 10);
+    });
+    // The gutter beside the subject's own column on one side (a step beside the card when it is on the spine).
+    const beside = (dir: 1 | -1): number => {
+      const col = node?.column ?? null;
+      const r = col === null ? undefined : columnRects.get(layout.columns[col]?.departmentId ?? '');
+      if (!r) return (dir > 0 ? a.right : a.left) + dir * 14;
+      const near = gutters.filter((g) => (dir > 0 ? g > r.right - 1 : g < r.left + 1));
+      return dir > 0 ? Math.min(...near, r.right + 10) : Math.max(...near, r.left - 10);
+    };
+    if (node?.kind === 'goal') {
+      if (b.bottom > a.top + 1) return null;
+      const lo = Math.max(a.left, b.left);
+      const hi = Math.min(a.right, b.right);
+      if (hi - lo >= 20) {
+        // The sheet stands over the goal: straight up, beside the bundle's port.
+        const inset = Math.min(24, (hi - lo) / 3);
+        let x = (lo + hi) / 2;
+        if (Math.abs(x - cx) < 16) x = x + 24 <= hi - inset ? x + 24 : x - 24;
+        return [{ x, y: a.top }, { x, y: b.bottom }];
+      }
+      const dir: 1 | -1 = bcx > cx ? 1 : -1;
+      const within = gutters.filter((g) => g >= a.left + 12 && g <= a.right - 12 && Math.abs(g - cx) >= 14);
+      const x0 = within.length ? (dir > 0 ? Math.max(...within) : Math.min(...within)) : dir > 0 ? a.right - 22 : a.left + 22;
+      const y = Math.min(Math.max(cy, b.top + 28), b.bottom - 36);
+      return [{ x: x0, y: a.top }, { x: x0, y }, { x: dir > 0 ? b.left : b.right, y }];
+    }
+    const toRight = b.left >= a.right - 4;
+    const toLeft = b.right <= a.left + 4;
+    if (toRight || toLeft) {
+      const dir: 1 | -1 = toRight ? 1 : -1;
+      const ax = toRight ? a.right : a.left;
+      const bx = toRight ? b.left : b.right;
+      const inset = Math.min(28, b.height / 3);
+      const by = Math.min(Math.max(cy, b.top + inset), b.bottom - inset);
+      if (Math.abs(by - cy) < 1) return [{ x: ax, y: cy }, { x: bx, y: cy }];
+      let gx = beside(dir);
+      if ((gx - ax) * dir > (bx - ax) * dir - 8) gx = ax + dir * Math.max(6, ((bx - ax) * dir) / 2);
+      return [{ x: ax, y: cy }, { x: gx, y: cy }, { x: gx, y: by }, { x: bx, y: by }];
+    }
+    // The surface is above or below the subject (a chip beside the Founder): out to the nearest gutter on its
+    // side, along the gutter, and into the surface from below or from the side.
+    const below = b.top >= a.bottom - 1;
+    if (!below && b.bottom > a.top + 1) return null;
+    const dir: 1 | -1 = bcx >= cx ? 1 : -1;
+    const ax = dir > 0 ? a.right : a.left;
+    const gx = beside(dir);
+    if (gx >= b.left + 12 && gx <= b.right - 12) return [{ x: ax, y: cy }, { x: gx, y: cy }, { x: gx, y: below ? b.top : b.bottom }];
+    const inset = Math.min(14, b.height / 3);
+    const yy = Math.min(Math.max(cy, b.top + inset), b.bottom - inset);
+    return [{ x: ax, y: cy }, { x: gx, y: cy }, { x: gx, y: yy }, { x: gx < b.left ? b.left : b.right, y: yy }];
   }
 
   #applyLineEmphasis(): void {

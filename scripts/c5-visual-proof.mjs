@@ -13,6 +13,8 @@
 //   - proof/walkthrough.mp4   a short walkthrough (H.264, encoded offline in the browser with WebCodecs);
 //   - proof/before-after.png  a contact sheet against a previous proof folder (with --before);
 //   - proof/manifest.json     what was captured, from which head, with content-free counts.
+// With --minimal it captures the smoke checks and Scenario A–D only (plus the sheet beside the chips): the
+// frames a presentation-only correction is judged on, without the walkthrough or the scale frame.
 // With --spike it stops after the technical smoke checks (the company surface renders — spine, five columns,
 // goals, execution lines; English UI with content as written; selection / focus / return; reduced-motion
 // parity; no external asset) and prints them. The surface is DOM + SVG: no GPU or WebGL is needed anywhere.
@@ -29,11 +31,14 @@ import { launchBrowser, openPage } from './c5/cdp.mjs';
 import { seedLive, seedScale, seedStatic } from './c5/seed-company.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const { values } = parseArgs({ strict: true, options: { workspace: { type: 'string' }, out: { type: 'string' }, keep: { type: 'boolean', default: false }, spike: { type: 'boolean', default: false }, before: { type: 'string' }, width: { type: 'string', default: '1440' }, height: { type: 'string', default: '900' } } });
+const { values } = parseArgs({ strict: true, options: { workspace: { type: 'string' }, out: { type: 'string' }, keep: { type: 'boolean', default: false }, spike: { type: 'boolean', default: false }, minimal: { type: 'boolean', default: false }, before: { type: 'string' }, width: { type: 'string', default: '1440' }, height: { type: 'string', default: '900' } } });
 if (!values.workspace) {
-  console.error(JSON.stringify({ ok: false, message: 'usage: --workspace <new or empty dir> [--out <dir>] [--keep] [--spike] [--before <dir>]' }));
+  console.error(JSON.stringify({ ok: false, message: 'usage: --workspace <new or empty dir> [--out <dir>] [--keep] [--spike] [--minimal] [--before <dir>]' }));
   process.exit(2);
 }
+// --minimal: the smoke checks and the frames a presentation-only correction is judged on (Company Live,
+// Employee Focus, Goal Focus, Founder Attention compact, the sheet beside the chips); no walkthrough, no scale.
+const minimal = values.minimal;
 const sandbox = path.resolve(values.workspace);
 for (let dir = sandbox; ; dir = path.dirname(dir)) {
   if (existsSync(path.join(dir, '.git'))) {
@@ -168,6 +173,29 @@ const waitReady = async () => {
   await settle(900);
 };
 const count = (selector) => page.evaluate(`document.querySelectorAll(${JSON.stringify(selector)}).length`);
+// The leader (tether) drawn over the surface: exactly one path, and none of its pieces crosses a card, a
+// column head, a goal or a chip (a piece that would is drawn beneath, in the under-layer). Returns the number of
+// crossings, or -1 when there is not exactly one leader over the surface.
+const leaderCrossings = () => page.evaluate(`(() => {
+  const paths = [...document.querySelectorAll('.lines-over .line-tether')];
+  if (paths.length !== 1) return -1;
+  const origin = document.querySelector('.company').getBoundingClientRect();
+  const segs = [...paths[0].getAttribute('d').matchAll(/M ([\\d.]+) ([\\d.]+) L ([\\d.]+) ([\\d.]+)/g)].map((m) => m.slice(1).map(Number));
+  const blocks = [...document.querySelectorAll('.card, .column-head, .goal, .chip-attention, .founder')].map((e) => e.getBoundingClientRect());
+  let n = 0;
+  for (const [x0, y0, x1, y1] of segs) {
+    const l = Math.min(x0, x1) + origin.left, r = Math.max(x0, x1) + origin.left, t = Math.min(y0, y1) + origin.top, b = Math.max(y0, y1) + origin.top;
+    for (const k of blocks) if (l < k.right - 1 && r > k.left + 1 && t < k.bottom - 1 && b > k.top + 1) n++;
+  }
+  return n;
+})()`);
+// The context sheet and the Founder's "Needs you" chips never overlap; every chip stays whole and in view.
+const chipsClearOfSheet = () => page.evaluate(`(() => {
+  const s = document.getElementById('focus');
+  if (s.hidden) return true;
+  const r = s.getBoundingClientRect();
+  return [...document.querySelectorAll('.chip-attention, .dock-head')].every((c) => { const k = c.getBoundingClientRect(); return k.right <= r.left + 1 || k.left >= r.right - 1 || k.bottom <= r.top + 1 || k.top >= r.bottom - 1; });
+})()`);
 
 try {
   await surface.start();
@@ -255,7 +283,7 @@ try {
     const builds1 = await page.evaluate(`document.querySelector('.company').dataset.builds`);
     if (builds0 !== builds1) throw new Error(`the surface was rebuilt without a change (${builds0} → ${builds1})`);
     // The context sheet is tethered to the card it is about, and it never covers the strategic direction.
-    const tether = await count('.line-tether');
+    const tether = await count('.line-tether:not(.is-under)');
     const sheetClear = await page.evaluate(`(() => { const s = document.getElementById('focus').getBoundingClientRect(); const g = document.querySelector('.goals').getBoundingClientRect(); return s.bottom <= g.top + 1; })()`);
     if (tether !== 1 || !sheetClear) throw new Error(`tether ${tether}; sheet clear of the goal band: ${sheetClear}`);
     await escape();
@@ -288,7 +316,7 @@ try {
     console.log(JSON.stringify({ verdict: 'C5 TECHNICAL SPIKE — PASS', spike: results.spike }));
   } else {
     // --- Scenario frames and the walkthrough ---
-    startCapture();
+    if (!minimal) startCapture();
     await step('A-company-live', async () => {
       await settle(1500);
       await shot('01-company-live');
@@ -310,9 +338,16 @@ try {
       const relations = await count('.line-relation');
       const lit = await page.evaluate(`document.querySelectorAll('.card.is-chain').length`);
       const namedGoal = await page.evaluate(`[...document.querySelectorAll('#focus .work-goal')].some((g) => g.textContent.trim().length > 0)`);
-      const tether = await count('.line-tether');
+      const tether = await count('.line-tether:not(.is-under)');
       if (!namedGoal || tether !== 1) throw new Error(`the goal a work item serves is named: ${namedGoal}; tether ${tether}`);
-      return { chainLinks: chain, relationLines: relations, chainCards: lit, tether };
+      // A person in the Growth column: the sheet docks on the right, beneath the Founder's chips (never over
+      // them), and the leader that crosses two columns to reach it writes over no card.
+      const belowDesk = await page.evaluate(`document.getElementById('focus').classList.contains('is-below-desk')`);
+      const chipsClear = await chipsClearOfSheet();
+      const crossings = await leaderCrossings();
+      const underPieces = await count('.line-tether.is-under');
+      if (!belowDesk || !chipsClear || crossings !== 0) throw new Error(`sheet below the desk ${belowDesk}; chips clear of the sheet ${chipsClear}; leader crossings ${crossings}`);
+      return { chainLinks: chain, relationLines: relations, chainCards: lit, tether, sheetBelowDesk: belowDesk, chipsClearOfSheet: chipsClear, leaderCrossings: crossings, leaderPiecesBeneath: underPieces };
     });
     await step('C-goal-focus', async () => {
       await click(`.goal[data-id="goal:${world.goals.saudi}"]`);
@@ -328,7 +363,12 @@ try {
       const quietColumns = await count('.column.is-quiet');
       const quietCards = await count('.card.is-quiet');
       if (brightExec < 1 || litExec < 1 || quietGoals < 1 || quietColumns < 1 || quietCards < 3) throw new Error(`goal focus did not quiet the rest (bright lines ${brightExec}, lit ${litExec}, quiet goals ${quietGoals}, quiet columns ${quietColumns}, quiet cards ${quietCards})`);
-      return { linkedWork: work, brightExecutionLines: brightExec, litLines: litExec, quietExecutionLines: quietExec, quietGoals, quietColumns, quietCards };
+      // The goal's leader leaves its top edge at a column gutter and joins the sheet's side above the rails:
+      // it crosses no other goal object, and the sheet stays clear of the chips.
+      const crossings = await leaderCrossings();
+      const chipsClear = await chipsClearOfSheet();
+      if (crossings !== 0 || !chipsClear) throw new Error(`leader crossings ${crossings}; chips clear of the sheet ${chipsClear}`);
+      return { linkedWork: work, brightExecutionLines: brightExec, litLines: litExec, quietExecutionLines: quietExec, quietGoals, quietColumns, quietCards, leaderCrossings: crossings, chipsClearOfSheet: chipsClear };
     });
     await step('D-founder-attention-compact', async () => {
       // Idle: what needs the Founder sits beside the Founder. Resting on one item spotlights where it lives —
@@ -340,22 +380,52 @@ try {
       await settle(500);
       await shot('04-founder-attention-compact');
       const detail = await closeUp('04b-founder-attention-compact-detail', '.spine', 12);
-      const tether = await count('.line-tether');
+      const tether = await count('.line-tether:not(.is-under)');
+      const crossings = await leaderCrossings();
       const quietColumns = await count('.column.is-quiet');
       const railOpen = await page.evaluate(`!document.getElementById('rail').hidden`);
       await unhover('.chip-attention');
       await settle(300);
       const restored = await count('.column.is-quiet');
-      if (railOpen || tether !== 1 || quietColumns < 1 || restored !== 0) throw new Error(`rail open ${railOpen}, tether ${tether}, quiet columns ${quietColumns} → ${restored}`);
-      return { tether, quietColumns, restored, detail: path.basename(detail.file) };
+      if (railOpen || tether !== 1 || crossings !== 0 || quietColumns < 1 || restored !== 0) throw new Error(`rail open ${railOpen}, tether ${tether}, leader crossings ${crossings}, quiet columns ${quietColumns} → ${restored}`);
+      return { tether, leaderCrossings: crossings, quietColumns, restored, detail: path.basename(detail.file) };
     });
+    await step('D2-sheet-beside-chips', async () => {
+      // A context sheet on the right and the Founder's chips, together: the sheet starts beneath the chips, every
+      // chip stays whole, and resting on one still spotlights where it lives while the sheet is open.
+      const seo = world.employees['growth.seo-1'].id;
+      await click(`.card[data-id="employee:${seo}"]`);
+      await waitUntil(`!document.getElementById('focus').hidden && document.querySelector('#focus .chain li')`, 10_000);
+      await untilPainted(`document.querySelectorAll('.lines-over .line-tether').length === 1`);
+      await settle(400);
+      const chipsClear = await chipsClearOfSheet();
+      await hover('.chip-attention');
+      await untilPainted(`document.querySelectorAll('.column.is-quiet').length > 0 && Number(getComputedStyle(document.querySelector('.column.is-quiet')).opacity) < 0.7`);
+      await settle(500);
+      await shot('14-sheet-beside-chips');
+      const chips = await count('.chip-attention');
+      const hoverTether = await count('.line-tether:not(.is-under)');
+      const crossings = await leaderCrossings();
+      await unhover('.chip-attention');
+      await settle(300);
+      const sheetTether = await count('.line-tether:not(.is-under)');
+      const sheetOpen = await page.evaluate(`!document.getElementById('focus').hidden`);
+      if (!chipsClear || chips < 1 || hoverTether !== 1 || crossings !== 0 || sheetTether !== 1 || !sheetOpen) throw new Error(`chips clear ${chipsClear}, chips ${chips}, tether on hover ${hoverTether}, leader crossings ${crossings}, sheet tether back ${sheetTether}, sheet open ${sheetOpen}`);
+      await escape();
+      await settle(300);
+      return { chipsClearOfSheet: chipsClear, chips, tetherOnHover: hoverTether, leaderCrossings: crossings, sheetTetherRestored: sheetTether };
+    });
+    if (minimal) {
+      writeFileSync(path.join(out, 'manifest.json'), JSON.stringify({ generatedAt: new Date().toISOString(), head: results.head, renderer: results.spike.renderer, minimal: true, frames: readdirSync(out).filter((f) => f.endsWith('.png')), video: null, steps: results.steps, live: { employees: Object.keys(world.employees).length, goals: 3 } }, null, 2));
+      console.log(JSON.stringify({ verdict: results.steps.every((s) => s.result === 'PASS') ? 'C5 VISUAL PROOF (MINIMAL) — PASS' : 'C5 VISUAL PROOF (MINIMAL) — FAIL', out }));
+    } else {
     await step('E-founder-attention-opened', async () => {
       await click('.dock-head');
       await waitUntil(`!document.getElementById('rail').hidden && document.querySelector('.rail-tab')`, 10_000);
       await click('.rail-tab:nth-child(2)');
       await waitUntil(`document.querySelector('.rail-item .brief')`, 10_000);
       await hover('.rail-item');
-      await untilPainted(`document.querySelectorAll('.line-tether').length === 1`);
+      await untilPainted(`document.querySelectorAll('.lines-over .line-tether').length === 1`);
       await settle(1000);
       await shot('05-founder-attention-opened');
       const needsMe = await page.evaluate(`document.querySelectorAll('.rail-tab')[0].querySelector('.count').textContent`);
@@ -395,9 +465,13 @@ try {
       const dirs = await page.evaluate(`[...document.querySelectorAll('#focus .entry-body')].map((b) => getComputedStyle(b).direction + ':' + (/[\\u0600-\\u06FF]/.test(b.textContent) ? 'ar' : 'en'))`);
       const layoutDir = await page.evaluate(`getComputedStyle(document.querySelector('#focus')).direction`);
       const context = await count('#focus .context-chips .chip');
+      // The CEO's sheet docks on the left (the empty desk beside the spine), never over the Founder's chips.
+      const sheetLeft = await page.evaluate(`document.getElementById('focus').classList.contains('is-left')`);
+      const chipsClear = await chipsClearOfSheet();
       if (layoutDir !== 'ltr') throw new Error(`the sheet is ${layoutDir}`);
       if (!dirs.includes('rtl:ar') || !dirs.includes('ltr:en')) throw new Error(`message directions ${dirs.join(' ')}`);
-      return { messages: dirs.length, directions: dirs, contextChips: context };
+      if (!sheetLeft || !chipsClear) throw new Error(`CEO sheet docked left ${sheetLeft}; chips clear of the sheet ${chipsClear}`);
+      return { messages: dirs.length, directions: dirs, contextChips: context, sheetDocked: 'left', chipsClearOfSheet: chipsClear };
     });
     await step('G-conversation-founder-employee-arabic', async () => {
       // A direct Founder ↔ Employee conversation: the English note already there; the Founder writes in Arabic
@@ -516,6 +590,7 @@ try {
     }
     writeFileSync(path.join(out, 'manifest.json'), JSON.stringify({ generatedAt: new Date().toISOString(), head: results.head, renderer: results.spike.renderer, frames: readdirSync(out).filter((f) => f.endsWith('.png')), video: existsSync(path.join(out, 'walkthrough.mp4')) ? 'walkthrough.mp4' : null, steps: results.steps, live: { employees: Object.keys(world.employees).length, goals: 3 } }, null, 2));
     console.log(JSON.stringify({ verdict: results.steps.every((s) => s.result === 'PASS') ? 'C5 VISUAL PROOF — PASS' : 'C5 VISUAL PROOF — FAIL', out }));
+    }
   }
   void live;
 } catch (error) {

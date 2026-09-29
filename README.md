@@ -304,7 +304,8 @@ command on any CLI: a Founder reference is not authentication.
   dependency) and writes thirteen scenario frames (Company Live, Employee Focus, Goal Focus, Founder Attention
   compact and opened, the Founder ↔ CEO and Founder ↔ Employee conversations with Arabic and English messages,
   governed preview and confirmation, Historical Focus, reduced motion and a really seeded scale frame) plus two
-  close-ups, a short walkthrough MP4 (encoded offline in the browser) and a manifest;
+  close-ups, a short walkthrough MP4 (encoded offline in the browser) and a manifest; `--minimal` captures only
+  the frames a presentation-only correction is judged on (no walkthrough, no scale frame);
   `--before <previous proof dir>` adds a before/after board. `npm run c5:spike -- --workspace <dir>` runs only
   the technical smoke checks (the company surface renders — spine, five columns, goals, execution lines;
   English application with content as written; selection / focus / return; reduced-motion parity; no external

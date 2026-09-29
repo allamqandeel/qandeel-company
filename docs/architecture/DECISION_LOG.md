@@ -2301,3 +2301,11 @@ Animation domain must not be enabled on this page (it slows every interaction fi
 transitioning elements; the rAF-driven settle suffices), and a clipped or scaled capture leaves the headless
 compositor at that size until the device metrics are set again. Runtime, storage, governance and authentication
 are unchanged; C5 remains NOT CLOSED pending exact-head CI, review and merge by the Technical Lead.
+
+**Addendum (final MINOR visual residual correction, on `d833a8c1`).** Two collisions from the frozen
+presentation were corrected without reopening it (report §23): the tether is a leader that keeps to its
+subject's row and the column gutters, leaves a goal from its top edge at the nearest gutter, and passes beneath
+any card, head, goal or chip it crosses (drawn in the under-layer; `splitLeader`, with a pure proof); the CEO's
+sheet docks on the empty left desk, and a right-docked sheet that would meet the "Needs you" chips starts
+beneath them (`--desk-b`, measured live). The walkthrough stays at 4 fps (proof-only MINOR: each headless
+capture is a ~160 ms software paint). The proof gained `--minimal`, leader-crossing and chips-clear checks.

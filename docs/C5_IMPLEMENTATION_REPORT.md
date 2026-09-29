@@ -593,8 +593,76 @@ before/after board v3 → final; manifest). Full `npm run ci` runs on the exact 
 
 ### 22.7 Residuals (MINOR)
 
-- A sheet docked on the far side of its subject is tethered across the company by a dashed hairline (it crosses
-  the columns between).
-- The sheet docked on the right covers the "Needs you" chips; the attention surface and the topbar button remain.
+- ~~A sheet docked on the far side of its subject is tethered across the company by a dashed hairline (it crosses
+  the columns between).~~ Corrected in §23.
+- ~~The sheet docked on the right covers the "Needs you" chips; the attention surface and the topbar button
+  remain.~~ Corrected in §23.
 - The walkthrough plays at 4 fps (about 11 s); the first two proof steps take ~20 s because the walkthrough
-  capture forces a paint every 250 ms.
+  capture forces a paint every 250 ms. Proof-only; kept (§23.3).
+
+## 23. Final MINOR visual residual correction (QANDEEL_COMPANY_C5_FINAL_MINOR_VISUAL_RESIDUAL_CORRECTION)
+
+Starting exact head `d833a8c1a73f3808b6ddb001276cd94dd56cdf54`. The Tree of Light is APPROVED / FROZEN: this
+correction fixes the two real visual collisions left in §22.7 and nothing else. No layout, copy, motion,
+runtime, storage, governance or authentication change; the Founder, the CEO, the five columns, the Strategic
+direction, the goal objects and the gold execution lines are exactly as they were.
+
+### 23.1 Tether routing (the leader)
+
+The tether from a selected card to its context sheet (and from an attention chip to the person it concerns) was
+a dashed Bézier from the card's centre straight to the sheet: on the far side it crossed the person cards of the
+columns between, and from a goal it crossed the goal beside it. It is now a **leader**, routed by
+`TreeView.#leaderRoute` and split by `splitLeader` (`view.ts`, with its own pure proof):
+
+- a person or the CEO leaves from the side edge on the sheet's side, **on their own row**, straight to the
+  sheet's near edge; when the sheet has no room on that row (a chip, a sheet that starts lower) the leader steps
+  over in the **nearest column gutter** first (at most two right-angle turns, never a diagonal);
+- a goal leaves from its **top edge at the column gutter nearest the sheet** (never through the goal beside it)
+  and joins the sheet's side edge above the rails; a sheet standing over the goal takes a short vertical;
+- an attention chip is joined from the person's row through the gutter on the chip's side and entered from
+  below (or from its near side), passing beneath the other chips;
+- every piece that would cross a card, a column head, a goal or a chip (blocks padded by 3 px) is drawn in the
+  **under-layer** beneath it, the rest over the surface: nothing on the surface is written over, and the leader
+  reads as running behind the objects it passes. It keeps its dotted hairline (`2 6`, 1.5 px, no casing, no
+  arcs), so it is never mistaken for a gold execution line or a derivation.
+
+### 23.2 Context sheet vs the Founder's "Needs you" chips
+
+- The **CEO's sheet docks on the left** (the desk left of the spine is empty; the right holds what needs the
+  Founder): the Founder ↔ CEO conversation keeps its full height and never touches the chips.
+- A sheet that docks **on the right** (a person in the left-hand columns, a goal served there) is
+  collision-aware: when its box would meet the chips, it gets `is-below-desk` and starts beneath them
+  (`top: calc(var(--desk-b) + 10px)`, the desk's bottom measured live by the view, like `--goals-h`, on
+  resize and scroll). The chips stay whole, discoverable and hoverable while the sheet is open — resting on one
+  still spotlights where it lives, with its own leader — and the sheet returns to its full height when the
+  attention surface replaces the dock. No chip moves; nothing is hidden.
+
+### 23.3 Walkthrough capture (proof only)
+
+Unchanged at 4 fps, recorded as proof-only MINOR: each capture is a forced software paint of ~160 ms on the
+headless tab, so a faster fixed cadence cannot be honoured, and a screencast with per-frame timestamps would
+change the encoder page and the harness. Product motion is untouched.
+
+### 23.4 Files changed
+
+`packages/command-center-ui/src/app/view.ts` (leader route, `splitLeader`, `--desk-b`), `src/app/main.ts`
+(docking rule, `is-below-desk`), `public/styles.css` (two rules), `test/layout.test.ts` (one new proof, 10 in
+all); `scripts/c5-visual-proof.mjs` (`--minimal`, leader-crossing and chips-clear checks, the sheet-beside-chips
+frame); `README.md`; this report; `DECISION_LOG.md` (D-C5-15 addendum).
+
+### 23.5 Focused validation and proof
+
+UI build + typecheck + tests 10/10 · `eslint --max-warnings=0` clean · `c5:visual-proof --minimal` PASS (smoke
+6/6; Company Live, Employee Focus with the leader crossing nothing and the sheet below the desk, Goal Focus with
+the goal leader crossing nothing, Founder Attention compact, the sheet beside the chips: `chipsClearOfSheet`
+and `leaderCrossings: 0` on every frame) · the full `c5:visual-proof` run once as validation (the CEO sheet
+docked left, Founder ↔ Employee in Arabic on the left with its leader beneath the cards it crosses).
+
+### 23.6 G1 — Skills used, proportional to the scope
+
+| Skill | Used | Reason |
+|---|---|---|
+| `impeccable` | used | The craft floor's reflexes for annotation lines (a leader is subordinate: hairline, no casing, passes beneath objects, never a work line); one bounded inspection round on the real frames |
+| `emil-design-eng` | used | No new motion: the sheet's shelf change is instant (a position, not a tween), transitions stay on named properties; nothing keyboard-triggered animates |
+| `ui-ux-pro-max` | used by hand | "Focus not obscured": the chips remain visible and reachable while a sheet is open; targets unchanged |
+| `frontend-design`, `animate`, `review-animations`, `dataviz`, `sibawayh:*` | not needed | No new surface, no motion change, no chart or palette change, no Arabic copy touched |

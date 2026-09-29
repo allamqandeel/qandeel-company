@@ -265,13 +265,24 @@ class App implements PanelHost {
     const focus = $('focus');
     if (lens.kind === 'EMPLOYEE' || lens.kind === 'GOAL' || lens.kind === 'CONVERSATION') {
       // The sheet docks on the side that keeps what it is about in view: a person in the two right-hand
-      // columns (or a goal served there) gets the sheet on the left. With the attention surface open, right.
+      // columns (or a goal served there) gets the sheet on the left, and so does the CEO (the desk left of the
+      // spine is empty; the right holds what needs the Founder). With the attention surface open, right.
       const nodeId = lens.kind === 'GOAL' ? `goal:${lens.goalId}` : `employee:${lens.employeeId}`;
       const node = this.layout?.byId.get(nodeId);
       const columns = this.layout?.columns.length ?? 5;
       const column = node?.kind === 'goal' ? (node.anchors.length ? node.anchors.reduce((s, i) => s + i, 0) / node.anchors.length : null) : node?.column ?? null;
-      focus.classList.toggle('is-left', !this.#railOpen && column !== null && column >= columns / 2);
+      const spine = node !== undefined && node.kind !== 'goal' && node.column === null;
+      const left = !this.#railOpen && (spine || (column !== null && column >= columns / 2));
+      focus.classList.toggle('is-left', left);
+      focus.classList.remove('is-below-desk');
       focus.hidden = false;
+      // Collision-aware: a sheet on the right never covers the Founder's "Needs you" chips. When the two would
+      // meet, the sheet starts beneath the chips (the desk's height is measured by the view, never assumed).
+      if (!left && !this.#railOpen) {
+        const desk = document.querySelector('.dock-attention')?.getBoundingClientRect();
+        const sheet = focus.getBoundingClientRect();
+        if (desk && sheet.left < desk.right + 8 && sheet.top < desk.bottom + 8) focus.classList.add('is-below-desk');
+      }
       void this.#renderFocus().then(() => this.#applyTether());
     } else {
       focus.hidden = true;
@@ -288,7 +299,7 @@ class App implements PanelHost {
   #setRail(open: boolean): void {
     this.#railOpen = open;
     $('rail').hidden = !open;
-    if (open) $('focus').classList.remove('is-left');
+    if (open) $('focus').classList.remove('is-left', 'is-below-desk');
     if (!open) this.spotlightAttention(null, null);
     $('attention-toggle').setAttribute('aria-expanded', open ? 'true' : 'false');
     document.documentElement.dataset.rail = open ? 'open' : 'closed';
