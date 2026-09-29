@@ -123,6 +123,29 @@ export function applyLens(u: CompanyUniverse, layout: Layout, lens: Lens): Empha
   }
 }
 
+/**
+ * The Founder reads one attention item: the company shows where it lives — the person it concerns, their
+ * leadership chain, their Department and the goal it is about — without changing the lens (a spotlight over
+ * the attention emphasis, gone when the eye moves on). Pure and total, like the lenses.
+ */
+export function attentionSpotlight(u: CompanyUniverse, layout: Layout, itemNodeId: string): Emphasis {
+  const item = layout.byId.get(itemNodeId);
+  if (!item || item.kind !== 'attention') return full(layout);
+  const keep = new Set<string>(['founder', item.id]);
+  const chain = item.employeeId === null ? [] : chainNodeIds(u, layout, item.employeeId);
+  for (const c of chain) keep.add(c);
+  const source = u.attention.find((a) => `attention:${a.id}` === item.id)?.sourceRef ?? '';
+  if (source.startsWith('goal:') && layout.byId.has(source)) keep.add(source);
+  const keepEdges = new Set<string>();
+  for (const e of layout.edges) if (item.employeeId !== null && (e.from === `employee:${item.employeeId}` || e.to === `employee:${item.employeeId}`)) keepEdges.add(e.id);
+  const sectors = new Set<string>(item.departmentId === null ? [] : [item.departmentId]);
+  if (source.startsWith('goal:')) for (const i of layout.byId.get(source)?.anchors ?? []) {
+    const d = layout.columns[i]?.departmentId;
+    if (d) sectors.add(d);
+  }
+  return quietExcept(layout, keep, keepEdges, sectors, item.employeeId === null ? null : `employee:${item.employeeId}`, chain);
+}
+
 /** Live relations are drawn only where they answer the lens question (focus surfaces); Company Live keeps the structure clean. */
 export function showsRelations(lens: Lens): boolean {
   return lens.kind === 'EMPLOYEE' || lens.kind === 'CONVERSATION' || lens.kind === 'CEO' || lens.kind === 'ATTENTION' || lens.kind === 'BLOCKED' || lens.kind === 'GOAL';

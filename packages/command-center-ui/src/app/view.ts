@@ -1,13 +1,19 @@
 /**
- * The Tree of Light surface (D-C5-14): the company as a structured, living executive operating surface.
- * Founder at the top, the CEO beneath on one leadership trunk, five Department columns branching below with
- * the Director first and the team inside, goals along the bottom as the strategic direction, and gold
- * execution lines showing where each column's work flows. Everything is DOM + one SVG line layer: the words
- * are browser-shaped text (bidi and Arabic shaping are the browser's), every person and goal is a real
- * button, and the same view serves every renderer capability (there is no WebGL to fall back from).
+ * The Tree of Light surface (D-C5-14, final craft D-C5-15): the company as a structured, living executive
+ * operating surface. Founder at the top, the CEO beneath on one leadership trunk, five Department columns
+ * branching below with the Director first and the team inside, goals along the bottom as the strategic
+ * direction, and gold execution lines showing where each column's work flows. Everything is DOM + one SVG line
+ * layer: the words are browser-shaped text (bidi and Arabic shaping are the browser's), every person and goal
+ * is a real button, and the same view serves every renderer capability (there is no WebGL to fall back from).
+ *
+ * The line layer is one system, drawn from durable facts only: the gold leadership bus (Founder → CEO → each
+ * column, orthogonal with rounded turns), the team lane inside a column (the Department's own accent), the
+ * gold collector rail of each goal (each serving column drops into it; the bundle enters the goal), the
+ * dashed derivation between a company goal and its Department goal, live relations on focus surfaces, and a
+ * tether from the selected card to its context sheet (or from an attention item to the person it concerns).
  *
  * Two kinds of motion, kept apart (C5 §7.2): SEMANTIC — the focus scroll, a lit path when a goal or person is
- * selected, an edge pulse when a relation appears, an attention chip arriving, and the slow flow along an
+ * selected, an edge pulse when a relation appears, an attention chip arriving, and a light travelling along an
  * execution line whose work is running now (a real state) — and AMBIENT — a very slow drift of the surface
  * light. Reduced motion keeps every mark and removes every tween.
  */
@@ -23,23 +29,36 @@ export const DEPARTMENT_COLORS = ['#2a78d6', '#178a63', '#b57a12', '#7a6fd6', '#
 export const departmentColor = (column: number | null): string => (column === null ? '#6f6b86' : (DEPARTMENT_COLORS[column % DEPARTMENT_COLORS.length] ?? '#6f6b86'));
 const RELATION_COLORS: Readonly<Record<string, string>> = { DELEGATION: '#2f9bd6', SUPPORT: '#2a9d8f', REVIEW: '#8a6fd6', APPROVAL: '#c48a1f', HANDOFF: '#d0862b', ESCALATION: '#d64545' };
 const GOLD = '#c48a1f';
+/** Turn radius of the orthogonal lines, in CSS pixels. */
+const R = 12;
 
 export interface ViewEvents {
   onSelect(nodeId: string, node: LayoutNode): void;
   onSelectDepartment(departmentId: string): void;
   onAttention(nodeId: string): void;
   onOpenAttention(): void;
+  /** The pointer rests on an attention item (or leaves it): the company spotlights where it lives, tethered to the item. */
+  onHoverAttention(nodeId: string | null, itemEl: HTMLElement | null): void;
 }
 
 interface Line {
   readonly el: SVGPathElement;
-  readonly kind: 'trunk' | 'branch' | 'lane' | 'exec' | 'derive' | 'relation';
+  readonly kind: 'trunk' | 'branch' | 'lane' | 'exec' | 'bundle' | 'derive' | 'relation' | 'tether';
   readonly a: string;
   readonly b: string;
   readonly goal?: string;
   readonly column?: number;
   readonly edge?: string;
   readonly count?: number;
+}
+
+interface Port {
+  readonly x: number;
+  readonly y: number;
+  readonly column: number;
+  readonly departmentId: string;
+  readonly count: number;
+  readonly flowing: boolean;
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -57,6 +76,7 @@ const button = (cls: string, text?: string): HTMLButtonElement => {
   return b;
 };
 const initials = (name: string): string => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w.charAt(0)).join('').toUpperCase();
+const n2 = (v: number): string => (Math.round(v * 2) / 2).toString();
 
 export class TreeView {
   #container!: HTMLElement;
@@ -64,6 +84,8 @@ export class TreeView {
   #company!: HTMLElement;
   #goalsHost!: HTMLElement;
   #svg!: SVGSVGElement;
+  /** The upper line layer: execution rails, bundles, derivations, ports and the tether, above the pinned goal band. */
+  #svgTop!: SVGSVGElement;
   #els = new Map<string, HTMLElement>();
   #columnEls = new Map<string, HTMLElement>();
   #lines: Line[] = [];
@@ -73,6 +95,7 @@ export class TreeView {
   #reduced = false;
   #relations = false;
   #selected: string | null = null;
+  #tether: { from: string; to: HTMLElement } | null = null;
   #raf = 0;
   #observer: ResizeObserver | null = null;
 
@@ -83,11 +106,19 @@ export class TreeView {
     // The goal band is a sibling of the company grid so it can stay pinned to the bottom of the scroll area.
     this.#goalsHost = el('div', 'goals-host');
     this.#svg = document.createElementNS(SVG_NS, 'svg');
-    this.#svg.setAttribute('class', 'lines');
+    this.#svg.setAttribute('class', 'lines lines-under');
     this.#svg.setAttribute('aria-hidden', 'true');
+    this.#svgTop = document.createElementNS(SVG_NS, 'svg');
+    this.#svgTop.setAttribute('class', 'lines lines-over');
+    this.#svgTop.setAttribute('aria-hidden', 'true');
     container.append(this.#company, this.#goalsHost);
-    this.#observer = new ResizeObserver(() => this.#scheduleLines());
+    this.#observer = new ResizeObserver(() => {
+      // The context sheets and the attention surface stop above the strategic direction: they read its height.
+      (container.parentElement ?? container).style.setProperty('--goals-h', `${Math.round(this.#goalsHost.getBoundingClientRect().height)}px`);
+      this.#scheduleLines();
+    });
     this.#observer.observe(container);
+    this.#observer.observe(this.#goalsHost);
     window.addEventListener('resize', () => this.#scheduleLines());
     // The goal band stays in view while the columns scroll under it: the lines follow.
     container.addEventListener('scroll', () => this.#scheduleLines(), { passive: true });
@@ -113,7 +144,7 @@ export class TreeView {
     this.#els.clear();
     this.#columnEls.clear();
     this.#company.replaceChildren();
-    this.#company.append(this.#buildSpine(layout, universe), this.#buildColumns(layout), this.#svg);
+    this.#company.append(this.#buildSpine(layout, universe), this.#buildColumns(layout), this.#svg, this.#svgTop);
     this.#goalsHost.replaceChildren(this.#buildGoals(layout, universe));
     this.#container.scrollTop = scrollTop;
     if (this.#emphasis) this.setEmphasis(this.#emphasis);
@@ -121,13 +152,19 @@ export class TreeView {
     this.#scheduleLines();
   }
 
+  /** The column a node lives in (null on the spine and for company goals). */
+  columnOf(nodeId: string): number | null {
+    return this.#layout?.byId.get(nodeId)?.column ?? null;
+  }
+
   #buildSpine(layout: Layout, universe: CompanyUniverse): HTMLElement {
     const spine = el('section', 'spine');
     const founder = button('founder');
     founder.dataset.id = 'founder';
     founder.setAttribute('aria-label', 'Founder, company centre. Return to Company Live');
-    founder.append(el('span', 'emblem', 'Q'), el('span', 'founder-text'));
-    founder.querySelector('.founder-text')?.append(el('span', 'founder-name', 'Founder'), el('span', 'founder-sub', 'Company centre'));
+    const text = el('span', 'founder-text');
+    text.append(el('span', 'founder-name', 'Founder'), el('span', 'founder-sub', 'Company centre'));
+    founder.append(el('span', 'emblem', 'Q'), text);
     founder.addEventListener('click', () => this.#events.onSelect('founder', layout.byId.get('founder') as LayoutNode));
     this.#els.set('founder', founder);
     const ceoNode = layout.ceoId === null ? null : layout.byId.get(layout.ceoId) ?? null;
@@ -144,6 +181,7 @@ export class TreeView {
     dock.setAttribute('aria-label', 'Needs you');
     const items = layout.attention;
     const head = button('dock-head');
+    head.setAttribute('aria-label', items.length === 0 ? 'Nothing needs you. Open Founder attention' : `${plural(items.length, 'item needs', 'items need')} you. Open Founder attention`);
     head.append(el('span', 'dock-title', items.length === 0 ? 'Nothing needs you' : 'Needs you'), el('span', 'dock-count', String(items.length)));
     head.addEventListener('click', () => this.#events.onOpenAttention());
     dock.append(head);
@@ -155,9 +193,23 @@ export class TreeView {
       chip.dataset.id = n.id;
       const owner = n.employeeId ? (layout.byId.get(`employee:${n.employeeId}`)?.label ?? '') : '';
       const item = universe.attention.find((a) => `attention:${a.id}` === n.id);
-      chip.append(el('span', 'chip-mark'), el('span', 'chip-text', `${t(SOURCE_LABEL, n.label)}${owner ? ' · ' + owner : ''}`), el('span', 'chip-level', t(LEVEL_LABEL, n.state)));
-      chip.setAttribute('aria-label', `${t(SOURCE_LABEL, n.label)}${owner ? ' from ' + owner : ''}, ${t(LEVEL_LABEL, n.state)}${item ? '' : ''}. Open`);
+      const goalTitle = item?.sourceRef.startsWith('goal:') ? (layout.byId.get(item.sourceRef)?.label ?? '') : '';
+      const what = el('span', 'chip-text');
+      what.append(el('span', 'chip-kind', t(SOURCE_LABEL, n.label)));
+      const who = goalTitle || owner;
+      if (who) {
+        const w = el('span', 'chip-who', who);
+        w.dir = dirOf(who);
+        what.append(w);
+      }
+      const verb = n.state === 'URGENT' ? 'Urgent' : n.state === 'NEEDS_DECISION' ? 'Decide' : n.state === 'NEEDS_ATTENTION' ? 'Look' : 'Read';
+      chip.append(el('span', 'chip-mark'), what, el('span', 'chip-level', verb));
+      chip.setAttribute('aria-label', `${t(SOURCE_LABEL, n.label)}${who ? ' · ' + who : ''}, ${t(LEVEL_LABEL, n.state)}. Open`);
       chip.addEventListener('click', () => this.#events.onAttention(n.id));
+      chip.addEventListener('pointerenter', () => this.#events.onHoverAttention(n.id, chip));
+      chip.addEventListener('focus', () => this.#events.onHoverAttention(n.id, chip));
+      chip.addEventListener('pointerleave', () => this.#events.onHoverAttention(null, null));
+      chip.addEventListener('blur', () => this.#events.onHoverAttention(null, null));
       this.#els.set(n.id, chip);
       li.append(chip);
       list.append(li);
@@ -181,7 +233,11 @@ export class TreeView {
       col.dataset.department = c.departmentId;
       col.style.setProperty('--dept', departmentColor(c.index));
       const header = button('column-head');
-      header.append(el('span', 'column-name', deptName(c.code, c.name)), el('span', 'column-count', plural(c.headcount, 'person', 'people')));
+      const mark = el('span', 'column-mark');
+      mark.setAttribute('aria-hidden', 'true');
+      const name = el('span', 'column-name', deptName(c.code, c.name));
+      const count = el('span', 'column-count', plural(c.headcount, 'person', 'people'));
+      header.append(mark, name, count);
       header.setAttribute('aria-label', `${deptName(c.code, c.name)}, ${plural(c.headcount, 'person', 'people')}. Open the department`);
       header.addEventListener('click', () => this.#events.onSelectDepartment(c.departmentId));
       col.append(header);
@@ -214,6 +270,9 @@ export class TreeView {
     const avatar = el('span', 'avatar');
     avatar.setAttribute('aria-hidden', 'true');
     if (!n.vacant) avatar.textContent = initials(n.label);
+    // The status lives on the person: a small dot at the avatar's corner (green well, blue running, amber
+    // awaiting a decision, red blocked, hollow for a vacant seat), and a ring while their work runs.
+    avatar.append(el('span', 'status'));
     const text = el('span', 'card-text');
     const name = el('span', 'card-name', n.label);
     name.dir = dirOf(n.label);
@@ -226,13 +285,11 @@ export class TreeView {
     if (stateText) meta.append(el('span', `tag tag-${n.vacant ? 'vacant' : n.acting ? 'acting' : n.state === 'BLOCKED' ? 'blocked' : n.running ? 'running' : 'waiting'}`, stateText));
     const serves = layout.goals.filter((g) => g.workers.includes(n.id));
     if (serves.length) {
-      const mark = el('span', 'serves', '◆');
+      const mark = el('span', 'serves');
       mark.setAttribute('aria-hidden', 'true');
+      mark.title = `Serves ${plural(serves.length, 'goal', 'goals')}`;
       meta.append(mark);
     }
-    const dot = el('span', 'dot');
-    dot.setAttribute('aria-hidden', 'true');
-    meta.append(dot);
     card.append(avatar, text, meta);
     const kind = n.seatKind === 'CEO' ? 'Chief Executive' : n.seatKind === 'DIRECTOR' ? 'Director' : n.seatKind === 'MANAGER' ? 'Manager' : n.seatKind === 'LEAD' ? 'Lead' : n.seatKind === 'SPECIALIST' ? 'Specialist' : '';
     card.setAttribute('aria-label', `${n.label}, ${n.sublabel}${kind ? ', ' + kind : ''}. Status: ${t(STATE_LABEL, n.state)}${serves.length ? '. Serves ' + plural(serves.length, 'goal', 'goals') : ''}`);
@@ -244,7 +301,9 @@ export class TreeView {
   #buildGoals(layout: Layout, universe: CompanyUniverse): HTMLElement {
     const section = el('section', 'goals');
     section.setAttribute('aria-label', 'Strategic direction');
-    section.append(el('h2', 'goals-title', 'Strategic direction'), el('p', 'goals-sub', layout.goals.length === 0 ? 'No goal yet. Propose one and the company can line its work up behind it.' : 'Where the work is going: gold lines run from each department to the goals its work serves.'));
+    const head = el('div', 'goals-head');
+    head.append(el('h2', 'goals-title', 'Strategic direction'), el('p', 'goals-sub', layout.goals.length === 0 ? 'No goal yet. Propose one and the company can line its work up behind it.' : 'Where the work is going. Each gold rail collects a department’s work into the goal it serves.'));
+    section.append(head);
     const band = el('div', 'goal-band');
     for (const g of layout.goals) band.append(this.#goal(g, layout, universe));
     section.append(band);
@@ -254,16 +313,31 @@ export class TreeView {
   #goal(g: LayoutNode, layout: Layout, universe: CompanyUniverse): HTMLElement {
     const goal = universe.goals.find((x) => `goal:${x.id}` === g.id);
     const proposed = g.state === 'PROPOSED' || g.state === 'DRAFT';
+    const company = (g.goalKind ?? 'COMPANY') === 'COMPANY';
     const b = button('goal');
     b.dataset.id = g.id;
     b.dataset.goalKind = g.goalKind ?? 'COMPANY';
     b.dataset.state = g.state.toLowerCase();
     const emblem = el('span', 'goal-emblem');
     emblem.setAttribute('aria-hidden', 'true');
-    const head = el('span', 'goal-head');
-    head.append(el('span', 'goal-kind', `${g.sublabel} · ${t(STATE_LABEL, g.state)}`));
     const title = el('span', 'goal-title', g.label);
     title.dir = dirOf(g.label);
+    // Kind and state read as a small status line under the title, never as a label above it.
+    const line = el('span', 'goal-line');
+    line.append(el('span', `goal-state state-${g.state.toLowerCase()}`, proposed ? 'Awaiting your decision' : t(STATE_LABEL, g.state)), el('span', 'goal-kind', company ? 'Company goal' : 'Department goal'));
+    const ownerName = goal ? (layout.byId.get(goal.ownerRef)?.label ?? (goal.ownerRef === 'founder' ? 'Founder' : '')) : '';
+    if (ownerName) {
+      const owner = el('span', 'goal-owner');
+      const av = el('span', 'goal-owner-avatar', initials(ownerName));
+      av.setAttribute('aria-hidden', 'true');
+      const ownerNode = goal ? layout.byId.get(goal.ownerRef) : undefined;
+      av.style.setProperty('--dept', departmentColor(ownerNode?.column ?? null));
+      const nm = el('span', 'goal-owner-name', ownerName);
+      nm.dir = dirOf(ownerName);
+      owner.append(av, nm);
+      line.append(owner);
+    }
+    if (goal?.horizonTo) line.append(el('span', 'goal-horizon', `by ${fmtDate(goal.horizonTo)}`));
     const depts = el('span', 'goal-depts');
     for (const i of g.anchors) {
       const c = layout.columns[i];
@@ -272,11 +346,7 @@ export class TreeView {
       chip.style.setProperty('--dept', departmentColor(i));
       depts.append(chip);
     }
-    if (g.anchors.length === 0) depts.append(el('span', 'goal-dept goal-dept-none', proposed ? 'Awaiting your decision' : 'No work linked yet'));
-    const meta = el('span', 'goal-meta');
-    const ownerName = goal ? (layout.byId.get(goal.ownerRef)?.label ?? (goal.ownerRef === 'founder' ? 'Founder' : '')) : '';
-    const bits = [goal?.horizonTo ? `Horizon ${fmtDate(goal.horizonTo)}` : null, plural(g.workers.length, 'work item', 'work items'), ownerName || null].filter((x): x is string => x !== null);
-    meta.textContent = bits.join(' · ');
+    if (g.anchors.length === 0) depts.append(el('span', 'goal-dept goal-dept-none', proposed ? 'No work until you decide' : 'No work linked yet'));
     const progress = el('span', 'goal-progress');
     progress.setAttribute('role', 'img');
     if (g.progress === null) {
@@ -289,10 +359,11 @@ export class TreeView {
       const fill = el('span', 'goal-fill');
       fill.style.width = `${pct}%`;
       bar.append(fill);
-      progress.append(bar, el('span', 'goal-pct', `${pct}%`));
+      progress.append(bar, el('span', 'goal-pct', `${pct}%`), el('span', 'goal-work', plural(g.workers.length, 'person', 'people')));
     }
-    b.append(emblem, head, title, depts, meta, progress);
-    b.setAttribute('aria-label', `${g.label}, ${g.sublabel}, ${t(STATE_LABEL, g.state)}. ${bits.join(', ')}. Open the goal`);
+    b.append(emblem, title, line, depts, progress);
+    const bits = [company ? 'Company goal' : 'Department goal', proposed ? 'awaiting your decision' : t(STATE_LABEL, g.state), goal?.horizonTo ? `by ${fmtDate(goal.horizonTo)}` : null, plural(g.workers.length, 'person serving', 'people serving'), ownerName ? `owned by ${ownerName}` : null].filter((x): x is string => x !== null);
+    b.setAttribute('aria-label', `${g.label}. ${bits.join(', ')}. Open the goal`);
     b.addEventListener('click', () => this.#events.onSelect(g.id, g));
     this.#els.set(g.id, b);
     return b;
@@ -318,6 +389,12 @@ export class TreeView {
 
   setRelationsVisible(visible: boolean): void {
     this.#relations = visible;
+    this.#scheduleLines();
+  }
+
+  /** A gold tether from a node to a surface outside the company grid (a context sheet, the attention surface). */
+  setTether(fromId: string | null, to: HTMLElement | null): void {
+    this.#tether = fromId !== null && to !== null ? { from: fromId, to } : null;
     this.#scheduleLines();
   }
 
@@ -374,88 +451,154 @@ export class TreeView {
     const w = Math.max(this.#company.scrollWidth, Math.ceil(origin.width));
     // The line layer covers the company and the goal band beneath it (the band may be pinned inside the view).
     const h = Math.max(this.#company.scrollHeight, Math.ceil(origin.height)) + this.#goalsHost.getBoundingClientRect().height + 8;
-    this.#svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
-    this.#svg.setAttribute('width', String(w));
-    this.#svg.setAttribute('height', String(h));
-    this.#svg.replaceChildren();
+    for (const svg of [this.#svg, this.#svgTop]) {
+      svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+      svg.setAttribute('width', String(w));
+      svg.setAttribute('height', String(h));
+      svg.replaceChildren();
+    }
     this.#lines = [];
+    const local = (r: DOMRect): DOMRect => new DOMRect(r.left - origin.left, r.top - origin.top, r.width, r.height);
     const rect = (id: string): DOMRect | null => {
       const e = this.#els.get(id);
-      if (!e) return null;
-      const r = e.getBoundingClientRect();
-      return new DOMRect(r.left - origin.left, r.top - origin.top, r.width, r.height);
+      return e ? local(e.getBoundingClientRect()) : null;
     };
+    // Structure (trunk, bus, lanes, relations) draws under the cards; execution (rails, bundles, derivations,
+    // ports, the tether) draws over the pinned goal band so a line visibly enters the goal it serves. A gold line
+    // over the band or a card wears a thin paper casing, like a road on a map.
+    const OVER: ReadonlySet<Line['kind']> = new Set(['exec', 'bundle', 'derive', 'tether']);
     const add = (d: string, kind: Line['kind'], attrs: Record<string, string>, meta: Partial<Line> = {}): Line => {
+      const layer = OVER.has(kind) ? this.#svgTop : this.#svg;
+      if ((kind === 'exec' || kind === 'bundle') && !attrs.class) {
+        const casing = document.createElementNS(SVG_NS, 'path');
+        casing.setAttribute('d', d);
+        casing.setAttribute('class', 'line line-casing');
+        casing.setAttribute('stroke-width', n2(Number(attrs['stroke-width'] ?? '1.5') + 4));
+        layer.append(casing);
+        const line: Line = { el: casing, kind, a: meta.a ?? '', b: meta.b ?? '', ...meta };
+        this.#lines.push(line);
+      }
       const p = document.createElementNS(SVG_NS, 'path');
       p.setAttribute('d', d);
       p.setAttribute('class', `line line-${kind}`);
       for (const [k, v] of Object.entries(attrs)) p.setAttribute(k, v);
       if (attrs.class) p.setAttribute('class', attrs.class);
-      this.#svg.append(p);
+      layer.append(p);
       const line: Line = { el: p, kind, a: meta.a ?? '', b: meta.b ?? '', ...meta };
       this.#lines.push(line);
       return line;
     };
-    const vcurve = (x1: number, y1: number, x2: number, y2: number): string => `M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2} ${x2} ${(y1 + y2) / 2} ${x2} ${y2}`;
-    // Trunk: Founder → CEO.
+    const port = (x: number, y: number, r: number, cls: string, goal?: string, fill?: string): void => {
+      const dot = document.createElementNS(SVG_NS, 'circle');
+      dot.setAttribute('cx', n2(x));
+      dot.setAttribute('cy', n2(y));
+      dot.setAttribute('r', String(r));
+      dot.setAttribute('class', cls);
+      if (goal) dot.dataset.goal = goal;
+      if (fill) dot.style.fill = fill;
+      this.#svgTop.append(dot);
+    };
+    // An orthogonal path: down from (x0, y0) to a horizontal bus at busY, along it, then down to (x1, y1),
+    // with rounded turns (a straight line when the ends are aligned).
+    const elbow = (x0: number, y0: number, x1: number, y1: number, busY: number): string => {
+      if (Math.abs(x1 - x0) < R * 2) return `M ${n2(x0)} ${n2(y0)} L ${n2(x1)} ${n2(y1)}`;
+      const dir = x1 > x0 ? 1 : -1;
+      const r = Math.min(R, Math.abs(y1 - y0) / 2, Math.abs(busY - y0), Math.abs(y1 - busY));
+      const s1 = dir > 0 ? 0 : 1;
+      const s2 = dir > 0 ? 1 : 0;
+      return `M ${n2(x0)} ${n2(y0)} L ${n2(x0)} ${n2(busY - r)} A ${n2(r)} ${n2(r)} 0 0 ${s1} ${n2(x0 + dir * r)} ${n2(busY)} L ${n2(x1 - dir * r)} ${n2(busY)} A ${n2(r)} ${n2(r)} 0 0 ${s2} ${n2(x1)} ${n2(busY + r)} L ${n2(x1)} ${n2(y1)}`;
+    };
+
+    // Leadership trunk: Founder → CEO (one straight gold stem with a soft halo beneath it).
     const founder = rect('founder');
     const ceo = layout.ceoId === null ? null : rect(layout.ceoId);
-    if (founder && ceo) add(vcurve(founder.left + founder.width / 2, founder.bottom, ceo.left + ceo.width / 2, ceo.top), 'trunk', { stroke: GOLD }, { a: 'founder', b: layout.ceoId ?? '' });
-    // Branches: CEO → each column head (a bus below the CEO, then down to the column).
+    if (founder && ceo) {
+      const d = `M ${n2(founder.left + founder.width / 2)} ${n2(founder.bottom)} L ${n2(ceo.left + ceo.width / 2)} ${n2(ceo.top)}`;
+      add(d, 'trunk', { stroke: GOLD, class: 'line line-trunk line-halo' }, { a: 'founder', b: layout.ceoId ?? '' });
+      add(d, 'trunk', { stroke: GOLD }, { a: 'founder', b: layout.ceoId ?? '' });
+    }
+    // The leadership bus: CEO → every column, one gold system with rounded turns; the column's own accent marks the port.
     const from = ceo ?? founder;
+    const columnRects = new Map<string, DOMRect>();
     for (const c of layout.columns) {
       const col = this.#columnEls.get(c.departmentId);
-      if (!from || !col) continue;
-      const r = col.getBoundingClientRect();
-      const x = r.left - origin.left + r.width / 2;
-      const top = r.top - origin.top;
-      const busY = from.bottom + (top - from.bottom) * 0.5;
-      const x0 = from.left + from.width / 2;
-      const d = `M ${x0} ${from.bottom} C ${x0} ${busY} ${x} ${busY} ${x} ${top}`;
-      add(d, 'branch', { stroke: departmentColor(c.index) }, { a: layout.ceoId ?? 'founder', b: c.departmentId, column: c.index });
-      // Lane: the team's line inside the column, from the Director down to the last member.
+      if (!col) continue;
+      const r = local(col.getBoundingClientRect());
+      columnRects.set(c.departmentId, r);
+      if (!from) continue;
+      const x = r.left + r.width / 2;
+      const busY = from.bottom + (r.top - from.bottom) * 0.5;
+      add(elbow(from.left + from.width / 2, from.bottom, x, r.top, busY), 'branch', { stroke: GOLD }, { a: layout.ceoId ?? 'founder', b: c.departmentId, column: c.index });
+      port(x, r.top, 3.5, 'line-port port-column', undefined, departmentColor(c.index));
+      // Lane: the team's line inside the column, from the Director down to the last member (the Department's accent).
       const first = c.directorId ? rect(c.directorId) : null;
       const last = c.memberIds.length ? rect(c.memberIds[c.memberIds.length - 1] ?? '') : first;
-      if (first && last && last !== first) add(`M ${x} ${first.bottom} L ${x} ${last.top + last.height / 2}`, 'lane', { stroke: departmentColor(c.index) }, { a: c.directorId ?? '', b: c.departmentId, column: c.index });
+      if (first && last && last !== first) add(`M ${n2(x)} ${n2(first.bottom)} L ${n2(x)} ${n2(last.top + last.height / 2)}`, 'lane', { stroke: departmentColor(c.index) }, { a: c.directorId ?? '', b: c.departmentId, column: c.index });
     }
-    // Execution lines: each column whose people serve a goal sends one gold line to that goal (bundled per column).
+    // Execution: each goal owns a gold collector rail just above the strategic direction; every column whose
+    // people serve it drops into the rail (weight by the people), and the bundle enters the goal from the rail.
+    const goalRects = new Map<string, DOMRect>();
     for (const g of layout.goals) {
-      const target = rect(g.id);
-      if (!target) continue;
+      const r = rect(g.id);
+      if (r) goalRects.set(g.id, r);
+    }
+    const bandTop = Math.min(...[...goalRects.values()].map((r) => r.top), Number.POSITIVE_INFINITY);
+    layout.goals.forEach((g, rank) => {
+      const target = goalRects.get(g.id);
+      if (!target) return;
       const tx = target.left + target.width / 2;
+      const railY = bandTop - 14 - rank * 8;
       const perColumn = new Map<number, number>();
       for (const worker of g.workers) {
         const n = layout.byId.get(worker);
         if (n && n.column !== null) perColumn.set(n.column, (perColumn.get(n.column) ?? 0) + 1);
       }
       for (const i of g.anchors) if (!perColumn.has(i)) perColumn.set(i, 0);
+      const ports: Port[] = [];
       for (const [i, count] of perColumn) {
         const c = layout.columns[i];
-        const col = c ? this.#columnEls.get(c.departmentId) : undefined;
-        if (!col) continue;
-        const r = col.getBoundingClientRect();
-        const x = r.left - origin.left + r.width / 2;
-        const y = r.bottom - origin.top;
+        const r = c ? columnRects.get(c.departmentId) : undefined;
+        if (!c || !r) continue;
+        // Columns serving several goals fan their ports out a little so the drops never overlap.
+        const served = layout.goals.filter((o) => o.anchors.includes(i) || o.workers.some((wid) => layout.byId.get(wid)?.column === i));
+        const k = served.findIndex((o) => o.id === g.id);
+        const x = r.left + r.width / 2 + (k - (served.length - 1) / 2) * 7;
         const flowing = g.workers.some((wid) => layout.byId.get(wid)?.running && layout.byId.get(wid)?.column === i);
-        const d = vcurve(x, y, tx, target.top);
-        add(d, 'exec', { stroke: GOLD, 'stroke-width': String(1.4 + Math.min(count, 4) * 0.6) }, { a: c?.departmentId ?? '', b: g.id, goal: g.id, column: i, count });
-        // Work running now: light travels along the line (a real state; a still highlight in reduced motion).
-        if (flowing) add(d, 'exec', { stroke: '#ffe2a6', 'stroke-width': '3', class: 'line line-exec line-flow' }, { a: c?.departmentId ?? '', b: g.id, goal: g.id, column: i, count });
-        // A small gold dot where the line leaves the column.
-        const dot = document.createElementNS(SVG_NS, 'circle');
-        dot.setAttribute('cx', String(x));
-        dot.setAttribute('cy', String(y));
-        dot.setAttribute('r', '3');
-        dot.setAttribute('class', 'line-port');
-        dot.dataset.goal = g.id;
-        this.#svg.append(dot);
+        ports.push({ x, y: r.bottom, column: i, departmentId: c.departmentId, count, flowing });
       }
-      // A derived Department goal hangs from its parent company goal.
+      if (ports.length === 0) return;
+      const total = ports.reduce((s, p) => s + p.count, 0);
+      for (const p of ports) {
+        const width = 1.2 + Math.min(p.count, 4) * 0.5;
+        let d: string;
+        if (p.y >= railY - R * 2) {
+          // The column runs on under the band: its rail starts where the column passes, then leads to the goal.
+          d = `M ${n2(p.x)} ${n2(railY)} L ${n2(tx)} ${n2(railY)} L ${n2(tx)} ${n2(target.top)}`;
+        } else {
+          d = elbow(p.x, p.y, tx, target.top, railY);
+          port(p.x, p.y, 3, 'line-port', g.id);
+        }
+        add(d, 'exec', { stroke: GOLD, 'stroke-width': n2(width) }, { a: p.departmentId, b: g.id, goal: g.id, column: p.column, count: p.count });
+        // Work running now: one light travels along the line (a real state; a still highlight in reduced motion).
+        if (p.flowing) add(d, 'exec', { stroke: '#fff1cf', 'stroke-width': n2(width + 1.5), pathLength: '1000', class: 'line line-exec line-flow' }, { a: p.departmentId, b: g.id, goal: g.id, column: p.column, count: p.count });
+      }
+      // The bundle: everything the goal collects enters it as one line, weighted by all the people serving.
+      add(`M ${n2(tx)} ${n2(railY)} L ${n2(tx)} ${n2(target.top)}`, 'bundle', { stroke: GOLD, 'stroke-width': n2(1.6 + Math.min(total, 8) * 0.45) }, { a: '', b: g.id, goal: g.id, count: total });
+      port(tx, target.top, 3.5 + Math.min(total, 6) * 0.25, 'line-port port-goal', g.id);
+      // A derived Department goal hangs from its parent company goal: a dashed link that runs beneath the goal
+      // objects (never across another goal) from the parent's foot to the child's foot.
       if (g.parentGoalId) {
-        const parent = rect(g.parentGoalId);
-        if (parent) add(`M ${parent.left + parent.width / 2} ${parent.bottom} C ${parent.left + parent.width / 2} ${parent.bottom + 18} ${tx} ${target.top - 18} ${tx} ${target.top}`, 'derive', { stroke: GOLD }, { a: g.parentGoalId, b: g.id, goal: g.id });
+        const parent = goalRects.get(g.parentGoalId);
+        if (parent) {
+          const px = parent.left + parent.width / 2;
+          const under = Math.max(parent.bottom, target.bottom) + 10;
+          const d = Math.abs(target.top - parent.top) < 4 && Math.abs(tx - px) > R * 2
+            ? `M ${n2(px)} ${n2(parent.bottom)} L ${n2(px)} ${n2(under - R)} A ${n2(R)} ${n2(R)} 0 0 ${tx > px ? 0 : 1} ${n2(px + (tx > px ? R : -R))} ${n2(under)} L ${n2(tx - (tx > px ? R : -R))} ${n2(under)} A ${n2(R)} ${n2(R)} 0 0 ${tx > px ? 0 : 1} ${n2(tx)} ${n2(under - R)} L ${n2(tx)} ${n2(target.bottom)}`
+            : `M ${n2(px)} ${n2(parent.bottom)} C ${n2(px)} ${n2(parent.bottom + 18)} ${n2(tx)} ${n2(target.top - 18)} ${n2(tx)} ${n2(target.top)}`;
+          add(d, 'derive', { stroke: GOLD }, { a: g.parentGoalId, b: g.id, goal: g.id });
+        }
       }
-    }
+    });
     // Live relations: drawn only on focus surfaces (the relationship lens).
     if (this.#relations) {
       for (const e of layout.edges) {
@@ -467,7 +610,35 @@ export class TreeView {
         const bx = b.left + b.width / 2;
         const by = b.top + b.height / 2;
         const bend = Math.max(60, Math.abs(bx - ax) * 0.35);
-        add(`M ${ax} ${ay} C ${ax} ${ay - bend} ${bx} ${by - bend} ${bx} ${by}`, 'relation', { stroke: RELATION_COLORS[e.kind] ?? GOLD }, { a: e.from, b: e.to, edge: e.id });
+        add(`M ${n2(ax)} ${n2(ay)} C ${n2(ax)} ${n2(ay - bend)} ${n2(bx)} ${n2(by - bend)} ${n2(bx)} ${n2(by)}`, 'relation', { stroke: RELATION_COLORS[e.kind] ?? GOLD }, { a: e.from, b: e.to, edge: e.id });
+      }
+    }
+    // The tether: from the selected card to its context sheet (or an attention item to its person).
+    if (this.#tether && this.#els.has(this.#tether.from) && this.#tether.to.isConnected && !this.#tether.to.hidden) {
+      const a = rect(this.#tether.from);
+      const b = local(this.#tether.to.getBoundingClientRect());
+      if (a && b.width > 0) {
+        const toRight = b.left >= a.right - 4;
+        const toLeft = b.right <= a.left + 4;
+        if (toRight || toLeft) {
+          const ax = toRight ? a.right : a.left;
+          const ay = a.top + a.height / 2;
+          const bx = toRight ? b.left : b.right;
+          const by = Math.min(Math.max(ay, b.top + 28), b.bottom - 28);
+          const mx = (ax + bx) / 2;
+          add(`M ${n2(ax)} ${n2(ay)} C ${n2(mx)} ${n2(ay)} ${n2(mx)} ${n2(by)} ${n2(bx)} ${n2(by)}`, 'tether', { stroke: GOLD }, { a: this.#tether.from, b: 'sheet' });
+          port(ax, ay, 3, 'line-port port-tether');
+          port(bx, by, 3, 'line-port port-tether');
+        } else {
+          // The surface sits above or below the node: a vertical tether from the nearer edge.
+          const below = b.top >= a.bottom;
+          const ax = a.left + a.width / 2;
+          const ay = below ? a.bottom : a.top;
+          const bx = Math.min(Math.max(ax, b.left + 28), b.right - 28);
+          const by = below ? b.top : b.bottom;
+          add(`M ${n2(ax)} ${n2(ay)} C ${n2(ax)} ${n2((ay + by) / 2)} ${n2(bx)} ${n2((ay + by) / 2)} ${n2(bx)} ${n2(by)}`, 'tether', { stroke: GOLD }, { a: this.#tether.from, b: 'sheet' });
+          port(ax, ay, 3, 'line-port port-tether');
+        }
       }
     }
     this.#applyLineEmphasis();
@@ -480,12 +651,14 @@ export class TreeView {
     for (const l of this.#lines) {
       let w = 1;
       if (l.kind === 'exec') w = Math.min(weight(l.goal ?? ''), em.sectors.get(l.a) ?? 1);
-      else if (l.kind === 'derive') w = weight(l.goal ?? '');
+      else if (l.kind === 'bundle' || l.kind === 'derive') w = weight(l.goal ?? '');
       else if (l.kind === 'branch' || l.kind === 'lane') w = em.sectors.get(l.b) ?? 1;
       else if (l.kind === 'relation') w = em.edges.get(l.edge ?? '') ?? 1;
       else if (l.kind === 'trunk') w = Math.max(weight('founder'), weight(l.b));
       l.el.classList.toggle('is-quiet', w < 0.5);
+      // A selected goal's lines are lit: they carry the eye from the goal back to the people serving it.
+      l.el.classList.toggle('is-lit', (l.kind === 'exec' || l.kind === 'bundle') && !l.el.classList.contains('line-casing') && l.goal !== undefined && l.goal === this.#selected && w >= 0.5);
     }
-    for (const dot of this.#svg.querySelectorAll<SVGCircleElement>('.line-port')) dot.classList.toggle('is-quiet', weight(dot.dataset.goal ?? '') < 0.5);
+    for (const dot of this.#svgTop.querySelectorAll<SVGCircleElement>('.line-port[data-goal]')) dot.classList.toggle('is-quiet', weight(dot.dataset.goal ?? '') < 0.5);
   }
 }

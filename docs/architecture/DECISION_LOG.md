@@ -2269,3 +2269,35 @@ become `c5-rank-order-flattened` and `c5-department-column-collapsed`; the proof
 The proof's settle drives frames because a background headless tab advances its animation clock only when it
 paints. The concept renders that informed the choice (constellation, strategy flow, tree of light, board) are
 recorded in the report; the flow and relationship strengths live on inside Goal Focus and Employee Focus.
+
+
+## D-C5-15 — Final visual craft pass: the Tree of Light is frozen; one line system, docked context sheets, an attention surface beside the Founder (Technical Lead, C5)
+
+**Context.** The Founder accepted the Tree of Light as the final visual foundation and asked for one bounded
+craft pass (QANDEEL_COMPANY_C5_TREE_OF_LIGHT_FINAL_VISUAL_CRAFT_PASS_v1): Company Live polish, integrated
+Employee and Goal Focus, an operating conversation, a Founder Attention that stays with the Founder, better
+execution lines and goal objects, no structural change, no runtime change.
+
+**Decision.** (1) The line layer is one system drawn from facts only, in two layers: structure (trunk with halo,
+an orthogonal gold bus from the CEO into every column, the team lane in the Department's accent, live relations)
+under the cards; execution (one collector rail per goal above the strategic direction that every serving column
+drops into, one bundle into the goal, the dashed derivation beneath the goal objects, the tether) above the
+pinned band with a paper casing. (2) Status lives on the person (a dot at the avatar's corner, a ring while work
+runs); the Department lives in the column (accent, header, lane) and on the avatar tint; tags appear only when
+they say something. (3) Context sheets (person, goal, conversation) dock beside the company, stop above the
+strategic direction, sit on the side that keeps their subject visible and are tethered to it; they share the
+columns' avatars, accents, radii and status grammar. (4) The conversation is an operating ledger: identity with
+reporting line, the work carried now and its goals, dated entries with sender, purpose and time, briefs as
+executive memos, the newest exchange kept in view, a composer addressed to the person; never bubbles.
+(5) Founder Attention idles as compact chips beside the Founder and opens as a surface anchored over them; reading
+an item spotlights where it lives in the company through a pure `attentionSpotlight` emphasis (a view concern
+that survives live refreshes; attention semantics untouched). (6) No tracked uppercase labels; sentence case,
+one scale; Arabic never letter-spaced. (7) The visual direction is frozen after this pass unless a BLOCKER is
+found.
+
+**Consequences.** The proof harness gained the spotlight, tether and "sheet clear of the goal band" checks, close-
+ups, a Founder ↔ Employee Arabic conversation, and two findings recorded for later harness work: the DevTools
+Animation domain must not be enabled on this page (it slows every interaction five to thirty times with this many
+transitioning elements; the rAF-driven settle suffices), and a clipped or scaled capture leaves the headless
+compositor at that size until the device metrics are set again. Runtime, storage, governance and authentication
+are unchanged; C5 remains NOT CLOSED pending exact-head CI, review and merge by the Technical Lead.

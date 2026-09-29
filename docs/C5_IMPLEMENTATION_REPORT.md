@@ -490,3 +490,111 @@ name and timeout), `README.md`, this report, `DECISION_LOG.md` (D-C5-14).
 
 - At very narrow widths the columns wrap to fewer per row (three, two, one); the goal band stays pinned.
 - The walkthrough is captured at a few frames per second (about 6 s at 4 fps).
+
+
+## 22. Final visual craft pass — Tree of Light (QANDEEL_COMPANY_C5_TREE_OF_LIGHT_FINAL_VISUAL_CRAFT_PASS_v1)
+
+The Tree of Light is the accepted and now frozen presentation. This pass raised its craft without touching its
+structure (Founder → CEO → five Department columns → people → Strategic direction → gold execution lines) and
+without touching storage, runtime, governance, authentication, migration 0009, Goal semantics, Founder Attention
+semantics, communication authority or the privacy rules. Where it contradicts section 21 about details of the
+surface, this section wins.
+
+### 22.1 Craft audit of v3 (what the frames showed)
+
+Company Live: the CEO → Department branches were five thin coloured curves meeting in a knot; column names were
+tracked uppercase eyebrows; each card carried a floating status dot and a ◆ stacked at its right edge; the
+execution lines curved across columns and the "flowing" overlay read as a dashed line. Employee / Goal Focus: a
+generic white panel that covered two columns and part of the goal band, with unnamed "Serves a goal" links and
+no visible tie to the selected card. Conversation: a side-panel ledger with the authority rule as a paragraph on
+top and a generic composer. Founder Attention: a full-height left rail covering two columns, the brief stacked
+like an e-mail, and nothing in the company responding to the item being read.
+
+### 22.2 What changed, by target
+
+- **Company Live.** One gold leadership system: a straight trunk (with a soft halo) from the Founder to the CEO,
+  then an orthogonal gold bus with rounded turns from the CEO into every column, each column's own accent only at
+  its port. Columns are fields (the Department's light at the top fading to paper, a hairline under a
+  sentence-case header with a colour mark, name and head-count, the Director first on a lane in the accent).
+  Cards carry the person: a rounded-square avatar in the Department tint (solid for Directors and the CEO), the
+  status as a dot at the avatar's corner (green well, blue running with a circling ring, amber awaiting, red
+  blocked, hollow for a vacant seat, a double ring for acting cover), one tag only when it says something, a gold
+  diamond when the person serves a goal. Depth is one material: paper, a soft offset shadow, hairlines.
+- **Gold execution lines.** Each goal owns a collector rail just above the Strategic direction; every serving
+  column drops into it (weight by the people serving, ports fanned so drops never overlap), and one bundle
+  weighted by everyone enters the goal. Rails and bundles draw above the pinned band with a paper casing (a road
+  on a map), structure draws under the cards. A running column sends one light along its line (`pathLength`
+  dash). A selected goal's lines are lit; unrelated lines quiet to a tenth. A derived Department goal hangs from
+  its parent by a dashed link that runs beneath the goal objects, never across another goal.
+- **Goals / Strategic direction.** A left-hand title block ("Strategic direction — where the work is going") and
+  the goals as mission objects: emblem, title first, then a status line (Active / Awaiting your decision, kind,
+  owner with initials, horizon), the serving Departments as accent chips, progress as a bar with the people
+  count. Company goals are warm and raised, Department goals subordinate, proposed goals dashed and hollow.
+- **Employee Focus.** A context sheet docked beside the company, stopping above the goal band (it reads the
+  band's height), on the side that keeps the person visible (right-hand columns get the sheet on the left), with a
+  gold tether from the selected card to the sheet. Header washed in the Department accent with the same avatar as
+  the column; "Reports to" as a lane of people (avatar, name, kind) up to the Founder; work rows that name the
+  goal they serve; live relations as people; authority as a budget meter and capability chips; "Talk to X".
+- **Goal Focus.** The same sheet in gold: emblem, kind and state, horizon, summary, success criteria, the path
+  from goal to action (owner as a person, serving Departments as accent chips, work items with their owner and
+  state, reviews and approvals), derived goals, the approve action for a proposed company goal.
+- **Conversation.** An operating ledger inside the company: the counterpart's identity with role, Department and
+  reporting line ("reports to you" for the CEO), what they carry now and the goals it serves, day separators,
+  entries with the sender's avatar, name, purpose and time (the Founder's entries on a warm wash, never bubbles),
+  a brief as an executive memo, the newest exchange kept in view, and a composer addressed "To Ehab, as
+  Question" with "Send to Ehab" and the authority rule as a footnote.
+- **Founder Attention.** Idle: compact chips beside the Founder (kind, subject, one verb — Decide / Urgent /
+  Look / Read); resting on one spotlights where it lives (the person, their chain, their Department, the goal it
+  is about) and tethers the person to the chip — emphasis only, through `attentionSpotlight`, attention
+  semantics untouched, and it survives the live refreshes of a working company. Open: a surface anchored beside
+  the Founder over the dock (about a fifth of the stage, the Founder in view), segmented lanes, items as executive
+  rows (level mark, kind, owner, time, the ask in one line, the brief as a four-part memo), actions Decide /
+  Reply / Show in company / Dismiss; reading an item spotlights it in the company the same way.
+- **Typography / motion.** No tracked uppercase labels remain (the wordmark keeps its tracking; Arabic never
+  receives letter-spacing); one type scale; sentence case everywhere. Motion: 160–220 ms strong ease-out
+  transitions on named properties, sheets enter from their own side (`@starting-style`), the attention surface
+  scales from its origin, hover lifts gated to fine pointers, reduced motion keeps every mark.
+
+### 22.3 What stayed intact
+
+Everything section 21.2 lists, plus the Tree of Light structure itself: no file under `packages/storage`,
+`packages/runtime`, `packages/governance` or `packages/command-center/src` changed; the lenses' semantics are
+unchanged (one pure addition, `attentionSpotlight`, with its own proof); the acceptance harness and the CI gates
+are unchanged.
+
+### 22.4 Files changed
+
+`packages/command-center-ui/src/app/{view,panels,main}.ts`, `src/model/lenses.ts` (`attentionSpotlight`),
+`src/index.ts`, `public/{styles.css,index.html}`, `test/layout.test.ts` (one new proof, 9 in all);
+`scripts/c5-visual-proof.mjs` (final frame set, close-ups, spotlight and tether checks, Animation domain no
+longer enabled), `scripts/c5/before-after.mjs` (v3 → final pairs, light board); `README.md`; this report;
+`DECISION_LOG.md` (D-C5-15).
+
+### 22.5 Focused validation
+
+UI build + typecheck + tests 9/9 · `command-center` tests 9/9 · `eslint --max-warnings=0` clean ·
+`verify-bootstrap` 63/63 · `c5:mutation` 16/16 caught · `c5:acceptance` PASS 9/9 · `c5:visual-proof` PASS
+(smoke 6/6 with the tether and "sheet clear of the goal band" checks; 13 frames and 2 close-ups; walkthrough;
+before/after board v3 → final; manifest). Full `npm run ci` runs on the exact head in GitHub CI.
+
+### 22.6 G1 — Skills found, used, and their concrete effect
+
+| Skill | Used | Effect on this pass |
+|---|---|---|
+| `impeccable` | used | Operate mode; the v3 audit (22.1); the craft floor drove the removal of eyebrow labels, the offset shadows, one material, themed browser surfaces; two bounded inspection rounds on real frames, one fix batch each |
+| `frontend-design` | used | The plan reviewed against the generic tells (no all-caps labels, no dot-joined meta strings on the goals, no hero-metric tiles); copy that names its action (Send to Ehab, Show in company, Decide) |
+| `dataviz` | used | The Department accents kept as validated; progress and the budget meter drawn to scale; identity never colour alone (name beside every accent) |
+| `emil-design-eng` / `animate` | used | Transition ingredients (160–220 ms, `cubic-bezier(0.23, 1, 0.32, 1)`), named properties only, `@starting-style` entrances, press feedback, hover gated to fine pointers, transitions over keyframes for anything rapid |
+| `review-animations` | used as the checklist | No `ease-in`, no `scale(0)`, no keyboard-triggered motion, reduced motion gentler not zero |
+| `sibawayh:designing-arabic-frontends` | used | Arabic content inside the LTR application: per-block `dir` and `lang`, Arabic line-height, `unicode-bidi: plaintext`, no letter-spacing on anything that can hold Arabic, `dir="auto"` composer |
+| `sibawayh:writing-eloquent-arabic` | not used | The chrome is English; the Arabic content in the seed is unchanged (one new Arabic message in the proof, written for the ledger) |
+| `ui-ux-pro-max` | partly | Its search tool needs Python (absent); its priority table applied by hand (contrast, 36 px targets, visible labels, no horizontal scroll, context-aware durations) |
+| `artifact-diagramming`, `github-actions`, React Native / Expo Skills | not needed | No diagram, no workflow change, no native surface |
+
+### 22.7 Residuals (MINOR)
+
+- A sheet docked on the far side of its subject is tethered across the company by a dashed hairline (it crosses
+  the columns between).
+- The sheet docked on the right covers the "Needs you" chips; the attention surface and the topbar button remain.
+- The walkthrough plays at 4 fps (about 11 s); the first two proof steps take ~20 s because the walkthrough
+  capture forces a paint every 250 ms.

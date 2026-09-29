@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { DEPT_LABEL, RANK_ORDER, applyLens, chainNodeIds, layoutUniverse, showsRelations } from '../src/index.js';
+import { DEPT_LABEL, RANK_ORDER, applyLens, attentionSpotlight, chainNodeIds, layoutUniverse, showsRelations } from '../src/index.js';
 import type { CompanyUniverse } from '../src/model/types.js';
 
 /** The value a proof relies on, present by construction of the fixture. */
@@ -214,5 +214,26 @@ describe('Lenses', () => {
     assert.equal(d.focusNodeId, must(l.columns[0]).directorId, 'a Department lens focuses its Director');
     assert.equal(d.nodes.get(`goal:${id(1, 'g')}`), 1, 'a goal anchored to the Department stays lit');
     assert.ok((d.nodes.get(`goal:${id(3, 'g')}`) ?? 1) < 0.5, 'a goal of another Department quiets');
+  });
+
+  test('C5-PROOF: reading one attention item spotlights where it lives — the person, their chain to the Founder, their Department; nothing else; the lens is untouched', () => {
+    const u = universe();
+    const l = layoutUniverse(u);
+    const item = `attention:${id(1, 'a')}`;
+    const s = attentionSpotlight(u, l, item);
+    const e1 = must(u.employees.filter((e) => e.seatKind === 'SPECIALIST')[1]);
+    assert.equal(s.nodes.get(item), 1);
+    assert.equal(s.nodes.get(`employee:${e1.id}`), 1, 'the person it concerns');
+    for (const c of chainNodeIds(u, l, e1.id)) assert.equal(s.nodes.get(c), 1, `${c} — their chain stays lit`);
+    assert.equal(s.focusNodeId, `employee:${e1.id}`);
+    assert.equal(s.sectors.get(must(e1.departmentId)), 1, 'their Department stays bright');
+    const other = must(l.columns[3]);
+    assert.ok((s.sectors.get(other.departmentId) ?? 1) < 0.5, 'an unrelated Department quiets');
+    assert.ok((s.nodes.get(must(other.directorId)) ?? 1) < 0.5, 'an unrelated Director quiets');
+    assert.ok((s.nodes.get(`goal:${id(1, 'g')}`) ?? 1) < 0.5, 'a goal the item is not about quiets');
+    assert.equal(s.edges.get('approval:1'), 1, 'the relation behind the item stays lit');
+    const none = attentionSpotlight(u, l, 'employee:nobody');
+    assert.ok([...none.nodes.values()].every((w) => w === 1), 'a spotlight on nothing changes nothing');
+    assert.deepEqual([...applyLens(u, l, { kind: 'LIVE' }).nodes.values()], [...none.nodes.values()], 'the lens itself is untouched');
   });
 });

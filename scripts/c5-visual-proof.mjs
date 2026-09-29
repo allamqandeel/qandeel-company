@@ -75,11 +75,49 @@ const step = async (name, fn) => {
     throw error;
   }
 };
-const shot = async (name) => {
+// QANDEEL_PROOF_TRACE=1 prints how long each helper call takes (tuning the harness, never part of the verdict).
+const TRACE = process.env.QANDEEL_PROOF_TRACE === '1';
+const traced = (name, fn) => async (...args) => {
+  const started = Date.now();
+  try {
+    return await fn(...args);
+  } finally {
+    if (TRACE) console.error(JSON.stringify({ trace: name, ms: Date.now() - started, arg: typeof args[0] === 'string' ? args[0].slice(0, 60) : args[0] }));
+  }
+};
+const shot = traced('shot', async (name) => {
   const file = path.join(out, `${name}.png`);
   await page.screenshot(file);
   return file;
+});
+// A close-up of one element (its box plus a margin): a detail frame for the eye. The live tab is never clipped
+// (a clipped or scaled capture leaves the headless compositor damaged for later frames): the full frame is
+// cropped on a throwaway page.
+const closeUp = async (name, selector, margin = 16) => {
+  const r = await page.evaluate(`(() => { const e = document.querySelector(${JSON.stringify(selector)}); if (!e) return null; const b = e.getBoundingClientRect(); return { x: b.left, y: b.top, width: b.width, height: b.height }; })()`);
+  if (!r) throw new Error(`no element ${selector}`);
+  const x = Math.max(0, r.x - margin);
+  const y = Math.max(0, r.y - margin);
+  const clip = { x, y, width: Math.min(W - x, r.width + margin * 2), height: Math.min(H - y, r.height + margin * 2), scale: 1 };
+  const full = await page.screenshot();
+  const crop = await openPage(browser.port);
+  try {
+    await crop.send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 1, mobile: false });
+    await crop.evaluate(`new Promise((done) => { document.documentElement.style.margin = '0'; document.body.style.margin = '0'; const img = new Image(); img.onload = () => done(true); img.src = 'data:image/png;base64,${full.toString('base64')}'; document.body.append(img); })`);
+    const { data } = await crop.send('Page.captureScreenshot', { format: 'png', clip });
+    const file = path.join(out, `${name}.png`);
+    writeFileSync(file, Buffer.from(data, 'base64'));
+    return { file, width: Math.round(clip.width), height: Math.round(clip.height) };
+  } finally {
+    await crop.close().catch(() => undefined);
+  }
 };
+// The pointer rests on an element (the surface responds to `pointerenter`; `focus` for keyboard parity).
+const hover = async (selector) => {
+  const ok = await page.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false })); return true; })()`);
+  if (!ok) throw new Error(`no element ${selector}`);
+};
+const unhover = async (selector) => page.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (el) el.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false })); return true; })()`);
 const startCapture = () => {
   capturing = true;
   const tick = async () => {
@@ -90,7 +128,8 @@ const startCapture = () => {
     } catch {
       // a navigation in flight: skip the frame
     }
-    captureTimer = setTimeout(tick, 1000 / 12);
+    // Four frames a second: the walkthrough plays at that rate, and every capture is a forced paint.
+    captureTimer = setTimeout(tick, 250);
   };
   void tick();
 };
@@ -102,19 +141,20 @@ const stopCapture = () => {
 // no render loop of its own (the DOM is still between changes). Requesting animation frames for the settle time
 // gives transitions the frames a visible tab would get for free (no screenshots: painting under software
 // rendering is the slow part; a frame request paints once per frame, nothing more).
-const settle = async (ms = 700) => {
+const settle = traced('settle', async (ms = 700) => {
   if (!page) return sleep(ms);
   await page.evaluate(`new Promise((done) => { const end = performance.now() + ${Math.round(ms)}; const tick = () => (performance.now() < end ? requestAnimationFrame(tick) : done()); requestAnimationFrame(tick); setTimeout(done, ${Math.round(ms) + 4000}); })`);
-};
+});
 // Waits, frame by frame, until a painted condition holds (a transition has reached its end, for example).
-const untilPainted = async (expression, timeoutMs = 6000) => {
+const untilPainted = traced('untilPainted', async (expression, timeoutMs = 6000) => {
   const ok = await page.evaluate(`new Promise((done) => { const end = performance.now() + ${timeoutMs}; const tick = () => { let v = false; try { v = !!(${expression}); } catch {} if (v) return done(true); if (performance.now() > end) return done(false); requestAnimationFrame(tick); }; requestAnimationFrame(tick); setTimeout(() => done(false), ${timeoutMs + 3000}); })`);
   if (!ok) throw new Error(`not painted in time: ${expression}`);
-};
-const click = async (selector) => {
+});
+const click = traced('click', async (selector) => {
   const ok = await page.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.scrollIntoView?.({ block: 'center' }); el.click(); return true; })()`);
   if (!ok) throw new Error(`no element ${selector}`);
-};
+});
+const waitUntil = traced('waitUntil', (expression, timeoutMs) => page.waitUntil(expression, timeoutMs));
 const type = async (selector, text) => {
   await page.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); el.focus(); el.value = ${JSON.stringify(text)}; el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
 };
@@ -124,7 +164,7 @@ const escape = async () => {
   await settle(400);
 };
 const waitReady = async () => {
-  await page.waitUntil(`document.getElementById('app') && !document.getElementById('app').hasAttribute('data-booting') && document.querySelectorAll('.column').length > 0`, 30_000);
+  await waitUntil(`document.getElementById('app') && !document.getElementById('app').hasAttribute('data-booting') && document.querySelectorAll('.column').length > 0`, 30_000);
   await settle(900);
 };
 const count = (selector) => page.evaluate(`document.querySelectorAll(${JSON.stringify(selector)}).length`);
@@ -137,11 +177,11 @@ try {
   page = await openPage(browser.port);
   await page.send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 1, mobile: false });
   // A headless tab only advances its animation clock when it is the fronted, focused target: the surface's CSS
-  // transitions (quieting, sheets) are real motion and must be seen, not skipped.
+  // transitions (quieting, sheets) are real motion and must be seen, not skipped. The frames are driven by the
+  // settle below; the DevTools Animation domain is deliberately NOT enabled — tracking every transition on the
+  // surface (lines, ports, cards) through it makes each interaction five to thirty times slower.
   await page.send('Page.bringToFront').catch(() => undefined);
   await page.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => undefined);
-  await page.send('Animation.enable').catch(() => undefined);
-  await page.send('Animation.setPlaybackRate', { playbackRate: 1 }).catch(() => undefined);
   const requests = [];
   const consoleLines = [];
   page.on('Network.requestWillBeSent', (p) => requests.push(p.request.url));
@@ -151,7 +191,7 @@ try {
   results.console = consoleLines;
   await page.send('Network.enable');
   await page.navigate(surface.launchUrl());
-  await page.waitUntil(`location.pathname === '/'`, 20_000);
+  await waitUntil(`location.pathname === '/'`, 20_000);
   await waitReady();
   const ceo = world.employees['company.ceo'].id;
 
@@ -162,12 +202,14 @@ try {
     const ceoCards = await count('.card-ceo');
     const columns = await count('.column');
     const goals = await count('.goal');
-    const exec = await count('.line-exec');
-    const trunk = await count('.line-trunk');
-    if (founder !== 1 || ceoCards !== 1 || columns !== 5 || goals < 3 || exec < 2 || trunk !== 1) throw new Error(`surface: founder ${founder}, ceo ${ceoCards}, columns ${columns}, goals ${goals}, execution lines ${exec}, trunk ${trunk}`);
+    const exec = await count('.line-exec:not(.line-flow)');
+    const bundles = await count('.line-bundle:not(.line-casing)');
+    const trunk = await count('.line-trunk:not(.line-halo)');
+    const bus = await count('.line-branch');
+    if (founder !== 1 || ceoCards !== 1 || columns !== 5 || goals < 3 || exec < 2 || bundles < 2 || trunk !== 1 || bus !== 5) throw new Error(`surface: founder ${founder}, ceo ${ceoCards}, columns ${columns}, goals ${goals}, execution lines ${exec}, bundles ${bundles}, trunk ${trunk}, bus ${bus}`);
     results.spike.renderer = renderer;
-    results.spike.surface = { columns, goals, executionLines: exec };
-    return { renderer, columns, goals, executionLines: exec };
+    results.spike.surface = { columns, goals, executionLines: exec, bundles, bus };
+    return { renderer, columns, goals, executionLines: exec, bundles, bus };
   });
   await step('spike-english-ui-content-as-written', async () => {
     // The application is English and left-to-right; company content keeps its own script and direction.
@@ -201,7 +243,7 @@ try {
   });
   await step('spike-selection-focus-return', async () => {
     await click(`.card[data-id="employee:${ceo}"]`);
-    await page.waitUntil(`document.getElementById('focus') && !document.getElementById('focus').hidden && document.querySelector('#focus .sheet-title')`, 10_000);
+    await waitUntil(`document.getElementById('focus') && !document.getElementById('focus').hidden && document.querySelector('#focus .sheet-title')`, 10_000);
     const title = await page.evaluate(`document.querySelector('#focus .sheet-title').textContent`);
     const lens = await page.evaluate(`document.documentElement.dataset.lens`);
     const quiet = await count('.card.is-quiet');
@@ -212,18 +254,23 @@ try {
     await settle(800);
     const builds1 = await page.evaluate(`document.querySelector('.company').dataset.builds`);
     if (builds0 !== builds1) throw new Error(`the surface was rebuilt without a change (${builds0} → ${builds1})`);
+    // The context sheet is tethered to the card it is about, and it never covers the strategic direction.
+    const tether = await count('.line-tether');
+    const sheetClear = await page.evaluate(`(() => { const s = document.getElementById('focus').getBoundingClientRect(); const g = document.querySelector('.goals').getBoundingClientRect(); return s.bottom <= g.top + 1; })()`);
+    if (tether !== 1 || !sheetClear) throw new Error(`tether ${tether}; sheet clear of the goal band: ${sheetClear}`);
     await escape();
     await settle(200);
     const back = await page.evaluate(`document.documentElement.dataset.lens`);
     const stillQuiet = await count('.card.is-quiet');
-    if (lens !== 'EMPLOYEE' || back !== 'LIVE' || quiet < 5 || stillQuiet !== 0) throw new Error(`lens ${lens} → ${back}; quiet ${quiet} → ${stillQuiet}`);
-    results.spike.selection = { title, lens, back, quieted: quiet, quietOpacity, builds: Number(builds1) };
-    return { title, lens, back, quieted: quiet, quietOpacity, builds: Number(builds1) };
+    const tetherGone = await count('.line-tether');
+    if (lens !== 'EMPLOYEE' || back !== 'LIVE' || quiet < 5 || stillQuiet !== 0 || tetherGone !== 0) throw new Error(`lens ${lens} → ${back}; quiet ${quiet} → ${stillQuiet}; tether ${tetherGone}`);
+    results.spike.selection = { title, lens, back, quieted: quiet, quietOpacity, builds: Number(builds1), tether, sheetClearOfGoals: sheetClear };
+    return { title, lens, back, quieted: quiet, quietOpacity, builds: Number(builds1), tether, sheetClearOfGoals: sheetClear };
   });
   await step('spike-reduced-motion-parity', async () => {
     // Parity of meaning, not of pixels: every card, goal, column name and line that Company Live shows in full
     // motion is still shown in reduced motion; only the tweens and the ambient drift go.
-    const marksExpr = `[...document.querySelectorAll('.card, .goal, .column-name, .line-exec, .line-trunk, .chip-attention')].map((e) => e.dataset.id || e.textContent || e.getAttribute('class')).sort()`;
+    const marksExpr = `[...document.querySelectorAll('.card, .goal, .column-name, .line-exec, .line-bundle, .line-trunk, .line-branch, .chip-attention')].map((e) => e.dataset.id || e.textContent || e.getAttribute('class')).sort()`;
     const before = await page.evaluate(marksExpr);
     await click('#motion-toggle');
     await settle(500);
@@ -255,41 +302,86 @@ try {
     await step('B-employee-focus', async () => {
       const seo = world.employees['growth.seo-1'].id;
       await click(`.card[data-id="employee:${seo}"]`);
-      await page.waitUntil(`!document.getElementById('focus').hidden && document.querySelector('#focus .chain li')`, 10_000);
+      await waitUntil(`!document.getElementById('focus').hidden && document.querySelector('#focus .chain li')`, 10_000);
       await untilPainted(`Number(getComputedStyle(document.querySelector('.card.is-quiet')).opacity) < 0.6`);
       await settle(600);
       await shot('02-employee-focus');
       const chain = await page.evaluate(`document.querySelectorAll('#focus .chain li').length`);
       const relations = await count('.line-relation');
       const lit = await page.evaluate(`document.querySelectorAll('.card.is-chain').length`);
-      return { chainLinks: chain, relationLines: relations, chainCards: lit };
+      const namedGoal = await page.evaluate(`[...document.querySelectorAll('#focus .work-goal')].some((g) => g.textContent.trim().length > 0)`);
+      const tether = await count('.line-tether');
+      if (!namedGoal || tether !== 1) throw new Error(`the goal a work item serves is named: ${namedGoal}; tether ${tether}`);
+      return { chainLinks: chain, relationLines: relations, chainCards: lit, tether };
     });
     await step('C-goal-focus', async () => {
       await click(`.goal[data-id="goal:${world.goals.saudi}"]`);
-      await page.waitUntil(`document.documentElement.dataset.lens === 'GOAL' && document.querySelector('#focus .goal-path')`, 10_000);
+      await waitUntil(`document.documentElement.dataset.lens === 'GOAL' && document.querySelector('#focus .goal-path')`, 10_000);
       await untilPainted(`Number(getComputedStyle(document.querySelector('.goal.is-quiet')).opacity) < 0.6`);
       await settle(600);
       await shot('03-goal-focus');
       const work = await page.evaluate(`document.querySelectorAll('#focus .work').length`);
-      const brightExec = await page.evaluate(`[...document.querySelectorAll('.line-exec')].filter((l) => !l.classList.contains('is-quiet')).length`);
+      const brightExec = await page.evaluate(`[...document.querySelectorAll('.line-exec:not(.line-flow)')].filter((l) => !l.classList.contains('is-quiet')).length`);
+      const litExec = await count('.line-exec.is-lit, .line-bundle.is-lit');
       const quietExec = await page.evaluate(`[...document.querySelectorAll('.line-exec.is-quiet')].length`);
       const quietGoals = await count('.goal.is-quiet');
       const quietColumns = await count('.column.is-quiet');
       const quietCards = await count('.card.is-quiet');
-      if (brightExec < 1 || quietGoals < 1 || quietColumns < 1 || quietCards < 3) throw new Error(`goal focus did not quiet the rest (bright lines ${brightExec}, quiet goals ${quietGoals}, quiet columns ${quietColumns}, quiet cards ${quietCards})`);
-      return { linkedWork: work, brightExecutionLines: brightExec, quietExecutionLines: quietExec, quietGoals, quietColumns, quietCards };
+      if (brightExec < 1 || litExec < 1 || quietGoals < 1 || quietColumns < 1 || quietCards < 3) throw new Error(`goal focus did not quiet the rest (bright lines ${brightExec}, lit ${litExec}, quiet goals ${quietGoals}, quiet columns ${quietColumns}, quiet cards ${quietCards})`);
+      return { linkedWork: work, brightExecutionLines: brightExec, litLines: litExec, quietExecutionLines: quietExec, quietGoals, quietColumns, quietCards };
     });
-    await step('D-conversation-english-ui-arabic-messages', async () => {
+    await step('D-founder-attention-compact', async () => {
+      // Idle: what needs the Founder sits beside the Founder. Resting on one item spotlights where it lives —
+      // the person, their chain, their Department — and a tether runs from the person to the item.
+      await escape();
+      await settle(300);
+      await hover('.chip-attention');
+      await untilPainted(`document.querySelectorAll('.column.is-quiet').length > 0 && Number(getComputedStyle(document.querySelector('.column.is-quiet')).opacity) < 0.7`);
+      await settle(500);
+      await shot('04-founder-attention-compact');
+      const detail = await closeUp('04b-founder-attention-compact-detail', '.spine', 12);
+      const tether = await count('.line-tether');
+      const quietColumns = await count('.column.is-quiet');
+      const railOpen = await page.evaluate(`!document.getElementById('rail').hidden`);
+      await unhover('.chip-attention');
+      await settle(300);
+      const restored = await count('.column.is-quiet');
+      if (railOpen || tether !== 1 || quietColumns < 1 || restored !== 0) throw new Error(`rail open ${railOpen}, tether ${tether}, quiet columns ${quietColumns} → ${restored}`);
+      return { tether, quietColumns, restored, detail: path.basename(detail.file) };
+    });
+    await step('E-founder-attention-opened', async () => {
+      await click('.dock-head');
+      await waitUntil(`!document.getElementById('rail').hidden && document.querySelector('.rail-tab')`, 10_000);
+      await click('.rail-tab:nth-child(2)');
+      await waitUntil(`document.querySelector('.rail-item .brief')`, 10_000);
+      await hover('.rail-item');
+      await untilPainted(`document.querySelectorAll('.line-tether').length === 1`);
+      await settle(1000);
+      await shot('05-founder-attention-opened');
+      const needsMe = await page.evaluate(`document.querySelectorAll('.rail-tab')[0].querySelector('.count').textContent`);
+      const briefs = await page.evaluate(`document.querySelectorAll('.rail-tab')[1].querySelector('.count').textContent`);
+      const ordinary = await page.evaluate(`[...document.querySelectorAll('.rail-item')].some((i) => i.textContent.includes('Competitor analysis'))`);
+      const parts = await count('.rail-item .brief .brief-row');
+      // The surface stays beside the Founder and leaves most of the company in view.
+      const coverage = await page.evaluate(`(() => { const r = document.getElementById('rail').getBoundingClientRect(); const s = document.querySelector('.stage').getBoundingClientRect(); return Math.round(100 * (r.width * r.height) / (s.width * s.height)); })()`);
+      const founderVisible = await page.evaluate(`(() => { const f = document.querySelector('.founder').getBoundingClientRect(); const r = document.getElementById('rail').getBoundingClientRect(); return f.right <= r.left || f.left >= r.right || f.bottom <= r.top; })()`);
+      if (ordinary) throw new Error('a routine completed task entered Founder Attention');
+      if (parts !== 4 || coverage > 30 || !founderVisible) throw new Error(`brief parts ${parts}, surface covers ${coverage}% of the stage, Founder visible ${founderVisible}`);
+      await unhover('.rail-item');
+      return { needsMe, briefs, routineExcluded: true, briefParts: parts, coveragePercent: coverage, founderVisible };
+    });
+    await step('F-conversation-founder-ceo', async () => {
       // The CEO's conversation: the Founder's Arabic question and the CEO's Arabic answer already there; the
       // Founder adds an English question; the reply comes from the CEO's own governed run (in Arabic).
+      await escape();
       await click(`.card[data-id="employee:${ceo}"]`);
-      await page.waitUntil(`!document.getElementById('focus').hidden && document.querySelector('#focus .sheet-actions .btn-primary')`, 10_000);
+      await waitUntil(`!document.getElementById('focus').hidden && document.querySelector('#focus .sheet-actions .btn-primary')`, 10_000);
       await click('#focus .sheet-actions .btn-primary');
-      await page.waitUntil(`document.documentElement.dataset.lens === 'CONVERSATION' && document.querySelectorAll('#focus .entry').length >= 2`, 15_000);
+      await waitUntil(`document.documentElement.dataset.lens === 'CONVERSATION' && document.querySelectorAll('#focus .entry').length >= 2`, 15_000);
       // Typed and sent in one breath (a live company may refresh the sheet between the two; the draft survives that too).
       await page.evaluate(`(() => { const f = document.querySelector('#focus .composer'); const el = f.querySelector('textarea'); el.focus(); el.value = ${JSON.stringify('Good. What is the first thing you need from me this week?')}; el.dispatchEvent(new Event('input', { bubbles: true })); f.requestSubmit(); return true; })()`);
       try {
-        await page.waitUntil(`document.querySelectorAll('#focus .entry:not(.pending)').length >= 4`, 60_000);
+        await waitUntil(`document.querySelectorAll('#focus .entry:not(.pending)').length >= 4`, 60_000);
       } catch (error) {
         const comm = surface.runtime.founder.communications;
         const stored = comm.messages(live.ceoThreadId).length;
@@ -299,37 +391,47 @@ try {
         throw new Error(`${String(error?.message ?? error)} — stored ${stored}, pending replies ${pending}, entries shown ${shown}, note "${toast}"`, { cause: error });
       }
       await settle(1200);
-      await shot('04-conversation');
+      await shot('06-conversation-founder-ceo');
       const dirs = await page.evaluate(`[...document.querySelectorAll('#focus .entry-body')].map((b) => getComputedStyle(b).direction + ':' + (/[\\u0600-\\u06FF]/.test(b.textContent) ? 'ar' : 'en'))`);
       const layoutDir = await page.evaluate(`getComputedStyle(document.querySelector('#focus')).direction`);
+      const context = await count('#focus .context-chips .chip');
       if (layoutDir !== 'ltr') throw new Error(`the sheet is ${layoutDir}`);
       if (!dirs.includes('rtl:ar') || !dirs.includes('ltr:en')) throw new Error(`message directions ${dirs.join(' ')}`);
-      return { messages: dirs.length, directions: dirs };
+      return { messages: dirs.length, directions: dirs, contextChips: context };
     });
-    await step('E-founder-attention-brief', async () => {
+    await step('G-conversation-founder-employee-arabic', async () => {
+      // A direct Founder ↔ Employee conversation: the English note already there; the Founder writes in Arabic
+      // inside the English application; the reply comes from the employee's own governed run.
+      const lead = world.employees['product.lead-1'].id;
       await escape();
-      await click('.dock-head');
-      await page.waitUntil(`!document.getElementById('rail').hidden && document.querySelector('.rail-tab')`, 10_000);
-      await click('.rail-tab:nth-child(2)');
-      await page.waitUntil(`document.querySelector('.rail-item .brief')`, 10_000);
+      await click(`.card[data-id="employee:${lead}"]`);
+      await waitUntil(`!document.getElementById('focus').hidden && document.querySelector('#focus .sheet-actions .btn-primary')`, 10_000);
+      await click('#focus .sheet-actions .btn-primary');
+      await waitUntil(`document.documentElement.dataset.lens === 'CONVERSATION' && document.querySelectorAll('#focus .entry').length >= 1`, 15_000);
+      await page.evaluate(`(() => { const f = document.querySelector('#focus .composer'); const el = f.querySelector('textarea'); el.focus(); el.value = ${JSON.stringify('ما أهم ما تحتاجينه مني هذا الأسبوع لإنجاز تقرير الاحتفاظ؟')}; el.dispatchEvent(new Event('input', { bubbles: true })); f.requestSubmit(); return true; })()`);
+      await waitUntil(`document.querySelectorAll('#focus .entry:not(.pending)').length >= 3`, 60_000);
       await settle(1200);
-      await shot('05-founder-attention-ceo-brief');
-      const needsMe = await page.evaluate(`document.querySelectorAll('.rail-tab')[0].querySelector('.count').textContent`);
-      const briefs = await page.evaluate(`document.querySelectorAll('.rail-tab')[1].querySelector('.count').textContent`);
-      const ordinary = await page.evaluate(`[...document.querySelectorAll('.rail-item')].some((i) => i.textContent.includes('Competitor analysis'))`);
-      if (ordinary) throw new Error('a routine completed task entered Founder Attention');
-      return { needsMe, briefs, routineExcluded: true };
+      await shot('07-conversation-founder-employee');
+      // The newest entry is in view above the composer (the ledger keeps the latest exchange under the eye).
+      const newestVisible = await page.evaluate(`(() => { const e = [...document.querySelectorAll('#focus .entry')].pop(); const r = e.getBoundingClientRect(); const c = document.querySelector('#focus .composer').getBoundingClientRect(); const s = document.getElementById('focus').getBoundingClientRect(); return r.bottom <= c.top + 1 && r.top >= s.top; })()`);
+      if (!newestVisible) throw new Error('the newest message is not in view');
+      const detail = await closeUp('08-arabic-message-in-english-ui', '#focus', 0);
+      const dirs = await page.evaluate(`[...document.querySelectorAll('#focus .entry-body')].map((b) => getComputedStyle(b).direction + ':' + (/[\\u0600-\\u06FF]/.test(b.textContent) ? 'ar' : 'en'))`);
+      const chromeDir = await page.evaluate(`getComputedStyle(document.querySelector('#focus .composer')).direction + ' ' + getComputedStyle(document.querySelector('#focus .entry-meta')).direction`);
+      const sheetLeft = await page.evaluate(`document.getElementById('focus').classList.contains('is-left')`);
+      if (!dirs.includes('rtl:ar') || !dirs.includes('ltr:en') || chromeDir !== 'ltr ltr') throw new Error(`directions ${dirs.join(' ')}; chrome ${chromeDir}`);
+      if (!sheetLeft) throw new Error('a person in a right-hand column should get the sheet on the left');
+      return { messages: dirs.length, directions: dirs, chrome: chromeDir, sheetDocked: 'left', detail: path.basename(detail.file) };
     });
-    await step('F-governed-action', async () => {
-      await click('.rail-tab:nth-child(2)');
-      await settle(300);
+    await step('H-governed-action', async () => {
+      await escape();
       await page.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }))`);
-      await page.waitUntil(`!document.getElementById('palette').hidden`, 5_000);
+      await waitUntil(`!document.getElementById('palette').hidden`, 5_000);
       await type('.palette-input', 'approve Ehab Tarek campaign with a budget of EGP 50,000');
       await submit('.palette-form');
-      await page.waitUntil(`!document.getElementById('preview').hidden && document.querySelector('#preview .preview-summary')`, 15_000);
+      await waitUntil(`!document.getElementById('preview').hidden && document.querySelector('#preview .preview-summary')`, 15_000);
       await settle(1200);
-      await shot('06-governed-action-preview');
+      await shot('09-governed-action-preview');
       const before = surface.runtime.governance.budgetFor('EMPLOYEE', ceo).capMoney;
       const summary = await page.evaluate(`document.querySelector('#preview .preview-summary').textContent`);
       const leaked = await page.evaluate(`/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/.test(document.getElementById('preview').textContent)`);
@@ -337,49 +439,54 @@ try {
       // The text alone changed nothing:
       if (surface.runtime.governance.budgetFor('EMPLOYEE', ceo).capMoney !== before) throw new Error('text mutated a budget');
       await click('#preview .btn-primary');
-      await page.waitUntil(`document.getElementById('preview').hidden`, 15_000);
+      await waitUntil(`document.getElementById('preview').hidden`, 15_000);
       await settle(1000);
-      await shot('07-governed-action-confirmed');
+      await shot('10-governed-action-confirmed');
       const after = surface.runtime.governance.budgetFor('EMPLOYEE', ceo).capMoney;
       const audit = surface.runtime.view.auditByAction('founder.action_confirmed').length;
       if (after !== 50_000 * 1_000_000 || audit < 1) throw new Error(`cap ${after}, audits ${audit}`);
       return { summary, capBefore: before, capAfter: after, confirmedAudits: audit };
     });
-    await step('G-timeline-return-to-live', async () => {
+    await step('I-timeline-return-to-live', async () => {
       await escape();
       await escape();
       await page.evaluate(`(() => { const r = document.querySelector('.scrubber'); r.value = String(Number(r.min) + 1000); r.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
-      await page.waitUntil(`document.documentElement.dataset.live === 'history'`, 10_000);
+      await waitUntil(`document.documentElement.dataset.live === 'history'`, 10_000);
       await settle(1400);
-      await shot('08-historical-focus');
+      await shot('11-historical-focus');
       const historyEmployees = await count('.card[data-kind="employee"]');
       await click('.timeline .btn');
-      await page.waitUntil(`document.documentElement.dataset.live === 'live'`, 10_000);
+      await waitUntil(`document.documentElement.dataset.live === 'live'`, 10_000);
       await settle(900);
       return { historyEmployees };
     });
-    await step('H-reduced-motion', async () => {
+    await step('J-reduced-motion', async () => {
       await click('#motion-toggle');
       await settle(600);
-      await shot('09-reduced-motion');
+      await shot('12-reduced-motion');
       await click('#motion-toggle');
       return { mode: 'reduced → full' };
     });
     stopCapture();
-    await step('I-scale', async () => {
+    await step('K-scale', async () => {
       // A larger company, really seeded through the store, then the real UI over it.
       const added = seedScale(company, world, 60);
       await page.navigate(`${surface.origin}/`);
       await waitReady();
       await settle(1500);
-      await shot('10-scale');
+      await shot('13-scale');
       const employees = surface.runtime.founder.universe().employees.length;
       const cards = await count('.card[data-id^="employee:"]');
       const columns = await count('.column');
       const growthRows = await page.evaluate(`document.querySelectorAll('.column:nth-child(2) .members .card').length`);
       if (cards !== employees) throw new Error(`${cards} cards for ${employees} employees`);
       if (columns !== 5) throw new Error('columns changed at scale');
-      return { added: added.length, employees, cards, growthMembers: growthRows };
+      // Density and legibility at scale: no name clipped below its line box, every column name within two lines.
+      const clipped = await page.evaluate(`[...document.querySelectorAll('.card-name')].filter((n) => n.scrollHeight > n.clientHeight + 2).length`);
+      const columnNamesFit = await page.evaluate(`[...document.querySelectorAll('.column-name')].every((n) => n.getBoundingClientRect().height < 40)`);
+      const exec = await count('.line-exec:not(.line-flow)');
+      if (clipped > 0 || !columnNamesFit) throw new Error(`clipped names ${clipped}; column names within two lines ${columnNamesFit}`);
+      return { added: added.length, employees, cards, growthMembers: growthRows, executionLines: exec, clippedNames: clipped };
     });
     await step('encode-walkthrough', async () => {
       const enc = await openPage(browser.port, `file:///${path.join(ROOT, 'scripts', 'c5', 'encoder.html').replace(/\\/g, '/')}`);

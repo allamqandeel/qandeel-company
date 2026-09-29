@@ -5,7 +5,7 @@
  */
 import { deptName, fmtRelative, INTENT_LABEL, LEVEL_LABEL, RELATION_LABEL, RESULT_LABEL, SOURCE_LABEL, t } from '../model/format.js';
 import { layoutUniverse } from '../model/layout.js';
-import { applyLens, chainNodeIds, showsRelations } from '../model/lenses.js';
+import { applyLens, attentionSpotlight, chainNodeIds, showsRelations } from '../model/lenses.js';
 import type { CompanyUniverse, Emphasis, Layout, LayoutNode, Lens } from '../model/types.js';
 import { api, ApiError, subscribeChanges } from './api.js';
 import { h, renderActivity, renderAttentionRail, renderCalendar, renderConversation, renderEmployeeFocus, renderGoalFocus, renderHealthLine, renderPalette, renderPreview, renderTimeline, type PanelHost } from './panels.js';
@@ -38,6 +38,8 @@ class App implements PanelHost {
   #previousAttentionIds = new Set<string>();
   #railOpen = false;
   #toastTimer = 0;
+  /** The attention item under the Founder's eye (its spotlight outlives the live refreshes of a working company). */
+  #spotlight: { itemId: string; el: HTMLElement | null } | null = null;
 
   constructor() {
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -64,6 +66,7 @@ class App implements PanelHost {
         if (a) this.focusSource(a.sourceRef);
       },
       onOpenAttention: () => (this.#railOpen ? this.closeRail() : this.showLane(null)),
+      onHoverAttention: (nodeId, itemEl) => this.spotlightAttention(nodeId === null ? null : nodeId.replace('attention:', ''), itemEl),
     });
     this.view.setReducedMotion(this.reduced);
     $('motion-toggle').addEventListener('click', () => this.setReduced(!this.reduced));
@@ -126,7 +129,10 @@ class App implements PanelHost {
       }
       renderTimeline($('timeline'), { live: at === null, at, earliest: this.timelineBounds.earliest, now: this.timelineBounds.now }, this);
       renderHealthLine($('health'), u, this.stream);
-      if (this.lens.kind === 'EMPLOYEE' || this.lens.kind === 'CONVERSATION' || this.lens.kind === 'GOAL') await this.#renderFocus();
+      if (this.lens.kind === 'EMPLOYEE' || this.lens.kind === 'CONVERSATION' || this.lens.kind === 'GOAL') {
+        await this.#renderFocus();
+        this.#applyTether();
+      }
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) this.lock(e.code);
       else this.note(`Could not refresh (${e instanceof ApiError ? e.code : 'error'})`, 'system');
@@ -198,10 +204,54 @@ class App implements PanelHost {
     return departmentColor(n?.column ?? null);
   }
 
+  deptColorOf(id: string): string {
+    return departmentColor(this.layout?.columns.find((c) => c.departmentId === id)?.index ?? null);
+  }
+
+  colorOf(ref: string): string {
+    if (ref === 'founder' || (this.layout && ref === this.layout.ceoId)) return '#c48a1f';
+    return departmentColor(this.layout?.byId.get(ref)?.column ?? null);
+  }
+
+  /**
+   * The Founder reads one attention item (in the dock beside the Founder or in the open attention surface):
+   * the company spotlights the person, their chain, their Department and the goal it is about, and a tether
+   * runs from the person to the item. Null restores the lens. Attention semantics are untouched: this is
+   * emphasis only.
+   */
+  spotlightAttention(itemId: string | null, itemEl: HTMLElement | null): void {
+    if (!this.universe || !this.layout) return;
+    if (itemId === null) {
+      this.#spotlight = null;
+      if (this.emphasis) this.view.setEmphasis(this.emphasis);
+      this.#applyTether();
+      return;
+    }
+    this.#spotlight = { itemId, el: itemEl };
+    const nodeId = `attention:${itemId}`;
+    const spot = attentionSpotlight(this.universe, this.layout, nodeId);
+    this.view.setEmphasis(spot);
+    const owner = this.layout.byId.get(nodeId)?.employeeId ?? null;
+    const anchor = itemEl && itemEl.isConnected ? itemEl : this.#railOpen ? $('rail') : null;
+    this.view.setTether(owner ? `employee:${owner}` : null, anchor);
+  }
+
+  /** The tether follows the lens: a context sheet is tied to what it is about. */
+  #applyTether(): void {
+    const focus = $('focus');
+    const lens = this.lens;
+    if (focus.hidden || !(lens.kind === 'EMPLOYEE' || lens.kind === 'CONVERSATION' || lens.kind === 'GOAL')) {
+      this.view.setTether(null, null);
+      return;
+    }
+    this.view.setTether(lens.kind === 'GOAL' ? `goal:${lens.goalId}` : `employee:${lens.employeeId}`, focus);
+  }
+
   #applyLens(immediate: boolean): void {
     if (!this.universe || !this.layout) return;
     this.emphasis = applyLens(this.universe, this.layout, this.lens);
     this.view.setEmphasis(this.emphasis);
+    if (this.#spotlight) this.spotlightAttention(this.#spotlight.itemId, this.#spotlight.el);
     this.view.setRelationsVisible(showsRelations(this.lens));
     this.view.setSelection(this.emphasis.focusNodeId);
     if (!immediate) this.view.focus(this.emphasis.focusNodeId);
@@ -214,11 +264,19 @@ class App implements PanelHost {
     this.#applyLens(false);
     const focus = $('focus');
     if (lens.kind === 'EMPLOYEE' || lens.kind === 'GOAL' || lens.kind === 'CONVERSATION') {
+      // The sheet docks on the side that keeps what it is about in view: a person in the two right-hand
+      // columns (or a goal served there) gets the sheet on the left. With the attention surface open, right.
+      const nodeId = lens.kind === 'GOAL' ? `goal:${lens.goalId}` : `employee:${lens.employeeId}`;
+      const node = this.layout?.byId.get(nodeId);
+      const columns = this.layout?.columns.length ?? 5;
+      const column = node?.kind === 'goal' ? (node.anchors.length ? node.anchors.reduce((s, i) => s + i, 0) / node.anchors.length : null) : node?.column ?? null;
+      focus.classList.toggle('is-left', !this.#railOpen && column !== null && column >= columns / 2);
       focus.hidden = false;
-      void this.#renderFocus();
+      void this.#renderFocus().then(() => this.#applyTether());
     } else {
       focus.hidden = true;
       focus.replaceChildren();
+      this.#applyTether();
     }
     if (lens.kind === 'ATTENTION') {
       this.lane = lens.lane;
@@ -230,6 +288,8 @@ class App implements PanelHost {
   #setRail(open: boolean): void {
     this.#railOpen = open;
     $('rail').hidden = !open;
+    if (open) $('focus').classList.remove('is-left');
+    if (!open) this.spotlightAttention(null, null);
     $('attention-toggle').setAttribute('aria-expanded', open ? 'true' : 'false');
     document.documentElement.dataset.rail = open ? 'open' : 'closed';
   }
