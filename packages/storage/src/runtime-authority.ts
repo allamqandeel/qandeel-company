@@ -87,6 +87,10 @@ import {
   type StepResultKind,
   type SubmitResult,
 } from './mind-writes.js';
+import { txRecordMessage, type MessageProposalInput, type RecordMessageResult } from './communications.js';
+import { txGoalAct } from './goals.js';
+import { getEmployeeRow } from './governance-core.js';
+import { attributed } from './governed-writes.js';
 import { materializeExpiredActing } from './org-core.js';
 import { txOrgAct, txReviewDecision, type OrgActResult, type ReviewDecisionResult } from './org-writes.js';
 import { sweepReviews } from './review-core.js';
@@ -405,6 +409,34 @@ export function recordOrgAct(store: CompanyStore, fence: Fence, step: number, ac
 /** The reviewer's decision from inside its own review Work Item (re-checked at this boundary). */
 export function recordReviewDecision(store: CompanyStore, fence: Fence, input: { outcome: unknown; reasonCode: string; rationale: string | null; evidenceRefs: readonly string[] }): ReviewDecisionResult {
   return fenced(store, 'review decision', fence, (ctx) => txReviewDecision(ctx, fence, input));
+}
+
+// --- C5 Founder communication and goals (job fence mandatory; runtime only) ------------------------------
+
+export type { MessageProposalInput, RecordMessageResult } from './communications.js';
+
+/**
+ * The run's Employee posts one structured message into the Founder thread its Work Item answers (C5,
+ * Stage 9). The thread binding is the item's immutable processor input; the sender is the attributed
+ * Employee, never a value in the output; a message never decides, approves or grants anything.
+ */
+export function recordMessage(store: CompanyStore, fence: Fence, input: MessageProposalInput): RecordMessageResult {
+  return fenced(store, 'founder message', fence, (ctx) => {
+    verifyFence(ctx, fence);
+    const a = attributed(ctx, fence);
+    const e = getEmployeeRow(ctx, a.employeeId);
+    return txRecordMessage(ctx, fence, a.employeeId, e.ref, a.workItemId, input);
+  });
+}
+
+/** A Director derives a Department goal or links its own work to a goal from inside its governed run (C5, Stage 2 §3). */
+export function recordGoalAct(store: CompanyStore, fence: Fence, action: 'goal.derive' | 'goal.link', args: Record<string, unknown>): { outcome: 'DONE' | 'REFUSED'; code: string; resultRef: string | null } {
+  return fenced(store, 'goal act', fence, (ctx) => {
+    verifyFence(ctx, fence);
+    const a = attributed(ctx, fence);
+    const e = getEmployeeRow(ctx, a.employeeId);
+    return txGoalAct(ctx, a.employeeId, e.ref, a.departmentId, a.workItemId, action, args);
+  });
 }
 
 /** Recovery (supervisor fence mandatory): bounded reconciliation of review state and expired acting coverage. */

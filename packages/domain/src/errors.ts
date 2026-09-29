@@ -63,6 +63,11 @@ export const ERROR_CODES = [
   'REVIEW_REQUIRED',
   'REVIEW_STALE',
   'REVIEWER_NOT_ELIGIBLE',
+  // C5 Founder surface, Goals and communication.
+  'FOUNDER_SESSION_INVALID',
+  'FOUNDER_CONFIRMATION_REQUIRED',
+  'GOAL_INVALID',
+  'COMMUNICATION_INVALID',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

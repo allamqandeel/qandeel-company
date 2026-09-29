@@ -28,9 +28,11 @@ export default tseslint.config(
     },
   },
   {
-    // C1 runtime code opens no network path (no listener, no provider call).
+    // C1 runtime code opens no network path (no listener, no provider call). C5's one exception is the
+    // loopback Founder listener (`packages/command-center/src/server/listener.ts`, verifier rule
+    // `founder-listener-loopback-only`) and the browser UI, which talks to that listener with fetch.
     files: ['packages/*/src/**/*.ts'],
-    ignores: ['packages/storage/src/sqlite/**'],
+    ignores: ['packages/storage/src/sqlite/**', 'packages/command-center/src/server/listener.ts', 'packages/command-center-ui/src/**'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -124,9 +126,40 @@ export default tseslint.config(
     },
   },
   {
+    // The Founder listener: the one module that may open a (loopback-only) network path; still no SQLite,
+    // no child processes, no storage internals.
+    files: ['packages/command-center/src/server/listener.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            { name: 'node:sqlite', message: 'Only packages/storage/src/sqlite/connection.ts may import node:sqlite.' },
+            ...['child_process', 'node:child_process', 'worker_threads', 'node:worker_threads'].map((name) => ({ name, message: 'The Founder surface executes no external tools or processes.' })),
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // The browser UI (C5): DOM globals, fetch to its own origin only (CSP connect-src 'self'), no Node modules.
+    files: ['packages/command-center-ui/src/**/*.ts'],
+    languageOptions: {
+      globals: {
+        window: 'readonly', document: 'readonly', navigator: 'readonly', location: 'readonly', history: 'readonly', fetch: 'readonly', EventSource: 'readonly', requestAnimationFrame: 'readonly', cancelAnimationFrame: 'readonly',
+        setTimeout: 'readonly', clearTimeout: 'readonly', setInterval: 'readonly', clearInterval: 'readonly', performance: 'readonly', localStorage: 'readonly', Intl: 'readonly', HTMLElement: 'readonly', HTMLButtonElement: 'readonly', HTMLInputElement: 'readonly', HTMLSelectElement: 'readonly', HTMLTextAreaElement: 'readonly', SVGElement: 'readonly', SVGSVGElement: 'readonly', SVGGElement: 'readonly', SVGPathElement: 'readonly', KeyboardEvent: 'readonly', PointerEvent: 'readonly', MouseEvent: 'readonly', RequestInit: 'readonly', Node: 'readonly', Buffer: 'readonly', console: 'readonly',
+      },
+    },
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [{ group: ['node:*', '@qandeel-company/runtime', '@qandeel-company/storage/*'], message: 'The browser UI has no Node surface and reaches the Company only through the loopback API.' }] }],
+    },
+  },
+  {
     files: ['**/*.mjs'],
     languageOptions: {
-      globals: { console: 'readonly', process: 'readonly', URL: 'readonly' },
+      // Node 24 globals the scripts use (the C5 acceptance / visual proof drive a loopback surface and a
+      // DevTools WebSocket through the runtime's built-ins; no dependency).
+      globals: { console: 'readonly', process: 'readonly', URL: 'readonly', Buffer: 'readonly', fetch: 'readonly', WebSocket: 'readonly', setTimeout: 'readonly', clearTimeout: 'readonly', performance: 'readonly' },
     },
   },
 );

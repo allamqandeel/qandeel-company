@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <title>QANDEEL — Company</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app" data-booting>
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">QANDEEL</span><span class="lens" id="lens">Company Live</span></div>
+      <p class="health" id="health" aria-live="polite"></p>
+      <div class="topbar-actions">
+        <button type="button" class="btn btn-quiet" id="palette-open" aria-keyshortcuts="Control+K">Ask the company <kbd>Ctrl K</kbd></button>
+        <button type="button" class="btn btn-ghost btn-dock" id="attention-toggle" aria-controls="rail" aria-expanded="false">Attention <span class="count" id="attention-count">0</span></button>
+        <button type="button" class="btn btn-ghost" id="motion-toggle" aria-pressed="false">Motion: full</button>
+        <button type="button" class="btn btn-ghost" id="legend-toggle" aria-controls="legend">Key</button>
+        <button type="button" class="btn btn-ghost" id="logout">End session</button>
+      </div>
+    </header>
+    <main class="stage">
+      <div id="universe" class="universe" role="region" aria-label="The company: the Founder at the top, the CEO beneath, one column per department with its Director first, goals along the bottom"></div>
+      <aside id="rail" class="rail" aria-label="Founder attention" hidden></aside>
+      <aside id="focus" class="focus" hidden aria-live="polite"></aside>
+      <section id="palette" class="palette" hidden aria-label="Founder command"></section>
+      <div id="preview" class="preview" role="dialog" aria-modal="true" aria-label="Confirm a governed action" hidden></div>
+      <section id="legend" class="legend" hidden aria-label="Key">
+        <h3>Reading the company</h3>
+        <ul>
+          <li><span class="key-mark key-trunk"></span> The gold trunk runs from the Founder to the CEO; the gold bus leads from the CEO into the five departments.</li>
+          <li><span class="key-mark key-dept"></span> A column is a department: its Director first, then Managers and Leads, then Specialists, on one lane in the department's colour.</li>
+          <li><span class="key-mark key-vacant"></span> A dashed card is a vacant seat; “Acting cover” marks a seat held on behalf of someone.</li>
+          <li><span class="key-mark key-running"></span> The dot on a person is their status: green well, blue running now (with a circling ring), amber awaiting a decision, red blocked.</li>
+          <li><span class="key-mark key-goal"></span> Goals along the bottom are the strategic direction. Each goal has a gold rail: the departments whose work serves it drop into the rail, and the bundle enters the goal. A gold diamond on a card means that person serves a goal.</li>
+          <li><span class="key-mark key-attention"></span> Beside the Founder: what needs you (approvals, briefs, decisions). Rest on one to see where it lives in the company. Nothing else is decorative.</li>
+        </ul>
+      </section>
+      <footer class="bottombar">
+        <div id="timeline" class="timeline" aria-label="Time"></div>
+        <details id="calendar" class="dock dock-calendar"></details>
+        <output id="activity" class="toast" aria-live="polite"></output>
+      </footer>
+    </main>
+  </div>
+  <div id="lock" class="lock" hidden>
+    <div class="lock-card">
+      <h1>No Founder session</h1>
+      <p>Open the command center from the command line on this same machine:</p>
+      <pre>qandeel-founder serve --workspace &lt;dir&gt;</pre>
+      <p>Then open the launch link it prints (valid for ninety seconds, once). Reason: <code data-code></code></p>
+    </div>
+  </div>
+  <script type="module" src="/app/app/main.js" nonce="{{nonce}}"></script>
+</body>
+</html>

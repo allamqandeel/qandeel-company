@@ -78,6 +78,23 @@ export interface ReviewDecisionOutcome {
   readonly code: string;
 }
 
+/** C5: a structured Founder-facing message proposed by the run's Employee (bound to its own thread by the runtime). */
+export type MessageProposal = Extract<ModelProposal, { type: 'MESSAGE' }>;
+/** C5: a Director's goal act proposed from inside its run (seat and Department re-checked by the fenced write). */
+export type GoalActProposal = Extract<ModelProposal, { type: 'GOAL_ACTION' }>;
+
+export interface MessageOutcome {
+  readonly outcome: 'RECORDED' | 'REFUSED';
+  readonly code: string;
+  readonly messageId: string | null;
+}
+
+export interface GoalActOutcome {
+  readonly outcome: 'DONE' | 'REFUSED';
+  readonly code: string;
+  readonly resultRef: string | null;
+}
+
 export interface GovernedRunServices {
   readonly context: GovernedRunContext;
   invokeModel(request: ModelCallRequest): Promise<ModelCallOutcome>;
@@ -91,6 +108,10 @@ export interface GovernedRunServices {
   submitReviewDecision(proposal: ReviewDecisionProposal, step: number): ReviewDecisionOutcome;
   /** C4: open handoffs this run's Work Item delegated (its work cannot finish while any is open). */
   openHandoffs(): number;
+  /** C5: the Employee's message into the Founder thread its Work Item answers (fenced; never authority). */
+  sendMessage(proposal: MessageProposal, step: number): MessageOutcome;
+  /** C5: a Director's goal derivation / link from inside its run (fenced). */
+  goalAct(proposal: GoalActProposal, step: number): GoalActOutcome;
 }
 
 /**

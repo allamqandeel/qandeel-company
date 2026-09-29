@@ -2038,3 +2038,345 @@ Recorded for the Product Owner; C4 implements the fail-closed reading in each ca
    Product Owner may set policy values.
 4. **Charter completion.** Baseline charters carry Product-authority mission / scope only; outcomes,
    measures, risks and budget envelopes await Founder versions (`publishCharter`).
+
+## D-C5-01 — C5 lives in two new packages over the existing engine; no second backend (Technical Lead, C5)
+
+**Context.** C5 needs a Founder-facing surface, a browser UI, a Goal model, Founder-facing communication and
+Founder Attention. Nothing in the repository had a network listener, a frontend or a Goal.
+**Decision.** Two packages join the workspace: `@qandeel-company/command-center` (the loopback Founder
+application surface: sessions, explicit capabilities, static files, Server-Sent Events, the proactive CEO
+briefing policy, the `qandeel-founder` launcher) and `@qandeel-company/command-center-ui` (the browser UI and
+its pure layout / lens model). Goals, communication, attention, sessions, previews and the projection live in
+`@qandeel-company/storage` (`goals.ts`, `communications.ts`, `attention.ts`, `founder-auth.ts`,
+`founder-actions.ts`, `universe.ts`, migration `0009_c5_founder_surface.sql`), reached through the runtime's
+new `founder` admin handle exactly like the C2–C4 handles. The verifier's later-scope regexes were narrowed to
+C6 / C7 names; `command-center*` joined `ALLOWED_PACKAGES`.
+**Consequence.** The UI never opens SQLite, never holds a `CompanyStore` and never imports the runtime-authority
+subpath or the test seam; the surface reaches storage only through the runtime's handles and the exported
+stores. One engine, one truth.
+
+## D-C5-02 — UI stack: tsc-only native ES modules and three.js WebGL 2; no bundler, no CDN, no desktop shell (Technical Lead, C5)
+
+**Context.** The Founder host runs Smart App Control. Vite 8 (rolldown, lightningcss), Vite 5–7 (esbuild, Rollup 4)
+ship unsigned native binaries that the host blocks — the same failure family L0 recorded for `tar.exe` and system
+Git. WebGPU renderers are still moving between releases; SDF text libraries shape Arabic only partially.
+**Decision.** The UI is compiled by the repository's TypeScript to ES2022 modules and loaded natively through an
+import map; `three@0.186.1` (MIT, pure JavaScript, zero dependencies, no install script) is the one renderer
+dependency, allow-listed for the UI package only and served from the workspace's own `node_modules`;
+`WebGLRenderer` (WebGL 2) is the primary renderer; the same layout renders as SVG 2.5D when WebGL 2 is
+unavailable. Every label, name and number is HTML / SVG text; WebGL draws geometry, light and atmosphere only.
+IBM Plex Sans Arabic (OFL) is bundled. No CDN, no remote font, no Electron / Tauri.
+**Consequence.** The whole build and runtime path runs on signed binaries (Node 24, Edge / Chrome). The
+verifier rule `founder-listener-loopback-only` refuses any remote URL in the UI and any network module outside
+the one listener.
+
+## D-C5-03 — The authenticated Founder surface: single-use launch token, hashed sessions, one synchronous scope (Technical Lead, C5)
+
+**Context.** D-C2-13 kept production Founder authority closed until C5 authenticates the human. Stage 14: local
+is not trusted; natural language never grants authority; secrets never enter ordinary SQLite.
+**Decision.** `qandeel-founder serve` / `launch` (run by the Founder's own Windows user against the workspace it
+owns — that file boundary is the trust anchor) mints a 32-byte single-use token whose SHA-256 is stored with a
+90-second expiry; the browser redeems it once (the token travels in a URL fragment, never in a request URL or a
+log) for a session whose cookie value and CSRF secret are stored only as SHA-256 hashes (8-hour expiry, 2-hour
+idle timeout, revoked on server stop). The first redemption of a workspace registers the Founder principal.
+`FounderAuthStore.withSession(session, fn)` re-verifies the row and enters `founderSessionInternals.scope`,
+which arms the existing chokepoint (`founderAdminWrite`) for the synchronous extent of `fn` only; a returned
+promise is refused. The listener binds `127.0.0.1`, allow-lists `Host` / `Origin` / `Sec-Fetch-Site`, requires
+the CSRF double submit on every state change, and serves a `default-src 'self'` CSP.
+**Consequence.** A Founder ref is still not authentication anywhere; the test seam is untouched and unreachable
+in production (`founder-session-scope-confined`). No secret is persisted, so Windows user-scoped protection
+(DPAPI) is not required in C5; a device-bound key remains a recorded seam.
+
+## D-C5-04 — The durable Goal model and Goal → Work links (Technical Lead, C5)
+
+**Context.** Stage 2 defines Goal as canonical Direction; no implemented Goal existed. Company goals need Founder
+approval; Directors derive Department goals within authority; routine work needs no artificial goal.
+**Decision.** `goals` (kind COMPANY / DEPARTMENT, explicit lifecycle DRAFT → PROPOSED → APPROVED → ACTIVE →
+PAUSED / ACHIEVED / CANCELLED / SUPERSEDED, owner, parent derivation, horizon, Founder approver), append-only
+`goal_history`, and `goal_work_links` (SERVES / DERIVED; ended, never deleted). A COMPANY goal cannot be
+APPROVED / ACTIVE without a `founder:*` approver (CHECK); a DEPARTMENT goal derives only from an APPROVED /
+ACTIVE company goal (trigger + code). Founder acts go through the chokepoint; a Director derives or links only
+from inside its governed run through the new `GOAL_ACTION` proposal (`recordGoalAct`, fenced, seat-checked,
+idempotent per employee / parent / title).
+**Consequence.** Goal Focus is data-backed: `Goal → owner → Departments → Work Items → Employees → reviews /
+approvals` comes from rows. No parallel Work Item engine; no C6 outcome analytics.
+
+## D-C5-05 — Founder-facing communication: structured threads, Employee replies only from their own governed run (Technical Lead, C5)
+
+**Context.** Stage 9: structured, targeted, context-linked communication; Message ≠ Decision; direct communication
+changes no authority; the Founder Communication Standard for briefs. C3: no ungoverned model call.
+**Decision.** `communication_threads` (FOUNDER_CEO / FOUNDER_EMPLOYEE / CEO_BRIEF, FOUNDER_ONLY scope, optional
+context) and append-only `communication_messages` (purpose, attention level, body + hash, `brief_json` for the
+standard, `reply_work_item_id`, `run_id`). A Founder message that needs an answer creates, in the same
+transaction, a `c2.employee-task` Work Item owned by the Employee, funded from its envelope and released (the
+queue trigger wakes the runtime); the thread binding lives in the item's immutable processor input. The
+Employee's run answers with the new `MESSAGE` proposal, recorded by `recordMessage` (fenced): the sender is the
+attributed Employee, the thread must be the item's, a BRIEF must carry its four answers, duplicates replay. A
+CEO brief is a system-requested run of the CEO seat holder (one open run per context).
+**Consequence.** Conversation ≠ authority (no grant, approval or budget path exists from a message); message
+bodies are company content under a Stage 9 scope and never enter audit / events / logs (Rule A, verifier rule
+`c5-telemetry-content-free`). `handoff_messages` stay C4's delegation records.
+
+## D-C5-06 — Founder Attention as durable dedup / cooldown state over canonical sources (Technical Lead, C5)
+
+**Context.** Stage 9 §16, §25–§29: attention is reserved for R3/R4 approvals, decisions, risk, conflict, strategy;
+no storm; silence is never approval.
+**Decision.** `founder_attention_items` keyed by a dedup key per source (pending R1/R3 approvals, RECOMMENDED
+staffing, ESCALATED handoffs, OPEN review conflicts, PROPOSED company goals, CEO briefs, unanswered decision
+requests / escalations / blockers, Founder-participant threads whose latest message warrants attention).
+`AttentionStore.sync` reconciles idempotently after a durable change signal (never on a timer): open, re-signal
+(4-hour cooldown), resolve with the source, keep a Founder dismissal until the source changes. Routine
+completions and FYIs never enter. Lanes: NEEDS_ME, CEO_BRIEFS, THREADS.
+**Consequence.** The Founder's first frame answers "does anything need me?" from state, not from notifications;
+items carry IDs and codes only.
+
+## D-C5-07 — Governed action previews: natural language never mutates; confirmation is an explicit, fingerprinted act (Technical Lead, C5)
+
+**Context.** Stage 14 D14-A.6; C5 brief §11.3 / §15: read commands may change focus; mutating intents need a
+structured governed preview and explicit Founder confirmation; no "LLM has full control of UI" agent.
+**Decision.** `classifyFounderIntent` is a closed deterministic grammar (Arabic / English) returning READ, MUTATING
+or UNKNOWN — never "execute". A mutating intent that resolves to one concrete target becomes a
+`founder_action_previews` row (validated payload of IDs / codes / bounded numbers, fingerprint, 10-minute
+expiry, bound to the session). `confirm` requires the same session, the exact fingerprint and a live preview,
+then calls the real boundary (`decideApproval`, `GoalStore`, `decideStaffingRequest`, `resolveConflict`,
+`changeBudgetCap`, `delegateAuthority`) inside the session scope and records the result on the preview. R4 and R2
+approvals are never previewable.
+**Consequence.** Scenario E holds by construction: the text alone changes nothing; the mutation check
+`c5-text-mutates-without-confirmation` proves the gate is not vacuous.
+
+## D-C5-08 — The Company Universe projection is derived, deterministic and time-correct (Technical Lead, C5)
+
+**Decision.** `projectUniverse(store, { at? })` in storage builds the one read model the UI renders: canonical
+sector order, seats with holders at T from effective-dated assignments (PRIMARY / ACTING / vacant), employees
+with their chain inward to the Founder, live work, typed live relations only (DELEGATION / SUPPORT / HANDOFF /
+ESCALATION / REVIEW / APPROVAL), goals with anchors and links, open attention, content-free signal counts.
+Historical instants read the append-only history tables, never current rows. Arrays are sorted by stable IDs.
+**Consequence.** It is never written back and never canonical; C6 extends it behind a separate read model.
+
+## D-C5-09 — Attention Orbits layout: rank = radius, Department = sector, seats own their angle (Technical Lead, C5)
+
+**Decision.** A pure module (`packages/command-center-ui/src/model/layout.ts`) places the Founder at the centre,
+the CEO orbit at 2.6, Directors 5.4, Managers / Leads 8.2, Specialists 11, goals as beacons at 14.2 at the mean
+angle of their anchor Departments, attention items at 1.35 inside the CEO orbit; five equal Department sectors
+in canonical order with a narrow company gap at the top for company-scoped seats; a seat's angle comes from its
+kind, ordinal and a stable hash of its code (a transfer moves the person, a vacancy keeps its place; no random
+layout ever). Depth (y) also expresses rank. When one Department holds more seats of a rank than its arc can carry
+at a minimum spacing of 1.15 units, the group overflows onto concentric sub-rings (ordinal modulo the ring count,
+0.85 units apart) instead of crowding one arc. Goals with no anchored work are spread by their own ordinal at the
+top. Edges are drawn only from live relations. Lenses map to emphasis weights; labels follow a distance tier, and
+attention captions appear only in the Attention lens, when near, or when selected (the rail carries the words).
+**Consequence.** Stable spatial memory and no spaghetti at 60+ employees are proven by tests
+(`attention-orbits-layout`) and by the mutations `c5-rank-radius-inverted` / `c5-department-sector-collapsed`.
+
+## D-C5-10 — Two motion layers, reduced motion as a parity mode (Technical Lead, C5)
+
+**Decision.** Ambient life (nebula drift, dust motes, sector-field breathing, Founder halo, pointer parallax) is
+neutral in colour, without direction between entities, never triggered by data, and removed in reduced motion.
+Semantic motion (camera focus / return, an edge pulse when a relation appears, an attention item gliding inward
+when new, the selection ring) starts and ends at real entities and is listed in the activity strip; in reduced
+motion it becomes cuts and static badges. Reduced motion is a separate mode (system preference or toggle),
+never a downgrade of the default.
+**Consequence.** A user cannot mistake ambient motion for a company event; the same meaning survives without
+motion (spike check `spike-reduced-motion-parity`).
+
+## D-C5-11 — The one network path, CI and verifier evolutions made by C5 (Technical Lead, C5)
+
+**Decision.** (1) `no-network-in-runtime-code` exempts exactly `packages/command-center/src/server/listener.ts`
+and the browser UI; the new rule `founder-listener-loopback-only` requires the loopback constant, refuses a
+wildcard bind, refuses network modules elsewhere in the surface package and refuses remote URLs / Node
+modules in the UI. (2) `runtime-dependencies-allowlisted` accepts `three` for the UI package only. (3) New
+rules `c5-proofs-present`, `c5-not-claimed-closed` (C6 / R2 / C7 not before C5 closes),
+`founder-session-scope-confined`, `c5-telemetry-content-free`, each with violation scenarios. (4) CI: the C5
+tests run inside the existing `tests` job; `c5:acceptance` and the browser smoke (`c5:spike`, headless Chrome /
+Edge through CDP, zero dependencies) join the `acceptance` job; `c5:mutation` shards join the matrix on both
+operating systems; the quality gate's parity covers `c5`. Nothing was removed and no `continue-on-error` was
+added.
+
+## D-C5-12 — Open Product questions surfaced by C5 (not decided here)
+
+Recorded for the Product Owner; C5 implements the fail-closed reading in each case.
+1. **Stage 16 authority.** The Founder Command Center source artifact is still missing; this candidate follows
+   the C5 task brief where Stage 16 would have supplied Product detail. The brief's contents are the only
+   Product source for lenses, attention lanes and the confirmation boundary.
+2. **Content exposure in the Founder projection.** The Founder sees company content (names, objectives,
+   message bodies, goal text) in the UI; telemetry stays content-free. Whether any category should be hidden
+   from the Founder surface (for example reviewer rationale) is a Product decision; C5 shows work objectives,
+   goal text and messages, not reviewer rationale or staffing evidence.
+3. **Budget ceilings from natural language.** A stated ceiling maps to the Employee envelope cap in the
+   envelope's currency; a different currency is refused (`CURRENCY_MISMATCH`). Whether the Founder may state
+   ceilings in another currency with a conversion policy is open.
+4. **Attention cooldown / session TTLs** (4 h, 8 h / 2 h idle, 90 s launch, 10 min preview) are engineering
+   defaults; the Product Owner may set policy values.
+5. **Engineering Department goal derivation** is available to any Director seat holder; whether Stage 10's
+   "Engineering becomes a formal Department later" limits it is a Product reading.
+
+
+## D-C5-13 — Presentation correction: English application with content as written; the map names its own ranks and Departments (Technical Lead, C5)
+
+**Context.** The Founder's comprehensive visual UX correction on the C5 candidate (same branch, same Draft PR):
+the application must be English and left-to-right while the Founder may write to the CEO and any Employee in
+Arabic or English; rank must be read from the orbit and Department from the sector without a click; the map,
+not a dashboard, is the product; goals must feel like strategic anchors; the conversation must be an operating
+ledger; the background must be premium, not a starfield.
+
+**Decision.** (1) The interface language is English (`lang="en" dir="ltr"`); every code family has one wording
+table in `packages/command-center-ui/src/model/format.ts`, an unknown code is spelled into words, and no
+identifier reaches the Founder as a code. Company content keeps its own script and direction per block
+(`dirOf`), never the layout around it. (2) The orbits carry their own names (one tag per ring on a sector
+boundary) and every sector carries a named, coloured rim arc with its head-count that opens the Department; the
+five Department hues are the dataviz-validated set `#3987e5 #199e70 #c98500 #9085e9 #d95926` (adjacent pairs
+around the ring ΔE ≥ 8.4 under CVD). (3) Panels open on demand and recede: the attention rail from a top-bar
+control or a lens, the time control on hover / in Historical Focus, activity as a transient note. (4) D-C5-09 is
+amended: anchored goals stand `GOAL_LEAD = 0.25` rad clockwise of their Departments' mean angle and are tethered
+to each anchored Department's rim; ring radii are 2.6 / 5.3 / 8.0 / 10.7 with the rim at 12.1 and goals at 13.4.
+(5) The seed and the proofs speak the same language as the product: people, seats, goals and work are seeded in
+English, the Founder ↔ CEO conversation is bilingual on purpose (the Arabic question and answer are the proof that
+content renders as written). (6) Nothing below the presentation changed: no storage, runtime, governance or
+authentication file, and migration 0009 is untouched.
+
+**Consequences.** The command grammar was already bilingual; the acceptance drives the governed action in
+English and the read command in Arabic. The spike checks replaced "Arabic labels" with "English chrome, content as
+written, ring and sector names present". The visual proof gained a conversation frame, a real scale frame and a
+before/after board. The Founder-facing Arabic register guidance (D-C5-10's sibawayh notes) now applies to content
+only.
+
+
+## D-C5-14 — Presentation reset: the Tree of Light replaces the orbital surface as the Founder's home (Technical Lead, C5)
+
+**Context.** The Founder rejected the orbital / galaxy presentation as the primary company view (it read as a
+graph in space, not a company) and selected the Tree of Light direction from the concept renders: Founder at the
+top, CEO beneath, five Department columns below, goals along the bottom, gold execution lines from work to goals.
+The reset is presentation-led on the same branch and Draft PR; the C5 runtime, authentication, Goal semantics,
+attention behaviour, communication, governed actions and history are preserved.
+
+**Decision.** (1) The home is a structured executive surface in DOM + SVG: a leadership spine (Founder emblem,
+attention chips beside it, one gold trunk to the CEO card), one column per Department in canonical order (name,
+accent, head-count, the Director first, then Managers / Leads, then Specialists; vacant seats keep their row;
+acting cover is its own node beside the person's own seat), and a strategic-direction band pinned to the bottom of
+the view holding the goals as mission objects. (2) Every line is a durable fact: reporting lines from the seat
+chain, execution lines from Goal → Work links (one per column and goal, weighted by the people serving), live
+typed relations drawn only on focus surfaces. (3) D-C5-02's `three` exception is retired: the UI has no
+dependency, the static server serves no vendor route, and there is no fallback renderer because there is nothing
+to fall back from. (4) D-C5-09 (Attention Orbits layout) and the orbit parts of D-C5-10 are superseded; the two
+motion layers survive as: ambient = one slow drift of the surface light; semantic = focus scroll, lit paths,
+relation pulse, arriving attention, flow along a running execution line; reduced motion keeps every mark.
+(5) The light executive theme is the committed world (warm paper, ink, one gold, five validated Department
+accents); the interface stays English with content as written (D-C5-13). (6) The mutation gates over the layout
+become `c5-rank-order-flattened` and `c5-department-column-collapsed`; the proof marker is
+`C5-PROOF: tree-of-light-layout`.
+
+**Consequences.** The Windows CI smoke no longer needs a GPU or software WebGL and is bounded to eight minutes.
+The proof's settle drives frames because a background headless tab advances its animation clock only when it
+paints. The concept renders that informed the choice (constellation, strategy flow, tree of light, board) are
+recorded in the report; the flow and relationship strengths live on inside Goal Focus and Employee Focus.
+
+
+## D-C5-15 — Final visual craft pass: the Tree of Light is frozen; one line system, docked context sheets, an attention surface beside the Founder (Technical Lead, C5)
+
+**Context.** The Founder accepted the Tree of Light as the final visual foundation and asked for one bounded
+craft pass (QANDEEL_COMPANY_C5_TREE_OF_LIGHT_FINAL_VISUAL_CRAFT_PASS_v1): Company Live polish, integrated
+Employee and Goal Focus, an operating conversation, a Founder Attention that stays with the Founder, better
+execution lines and goal objects, no structural change, no runtime change.
+
+**Decision.** (1) The line layer is one system drawn from facts only, in two layers: structure (trunk with halo,
+an orthogonal gold bus from the CEO into every column, the team lane in the Department's accent, live relations)
+under the cards; execution (one collector rail per goal above the strategic direction that every serving column
+drops into, one bundle into the goal, the dashed derivation beneath the goal objects, the tether) above the
+pinned band with a paper casing. (2) Status lives on the person (a dot at the avatar's corner, a ring while work
+runs); the Department lives in the column (accent, header, lane) and on the avatar tint; tags appear only when
+they say something. (3) Context sheets (person, goal, conversation) dock beside the company, stop above the
+strategic direction, sit on the side that keeps their subject visible and are tethered to it; they share the
+columns' avatars, accents, radii and status grammar. (4) The conversation is an operating ledger: identity with
+reporting line, the work carried now and its goals, dated entries with sender, purpose and time, briefs as
+executive memos, the newest exchange kept in view, a composer addressed to the person; never bubbles.
+(5) Founder Attention idles as compact chips beside the Founder and opens as a surface anchored over them; reading
+an item spotlights where it lives in the company through a pure `attentionSpotlight` emphasis (a view concern
+that survives live refreshes; attention semantics untouched). (6) No tracked uppercase labels; sentence case,
+one scale; Arabic never letter-spaced. (7) The visual direction is frozen after this pass unless a BLOCKER is
+found.
+
+**Consequences.** The proof harness gained the spotlight, tether and "sheet clear of the goal band" checks, close-
+ups, a Founder ↔ Employee Arabic conversation, and two findings recorded for later harness work: the DevTools
+Animation domain must not be enabled on this page (it slows every interaction five to thirty times with this many
+transitioning elements; the rAF-driven settle suffices), and a clipped or scaled capture leaves the headless
+compositor at that size until the device metrics are set again. Runtime, storage, governance and authentication
+are unchanged; C5 remains NOT CLOSED pending exact-head CI, review and merge by the Technical Lead.
+
+**Addendum (final MINOR visual residual correction, on `d833a8c1`).** Two collisions from the frozen
+presentation were corrected without reopening it (report §23): the tether is a leader that keeps to its
+subject's row and the column gutters, leaves a goal from its top edge at the nearest gutter, and passes beneath
+any card, head, goal or chip it crosses (drawn in the under-layer; `splitLeader`, with a pure proof); the CEO's
+sheet docks on the empty left desk, and a right-docked sheet that would meet the "Needs you" chips starts
+beneath them (`--desk-b`, measured live). The walkthrough stays at 4 fps (proof-only MINOR: each headless
+capture is a ~160 ms software paint). The proof gained `--minimal`, leader-crossing and chips-clear checks.
+
+## D-C5-16 — The line layer is sized from layout rects, rounded down, never from the scroll extent it creates; the browser harness fails bounded and reads the runner's motion preference (Technical Lead, C5)
+
+**Context.** Windows CI hung twice in the C5 browser smoke until the step's 8-minute ceiling. Three bounded
+corrections followed, each from an exact head the Founder named (report §24). The harness could wait forever
+on an unanswered DevTools command; the reduced-motion smoke assumed the runner starts in `full` motion; and,
+once the harness could fail with a name, reproducing the runner locally proved a defect in the Product: the
+Tree of Light's line layer (`TreeView.#drawLines`) derived its height from the company's `scrollHeight`, of
+which the layer itself is the largest part, so every redraw grew it by one goal band (1 073 → 30 245 px in
+sixteen seconds) until the browser crawled. The Founder authorized the Product fix in that scope only.
+
+**Decision.** (1) The line layer's size is read from layout rects alone: the company box and the goal band it
+must cover, the union's edge rounded once and **down** (`floor(max(company.height, band.bottom − company.top))`,
+`floor(company.width)`). Never from `scrollHeight` / `scrollWidth`, which the layer feeds; never rounded up,
+because a layer a fraction of a pixel past the boxes it covers opens the surface's scrollbars, which shrink the
+company, which redraws the layer smaller, which closes them: an endless redraw at frame rate. The layer paints
+with `overflow: visible`, so its size clips nothing; it may only never create scroll extent. (2) Every DevTools
+command the harness sends is bounded (`QANDEEL_CDP_TIMEOUT_MS`, default 20 s) and an unanswered one fails
+naming the method, the helper and the step, with the pending map cleared and a bounded post-mortem; the CI
+step's ceiling is the emergency stop, never the diagnosis. (3) The smoke reads the two motion layers (the OS
+preference and the application mode) instead of assuming either, drives the real toggle only when needed, and
+restores what it found. (4) `spike-line-layer-bounded` is a permanent regression proof: selection, return and
+twenty forced redraws leave the layer, both scroll extents and the visible surface unchanged.
+
+**Consequences.** The Windows selection step (47 s) and the 8-minute hangs had one cause in the Product, not
+in the runner; the surface no longer degrades with live refreshes on any host. No layout semantics, visual
+design or motion behaviour changed. Runtime, storage, governance, authentication, CSS and `main.ts` untouched;
+the quality gate and the Windows leg unchanged. C5 remains NOT CLOSED pending exact-head CI, review and merge by
+the Technical Lead.
+
+**Addendum (the harness renders without a GPU process).** The exact-head run on the line-layer fix left the
+Windows leg red for a second, distinct cause, which a harness-only diagnostic commit then named from the runner
+itself (report §24.7): every step records the timing of each helper call, the browser's product and GPU
+backend are recorded at start, and an unanswered command reports the process tree and the browser's log tail.
+The Windows post-mortem showed the SwiftShader GPU process at 137.7 CPU-seconds in thirty seconds against a
+renderer at 13.5, the browser blocked behind it. Decision: the harness launches the browser with
+`--disable-gpu` (software compositing, CPU raster) — the surface is DOM + SVG and the walkthrough encoder a 2D
+canvas with WebCodecs, so no GPU is needed anywhere; the SwiftShader flags were a WebGL-era leftover.
+`QANDEEL_BROWSER_GPU=swiftshader` restores the old path for comparison. The browser log also surfaced a MINOR
+Product residual, recorded and not changed: the context sheets set the Department tint through a `style`
+attribute that the surface's own CSP blocks.
+
+## D-C5-17 — The Founder change-signalling contract: reads are silent, failures are silent, a successful mutation announces once, attention reconciliation announces only a delta (Technical Lead, C5; authorized by the Founder)
+
+**Context.** With the harness bounded and GPU-less, the Windows runner's own log named the remaining cause of
+its red smoke: the context sheet rebuilt every ≈35 ms after a selection. On the Founder's host the real
+surface went from 0 requests in 4 s idle to 605 in 4 s after one CEO selection and 720 in 4 s after the
+return, indefinitely (report §25). `CompanyRuntime.founder` wrapped its four stores in a generic Proxy whose
+`finally { wake() }` signalled the dispatcher and announced "the Founder's world changed" after every call —
+reads, failures and zero-delta attention reconciliation included — while the surface refreshes on that
+announcement with Founder reads: a closed loop at API latency, invisible on a fast host, fatal on the runner.
+
+**Decision.** (1) A Founder change announcement means *durable Founder-visible state materially changed*:
+announced, and the dispatcher woken, only after a successful mutation, once. (2) Reads announce nothing and
+wake nothing; a call that throws announces nothing; `attention.sync` announces only when it opened, signalled
+or resolved an item; `founder.universe` stays a pure projection. (3) No generic "every method is a write"
+proxy: `signalling` builds each capability from an explicit classification of every public method (goals:
+`propose`, `transition`, `linkWork`, `unlinkWork` mutate; communications: `openThread`, `directThread`, `send`,
+`requestCeoBrief`, `closeThread`; attention: `dismiss`, with `sync` conditional; actions: `preview`, `confirm`,
+`reject`, `expireStale`; everything else reads) and refuses at construction a method that is unclassified or a
+classified name that no longer exists. (4) No UI debounce or coalescing: the producer's contract is the fix;
+a masked producer would hide the next real event bug and add latency. (5) An explicit user mutation that is
+internally a replay may still announce once, bounded (no redesign of idempotent user commands for C5).
+
+**Consequences.** Five runtime proofs meter `onFounderChange` and `wakeSignals` (reads 0/0; failed writes 0/0
+with errors preserved; a mutation exactly 1/1 after the durable write; stable reconciliation 0, a real delta
+1 then silence; the method census exact and frozen); two `c5:mutation` gates (reads announcing, zero-delta
+sync announcing); the browser smoke proves the real surface idle after a selection and return (0 API
+requests in 3 s, at most one refresh cycle allowed). Store transactions, the auth/security model, migration
+0009, attention and goal semantics, the Tree of Light, layout and motion are unchanged. C5 remains NOT CLOSED
+pending exact-head CI, review and merge by the Technical Lead.

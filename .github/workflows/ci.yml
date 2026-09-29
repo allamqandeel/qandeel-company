@@ -165,7 +165,7 @@ jobs:
           node-version-file: .nvmrc
           package-manager-cache: false
       - run: npm ci
-      - name: Every workspace test (unit, real SQLite, multi-process, fault-injection; C1 + C2 + C3 + R1 + C4)
+      - name: Every workspace test (unit, real SQLite, multi-process, fault-injection; C1 + C2 + C3 + R1 + C4 + C5, including the Founder surface and the UI model)
         run: |
           npm run build
           npm run test
@@ -188,11 +188,12 @@ jobs:
           - { os: windows-latest, label: r1-4of4, suite: 'r1:4/4' }
           - { os: windows-latest, label: c4-1of2, suite: 'c4:1/2' }
           - { os: windows-latest, label: c4-2of2, suite: 'c4:2/2' }
+          - { os: windows-latest, label: c5-1of1, suite: 'c5:1/1' }
           - { os: ubuntu-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }
           - { os: ubuntu-latest, label: c3-1of1, suite: 'c3:1/1' }
           - { os: ubuntu-latest, label: r1-1of2, suite: 'r1:1/2' }
           - { os: ubuntu-latest, label: r1-2of2, suite: 'r1:2/2' }
-          - { os: ubuntu-latest, label: c4-1of1, suite: 'c4:1/1' }
+          - { os: ubuntu-latest, label: c4-c5, suite: 'c4:1/1 c5:1/1' }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -249,6 +250,11 @@ jobs:
         run: npm run c3:acceptance -- --workspace "${{ runner.temp }}/c3-acceptance"
       - name: C4 local acceptance (disposable workspace; organization, delegation, Review Pool, P-07; fake provider)
         run: npm run c4:acceptance -- --workspace "${{ runner.temp }}/c4-acceptance"
+      - name: C5 local acceptance (disposable workspace; Founder auth fail-closed, Goals, communication, attention, governed confirmation, projection, restart; fake provider)
+        run: npm run c5:acceptance -- --workspace "${{ runner.temp }}/c5-acceptance"
+      - name: C5 browser smoke (the real UI in headless Chrome through CDP; the company surface renders, selection, focus, reduced motion, no external asset)
+        timeout-minutes: 8
+        run: npm run c5:spike -- --workspace "${{ runner.temp }}/c5-spike"
 
   quality-gate:
     name: quality-gate

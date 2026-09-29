@@ -108,7 +108,7 @@ describe('versioned migrations', () => {
     }
   });
 
-  test('C4-PROOF: real released v6 → v8 preserves every C2 organization / money row and adopts existing Departments by code', () => {
+  test('C4-PROOF: real released v6 → current (v8 + the C5 v9 tables) preserves every C2 organization / money row and adopts existing Departments by code', () => {
     const root = tempRoot('mig-v6-v8');
     try {
       const v6 = openStoreForTests(root, { clock, migrations: loadReleasedMigrations(6) });
@@ -130,7 +130,8 @@ describe('versioned migrations', () => {
       v6.close();
       const v8 = CompanyStore.open(root, { clock });
       try {
-      assert.deepEqual(v8.migration.applied, [7, 8]);
+      // C5 appended 0009 (Founder surface tables only): the C4 rows are still preserved across the full upgrade.
+      assert.deepEqual(v8.migration.applied, [7, 8, 9]);
       const d8 = storeContext(v8).db;
       const growth = d8.get<{ id: string; name: string }>(`SELECT id, name FROM departments WHERE code = 'growth'`);
       assert.deepEqual({ ...growth }, { id: id(1), name: 'Growth (pre-C4)' }, 'an existing Department is adopted by code, never duplicated or renamed');
