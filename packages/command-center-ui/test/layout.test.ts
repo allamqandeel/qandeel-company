@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { RING_RADIUS, applyLens, cameraTargetFor, chainNodeIds, labelTier, labelVisible, layoutUniverse } from '../src/index.js';
+import { DEPT_LABEL, RING_LABEL, RING_RADIUS, applyLens, cameraTargetFor, chainNodeIds, labelTier, labelVisible, layoutUniverse } from '../src/index.js';
 import type { CompanyUniverse } from '../src/model/types.js';
 
 /** The value a proof relies on, present by construction of the fixture. */
@@ -121,9 +121,26 @@ describe('Attention Orbits layout', () => {
     assert.deepEqual(l.edges.map((e) => e.id).sort(), ['approval:1', 'delegation:1'], 'a relation to a ghost endpoint draws nothing');
     assert.ok(l.edges.every((e) => e.from !== e.to));
     const acting = must(l.nodes.find((n) => n.acting));
-    assert.ok(acting.sublabel.includes('بالإنابة'));
+    assert.ok(acting.sublabel.includes('Acting'));
     const onLeave = l.nodes.find((n) => n.state === 'ON_LEAVE');
     assert.ok(onLeave, 'the lifecycle state travels with the node');
+  });
+
+  test('C5-PROOF: presentation facts come from state — running work circles its owner, goals carry their anchors, the map names ranks and departments in English', () => {
+    const u = universe();
+    const l = layoutUniverse(u);
+    const owner = must(must(u.work[0]).ownerEmployeeId);
+    assert.equal(must(l.byId.get(`employee:${owner}`)).running, true, 'the running arc is a real state');
+    assert.ok(l.nodes.filter((n) => n.kind === 'employee' && n.running).length === 1, 'nobody else looks busy');
+    const goal = must(l.byId.get(`goal:${id(1, 'g')}`));
+    assert.equal(goal.goalKind, 'COMPANY');
+    const ownerDept = must(u.employees.find((e) => e.id === owner)).departmentId;
+    assert.deepEqual(goal.anchors, [must(l.sectors.find((s) => s.departmentId === ownerDept)).index], 'a goal is tethered to the sectors of the work serving it');
+    assert.ok(l.rimRadius > must(l.rings.at(-1)).radius && l.rimRadius < l.outerRadius, 'the named rim sits between the last orbit and the goals');
+    for (const r of l.rings) assert.ok(RING_LABEL[r.kind], `ring ${r.kind} has a name`);
+    for (const s of l.sectors) assert.ok(DEPT_LABEL[s.code], `sector ${s.code} has a name`);
+    assert.equal(must(l.nodes.find((n) => n.kind === 'founder')).label, 'Founder');
+    assert.ok(l.nodes.every((n) => n.kind === 'attention' || !/[؀-ۿ]/.test(n.sublabel)), 'structural sublabels are English; content stays as written');
   });
 
   test('C5-PROOF: scale — a 60-employee Department keeps every employee apart and lays out in milliseconds', () => {

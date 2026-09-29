@@ -2210,3 +2210,32 @@ Recorded for the Product Owner; C5 implements the fail-closed reading in each ca
 5. **Engineering Department goal derivation** is available to any Director seat holder; whether Stage 10's
    "Engineering becomes a formal Department later" limits it is a Product reading.
 
+
+## D-C5-13 — Presentation correction: English application with content as written; the map names its own ranks and Departments (Technical Lead, C5)
+
+**Context.** The Founder's comprehensive visual UX correction on the C5 candidate (same branch, same Draft PR):
+the application must be English and left-to-right while the Founder may write to the CEO and any Employee in
+Arabic or English; rank must be read from the orbit and Department from the sector without a click; the map,
+not a dashboard, is the product; goals must feel like strategic anchors; the conversation must be an operating
+ledger; the background must be premium, not a starfield.
+
+**Decision.** (1) The interface language is English (`lang="en" dir="ltr"`); every code family has one wording
+table in `packages/command-center-ui/src/model/format.ts`, an unknown code is spelled into words, and no
+identifier reaches the Founder as a code. Company content keeps its own script and direction per block
+(`dirOf`), never the layout around it. (2) The orbits carry their own names (one tag per ring on a sector
+boundary) and every sector carries a named, coloured rim arc with its head-count that opens the Department; the
+five Department hues are the dataviz-validated set `#3987e5 #199e70 #c98500 #9085e9 #d95926` (adjacent pairs
+around the ring ΔE ≥ 8.4 under CVD). (3) Panels open on demand and recede: the attention rail from a top-bar
+control or a lens, the time control on hover / in Historical Focus, activity as a transient note. (4) D-C5-09 is
+amended: anchored goals stand `GOAL_LEAD = 0.25` rad clockwise of their Departments' mean angle and are tethered
+to each anchored Department's rim; ring radii are 2.6 / 5.3 / 8.0 / 10.7 with the rim at 12.1 and goals at 13.4.
+(5) The seed and the proofs speak the same language as the product: people, seats, goals and work are seeded in
+English, the Founder ↔ CEO conversation is bilingual on purpose (the Arabic question and answer are the proof that
+content renders as written). (6) Nothing below the presentation changed: no storage, runtime, governance or
+authentication file, and migration 0009 is untouched.
+
+**Consequences.** The command grammar was already bilingual; the acceptance drives the governed action in
+English and the read command in Arabic. The spike checks replaced "Arabic labels" with "English chrome, content as
+written, ring and sector names present". The visual proof gained a conversation frame, a real scale frame and a
+before/after board. The Founder-facing Arabic register guidance (D-C5-10's sibawayh notes) now applies to content
+only.

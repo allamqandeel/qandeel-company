@@ -36,6 +36,12 @@ export interface LayoutNode {
   readonly vacant: boolean;
   readonly seatKind: string | null;
   readonly employeeId: string | null;
+  /** Goals only: company goals are the brighter beacons. */
+  readonly goalKind: 'COMPANY' | 'DEPARTMENT' | null;
+  /** Goals only: the sector indices this goal is anchored to (its gravity lines on the map). */
+  readonly anchors: readonly number[];
+  /** Employees only: live work is running for this person right now (a real state, drawn as a slow orbiting arc). */
+  readonly running: boolean;
   readonly importance: number;
 }
 
@@ -65,6 +71,8 @@ export interface Layout {
   readonly sectors: readonly LayoutSector[];
   readonly rings: readonly { readonly index: number; readonly radius: number; readonly kind: string }[];
   readonly outerRadius: number;
+  /** The radius of the sector rim: the coloured arc that names each Department on the map. */
+  readonly rimRadius: number;
   readonly byId: ReadonlyMap<string, LayoutNode>;
 }
 

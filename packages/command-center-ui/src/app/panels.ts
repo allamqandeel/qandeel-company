@@ -1,10 +1,11 @@
 /**
- * The DOM surfaces around the universe: the attention rail (start side), the focus panel (end side), the
- * conversation panel, the command palette, the governed-action confirmation, the timeline control, the
- * calendar strip and the activity strip. Every control names its action; every Arabic string is written
- * in Arabic structure; codes and IDs are LTR islands.
+ * The DOM surfaces around the universe: the attention rail (opens on demand), the focus sheet (employee,
+ * goal, conversation), the command palette, the governed-action confirmation, the time control, the
+ * upcoming dock and the activity note. The application speaks English; company content is shown as written
+ * (an Arabic message reads right-to-left inside its own block). Every control names its action; no code or
+ * identifier reaches the Founder as a code.
  */
-import { ACTION_AR, ar, countNoun, deptName, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, FIELD_AR, INTENT_AR, KIND_AR, LANE_AR, LEVEL_AR, PURPOSE_AR, RELATION_AR, SOURCE_AR, STATE_AR } from '../model/format.js';
+import { ACTION_LABEL, CALENDAR_LABEL, CAPABILITY_LABEL, dirOf, FIELD_LABEL, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, hasArabic, humanize, INTENT_LABEL, KIND_LABEL, LANE_LABEL, LEVEL_LABEL, plural, PURPOSE_LABEL, RELATION_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATE_LABEL, t } from '../model/format.js';
 import type { CompanyUniverse } from '../model/types.js';
 
 type Json = Record<string, unknown>;
@@ -21,11 +22,24 @@ export const h = (tag: string, attrs: Record<string, string | number | boolean> 
   for (const c of children) if (c !== null && c !== undefined) e.append(c);
   return e;
 };
-const ltr = (text: string, cls = 'code'): HTMLElement => h('span', { class: cls, dir: 'ltr', text });
+/** Company content as written: direction from its first strong character, Arabic gets the Arabic line-height. */
+const content = (tag: string, text: string, cls = ''): HTMLElement => {
+  const e = h(tag, { class: `${cls} content ${hasArabic(text) ? 'is-arabic' : ''}`.trim(), text });
+  e.dir = dirOf(text);
+  if (hasArabic(text)) e.lang = 'ar';
+  return e;
+};
+const initials = (name: string): string => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w.charAt(0)).join('').toUpperCase();
+/** A hue with an alpha, for tinted surfaces (`#rrggbb` → `rgba(...)`). */
+const tint = (hex: string, alpha: number): string => {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  return m ? `rgba(${parseInt(m[1] ?? '0', 16)}, ${parseInt(m[2] ?? '0', 16)}, ${parseInt(m[3] ?? '0', 16)}, ${alpha})` : hex;
+};
 
 export interface PanelHost {
   openEmployee(id: string): void;
   openGoal(id: string): void;
+  openDepartment(id: string): void;
   openThread(threadId: string, employeeId: string): void;
   startConversation(employeeId: string | null): void;
   runCommand(text: string): Promise<void>;
@@ -34,37 +48,54 @@ export interface PanelHost {
   dismissAttention(itemId: string): Promise<void>;
   sendMessage(threadId: string, purpose: string, body: string): Promise<void>;
   showLane(lane: 'NEEDS_ME' | 'CEO_BRIEFS' | 'THREADS' | null): void;
+  closeRail(): void;
   returnToLive(): void;
   scrubTo(at: string): void;
   focusSource(sourceRef: string): void;
-  /** A human name for an entity ref (`employee:<id>` → the person's name; `founder` → المؤسس; else the ref). */
+  /** A human name for an entity ref (`employee:<id>` → the person's name; `founder` → Founder; else readable words). */
   nameOf(ref: string): string;
+  /** The Department's name for its id. */
+  deptNameOf(id: string): string;
+  /** A work item's objective for its id, when it is on the map. */
+  workTitleOf(id: string): string | null;
+}
+
+// --- shared: the Founder Communication Standard brief ----------------------------------------------
+
+function briefBlock(brief: Json): HTMLElement {
+  const row = (title: string, text: string): HTMLElement => h('div', { class: 'brief-row' }, h('h4', { text: title }), content('p', text));
+  return h('div', { class: 'brief' }, row('What is happening', String(brief.happening)), row('Why it matters', String(brief.matters)), row('Recommendation', String(brief.recommendation)), row('Decision needed', brief.decisionNeeded ? String(brief.decision ?? 'Yes') : 'No'));
 }
 
 // --- attention rail -----------------------------------------------------------------------------------
 
-export function renderAttentionRail(root: HTMLElement, data: { items: Json[]; health: Json }, host: PanelHost, activeLane: string | null): void {
+export function renderAttentionRail(root: HTMLElement, data: { items: Json[]; health: Json }, host: PanelHost, activeLane: string | null): { needsMe: number; briefs: number } {
   root.replaceChildren();
   const lanes: ('NEEDS_ME' | 'CEO_BRIEFS' | 'THREADS')[] = ['NEEDS_ME', 'CEO_BRIEFS', 'THREADS'];
-  const tabs = h('div', { class: 'rail-tabs', role: 'tablist', 'aria-label': 'مسارات الانتباه' });
+  const counts = Object.fromEntries(lanes.map((l) => [l, data.items.filter((i) => i.lane === l).length])) as Record<string, number>;
+  const close = h('button', { type: 'button', class: 'btn btn-ghost sheet-close', 'aria-label': 'Close attention', text: 'Close' });
+  close.addEventListener('click', () => host.closeRail());
+  root.append(h('div', { class: 'sheet-head' }, h('h2', { class: 'sheet-title', text: 'Founder attention' }), close));
+  const tabs = h('div', { class: 'rail-tabs', role: 'tablist', 'aria-label': 'Attention lanes' });
   for (const lane of lanes) {
-    const count = data.items.filter((i) => i.lane === lane).length;
-    const b = h('button', { type: 'button', role: 'tab', class: `rail-tab${activeLane === lane ? ' is-active' : ''}`, 'aria-selected': activeLane === lane ? 'true' : 'false' }, h('span', { text: LANE_AR[lane] ?? lane }), h('span', { class: 'count', text: String(count) }));
+    const b = h('button', { type: 'button', role: 'tab', class: `rail-tab${activeLane === lane ? ' is-active' : ''}`, 'aria-selected': activeLane === lane ? 'true' : 'false' }, h('span', { text: LANE_LABEL[lane] ?? lane }), h('span', { class: 'count', text: String(counts[lane]) }));
     b.addEventListener('click', () => host.showLane(activeLane === lane ? null : lane));
     tabs.append(b);
   }
-  root.append(h('h2', { class: 'rail-title', text: 'انتباه المؤسس' }), tabs);
+  root.append(tabs);
   const list = h('ul', { class: 'rail-list', role: 'list' });
   const items = data.items.filter((i) => activeLane === null || i.lane === activeLane);
-  if (items.length === 0) list.append(h('li', { class: 'rail-empty', text: activeLane === null ? 'لا شيء يحتاجك الآن. الشركة تعمل.' : 'لا عناصر في هذا المسار.' }));
+  if (items.length === 0) list.append(h('li', { class: 'empty' }, h('strong', { text: activeLane === null ? 'Nothing needs you.' : 'Nothing in this lane.' }), h('span', { text: activeLane === null ? ' The company is working; anything that needs a decision will appear here.' : ' Items arrive here as the company raises them.' })));
   for (const i of items) list.append(attentionItem(i, host));
   root.append(list);
+  return { needsMe: counts.NEEDS_ME ?? 0, briefs: counts.CEO_BRIEFS ?? 0 };
 }
 
 function attentionItem(i: Json, host: PanelHost): HTMLElement {
   const level = String(i.level);
   const li = h('li', { class: `rail-item level-${level.toLowerCase()}` });
-  const head = h('div', { class: 'rail-item-head' }, h('span', { class: `pill pill-${level.toLowerCase()}`, text: ar(LEVEL_AR, level) }), h('span', { class: 'rail-kind', text: ar(SOURCE_AR, String(i.sourceKind)) }), h('span', { class: 'rail-time', text: fmtRelative(String(i.lastSignalAt)) }));
+  const owner = i.ownerRef ? host.nameOf(String(i.ownerRef)) : null;
+  const head = h('div', { class: 'rail-item-head' }, h('span', { class: `pill pill-${level.toLowerCase()}`, text: t(LEVEL_LABEL, level) }), h('span', { class: 'rail-kind', text: t(SOURCE_LABEL, String(i.sourceKind)) }), owner ? h('span', { class: 'rail-owner', text: owner }) : null, h('time', { class: 'rail-time', text: fmtRelative(String(i.lastSignalAt)) }));
   li.append(head);
   const body = h('div', { class: 'rail-item-body' });
   const approval = i.approval as Json | undefined;
@@ -75,96 +106,94 @@ function attentionItem(i: Json, host: PanelHost): HTMLElement {
   if (approval) {
     const action = String(approval.action);
     const subject = host.nameOf(String(approval.subjectRef));
-    body.append(h('p', {}, 'موافقة ', h('strong', { text: String(approval.risk) }), ' على ', ACTION_AR[action] ? h('span', { text: ACTION_AR[action] }) : ltr(action), ' لصالح ', subject === String(approval.subjectRef) ? ltr(subject) : h('span', { text: subject })));
+    body.append(h('p', {}, h('strong', { text: `${String(approval.risk)} approval` }), ` to ${t(ACTION_LABEL, action)} for `, content('span', subject)));
   }
   if (message) {
     const brief = message.brief as Json | null;
-    if (brief) {
-      body.append(
-        h('dl', { class: 'brief' }, h('dt', { text: 'ماذا يحدث؟' }), h('dd', { text: String(brief.happening) }), h('dt', { text: 'لماذا يهم؟' }), h('dd', { text: String(brief.matters) }), h('dt', { text: 'التوصية' }), h('dd', { text: String(brief.recommendation) }), h('dt', { text: 'هل تحتاج قرارًا مني؟' }), h('dd', { text: brief.decisionNeeded ? `نعم — ${String(brief.decision ?? '')}` : 'لا' })),
-      );
-    } else body.append(h('p', { class: 'msg-body', text: String(message.body) }));
+    if (brief) body.append(briefBlock(brief));
+    else body.append(content('p', String(message.body), 'msg-body'));
   }
-  if (staffing) body.append(h('p', {}, 'طلب توظيف: ', h('strong', { text: String(staffing.positionTitle) }), ' — توصية المدير التنفيذي: ', h('span', { text: staffing.ceoRecommendation === 'APPROVE' ? 'وافق' : staffing.ceoRecommendation === 'REJECT' ? 'ارفض' : 'بلا' })));
-  if (goal) body.append(h('p', {}, 'هدف مقترح: ', h('strong', { text: String(goal.title) })));
-  if (escalation) body.append(h('p', {}, 'تصعيد على عمل ', ltr(String(escalation.childWorkItemId).slice(0, 8))));
+  if (staffing) body.append(h('p', {}, 'Staffing request: ', h('strong', { text: String(staffing.positionTitle) }), ` — the CEO recommends ${staffing.ceoRecommendation === 'APPROVE' ? 'approving' : staffing.ceoRecommendation === 'REJECT' ? 'rejecting' : 'no decision yet'}`));
+  if (goal) body.append(h('p', {}, 'Proposed goal: ', content('strong', String(goal.title))));
+  if (escalation) {
+    const title = host.workTitleOf(String(escalation.childWorkItemId));
+    body.append(h('p', {}, 'Escalation on ', title ? content('span', title) : h('span', { text: 'a work item' })));
+  }
   li.append(body);
   const actions = h('div', { class: 'rail-actions' });
-  const open = h('button', { type: 'button', class: 'btn btn-quiet', text: 'افتح المصدر' });
+  const open = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Open source' });
   open.addEventListener('click', () => host.focusSource(String(i.sourceRef)));
   actions.append(open);
   if (approval) {
-    const approve = h('button', { type: 'button', class: 'btn btn-primary', text: 'راجع القرار' });
-    approve.addEventListener('click', () => void host.runCommand(`وافق ${String(approval.id)}`));
+    const approve = h('button', { type: 'button', class: 'btn btn-primary', text: 'Review decision' });
+    approve.addEventListener('click', () => void host.runCommand(`approve ${String(approval.id)}`));
     actions.append(approve);
   }
   if (goal) {
-    const approve = h('button', { type: 'button', class: 'btn btn-primary', text: 'اعتمد الهدف' });
-    approve.addEventListener('click', () => void host.runCommand(`وافق على هدف ${String(goal.title)}`));
+    const approve = h('button', { type: 'button', class: 'btn btn-primary', text: 'Approve goal' });
+    approve.addEventListener('click', () => void host.runCommand(`approve goal ${String(goal.title)}`));
     actions.append(approve);
   }
   if (message) {
-    const reply = h('button', { type: 'button', class: 'btn btn-quiet', text: 'ردّ' });
+    const reply = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Reply' });
     reply.addEventListener('click', () => host.openThread(String(message.threadId), String(i.ownerRef ?? '').replace('employee:', '')));
     actions.append(reply);
   }
-  const dismiss = h('button', { type: 'button', class: 'btn btn-ghost', text: 'تجاهل', 'aria-label': 'تجاهل هذا العنصر (الصمت ليس موافقة)' });
+  const dismiss = h('button', { type: 'button', class: 'btn btn-ghost', text: 'Dismiss', 'aria-label': 'Dismiss this item (silence is not approval)' });
   dismiss.addEventListener('click', () => void host.dismissAttention(String(i.id)));
   actions.append(dismiss);
   li.append(actions);
   return li;
 }
 
-// --- focus panel: employee ---------------------------------------------------------------------------
+// --- focus sheet: employee -----------------------------------------------------------------------------
 
-export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost): void {
+function sheetHead(host: PanelHost, title: string, sub: (Node | string | null)[], avatar: { text: string; color: string } | null): HTMLElement {
+  const back = h('button', { type: 'button', class: 'btn btn-ghost sheet-close', 'aria-label': 'Back to Company Live', text: 'Back to live' });
+  back.addEventListener('click', () => host.returnToLive());
+  const identity = h('div', { class: 'identity' }, avatar ? h('span', { class: 'avatar', text: avatar.text, style: `background:${tint(avatar.color, 0.26)};border-color:${tint(avatar.color, 0.6)};box-shadow:0 6px 18px ${tint(avatar.color, 0.22)}`, 'aria-hidden': 'true' }) : null, h('div', { class: 'identity-text' }, content('h2', title, 'sheet-title'), h('p', { class: 'sheet-sub' }, ...sub)));
+  return h('div', { class: 'sheet-head' }, identity, back);
+}
+
+const sectionEl = (title: string, ...body: (Node | null)[]): HTMLElement => h('section', { class: 'sheet-section' }, h('h3', { text: title }), ...body);
+
+export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost, deptColor: string): void {
   root.replaceChildren();
   const e = d.employee as Json;
   const seat = d.seat as Json | null;
   const dept = d.department as Json | null;
   const name = e.name as { given: string; family: string };
-  const manager = d.manager as Json | null;
+  const full = `${name.given} ${name.family}`;
   const chain = (e.chain as Json[]) ?? [];
-  root.append(
-    closeButton(host),
-    h('p', { class: 'eyebrow-free kicker', text: dept ? deptName(String(dept.code), String(dept.name)) : 'نطاق الشركة' }),
-    h('h2', { class: 'focus-title', text: `${name.given} ${name.family}` }),
-    h('p', { class: 'focus-sub' }, h('span', { text: seat ? String(seat.title) : 'بلا مقعد' }), seat && seat.holderKind === 'ACTING' ? h('span', { class: 'pill pill-acting', text: 'بالإنابة' }) : null, h('span', { class: `pill pill-state`, text: ar(STATE_AR, String(e.state)) })),
-  );
-  const chainEl = h('ol', { class: 'chain', 'aria-label': 'سلسلة الإدارة حتى المؤسس' });
+  const deptLabel = dept ? host.deptNameOf(String(dept.id)) : 'Company';
+  root.append(sheetHead(host, full, [h('span', { text: seat ? String(seat.title) : 'No seat' }), ...(dept ? [h('span', { class: 'sep' }), h('span', { text: deptLabel })] : []), seat && seat.holderKind === 'ACTING' ? h('span', { class: 'pill pill-acting', text: 'Acting' }) : null, h('span', { class: `pill pill-state`, text: t(STATE_LABEL, String(e.state)) })], { text: initials(full), color: deptColor }));
+  // Reports to: the seat chain inward, every link a person with a name.
+  const chainEl = h('ol', { class: 'chain', 'aria-label': 'Reporting line to the Founder' });
   for (const link of chain) {
-    const li = h('li', {}, h('span', { class: 'chain-kind', text: ar(KIND_AR, String(link.kind)) }));
-    if (link.employeeId && link.employeeId !== e.id) {
-      const b = h('button', { type: 'button', class: 'link', text: 'افتح' });
+    if (String(link.employeeId) === String(e.id)) continue;
+    const li = h('li', {});
+    if (link.kind === 'FOUNDER') li.append(h('span', { class: 'chain-name', text: 'Founder' }));
+    else if (link.employeeId) {
+      const b = h('button', { type: 'button', class: 'link chain-name', text: host.nameOf(`employee:${String(link.employeeId)}`) });
       b.addEventListener('click', () => host.openEmployee(String(link.employeeId)));
-      li.append(b);
-    } else if (link.kind !== 'FOUNDER' && !link.employeeId) li.append(h('span', { class: 'muted', text: 'شاغر' }));
+      li.append(b, h('span', { class: 'chain-kind', text: t(KIND_LABEL, String(link.kind)) }));
+    } else li.append(h('span', { class: 'chain-name muted', text: 'Vacant' }), h('span', { class: 'chain-kind', text: t(KIND_LABEL, String(link.kind)) }));
     chainEl.append(li);
   }
-  root.append(h('section', { class: 'focus-section' }, h('h3', { text: manager ? `يتبع: ${ar(KIND_AR, String(manager.kind))}` : 'السلسلة' }), chainEl));
+  root.append(sectionEl('Reports to', chainEl));
   const work = (d.work as Json[]) ?? [];
   const workEl = h('ul', { class: 'work-list' });
-  if (work.length === 0) workEl.append(h('li', { class: 'muted', text: 'لا عمل حي الآن.' }));
-  for (const w of work) {
-    const goals = (w.goalIds as string[]) ?? [];
-    const li = h('li', { class: `work state-${String(w.state).toLowerCase()}` }, h('span', { class: 'work-state', text: ar(STATE_AR, String(w.state)) }), h('span', { class: 'work-objective', text: String(w.objective) }));
-    if (w.blockedReason) li.append(h('span', { class: 'work-reason', text: `السبب: ${String(w.blockedReason)}` }));
-    if (w.waitReason) li.append(h('span', { class: 'work-reason' }, 'ينتظر: ', ltr(String(w.waitReason))));
-    for (const gid of goals) {
-      const g = h('button', { type: 'button', class: 'link', text: 'يخدم هدفًا' });
-      g.addEventListener('click', () => host.openGoal(gid));
-      li.append(g);
-    }
-    workEl.append(li);
-  }
-  root.append(h('section', { class: 'focus-section' }, h('h3', { text: 'يعمل الآن على' }), workEl));
+  if (work.length === 0) workEl.append(h('li', { class: 'empty', text: 'No live work right now.' }));
+  for (const w of work) workEl.append(workRow(w, host, { owner: false }));
+  root.append(sectionEl('Working on', workEl));
   const rel = (d.relations as Json[]) ?? [];
   if (rel.length > 0) {
     const relEl = h('ul', { class: 'rel-list' });
     for (const r of rel) {
-      const other = String(r.from) === `employee:${String(e.id)}` ? String(r.to) : String(r.from);
-      const li = h('li', {}, h('span', { class: 'rel-kind', text: ar(RELATION_AR, String(r.kind)) }), h('span', { class: 'muted', text: String(r.from) === `employee:${String(e.id)}` ? 'إلى' : 'من' }));
-      if (other === 'founder') li.append(h('span', { text: 'المؤسس' }));
+      const outgoing = String(r.from) === `employee:${String(e.id)}`;
+      const other = outgoing ? String(r.to) : String(r.from);
+      const li = h('li', {}, h('span', { class: 'rel-kind', text: t(RELATION_LABEL, String(r.kind)) }), h('span', { class: 'muted', text: outgoing ? 'to' : 'from' }));
+      if (other === 'founder') li.append(h('span', { text: 'the Founder' }));
       else {
         const b = h('button', { type: 'button', class: 'link', text: host.nameOf(other) });
         b.addEventListener('click', () => host.openEmployee(other.replace('employee:', '')));
@@ -172,97 +201,141 @@ export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost)
       }
       relEl.append(li);
     }
-    root.append(h('section', { class: 'focus-section' }, h('h3', { text: 'علاقات حية' }), relEl));
+    root.append(sectionEl('Live relations', relEl));
   }
   const budget = d.budget as Json | null;
   const grants = (d.grants as Json[]) ?? [];
-  const ctxEl = h('dl', { class: 'facts' });
-  if (budget) ctxEl.append(h('dt', { text: 'الغلاف المالي' }), h('dd', { text: `${fmtMoneyMicros(Number(budget.spentMoney), String(budget.currency))} من ${fmtMoneyMicros(Number(budget.capMoney), String(budget.currency))}` }));
-  ctxEl.append(h('dt', { text: 'الصلاحيات الحية' }), h('dd', {}, grants.length === 0 ? 'لا صلاحيات ممنوحة' : grants.map((g) => `${String(g.capability)} (${String(g.riskCeiling)})`).join('، ')));
-  ctxEl.append(h('dt', { text: 'الدور' }), h('dd', {}, ltr(String(e.roleRef))));
-  root.append(h('section', { class: 'focus-section' }, h('h3', { text: 'السياق' }), ctxEl));
-  const talk = h('button', { type: 'button', class: 'btn btn-primary btn-wide', text: 'تحدّث معه الآن' });
+  const facts = h('dl', { class: 'facts' });
+  if (budget) facts.append(h('dt', { text: 'Budget' }), h('dd', { text: `${fmtMoneyMicros(Number(budget.spentMoney), String(budget.currency))} spent of ${fmtMoneyMicros(Number(budget.capMoney), String(budget.currency))}` }));
+  facts.append(h('dt', { text: 'May do' }), h('dd', { text: grants.length === 0 ? 'Nothing granted yet' : grants.map((g) => `${t(CAPABILITY_LABEL, String(g.capability))} (${String(g.riskCeiling)})`).join(' · ') }));
+  root.append(sectionEl('Authority', facts));
+  const talk = h('button', { type: 'button', class: 'btn btn-primary btn-wide', text: `Talk to ${name.given}` });
   talk.addEventListener('click', () => host.startConversation(String(e.id)));
-  const ceiling = h('button', { type: 'button', class: 'btn btn-quiet btn-wide', text: 'حدّد سقف الميزانية' });
-  ceiling.addEventListener('click', () => void host.runCommand(`وافق على حملة ${name.given} ${name.family} بميزانية 0`));
-  root.append(h('div', { class: 'focus-actions' }, talk, budget ? ceiling : null));
+  const ceiling = h('button', { type: 'button', class: 'btn btn-quiet btn-wide', text: 'Set budget ceiling' });
+  ceiling.addEventListener('click', () => void host.runCommand(`set ${full} budget ceiling EGP 0`));
+  root.append(h('div', { class: 'sheet-actions' }, talk, budget ? ceiling : null));
+}
+
+function workRow(w: Json, host: PanelHost, opts: { owner: boolean }): HTMLElement {
+  const goals = (w.goalIds as string[]) ?? [];
+  const li = h('li', { class: `work state-${String(w.state).toLowerCase()}` }, h('span', { class: 'work-state', text: t(STATE_LABEL, String(w.state)) }), content('span', String(w.objective), 'work-objective'));
+  if (opts.owner && w.ownerEmployeeId) {
+    const b = h('button', { type: 'button', class: 'link', text: host.nameOf(`employee:${String(w.ownerEmployeeId)}`) });
+    b.addEventListener('click', () => host.openEmployee(String(w.ownerEmployeeId)));
+    li.append(b);
+  }
+  if (w.blockedReason) li.append(content('span', `Blocked: ${String(w.blockedReason)}`, 'work-reason'));
+  if (w.waitReason) li.append(h('span', { class: 'work-reason', text: `Waiting: ${humanize(String(w.waitReason))}` }));
+  for (const gid of goals) {
+    const g = h('button', { type: 'button', class: 'link', text: 'Serves a goal' });
+    g.addEventListener('click', () => host.openGoal(gid));
+    li.append(g);
+  }
+  return li;
 }
 
 export function renderGoalFocus(root: HTMLElement, d: Json, host: PanelHost): void {
   root.replaceChildren();
   const g = d.goal as Json;
-  root.append(closeButton(host), h('p', { class: 'kicker', text: g.kind === 'COMPANY' ? 'هدف الشركة' : 'هدف القسم' }), h('h2', { class: 'focus-title', text: String(g.title) }), h('p', { class: 'focus-sub' }, h('span', { class: 'pill pill-state', text: ar(STATE_AR, String(g.state)) }), g.horizonTo ? h('span', { class: 'muted', text: `الأفق: ${fmtDateTime(String(g.horizonTo))}` }) : null));
-  root.append(h('p', { class: 'focus-summary', text: String(g.summary) }));
+  const company = g.kind === 'COMPANY';
+  root.append(sheetHead(host, String(g.title), [h('span', { class: 'goal-kind', text: company ? 'Company goal' : 'Department goal' }), h('span', { class: 'pill pill-state', text: t(STATE_LABEL, String(g.state)) }), g.horizonTo ? h('span', { class: 'muted', text: `Horizon ${fmtDateTime(String(g.horizonTo))}` }) : null], { text: '◆', color: company ? '#ffe3ae' : '#e8c98f' }));
+  root.append(content('p', String(g.summary), 'sheet-summary'));
   const criteria = (g.successCriteria as string[]) ?? [];
-  if (criteria.length) root.append(h('section', { class: 'focus-section' }, h('h3', { text: 'معايير النجاح' }), h('ul', { class: 'plain' }, ...criteria.map((c) => h('li', { text: c })))));
+  if (criteria.length) root.append(sectionEl('Success looks like', h('ul', { class: 'plain' }, ...criteria.map((c) => content('li', c)))));
   const work = (d.work as Json[]) ?? [];
-  const path = h('ol', { class: 'goal-path', 'aria-label': 'كيف يتحول الهدف إلى تنفيذ' });
-  path.append(h('li', {}, h('span', { class: 'step', text: 'الهدف' }), h('span', { text: String(g.title) })));
+  const path = h('ol', { class: 'goal-path', 'aria-label': 'How the goal becomes action' });
   const owner = host.nameOf(String(g.ownerRef));
-  path.append(h('li', {}, h('span', { class: 'step', text: 'القيادة المسؤولة' }), owner === String(g.ownerRef) ? ltr(owner) : h('span', { text: owner })));
-  const deptCount = ((d.departments as string[]) ?? []).length;
-  path.append(h('li', {}, h('span', { class: 'step', text: 'الأقسام' }), h('span', { text: deptCount === 0 ? 'لا قسم مرتبط بعد' : countNoun(deptCount, { one: 'قسم واحد', two: 'قسمان', few: 'أقسام', many: 'قسمًا' }) })));
+  path.append(h('li', {}, h('span', { class: 'step', text: 'Owner' }), content('span', owner)));
+  const depts = (d.departments as string[]) ?? [];
+  const deptEl = h('span', { class: 'chips' });
+  if (depts.length === 0) deptEl.append(h('span', { class: 'muted', text: 'No department linked yet' }));
+  for (const id of depts) {
+    const b = h('button', { type: 'button', class: 'chip', text: host.deptNameOf(id) });
+    b.addEventListener('click', () => host.openDepartment(id));
+    deptEl.append(b);
+  }
+  path.append(h('li', {}, h('span', { class: 'step', text: plural(depts.length, 'Department', 'Departments') }), deptEl));
   const workEl = h('ul', { class: 'work-list' });
-  if (work.length === 0) workEl.append(h('li', { class: 'muted', text: 'لا عمل مرتبط بعد — الهدف لم يتحول إلى تنفيذ.' }));
-  for (const w of work) {
-    const li = h('li', { class: `work state-${String(w.state).toLowerCase()}` }, h('span', { class: 'work-state', text: ar(STATE_AR, String(w.state)) }), h('span', { class: 'work-objective', text: String(w.objective) }));
-    if (w.ownerEmployeeId) {
-      const b = h('button', { type: 'button', class: 'link', text: 'المالك' });
-      b.addEventListener('click', () => host.openEmployee(String(w.ownerEmployeeId)));
-      li.append(b);
-    }
-    workEl.append(li);
-  }
-  path.append(h('li', {}, h('span', { class: 'step', text: 'بنود العمل' }), workEl));
+  if (work.length === 0) workEl.append(h('li', { class: 'empty', text: 'No work linked yet — this goal has not turned into action.' }));
+  for (const w of work) workEl.append(workRow(w, host, { owner: true }));
+  path.append(h('li', {}, h('span', { class: 'step', text: plural(work.length, 'Work item', 'Work items') }), workEl));
   const paths = (d.paths as Json[]) ?? [];
-  path.append(h('li', {}, h('span', { class: 'step', text: 'مراجعات وموافقات' }), h('span', { text: paths.length === 0 ? 'لا مراجعة أو موافقة مفتوحة' : paths.map((p) => ar(RELATION_AR, String(p.kind))).join('، ') })));
-  root.append(h('section', { class: 'focus-section' }, h('h3', { text: 'من الهدف إلى الفعل' }), path));
+  path.append(h('li', {}, h('span', { class: 'step', text: 'Reviews & approvals' }), h('span', { text: paths.length === 0 ? 'None open' : paths.map((p) => t(RELATION_LABEL, String(p.kind))).join(', ') })));
+  root.append(sectionEl('From goal to action', path));
   const children = (d.children as Json[]) ?? [];
-  if (children.length) root.append(h('section', { class: 'focus-section' }, h('h3', { text: 'أهداف مشتقة' }), h('ul', { class: 'plain' }, ...children.map((c) => { const b = h('button', { type: 'button', class: 'link', text: String(c.title) }); b.addEventListener('click', () => host.openGoal(String(c.id))); return h('li', {}, b, h('span', { class: 'muted', text: ` · ${ar(STATE_AR, String(c.state))}` })); }))));
-  if (g.kind === 'COMPANY' && g.state === 'PROPOSED') {
-    const approve = h('button', { type: 'button', class: 'btn btn-primary btn-wide', text: 'اعتمد هذا الهدف' });
-    approve.addEventListener('click', () => void host.runCommand(`وافق على هدف ${String(g.title)}`));
-    root.append(h('div', { class: 'focus-actions' }, approve));
+  if (children.length) root.append(sectionEl('Derived goals', h('ul', { class: 'plain' }, ...children.map((c) => { const b = h('button', { type: 'button', class: 'link', text: String(c.title) }); b.dir = dirOf(String(c.title)); b.addEventListener('click', () => host.openGoal(String(c.id))); return h('li', {}, b, h('span', { class: 'muted', text: ` · ${t(STATE_LABEL, String(c.state))}` })); }))));
+  if (company && g.state === 'PROPOSED') {
+    const approve = h('button', { type: 'button', class: 'btn btn-primary btn-wide', text: 'Approve this goal' });
+    approve.addEventListener('click', () => void host.runCommand(`approve goal ${String(g.title)}`));
+    root.append(h('div', { class: 'sheet-actions' }, approve));
   }
-}
-
-function closeButton(host: PanelHost): HTMLElement {
-  const b = h('button', { type: 'button', class: 'btn btn-ghost close', 'aria-label': 'العودة إلى الشركة الحية', text: '↩ الحيّ' });
-  b.addEventListener('click', () => host.returnToLive());
-  return b;
 }
 
 // --- conversation ------------------------------------------------------------------------------------
 
-export function renderConversation(root: HTMLElement, d: { thread: Json; messages: Json[]; pending: Json[] }, host: PanelHost, universe: CompanyUniverse | null): void {
+export function renderConversation(root: HTMLElement, d: { thread: Json; messages: Json[]; pending: Json[] }, host: PanelHost, universe: CompanyUniverse | null, deptColor: string): void {
   root.replaceChildren();
-  const t = d.thread;
-  const employee = universe?.employees.find((e) => e.id === t.employeeId);
-  const name = employee ? `${employee.name.given} ${employee.name.family}` : String(t.subject);
-  root.append(closeButton(host), h('p', { class: 'kicker', text: t.kind === 'FOUNDER_CEO' || t.kind === 'CEO_BRIEF' ? 'المدير التنفيذي' : 'محادثة مباشرة' }), h('h2', { class: 'focus-title', text: name }), h('p', { class: 'focus-sub muted', text: 'الحديث لا يمنح صلاحية: أي أمر يمسّ الميزانية أو الاعتماد يتحول إلى معاينة محكومة تؤكدها بنفسك.' }));
-  const list = h('ol', { class: 'messages', 'aria-live': 'polite' });
+  const th = d.thread;
+  const employee = universe?.employees.find((e) => e.id === th.employeeId);
+  const name = employee ? `${employee.name.given} ${employee.name.family}` : String(th.subject);
+  const seat = employee ? universe?.seats.find((s) => s.holderEmployeeId === employee.id) : undefined;
+  const isCeo = th.kind === 'FOUNDER_CEO' || th.kind === 'CEO_BRIEF' || seat?.kind === 'CEO';
+  const deptLabel = employee?.departmentId ? host.deptNameOf(employee.departmentId) : 'Company';
+  root.append(sheetHead(host, name, [h('span', { text: seat ? (isCeo ? 'Chief Executive Officer' : seat.title) : 'Direct conversation' }), ...(employee?.departmentId ? [h('span', { class: 'sep' }), h('span', { text: deptLabel })] : [])], { text: initials(name), color: deptColor }));
+  // Context: the work this person is carrying, so the conversation happens inside the company, not beside it.
+  const work = employee ? (universe?.work ?? []).filter((w) => w.ownerEmployeeId === employee.id && w.state !== 'COMPLETED' && w.state !== 'CANCELLED') : [];
+  if (work.length) {
+    const chips = h('div', { class: 'chips context-chips', 'aria-label': 'Work in this conversation' });
+    for (const w of work.slice(0, 4)) {
+      const chip = h('span', { class: `chip chip-${String(w.state).toLowerCase()}` }, h('span', { class: 'chip-state', text: t(STATE_LABEL, w.state) }), content('span', w.objective));
+      chips.append(chip);
+    }
+    root.append(chips);
+  }
+  root.append(h('p', { class: 'conv-rule', text: 'Conversation never grants authority. A budget, approval or goal request becomes a governed preview you confirm yourself.' }));
+  const list = h('ol', { class: 'ledger', 'aria-live': 'polite' });
   for (const m of d.messages) {
     const mine = m.senderKind === 'FOUNDER';
-    const li = h('li', { class: `message ${mine ? 'from-founder' : 'from-employee'}` }, h('div', { class: 'message-meta' }, h('span', { class: 'pill', text: ar(PURPOSE_AR, String(m.purpose)) }), h('span', { class: 'muted', text: fmtRelative(String(m.createdAt)) })));
+    const li = h('li', { class: `entry ${mine ? 'from-founder' : 'from-employee'}` }, h('div', { class: 'entry-meta' }, h('span', { class: 'who', text: mine ? 'You' : name }), h('span', { class: 'purpose', text: t(PURPOSE_LABEL, String(m.purpose)) }), h('time', { class: 'when', text: fmtRelative(String(m.createdAt)) })));
     const brief = m.brief as Json | null;
-    if (brief) li.append(h('dl', { class: 'brief' }, h('dt', { text: 'ماذا يحدث؟' }), h('dd', { text: String(brief.happening) }), h('dt', { text: 'لماذا يهم؟' }), h('dd', { text: String(brief.matters) }), h('dt', { text: 'التوصية' }), h('dd', { text: String(brief.recommendation) }), h('dt', { text: 'قرار مطلوب؟' }), h('dd', { text: brief.decisionNeeded ? `نعم — ${String(brief.decision ?? '')}` : 'لا' })));
-    else li.append(h('p', { class: 'msg-body', text: String(m.body) }));
+    if (brief) li.append(briefBlock(brief));
+    else li.append(content('p', String(m.body), 'entry-body'));
     list.append(li);
   }
-  for (const p of d.pending) list.append(h('li', { class: 'message pending' }, h('span', { class: 'muted' }, 'ينتظر الرد — عمل الموظف ', h('span', { class: 'pill', text: ar(STATE_AR, String(p.workItemState)) }))));
+  for (const p of d.pending) list.append(h('li', { class: 'entry pending' }, h('span', { class: 'who', text: name }), h('span', { text: ` is working on a reply · ${t(STATE_LABEL, String(p.workItemState))}` })));
+  if (d.messages.length === 0 && d.pending.length === 0) list.append(h('li', { class: 'entry empty' }, h('strong', { text: 'Nothing said yet.' }), h('span', { text: ` Write to ${employee?.name.given ?? name} in English or Arabic; a reply comes from their own governed run.` })));
   root.append(list);
-  const form = h('form', { class: 'composer' });
-  const purpose = h('select', { 'aria-label': 'غرض الرسالة', name: 'purpose' }) as HTMLSelectElement;
-  for (const p of ['QUESTION', 'REQUEST', 'DECISION_REQUEST', 'FYI', 'CORRECTION']) purpose.append(h('option', { value: p, text: ar(PURPOSE_AR, p) }));
-  const text = h('textarea', { 'aria-label': 'نص الرسالة', name: 'body', rows: 3, placeholder: 'اكتب للموظف مباشرة…', maxlength: 4000 }) as HTMLTextAreaElement;
-  const send = h('button', { type: 'submit', class: 'btn btn-primary', text: 'أرسل' });
-  form.append(purpose, text, send);
+  const form = h('form', { class: 'composer' }) as HTMLFormElement;
+  const purposes = ['QUESTION', 'REQUEST', 'DECISION_REQUEST', 'FYI', 'CORRECTION'];
+  let purpose = 'QUESTION';
+  const chips = h('div', { class: 'purpose-chips', role: 'radiogroup', 'aria-label': 'Message purpose' });
+  const chipEls = purposes.map((p) => {
+    const b = h('button', { type: 'button', role: 'radio', class: `chip chip-choice${p === purpose ? ' is-active' : ''}`, 'aria-checked': p === purpose ? 'true' : 'false', text: t(PURPOSE_LABEL, p) });
+    b.addEventListener('click', () => {
+      purpose = p;
+      for (const c of chipEls) {
+        c.classList.toggle('is-active', c === b);
+        c.setAttribute('aria-checked', c === b ? 'true' : 'false');
+      }
+    });
+    return b;
+  });
+  chips.append(...chipEls);
+  const text = h('textarea', { 'aria-label': 'Message', name: 'body', rows: 3, placeholder: `Write to ${employee?.name.given ?? name} in English or Arabic…`, maxlength: 4000, dir: 'auto' }) as HTMLTextAreaElement;
+  const send = h('button', { type: 'submit', class: 'btn btn-primary', text: 'Send' });
+  form.append(chips, text, h('div', { class: 'composer-foot' }, h('span', { class: 'hint', text: 'Enter sends · Shift+Enter for a new line' }), send));
+  text.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const body = text.value.trim();
     if (!body) return;
     send.setAttribute('disabled', '');
-    void host.sendMessage(String(t.id), purpose.value, body).finally(() => send.removeAttribute('disabled'));
+    void host.sendMessage(String(th.id), purpose, body).finally(() => send.removeAttribute('disabled'));
     text.value = '';
   });
   root.append(form);
@@ -273,8 +346,8 @@ export function renderConversation(root: HTMLElement, d: { thread: Json; message
 export function renderPalette(root: HTMLElement, host: PanelHost, result: Json | null, busy: boolean): HTMLInputElement {
   root.replaceChildren();
   const form = h('form', { class: 'palette-form', role: 'search' });
-  const input = h('input', { type: 'text', class: 'palette-input', placeholder: 'اسأل الشركة: افتح ليلى، ما المتوقف؟، من يعمل على إطلاق السعودية؟', 'aria-label': 'أمر المؤسس', autocomplete: 'off', maxlength: 400 }) as HTMLInputElement;
-  const go = h('button', { type: 'submit', class: 'btn btn-primary', text: busy ? '…' : 'نفّذ' });
+  const input = h('input', { type: 'text', class: 'palette-input', placeholder: 'Ask the company: open Laila · what is blocked? · who is working on the Saudi launch?', 'aria-label': 'Founder command', autocomplete: 'off', maxlength: 400, dir: 'auto' }) as HTMLInputElement;
+  const go = h('button', { type: 'submit', class: 'btn btn-primary', text: busy ? '…' : 'Go' });
   form.append(input, go);
   form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -285,16 +358,17 @@ export function renderPalette(root: HTMLElement, host: PanelHost, result: Json |
   if (result) {
     const intent = result.intent as Json;
     const line = h('p', { class: 'palette-result' });
-    if (intent.kind === 'UNKNOWN') line.textContent = 'لم أفهم الأمر. جرّب: «افتح <اسم>»، «اعرض قسم النمو»، «ما المتوقف؟»، «يحتاج موافقتي».';
-    else if (intent.kind === 'READ') line.append(h('span', { class: 'pill', text: 'قراءة' }), ' ', h('span', { text: 'غيّرتُ التركيز، لم أغيّر أي حقيقة.' }));
-    else if (result.preview) line.append(h('span', { class: 'pill pill-needs_decision', text: 'فعل محكوم' }), ' ', h('span', { text: 'أعددت معاينة مهيكلة. لا شيء يتغير قبل تأكيدك.' }));
-    else line.append(h('span', { class: 'pill', text: 'فعل' }), ' ', h('span', { text: 'لم أجد هدفًا واحدًا محددًا لهذا الفعل. اختر من الخريطة أو حدد الاسم.' }));
+    if (intent.kind === 'UNKNOWN') line.textContent = 'Not understood. Try “open <name>”, “show growth”, “what is blocked?”, “needs my approval”.';
+    else if (intent.kind === 'READ') line.append(h('span', { class: 'pill', text: 'Read' }), ' ', h('span', { text: 'Focus changed. No fact changed.' }));
+    else if (result.preview) line.append(h('span', { class: 'pill pill-needs_decision', text: 'Governed action' }), ' ', h('span', { text: 'A structured preview is ready. Nothing changes until you confirm.' }));
+    else line.append(h('span', { class: 'pill', text: 'Action' }), ' ', h('span', { text: 'No single target matched. Pick it on the map or name it.' }));
     root.append(line);
     const matches = (result.matches as Json[]) ?? [];
     if (matches.length > 1) {
       const ul = h('ul', { class: 'palette-matches' });
       for (const m of matches) {
         const b = h('button', { type: 'button', class: 'link', text: String(m.label) });
+        b.dir = dirOf(String(m.label));
         b.addEventListener('click', () => (m.kind === 'employee' ? host.openEmployee(String(m.id)) : m.kind === 'goal' ? host.openGoal(String(m.id)) : host.focusSource(`${String(m.kind)}:${String(m.id)}`)));
         ul.append(h('li', {}, b));
       }
@@ -304,52 +378,57 @@ export function renderPalette(root: HTMLElement, host: PanelHost, result: Json |
   return input;
 }
 
+/** Payload fields the Founder reads: identifiers are resolved to names or dropped, never shown as codes. */
+const HIDDEN_FIELDS = new Set(['reasonCode', 'currency', 'approvalId', 'goalId', 'budgetId', 'requestId', 'conflictId', 'employeeId']);
+
 export function renderPreview(root: HTMLElement, preview: Json, host: PanelHost): void {
   root.replaceChildren();
   const payload = (preview.payload as Json) ?? {};
   const currency = typeof payload.currency === 'string' ? payload.currency : 'EGP';
-  // The structured act in the Founder's words: every field named, money and counts formatted, IDs as LTR islands.
+  const scope = typeof payload.scope === 'string' ? payload.scope : null;
   const value = (k: string, v: unknown): HTMLElement => {
     if (k === 'capMoney' && typeof v === 'number') return h('span', { text: fmtMoneyMicros(v, currency) });
-    if (k === 'capTokens' && typeof v === 'number') return h('span', { text: `${fmtNumber(v)} رمز` });
-    if (k === 'decision') return h('span', { text: v === 'REJECT' ? 'رفض' : 'اعتماد' });
-    if (k === 'activate') return h('span', { text: v ? 'نعم' : 'لا' });
-    if (k === 'to' || k === 'resolution') return h('span', { text: ar(STATE_AR, String(v)) });
-    if (k === 'scope') return h('span', { text: ar(KIND_AR, String(v)) === String(v) ? ({ EMPLOYEE: 'موظف', DEPARTMENT: 'إدارة', COMPANY: 'الشركة', WORK_ITEM: 'بند عمل' } as Record<string, string>)[String(v)] ?? String(v) : ar(KIND_AR, String(v)) });
+    if (k === 'capTokens' && typeof v === 'number') return h('span', { text: `${fmtNumber(v)} tokens` });
+    if (k === 'decision') return h('span', { text: v === 'REJECT' ? 'Reject' : 'Approve' });
+    if (k === 'activate') return h('span', { text: v ? 'Yes' : 'No' });
+    if (k === 'to' || k === 'resolution') return h('span', { text: t(STATE_LABEL, String(v)) });
+    if (k === 'scope') return h('span', { text: t(SCOPE_LABEL, String(v)) });
+    if (k === 'scopeId') return content('span', scope === 'EMPLOYEE' ? host.nameOf(`employee:${String(v)}`) : scope === 'DEPARTMENT' ? host.deptNameOf(String(v)) : scope === 'COMPANY' ? 'The company' : host.workTitleOf(String(v)) ?? 'A work item');
     if (k === 'expiresAt' && typeof v === 'string') return h('span', { text: fmtDateTime(v) });
-    return ltr(String(v));
+    if (k === 'capability') return h('span', { text: t(CAPABILITY_LABEL, String(v)) });
+    return h('span', { text: humanize(String(v)) });
   };
-  const rows = Object.entries(payload).filter(([k]) => k !== 'reasonCode' && k !== 'currency');
+  const rows = Object.entries(payload).filter(([k]) => !HIDDEN_FIELDS.has(k));
   root.append(
-    h('h2', { class: 'preview-title', text: `تأكيد فعل محكوم: ${ar(INTENT_AR, String(preview.intentKind))}` }),
-    h('p', { class: 'muted', text: 'هذا ما سينفذ عند التأكيد — لا أكثر. النص الذي كتبته لا يغيّر شيئًا بذاته.' }),
-    h('p', { class: 'preview-summary', text: String(preview.summary ?? preview.intentKind) }),
-    h('dl', { class: 'facts' }, ...rows.flatMap(([k, v]) => [h('dt', {}, FIELD_AR[k] ? h('span', { text: FIELD_AR[k] }) : ltr(k)), h('dd', {}, value(k, v))])),
-    h('p', { class: 'muted small' }, 'بصمة المعاينة: ', ltr(String(preview.fingerprint).slice(0, 16) + '…'), ' — تنتهي ', h('span', { text: fmtRelative(String(preview.expiresAt)) })),
+    h('h2', { class: 'preview-title', text: t(INTENT_LABEL, String(preview.intentKind)) }),
+    h('p', { class: 'preview-lede', text: 'This is what will happen when you confirm — nothing more. The words you typed change nothing by themselves.' }),
+    content('p', String(preview.summary ?? preview.intentKind), 'preview-summary'),
+    h('dl', { class: 'facts' }, ...rows.flatMap(([k, v]) => [h('dt', { text: t(FIELD_LABEL, k) }), h('dd', {}, value(k, v))])),
+    h('p', { class: 'muted small', text: `This preview expires ${fmtRelative(String(preview.expiresAt))}.` }),
   );
-  const confirm = h('button', { type: 'button', class: 'btn btn-primary', text: 'أؤكد التنفيذ' });
-  const cancel = h('button', { type: 'button', class: 'btn btn-quiet', text: 'إلغاء' });
+  const confirm = h('button', { type: 'button', class: 'btn btn-primary', text: 'Confirm and execute' });
+  const cancel = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Cancel' });
   confirm.addEventListener('click', () => void host.confirmPreview(String(preview.id), String(preview.fingerprint)));
   cancel.addEventListener('click', () => void host.rejectPreview(String(preview.id)));
   root.append(h('div', { class: 'preview-actions' }, cancel, confirm));
   confirm.focus();
 }
 
-// --- timeline / calendar / activity ------------------------------------------------------------------
+// --- time, upcoming, activity ----------------------------------------------------------------------
 
 export function renderTimeline(root: HTMLElement, state: { live: boolean; at: string | null; earliest: string; now: string }, host: PanelHost): void {
   root.replaceChildren();
-  const live = h('button', { type: 'button', class: `btn ${state.live ? 'btn-live' : 'btn-quiet'}`, text: state.live ? '● مباشر' : '↩ عودة إلى المباشر', 'aria-pressed': state.live ? 'true' : 'false' });
+  root.classList.toggle('is-history', !state.live);
+  const live = h('button', { type: 'button', class: `btn ${state.live ? 'btn-live' : 'btn-quiet'}`, text: state.live ? 'Live' : 'Return to live', 'aria-pressed': state.live ? 'true' : 'false' }, );
+  live.prepend(h('span', { class: `dot ${state.live ? 'dot-live' : 'dot-off'}`, 'aria-hidden': 'true' }));
   live.addEventListener('click', () => host.returnToLive());
   const min = Date.parse(state.earliest);
   const max = Date.parse(state.now);
   const value = state.at ? Date.parse(state.at) : max;
-  // The scrubber is an LTR island: earliest at the left, now at the right, next to the «الآن» label (a range input
-  // in RTL would put its maximum on the left, away from the label that names it).
   // The step follows the span (about 240 stops, a minute at most, never coarser than the span itself), so a young
   // company with seconds of history scrubs just as well as one with months.
   const step = Math.max(1000, Math.min(60_000, Math.floor((max - min) / 240)));
-  const range = h('input', { type: 'range', class: 'scrubber', dir: 'ltr', step: String(step), 'aria-label': 'لحظة التاريخ', 'aria-valuetext': state.at ? fmtDateTime(state.at) : 'الآن' }) as HTMLInputElement;
+  const range = h('input', { type: 'range', class: 'scrubber', step: String(step), 'aria-label': 'Moment in the company history', 'aria-valuetext': state.at ? fmtDateTime(state.at) : 'Now' }) as HTMLInputElement;
   // Bounds first, value last: a value applied before its bounds is clamped to the default 0–100 range.
   range.min = String(min);
   range.max = String(max);
@@ -359,21 +438,20 @@ export function renderTimeline(root: HTMLElement, state: { live: boolean; at: st
     clearTimeout(timer);
     timer = window.setTimeout(() => host.scrubTo(new Date(Number(range.value)).toISOString()), 220);
   });
-  const label = h('span', { class: 'time-label', text: state.at ? fmtDateTime(state.at) : 'الآن' });
-  root.append(label, range, live);
+  const label = h('span', { class: 'time-label', text: state.at ? fmtDateTime(state.at) : 'Now' });
+  root.append(live, h('div', { class: 'scrub' }, h('span', { class: 'time-edge', text: fmtDateTime(state.earliest) }), range, label));
 }
 
 export function renderCalendar(root: HTMLElement, d: { events: Json[] }, host: PanelHost): void {
   root.replaceChildren();
-  root.append(h('h3', { class: 'strip-title', text: 'القادم' }));
-  const KIND: Record<string, string> = { ACTING_ENDS: 'تنتهي الإنابة', DELEGATION_DUE: 'استحقاق تفويض', STAFFING_DECISION_DUE: 'قرار توظيف مستحق', GOAL_HORIZON: 'أفق هدف', WORK_DUE: 'استحقاق عمل', APPROVAL_EXPIRES: 'تنتهي موافقة', SESSION_EXPIRES: 'تنتهي جلستك' };
-  const ul = h('ul', { class: 'strip-list' });
   const events = d.events.slice(0, 8);
-  if (events.length === 0) ul.append(h('li', { class: 'muted', text: 'لا مواعيد خلال ثلاثين يومًا.' }));
+  root.append(h('summary', { class: 'dock-summary' }, h('span', { text: 'Upcoming' }), h('span', { class: 'count', text: String(d.events.length) })));
+  const ul = h('ul', { class: 'dock-list' });
+  if (events.length === 0) ul.append(h('li', { class: 'empty', text: 'Nothing due in the next thirty days.' }));
   for (const e of events) {
-    const li = h('li', {}, h('span', { class: 'strip-when', text: fmtRelative(String(e.at)) }), h('span', { text: `${KIND[String(e.kind)] ?? String(e.kind)}${e.title ? ' — ' + String(e.title) : ''}` }));
+    const li = h('li', {}, h('time', { class: 'dock-when', text: fmtRelative(String(e.at)) }), h('span', { class: 'dock-what' }, h('span', { text: t(CALENDAR_LABEL, String(e.kind)) }), e.title ? content('span', String(e.title), 'dock-title') : null));
     if (String(e.ref).startsWith('goal:') || String(e.ref).startsWith('work_item:')) {
-      const b = h('button', { type: 'button', class: 'link', text: 'افتح' });
+      const b = h('button', { type: 'button', class: 'link', text: 'Open' });
       b.addEventListener('click', () => host.focusSource(String(e.ref)));
       li.append(b);
     }
@@ -382,16 +460,21 @@ export function renderCalendar(root: HTMLElement, d: { events: Json[] }, host: P
   root.append(ul);
 }
 
-export function renderActivity(root: HTMLElement, lines: { at: string; text: string; kind: 'semantic' | 'system' }[]): void {
-  // Empty state: what this strip is for, so silence reads as "nothing moved", never as a broken panel.
-  const body = lines.length === 0 ? h('p', { class: 'strip-empty', text: 'لم يتحرك شيء بعد. كل حركة على الخريطة لها سطر هنا، والخلفية الحيّة لا تُحسب.' }) : h('ul', { class: 'strip-list' }, ...lines.slice(-6).reverse().map((l) => h('li', { class: `act-${l.kind}` }, h('span', { class: 'strip-when', text: fmtRelative(l.at) }), h('span', { text: l.text }))));
-  root.replaceChildren(h('h3', { class: 'strip-title', text: 'ما تحرّك' }), body);
+/** The latest activity note: shown for a while, then it recedes. Every semantic motion on the map has one. */
+export function renderActivity(root: HTMLElement, line: { at: string; text: string; kind: 'semantic' | 'system' } | null): void {
+  root.replaceChildren();
+  if (!line) {
+    root.classList.remove('is-shown');
+    return;
+  }
+  root.append(h('span', { class: `act-${line.kind}` }, content('span', line.text)));
+  root.classList.add('is-shown');
 }
 
 export function renderHealthLine(root: HTMLElement, u: CompanyUniverse | null, stream: 'open' | 'closed'): void {
   root.replaceChildren();
   if (!u) return;
   const s = u.signals;
-  const parts = [`${s.running} قيد التنفيذ`, `${s.blocked} متوقف`, `${s.waitingApproval} ينتظر موافقة`, `${s.waitingReview} ينتظر مراجعة`, `${s.vacantSeats} مقعد شاغر`, s.actingSeats ? `${s.actingSeats} إنابة` : null].filter((x): x is string => x !== null);
-  root.append(h('span', { class: `dot ${stream === 'open' ? 'dot-live' : 'dot-off'}`, 'aria-label': stream === 'open' ? 'متصل بالشركة' : 'انقطع الاتصال، تجري إعادة المحاولة' }), h('span', { text: parts.join(' · ') }));
+  const parts = [plural(s.running, 'running', 'running'), s.blocked ? plural(s.blocked, 'blocked', 'blocked') : null, s.waitingApproval ? plural(s.waitingApproval, 'awaiting approval', 'awaiting approval') : null, s.waitingReview ? plural(s.waitingReview, 'in review', 'in review') : null, s.vacantSeats ? plural(s.vacantSeats, 'vacant seat', 'vacant seats') : null, s.actingSeats ? plural(s.actingSeats, 'acting cover', 'acting covers') : null].filter((x): x is string => x !== null);
+  root.append(h('span', { class: `dot ${stream === 'open' ? 'dot-live' : 'dot-off'}`, 'aria-label': stream === 'open' ? 'Connected to the company' : 'Disconnected, retrying' }), h('span', { text: parts.join(' · ') }));
 }

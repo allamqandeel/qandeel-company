@@ -294,3 +294,105 @@ The focused cadence: the C5 suites, the verifier and the spike were re-run after
 | `artifact-diagramming` | The architecture figure in section 5 |
 | `github-actions` | Matrix / acceptance changes in `ci.yml` without weakening any gate |
 
+
+## 20. Presentation correction (Attention Orbits comprehensive visual UX correction v1)
+
+A second pass on the same branch and Draft PR, on the Founder's correction brief. It changes presentation only: the
+runtime, the storage schema, migration 0009, authentication, the Goal semantics and the interaction model are
+untouched (no file under `packages/storage`, `packages/runtime` or `packages/governance` changed). Where this
+section contradicts an earlier section about the interface language, this section wins.
+
+### 20.1 Presentation audit of the previous proof (before the change)
+
+| # | Finding in the previous frames | Severity |
+|---|---|---|
+| 1 | The application chrome was Arabic and the layout RTL; the brief wants an English, LTR application with Arabic only inside message content | MAJOR |
+| 2 | The map lived inside a dashboard: the attention rail always open, two bottom cards, a permanent scrubber, a counts line under the brand | MAJOR |
+| 3 | Rank was not readable from the orbits: no ring names, faint rings, nodes of similar size | MAJOR |
+| 4 | Sectors were faint tinted wedges without names; a group of people could not be assigned to a Department at a glance | MAJOR |
+| 5 | The Founder was an over-sized glowing sun (0.62 core, 6.5-unit halo) that swallowed the CEO orbit | MAJOR |
+| 6 | Nodes were plain spheres: identity, level, department, state and live activity were not a system | MAJOR |
+| 7 | Goals were a slim white pillar over a ring, alone in space, with no visible link to the Departments serving them | MAJOR |
+| 8 | Messages were generic bubbles and a select + textarea form; briefs were a two-column definition list | MAJOR |
+| 9 | Raw identifiers and codes reached the Founder (UUIDs in the preview, `model.invoke (R0)`, `role:growth.seo-specialist`, a preview fingerprint) | MAJOR |
+| 10 | The five Department hues failed the dataviz palette validator (pink ↔ green ΔE 2.6 under deutan; every hue outside the dark-surface lightness band) | MINOR |
+| 11 | Background: a dark gradient with 520 motes read as a starfield; little depth or light | MINOR |
+| 12 | Empty states and notes were generic ("nothing moved yet…") and the eyebrow labels over headings remained | MINOR |
+
+### 20.2 What changed
+
+- **English application, content as written.** `<html lang="en" dir="ltr">`; every string of the chrome, the sheets,
+  the palette, the preview and the notes is English (`format.ts` holds one wording table per code family, and an
+  unknown code is spelled into words, never shown as a code). Company content (names, objectives, goal text,
+  messages) renders as written: `dirOf` picks the direction from the first strong character, Arabic blocks get
+  `dir="rtl" lang="ar"` and the Arabic line-height, the composer and the palette are `dir="auto"`. The command
+  grammar was already bilingual; the proof now drives it in English and the acceptance in both.
+- **The universe is the product.** The attention rail opens from a top-bar control (with a count) or from a lens
+  and closes with Escape; the bottom edge holds a small time pill (the scrubber appears on hover, focus or in
+  Historical Focus), an "Upcoming" dock and a transient activity note; the counts line moved into the top bar as
+  one quiet sentence. No permanent panel remains.
+- **Rank from the orbit.** One tag per orbit (CEO, Directors, Managers & Leads, Specialists) placed on the
+  orbit line at a sector boundary (seat-free by construction); ring lines with the CEO orbit stronger,
+  alternating orbit bands, and node cores sized by rank (0.42 / 0.34 / 0.27 / 0.22).
+- **Department from the sector.** A coloured rim arc per sector at radius 12.1 carrying the Department's name and
+  its head-count (a real button: it opens the Department), sector fields gathering strength toward the rim, and
+  hairline separators from the Director orbit to the rim, all in one anti-aliased plane shader. The palette is
+  the dataviz-validated set `#3987e5 #199e70 #c98500 #9085e9 #d95926` (every adjacent pair around the ring,
+  including the wrap, ΔE ≥ 8.4 under CVD and ≥ 19.8 in normal vision; L 0.48–0.67; ≥ 3:1 on the surface).
+- **Founder as centre of gravity, not a sun.** A 0.5 core with a thin seal ring, a 3.4-unit halo at 0.42 opacity,
+  a modest key light.
+- **Node system.** Core (department hue, physical material with clearcoat), a seat ring on the plane in the
+  department hue, a soft ground shadow, status rings (hollow / broken / double / dashed, unchanged semantics), a
+  circling arc for running work (a real state; static in reduced motion), the selection ring and depth-scaled
+  captions (`--depth` from the camera distance).
+- **Goal beacons.** A faceted gem over a pool of light with a slender beam, one tether per anchored Department to
+  that Department's rim (brighter in Goal Focus), proposed goals dimmer and translucent; anchored goals stand a
+  quarter radian clockwise of their Departments' mean angle so the sector name and the beacon never share a spot
+  (`GOAL_LEAD`; D-C5-09 amended in D-C5-13).
+- **Conversation.** A ledger, not bubbles: the counterpart's identity (initials in the department hue, seat,
+  department), the work they carry as context chips, a one-line rule that conversation never grants authority,
+  entries with the sender by name and hue, the purpose named, the time, the body as written; the Founder
+  Communication Standard brief as four titled parts; a composer with purpose chips, a bilingual textarea and
+  Enter-to-send. The same brief component renders in the attention rail.
+- **Atmosphere.** A deep ink-to-haze gradient with two slow, very large light fields (cool and warm), a horizon
+  band, a pool of light where the camera looks, film grain against banding, 220 far dust motes (no starfield,
+  no neon), fog, a lower camera elevation and stronger pointer parallax; reduced motion stills all of it.
+- **No code leaks.** Preview fields are named and identifiers resolved (budget holder → a name) or dropped;
+  capabilities read as words ("Model calls (R0) · Notes (R1)"); the role row is gone; escalations name the work.
+- **Empty states and notes** say what the surface is for and what to do next; eyebrows over headings are gone.
+
+### 20.3 Validation (focused, per the brief; GitHub CI on the exact head is the full gate)
+
+- `command-center-ui` build + typecheck + tests: 9/9 (one new proof: running state, goal anchors, English structural
+  labels); `command-center` typecheck + tests: 9/9 (index served as `lang="en" dir="ltr"`).
+- `eslint --max-warnings=0` on `packages/command-center-ui`, `packages/command-center`, `scripts`: clean.
+- `c5:spike`: 6/6 (scene boots; English UI with content as written; four ring tags and five sector names; no
+  external asset; selection / focus / return; reduced-motion parity now including ring and sector names).
+- `c5:visual-proof`: PASS — eleven frames (Company Live, Employee Focus, Goal Focus, Conversation with Arabic and
+  English messages inside the English sheet, Founder Attention, governed preview and confirmation, Historical
+  Focus, reduced motion, SVG fallback, a scale frame over a really seeded 77-person company with no overlap), a
+  10 s walkthrough MP4, a before/after board and the manifest; the preview is checked for identifier leaks and the
+  conversation for per-message direction (`rtl` for Arabic bodies, `ltr` for English) inside an `ltr` sheet.
+- `c5:acceptance`: PASS 9/9 (the governed action now driven by an English instruction, the read command in Arabic).
+- `verify-bootstrap`: 63/63.
+- Not re-run locally by instruction: the full `npm run ci` (33 min); the mutation shards run in CI on the exact head.
+
+### 20.4 G1 — Skills used in this pass and their concrete effect
+
+| Skill | Effect |
+|---|---|
+| `impeccable` | Mode: Operate. The audit above, then the craft floor: no eyebrow labels, no nested cards, no `border-left` accents, themed browser surfaces, one authored motion (camera), bounded inspection rounds (three rounds of real frames, fixes batched) |
+| `frontend-design` | The plan reviewed against the generic tells; copy from the Founder's perspective (controls name their action, empty states invite action) |
+| `dataviz` | The validator (`validate_palette.js`) rejected the old hues and shaped the new five, run in ring order with the wrap; department is never colour alone (position + named rim) |
+| `emil-design-eng` / `animate` | Sheets enter with `@starting-style` (220 ms, `cubic-bezier(0.23,1,0.32,1)`), the toast and scrubber reveal in ≤ 220 ms, press feedback, transitions over keyframes, `transform` / `opacity` only, reduced motion gentler not zero |
+| `sibawayh:designing-arabic-frontends` | Arabic content inside an LTR application: block-level `dir` from the first strong character, `lang="ar"` for font fallback and screen readers, Arabic line-height 1.8, `unicode-bidi: plaintext`, no letter-spacing on anything that can hold Arabic (the uppercase tracking is on Latin-only map tags), `dir="auto"` inputs |
+| `sibawayh:writing-eloquent-arabic` | Not applied to the chrome (now English); the Arabic in the seed (the Founder's question, the CEO's answer and brief) kept its native structure |
+| `ui-ux-pro-max` | The search tool needs Python, which the Founder host does not have; its priority table was applied by hand (contrast, 36–44 px targets, visible labels, no icon-only controls, context-aware durations) |
+
+### 20.5 Residuals of this pass (MINOR)
+
+- In Goal Focus at the near tier a specialist caption can touch the far-side sector name; captions never cover
+  the rim itself.
+- The SVG fallback keeps the named rims, tethers and beacons in 2.5D without the atmosphere, by design.
+- `seedScale` (the scale frame) opens a second store connection beside the running runtime, as an administrative
+  tool would; it is proof tooling only.

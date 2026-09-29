@@ -4,7 +4,7 @@
  * available. Not an Org Chart: the Founder still operates the same world.
  */
 import type { Emphasis, Layout, LayoutEdge, LayoutNode } from '../model/types.js';
-import { departmentColor, nodeColor, PALETTE, RELATION_COLORS, statusShape, type CameraTarget, type RendererEvents, type UniverseRenderer } from './renderer.js';
+import { departmentColor, nodeColor, nodeRadius, PALETTE, RELATION_COLORS, statusShape, type CameraTarget, type Projection, type RendererEvents, type UniverseRenderer } from './renderer.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const el = <K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number> = {}): SVGElementTagNameMap[K] => {
@@ -12,6 +12,7 @@ const el = <K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, 
   for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
   return e;
 };
+const SQUASH = 0.55;
 
 export class SvgUniverse implements UniverseRenderer {
   readonly kind = 'svg' as const;
@@ -46,25 +47,49 @@ export class SvgUniverse implements UniverseRenderer {
 
   setLayout(layout: Layout): void {
     this.#gSectors.replaceChildren();
+    const arc = (r: number, a0: number, a1: number): string => `M ${Math.cos(a0) * r} ${Math.sin(a0) * r} A ${r} ${r} 0 0 1 ${Math.cos(a1) * r} ${Math.sin(a1) * r}`;
     for (const s of layout.sectors) {
-      const r = layout.outerRadius + 1.2;
-      const p = el('path', { d: `M 0 0 L ${Math.cos(s.start) * r} ${Math.sin(s.start) * r} A ${r} ${r} 0 0 1 ${Math.cos(s.end) * r} ${Math.sin(s.end) * r} Z`, fill: departmentColor(s.index), 'fill-opacity': 0.07, stroke: departmentColor(s.index), 'stroke-opacity': 0.18, 'stroke-width': 0.03 });
-      p.dataset.department = s.departmentId;
-      this.#gSectors.appendChild(p);
+      const r = layout.rimRadius;
+      const wedge = el('path', { d: `M 0 0 L ${Math.cos(s.start) * r} ${Math.sin(s.start) * r} A ${r} ${r} 0 0 1 ${Math.cos(s.end) * r} ${Math.sin(s.end) * r} Z`, fill: departmentColor(s.index), 'fill-opacity': 0.06, stroke: 'none' });
+      wedge.dataset.department = s.departmentId;
+      this.#gSectors.appendChild(wedge);
+      // The named rim: a solid coloured arc per Department.
+      const rim = el('path', { d: arc(r, s.start + 0.03, s.end - 0.03), fill: 'none', stroke: departmentColor(s.index), 'stroke-opacity': 0.85, 'stroke-width': 0.14, 'stroke-linecap': 'round' });
+      rim.dataset.department = s.departmentId;
+      this.#gSectors.appendChild(rim);
+      this.#gSectors.appendChild(el('line', { x1: Math.cos(s.start) * (layout.rings[1]?.radius ?? 5), y1: Math.sin(s.start) * (layout.rings[1]?.radius ?? 5), x2: Math.cos(s.start) * r, y2: Math.sin(s.start) * r, stroke: '#8d88c9', 'stroke-opacity': 0.2, 'stroke-width': 0.02 }));
     }
-    for (const ring of layout.rings) this.#gSectors.appendChild(el('circle', { r: ring.radius, fill: 'none', stroke: '#8f86d8', 'stroke-opacity': ring.index === 1 ? 0.35 : 0.2, 'stroke-width': 0.04 }));
+    for (const ring of layout.rings) this.#gSectors.appendChild(el('circle', { r: ring.radius, fill: 'none', stroke: '#8d88c9', 'stroke-opacity': ring.index === 1 ? 0.45 : 0.28, 'stroke-width': 0.04 }));
     this.#gNodes.replaceChildren();
     this.#nodes.clear();
     for (const n of layout.nodes) {
-      const g = el('g', { transform: `translate(${n.x} ${n.z - n.y * 0.55})` });
+      const g = el('g', { transform: `translate(${n.x} ${n.z - n.y * SQUASH})` });
       const color = nodeColor(n);
       const shape = statusShape(n);
-      const r = n.kind === 'founder' ? 0.7 : n.kind === 'goal' ? 0.32 : n.seatKind === 'CEO' ? 0.48 : n.seatKind === 'DIRECTOR' ? 0.4 : 0.3;
-      g.appendChild(el('circle', { r: r * 2.2, fill: color, 'fill-opacity': n.kind === 'attention' ? 0.25 : 0.12 }));
-      if (n.kind === 'goal') g.appendChild(el('polygon', { points: `0,${-1.6} 0.22,0 -0.22,0`, fill: color, 'fill-opacity': 0.9 }));
+      const r = nodeRadius(n) * 1.15;
+      g.appendChild(el('circle', { r: r * 2.1, fill: color, 'fill-opacity': n.kind === 'attention' ? 0.22 : 0.1 }));
+      if (n.kind === 'goal') {
+        // A beacon in the fallback: a diamond over a ring, tethered to its Departments' rims.
+        for (const sectorIndex of n.anchors) {
+          const s = layout.sectors[sectorIndex];
+          if (!s) continue;
+          g.appendChild(el('line', { x1: 0, y1: 0, x2: Math.cos(s.mid) * layout.rimRadius - n.x, y2: Math.sin(s.mid) * layout.rimRadius - n.z, stroke: departmentColor(sectorIndex), 'stroke-opacity': 0.5, 'stroke-width': 0.06 }));
+        }
+        g.appendChild(el('circle', { r: 0.7, fill: 'none', stroke: color, 'stroke-opacity': 0.6, 'stroke-width': 0.08 }));
+        g.appendChild(el('polygon', { points: `0,${-1.2} 0.34,-0.55 0,0.1 -0.34,-0.55`, fill: color, 'fill-opacity': n.state === 'PROPOSED' ? 0.45 : 0.95 }));
+        g.dataset.id = n.id;
+        g.style.cursor = 'pointer';
+        g.addEventListener('click', () => this.#events.onSelect(n.id, n));
+        this.#gNodes.appendChild(g);
+        this.#nodes.set(n.id, { node: n, g });
+        continue;
+      }
+      if (n.kind === 'employee' || n.kind === 'seat') g.appendChild(el('circle', { r: r + 0.14, fill: 'none', stroke: departmentColor(n.sector), 'stroke-opacity': 0.55, 'stroke-width': 0.05 }));
+      if (n.kind === 'founder') g.appendChild(el('circle', { r: 1.0, fill: 'none', stroke: PALETTE.founderGlow, 'stroke-opacity': 0.85, 'stroke-width': 0.03 }));
       const core = el('circle', { r, fill: shape === 'hollow' || shape === 'dashed' ? 'none' : color, stroke: shape === 'broken' ? PALETTE.blocked : color, 'stroke-width': shape === 'solid' ? 0.04 : 0.09, 'stroke-dasharray': shape === 'dashed' ? '0.18 0.12' : shape === 'broken' ? `${r * 2.2} ${r * 1.2}` : 'none' });
       g.appendChild(core);
-      if (shape === 'double') g.appendChild(el('circle', { r: r + 0.2, fill: 'none', stroke: color, 'stroke-width': 0.05 }));
+      if (shape === 'double') g.appendChild(el('circle', { r: r + 0.26, fill: 'none', stroke: color, 'stroke-width': 0.05 }));
+      if (n.running) g.appendChild(el('circle', { r: r + 0.22, fill: 'none', stroke: PALETTE.running, 'stroke-width': 0.06, 'stroke-dasharray': `${(r + 0.22) * 3.4} ${(r + 0.22) * 3}` }));
       g.dataset.id = n.id;
       g.style.cursor = 'pointer';
       g.addEventListener('click', () => this.#events.onSelect(n.id, n));
@@ -80,9 +105,9 @@ export class SvgUniverse implements UniverseRenderer {
       const b = layout.byId.get(e.to) ?? (e.to === 'founder' ? { x: 0, y: 0.9, z: 0 } : null);
       if (!a || !b) continue;
       const ax = a.x;
-      const az = a.z - a.y * 0.55;
+      const az = a.z - a.y * SQUASH;
       const bx = b.x;
-      const bz = b.z - b.y * 0.55;
+      const bz = b.z - b.y * SQUASH;
       const mx = (ax + bx) / 2;
       const mz = (az + bz) / 2 - 1.2;
       const path = el('path', { d: `M ${ax} ${az} Q ${mx} ${mz} ${bx} ${bz}`, fill: 'none', stroke: RELATION_COLORS[e.kind] ?? '#fff', 'stroke-width': e.kind === 'ESCALATION' ? 0.12 : 0.08, 'stroke-opacity': 0.8, 'stroke-linecap': 'round' });
@@ -107,7 +132,7 @@ export class SvgUniverse implements UniverseRenderer {
 
   focus(target: CameraTarget, immediate: boolean): void {
     const scale = 34 / target.distance;
-    this.#target = { cx: target.x, cz: target.z - target.y * 0.55, scale, distance: target.distance };
+    this.#target = { cx: target.x, cz: target.z - target.y * SQUASH, scale, distance: target.distance };
     if (immediate || this.#reduced) this.#view = { ...this.#target };
   }
 
@@ -131,15 +156,21 @@ export class SvgUniverse implements UniverseRenderer {
     this.#svg.classList.toggle('is-history', !live);
   }
 
-  project(nodeId: string): { x: number; y: number; visible: boolean; depth: number } | null {
+  project(nodeId: string): Projection | null {
     const v = this.#nodes.get(nodeId);
     if (!v) return null;
+    const n = v.node;
+    const lift = n.kind === 'goal' ? 1.6 : n.kind === 'founder' ? -1.4 : nodeRadius(n) + 0.45;
+    return this.projectPoint(n.x, n.y + lift, n.z);
+  }
+
+  projectPoint(x: number, y: number, z: number): Projection {
     const w = this.#container.clientWidth;
     const h = this.#container.clientHeight;
     const unit = (Math.min(w, h) / 34) * this.#view.scale;
-    const x = w / 2 + (v.node.x - this.#view.cx) * unit;
-    const y = h / 2 + (v.node.z - v.node.y * 0.55 - this.#view.cz) * unit - unit * 0.55;
-    return { x, y, visible: x > -20 && x < w + 20 && y > -20 && y < h + 20, depth: 0.5 };
+    const sx = w / 2 + (x - this.#view.cx) * unit;
+    const sy = h / 2 + (z - y * SQUASH - this.#view.cz) * unit;
+    return { x: sx, y: sy, visible: sx > -20 && sx < w + 20 && sy > -20 && sy < h + 20, depth: 0.3 };
   }
 
   resize(): void {

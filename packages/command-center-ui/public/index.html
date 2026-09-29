@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="ar" dir="rtl">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
-  <title>قنديل — عالم الشركة</title>
+  <title>QANDEEL — Company Universe</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/styles.css">
   <script type="importmap" nonce="{{nonce}}">{"imports":{"three":"/vendor/three/build/three.module.js","three/addons/":"/vendor/three/examples/jsm/"}}</script>
@@ -12,51 +12,51 @@
 <body>
   <div id="app" data-booting>
     <header class="topbar">
-      <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">قنديل</span><span class="lens" id="lens">الشركة الحيّة</span></div>
-      <div class="topbar-actions">
-        <button type="button" class="btn btn-quiet" id="palette-open" aria-keyshortcuts="Control+K">اسأل الشركة <kbd dir="ltr">Ctrl+K</kbd></button>
-        <button type="button" class="btn btn-ghost" id="motion-toggle" aria-pressed="false">الحركة: كاملة</button>
-        <button type="button" class="btn btn-ghost" id="legend-toggle" aria-controls="legend">المفتاح</button>
-        <button type="button" class="btn btn-ghost" id="logout">إنهاء الجلسة</button>
-      </div>
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">QANDEEL</span><span class="lens" id="lens">Company Live</span></div>
       <p class="health" id="health" aria-live="polite"></p>
+      <div class="topbar-actions">
+        <button type="button" class="btn btn-quiet" id="palette-open" aria-keyshortcuts="Control+K">Ask the company <kbd>Ctrl K</kbd></button>
+        <button type="button" class="btn btn-ghost btn-dock" id="attention-toggle" aria-controls="rail" aria-expanded="false">Attention <span class="count" id="attention-count">0</span></button>
+        <button type="button" class="btn btn-ghost" id="motion-toggle" aria-pressed="false">Motion: full</button>
+        <button type="button" class="btn btn-ghost" id="legend-toggle" aria-controls="legend">Key</button>
+        <button type="button" class="btn btn-ghost" id="logout">End session</button>
+      </div>
     </header>
     <main class="stage">
-      <div id="universe" class="universe" role="img" aria-label="عالم الشركة: المؤسس في المركز، المدير التنفيذي في أقرب مدار، الأقسام قطاعات، الأهداف منارات خارجية"></div>
-      <div id="labels" class="labels" role="group" aria-label="كيانات الشركة (استخدم الأسهم للتنقل، F6 للدخول)"></div>
-      <aside id="rail" class="rail" aria-label="انتباه المؤسس"></aside>
+      <div id="universe" class="universe" role="img" aria-label="The company universe: the Founder at the centre, the CEO on the nearest orbit, one orbit per rank, one sector per department, goals as beacons outside the last orbit"></div>
+      <div id="labels" class="labels" role="group" aria-label="Company entities (arrow keys to move, F6 to enter)"></div>
+      <aside id="rail" class="rail" aria-label="Founder attention" hidden></aside>
       <aside id="focus" class="focus" hidden aria-live="polite"></aside>
-      <section id="palette" class="palette" hidden aria-label="أمر المؤسس"></section>
-      <div id="preview" class="preview" role="dialog" aria-modal="true" aria-label="تأكيد فعل محكوم" hidden></div>
-      <section id="legend" class="legend" hidden aria-label="مفتاح الرموز">
-        <h3>المفتاح</h3>
+      <section id="palette" class="palette" hidden aria-label="Founder command"></section>
+      <div id="preview" class="preview" role="dialog" aria-modal="true" aria-label="Confirm a governed action" hidden></div>
+      <section id="legend" class="legend" hidden aria-label="Key">
+        <h3>Reading the universe</h3>
         <ul>
-          <li><span class="mark mark-solid" style="--dept:#f7edd2"></span> المؤسس في المركز — المدير التنفيذي في أقرب مدار — كل حلقة أبعد = مستوى إداري أدنى</li>
-          <li><span class="mark mark-solid" style="--dept:#7fa6ff"></span> لون القطاع = القسم (خمسة قطاعات ثابتة)</li>
-          <li><span class="mark mark-hollow" style="--dept:#d9d3ff"></span> حلقة مفرّغة = ينتظر (مراجعة/موافقة)</li>
-          <li><span class="mark mark-broken" style="--dept:#ff6b57"></span> حلقة مكسورة = متوقف</li>
-          <li><span class="mark mark-dashed" style="--dept:#5f5a8c"></span> متقطع = مقعد شاغر</li>
-          <li><span class="mark mark-double" style="--dept:#5ad39c"></span> حلقتان = إنابة مؤقتة</li>
-          <li><span class="beacon-mark" aria-hidden="true"></span> منارة خارجية = هدف</li>
-          <li><span class="mark mark-attention" style="--dept:#f2b95b"></span> داخل مدار المدير التنفيذي = يحتاجك</li>
-          <li>الخطوط المضيئة = علاقات حية فقط (تفويض، مراجعة، موافقة، تصعيد). لا خطوط زخرفية.</li>
+          <li><span class="mark mark-solid" style="--dept:#f6ecd4"></span> The Founder is the centre. The CEO is on the nearest orbit; every orbit further out is one rank lower.</li>
+          <li><span class="mark mark-solid" style="--dept:#3987e5"></span> A sector is a department: its name sits on the coloured rim, and every person in it carries the same hue.</li>
+          <li><span class="mark mark-hollow" style="--dept:#cfc8ee"></span> Hollow = waiting (review or approval)</li>
+          <li><span class="mark mark-broken" style="--dept:#ff6b57"></span> Broken ring = blocked</li>
+          <li><span class="mark mark-dashed" style="--dept:#6b6592"></span> Dashed = vacant seat</li>
+          <li><span class="mark mark-double" style="--dept:#199e70"></span> Double ring = acting cover</li>
+          <li><span class="mark mark-running" style="--dept:#7fd9ff"></span> Circling arc = work running now</li>
+          <li><span class="beacon-mark" aria-hidden="true"></span> A beacon outside the last orbit is a goal, tethered to the departments serving it.</li>
+          <li><span class="mark mark-attention" style="--dept:#f0c987"></span> Inside the CEO orbit = needs you</li>
+          <li>Lit lines are live relations only (delegation, review, approval, escalation). Nothing is decorative.</li>
         </ul>
       </section>
       <footer class="bottombar">
-        <div id="timeline" class="timeline" aria-label="الزمن"></div>
-        <div class="strips">
-          <section id="calendar" class="strip" aria-label="القادم"></section>
-          <section id="activity" class="strip" aria-label="ما تحرّك"></section>
-        </div>
+        <div id="timeline" class="timeline" aria-label="Time"></div>
+        <details id="calendar" class="dock dock-calendar"></details>
+        <output id="activity" class="toast" aria-live="polite"></output>
       </footer>
     </main>
   </div>
   <div id="lock" class="lock" hidden>
     <div class="lock-card">
-      <h1>لا جلسة مؤسس</h1>
-      <p>افتح مركز القيادة من سطر الأوامر على هذا الجهاز نفسه:</p>
-      <pre dir="ltr">qandeel-founder serve --workspace &lt;dir&gt;</pre>
-      <p>ثم افتح رابط الإطلاق الذي يطبعه (صالح لتسعين ثانية ومرة واحدة). الرمز: <code data-code dir="ltr"></code></p>
+      <h1>No Founder session</h1>
+      <p>Open the command center from the command line on this same machine:</p>
+      <pre>qandeel-founder serve --workspace &lt;dir&gt;</pre>
+      <p>Then open the launch link it prints (valid for ninety seconds, once). Reason: <code data-code></code></p>
     </div>
   </div>
   <script type="module" src="/app/app/main.js" nonce="{{nonce}}"></script>

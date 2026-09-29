@@ -139,7 +139,7 @@ describe('Founder surface over loopback HTTP', () => {
       assert.equal(again.status, 401, 'a launch token is single-use');
       const page = await fetch(`${origin}/`);
       assert.equal(page.status, 200);
-      assert.match(await page.text(), /lang="ar" dir="rtl"/);
+      assert.match(await page.text(), /lang="en" dir="ltr"/);
       assert.match(page.headers.get('content-security-policy') ?? '', /default-src 'self'/);
     }));
 

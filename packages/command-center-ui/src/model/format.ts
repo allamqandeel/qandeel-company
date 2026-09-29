@@ -1,9 +1,11 @@
 /**
- * One formatting policy for the Founder surface: Arabic (Egypt) locale, Gregorian calendar, one numeral
- * system everywhere (`ar-EG` resolves Eastern Arabic digits; the choice is centralized here, never per
- * surface). Codes and IDs are LTR islands rendered by the caller with `dir="ltr"`.
+ * One formatting and wording policy for the Founder surface. The application itself speaks English (LTR
+ * layout, en-GB numerals and dates, Gregorian calendar, one policy centralized here). Company content —
+ * names, objectives, messages — is shown as written: an Arabic message renders right-to-left inside its own
+ * block (`dirOf`), never the layout around it. Codes and IDs never reach the Founder's eyes as codes: every
+ * table below names the thing in words, and an unknown code falls back to a readable form.
  */
-export const LOCALE = 'ar-EG-u-ca-gregory';
+export const LOCALE = 'en-GB-u-ca-gregory';
 
 const numberFormat = new Intl.NumberFormat(LOCALE);
 const dateTime = new Intl.DateTimeFormat(LOCALE, { dateStyle: 'medium', timeStyle: 'short' });
@@ -12,15 +14,10 @@ const timeOnly = new Intl.DateTimeFormat(LOCALE, { timeStyle: 'short' });
 const relative = new Intl.RelativeTimeFormat(LOCALE, { numeric: 'auto' });
 
 export const fmtNumber = (n: number): string => numberFormat.format(n);
-export const fmtMoneyMicros = (micros: number, currency: string): string => new Intl.NumberFormat(LOCALE, { style: 'currency', currency, maximumFractionDigits: 0, signDisplay: 'never' }).format(Math.max(0, Number.isFinite(micros) ? micros : 0) / 1_000_000);
+export const fmtMoneyMicros = (micros: number, currency: string): string => new Intl.NumberFormat(LOCALE, { style: 'currency', currency, currencyDisplay: 'code', maximumFractionDigits: 0, signDisplay: 'never' }).format(Math.max(0, Number.isFinite(micros) ? micros : 0) / 1_000_000);
 
-/** Arabic counted nouns: 1 → singular, 2 → dual, 3–10 → plural, 11+ → singular accusative. Digits follow the locale. */
-export function countNoun(n: number, forms: { one: string; two: string; few: string; many: string }): string {
-  if (n === 1) return forms.one;
-  if (n === 2) return forms.two;
-  if (n >= 3 && n <= 10) return `${fmtNumber(n)} ${forms.few}`;
-  return `${fmtNumber(n)} ${forms.many}`;
-}
+/** "1 department", "3 departments". */
+export const plural = (n: number, one: string, other: string): string => `${fmtNumber(n)} ${n === 1 ? one : other}`;
 export const fmtDateTime = (iso: string): string => dateTime.format(new Date(iso));
 export const fmtDate = (iso: string): string => dateOnly.format(new Date(iso));
 export const fmtTime = (iso: string): string => timeOnly.format(new Date(iso));
@@ -34,125 +31,144 @@ export function fmtRelative(iso: string, nowMs = Date.now()): string {
   return relative.format(Math.round(diff / 86_400_000), 'day');
 }
 
-export const STATE_AR: Readonly<Record<string, string>> = {
-  PROPOSED: 'مقترح',
-  READY: 'جاهز',
-  QUEUED: 'في الطابور',
-  RUNNING: 'قيد التنفيذ',
-  IN_PROGRESS: 'قيد التنفيذ',
-  DELEGATED: 'مفوَّض',
-  ACCEPTED: 'مقبول',
-  REFUSED: 'مرفوض',
-  REWORK: 'إعادة عمل',
-  PASS: 'قبول',
-  WAITING_REVIEW: 'ينتظر المراجعة',
-  WAITING_APPROVAL: 'ينتظر الموافقة',
-  BLOCKED: 'متوقف',
-  COMPLETED: 'مكتمل',
-  FAILED: 'فشل',
-  CANCELLED: 'أُلغي',
-  ACTIVE: 'نشط',
-  PAUSED: 'موقوف مؤقتًا',
-  APPROVED: 'معتمد',
-  ACHIEVED: 'تحقق',
-  DRAFT: 'مسودة',
-  VACANT: 'شاغر',
-  CANDIDATE: 'مرشح',
-  TRAINING: 'في التدريب',
-  SHADOW: 'ظل',
-  PROBATION: 'تحت الاختبار',
-  ON_LEAVE: 'في إجازة',
-  RETRAINING: 'إعادة تدريب',
-  SUSPENDED: 'موقوف',
-  RETIRED: 'متقاعد',
-  PENDING: 'معلّق',
-  OPEN: 'مفتوح',
-  RESOLVED: 'محلول',
+/** Text direction from the first strong character: Arabic content reads right-to-left inside an English layout. */
+export const dirOf = (text: string): 'rtl' | 'ltr' => (/^[^A-Za-z؀-ۿ]*[؀-ۿ]/.test(text) ? 'rtl' : 'ltr');
+export const hasArabic = (text: string): boolean => /[؀-ۿ]/.test(text);
+
+export const STATE_LABEL: Readonly<Record<string, string>> = {
+  PROPOSED: 'Proposed',
+  READY: 'Ready',
+  QUEUED: 'Queued',
+  RUNNING: 'Running',
+  IN_PROGRESS: 'In progress',
+  DELEGATED: 'Delegated',
+  ACCEPTED: 'Accepted',
+  REFUSED: 'Refused',
+  REWORK: 'Rework',
+  PASS: 'Pass',
+  WAITING_REVIEW: 'Waiting for review',
+  WAITING_APPROVAL: 'Waiting for approval',
+  BLOCKED: 'Blocked',
+  COMPLETED: 'Completed',
+  FAILED: 'Failed',
+  CANCELLED: 'Cancelled',
+  ACTIVE: 'Active',
+  PAUSED: 'Paused',
+  APPROVED: 'Approved',
+  ACHIEVED: 'Achieved',
+  DRAFT: 'Draft',
+  VACANT: 'Vacant',
+  CANDIDATE: 'Candidate',
+  TRAINING: 'Training',
+  SHADOW: 'Shadowing',
+  PROBATION: 'Probation',
+  ON_LEAVE: 'On leave',
+  RETRAINING: 'Retraining',
+  SUSPENDED: 'Suspended',
+  RETIRED: 'Retired',
+  PENDING: 'Pending',
+  OPEN: 'Open',
+  RESOLVED: 'Resolved',
+  PRINCIPAL: 'Founder',
 };
 
-export const LANE_AR: Readonly<Record<string, string>> = { NEEDS_ME: 'يحتاجني', CEO_BRIEFS: 'موجزات المدير التنفيذي', THREADS: 'محادثاتي' };
-export const LEVEL_AR: Readonly<Record<string, string>> = { INFORMATIONAL: 'للعلم', NEEDS_ATTENTION: 'يحتاج انتباهًا', NEEDS_DECISION: 'يحتاج قرارًا', URGENT: 'عاجل' };
-export const SOURCE_AR: Readonly<Record<string, string>> = { APPROVAL: 'موافقة', STAFFING_REQUEST: 'طلب توظيف', ESCALATION: 'تصعيد', REVIEW_CONFLICT: 'خلاف مراجعة', BRIEF: 'موجز', THREAD: 'محادثة', GOAL: 'هدف', DECISION_REQUEST: 'طلب قرار' };
-export const RELATION_AR: Readonly<Record<string, string>> = { DELEGATION: 'تفويض عمل', SUPPORT: 'دعم', REVIEW: 'مراجعة', APPROVAL: 'موافقة', HANDOFF: 'استيضاح', ESCALATION: 'تصعيد' };
-export const KIND_AR: Readonly<Record<string, string>> = { CEO: 'المدير التنفيذي', DIRECTOR: 'مدير قسم', MANAGER: 'مدير', LEAD: 'قائد', SPECIALIST: 'متخصص', FOUNDER: 'المؤسس' };
-export const PURPOSE_AR: Readonly<Record<string, string>> = { REQUEST: 'طلب', QUESTION: 'سؤال', FYI: 'للعلم', REVIEW: 'مراجعة', DECISION_REQUEST: 'طلب قرار', BLOCKER: 'عائق', ESCALATION: 'تصعيد', RESULT: 'نتيجة', CORRECTION: 'تصحيح', BRIEF: 'موجز' };
+export const LANE_LABEL: Readonly<Record<string, string>> = { NEEDS_ME: 'Needs me', CEO_BRIEFS: 'CEO briefs', THREADS: 'Conversations' };
+export const LEVEL_LABEL: Readonly<Record<string, string>> = { INFORMATIONAL: 'For information', NEEDS_ATTENTION: 'Needs attention', NEEDS_DECISION: 'Decision needed', URGENT: 'Urgent' };
+export const SOURCE_LABEL: Readonly<Record<string, string>> = { APPROVAL: 'Approval', STAFFING_REQUEST: 'Staffing request', ESCALATION: 'Escalation', REVIEW_CONFLICT: 'Review conflict', BRIEF: 'Brief', THREAD: 'Conversation', GOAL: 'Goal', DECISION_REQUEST: 'Decision request' };
+export const RELATION_LABEL: Readonly<Record<string, string>> = { DELEGATION: 'Delegation', SUPPORT: 'Support', REVIEW: 'Review', APPROVAL: 'Approval', HANDOFF: 'Hand-off', ESCALATION: 'Escalation' };
+export const KIND_LABEL: Readonly<Record<string, string>> = { CEO: 'Chief Executive', DIRECTOR: 'Director', MANAGER: 'Manager', LEAD: 'Lead', SPECIALIST: 'Specialist', FOUNDER: 'Founder' };
+export const RING_LABEL: Readonly<Record<string, string>> = { CEO: 'CEO', DIRECTOR: 'Directors', MANAGER: 'Managers & Leads', SPECIALIST: 'Specialists' };
+export const PURPOSE_LABEL: Readonly<Record<string, string>> = { REQUEST: 'Request', QUESTION: 'Question', FYI: 'For information', REVIEW: 'Review', DECISION_REQUEST: 'Decision request', BLOCKER: 'Blocker', ESCALATION: 'Escalation', RESULT: 'Result', CORRECTION: 'Correction', BRIEF: 'Brief' };
 
-/** The five canonical Departments (release-seeded with English names) in the Founder's language. */
-export const DEPT_NAME_AR: Readonly<Record<string, string>> = {
-  'strategic-market-intelligence': 'استخبارات السوق الاستراتيجية',
-  growth: 'النمو',
-  'brand-creative': 'العلامة والإبداع',
-  product: 'المنتج',
-  engineering: 'الهندسة',
+/** The five canonical Departments as the Founder reads them (a Department the Founder creates keeps its own name). */
+export const DEPT_LABEL: Readonly<Record<string, string>> = {
+  'strategic-market-intelligence': 'Strategic Market Intelligence',
+  growth: 'Growth',
+  'brand-creative': 'Brand & Creative',
+  product: 'Product',
+  engineering: 'Engineering',
 };
-export const deptName = (code: string, name: string): string => DEPT_NAME_AR[code] ?? name;
+export const deptName = (code: string, name: string): string => DEPT_LABEL[code] ?? name;
 
-/** Approval actions as the Founder reads them; an unknown action code stays an LTR island. */
-export const ACTION_AR: Readonly<Record<string, string>> = {
-  'work_item.execute': 'تنفيذ بند عمل',
-  'work_item.release': 'إطلاق بند عمل',
-  'tool.invoke': 'استدعاء أداة',
-  'budget.change': 'تغيير غلاف مالي',
-  'employee.activate': 'تفعيل موظف',
-};
-
-/**
- * Arabic titles for the release-seeded canonical seats (their stored titles are the C4 English codes' names).
- * A seat created by the Founder keeps the title it was given; this table never renames it.
- */
-export const SEAT_TITLE_AR: Readonly<Record<string, string>> = {
-  'company.ceo': 'المدير التنفيذي',
-  'director.strategic-market-intelligence': 'مدير إدارة استخبارات السوق',
-  'director.growth': 'مدير إدارة النمو',
-  'director.brand-creative': 'مدير إدارة العلامة والإبداع',
-  'director.product': 'مدير إدارة المنتج',
-  'director.engineering': 'مدير إدارة الهندسة',
-  'product.app-store-release-reputation-lead': 'قائد إصدارات المتجر والسمعة',
+/** Approval actions in words; an unknown action code is spelled out from its parts. */
+export const ACTION_LABEL: Readonly<Record<string, string>> = {
+  'work_item.execute': 'execute a work item',
+  'work_item.release': 'release a work item',
+  'tool.invoke': 'invoke a tool',
+  'budget.change': 'change a budget',
+  'employee.activate': 'activate an employee',
 };
 
-/** Founder command intents in the Founder's words (the activity strip and the preview name the act, never its code). */
-export const INTENT_AR: Readonly<Record<string, string>> = {
-  RETURN_TO_LIVE: 'العودة إلى الحيّ',
-  WHO_WORKS_ON: 'من يعمل على',
-  WHAT_IS_BLOCKED: 'ما المتوقف',
-  NEEDS_MY_APPROVAL: 'ما يحتاج موافقتي',
-  SHOW_BRIEFS: 'عرض الموجزات',
-  SHOW_TIMELINE: 'عرض خط الزمن',
-  SHOW_CEO: 'فتح المدير التنفيذي',
-  SHOW_GOAL: 'فتح هدف',
-  SHOW_DEPARTMENT: 'فتح إدارة',
-  OPEN_EMPLOYEE: 'فتح موظف',
-  APPROVAL_DECIDE: 'قرار في طلب موافقة',
-  GOAL_APPROVE: 'اعتماد هدف',
-  GOAL_STATE: 'تغيير حالة هدف',
-  GOAL_PROPOSE: 'اقتراح هدف',
-  STAFFING_DECIDE: 'قرار في طلب توظيف',
-  CONFLICT_RESOLVE: 'حسم خلاف مراجعة',
-  BUDGET_CEILING: 'رفع سقف غلاف مالي',
-  DELEGATE_WORK: 'تفويض صلاحية',
+/** Canonical seat titles (the release seed stores the C4 codes' names); a seat the Founder created keeps its title. */
+export const SEAT_TITLE: Readonly<Record<string, string>> = {
+  'company.ceo': 'Chief Executive Officer',
+  'director.strategic-market-intelligence': 'Director, Strategic Market Intelligence',
+  'director.growth': 'Director, Growth',
+  'director.brand-creative': 'Director, Brand & Creative',
+  'director.product': 'Director, Product',
+  'director.engineering': 'Director, Engineering',
+  'product.app-store-release-reputation-lead': 'Store Release & Reputation Lead',
 };
 
-/** Preview payload fields in the Founder's words; unknown fields keep their code as an LTR island. */
-export const FIELD_AR: Readonly<Record<string, string>> = {
-  approvalId: 'طلب الموافقة',
-  decision: 'القرار',
-  reasonCode: 'رمز السبب',
-  goalId: 'الهدف',
-  activate: 'تفعيل فوري',
-  to: 'الحالة الجديدة',
-  budgetId: 'الغلاف المالي',
-  capMoney: 'السقف المالي',
-  capTokens: 'سقف الرموز',
-  currency: 'العملة',
-  scope: 'النطاق',
-  scopeId: 'صاحب الغلاف',
-  requestId: 'طلب التوظيف',
-  conflictId: 'الخلاف',
-  resolution: 'الحسم',
-  employeeId: 'الموظف',
-  capability: 'الصلاحية',
-  expiresAt: 'ينتهي في',
-  purposeCode: 'الغرض',
+/** Capabilities in words (the Founder reads what an employee may do, never the grant code). */
+export const CAPABILITY_LABEL: Readonly<Record<string, string>> = {
+  'model.invoke': 'Model calls',
+  'tool:notes.append': 'Notes',
+  'tool:publisher.publish': 'Publishing',
+  'org.work.delegate': 'Delegating work',
 };
 
-export const ar = (table: Readonly<Record<string, string>>, code: string): string => table[code] ?? code;
+/** Founder command intents in words (the activity note and the preview name the act, never its code). */
+export const INTENT_LABEL: Readonly<Record<string, string>> = {
+  RETURN_TO_LIVE: 'Return to live',
+  WHO_WORKS_ON: 'Who works on',
+  WHAT_IS_BLOCKED: 'What is blocked',
+  NEEDS_MY_APPROVAL: 'Needs my approval',
+  SHOW_BRIEFS: 'Show briefs',
+  SHOW_TIMELINE: 'Show timeline',
+  SHOW_CEO: 'Open the CEO',
+  SHOW_GOAL: 'Open a goal',
+  SHOW_DEPARTMENT: 'Open a department',
+  OPEN_EMPLOYEE: 'Open an employee',
+  APPROVAL_DECIDE: 'Decide an approval',
+  GOAL_APPROVE: 'Approve a goal',
+  GOAL_STATE: 'Change a goal state',
+  GOAL_PROPOSE: 'Propose a goal',
+  STAFFING_DECIDE: 'Decide a staffing request',
+  CONFLICT_RESOLVE: 'Resolve a review conflict',
+  BUDGET_CEILING: 'Raise a budget ceiling',
+  DELEGATE_WORK: 'Delegate authority',
+};
+
+/** Preview payload fields in words; a field this table does not know is spelled out from its code. */
+export const FIELD_LABEL: Readonly<Record<string, string>> = {
+  approvalId: 'Approval',
+  decision: 'Decision',
+  reasonCode: 'Reason',
+  goalId: 'Goal',
+  activate: 'Activate now',
+  to: 'New state',
+  budgetId: 'Budget',
+  capMoney: 'Money ceiling',
+  capTokens: 'Token ceiling',
+  currency: 'Currency',
+  scope: 'Scope',
+  scopeId: 'Budget holder',
+  requestId: 'Staffing request',
+  conflictId: 'Conflict',
+  employeeId: 'Employee',
+  capability: 'Capability',
+  expiresAt: 'Expires',
+  purposeCode: 'Purpose',
+};
+
+export const SCOPE_LABEL: Readonly<Record<string, string>> = { EMPLOYEE: 'Employee', DEPARTMENT: 'Department', COMPANY: 'Company', WORK_ITEM: 'Work item' };
+export const RESULT_LABEL: Readonly<Record<string, string>> = { budget: 'budget ceiling', approval: 'approval', goal: 'goal', staffing_request: 'staffing request', review_conflict: 'review conflict', authority_delegation: 'authority delegation' };
+export const CALENDAR_LABEL: Readonly<Record<string, string>> = { ACTING_ENDS: 'Acting cover ends', DELEGATION_DUE: 'Delegation due', STAFFING_DECISION_DUE: 'Staffing decision due', GOAL_HORIZON: 'Goal horizon', WORK_DUE: 'Work due', APPROVAL_EXPIRES: 'Approval expires', SESSION_EXPIRES: 'Your session ends' };
+
+/** A table lookup that never leaks a code: unknown codes become readable words ("work_item.execute" → "work item execute"). */
+export const t = (table: Readonly<Record<string, string>>, code: string): string => table[code] ?? humanize(code);
+export const humanize = (code: string): string => {
+  const words = code.replace(/^(?:role|tool|employee|goal|seat|department|work_item|approval|thread|message):/, '').replace(/[._:-]+/g, ' ').trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : code;
+};

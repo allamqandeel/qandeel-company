@@ -3,14 +3,14 @@
  * projection → renderer (WebGL 2, or the SVG fallback) → lenses, attention, conversation, governed
  * confirmation, timeline. Server-Sent "changed" nudges re-project; nothing polls.
  */
-import { ar, deptName, fmtRelative, INTENT_AR, LEVEL_AR, RELATION_AR, SOURCE_AR } from '../model/format.js';
+import { deptName, fmtRelative, INTENT_LABEL, LEVEL_LABEL, RELATION_LABEL, RESULT_LABEL, SOURCE_LABEL, t } from '../model/format.js';
 import { layoutUniverse } from '../model/layout.js';
 import { applyLens, cameraTargetFor, chainNodeIds } from '../model/lenses.js';
 import type { CompanyUniverse, Emphasis, Layout, LayoutNode, Lens } from '../model/types.js';
 import { api, ApiError, subscribeChanges } from './api.js';
 import { LabelLayer } from './labels.js';
 import { h, renderActivity, renderAttentionRail, renderCalendar, renderConversation, renderEmployeeFocus, renderGoalFocus, renderHealthLine, renderPalette, renderPreview, renderTimeline, type PanelHost } from './panels.js';
-import type { UniverseRenderer } from './renderer.js';
+import { departmentColor, type UniverseRenderer } from './renderer.js';
 import { WebGlUniverse, webgl2Available } from './scene.js';
 import { SvgUniverse } from './svg-renderer.js';
 
@@ -40,6 +40,8 @@ class App implements PanelHost {
   #dirty = false;
   #previousRelationIds = new Set<string>();
   #previousAttentionIds = new Set<string>();
+  #railOpen = false;
+  #toastTimer = 0;
 
   constructor() {
     const forceSvg = new URLSearchParams(location.search).get('renderer') === 'svg';
@@ -68,10 +70,14 @@ class App implements PanelHost {
       onDistance: (d) => this.labels.setDistance(d),
     });
     this.renderer.setReducedMotion(this.reduced);
-    this.labels.bind(this.renderer, (id) => {
-      const n = this.layout?.byId.get(id);
-      if (n) this.select(id, n);
-    });
+    this.labels.bind(
+      this.renderer,
+      (id) => {
+        const n = this.layout?.byId.get(id);
+        if (n) this.select(id, n);
+      },
+      (departmentId) => this.openDepartment(departmentId),
+    );
     $('motion-toggle').addEventListener('click', () => this.setReduced(!this.reduced));
     this.#renderMotionToggle();
     window.addEventListener('resize', () => this.renderer.resize());
@@ -79,6 +85,7 @@ class App implements PanelHost {
     $('logout').addEventListener('click', () => void api.post('/api/session/logout').then(() => location.reload()));
     $('palette-open').addEventListener('click', () => this.openPalette());
     $('legend-toggle').addEventListener('click', () => $('legend').toggleAttribute('hidden'));
+    $('attention-toggle').addEventListener('click', () => (this.#railOpen ? this.closeRail() : this.showLane(null)));
     this.#paletteInput();
     await this.refresh(true);
     subscribeChanges(
@@ -114,7 +121,7 @@ class App implements PanelHost {
 
   #renderMotionToggle(): void {
     const b = $('motion-toggle');
-    b.textContent = this.reduced ? 'الحركة: مخفّضة' : 'الحركة: كاملة';
+    b.textContent = this.reduced ? 'Motion: reduced' : 'Motion: full';
     b.setAttribute('aria-pressed', this.reduced ? 'true' : 'false');
     document.documentElement.dataset.motion = this.reduced ? 'reduced' : 'full';
   }
@@ -131,17 +138,16 @@ class App implements PanelHost {
       this.applyUniverse(u, initial);
       if (!at) {
         const [attention, calendar, timeline] = await Promise.all([api.get<{ items: Json[]; health: Json }>('/api/attention'), api.get<{ events: Json[] }>('/api/calendar'), api.get<{ earliest: string; now: string }>('/api/timeline')]);
-        renderAttentionRail($('rail'), attention, this, this.lane);
+        this.#renderRail(attention);
         renderCalendar($('calendar'), calendar, this);
         this.timelineBounds = { earliest: timeline.earliest, now: timeline.now };
       }
       renderTimeline($('timeline'), { live: at === null, at, earliest: this.timelineBounds.earliest, now: this.timelineBounds.now }, this);
       renderHealthLine($('health'), u, this.stream);
-      if (initial) renderActivity($('activity'), this.activity);
       if (this.lens.kind === 'EMPLOYEE' || this.lens.kind === 'CONVERSATION' || this.lens.kind === 'GOAL') await this.#renderFocus();
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) this.lock(e.code);
-      else this.note(`تعذّر التحديث (${e instanceof ApiError ? e.code : 'ERROR'})`, 'system');
+      else this.note(`Could not refresh (${e instanceof ApiError ? e.code : 'error'})`, 'system');
     } finally {
       this.#refreshing = false;
       if (this.#dirty) {
@@ -149,6 +155,13 @@ class App implements PanelHost {
         void this.refresh(false);
       }
     }
+  }
+
+  #renderRail(attention: { items: Json[]; health: Json }): void {
+    const counts = renderAttentionRail($('rail'), attention, this, this.lane);
+    const total = counts.needsMe + counts.briefs;
+    $('attention-count').textContent = String(total);
+    $('attention-toggle').classList.toggle('has-items', total > 0);
   }
 
   applyUniverse(u: CompanyUniverse, initial: boolean): void {
@@ -165,14 +178,14 @@ class App implements PanelHost {
       const relationIds = new Set(u.relations.map((r) => r.id));
       for (const r of u.relations) if (!this.#previousRelationIds.has(r.id)) {
         this.renderer.pulseEdge(r.id);
-        this.note(`علاقة جديدة: ${ar(RELATION_AR, r.kind)} — ${this.nameOf(r.from)} ← ${this.nameOf(r.to)}`, 'semantic');
+        this.note(`New ${t(RELATION_LABEL, r.kind).toLowerCase()}: ${this.nameOf(r.from)} → ${this.nameOf(r.to)}`, 'semantic');
       }
       this.#previousRelationIds = relationIds;
       const attentionIds = new Set(u.attention.map((a) => a.id));
       for (const a of u.attention) if (!this.#previousAttentionIds.has(a.id)) {
         const owner = a.ownerRef?.startsWith('employee:') ? a.ownerRef : null;
         this.renderer.arriveAttention(`attention:${a.id}`, owner);
-        this.note(`يحتاجك: ${ar(SOURCE_AR, a.sourceKind)} — ${ar(LEVEL_AR, a.level)}`, 'semantic');
+        this.note(`Needs you: ${t(SOURCE_LABEL, a.sourceKind).toLowerCase()} — ${t(LEVEL_LABEL, a.level).toLowerCase()}`, 'semantic');
       }
       this.#previousAttentionIds = attentionIds;
     } else {
@@ -182,9 +195,27 @@ class App implements PanelHost {
   }
 
   nameOf(ref: string): string {
-    if (ref === 'founder' || ref.startsWith('founder:')) return 'المؤسس';
+    if (ref === 'founder' || ref.startsWith('founder:')) return 'Founder';
     const e = this.universe?.employees.find((x) => `employee:${x.id}` === ref);
-    return e ? `${e.name.given} ${e.name.family}` : ref;
+    if (e) return `${e.name.given} ${e.name.family}`;
+    if (ref.startsWith('work_item:')) return this.workTitleOf(ref.slice('work_item:'.length)) ?? 'a work item';
+    if (ref.startsWith('goal:')) return this.universe?.goals.find((g) => g.id === ref.slice(5))?.title ?? 'a goal';
+    if (ref.startsWith('department:')) return this.deptNameOf(ref.slice('department:'.length));
+    return ref.replace(/^[a-z_]+:/, '').replace(/[0-9a-f-]{36}/, 'an item');
+  }
+
+  deptNameOf(id: string): string {
+    const d = this.universe?.departments.find((x) => x.id === id);
+    return d ? deptName(d.code, d.name) : 'a department';
+  }
+
+  workTitleOf(id: string): string | null {
+    return this.universe?.work.find((w) => w.id === id)?.objective ?? null;
+  }
+
+  #deptColorOf(employeeId: string | null): string {
+    const n = employeeId ? this.layout?.byId.get(`employee:${employeeId}`) : undefined;
+    return departmentColor(n?.sector ?? null);
   }
 
   #applyLens(immediate: boolean): void {
@@ -213,24 +244,32 @@ class App implements PanelHost {
     }
     if (lens.kind === 'ATTENTION') {
       this.lane = lens.lane;
-      void api.get<{ items: Json[]; health: Json }>('/api/attention').then((a) => renderAttentionRail($('rail'), a, this, this.lane));
+      this.#setRail(true);
+      void api.get<{ items: Json[]; health: Json }>('/api/attention').then((a) => this.#renderRail(a));
     }
+  }
+
+  #setRail(open: boolean): void {
+    this.#railOpen = open;
+    $('rail').hidden = !open;
+    $('attention-toggle').setAttribute('aria-expanded', open ? 'true' : 'false');
+    document.documentElement.dataset.rail = open ? 'open' : 'closed';
   }
 
   async #renderFocus(): Promise<void> {
     const focus = $('focus');
     try {
-      if (this.lens.kind === 'EMPLOYEE') renderEmployeeFocus(focus, await api.get<Json>(`/api/employees/${this.lens.employeeId}`), this);
+      if (this.lens.kind === 'EMPLOYEE') renderEmployeeFocus(focus, await api.get<Json>(`/api/employees/${this.lens.employeeId}`), this, this.#deptColorOf(this.lens.employeeId));
       else if (this.lens.kind === 'GOAL') renderGoalFocus(focus, await api.get<Json>(`/api/goals/${this.lens.goalId}`), this);
-      else if (this.lens.kind === 'CONVERSATION') renderConversation(focus, await api.get<{ thread: Json; messages: Json[]; pending: Json[] }>(`/api/threads/${this.lens.threadId}/messages`), this, this.universe);
+      else if (this.lens.kind === 'CONVERSATION') renderConversation(focus, await api.get<{ thread: Json; messages: Json[]; pending: Json[] }>(`/api/threads/${this.lens.threadId}/messages`), this, this.universe, this.#deptColorOf(this.lens.employeeId));
     } catch (e) {
-      focus.replaceChildren(h('p', { class: 'muted', text: `تعذّر فتح التفاصيل (${e instanceof ApiError ? e.code : 'ERROR'})` }));
+      focus.replaceChildren(h('p', { class: 'empty', text: `Could not open the details (${e instanceof ApiError ? e.code : 'error'}).` }));
     }
   }
 
   select(id: string, node: LayoutNode): void {
     if (node.kind === 'founder') return this.setLens({ kind: 'LIVE' });
-    if (node.kind === 'employee' && node.employeeId) return this.setLens(node.seatKind === 'CEO' ? { kind: 'EMPLOYEE', employeeId: node.employeeId } : { kind: 'EMPLOYEE', employeeId: node.employeeId });
+    if (node.kind === 'employee' && node.employeeId) return this.setLens({ kind: 'EMPLOYEE', employeeId: node.employeeId });
     if (node.kind === 'seat' && node.departmentId) return this.setLens({ kind: 'DEPARTMENT', departmentId: node.departmentId });
     if (node.kind === 'goal') return this.setLens({ kind: 'GOAL', goalId: id.slice('goal:'.length) });
     if (node.kind === 'attention') {
@@ -250,24 +289,39 @@ class App implements PanelHost {
     this.setLens({ kind: 'GOAL', goalId: id });
   }
 
+  openDepartment(id: string): void {
+    this.setLens({ kind: 'DEPARTMENT', departmentId: id });
+  }
+
   openThread(threadId: string, employeeId: string): void {
     this.setLens({ kind: 'CONVERSATION', threadId, employeeId });
   }
 
   startConversation(employeeId: string | null): void {
+    // The CEO's conversation is the Founder ↔ CEO thread itself (one thread, whoever holds the seat).
+    const ceo = this.universe?.seats.find((s) => s.kind === 'CEO')?.holderEmployeeId ?? null;
     void api
-      .post<{ thread: Json }>('/api/threads', { employeeId })
+      .post<{ thread: Json }>('/api/threads', { employeeId: employeeId !== null && employeeId === ceo ? null : employeeId })
       .then((r) => this.openThread(String(r.thread.id), String(r.thread.employeeId)))
-      .catch((e: unknown) => this.note(`تعذّر فتح المحادثة (${e instanceof ApiError ? e.code : 'ERROR'})`, 'system'));
+      .catch((e: unknown) => this.note(`Could not open the conversation (${e instanceof ApiError ? e.code : 'error'})`, 'system'));
   }
 
   showLane(lane: 'NEEDS_ME' | 'CEO_BRIEFS' | 'THREADS' | null): void {
     this.setLens({ kind: 'ATTENTION', lane });
   }
 
+  closeRail(): void {
+    this.#setRail(false);
+    if (this.lens.kind === 'ATTENTION') {
+      this.lane = null;
+      this.setLens({ kind: 'LIVE' });
+    }
+  }
+
   returnToLive(): void {
     this.historyAt = null;
     this.lane = null;
+    this.#setRail(false);
     this.setLens({ kind: 'LIVE' });
     void this.refresh(false);
   }
@@ -276,17 +330,17 @@ class App implements PanelHost {
     this.historyAt = at;
     this.lens = { kind: 'HISTORY', at };
     void this.refresh(false);
-    this.note(`عرض الشركة كما كانت ${fmtRelative(at)}`, 'system');
+    this.note(`Showing the company as it was ${fmtRelative(at)}`, 'system');
   }
 
   focusSource(sourceRef: string): void {
     const [kind, id] = sourceRef.split(':') as [string, string];
     if (kind === 'goal') return this.openGoal(id);
     if (kind === 'employee') return this.openEmployee(id);
-    if (kind === 'department') return this.setLens({ kind: 'DEPARTMENT', departmentId: id });
+    if (kind === 'department') return this.openDepartment(id);
     if (kind === 'thread') {
-      const t = this.universe?.attention.find((a) => a.sourceRef === sourceRef);
-      const emp = t?.ownerRef?.replace('employee:', '') ?? '';
+      const th = this.universe?.attention.find((a) => a.sourceRef === sourceRef);
+      const emp = th?.ownerRef?.replace('employee:', '') ?? '';
       return this.openThread(id, emp);
     }
     if (kind === 'message') {
@@ -320,10 +374,10 @@ class App implements PanelHost {
       const focus = r.focus as Json | undefined;
       if (intent.kind === 'READ' && focus) this.#applyFocus(focus);
       if (r.preview) this.showPreview(r.preview as Json);
-      this.note(intent.kind === 'READ' ? `أمر قراءة: ${ar(INTENT_AR, String(intent.intent))}` : intent.kind === 'MUTATING' ? `فعل محكوم: ${ar(INTENT_AR, String(intent.intent))} — بانتظار التأكيد` : 'أمر غير مفهوم', 'system');
+      this.note(intent.kind === 'READ' ? `Read: ${t(INTENT_LABEL, String(intent.intent))}` : intent.kind === 'MUTATING' ? `Governed action: ${t(INTENT_LABEL, String(intent.intent))} — awaiting your confirmation` : 'Command not understood', 'system');
     } catch (e) {
       this.paletteResult = { intent: { kind: 'UNKNOWN' } };
-      this.note(`تعذّر الأمر (${e instanceof ApiError ? e.code : 'ERROR'})`, 'system');
+      this.note(`The command failed (${e instanceof ApiError ? e.code : 'error'})`, 'system');
     } finally {
       this.#paletteInput(false);
     }
@@ -336,7 +390,7 @@ class App implements PanelHost {
     if (lens === 'CEO') return target ? this.openEmployee(target) : this.setLens({ kind: 'CEO' });
     if (lens === 'EMPLOYEE' && target) return this.openEmployee(target);
     if (lens === 'GOAL' && target) return this.openGoal(target);
-    if (lens === 'DEPARTMENT' && target) return this.setLens({ kind: 'DEPARTMENT', departmentId: target });
+    if (lens === 'DEPARTMENT' && target) return this.openDepartment(target);
     if (lens === 'BLOCKED') return this.setLens({ kind: 'BLOCKED' });
     if (lens === 'ATTENTION') return this.setLens({ kind: 'ATTENTION', lane: (focus.query as 'NEEDS_ME' | 'CEO_BRIEFS' | 'THREADS' | null) ?? null });
     if (lens === 'HISTORY') return this.scrubTo(new Date(Date.now() - 3_600_000).toISOString());
@@ -368,40 +422,42 @@ class App implements PanelHost {
     try {
       const r = await api.post<{ resultRef: string }>(`/api/previews/${previewId}/confirm`, { fingerprint });
       $('preview').hidden = true;
-      const RESULT_AR: Record<string, string> = { budget: 'غلاف مالي', approval: 'موافقة', goal: 'هدف', staffing_request: 'طلب توظيف', review_conflict: 'خلاف مراجعة', authority_delegation: 'تفويض صلاحية' };
       const kind = String(r.resultRef).split(':')[0] ?? '';
-      this.note(`نُفّذ الفعل المحكوم عند حدّه الحقيقي (${RESULT_AR[kind] ?? kind})`, 'semantic');
+      this.note(`Executed at the real boundary: ${t(RESULT_LABEL, kind)}`, 'semantic');
       await this.refresh(false);
     } catch (e) {
-      this.note(`لم يُنفّذ الفعل (${e instanceof ApiError ? e.code : 'ERROR'})`, 'system');
+      this.note(`Not executed (${e instanceof ApiError ? e.code : 'error'})`, 'system');
     }
   }
 
   async rejectPreview(previewId: string): Promise<void> {
     $('preview').hidden = true;
     await api.post(`/api/previews/${previewId}/reject`, { reasonCode: 'founder.cancelled' }).catch(() => undefined);
-    this.note('أُلغيت المعاينة. لم يتغير شيء.', 'system');
+    this.note('Preview cancelled. Nothing changed.', 'system');
   }
 
   async dismissAttention(itemId: string): Promise<void> {
-    await api.post(`/api/attention/${itemId}/dismiss`, { reasonCode: 'founder.dismissed' }).catch((e: unknown) => this.note(`تعذّر التجاهل (${e instanceof ApiError ? e.code : 'ERROR'})`, 'system'));
+    await api.post(`/api/attention/${itemId}/dismiss`, { reasonCode: 'founder.dismissed' }).catch((e: unknown) => this.note(`Could not dismiss (${e instanceof ApiError ? e.code : 'error'})`, 'system'));
     await this.refresh(false);
   }
 
   async sendMessage(threadId: string, purpose: string, body: string): Promise<void> {
     try {
       await api.post(`/api/threads/${threadId}/messages`, { purpose, body });
-      this.note('أُرسلت رسالتك؛ الموظف يعمل على الرد.', 'semantic');
+      this.note('Sent. A reply comes from their own governed run.', 'semantic');
       await this.refresh(false);
     } catch (e) {
-      this.note(`لم تُرسل الرسالة (${e instanceof ApiError ? e.code : 'ERROR'})`, 'system');
+      this.note(`Not sent (${e instanceof ApiError ? e.code : 'error'})`, 'system');
     }
   }
 
   note(text: string, kind: 'semantic' | 'system'): void {
-    this.activity.push({ at: new Date().toISOString(), text, kind });
+    const line = { at: new Date().toISOString(), text, kind };
+    this.activity.push(line);
     if (this.activity.length > 40) this.activity.shift();
-    renderActivity($('activity'), this.activity);
+    renderActivity($('activity'), line);
+    clearTimeout(this.#toastTimer);
+    this.#toastTimer = window.setTimeout(() => renderActivity($('activity'), null), 7000);
   }
 
   #hotkeys(e: KeyboardEvent): void {
@@ -429,26 +485,26 @@ class App implements PanelHost {
 function lensTitle(lens: Lens, u: CompanyUniverse, layout: Layout): string {
   switch (lens.kind) {
     case 'LIVE':
-      return 'الشركة الحيّة';
+      return 'Company Live';
     case 'HISTORY':
-      return `لحظة سابقة — ${fmtRelative(lens.at)}`;
+      return `Historical focus — ${fmtRelative(lens.at)}`;
     case 'ATTENTION':
-      return lens.lane === null ? 'انتباه المؤسس' : lens.lane === 'NEEDS_ME' ? 'يحتاجني' : lens.lane === 'CEO_BRIEFS' ? 'موجزات المدير التنفيذي' : 'محادثاتي';
+      return lens.lane === null ? 'Founder attention' : lens.lane === 'NEEDS_ME' ? 'Needs me' : lens.lane === 'CEO_BRIEFS' ? 'CEO briefs' : 'Conversations';
     case 'CEO':
-      return 'تركيز: المدير التنفيذي';
+      return 'Focus: Chief Executive';
     case 'EMPLOYEE':
     case 'CONVERSATION': {
       const n = layout.byId.get(`employee:${lens.employeeId}`);
-      return `${lens.kind === 'CONVERSATION' ? 'محادثة' : 'تركيز'}: ${n?.label ?? ''}`;
+      return `${lens.kind === 'CONVERSATION' ? 'Conversation' : 'Focus'}: ${n?.label ?? ''}`;
     }
     case 'GOAL':
-      return `هدف: ${u.goals.find((g) => g.id === lens.goalId)?.title ?? ''}`;
+      return `Goal: ${u.goals.find((g) => g.id === lens.goalId)?.title ?? ''}`;
     case 'DEPARTMENT': {
       const d = u.departments.find((x) => x.id === lens.departmentId);
-      return `قسم: ${d ? deptName(d.code, d.name) : ''}`;
+      return `Department: ${d ? deptName(d.code, d.name) : ''}`;
     }
     case 'BLOCKED':
-      return 'المتوقف الآن';
+      return 'Blocked now';
   }
 }
 

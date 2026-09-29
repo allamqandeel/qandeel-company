@@ -30,7 +30,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-import { seedLive, seedStatic } from './c5/seed-company.mjs';
+import { CONTENT, seedLive, seedStatic } from './c5/seed-company.mjs';
 
 const MARKER = '.qandeel-c5-acceptance';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -96,7 +96,6 @@ const refusedWith = (fn, code) => {
 };
 const cliRun = (...args) => spawnSync(process.execPath, [FOUNDER_CLI, ...args], { encoding: 'utf8', shell: false, windowsHide: true });
 
-const CONTENT = ['إطلاق السعودية', 'ما وضع إطلاق', 'الإطلاق السعودي على المسار', 'حملة الإطلاق السعودي جاهزة'];
 const logs = [];
 const cookieHeader = (cookies) => Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
 function client(origin) {
@@ -212,7 +211,8 @@ try {
     const gov = surface.runtime.governance;
     const ceoBudget = gov.budgetFor('EMPLOYEE', world.employees['company.ceo'].id);
     const capBefore = ceoBudget.capMoney;
-    const cmd = await c.post('/api/command', { text: 'وافق على حملة إيهاب طارق بميزانية EGP 50,000' });
+    // The Founder writes in English or Arabic; the same bounded grammar classifies both.
+    const cmd = await c.post('/api/command', { text: 'approve Ehab Tarek campaign with a budget of EGP 50,000' });
     check(cmd.status === 200 && cmd.body.intent.kind === 'MUTATING' && cmd.body.preview?.state === 'PREVIEW', 'a mutating instruction becomes a structured preview');
     check(gov.budgetFor('EMPLOYEE', world.employees['company.ceo'].id).capMoney === capBefore, 'the text alone changed nothing');
     const p = cmd.body.preview;
@@ -225,9 +225,9 @@ try {
     check(gov.budgetFor('EMPLOYEE', world.employees['company.ceo'].id).capMoney === 50_000 * 1_000_000, 'the ceiling changed at the real boundary, inside the session scope');
     check((await c.post(`/api/previews/${p.id}/confirm`, { fingerprint: p.fingerprint })).status === 409, 'decided exactly once');
     const audits = surface.runtime.view.auditByAction('founder.action_confirmed');
-    check(audits.length === 1 && !JSON.stringify(audits).includes('إيهاب'), 'the confirmation is audited, content-free');
-    // A read command changes focus only.
-    const read = await c.post('/api/command', { text: 'افتح ليلى مراد' });
+    check(audits.length === 1 && !JSON.stringify(audits).includes('Ehab'), 'the confirmation is audited, content-free');
+    // A read command changes focus only (Arabic here: the grammar is bilingual).
+    const read = await c.post('/api/command', { text: 'افتح Laila Mourad' });
     check(read.body.intent.kind === 'READ' && read.body.focus.targetId === world.employees['growth.manager-1'].id, 'a read command resolves a focus target');
     check((await c.post('/api/session/logout', {})).status === 200, 'logout');
     check((await fetch(`${surface.origin}/api/session`, { headers: { Cookie: cookieHeader(c.cookies) } })).status === 401, 'the cookie is dead after logout');

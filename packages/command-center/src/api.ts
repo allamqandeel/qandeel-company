@@ -260,7 +260,8 @@ function matchGoals(u: CompanyUniverse, q: string): CompanyUniverse['goals'] {
 
 /**
  * Employees named by a query: the query names the person (a name or role fragment), or — for a longer
- * instruction such as "وافق على حملة إيهاب طارق بميزانية …" — the person's full name occurs inside the query.
+ * instruction such as "approve Ehab Tarek's campaign with a budget of …" (or its Arabic form) — the person's
+ * full name occurs inside the query.
  */
 function matchEmployees(u: CompanyUniverse, q: string): CompanyUniverse['employees'] {
   const n = norm(q);
@@ -279,20 +280,20 @@ function resolveMutatingTarget(ctx: ApiContext, u: CompanyUniverse, intent: Muta
       const a = byArg.length === 1 ? byArg[0] : pending.length === 1 ? pending[0] : undefined;
       if (!a) return null;
       const subject = a.workItemId !== null ? (u.work.find((w) => w.id === a.workItemId)?.objective ?? a.subjectRef) : a.subjectRef;
-      return { intent, payload: { approvalId: a.id, decision: decision ?? 'APPROVE', reasonCode: 'founder.decided' }, summary: `${decision === 'REJECT' ? 'رفض' : 'اعتماد'} طلب الموافقة (${a.risk}) على: ${subject}` };
+      return { intent, payload: { approvalId: a.id, decision: decision ?? 'APPROVE', reasonCode: 'founder.decided' }, summary: `${decision === 'REJECT' ? 'Reject' : 'Approve'} the ${a.risk} approval request for: ${subject}` };
     }
     case 'GOAL_APPROVE': {
       const gs = matchGoals(u, argument ?? '').filter((g) => g.kind === 'COMPANY' && g.state === 'PROPOSED');
       const g = gs.length === 1 ? gs[0] : undefined;
       if (!g) return null;
-      return { intent, payload: { goalId: g.id, activate: true, reasonCode: 'goal.approved' }, summary: `اعتماد هدف الشركة وتفعيله: ${g.title}` };
+      return { intent, payload: { goalId: g.id, activate: true, reasonCode: 'goal.approved' }, summary: `Approve and activate the company goal: ${g.title}` };
     }
     case 'GOAL_STATE': {
       const gs = matchGoals(u, argument ?? '');
       const g = gs.length === 1 ? gs[0] : undefined;
       if (!g) return null;
       const to = /pause|اوقف|أوقف/i.test(argument ?? '') ? 'PAUSED' : /cancel|الغ/i.test(argument ?? '') ? 'CANCELLED' : /achiev/i.test(argument ?? '') ? 'ACHIEVED' : 'ACTIVE';
-      const verb = to === 'PAUSED' ? 'إيقاف الهدف مؤقتًا' : to === 'CANCELLED' ? 'إلغاء الهدف' : to === 'ACHIEVED' ? 'إعلان تحقق الهدف' : 'تفعيل الهدف';
+      const verb = to === 'PAUSED' ? 'Pause the goal' : to === 'CANCELLED' ? 'Cancel the goal' : to === 'ACHIEVED' ? 'Mark the goal achieved' : 'Activate the goal';
       return { intent, payload: { goalId: g.id, to, reasonCode: 'goal.state' }, summary: `${verb}: ${g.title}` };
     }
     case 'BUDGET_CEILING': {
@@ -303,19 +304,19 @@ function resolveMutatingTarget(ctx: ApiContext, u: CompanyUniverse, intent: Muta
       if (budgetId === null) return null;
       const b = ctx.runtime.governance.budgetFor('EMPLOYEE', e.id);
       // Money is stored in micro-units of the envelope's currency; a stated ceiling maps 1:1 to that currency.
-      return { intent, payload: { budgetId, capMoney: amount.value * 1_000_000, capTokens: b?.capTokens ?? 0, currency: amount.currency, reasonCode: 'founder.ceiling' }, summary: `رفع سقف الغلاف المالي لـ${nameOf(u, e.id)} إلى ${amount.value.toLocaleString('ar-EG')} ${amount.currency === 'EGP' ? 'جنيه' : amount.currency === 'SAR' ? 'ريال' : 'دولار'}` };
+      return { intent, payload: { budgetId, capMoney: amount.value * 1_000_000, capTokens: b?.capTokens ?? 0, currency: amount.currency, reasonCode: 'founder.ceiling' }, summary: `Raise the budget ceiling of ${nameOf(u, e.id)} to ${amount.currency} ${amount.value.toLocaleString('en-GB')}` };
     }
     case 'STAFFING_DECIDE': {
       const rs = ctx.runtime.org.organization.staffingRequests('RECOMMENDED');
       const r = rs.length === 1 ? rs[0] : undefined;
       if (!r) return null;
-      return { intent, payload: { requestId: r.id, decision: decision ?? 'APPROVE', reasonCode: 'founder.decided' }, summary: `${decision === 'REJECT' ? 'رفض' : 'اعتماد'} طلب التوظيف: ${r.positionTitle}` };
+      return { intent, payload: { requestId: r.id, decision: decision ?? 'APPROVE', reasonCode: 'founder.decided' }, summary: `${decision === 'REJECT' ? 'Reject' : 'Approve'} the staffing request: ${r.positionTitle}` };
     }
     case 'CONFLICT_RESOLVE': {
       const cs = ctx.runtime.org.review.conflicts('OPEN');
       const c = cs.length === 1 ? cs[0] : undefined;
       if (!c) return null;
-      return { intent, payload: { conflictId: c.id, resolution: decision === 'REJECT' ? 'REWORK' : 'PASS', reasonCode: 'founder.resolved' }, summary: `حسم خلاف المراجعة ${decision === 'REJECT' ? 'بإعادة العمل' : 'بالقبول'}` };
+      return { intent, payload: { conflictId: c.id, resolution: decision === 'REJECT' ? 'REWORK' : 'PASS', reasonCode: 'founder.resolved' }, summary: `Resolve the review conflict ${decision === 'REJECT' ? 'with rework' : 'as passed'}` };
     }
     case 'GOAL_PROPOSE':
     case 'DELEGATE_WORK':
