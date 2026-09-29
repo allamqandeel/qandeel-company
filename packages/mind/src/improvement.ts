@@ -19,7 +19,7 @@ import { QandeelError } from '@qandeel-company/domain';
 import type { AttributedCause, CauseCategory, DirectCause, WorkEvidence } from './evaluation.js';
 import type { EvaluationFact, LearningEffect } from './performance.js';
 
-export const LEARNING_KINDS = ['MISTAKE_LESSON', 'SUCCESSFUL_PATTERN', 'NEAR_MISS_WARNING'] as const;
+export const LEARNING_KINDS = ['MISTAKE_LESSON', 'SUCCESSFUL_PATTERN', 'NEAR_MISS_WARNING', 'SYSTEMIC_PROBLEM'] as const;
 export type LearningKind = (typeof LEARNING_KINDS)[number];
 
 export const LEARNING_SOURCES = ['REFLECTION', 'ATTRIBUTION', 'REVIEW', 'GATE_CATCH', 'EVALUATION'] as const;
@@ -41,6 +41,8 @@ export function learningValidationGate(input: {
   qualifiedEvaluation: boolean;
 }): { allowed: boolean; reason: string } {
   const a = input.attribution;
+  // A systemic problem is a finding about the company, never a lesson about one Employee.
+  if (input.kind === 'SYSTEMIC_PROBLEM') return { allowed: false, reason: 'SYSTEMIC_PROBLEM_IS_A_FINDING' };
   if (input.kind === 'MISTAKE_LESSON') {
     if (a === null || a.state !== 'VALIDATED') return { allowed: false, reason: 'ATTRIBUTION_NOT_VALIDATED' };
     if (!a.employeeAccountable) return { allowed: false, reason: 'CAUSE_IS_NOT_THE_EMPLOYEE' };
@@ -212,6 +214,36 @@ export function detectSystemicCandidates(facts: readonly ValidatedAttributionFac
     out.push({ targetKind: TARGET_FOR[g.cause], targetRef: g.key, cause: g.cause, occurrences: g.items.length, distinctEmployees: employees.size, evidenceRefs: g.items.map((i) => `causal_attribution:${i.attributionId}`) });
   }
   return out;
+}
+
+/**
+ * An observation classified SYSTEMIC_PROBLEM becomes a systemic candidate only on independent evidence: a
+ * VALIDATED attribution of its work whose PRIMARY cause is the system (tool, model, context, workflow,
+ * provider, requirement, external dependency). An Employee's own judgement is a lesson, not a system problem.
+ */
+export function reportedSystemicCandidate(input: { signalId: string; observationId: string; attribution: ValidatedAttributionFact | null }): SystemicCandidate {
+  const a = input.attribution;
+  if (a === null) throw new QandeelError('LEARNING_GATE', 'a reported systemic problem needs a validated attribution of its work', { reason: 'ATTRIBUTION_NOT_VALIDATED' });
+  const primary = a.causes.find((c) => c.role === 'PRIMARY');
+  if (!primary) throw new QandeelError('LEARNING_GATE', 'the validated attribution names no primary cause', { reason: 'NO_PRIMARY_CAUSE' });
+  if (primary.category === 'EMPLOYEE_JUDGMENT') throw new QandeelError('LEARNING_GATE', 'the validated cause is the Employee, not the system', { reason: 'CAUSE_IS_THE_EMPLOYEE' });
+  return {
+    targetKind: TARGET_FOR[primary.category],
+    targetRef: a.comparableKey,
+    cause: primary.category,
+    occurrences: 1,
+    distinctEmployees: a.employeeId === null ? 0 : 1,
+    evidenceRefs: [`learning_signal:${input.signalId}`, `lesson:${input.observationId}`, `causal_attribution:${a.attributionId}`],
+  };
+}
+
+/**
+ * Who contributed a reported systemic finding: the Employee who authored the observation, and only when it is
+ * their own REFLECTION. An evaluator-, gate- or reviewer-derived observation names no contributor — the subject
+ * of a record is never credited as its author. Provenance is credit, never authority.
+ */
+export function systemicContributor(input: { source: LearningSource; observationEmployeeId: string }): string | null {
+  return input.source === 'REFLECTION' ? input.observationEmployeeId : null;
 }
 
 // ---------------------------------------------------------------------------------------------------------

@@ -216,7 +216,7 @@ CREATE TRIGGER causal_attribution_history_append_only_d BEFORE DELETE ON causal_
 CREATE TABLE learning_signals (
   id                  TEXT    NOT NULL PRIMARY KEY CHECK (length(id) = 36),
   observation_id      TEXT    NOT NULL UNIQUE REFERENCES lessons (id) ON DELETE RESTRICT,
-  kind                TEXT    NOT NULL CHECK (kind IN ('MISTAKE_LESSON', 'SUCCESSFUL_PATTERN', 'NEAR_MISS_WARNING')),
+  kind                TEXT    NOT NULL CHECK (kind IN ('MISTAKE_LESSON', 'SUCCESSFUL_PATTERN', 'NEAR_MISS_WARNING', 'SYSTEMIC_PROBLEM')),
   source              TEXT    NOT NULL CHECK (source IN ('REFLECTION', 'ATTRIBUTION', 'REVIEW', 'GATE_CATCH', 'EVALUATION')),
   work_item_id        TEXT    NOT NULL REFERENCES work_items (id) ON DELETE RESTRICT,
   attribution_id      TEXT             REFERENCES causal_attributions (id) ON DELETE RESTRICT,
@@ -235,8 +235,10 @@ BEGIN SELECT RAISE(ABORT, 'a learning signal classifies a recorded observation')
 -- Validation gate on the C3 lesson lifecycle (a new trigger on an existing table; 0005 is untouched).
 CREATE TRIGGER lessons_c6_validation_gate BEFORE UPDATE ON lessons
 WHEN NEW.stage = 'VALIDATED' AND OLD.stage <> 'VALIDATED' AND EXISTS (SELECT 1 FROM learning_signals s WHERE s.observation_id = NEW.observation_id) AND (
+     -- A systemic problem is a finding about the company, never a lesson about one Employee.
+     EXISTS (SELECT 1 FROM learning_signals s WHERE s.observation_id = NEW.observation_id AND s.kind = 'SYSTEMIC_PROBLEM')
      -- A mistake lesson needs a VALIDATED attribution that makes the Employee accountable.
-     EXISTS (SELECT 1 FROM learning_signals s WHERE s.observation_id = NEW.observation_id AND s.kind = 'MISTAKE_LESSON'
+  OR EXISTS (SELECT 1 FROM learning_signals s WHERE s.observation_id = NEW.observation_id AND s.kind = 'MISTAKE_LESSON'
              AND NOT EXISTS (SELECT 1 FROM causal_attributions a WHERE a.work_item_id = s.work_item_id AND a.state = 'VALIDATED' AND a.employee_accountable = 1))
   -- A successful pattern needs a qualified evaluation of its work.
   OR EXISTS (SELECT 1 FROM learning_signals s WHERE s.observation_id = NEW.observation_id AND s.kind = 'SUCCESSFUL_PATTERN'
@@ -318,6 +320,10 @@ CREATE TRIGGER learning_intervention_history_append_only_d BEFORE DELETE ON lear
 -- 7. Systemic findings (double-loop learning): repeated validated causes point at a workflow, skill, tool,
 -- evaluator, requirement, policy assumption, role design or Goal definition. A finding recommends; it never
 -- rewrites governance, identity, authority or Founder policy.
+-- Provenance: a finding the system detected (REPEATED_ATTRIBUTION, RETRAINING_EXHAUSTED) names no source
+-- signal and no contributor. A REPORTED_OBSERVATION finding points at the SYSTEMIC_PROBLEM learning signal it
+-- came from; it names a contributor Employee only when that observation is the Employee's own REFLECTION, and
+-- then exactly its author. Provenance is credit (System Contribution), never authority.
 -- =====================================================================================================
 CREATE TABLE systemic_findings (
   id                    TEXT    NOT NULL PRIMARY KEY CHECK (length(id) = 36),
@@ -325,7 +331,9 @@ CREATE TABLE systemic_findings (
   target_kind           TEXT    NOT NULL CHECK (target_kind IN ('WORKFLOW', 'SKILL', 'TOOL', 'CONTEXT', 'MODEL_ROUTE', 'EVALUATOR', 'REQUIREMENT', 'POLICY_ASSUMPTION', 'ROLE_DESIGN', 'GOAL_DEFINITION', 'EXTERNAL_DEPENDENCY')),
   target_ref            TEXT    NOT NULL CHECK (length(target_ref) BETWEEN 1 AND 161),
   cause                 TEXT    NOT NULL CHECK (cause IN ('EMPLOYEE_JUDGMENT', 'MODEL', 'TOOL', 'CONTEXT_RETRIEVAL', 'WORKFLOW_PROCESS', 'PROVIDER', 'REQUIREMENT', 'EXTERNAL_DEPENDENCY')),
-  origin                TEXT    NOT NULL CHECK (origin IN ('REPEATED_ATTRIBUTION', 'RETRAINING_EXHAUSTED')),
+  origin                TEXT    NOT NULL CHECK (origin IN ('REPEATED_ATTRIBUTION', 'RETRAINING_EXHAUSTED', 'REPORTED_OBSERVATION')),
+  source_signal_id      TEXT             REFERENCES learning_signals (id) ON DELETE RESTRICT,
+  contributor_employee_id TEXT           REFERENCES employees (id) ON DELETE RESTRICT,
   occurrences           INTEGER NOT NULL CHECK (occurrences >= 1),
   distinct_employees    INTEGER NOT NULL CHECK (distinct_employees >= 0),
   evidence_refs_json    TEXT    NOT NULL CHECK (json_valid(evidence_refs_json) AND json_type(evidence_refs_json) = 'array' AND json_array_length(evidence_refs_json) >= 1 AND length(evidence_refs_json) <= 8192),
@@ -336,13 +344,25 @@ CREATE TABLE systemic_findings (
   version               INTEGER NOT NULL CHECK (version >= 1),
   created_at            TEXT    NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
   updated_at            TEXT    NOT NULL CHECK (updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
-  CHECK (state = 'CANDIDATE' OR decided_by_ref IS NOT NULL)
+  CHECK (state = 'CANDIDATE' OR decided_by_ref IS NOT NULL),
+  CHECK ((origin = 'REPORTED_OBSERVATION') = (source_signal_id IS NOT NULL)),
+  CHECK (contributor_employee_id IS NULL OR source_signal_id IS NOT NULL)
 ) STRICT;
 CREATE INDEX systemic_findings_state ON systemic_findings (state);
+CREATE INDEX systemic_findings_contributor ON systemic_findings (contributor_employee_id, state);
 CREATE TRIGGER systemic_findings_no_delete BEFORE DELETE ON systemic_findings BEGIN SELECT RAISE(ABORT, 'systemic findings are durable history'); END;
+-- The contributor is exactly the author of a reflected SYSTEMIC_PROBLEM observation, or nobody.
+CREATE TRIGGER systemic_findings_provenance BEFORE INSERT ON systemic_findings
+WHEN NEW.source_signal_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM learning_signals s JOIN lessons l ON l.id = s.observation_id
+  WHERE s.id = NEW.source_signal_id AND s.kind = 'SYSTEMIC_PROBLEM'
+    AND EXISTS (SELECT 1 FROM causal_attributions a WHERE a.work_item_id = s.work_item_id AND a.state = 'VALIDATED')
+    AND ((s.source = 'REFLECTION' AND NEW.contributor_employee_id IS l.employee_id) OR (s.source <> 'REFLECTION' AND NEW.contributor_employee_id IS NULL)))
+BEGIN SELECT RAISE(ABORT, 'a systemic finding credits only the author of the reflected observation it came from, on a validated attribution'); END;
 CREATE TRIGGER systemic_findings_forward BEFORE UPDATE ON systemic_findings
 WHEN NEW.id IS NOT OLD.id OR NEW.dedup_key IS NOT OLD.dedup_key OR NEW.target_kind IS NOT OLD.target_kind OR NEW.target_ref IS NOT OLD.target_ref
   OR NEW.cause IS NOT OLD.cause OR NEW.created_at IS NOT OLD.created_at OR NEW.version <> OLD.version + 1
+  OR NEW.origin IS NOT OLD.origin OR NEW.source_signal_id IS NOT OLD.source_signal_id OR NEW.contributor_employee_id IS NOT OLD.contributor_employee_id
   OR NEW.occurrences < OLD.occurrences OR OLD.state IN ('REJECTED', 'ADDRESSED')
   OR (OLD.state = 'VALIDATED' AND NEW.state NOT IN ('VALIDATED', 'ADDRESSED'))
   OR (OLD.state <> 'CANDIDATE' AND (NEW.evidence_refs_json IS NOT OLD.evidence_refs_json OR NEW.occurrences IS NOT OLD.occurrences))

@@ -5,6 +5,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
+import { isQandeelError } from '@qandeel-company/domain';
+
 import {
   assertClaim,
   assessLearningEffect,
@@ -19,10 +21,12 @@ import {
   nextInterventionDecision,
   patternExpansionAllowed,
   proposeAttribution,
+  reportedSystemicCandidate,
   retrainingMaterial,
   reviewerMetaEvaluation,
   standardReferenceCases,
   standardWorkOutcomeDefinition,
+  systemicContributor,
   type EvaluationFact,
   type FollowupFact,
   type ReportFacts,
@@ -242,6 +246,17 @@ describe('C6 learning closure', () => {
     const c = detectSystemicCandidates([f(1, 'a'), f(2, 'b'), f(3, 'a')]);
     assert.equal(c.length, 1);
     assert.equal(req(c[0]).targetKind, 'WORKFLOW');
+  });
+  test('a reported systemic problem needs a validated system cause, credits only a reflecting author, and is never a lesson', () => {
+    const a = (category: 'TOOL' | 'EMPLOYEE_JUDGMENT') => ({ attributionId: 'a1', workItemId: 'w1', employeeId: 'emp', comparableKey: 'growth.brief', overall: category, causes: [{ category, role: 'PRIMARY' as const, confidence: 'HIGH' as const, basis: 'X' }] });
+    assert.throws(() => reportedSystemicCandidate({ signalId: 's', observationId: 'o', attribution: null }), (e: unknown) => isQandeelError(e) && e.details.reason === 'ATTRIBUTION_NOT_VALIDATED');
+    assert.throws(() => reportedSystemicCandidate({ signalId: 's', observationId: 'o', attribution: a('EMPLOYEE_JUDGMENT') }), (e: unknown) => isQandeelError(e) && e.details.reason === 'CAUSE_IS_THE_EMPLOYEE');
+    const c = reportedSystemicCandidate({ signalId: 's', observationId: 'o', attribution: a('TOOL') });
+    assert.equal(c.targetKind, 'TOOL');
+    assert.deepEqual(c.evidenceRefs, ['learning_signal:s', 'lesson:o', 'causal_attribution:a1']);
+    assert.equal(systemicContributor({ source: 'REFLECTION', observationEmployeeId: 'emp' }), 'emp');
+    for (const source of ['ATTRIBUTION', 'REVIEW', 'GATE_CATCH', 'EVALUATION'] as const) assert.equal(systemicContributor({ source, observationEmployeeId: 'emp' }), null);
+    assert.equal(learningValidationGate({ source: 'REFLECTION', kind: 'SYSTEMIC_PROBLEM', attribution: { state: 'VALIDATED', employeeAccountable: false }, qualifiedEvaluation: true }).reason, 'SYSTEMIC_PROBLEM_IS_A_FINDING');
   });
   test('hidden holdout / Gold cases are never retraining material', () => {
     assert.deepEqual(retrainingMaterial([{ caseId: 'r', stage: 'REGRESSION_CASE', hidden: false }, { caseId: 'g', stage: 'GOLD_CASE', hidden: true }, { caseId: 'h', stage: 'REGRESSION_CASE', hidden: true }]), ['r']);

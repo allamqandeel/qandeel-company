@@ -115,6 +115,18 @@ const MUTATIONS = [
     runs: [KERNEL],
   },
   {
+    id: 'c6-systemic-credit-misattributed',
+    gate: 'a systemic finding credits an Employee only as the author of the reflected observation it came from, never the subject of a system record',
+    edits: [{ file: `${MIND}/improvement.js`, search: "return input.source === 'REFLECTION' ? input.observationEmployeeId : null;", replace: 'return input.observationEmployeeId;', expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  {
+    id: 'c6-systemic-credit-before-validation',
+    gate: 'System Contribution credit for a systemic finding waits for the Founder to validate it',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: "WHERE contributor_employee_id = ? AND state IN ('VALIDATED', 'ADDRESSED')", replace: "WHERE contributor_employee_id = ? AND state IN ('CANDIDATE', 'VALIDATED', 'ADDRESSED')", expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
     id: 'c6-recommendation-mutates-authority',
     gate: 'a report or recommendation changes no authority, budget, grant, approval, seat, hold or certification',
     edits: [{ file: `${STORAGE}/improvement.js`, search: "appendAudit(ctx, 'report.generated'", // The injected write is assembled at run time: this script never writes a budget itself; it plants the defect

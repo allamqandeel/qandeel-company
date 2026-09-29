@@ -119,7 +119,9 @@ getting better, not merely remember more. It extends the C1–C5 mechanisms and 
   human decision, never a promotion; **cost per qualified outcome** instead of "cheapest";
 - **learning closure** over the C3 lesson lifecycle: reflection is a hypothesis (validated only on
   independent evidence), mistake lessons, successful patterns (candidate-first, shared only after verified
-  reuse), near-miss warnings, systemic findings when failures repeat across Employees (double-loop), learning
+  reuse), near-miss warnings, systemic findings when failures repeat across Employees (double-loop) or when an
+  Employee's reflected systemic problem is confirmed by a validated system cause (traceable to that Employee
+  and credited to their System Contribution only once the Founder validates it — credit, never authority), learning
   interventions whose effect is judged on LATER comparable evidence (training completed ≠ improvement), a
   bounded retraining loop that escalates instead of repeating, and the failure → regression / Gold case path
   bound to hidden Academy holdouts;

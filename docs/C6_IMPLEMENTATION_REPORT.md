@@ -104,7 +104,10 @@ missing and is not reconstructed.
   analysis supports it. A validated lesson leads to targeted retraining, but "training finished" is not
   "improved": only later comparable work that no longer repeats the mistake proves improvement. Smart
   successes become pattern candidates and are shared only after verified reuse. When the same failure repeats
-  across different people, QANDEEL questions the workflow itself (a systemic finding for the Founder).
+  across different people, QANDEEL questions the workflow itself (a systemic finding for the Founder). When an
+  Employee is the one who spots a problem in the system (a broken tool, a flawed workflow) and independent cause
+  analysis confirms it, the finding records that Employee as its author and credits it to their growth once the
+  Founder validates it; findings the system detects on its own credit nobody. Credit never grants authority.
 - **Report like an executive team.** Daily, weekly and monthly reports state facts, assessments, trends and
   recommendations separately; every judgement cites its evidence and its uncertainty. Only material exceptions
   interrupt the Founder.
@@ -113,7 +116,7 @@ missing and is not reconstructed.
   restored company resumes without repeating an uncertain external action. Schema updates are rehearsed on a
   snapshot first; a failure rolls back and holds the company safely until the operator decides.
 
-## 6. Schema (migration `0010_c6_improvement_engine.sql`, pinned `f1cc8dc7…`)
+## 6. Schema (migration `0010_c6_improvement_engine.sql`, pinned `9bcc6ff7…`)
 
 | Table | Source of truth / writer | Readers | Lifecycle / idempotency | Retention / privacy |
 |---|---|---|---|---|
@@ -122,9 +125,9 @@ missing and is not reconstructed.
 | `outcome_verifications` | Founder | evaluator, reports | append-only; one decisive verdict per Work Item; needs a reviewed Work Item (trigger); no `EXTERNAL_OUTCOME` (CHECK) | never deleted; evidence refs only |
 | `evaluation_results` | system evaluator (derived from canonical rows) | profiles, reports, inspection | one live per (Work Item, definition); re-evaluation supersedes; unchanged evidence is a no-op (evidence hash); qualified needs an ACHIEVED verification and an ACTIVE definition (triggers) | never deleted; counts, codes, refs |
 | `causal_attributions` (+`_history`) | evaluator proposal / Founder decision | profiles, learning, systemic detection | one live per Work Item; PROPOSED → VALIDATED / REJECTED / SUPERSEDED; the subject Employee never decides (CHECK) | never deleted; cause codes |
-| `learning_signals` | evaluator / classification act | learning gates, reports | append-only; one per observation; classifies C3 observations only (trigger) | never deleted; codes |
+| `learning_signals` | evaluator / classification act | learning gates, reports, systemic provenance | append-only; one per observation; classifies C3 observations only (trigger); a `SYSTEMIC_PROBLEM` signal is never validated as a lesson (trigger) | never deleted; codes |
 | `learning_interventions` (+`_history`) | Founder plan / completion; system assessment | profiles, reports | PLANNED → TRAINING_COMPLETED → EFFECT_ASSESSED; decisive effect final; retraining bound (trigger); only on VALIDATED lessons (trigger) | never deleted; refs, codes |
-| `systemic_findings` (+`_history`) | system detection (upsert by dedup key); Founder decision | attention, reports | CANDIDATE → VALIDATED / REJECTED → ADDRESSED; evidence only grows while a candidate | never deleted; refs, codes |
+| `systemic_findings` (+`_history`) | system detection (upsert by dedup key) or a classified `SYSTEMIC_PROBLEM` observation on a validated system cause; Founder decision | attention, reports, System Contribution | CANDIDATE → VALIDATED / REJECTED → ADDRESSED; evidence only grows while a candidate; provenance (`origin`, `source_signal_id`, `contributor_employee_id`) fixed at creation — a contributor is exactly the author of a reflected source observation, or nobody (CHECKs + trigger) | never deleted; refs, codes, ids |
 | `failure_cases` (+`_history`) | Founder | Academy material, R2 | REAL_FAILURE → … → REGRESSION_CASE / GOLD_CASE / REJECTED; hidden ⇔ HOLDOUT scenario (trigger) | never deleted; ids |
 | `report_snapshots` | system reporter | Founder surface, CLI | append-only; idempotent per (cadence, period end, claims hash) | never deleted; claim codes / refs / counts |
 | `backup_retirements` | retention | discovery | append-only; never retires the last live generation (trigger) | the backup files are removed; the record stays |
@@ -166,14 +169,21 @@ reuses). Everything else from 0001–0009 is unchanged.
      intervention CHECK; the evaluation read bound dropped the newest rows; the off-device RPO used the
      verification time instead of the data's age; "latest" ties broke on random ids; a stale proposal stayed
      decidable; a failed clean restore left a half-built target; read-only inspection was refused under a hold;
-     an unvalidated report period; POSIX volumes were all "same volume". One finding (system contribution from
-     systemic findings) is a recorded residual.
+     an unvalidated report period; POSIX volumes were all "same volume".
+  4. *Review finding #9, fixed before the PR at the Product Owner's direction (it was first proposed as residual
+     R-C6-01):* systemic findings carried no provenance, so System Contribution could never credit an Employee
+     who discovered a problem in the system. Fix (D-C6-09): the existing C3 observation → C6 learning-signal path
+     gains the fourth learning output `SYSTEMIC_PROBLEM`; a finding reported that way keeps its source signal and
+     names a contributor only when the observation is the Employee's own reflection, only on a VALIDATED
+     system cause, and the credit counts only once the Founder validates the finding. Guarded by kernel and
+     storage proofs and the `c6-systemic-credit-misattributed` / `c6-systemic-credit-before-validation`
+     mutations.
   No root-cause family recurred a second time.
 
 ## 8. Validation (see the PR description for the exact head and GitHub runs)
 
-Focused during the build: kernel 36 tests, storage C6 16 tests (plus the full storage suite), runtime C6 3 tests
-(plus the full runtime suite, C5 signalling proofs included), `c6:mutation` 27/27 caught, `c6:acceptance`
+Focused during the build: kernel 37 tests, storage C6 18 tests (plus the full storage suite), runtime C6 3 tests
+(plus the full runtime suite, C5 signalling proofs included), `c6:mutation` 29/29 caught, `c6:acceptance`
 20/20 PASS, verifier 69/69 with every new rule self-tested, `eslint --max-warnings=0` clean. The full local
 gate (`npm ci`, `npm run ci`, C1–C6 acceptances, the C5 browser smoke) runs once on the closure-candidate tree
 before the PR; GitHub CI (Windows + Ubuntu) on the exact PR head is the confirmation.
@@ -182,7 +192,7 @@ before the PR; GitHub CI (Windows + Ubuntu) on the exact PR head is the confirma
 
 | Skill | Used | Where / effect |
 |---|---|---|
-| `code-review` (high) | yes | Independent correctness review of the full C6 diff before the PR: ten findings, nine fixed with proofs (§7.3), one recorded residual |
+| `code-review` (high) | yes | Independent correctness review of the full C6 diff before the PR: ten findings, all ten fixed with proofs (§7.3, §7.4) |
 | `security-review` | attempted | Could not launch: it shells out through the Bash tool, which exits 2 on every command on this host (known Founder-host quirk); replaced by a manual security pass over the crypto / recovery path (AES-256-GCM with header AAD and per-package random IV, pinned scrypt parameters, entry allow-list, contained paths, passphrase never stored) and the verifier rule `c6-recovery-secret-never-stored` |
 | `dataviz`, `artifact-diagramming`, `impeccable`, `frontend-design`, `animate`, `emil-design-eng`, `ui-ux-pro-max`, `sibawayh:*` | no | C6 changes no visual surface (Tree of Light frozen; two intent labels only), draws no chart and writes no Arabic UI copy |
 | `claude-api` | no | C6 makes no model call (the evaluator is deterministic; `MODEL_GRADER` is an unexecuted seam) |
@@ -190,8 +200,8 @@ before the PR; GitHub CI (Windows + Ubuntu) on the exact PR head is the confirma
 
 ## 10. Residuals and deferred items (no hidden claims)
 
-- **R-C6-01 (MINOR):** system contribution does not credit systemic findings (they carry no Employee
-  authorship link); patterns and verified reuses are credited.
+- **R-C6-01:** closed before the PR (§7.4) — systemic findings carry traceable provenance and credit their
+  Employee author.
 - **R-C6-02 (MINOR, Product):** reports and profiles are reachable through the API, the command palette's read
   intents and the CLI; a dedicated report view inside the Tree of Light is not built (the surface is frozen).
 - **R-C6-03 (MINOR):** portable packages are built in memory (bounded at 1.5 GiB, refused above); streaming

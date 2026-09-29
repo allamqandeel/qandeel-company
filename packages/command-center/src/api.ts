@@ -118,7 +118,7 @@ export function attention(ctx: ApiContext): Json {
       }
       if (kind === 'systemic_finding') {
         const f = store.improvement.systemicFindings().find((x) => x.id === id);
-        return f ? { systemic: { id: f.id, targetKind: f.targetKind, targetRef: f.targetRef, cause: f.cause, occurrences: f.occurrences, distinctEmployees: f.distinctEmployees, recommendationCode: f.recommendationCode, state: f.state } } : {};
+        return f ? { systemic: { id: f.id, targetKind: f.targetKind, targetRef: f.targetRef, cause: f.cause, origin: f.origin, contributorEmployeeId: f.contributorEmployeeId, occurrences: f.occurrences, distinctEmployees: f.distinctEmployees, recommendationCode: f.recommendationCode, state: f.state } } : {};
       }
       if (kind === 'recovery_drill' || kind === 'portable_backup' || kind === 'maintenance') {
         return { resilience: { exceptions: ctx.runtime.resilience().exceptions.filter((x) => x.material && x.ref === i.sourceRef).map((x) => x.code) } };

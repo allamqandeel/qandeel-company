@@ -144,6 +144,7 @@ export {
   type LearningSignalRecord,
   type ReportRecord,
   type SystemicFindingRecord,
+  type SystemicOrigin,
 } from './improvement.js';
 export {
   DEFAULT_RETENTION,

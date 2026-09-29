@@ -2473,10 +2473,32 @@ Proven by `c6-runtime` tests and two `c6:mutation` gates; the C5 census and sign
 
 ## D-C6-08 — C6 CI, verifier and proof parity (Technical Lead, C6)
 
-**Decision.** `c6:mutation` (27 semantic mutations) joins the mutation matrix on both operating systems
+**Decision.** `c6:mutation` (29 semantic mutations, D-C6-09 included) joins the mutation matrix on both operating systems
 (Windows two shards, Ubuntu one) and the quality gate's parity set; `c6:acceptance` joins the acceptance job on
 both operating systems; the verifier adds `c6-proofs-present`, `c6-not-claimed-closed`, `c6-no-universal-score`,
 `c6-telemetry-content-free`, `c6-recovery-secret-never-stored` and `c6-external-outcomes-unavailable`, each
 self-tested, and now also pins the two C5 signalling mutations that were recorded in the script but not pinned.
 No job removed, no timeout raised, no `continue-on-error`. The C5 closure record was written at the C6 start
 from GitHub truth (PR #10, runs #81 / #82); C5 is CLOSED / MERGED / CANONICAL.
+
+## D-C6-09 — Systemic-finding provenance and System Contribution credit (Technical Lead, C6)
+
+**Context.** Review finding #9: systemic findings carried no provenance, so the System Contribution dimension
+of an Employee's growth could never credit an Employee who discovered a problem in the system. The Product
+Owner directed a fix before the PR instead of a residual.
+
+**Decision.** No parallel mechanism: the existing C3 observation → C6 learning-signal classification gains the
+fourth learning output the kernel already named, `SYSTEMIC_PROBLEM`. Classifying a work-derived observation that
+way records a systemic candidate (origin `REPORTED_OBSERVATION`) only on independent evidence — a VALIDATED
+attribution of that work whose PRIMARY cause is the system; an Employee-judgement cause is refused
+(`CAUSE_IS_THE_EMPLOYEE`) and the classification rolls back. The finding keeps `source_signal_id` and names
+`contributor_employee_id` only when the observation is the Employee's own REFLECTION, and then exactly its
+author; system-detected findings (`REPEATED_ATTRIBUTION`, `RETRAINING_EXHAUSTED`) and evaluator / gate /
+reviewer-derived observations credit nobody. Provenance is fixed at creation (a later report of the same
+problem credits nobody new) and guarded by CHECKs and triggers. The credit enters the profile's
+`SYSTEM_CONTRIBUTION` only once the Founder has VALIDATED (or ADDRESSED) the finding; it grants no authority
+(the contributor cannot decide the finding; no role, grant, budget, approval, seat, hold or certification
+changes). A `SYSTEMIC_PROBLEM` observation is never validated as a lesson about the Employee. Migration 0010 is
+amended and re-pinned rather than followed by an 0011 because it has never been released (it exists only on
+the unmerged C6 branch). Proven by kernel and storage proofs and the `c6-systemic-credit-misattributed` and
+`c6-systemic-credit-before-validation` mutations.

@@ -17,6 +17,7 @@ import { QandeelError, assertCode, assertId, canonicalJson, isTimestamp, newId, 
 import {
   EVIDENCE_CLASSES,
   EXTERNAL_OUTCOMES_AVAILABLE,
+  LEARNING_KINDS,
   assertCauses,
   assertEvalDefinition,
   assertCaseStep,
@@ -34,12 +35,15 @@ import {
   patternExpansionAllowed,
   proposeAttribution,
   reportPeriod,
+  reportedSystemicCandidate,
   retrainingMaterial,
   reviewerMetaEvaluation,
   summarizeCauses,
+  systemicContributor,
   type AttributedCause,
   type CalibrationResult,
   type CaseStage,
+  type CauseCategory,
   type CompanyReport,
   type CostPerQualifiedOutcome,
   type DirectCause,
@@ -157,12 +161,18 @@ export interface InterventionRecord {
   readonly assessedAt: string | null;
 }
 
+export type SystemicOrigin = 'REPEATED_ATTRIBUTION' | 'RETRAINING_EXHAUSTED' | 'REPORTED_OBSERVATION';
+
 export interface SystemicFindingRecord {
   readonly id: Id;
   readonly targetKind: SystemicTarget;
   readonly targetRef: string;
   readonly cause: DirectCause;
-  readonly origin: 'REPEATED_ATTRIBUTION' | 'RETRAINING_EXHAUSTED';
+  readonly origin: SystemicOrigin;
+  /** The SYSTEMIC_PROBLEM learning signal a reported finding came from (null when the system detected it). */
+  readonly sourceSignalId: Id | null;
+  /** The Employee credited with the finding: only the author of a reflected observation, otherwise null. */
+  readonly contributorEmployeeId: Id | null;
   readonly occurrences: number;
   readonly distinctEmployees: number;
   readonly evidenceRefs: readonly string[];
@@ -221,7 +231,7 @@ const mapEvaluation = (r: Row): EvaluationRecord => ({
 const mapAttribution = (r: Row): AttributionRecord => ({ id: s(r.id) as Id, workItemId: s(r.work_item_id) as Id, employeeId: os(r.employee_id) as Id | null, comparableKey: s(r.comparable_key), overall: s(r.overall), causes: j(r.causes_json), employeeAccountable: Number(r.employee_accountable) === 1, confidence: s(r.confidence), source: s(r.source) as AttributionRecord['source'], state: s(r.state) as AttributionRecord['state'], decidedByRef: os(r.decided_by_ref), evidenceRefs: j(r.evidence_refs_json), createdAt: s(r.created_at) });
 const mapSignal = (r: Row): LearningSignalRecord => ({ id: s(r.id) as Id, observationId: s(r.observation_id) as Id, kind: s(r.kind) as LearningKind, source: s(r.source) as LearningSource, workItemId: s(r.work_item_id) as Id, attributionId: os(r.attribution_id) as Id | null, evaluationId: os(r.evaluation_id) as Id | null, codes: j(r.codes_json), createdAt: s(r.created_at) });
 const mapIntervention = (r: Row): InterventionRecord => ({ id: s(r.id) as Id, lessonId: s(r.lesson_id) as Id, employeeId: s(r.employee_id) as Id, kind: s(r.kind) as InterventionRecord['kind'], cycleNo: Number(r.cycle_no), targetCause: s(r.target_cause) as DirectCause, comparableKey: s(r.comparable_key), remediationId: os(r.remediation_id) as Id | null, state: s(r.state) as InterventionRecord['state'], effect: s(r.effect) as LearningEffect, effectBasis: os(r.effect_basis), evidenceRefs: j(r.evidence_refs_json), trainingCompletedAt: os(r.training_completed_at), assessedAt: os(r.assessed_at) });
-const mapFinding = (r: Row): SystemicFindingRecord => ({ id: s(r.id) as Id, targetKind: s(r.target_kind) as SystemicTarget, targetRef: s(r.target_ref), cause: s(r.cause) as DirectCause, origin: s(r.origin) as SystemicFindingRecord['origin'], occurrences: Number(r.occurrences), distinctEmployees: Number(r.distinct_employees), evidenceRefs: j(r.evidence_refs_json), state: s(r.state) as SystemicFindingRecord['state'], recommendationCode: s(r.recommendation_code), oversightFindingId: os(r.oversight_finding_id) as Id | null, decidedByRef: os(r.decided_by_ref) });
+const mapFinding = (r: Row): SystemicFindingRecord => ({ id: s(r.id) as Id, targetKind: s(r.target_kind) as SystemicTarget, targetRef: s(r.target_ref), cause: s(r.cause) as DirectCause, origin: s(r.origin) as SystemicOrigin, sourceSignalId: os(r.source_signal_id) as Id | null, contributorEmployeeId: os(r.contributor_employee_id) as Id | null, occurrences: Number(r.occurrences), distinctEmployees: Number(r.distinct_employees), evidenceRefs: j(r.evidence_refs_json), state: s(r.state) as SystemicFindingRecord['state'], recommendationCode: s(r.recommendation_code), oversightFindingId: os(r.oversight_finding_id) as Id | null, decidedByRef: os(r.decided_by_ref) });
 const mapCase = (r: Row): FailureCaseRecord => ({ id: s(r.id) as Id, workItemId: s(r.work_item_id) as Id, attributionId: os(r.attribution_id) as Id | null, comparableKey: s(r.comparable_key), stage: s(r.stage) as CaseStage, hidden: Number(r.hidden) === 1, academyScenarioId: os(r.academy_scenario_id) as Id | null, calibrationRunId: os(r.calibration_run_id) as Id | null });
 const mapReport = (r: Row): ReportRecord => ({ id: s(r.id) as Id, cadence: s(r.cadence) as ReportCadence, periodFrom: s(r.period_from), periodTo: s(r.period_to), claims: j(r.claims_json), claimsSha256: s(r.claims_sha256), createdAt: s(r.created_at) });
 
@@ -312,7 +322,11 @@ const TARGET_RECOMMENDATION: Record<string, string> = {
   EXTERNAL_DEPENDENCY: 'REVIEW_EXTERNAL_DEPENDENCY',
 };
 
-function upsertSystemic(ctx: StoreContext, c: SystemicCandidate, origin: 'REPEATED_ATTRIBUTION' | 'RETRAINING_EXHAUSTED', actorRef: string): { id: Id; changed: boolean } {
+/**
+ * Records or grows a systemic candidate. Provenance is fixed at creation: a finding that already exists keeps
+ * its origin and contributor (the first discoverer), and a later report of the same problem credits nobody new.
+ */
+function upsertSystemic(ctx: StoreContext, c: SystemicCandidate, origin: SystemicOrigin, actorRef: string, provenance: { sourceSignalId: Id; contributorEmployeeId: Id | null } | null = null): { id: Id; changed: boolean } {
   const key = `${c.targetKind}|${c.targetRef}|${c.cause}`.slice(0, 200);
   const at = ts(ctx);
   const existing = ctx.db.get('SELECT * FROM systemic_findings WHERE dedup_key = ?', key);
@@ -325,12 +339,12 @@ function upsertSystemic(ctx: StoreContext, c: SystemicCandidate, origin: 'REPEAT
   }
   const id = newId();
   ctx.db.run(
-    `INSERT INTO systemic_findings (id, dedup_key, target_kind, target_ref, cause, origin, occurrences, distinct_employees, evidence_refs_json, state, recommendation_code, oversight_finding_id, decided_by_ref, version, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'CANDIDATE', ?, NULL, NULL, 1, ?, ?)`,
-    id, key, c.targetKind, c.targetRef, c.cause, origin, c.occurrences, c.distinctEmployees, JSON.stringify(c.evidenceRefs.slice(0, 100)), TARGET_RECOMMENDATION[c.targetKind] ?? 'INVESTIGATE', at, at,
+    `INSERT INTO systemic_findings (id, dedup_key, target_kind, target_ref, cause, origin, source_signal_id, contributor_employee_id, occurrences, distinct_employees, evidence_refs_json, state, recommendation_code, oversight_finding_id, decided_by_ref, version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CANDIDATE', ?, NULL, NULL, 1, ?, ?)`,
+    id, key, c.targetKind, c.targetRef, c.cause, origin, provenance?.sourceSignalId ?? null, provenance?.contributorEmployeeId ?? null, c.occurrences, c.distinctEmployees, JSON.stringify(c.evidenceRefs.slice(0, 100)), TARGET_RECOMMENDATION[c.targetKind] ?? 'INVESTIGATE', at, at,
   );
   ctx.db.run('INSERT INTO systemic_finding_history (finding_id, version, from_state, to_state, reason_code, actor_ref, occurred_at) VALUES (?, 1, NULL, ?, ?, ?, ?)', id, 'CANDIDATE', origin, actorRef, at);
-  appendAudit(ctx, 'systemic.candidate', 'systemic_finding', id, { actorRef }, 'OK', origin, { targetKind: c.targetKind, cause: c.cause, occurrences: c.occurrences });
+  appendAudit(ctx, 'systemic.candidate', 'systemic_finding', id, { actorRef }, 'OK', origin, { targetKind: c.targetKind, cause: c.cause, occurrences: c.occurrences, sourceSignalId: provenance?.sourceSignalId ?? null, contributorEmployeeId: provenance?.contributorEmployeeId ?? null });
   return { id, changed: true };
 }
 
@@ -424,7 +438,8 @@ function txProfile(ctx: StoreContext, employeeId: Id, at: string): PerformancePr
     evaluations: liveEvaluations(ctx, { employeeId }),
     attributions: attributionFacts(ctx, employeeId),
     learningEffects: ctx.db.all<{ id: string; effect: string }>(`SELECT id, effect FROM learning_interventions WHERE employee_id = ? AND kind = 'TARGETED_RETRAINING'`, employeeId).map((r) => ({ interventionId: r.id, effect: r.effect as LearningEffect })),
-    contributions: { validatedPatterns: patterns, verifiedPatternReuses: reuses, validatedSystemicFindings: [] },
+    // Credit for a systemic finding: only the Employee it names as contributor, and only once the Founder validated it.
+    contributions: { validatedPatterns: patterns, verifiedPatternReuses: reuses, validatedSystemicFindings: ctx.db.all<{ id: string }>(`SELECT id FROM systemic_findings WHERE contributor_employee_id = ? AND state IN ('VALIDATED', 'ADDRESSED') ORDER BY created_at, id`, employeeId).map((r) => r.id) },
   });
 }
 
@@ -684,14 +699,24 @@ export class ImprovementStore {
    */
   classifyObservation(observationId: string, kind: LearningKind, actorRef = SYSTEM_EVALUATOR_REF): LearningSignalRecord {
     return this.#system('classify observation', (ctx) => {
-      const o = ctx.db.get<{ id: string; kind: string; event_ref: string; candidate_id: string | null }>('SELECT id, kind, event_ref, candidate_id FROM lessons WHERE id = ?', assertId(observationId, 'observationId'));
+      const o = ctx.db.get<{ id: string; kind: string; event_ref: string; candidate_id: string | null; employee_id: string }>('SELECT id, kind, event_ref, candidate_id, employee_id FROM lessons WHERE id = ?', assertId(observationId, 'observationId'));
       if (!o || o.kind !== 'OBSERVATION') throw new QandeelError('NOT_FOUND', 'observation not found', { observationId: String(observationId).slice(0, 64) });
-      if (!['MISTAKE_LESSON', 'SUCCESSFUL_PATTERN', 'NEAR_MISS_WARNING'].includes(kind)) throw new QandeelError('VALIDATION_FAILED', 'unknown learning kind', { field: 'kind' });
+      if (!(LEARNING_KINDS as readonly string[]).includes(kind)) throw new QandeelError('VALIDATION_FAILED', 'unknown learning kind', { field: 'kind' });
       const m = /^work_item:([0-9a-f-]{36})$/.exec(o.event_ref);
       if (!m) throw new QandeelError('LEARNING_GATE', 'only work-derived observations are classified', { reason: 'NOT_WORK_DERIVED' });
+      const workItemId = m[1] as Id;
       const source: LearningSource = o.candidate_id !== null ? 'REFLECTION' : 'ATTRIBUTION';
-      const id = signalOn(ctx, { observationId: o.id as Id, kind, source, workItemId: m[1] as Id, codes: [], actorRef: assertCode(actorRef.replace(/[^a-z0-9:._-]/gi, '').slice(0, 64) || 'system', 'actorRef') });
-      return mapSignal(present(ctx.db.get('SELECT * FROM learning_signals WHERE id = ?', id)));
+      const actor = assertCode(actorRef.replace(/[^a-z0-9:._-]/gi, '').slice(0, 64) || 'system', 'actorRef');
+      const signal = mapSignal(present(ctx.db.get('SELECT * FROM learning_signals WHERE id = ?', signalOn(ctx, { observationId: o.id as Id, kind, source, workItemId, codes: [], actorRef: actor }))));
+      // A systemic problem becomes a finding only on independent evidence (the gate throws and the whole
+      // classification rolls back); the reflection alone never makes one. Its provenance is the signal.
+      if (kind === 'SYSTEMIC_PROBLEM' && signal.kind === 'SYSTEMIC_PROBLEM') {
+        const v = ctx.db.get(`SELECT * FROM causal_attributions WHERE work_item_id = ? AND state = 'VALIDATED'`, workItemId);
+        const a = v ? mapAttribution(v) : null;
+        const candidate = reportedSystemicCandidate({ signalId: signal.id, observationId: o.id, attribution: a && { attributionId: a.id, workItemId, employeeId: a.employeeId, comparableKey: a.comparableKey, overall: a.overall as CauseCategory, causes: a.causes } });
+        upsertSystemic(ctx, candidate, 'REPORTED_OBSERVATION', actor, { sourceSignalId: signal.id, contributorEmployeeId: systemicContributor({ source: signal.source, observationEmployeeId: o.employee_id }) as Id | null });
+      }
+      return signal;
     });
   }
 

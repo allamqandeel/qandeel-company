@@ -8,10 +8,11 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { isQandeelError, type Id } from '@qandeel-company/domain';
+import { isQandeelError, newId, type Id } from '@qandeel-company/domain';
 import { standardWorkOutcomeDefinition } from '@qandeel-company/mind';
 
 import { AttentionStore, ImprovementStore, MemoryStore, ReviewStore, type EmployeeRecord } from '../src/index.js';
+import { insertLesson } from '../src/mind-writes.js';
 import { settle } from '../src/runtime-authority.js';
 import { storeContext } from '../src/store.js';
 import { grantAll, hire, seed, type Seed } from './c2-helpers.js';
@@ -235,6 +236,10 @@ describe('C6 systemic findings, reports and Founder Attention', () => {
       const [finding] = m.systemicFindings({ state: 'CANDIDATE' });
       assert.equal(finding?.targetKind, 'WORKFLOW');
       assert.equal(finding?.distinctEmployees, 2);
+      // System-detected from reviewer-derived attributions: the subjects of the failures are not its authors.
+      assert.equal(finding?.origin, 'REPEATED_ATTRIBUTION');
+      assert.equal(finding?.sourceSignalId, null);
+      assert.equal(finding?.contributorEmployeeId, null);
       const sync = AttentionStore.for(h.store).sync();
       assert.ok(sync.opened >= 1);
       assert.ok(AttentionStore.for(h.store).list().some((i) => i.sourceRef === `systemic_finding:${finding?.id}`));
@@ -254,9 +259,92 @@ describe('C6 systemic findings, reports and Founder Attention', () => {
       assert.equal(AttentionStore.for(h.store).sync().resolved, 1);
       const monthly = m.generateReport('MONTHLY').report.claims;
       assert.ok(monthly.some((c) => c.code === 'CONSIDER_PROCESS_CHANGE' && c.kind === 'RECOMMENDATION'));
+      for (const e of [s.employee.id, other.id]) assert.ok(!contributionRefs(m, e).some((r) => r.startsWith('systemic_finding:')), 'a failure subject is never credited with the finding');
+    });
+  });
+
+  test('C6-PROOF: an Employee-reflected systemic problem is traceable to its author, credited only once the Founder validates it, and grants no authority', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const ctx = storeContext(h.store);
+      const { workItemId, observationId } = reviewedWork(h, s, s.employee, { failFirst: true, reflection: 'The figures tool returned last quarter’s data; the workflow never checks its freshness.' });
+      verify(s, m, workItemId, 'NOT_ACHIEVED');
+      m.evaluate(workItemId);
+      const proposed = m.attributions({ workItemId })[0];
+      // Reflection is a hypothesis: before an independent attribution nothing is recorded (the classification rolls back).
+      assert.throws(() => m.classifyObservation(observationId as Id, 'SYSTEMIC_PROBLEM'), reason('ATTRIBUTION_NOT_VALIDATED'));
+      assert.equal(m.signals({ workItemId }).length, 0);
+      assert.equal(m.systemicFindings().length, 0);
+      m.decideAttribution(s.founder, proposed?.id as Id, { decision: 'VALIDATE', reasonCode: 'founder.cause', causes: [{ category: 'TOOL', role: 'PRIMARY', confidence: 'HIGH', basis: 'TOOL_RETURNED_STALE_DATA' }] });
+      const authority = authorityFingerprint(ctx);
+
+      const signal = m.classifyObservation(observationId as Id, 'SYSTEMIC_PROBLEM');
+      assert.equal(signal.source, 'REFLECTION');
+      const [finding] = m.systemicFindings({ state: 'CANDIDATE' });
+      assert.equal(finding?.origin, 'REPORTED_OBSERVATION');
+      assert.equal(finding?.targetKind, 'TOOL');
+      assert.equal(finding?.sourceSignalId, signal.id);
+      assert.equal(finding?.contributorEmployeeId, s.employee.id, 'traceable to the Employee who reflected it');
+      assert.ok(finding?.evidenceRefs.includes(`lesson:${observationId}`));
+      assert.ok(JSON.stringify(h.store.audit(finding?.id as Id)).includes(s.employee.id), 'the audit trail names the contributor by id');
+      // A systemic problem is a finding about the company, never a lesson about the Employee.
+      const lesson = MemoryStore.for(h.store).nominateLesson(s.founder, observationId as Id, 'founder.nominated');
+      assert.throws(() => MemoryStore.for(h.store).validateLesson(s.founder, lesson.id, { decision: 'VALIDATE', reasonCode: 'x' }), reason('SYSTEMIC_PROBLEM_IS_A_FINDING'));
+
+      // Provenance is credit, never authority: the contributor cannot decide the finding, and credit waits for the Founder.
+      assert.throws(() => m.decideSystemicFinding(s.employee.ref, finding?.id as Id, { decision: 'VALIDATE', reasonCode: 'self.approved' }), (e: unknown) => isQandeelError(e));
+      assert.ok(!contributionRefs(m, s.employee.id).includes(`systemic_finding:${finding?.id}`));
+      m.decideSystemicFinding(s.founder, finding?.id as Id, { decision: 'VALIDATE', reasonCode: 'founder.agreed' });
+      assert.ok(contributionRefs(m, s.employee.id).includes(`systemic_finding:${finding?.id}`));
+      assert.equal(authorityFingerprint(ctx), authority, 'no role, grant, budget, approval, seat, hold or certification changed');
+      // The provenance is fixed: nobody can re-credit the finding to someone else.
+      assert.throws(() => ctx.db.immediate('bypass', () => ctx.db.run('UPDATE systemic_findings SET contributor_employee_id = NULL, version = version + 1 WHERE id = ?', finding?.id)), code('STORAGE_INVARIANT'));
+    });
+  });
+
+  test('C6-PROOF: a system-recorded observation of the same problem credits nobody, and a false contributor is refused by the store', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const ctx = storeContext(h.store);
+      const { workItemId } = reviewedWork(h, s, s.employee, { failFirst: true });
+      verify(s, m, workItemId, 'NOT_ACHIEVED');
+      m.evaluate(workItemId);
+      m.decideAttribution(s.founder, m.attributions({ workItemId })[0]?.id as Id, { decision: 'VALIDATE', reasonCode: 'founder.cause', causes: [{ category: 'TOOL', role: 'PRIMARY', confidence: 'HIGH', basis: 'TOOL_RETURNED_STALE_DATA' }] });
+      // An observation the system recorded about the Employee's work (no candidate: not the Employee's reflection).
+      const observationId = ctx.db.immediate('system observation', () =>
+        insertLesson(ctx, { employeeId: s.employee.id, kind: 'OBSERVATION', observationId: null, eventRef: `work_item:${workItemId}`, topic: 'c6.systemic', claimKey: null, claimValue: null, content: 'Recorded by the evaluator.', dataClass: 'D1', marketRef: null, candidateId: null }),
+      );
+      const signal = m.classifyObservation(observationId, 'SYSTEMIC_PROBLEM');
+      assert.equal(signal.source, 'ATTRIBUTION');
+      const [finding] = m.systemicFindings();
+      assert.equal(finding?.origin, 'REPORTED_OBSERVATION');
+      assert.equal(finding?.sourceSignalId, signal.id, 'traceable to its source');
+      assert.equal(finding?.contributorEmployeeId, null, 'the subject of a system record is not its author');
+      m.decideSystemicFinding(s.founder, finding?.id as Id, { decision: 'VALIDATE', reasonCode: 'founder.agreed' });
+      assert.ok(!contributionRefs(m, s.employee.id).some((r) => r.startsWith('systemic_finding:')));
+      // The store refuses a finding that names a contributor who did not author a reflected source, or one with no source.
+      const insert = (origin: string, signalId: string | null, contributor: string | null): unknown =>
+        ctx.db.immediate('bypass', () =>
+          ctx.db.run(
+            `INSERT INTO systemic_findings (id, dedup_key, target_kind, target_ref, cause, origin, source_signal_id, contributor_employee_id, occurrences, distinct_employees, evidence_refs_json, state, recommendation_code, version, created_at, updated_at) VALUES (?, ?, 'TOOL', 'x', 'TOOL', ?, ?, ?, 1, 1, '["x"]', 'CANDIDATE', 'R', 1, ?, ?)`,
+            newId(), `k-${newId()}`, origin, signalId, contributor, h.store.now(), h.store.now(),
+          ),
+        );
+      assert.throws(() => insert('REPORTED_OBSERVATION', signal.id, s.employee.id), code('STORAGE_INVARIANT'));
+      assert.throws(() => insert('REPEATED_ATTRIBUTION', null, s.employee.id), code('STORAGE_INVARIANT'));
     });
   });
 });
+
+const contributionRefs = (m: ImprovementStore, employeeId: Id): readonly string[] => m.profile(employeeId).dimensions.find((d) => d.dimension === 'SYSTEM_CONTRIBUTION')?.evidenceRefs ?? [];
+
+function authorityFingerprint(ctx: ReturnType<typeof storeContext>): string {
+  return ['employees', 'permission_grants', 'budgets', 'approvals', 'org_positions', 'position_assignments', 'quality_holds', 'certifications', 'passport_entries']
+    .map((t) => `${t}:${JSON.stringify(ctx.db.all(`SELECT * FROM ${t} ORDER BY rowid`))}`)
+    .join('|');
+}
 
 describe('C6 evidence: the cause is read from the run’s own recorded failure', () => {
   test('C6-PROOF: a run that failed because its tool did not execute is TOOL evidence; a billed failed call alone is cost, never a provider cause', () => {
