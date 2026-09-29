@@ -396,3 +396,97 @@ section contradicts an earlier section about the interface language, this sectio
 - The SVG fallback keeps the named rims, tethers and beacons in 2.5D without the atmosphere, by design.
 - `seedScale` (the scale frame) opens a second store connection beside the running runtime, as an administrative
   tool would; it is proof tooling only.
+
+
+## 21. Presentation reset — Tree of Light (QANDEEL_COMPANY_C5_TREE_OF_LIGHT_PRESENTATION_RESET_v1)
+
+The Founder rejected the orbital / galaxy presentation as the primary company view and selected the Tree of Light
+direction: **Founder at the top → CEO beneath → five Department columns → goals along the bottom → gold execution
+lines from work to goals.** This section records the reset on the same branch and Draft PR. Where it contradicts
+sections 2–20 about the main view, this section wins. Sections 13–20 remain the record of the runtime, storage,
+authentication, Goal, attention, communication and governed-action work, which this reset preserves.
+
+### 21.1 What changed visually
+
+- **Home / Company Live** is now a structured executive surface, DOM + SVG: the Founder emblem at the top with
+  "what needs you" beside it (compact chips; the full attention rail opens from them), the CEO card beneath on
+  one gold trunk, five Department columns branching from the CEO (name, colour accent, head-count, the Director
+  first, then Managers / Leads, then Specialists, vacant seats dashed in place, acting cover marked), and the
+  **Strategic direction** band pinned to the bottom of the view with the goals as mission objects (company goals
+  primary, Department goals secondary, proposed goals outlined "awaiting your decision", progress from linked
+  work, the Departments serving each goal as chips). Gold execution lines run from each column that serves a goal
+  to that goal (one bundled line per column and goal, its weight by the number of people serving); when work runs
+  now, a light travels along the line. ◆ on a card marks a person whose work serves a goal.
+- **No WebGL, no vendor library.** `three` is removed from the UI package, the lockfile, the static server and the
+  verifier allow-list; the server serves the UI's own files only. The renderer contract, WebGL scene, SVG 2.5D
+  fallback and label layer are gone: one view serves every capability, so there is nothing to fall back from.
+- **Lenses adapted, behaviour kept.** Employee Focus lights the person, their reporting chain up to the Founder
+  (cards gain a gold edge), their live relations (drawn only on focus surfaces) and the goals their work serves;
+  everything else quiets. Goal Focus keeps the goal, its derived goal, its serving people and their leadership
+  and brightens its execution lines; unrelated columns and goals quiet. Department, CEO, Blocked, Attention and
+  Historical Focus map the same way. Focus scrolls the surface to the selected card (a cut in reduced motion).
+- **Theme.** A light executive surface (warm paper neutrals, ink type, one gold, five Department accents validated
+  with the dataviz palette checker on the light surface: L 0.43–0.77, ≥ 3:1, adjacent CVD ΔE ≥ 7.8 with the
+  column name as the secondary encoding). Ambient life is one very slow drift of the surface light; semantic motion
+  is the focus scroll, the lit paths, a relation pulse, an arriving attention chip and the flow along a running
+  execution line. Reduced motion keeps every mark and removes every tween and the drift.
+- **Conversation** keeps the ledger of section 20 on the light theme; the draft and its purpose now survive the
+  live refreshes of a working company.
+- **Scale.** Columns grow downward and the view scrolls under the pinned goal band; the scale frame shows a
+  really seeded 77-person company with the same five columns.
+
+### 21.2 What stayed intact
+
+Authentication and sessions, Goal durability and semantics, Founder Attention behaviour, the CEO proactive brief,
+direct Founder ↔ Employee communication, governed action preview / confirmation, timeline / history, the C5 truth
+model, migration 0009, the runtime, governance and storage packages (no file under `packages/storage`,
+`packages/runtime` or `packages/governance` changed), the command grammar, the acceptance harness and the CI
+gates (the smoke step is bounded to eight minutes; nothing was removed or made optional).
+
+### 21.3 Files changed (presentation reset)
+
+`packages/command-center-ui/src/model/{types,layout,lenses}.ts` (the column layout model, lenses over it),
+`src/app/view.ts` (new: the Tree of Light view), `src/app/main.ts`, `src/app/panels.ts` (draft survives refresh),
+`src/index.ts`, `public/{index.html,styles.css}`, `package.json` (no dependency), `test/layout.test.ts` (rewritten
+proofs); removed `src/app/{scene,svg-renderer,labels,renderer}.ts`; `packages/command-center/src/{static,index}.ts`
+(no vendor route), `test/surface.test.ts`; `package-lock.json`; `scripts/c5-visual-proof.mjs`,
+`scripts/c5/before-after.mjs`, `scripts/c5-mutation-check.mjs` (`c5-rank-order-flattened`,
+`c5-department-column-collapsed` replace the orbit gates), `scripts/verify-bootstrap.mjs` (proof marker
+`tree-of-light-layout`, pinned mutation ids, no package dependency), `.github/workflows/ci.yml` (smoke step
+name and timeout), `README.md`, this report, `DECISION_LOG.md` (D-C5-14).
+
+### 21.4 Focused validation (GitHub CI on the exact head is the full gate)
+
+- `command-center-ui` build + typecheck + tests 8/8 (leadership spine; columns in canonical order led by their
+  Director; rank order never by code; seats own their row; goals anchored and served through durable links with
+  progress from work states; edges only from live relations; scale; lenses).
+- `command-center` build + tests 9/9. `eslint --max-warnings=0` clean. `verify-bootstrap` 63/63 with self-test.
+- `c5:mutation` 16/16 caught (including the two new layout gates). `c5:acceptance` PASS 9/9.
+- `c5:visual-proof` PASS: smoke 6/6 (the surface renders — spine, five columns, goals, execution lines; English
+  chrome with content as written; structure named; no external asset; selection quiets visibly and returns; the
+  surface is never rebuilt without a change; reduced-motion parity of every mark), ten frames, a walkthrough MP4,
+  the before/after board against the orbital proof, the manifest.
+- Why the previous CI runs failed, and the fix: the Windows smoke ran the WebGL scene under software rendering and
+  hit the job limit (no GPU is needed now, and the step is bounded); the `c5-rank-radius-inverted` mutation
+  searched a radius the correction had changed (the orbit gates are replaced by the column gates).
+- A headless finding worth recording: a background headless tab advances its animation clock only when it paints;
+  the proof's settle now drives frames, so CSS transitions are seen as a visible tab would see them.
+
+### 21.5 G1 — Skills, used or not, and their effect on the reset
+
+| Skill | Used | Effect |
+|---|---|---|
+| `impeccable` | used | Operate mode; the audit of the orbital frames; the craft floor (no eyebrow labels, no nested cards, no `border-left` accents, themed browser surfaces, one authored motion); three bounded inspection rounds on real frames |
+| `frontend-design` | used | The plan reviewed against the generic tells; the surface's own vocabulary (Strategic direction, Needs you, Talk to Hany); copy that names its action |
+| `dataviz` | used | The light-surface palette validated with `validate_palette.js`; Department never colour alone; progress drawn to scale |
+| `emil-design-eng` / `animate` | used | Transition ingredients (160–220 ms, strong ease-out), press feedback, transitions over keyframes, `transform` / `opacity` only, reduced motion gentler not zero; the flow along a running line as state indication |
+| `review-animations` | used as the checklist | Every transition property named, no `ease-in`, no `scale(0)`, keyboard palette does not animate |
+| `sibawayh:designing-arabic-frontends` | used | Arabic content inside an LTR application: per-block `dir` and `lang`, Arabic line-height, `unicode-bidi: plaintext`, no letter-spacing on anything that can hold Arabic, `dir="auto"` inputs |
+| `sibawayh:writing-eloquent-arabic` | not used | The chrome is English; the Arabic content in the seed is unchanged |
+| `ui-ux-pro-max` | partly | Its search tool needs Python (absent on the Founder host); the priority table was applied by hand (contrast, targets, visible labels, context-aware durations) |
+| `artifact-diagramming`, `github-actions` | not needed | No new diagram; the CI change is a step name and a timeout |
+
+### 21.6 Residuals (MINOR)
+
+- At very narrow widths the columns wrap to fewer per row (three, two, one); the goal band stays pinned.
+- The walkthrough is captured at a few frames per second (about 6 s at 4 fps).

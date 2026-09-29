@@ -1,20 +1,21 @@
 #!/usr/bin/env node
-// C5 visual proof package — from the REAL implemented UI, not a mockup (C5 brief §31).
+// C5 visual proof package — from the REAL implemented UI, not a mockup (C5 brief §31; D-C5-14 Tree of Light).
 //
 //   npm run c5:visual-proof -- --workspace <disposable dir> --out <dir> [--keep] [--spike] [--before <dir>]
 //
 // Seeds a representative organization (deterministic fake provider, no network, no credential), starts the
 // Founder surface (runtime + loopback listener) in this process, drives a headless Edge / Chrome through
 // the Chrome DevTools Protocol with zero dependencies, and produces:
-//   - proof/01..11-*.png      Company Live, Employee Focus, Goal Focus, Conversation (English UI, Arabic
-//                             and English messages), Founder Attention / CEO brief, governed action preview
-//                             and confirmation, Historical Focus, reduced motion, the SVG fallback and a
-//                             scale frame over a really seeded larger company;
+//   - proof/01..10-*.png      Company Live, Employee Focus, Goal Focus, Conversation (English UI, Arabic and
+//                             English messages), Founder Attention / CEO brief, governed action preview and
+//                             confirmation, Historical Focus, reduced motion, and a scale frame over a really
+//                             seeded larger company;
 //   - proof/walkthrough.mp4   a short walkthrough (H.264, encoded offline in the browser with WebCodecs);
 //   - proof/before-after.png  a contact sheet against a previous proof folder (with --before);
 //   - proof/manifest.json     what was captured, from which head, with content-free counts.
-// With --spike it stops after the technical spike checks (scene boots, English UI with content as written,
-// orbits and sectors named, selection, focus / return, reduced motion, no external asset) and prints them.
+// With --spike it stops after the technical smoke checks (the company surface renders — spine, five columns,
+// goals, execution lines; English UI with content as written; selection / focus / return; reduced-motion
+// parity; no external asset) and prints them. The surface is DOM + SVG: no GPU or WebGL is needed anywhere.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -97,7 +98,19 @@ const stopCapture = () => {
   capturing = false;
   clearTimeout(captureTimer);
 };
-const settle = (ms = 900) => sleep(ms);
+// Settling drives frames: a headless tab advances its animation clock only when it paints, and the surface has
+// no render loop of its own (the DOM is still between changes). Requesting animation frames for the settle time
+// gives transitions the frames a visible tab would get for free (no screenshots: painting under software
+// rendering is the slow part; a frame request paints once per frame, nothing more).
+const settle = async (ms = 700) => {
+  if (!page) return sleep(ms);
+  await page.evaluate(`new Promise((done) => { const end = performance.now() + ${Math.round(ms)}; const tick = () => (performance.now() < end ? requestAnimationFrame(tick) : done()); requestAnimationFrame(tick); setTimeout(done, ${Math.round(ms) + 4000}); })`);
+};
+// Waits, frame by frame, until a painted condition holds (a transition has reached its end, for example).
+const untilPainted = async (expression, timeoutMs = 6000) => {
+  const ok = await page.evaluate(`new Promise((done) => { const end = performance.now() + ${timeoutMs}; const tick = () => { let v = false; try { v = !!(${expression}); } catch {} if (v) return done(true); if (performance.now() > end) return done(false); requestAnimationFrame(tick); }; requestAnimationFrame(tick); setTimeout(() => done(false), ${timeoutMs + 3000}); })`);
+  if (!ok) throw new Error(`not painted in time: ${expression}`);
+};
 const click = async (selector) => {
   const ok = await page.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.scrollIntoView?.({ block: 'center' }); el.click(); return true; })()`);
   if (!ok) throw new Error(`no element ${selector}`);
@@ -108,12 +121,13 @@ const type = async (selector, text) => {
 const submit = async (selector) => page.evaluate(`(() => { const f = document.querySelector(${JSON.stringify(selector)}); f.requestSubmit(); return true; })()`);
 const escape = async () => {
   await page.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
-  await settle(500);
+  await settle(400);
 };
 const waitReady = async () => {
-  await page.waitUntil(`document.getElementById('app') && !document.getElementById('app').hasAttribute('data-booting')`, 30_000);
-  await settle(1500);
+  await page.waitUntil(`document.getElementById('app') && !document.getElementById('app').hasAttribute('data-booting') && document.querySelectorAll('.column').length > 0`, 30_000);
+  await settle(900);
 };
+const count = (selector) => page.evaluate(`document.querySelectorAll(${JSON.stringify(selector)}).length`);
 
 try {
   await surface.start();
@@ -122,6 +136,12 @@ try {
   browser = await launchBrowser({ width: W, height: H });
   page = await openPage(browser.port);
   await page.send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 1, mobile: false });
+  // A headless tab only advances its animation clock when it is the fronted, focused target: the surface's CSS
+  // transitions (quieting, sheets) are real motion and must be seen, not skipped.
+  await page.send('Page.bringToFront').catch(() => undefined);
+  await page.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => undefined);
+  await page.send('Animation.enable').catch(() => undefined);
+  await page.send('Animation.setPlaybackRate', { playbackRate: 1 }).catch(() => undefined);
   const requests = [];
   const consoleLines = [];
   page.on('Network.requestWillBeSent', (p) => requests.push(p.request.url));
@@ -135,37 +155,43 @@ try {
   await waitReady();
   const ceo = world.employees['company.ceo'].id;
 
-  // --- technical spike checks (C5 brief §3) ---
-  await step('spike-scene-boots', async () => {
+  // --- technical smoke checks (C5 brief §3, on the Tree of Light surface) ---
+  await step('spike-company-surface-renders', async () => {
     const renderer = await page.evaluate(`document.documentElement.dataset.renderer`);
-    const canvas = await page.evaluate(`!!document.querySelector('#universe canvas, #universe svg')`);
-    if (!canvas) throw new Error('no scene element');
+    const founder = await count('.founder');
+    const ceoCards = await count('.card-ceo');
+    const columns = await count('.column');
+    const goals = await count('.goal');
+    const exec = await count('.line-exec');
+    const trunk = await count('.line-trunk');
+    if (founder !== 1 || ceoCards !== 1 || columns !== 5 || goals < 3 || exec < 2 || trunk !== 1) throw new Error(`surface: founder ${founder}, ceo ${ceoCards}, columns ${columns}, goals ${goals}, execution lines ${exec}, trunk ${trunk}`);
     results.spike.renderer = renderer;
-    return { renderer };
+    results.spike.surface = { columns, goals, executionLines: exec };
+    return { renderer, columns, goals, executionLines: exec };
   });
   await step('spike-english-ui-content-as-written', async () => {
     // The application is English and left-to-right; company content keeps its own script and direction.
     const lang = await page.evaluate(`document.documentElement.lang + ' ' + document.documentElement.dir`);
-    const labels = await page.evaluate(`[...document.querySelectorAll('.label:not([hidden]) .name')].map((n) => n.textContent)`);
-    const latin = labels.filter((l) => /[A-Za-z]/.test(l)).length;
-    const chromeArabic = await page.evaluate(`/[\\u0600-\\u06FF]/.test(document.querySelector('.topbar').textContent + document.querySelector('.bottombar').textContent)`);
+    const names = await page.evaluate(`[...document.querySelectorAll('.card-name')].map((n) => n.textContent)`);
+    const latin = names.filter((l) => /[A-Za-z]/.test(l)).length;
+    const chromeArabic = await page.evaluate(`/[\\u0600-\\u06FF]/.test(document.querySelector('.topbar').textContent + document.querySelector('.bottombar').textContent + [...document.querySelectorAll('.column-name, .goals-title, .dock-title')].map((e) => e.textContent).join(' '))`);
     const font = await page.evaluate(`document.fonts.check('14px "IBM Plex Sans Arabic"')`);
     if (lang !== 'en ltr') throw new Error(`document is ${lang}`);
-    if (latin < 3) throw new Error(`only ${latin} Latin labels visible`);
+    if (latin < 10) throw new Error(`only ${latin} Latin names visible`);
     if (chromeArabic) throw new Error('application chrome carries Arabic');
     if (!font) throw new Error('the bundled font did not load');
     results.spike.labels = { latin, font, lang };
     return { latin, font, lang };
   });
-  await step('spike-orbits-and-sectors-named', async () => {
-    const rings = await page.evaluate(`[...document.querySelectorAll('.tag-ring:not([hidden])')].map((t) => t.textContent)`);
-    const sectors = await page.evaluate(`[...document.querySelectorAll('.tag-sector:not([hidden]) .tag-name')].map((t) => t.textContent)`);
-    const ranks = await page.evaluate(`[...new Set([...document.querySelectorAll('.label')].map((l) => l.getAttribute('aria-label')))].filter((a) => /Chief Executive|Director|Specialist/.test(a)).length`);
-    if (rings.length < 4) throw new Error(`ring tags: ${rings.join(', ')}`);
-    if (sectors.length < 5) throw new Error(`sector names: ${sectors.join(', ')}`);
-    if (ranks < 3) throw new Error('fewer than three orbit levels labelled');
-    results.spike.orbits = { rings, sectors, labelledLevels: ranks };
-    return { rings, sectors, labelledLevels: ranks };
+  await step('spike-structure-named', async () => {
+    const columns = await page.evaluate(`[...document.querySelectorAll('.column-name')].map((t) => t.textContent)`);
+    const directorsFirst = await page.evaluate(`[...document.querySelectorAll('.column')].every((c) => c.querySelector('.director .card')?.dataset.rank === 'DIRECTOR' || c.querySelector('.director .card')?.dataset.kind === 'seat')`);
+    const ranks = await page.evaluate(`[...new Set([...document.querySelectorAll('.card')].map((c) => c.dataset.rank))].filter(Boolean).length`);
+    if (columns.length !== 5) throw new Error(`column names: ${columns.join(', ')}`);
+    if (!directorsFirst) throw new Error('a column does not lead with its Director seat');
+    if (ranks < 3) throw new Error('fewer than three ranks on the surface');
+    results.spike.structure = { columns, ranks };
+    return { columns, ranks };
   });
   await step('spike-no-external-asset', async () => {
     const external = requests.filter((u) => !u.startsWith(surface.origin) && !u.startsWith('data:') && !u.startsWith('blob:'));
@@ -174,33 +200,42 @@ try {
     return { total: requests.length, external: 0 };
   });
   await step('spike-selection-focus-return', async () => {
-    await click(`.label[data-id="employee:${ceo}"]`);
+    await click(`.card[data-id="employee:${ceo}"]`);
     await page.waitUntil(`document.getElementById('focus') && !document.getElementById('focus').hidden && document.querySelector('#focus .sheet-title')`, 10_000);
     const title = await page.evaluate(`document.querySelector('#focus .sheet-title').textContent`);
     const lens = await page.evaluate(`document.documentElement.dataset.lens`);
+    const quiet = await count('.card.is-quiet');
+    // The quieting must be visible, not only a class; and a live refresh never rebuilds an unchanged surface.
+    const builds0 = await page.evaluate(`document.querySelector('.company').dataset.builds`);
+    await untilPainted(`Number(getComputedStyle(document.querySelector('.card.is-quiet')).opacity) < 0.6`);
+    const quietOpacity = await page.evaluate(`Number(getComputedStyle(document.querySelector('.card.is-quiet')).opacity)`);
+    await settle(800);
+    const builds1 = await page.evaluate(`document.querySelector('.company').dataset.builds`);
+    if (builds0 !== builds1) throw new Error(`the surface was rebuilt without a change (${builds0} → ${builds1})`);
     await escape();
-    await settle(300);
+    await settle(200);
     const back = await page.evaluate(`document.documentElement.dataset.lens`);
-    if (lens !== 'EMPLOYEE' || back !== 'LIVE') throw new Error(`lens ${lens} → ${back}`);
-    results.spike.selection = { title, lens, back };
-    return { title, lens, back };
+    const stillQuiet = await count('.card.is-quiet');
+    if (lens !== 'EMPLOYEE' || back !== 'LIVE' || quiet < 5 || stillQuiet !== 0) throw new Error(`lens ${lens} → ${back}; quiet ${quiet} → ${stillQuiet}`);
+    results.spike.selection = { title, lens, back, quieted: quiet, quietOpacity, builds: Number(builds1) };
+    return { title, lens, back, quieted: quiet, quietOpacity, builds: Number(builds1) };
   });
   await step('spike-reduced-motion-parity', async () => {
-    // Parity of meaning, not of pixels: every pinned label (Founder, CEO, Directors, goals) and every ring and
-    // sector name that Company Live shows in full motion is still shown in reduced motion, with no ambient drift.
-    const pinnedExpr = `[...document.querySelectorAll('.label:not([hidden]), .tag:not([hidden])')].filter((l) => l.classList.contains('tag') || ['founder','goal'].includes(l.dataset.kind) || /Chief Executive|Director/.test(l.getAttribute('aria-label') || '')).map((l) => l.dataset.id || l.textContent).sort()`;
-    await settle(1600);
-    const before = await page.evaluate(pinnedExpr);
+    // Parity of meaning, not of pixels: every card, goal, column name and line that Company Live shows in full
+    // motion is still shown in reduced motion; only the tweens and the ambient drift go.
+    const marksExpr = `[...document.querySelectorAll('.card, .goal, .column-name, .line-exec, .line-trunk, .chip-attention')].map((e) => e.dataset.id || e.textContent || e.getAttribute('class')).sort()`;
+    const before = await page.evaluate(marksExpr);
     await click('#motion-toggle');
-    await settle(700);
+    await settle(500);
     const mode = await page.evaluate(`document.documentElement.dataset.motion`);
-    const after = await page.evaluate(pinnedExpr);
+    const after = await page.evaluate(marksExpr);
+    const drift = await page.evaluate(`getComputedStyle(document.querySelector('.stage'), '::before').animationName`);
     const missing = before.filter((x) => !after.includes(x));
-    if (mode !== 'reduced' || after.length < 3 || missing.length > 0) throw new Error(`reduced motion mode ${mode}; missing ${missing.length} of ${before.length} pinned labels`);
+    if (mode !== 'reduced' || after.length < 20 || missing.length > 0 || drift !== 'none') throw new Error(`reduced motion mode ${mode}; missing ${missing.length} of ${before.length} marks; drift ${drift}`);
     await click('#motion-toggle');
     await settle(200);
-    results.spike.reducedMotion = { mode, pinnedLabels: after.length };
-    return { mode, pinnedLabels: after.length };
+    results.spike.reducedMotion = { mode, marks: after.length };
+    return { mode, marks: after.length };
   });
   if (values.spike) {
     console.log(JSON.stringify({ verdict: 'C5 TECHNICAL SPIKE — PASS', spike: results.spike }));
@@ -208,41 +243,62 @@ try {
     // --- Scenario frames and the walkthrough ---
     startCapture();
     await step('A-company-live', async () => {
-      await settle(2500);
+      await settle(1500);
       await shot('01-company-live');
       const signals = await page.evaluate(`document.getElementById('health').textContent`);
       const railOpen = await page.evaluate(`!document.getElementById('rail').hidden`);
+      const chips = await count('.chip-attention');
       if (railOpen) throw new Error('the attention rail is open before anything was asked');
-      return { signals };
+      if (chips < 1) throw new Error('nothing beside the Founder although decisions are pending');
+      return { signals, attentionChips: chips };
     });
     await step('B-employee-focus', async () => {
       const seo = world.employees['growth.seo-1'].id;
-      await click(`.label[data-id="employee:${seo}"]`);
+      await click(`.card[data-id="employee:${seo}"]`);
       await page.waitUntil(`!document.getElementById('focus').hidden && document.querySelector('#focus .chain li')`, 10_000);
-      await settle(1800);
+      await untilPainted(`Number(getComputedStyle(document.querySelector('.card.is-quiet')).opacity) < 0.6`);
+      await settle(600);
       await shot('02-employee-focus');
       const chain = await page.evaluate(`document.querySelectorAll('#focus .chain li').length`);
-      return { chainLinks: chain };
+      const relations = await count('.line-relation');
+      const lit = await page.evaluate(`document.querySelectorAll('.card.is-chain').length`);
+      return { chainLinks: chain, relationLines: relations, chainCards: lit };
     });
     await step('C-goal-focus', async () => {
-      await click(`.label[data-id="goal:${world.goals.saudi}"]`);
+      await click(`.goal[data-id="goal:${world.goals.saudi}"]`);
       await page.waitUntil(`document.documentElement.dataset.lens === 'GOAL' && document.querySelector('#focus .goal-path')`, 10_000);
-      await settle(1800);
+      await untilPainted(`Number(getComputedStyle(document.querySelector('.goal.is-quiet')).opacity) < 0.6`);
+      await settle(600);
       await shot('03-goal-focus');
       const work = await page.evaluate(`document.querySelectorAll('#focus .work').length`);
-      return { linkedWork: work };
+      const brightExec = await page.evaluate(`[...document.querySelectorAll('.line-exec')].filter((l) => !l.classList.contains('is-quiet')).length`);
+      const quietExec = await page.evaluate(`[...document.querySelectorAll('.line-exec.is-quiet')].length`);
+      const quietGoals = await count('.goal.is-quiet');
+      const quietColumns = await count('.column.is-quiet');
+      const quietCards = await count('.card.is-quiet');
+      if (brightExec < 1 || quietGoals < 1 || quietColumns < 1 || quietCards < 3) throw new Error(`goal focus did not quiet the rest (bright lines ${brightExec}, quiet goals ${quietGoals}, quiet columns ${quietColumns}, quiet cards ${quietCards})`);
+      return { linkedWork: work, brightExecutionLines: brightExec, quietExecutionLines: quietExec, quietGoals, quietColumns, quietCards };
     });
     await step('D-conversation-english-ui-arabic-messages', async () => {
       // The CEO's conversation: the Founder's Arabic question and the CEO's Arabic answer already there; the
       // Founder adds an English question; the reply comes from the CEO's own governed run (in Arabic).
-      await click(`.label[data-id="employee:${ceo}"]`);
+      await click(`.card[data-id="employee:${ceo}"]`);
       await page.waitUntil(`!document.getElementById('focus').hidden && document.querySelector('#focus .sheet-actions .btn-primary')`, 10_000);
       await click('#focus .sheet-actions .btn-primary');
       await page.waitUntil(`document.documentElement.dataset.lens === 'CONVERSATION' && document.querySelectorAll('#focus .entry').length >= 2`, 15_000);
-      await type('#focus .composer textarea', 'Good. What is the first thing you need from me this week?');
-      await submit('#focus .composer');
-      await page.waitUntil(`document.querySelectorAll('#focus .entry:not(.pending)').length >= 4`, 60_000);
-      await settle(1500);
+      // Typed and sent in one breath (a live company may refresh the sheet between the two; the draft survives that too).
+      await page.evaluate(`(() => { const f = document.querySelector('#focus .composer'); const el = f.querySelector('textarea'); el.focus(); el.value = ${JSON.stringify('Good. What is the first thing you need from me this week?')}; el.dispatchEvent(new Event('input', { bubbles: true })); f.requestSubmit(); return true; })()`);
+      try {
+        await page.waitUntil(`document.querySelectorAll('#focus .entry:not(.pending)').length >= 4`, 60_000);
+      } catch (error) {
+        const comm = surface.runtime.founder.communications;
+        const stored = comm.messages(live.ceoThreadId).length;
+        const pending = comm.pendingReplies().length;
+        const shown = await count('#focus .entry');
+        const toast = await page.evaluate(`document.getElementById('activity').textContent`);
+        throw new Error(`${String(error?.message ?? error)} — stored ${stored}, pending replies ${pending}, entries shown ${shown}, note "${toast}"`, { cause: error });
+      }
+      await settle(1200);
       await shot('04-conversation');
       const dirs = await page.evaluate(`[...document.querySelectorAll('#focus .entry-body')].map((b) => getComputedStyle(b).direction + ':' + (/[\\u0600-\\u06FF]/.test(b.textContent) ? 'ar' : 'en'))`);
       const layoutDir = await page.evaluate(`getComputedStyle(document.querySelector('#focus')).direction`);
@@ -252,11 +308,11 @@ try {
     });
     await step('E-founder-attention-brief', async () => {
       await escape();
-      await click('#attention-toggle');
+      await click('.dock-head');
       await page.waitUntil(`!document.getElementById('rail').hidden && document.querySelector('.rail-tab')`, 10_000);
       await click('.rail-tab:nth-child(2)');
       await page.waitUntil(`document.querySelector('.rail-item .brief')`, 10_000);
-      await settle(1500);
+      await settle(1200);
       await shot('05-founder-attention-ceo-brief');
       const needsMe = await page.evaluate(`document.querySelectorAll('.rail-tab')[0].querySelector('.count').textContent`);
       const briefs = await page.evaluate(`document.querySelectorAll('.rail-tab')[1].querySelector('.count').textContent`);
@@ -272,7 +328,7 @@ try {
       await type('.palette-input', 'approve Ehab Tarek campaign with a budget of EGP 50,000');
       await submit('.palette-form');
       await page.waitUntil(`!document.getElementById('preview').hidden && document.querySelector('#preview .preview-summary')`, 15_000);
-      await settle(1500);
+      await settle(1200);
       await shot('06-governed-action-preview');
       const before = surface.runtime.governance.budgetFor('EMPLOYEE', ceo).capMoney;
       const summary = await page.evaluate(`document.querySelector('#preview .preview-summary').textContent`);
@@ -282,7 +338,7 @@ try {
       if (surface.runtime.governance.budgetFor('EMPLOYEE', ceo).capMoney !== before) throw new Error('text mutated a budget');
       await click('#preview .btn-primary');
       await page.waitUntil(`document.getElementById('preview').hidden`, 15_000);
-      await settle(1200);
+      await settle(1000);
       await shot('07-governed-action-confirmed');
       const after = surface.runtime.governance.budgetFor('EMPLOYEE', ceo).capMoney;
       const audit = surface.runtime.view.auditByAction('founder.action_confirmed').length;
@@ -294,54 +350,41 @@ try {
       await escape();
       await page.evaluate(`(() => { const r = document.querySelector('.scrubber'); r.value = String(Number(r.min) + 1000); r.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
       await page.waitUntil(`document.documentElement.dataset.live === 'history'`, 10_000);
-      await settle(1800);
+      await settle(1400);
       await shot('08-historical-focus');
-      const historyEmployees = await page.evaluate(`document.querySelectorAll('.label[data-kind="employee"]').length`);
+      const historyEmployees = await count('.card[data-kind="employee"]');
       await click('.timeline .btn');
       await page.waitUntil(`document.documentElement.dataset.live === 'live'`, 10_000);
-      await settle(1200);
+      await settle(900);
       return { historyEmployees };
     });
     await step('H-reduced-motion', async () => {
       await click('#motion-toggle');
-      await settle(800);
+      await settle(600);
       await shot('09-reduced-motion');
       await click('#motion-toggle');
       return { mode: 'reduced → full' };
     });
     stopCapture();
-    await step('I-svg-fallback', async () => {
-      await page.navigate(`${surface.origin}/?renderer=svg`);
-      await page.waitUntil(`document.documentElement.dataset.renderer === 'svg' && !document.getElementById('app').hasAttribute('data-booting')`, 30_000);
-      await settle(1500);
-      await shot('10-svg-fallback');
-      const nodes = await page.evaluate(`document.querySelectorAll('.svg-universe g[data-id]').length`);
-      return { svgNodes: nodes };
-    });
-    await step('J-scale', async () => {
-      // A larger company, really seeded through the running runtime, then the real UI over it.
+    await step('I-scale', async () => {
+      // A larger company, really seeded through the store, then the real UI over it.
       const added = seedScale(company, world, 60);
       await page.navigate(`${surface.origin}/`);
       await waitReady();
-      await settle(2500);
-      await shot('11-scale');
+      await settle(1500);
+      await shot('10-scale');
       const employees = surface.runtime.founder.universe().employees.length;
-      const { layoutUniverse } = await import('@qandeel-company/command-center-ui');
-      const layout = layoutUniverse(surface.runtime.founder.universe());
-      const people = layout.nodes.filter((n) => n.kind === 'employee');
-      let min = Infinity;
-      for (let i = 0; i < people.length; i++) for (let j = i + 1; j < people.length; j++) min = Math.min(min, Math.hypot(people[i].x - people[j].x, people[i].z - people[j].z));
-      const visible = await page.evaluate(`document.querySelectorAll('.label:not([hidden])').length`);
-      const sectors = await page.evaluate(`document.querySelectorAll('.tag-sector:not([hidden])').length`);
-      if (!(min > 0.25)) throw new Error(`employees overlap at scale (min distance ${min})`);
-      if (sectors < 5) throw new Error('sector names lost at scale');
-      return { added: added.length, employees, minEmployeeDistance: Math.round(min * 100) / 100, visibleLabels: visible, sectorNames: sectors };
+      const cards = await count('.card[data-id^="employee:"]');
+      const columns = await count('.column');
+      const growthRows = await page.evaluate(`document.querySelectorAll('.column:nth-child(2) .members .card').length`);
+      if (cards !== employees) throw new Error(`${cards} cards for ${employees} employees`);
+      if (columns !== 5) throw new Error('columns changed at scale');
+      return { added: added.length, employees, cards, growthMembers: growthRows };
     });
     await step('encode-walkthrough', async () => {
       const enc = await openPage(browser.port, `file:///${path.join(ROOT, 'scripts', 'c5', 'encoder.html').replace(/\\/g, '/')}`);
       await enc.waitUntil('window.encoderReady === true', 10_000);
-      // Frames are captured as fast as the headless tab yields them (a few per second); 4 fps playback keeps the
-      // walkthrough watchable rather than a blur.
+      // Frames are captured as fast as the headless tab yields them; 4 fps playback keeps the walkthrough watchable.
       const fps = 4;
       // The frames go over in small batches (one DevTools message per ~1 MB), then the page encodes them.
       await enc.send('Runtime.evaluate', { expression: 'window.__frames = []; true' });

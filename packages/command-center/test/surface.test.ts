@@ -83,7 +83,7 @@ async function withSurface(fn: (ctx: { surface: FounderSurface; world: World; or
   const company = path.join(base, 'مساحة-العمل');
   const world = seed(company);
   const logs: string[] = [];
-  const surface = new FounderSurface({ workspace: company, roots: { app: path.join(uiRoot, 'dist', 'src'), public: path.join(uiRoot, 'public'), three: path.join(uiRoot, 'public') }, runtime: { supervisorTtlMs: 3_000 }, briefing: false, log: (event, fields) => logs.push(`${event} ${JSON.stringify(fields)}`) });
+  const surface = new FounderSurface({ workspace: company, roots: { app: path.join(uiRoot, 'dist', 'src'), public: path.join(uiRoot, 'public') }, runtime: { supervisorTtlMs: 3_000 }, briefing: false, log: (event, fields) => logs.push(`${event} ${JSON.stringify(fields)}`) });
   try {
     await surface.start();
     await fn({ surface, world, origin: surface.origin, company });

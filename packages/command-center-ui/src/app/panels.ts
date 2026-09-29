@@ -274,6 +274,9 @@ export function renderGoalFocus(root: HTMLElement, d: Json, host: PanelHost): vo
 // --- conversation ------------------------------------------------------------------------------------
 
 export function renderConversation(root: HTMLElement, d: { thread: Json; messages: Json[]; pending: Json[] }, host: PanelHost, universe: CompanyUniverse | null, deptColor: string): void {
+  // A live company refreshes the thread while the Founder types: the draft and the chosen purpose survive it.
+  const draft = root.querySelector<HTMLTextAreaElement>('.composer textarea')?.value ?? '';
+  const draftPurpose = root.querySelector<HTMLElement>('.chip-choice.is-active')?.dataset.purpose ?? 'QUESTION';
   root.replaceChildren();
   const th = d.thread;
   const employee = universe?.employees.find((e) => e.id === th.employeeId);
@@ -307,10 +310,10 @@ export function renderConversation(root: HTMLElement, d: { thread: Json; message
   root.append(list);
   const form = h('form', { class: 'composer' }) as HTMLFormElement;
   const purposes = ['QUESTION', 'REQUEST', 'DECISION_REQUEST', 'FYI', 'CORRECTION'];
-  let purpose = 'QUESTION';
+  let purpose = purposes.includes(draftPurpose) ? draftPurpose : 'QUESTION';
   const chips = h('div', { class: 'purpose-chips', role: 'radiogroup', 'aria-label': 'Message purpose' });
   const chipEls = purposes.map((p) => {
-    const b = h('button', { type: 'button', role: 'radio', class: `chip chip-choice${p === purpose ? ' is-active' : ''}`, 'aria-checked': p === purpose ? 'true' : 'false', text: t(PURPOSE_LABEL, p) });
+    const b = h('button', { type: 'button', role: 'radio', class: `chip chip-choice${p === purpose ? ' is-active' : ''}`, 'aria-checked': p === purpose ? 'true' : 'false', 'data-purpose': p, text: t(PURPOSE_LABEL, p) });
     b.addEventListener('click', () => {
       purpose = p;
       for (const c of chipEls) {
@@ -322,6 +325,7 @@ export function renderConversation(root: HTMLElement, d: { thread: Json; message
   });
   chips.append(...chipEls);
   const text = h('textarea', { 'aria-label': 'Message', name: 'body', rows: 3, placeholder: `Write to ${employee?.name.given ?? name} in English or Arabic…`, maxlength: 4000, dir: 'auto' }) as HTMLTextAreaElement;
+  text.value = draft;
   const send = h('button', { type: 'submit', class: 'btn btn-primary', text: 'Send' });
   form.append(chips, text, h('div', { class: 'composer-foot' }, h('span', { class: 'hint', text: 'Enter sends · Shift+Enter for a new line' }), send));
   text.addEventListener('keydown', (e) => {

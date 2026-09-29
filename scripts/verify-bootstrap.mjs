@@ -103,10 +103,10 @@ const SQLITE_IMPORT = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\
 const NETWORK_MODULE = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?(?:http|https|http2|net|tls|dgram|dns|dns\/promises|undici|child_process|worker_threads)['"]|\bfetch\s*\(|\bnew\s+(?:WebSocket|XMLHttpRequest)\b/;
 // Runtime dependencies of workspace packages: only sibling workspaces unless a change adds a
 // reviewed exception here (no ORM, provider SDK, queue server, framework or native addon).
-// C5 (D-C5-02): `three` (MIT, pure JavaScript, zero dependencies, no install script) is the one renderer
-// dependency, allowed for the browser UI package only and served from the workspace's own node_modules.
+// C5 (D-C5-14): the browser UI is DOM and SVG on the platform alone; no renderer dependency remains
+// (the `three` exception of D-C5-02 was retired with the Tree of Light surface).
 const ALLOWED_RUNTIME_DEPENDENCIES = [];
-const ALLOWED_PACKAGE_DEPENDENCIES = { 'packages/command-center-ui/package.json': ['three'] };
+const ALLOWED_PACKAGE_DEPENDENCIES = {};
 // C5: the loopback Founder listener is the ONE network path in the repository, and the browser UI (which
 // runs in the Founder's browser, not in the Company runtime) talks to it with fetch / EventSource.
 const FOUNDER_LISTENER = 'packages/command-center/src/server/listener.ts';
@@ -193,7 +193,7 @@ const LATER_SCOPE_PACKAGE = /^(?:dashboards?|analytics|app-ops|appops|web-ops|we
 // --- C5 boundaries ------------------------------------------------------------------------------
 const C5_REPORT = 'docs/C5_IMPLEMENTATION_REPORT.md';
 const C5_CLOSURE = /^docs\/C5_[^/]*CLOSURE[^/]*\.md$/i;
-const C5_PROOF_MARKERS = ['C5-PROOF: c5-kernel', 'C5-PROOF: founder-surface', 'C5-PROOF: runtime-c5', 'C5-PROOF: founder-listener', 'C5-PROOF: attention-orbits-layout'];
+const C5_PROOF_MARKERS = ['C5-PROOF: c5-kernel', 'C5-PROOF: founder-surface', 'C5-PROOF: runtime-c5', 'C5-PROOF: founder-listener', 'C5-PROOF: tree-of-light-layout'];
 const C5_MUTATION_CHECK = 'scripts/c5-mutation-check.mjs';
 // The production Founder session scope is entered only by the auth module (a session, never a ref, arms it).
 const FOUNDER_AUTH = 'packages/storage/src/founder-auth.ts';
@@ -298,7 +298,7 @@ const MUTATION_PINS = {
     script: 'c5:mutation',
     ids: [
       'c5-founder-ref-is-authentication', 'c5-session-expiry-ignored', 'c5-session-scope-stays-armed', 'c5-csrf-gate-removed', 'c5-host-gate-removed', 'c5-text-mutates-without-confirmation', 'c5-preview-fingerprint-unchecked',
-      'c5-rank-radius-inverted', 'c5-department-sector-collapsed', 'c5-goal-work-link-dropped', 'c5-attention-widened-to-routine', 'c5-message-grants-authority', 'c5-message-body-in-audit', 'c5-history-uses-current-truth', 'c5-r4-offered-as-approvable', 'c5-company-goal-without-founder',
+      'c5-rank-order-flattened', 'c5-department-column-collapsed', 'c5-goal-work-link-dropped', 'c5-attention-widened-to-routine', 'c5-message-grants-authority', 'c5-message-body-in-audit', 'c5-history-uses-current-truth', 'c5-r4-offered-as-approvable', 'c5-company-goal-without-founder',
     ],
   },
   // R1 Independent Core Review: one mutation per fixed finding (docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md).
@@ -1414,7 +1414,7 @@ function syntheticRepo(overrides = {}) {
     'packages/command-center/src/security.ts': "export const LOOPBACK_HOST = '127.0.0.1';\nexport function sessionCookie(v) { return `${v}; HttpOnly; SameSite=Strict`; }\n",
     [FOUNDER_AUTH]: SYNTH_AUTH,
     'packages/command-center-ui/src/app/api.ts': "const res = await fetch(path, init);\n",
-    'packages/command-center-ui/package.json': JSON.stringify({ private: true, dependencies: { three: '0.186.1' }, scripts: { test: 'npm run build && node ../../scripts/run-node-tests.mjs' } }),
+    'packages/command-center-ui/package.json': JSON.stringify({ private: true, scripts: { test: 'npm run build && node ../../scripts/run-node-tests.mjs' } }),
     [CONTEXT_ASSEMBLER]: SYNTH_ASSEMBLER,
     [MODEL_RUNTIME]: SYNTH_MODEL_RUNTIME,
     [RUNTIME_TYPES]: SYNTH_TYPES,

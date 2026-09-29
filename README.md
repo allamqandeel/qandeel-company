@@ -268,8 +268,8 @@ npm run c5:acceptance -- --workspace "D:\QANDEEL-C5-ACCEPTANCE\run-1"
     ACTING, vacant specialist seats), live work (running, blocked, awaiting Founder approval, delegated),
     Goals with Goal → Work links, a Founder ↔ CEO thread answered by the CEO's own governed run, a CEO
     brief in the Founder Communication Standard;
-  - the Company Universe projection (Founder centre, CEO nearest orbit, five sectors, truthful seats,
-    live-only relations, Goal traceability), deterministic and time-correct;
+  - the Company Universe projection (Founder, CEO, five Departments, truthful seats, live-only relations,
+    Goal traceability), deterministic and time-correct;
   - Founder Attention lanes (Needs Me / CEO Briefs; routine work and plain FYIs excluded; no storm);
   - the governed confirmation boundary over real loopback HTTP: natural language → structured preview →
     explicit confirmation; forged CSRF, wrong fingerprint and a foreign Host are refused;
@@ -277,7 +277,7 @@ npm run c5:acceptance -- --workspace "D:\QANDEEL-C5-ACCEPTANCE\run-1"
 - **Result and cleanup:** it prints `C5 LOCAL ACCEPTANCE — PASS` and deletes only what it created.
 - **What it needs:** no credentials, no provider keys, no network.
 
-### C5 Founder Command Center (Attention Orbits)
+### C5 Founder Command Center (Tree of Light)
 
 After `npm run build`:
 
@@ -288,23 +288,26 @@ node packages/command-center/dist/src/cli.js serve --workspace "D:\QANDEEL-COMPA
 It starts the Company runtime and the loopback-only Founder surface in one process and prints a launch URL
 (`http://127.0.0.1:<port>/launch#<token>`; single-use, 90 seconds). Open it in Edge or Chrome on the same
 machine: the browser exchanges the token for a session (hashed at rest, HttpOnly, SameSite=Strict) and lands
-in **Company Live** — the Founder at the centre, the CEO on the nearest orbit, rank as radius (each orbit
-named), Departments as named sectors, Goals as beacons tethered to the Departments serving them, live work as
-typed relations, and what needs the Founder inside the CEO orbit. The application is English; company content
-(names, objectives, messages) renders as written, Arabic right-to-left inside its own block. `Ctrl+K` opens
-the command palette (Arabic or English): read commands change focus; a mutating
+in **Company Live** — the Founder at the top, the CEO beneath on one leadership trunk, the five Departments
+as columns branching below (each led by its Director, its people inside in rank order, vacant seats and acting
+cover shown truthfully), the goals along the bottom as the strategic direction, gold execution lines from
+each Department to the goals its work serves, and what needs the Founder beside the Founder. The surface is
+DOM and SVG (no WebGL, no vendor library). The application is English; company content (names, objectives,
+messages) renders as written, Arabic right-to-left inside its own block. `Ctrl+K` opens the command palette
+(Arabic or English): read commands change focus; a mutating
 instruction becomes a governed preview that the Founder confirms explicitly. `node … cli.js launch --workspace
 <dir> --port <port>` mints a fresh launch URL for a running surface. There is no approve / reject / register
 command on any CLI: a Founder reference is not authentication.
 
 - **Visual proof package (from the real UI):** `npm run c5:visual-proof -- --workspace <disposable dir> --out <dir>`
   seeds a representative company, drives a headless Edge / Chrome through the DevTools Protocol (no
-  dependency) and writes eleven scenario frames (Company Live, Employee Focus, Goal Focus, the bilingual
-  conversation, Founder Attention, governed preview and confirmation, Historical Focus, reduced motion, the SVG
-  fallback and a really seeded scale frame), a short walkthrough MP4 (encoded offline in the browser) and a
-  manifest; `--before <previous proof dir>` adds a before/after board. `npm run c5:spike -- --workspace <dir>`
-  runs only the technical spike checks (scene boots, English application with company content as written,
-  named orbits and sectors, selection / focus / return, reduced-motion parity, no external asset).
+  dependency) and writes ten scenario frames (Company Live, Employee Focus, Goal Focus, the bilingual
+  conversation, Founder Attention, governed preview and confirmation, Historical Focus, reduced motion and a
+  really seeded scale frame), a short walkthrough MP4 (encoded offline in the browser) and a manifest;
+  `--before <previous proof dir>` adds a before/after board. `npm run c5:spike -- --workspace <dir>` runs only
+  the technical smoke checks (the company surface renders — spine, five columns, goals, execution lines;
+  English application with content as written; selection / focus / return; reduced-motion parity; no external
+  asset).
 
 ### Engineering CLI
 

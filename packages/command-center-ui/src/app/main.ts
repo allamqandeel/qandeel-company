@@ -1,18 +1,15 @@
 /**
- * The Founder Command Center application: one living company universe. Boot → session check → universe
- * projection → renderer (WebGL 2, or the SVG fallback) → lenses, attention, conversation, governed
- * confirmation, timeline. Server-Sent "changed" nudges re-project; nothing polls.
+ * The Founder Command Center application: one living company surface. Boot → session check → universe
+ * projection → the Tree of Light view → lenses, attention, conversation, governed confirmation, timeline.
+ * Server-Sent "changed" nudges re-project; nothing polls.
  */
 import { deptName, fmtRelative, INTENT_LABEL, LEVEL_LABEL, RELATION_LABEL, RESULT_LABEL, SOURCE_LABEL, t } from '../model/format.js';
 import { layoutUniverse } from '../model/layout.js';
-import { applyLens, cameraTargetFor, chainNodeIds } from '../model/lenses.js';
+import { applyLens, chainNodeIds, showsRelations } from '../model/lenses.js';
 import type { CompanyUniverse, Emphasis, Layout, LayoutNode, Lens } from '../model/types.js';
 import { api, ApiError, subscribeChanges } from './api.js';
-import { LabelLayer } from './labels.js';
 import { h, renderActivity, renderAttentionRail, renderCalendar, renderConversation, renderEmployeeFocus, renderGoalFocus, renderHealthLine, renderPalette, renderPreview, renderTimeline, type PanelHost } from './panels.js';
-import { departmentColor, type UniverseRenderer } from './renderer.js';
-import { WebGlUniverse, webgl2Available } from './scene.js';
-import { SvgUniverse } from './svg-renderer.js';
+import { departmentColor, TreeView } from './view.js';
 
 type Json = Record<string, unknown>;
 
@@ -29,8 +26,7 @@ class App implements PanelHost {
   lens: Lens = { kind: 'LIVE' };
   lane: 'NEEDS_ME' | 'CEO_BRIEFS' | 'THREADS' | null = null;
   historyAt: string | null = null;
-  renderer: UniverseRenderer;
-  labels: LabelLayer;
+  view = new TreeView();
   activity: { at: string; text: string; kind: 'semantic' | 'system' }[] = [];
   stream: 'open' | 'closed' = 'closed';
   reduced: boolean;
@@ -44,9 +40,6 @@ class App implements PanelHost {
   #toastTimer = 0;
 
   constructor() {
-    const forceSvg = new URLSearchParams(location.search).get('renderer') === 'svg';
-    this.renderer = !forceSvg && webgl2Available() ? new WebGlUniverse() : new SvgUniverse();
-    this.labels = new LabelLayer($('labels'));
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
     const stored = safeGet('qandeel.reducedMotion');
     this.reduced = stored === null ? mq.matches : stored === '1';
@@ -56,31 +49,25 @@ class App implements PanelHost {
   }
 
   async boot(): Promise<void> {
-    document.documentElement.dataset.renderer = this.renderer.kind;
+    document.documentElement.dataset.renderer = 'dom';
     try {
       await api.get('/api/session');
     } catch (e) {
       this.lock(e instanceof ApiError ? e.code : 'FOUNDER_SESSION_INVALID');
       return;
     }
-    const stage = $('universe');
-    this.renderer.mount(stage, {
+    this.view.mount($('universe'), {
       onSelect: (id, node) => this.select(id, node),
-      onHover: (id) => stage.setAttribute('data-hover', id ?? ''),
-      onDistance: (d) => this.labels.setDistance(d),
-    });
-    this.renderer.setReducedMotion(this.reduced);
-    this.labels.bind(
-      this.renderer,
-      (id) => {
-        const n = this.layout?.byId.get(id);
-        if (n) this.select(id, n);
+      onSelectDepartment: (departmentId) => this.openDepartment(departmentId),
+      onAttention: (nodeId) => {
+        const a = this.universe?.attention.find((x) => `attention:${x.id}` === nodeId);
+        if (a) this.focusSource(a.sourceRef);
       },
-      (departmentId) => this.openDepartment(departmentId),
-    );
+      onOpenAttention: () => (this.#railOpen ? this.closeRail() : this.showLane(null)),
+    });
+    this.view.setReducedMotion(this.reduced);
     $('motion-toggle').addEventListener('click', () => this.setReduced(!this.reduced));
     this.#renderMotionToggle();
-    window.addEventListener('resize', () => this.renderer.resize());
     window.addEventListener('keydown', (e) => this.#hotkeys(e));
     $('logout').addEventListener('click', () => void api.post('/api/session/logout').then(() => location.reload()));
     $('palette-open').addEventListener('click', () => this.openPalette());
@@ -95,11 +82,6 @@ class App implements PanelHost {
         renderHealthLine($('health'), this.universe, s);
       },
     );
-    const tick = (): void => {
-      this.labels.update();
-      requestAnimationFrame(tick);
-    };
-    tick();
     $('app').removeAttribute('data-booting');
   }
 
@@ -115,7 +97,7 @@ class App implements PanelHost {
     this.reduced = reduced;
     safeSet('qandeel.reducedMotion', reduced ? '1' : '0');
     document.documentElement.dataset.motion = reduced ? 'reduced' : 'full';
-    this.renderer.setReducedMotion(reduced);
+    this.view.setReducedMotion(reduced);
     this.#renderMotionToggle();
   }
 
@@ -168,23 +150,21 @@ class App implements PanelHost {
     const previous = this.universe;
     this.universe = u;
     this.layout = layoutUniverse(u);
-    this.renderer.setLayout(this.layout, this.lens);
-    this.labels.setLayout(this.layout);
-    this.renderer.setLive(u.live);
+    this.view.setLayout(this.layout, u);
+    this.view.setLive(u.live);
     document.documentElement.dataset.live = u.live ? 'live' : 'history';
     this.#applyLens(initial);
     // Semantic motion only on real change between snapshots: new relations pulse, new attention arrives.
     if (previous && u.live) {
       const relationIds = new Set(u.relations.map((r) => r.id));
       for (const r of u.relations) if (!this.#previousRelationIds.has(r.id)) {
-        this.renderer.pulseEdge(r.id);
+        this.view.pulseEdge(r.id);
         this.note(`New ${t(RELATION_LABEL, r.kind).toLowerCase()}: ${this.nameOf(r.from)} → ${this.nameOf(r.to)}`, 'semantic');
       }
       this.#previousRelationIds = relationIds;
       const attentionIds = new Set(u.attention.map((a) => a.id));
       for (const a of u.attention) if (!this.#previousAttentionIds.has(a.id)) {
-        const owner = a.ownerRef?.startsWith('employee:') ? a.ownerRef : null;
-        this.renderer.arriveAttention(`attention:${a.id}`, owner);
+        this.view.arriveAttention(`attention:${a.id}`);
         this.note(`Needs you: ${t(SOURCE_LABEL, a.sourceKind).toLowerCase()} — ${t(LEVEL_LABEL, a.level).toLowerCase()}`, 'semantic');
       }
       this.#previousAttentionIds = attentionIds;
@@ -215,18 +195,16 @@ class App implements PanelHost {
 
   #deptColorOf(employeeId: string | null): string {
     const n = employeeId ? this.layout?.byId.get(`employee:${employeeId}`) : undefined;
-    return departmentColor(n?.sector ?? null);
+    return departmentColor(n?.column ?? null);
   }
 
   #applyLens(immediate: boolean): void {
     if (!this.universe || !this.layout) return;
     this.emphasis = applyLens(this.universe, this.layout, this.lens);
-    this.renderer.setEmphasis(this.emphasis);
-    this.labels.setEmphasis(this.emphasis);
-    const target = cameraTargetFor(this.layout, this.emphasis);
-    this.renderer.focus(target, immediate);
-    this.renderer.setSelection(this.emphasis.focusNodeId);
-    this.labels.setSelection(this.emphasis.focusNodeId);
+    this.view.setEmphasis(this.emphasis);
+    this.view.setRelationsVisible(showsRelations(this.lens));
+    this.view.setSelection(this.emphasis.focusNodeId);
+    if (!immediate) this.view.focus(this.emphasis.focusNodeId);
     $('lens').textContent = lensTitle(this.lens, this.universe, this.layout);
     document.documentElement.dataset.lens = this.lens.kind;
   }
@@ -268,7 +246,7 @@ class App implements PanelHost {
   }
 
   select(id: string, node: LayoutNode): void {
-    if (node.kind === 'founder') return this.setLens({ kind: 'LIVE' });
+    if (node.kind === 'founder') return this.returnToLive();
     if (node.kind === 'employee' && node.employeeId) return this.setLens({ kind: 'EMPLOYEE', employeeId: node.employeeId });
     if (node.kind === 'seat' && node.departmentId) return this.setLens({ kind: 'DEPARTMENT', departmentId: node.departmentId });
     if (node.kind === 'goal') return this.setLens({ kind: 'GOAL', goalId: id.slice('goal:'.length) });
@@ -475,9 +453,6 @@ class App implements PanelHost {
         return;
       }
       this.returnToLive();
-    } else if (e.key === 'F6') {
-      e.preventDefault();
-      this.labels.focusFirst();
     }
   }
 }

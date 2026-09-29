@@ -8,5 +8,5 @@
 export { FounderSurface, type FounderSurfaceOptions } from './surface.js';
 export { BriefingPolicy, BRIEF_COOLDOWN_MS, signalFor, type BriefSignal } from './briefing.js';
 export { CSRF_COOKIE, CSRF_HEADER, LAUNCH_PATH, LOOPBACK_HOST, MAX_BODY_BYTES, SESSION_COOKIE, allowedHosts, allowedOrigins, gateRequest, parseCookies, securityHeaders, statusForCode, type Gate, type RequestFacts } from './security.js';
-export { defaultStaticRoots, findThreeRoot, resolveStatic, uiPackageRoot, type StaticFile, type StaticRoots } from './static.js';
+export { defaultStaticRoots, resolveStatic, uiPackageRoot, type StaticFile, type StaticRoots } from './static.js';
 export * as founderApi from './api.js';

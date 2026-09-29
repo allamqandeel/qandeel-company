@@ -1,9 +1,9 @@
 /**
- * Local static assets of the Founder surface: the UI package's compiled modules and public files, the
- * bundled Arabic font and `three` served from the workspace's own `node_modules`. Nothing is fetched from
- * the network; every path is confined to an allow-listed root and an allow-listed extension.
+ * Local static assets of the Founder surface: the UI package's compiled modules and public files, including
+ * the bundled font. Nothing is fetched from the network and no vendor library is served (the surface is DOM
+ * and SVG); every path is confined to an allow-listed root and an allow-listed extension.
  */
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,21 +25,6 @@ export interface StaticRoots {
   readonly app: string;
   /** `/` → the UI package's `public` directory (index.html, launch.html, styles, fonts). */
   readonly public: string;
-  /** `/vendor/three/*` → the `three` package directory. */
-  readonly three: string;
-}
-
-/** Walks up from `from` to find `node_modules/three` (npm workspaces hoist it to the repository root). */
-export function findThreeRoot(from: string): string {
-  let dir = path.resolve(from);
-  for (let i = 0; i < 12; i++) {
-    const candidate = path.join(dir, 'node_modules', 'three');
-    if (existsSync(path.join(candidate, 'package.json'))) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  throw new Error('three is not installed (run npm ci)');
 }
 
 /** The UI package root, resolved through its own export map (never a hard-coded path). */
@@ -51,7 +36,7 @@ export function uiPackageRoot(): string {
 
 export function defaultStaticRoots(): StaticRoots {
   const ui = uiPackageRoot();
-  return { app: path.join(ui, 'dist', 'src'), public: path.join(ui, 'public'), three: findThreeRoot(ui) };
+  return { app: path.join(ui, 'dist', 'src'), public: path.join(ui, 'public') };
 }
 
 export interface StaticFile {
@@ -67,9 +52,6 @@ export function resolveStatic(roots: StaticRoots, urlPath: string): StaticFile |
   if (urlPath.startsWith('/app/')) {
     root = roots.app;
     rel = urlPath.slice('/app/'.length);
-  } else if (urlPath.startsWith('/vendor/three/')) {
-    root = roots.three;
-    rel = urlPath.slice('/vendor/three/'.length);
   } else {
     root = roots.public;
     rel = urlPath === '/' ? 'index.html' : urlPath === '/launch' ? 'launch.html' : urlPath.slice(1);
@@ -85,7 +67,7 @@ export function resolveStatic(roots: StaticRoots, urlPath: string): StaticFile |
   if (fullReal === null || !(fullReal === rootReal || fullReal.startsWith(rootReal + path.sep))) return null;
   try {
     if (!statSync(fullReal).isFile()) return null;
-    return { body: readFileSync(fullReal), contentType, immutable: urlPath.startsWith('/vendor/') || ext === '.woff2' };
+    return { body: readFileSync(fullReal), contentType, immutable: ext === '.woff2' };
   } catch {
     return null;
   }

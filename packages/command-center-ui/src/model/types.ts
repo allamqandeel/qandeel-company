@@ -17,18 +17,19 @@ export type Lens =
 
 export type NodeKind = 'founder' | 'employee' | 'seat' | 'goal' | 'attention';
 
+/**
+ * One thing on the company surface. The Tree of Light composition (D-C5-14): the Founder at the top, the CEO
+ * beneath, one column per Department with its Director first, its people below in rank order, goals along the
+ * bottom tethered to the columns whose work serves them, and what needs the Founder beside the Founder.
+ */
 export interface LayoutNode {
   readonly id: string;
   readonly kind: NodeKind;
-  /** Orbit-plane coordinates (x, z) and a small vertical offset (y) that expresses rank depth. */
-  readonly x: number;
-  readonly y: number;
-  readonly z: number;
-  readonly radius: number;
-  readonly angle: number;
-  readonly ring: number;
-  readonly sector: number | null;
+  /** The Department column this node lives in (canonical order), or null for the leadership spine and company goals. */
+  readonly column: number | null;
   readonly departmentId: string | null;
+  /** Position inside the column: 0 = the Director, then Managers / Leads, then Specialists (vacant seats keep their place). */
+  readonly row: number;
   readonly label: string;
   readonly sublabel: string;
   readonly state: string;
@@ -36,11 +37,17 @@ export interface LayoutNode {
   readonly vacant: boolean;
   readonly seatKind: string | null;
   readonly employeeId: string | null;
-  /** Goals only: company goals are the brighter beacons. */
+  /** Goals only: company goals are the primary strategic objects. */
   readonly goalKind: 'COMPANY' | 'DEPARTMENT' | null;
-  /** Goals only: the sector indices this goal is anchored to (its gravity lines on the map). */
+  /** Goals only: the columns this goal is anchored to (its execution lines on the surface). */
   readonly anchors: readonly number[];
-  /** Employees only: live work is running for this person right now (a real state, drawn as a slow orbiting arc). */
+  /** Goals only: the employee node ids whose live work serves this goal (from durable Goal → Work links). */
+  readonly workers: readonly string[];
+  /** Goals only: completed linked work over all linked work, or null when nothing is linked yet. */
+  readonly progress: number | null;
+  /** Goals only: the parent company goal's node id for a derived Department goal. */
+  readonly parentGoalId: string | null;
+  /** Employees only: live work is running for this person right now (a real state). */
   readonly running: boolean;
   readonly importance: number;
 }
@@ -55,24 +62,34 @@ export interface LayoutEdge {
   readonly sourceRef: string;
 }
 
-export interface LayoutSector {
+/** A reporting line (the organization's structure, from the seat chain): `from` reports to `to` (`founder` for the CEO). */
+export interface ReportEdge {
+  readonly from: string;
+  readonly to: string;
+}
+
+export interface LayoutColumn {
   readonly departmentId: string;
   readonly code: string;
   readonly name: string;
   readonly index: number;
-  readonly start: number;
-  readonly end: number;
-  readonly mid: number;
+  /** The Director's node (an employee, or the vacant seat), or null when the Department has no Director seat. */
+  readonly directorId: string | null;
+  /** Everyone else in rank order: Managers / Leads, then Specialists; vacant seats in place. */
+  readonly memberIds: readonly string[];
+  /** Live people in the column (vacant seats excluded). */
+  readonly headcount: number;
 }
 
 export interface Layout {
   readonly nodes: readonly LayoutNode[];
   readonly edges: readonly LayoutEdge[];
-  readonly sectors: readonly LayoutSector[];
-  readonly rings: readonly { readonly index: number; readonly radius: number; readonly kind: string }[];
-  readonly outerRadius: number;
-  /** The radius of the sector rim: the coloured arc that names each Department on the map. */
-  readonly rimRadius: number;
+  readonly reports: readonly ReportEdge[];
+  readonly columns: readonly LayoutColumn[];
+  /** Goals in band order: company goals by state (active first), then Department goals. */
+  readonly goals: readonly LayoutNode[];
+  readonly attention: readonly LayoutNode[];
+  readonly ceoId: string | null;
   readonly byId: ReadonlyMap<string, LayoutNode>;
 }
 
@@ -80,8 +97,9 @@ export interface Emphasis {
   /** 0 = quiet (dimmed), 1 = full. */
   readonly nodes: ReadonlyMap<string, number>;
   readonly edges: ReadonlyMap<string, number>;
+  /** By departmentId. */
   readonly sectors: ReadonlyMap<string, number>;
-  /** Node ids whose labels must show whatever the zoom (the answer to the lens question). */
+  /** Node ids whose captions must show whatever the density (kept for parity with the lens contract). */
   readonly pinnedLabels: ReadonlySet<string>;
   readonly focusNodeId: string | null;
   readonly chain: readonly string[];

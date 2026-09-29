@@ -2,7 +2,7 @@
   "name": "@qandeel-company/command-center-ui",
   "version": "0.1.0",
   "private": true,
-  "description": "C5 Attention Orbits — the Founder Command Center browser UI: the living Company Universe (three.js WebGL2 with HTML labels, SVG 2.5D fallback), lenses, Founder Attention, conversation, governed action confirmation and the timeline. Compiled by tsc to native ES modules; no bundler, no remote asset.",
+  "description": "C5 Tree of Light — the Founder Command Center browser UI: the company as a structured executive surface (Founder, CEO, department columns, goals along the bottom, gold execution lines; DOM + SVG, no WebGL), lenses, Founder Attention, conversation, governed action confirmation and the timeline. Compiled by tsc to native ES modules; no bundler, no dependency, no remote asset.",
   "license": "SEE LICENSE IN ../../LICENSE.md",
   "type": "module",
   "exports": {
@@ -20,11 +20,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node ../../scripts/run-node-tests.mjs"
   },
-  "dependencies": {
-    "three": "0.186.1"
-  },
   "devDependencies": {
-    "@qandeel-company/storage": "0.1.0",
-    "@types/three": "0.186.0"
+    "@qandeel-company/storage": "0.1.0"
   }
 }

@@ -75,18 +75,15 @@ const MUTATIONS = [
     runs: [STORAGE, SURFACE],
   },
   {
-    id: 'c5-rank-radius-inverted',
-    gate: 'rank = radius: closer to the Founder is higher (CEO nearest, specialists outermost)',
-    edits: [
-      { file: `${UI}/model/layout.js`, search: 'CEO: 2.6,', replace: 'CEO: 11,', expectedCount: 1 },
-      { file: `${UI}/model/layout.js`, search: 'SPECIALIST: 11,', replace: 'SPECIALIST: 2.6,', expectedCount: 1 },
-    ],
+    id: 'c5-rank-order-flattened',
+    gate: 'rank orders a column: the Director leads, Managers and Leads follow, Specialists complete the team (never the seat code)',
+    edits: [{ file: `${UI}/model/layout.js`, search: '(RANK_ORDER[a.kind] ?? 3) - (RANK_ORDER[b.kind] ?? 3) || byCode(a, b)', replace: 'byCode(a, b)', expectedCount: 1 }],
     runs: [LAYOUT],
   },
   {
-    id: 'c5-department-sector-collapsed',
-    gate: 'Department = sector: five disjoint sectors, never a shared wedge',
-    edits: [{ file: `${UI}/model/layout.js`, search: 'const start = origin + i * span;', replace: 'const start = origin;', expectedCount: 1 }],
+    id: 'c5-department-column-collapsed',
+    gate: 'Department = column: every seat lives in its own Department column, never a shared one',
+    edits: [{ file: `${UI}/model/layout.js`, search: 'const own = seats.filter((s) => s.departmentId === d.id);', replace: 'const own = index === 0 ? seats.filter((s) => s.departmentId !== null) : [];', expectedCount: 1 }],
     runs: [LAYOUT],
   },
   {

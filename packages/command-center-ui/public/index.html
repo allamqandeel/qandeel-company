@@ -3,11 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="dark">
-  <title>QANDEEL — Company Universe</title>
+  <meta name="color-scheme" content="light">
+  <title>QANDEEL — Company</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/styles.css">
-  <script type="importmap" nonce="{{nonce}}">{"imports":{"three":"/vendor/three/build/three.module.js","three/addons/":"/vendor/three/examples/jsm/"}}</script>
 </head>
 <body>
   <div id="app" data-booting>
@@ -23,25 +22,20 @@
       </div>
     </header>
     <main class="stage">
-      <div id="universe" class="universe" role="img" aria-label="The company universe: the Founder at the centre, the CEO on the nearest orbit, one orbit per rank, one sector per department, goals as beacons outside the last orbit"></div>
-      <div id="labels" class="labels" role="group" aria-label="Company entities (arrow keys to move, F6 to enter)"></div>
+      <div id="universe" class="universe" role="region" aria-label="The company: the Founder at the top, the CEO beneath, one column per department with its Director first, goals along the bottom"></div>
       <aside id="rail" class="rail" aria-label="Founder attention" hidden></aside>
       <aside id="focus" class="focus" hidden aria-live="polite"></aside>
       <section id="palette" class="palette" hidden aria-label="Founder command"></section>
       <div id="preview" class="preview" role="dialog" aria-modal="true" aria-label="Confirm a governed action" hidden></div>
       <section id="legend" class="legend" hidden aria-label="Key">
-        <h3>Reading the universe</h3>
+        <h3>Reading the company</h3>
         <ul>
-          <li><span class="mark mark-solid" style="--dept:#f6ecd4"></span> The Founder is the centre. The CEO is on the nearest orbit; every orbit further out is one rank lower.</li>
-          <li><span class="mark mark-solid" style="--dept:#3987e5"></span> A sector is a department: its name sits on the coloured rim, and every person in it carries the same hue.</li>
-          <li><span class="mark mark-hollow" style="--dept:#cfc8ee"></span> Hollow = waiting (review or approval)</li>
-          <li><span class="mark mark-broken" style="--dept:#ff6b57"></span> Broken ring = blocked</li>
-          <li><span class="mark mark-dashed" style="--dept:#6b6592"></span> Dashed = vacant seat</li>
-          <li><span class="mark mark-double" style="--dept:#199e70"></span> Double ring = acting cover</li>
-          <li><span class="mark mark-running" style="--dept:#7fd9ff"></span> Circling arc = work running now</li>
-          <li><span class="beacon-mark" aria-hidden="true"></span> A beacon outside the last orbit is a goal, tethered to the departments serving it.</li>
-          <li><span class="mark mark-attention" style="--dept:#f0c987"></span> Inside the CEO orbit = needs you</li>
-          <li>Lit lines are live relations only (delegation, review, approval, escalation). Nothing is decorative.</li>
+          <li><span class="key-mark key-trunk"></span> The gold trunk runs from the Founder to the CEO; the branches lead to the five departments.</li>
+          <li><span class="key-mark key-dept"></span> A column is a department: its Director first, then Managers and Leads, then Specialists, in the department's colour.</li>
+          <li><span class="key-mark key-vacant"></span> A dashed card is a vacant seat; “Acting cover” marks a seat held on behalf of someone.</li>
+          <li><span class="key-mark key-running"></span> A circling ring on a person means their work is running now; a red edge means blocked; amber means awaiting a decision.</li>
+          <li><span class="key-mark key-goal"></span> Goals along the bottom are the strategic direction; gold lines run from each department to the goals its work serves. ◆ on a card means that person serves a goal.</li>
+          <li><span class="key-mark key-attention"></span> Beside the Founder: what needs you (approvals, briefs, decisions). Nothing else is decorative.</li>
         </ul>
       </section>
       <footer class="bottombar">

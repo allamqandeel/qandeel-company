@@ -2239,3 +2239,33 @@ English and the read command in Arabic. The spike checks replaced "Arabic labels
 written, ring and sector names present". The visual proof gained a conversation frame, a real scale frame and a
 before/after board. The Founder-facing Arabic register guidance (D-C5-10's sibawayh notes) now applies to content
 only.
+
+
+## D-C5-14 — Presentation reset: the Tree of Light replaces the orbital surface as the Founder's home (Technical Lead, C5)
+
+**Context.** The Founder rejected the orbital / galaxy presentation as the primary company view (it read as a
+graph in space, not a company) and selected the Tree of Light direction from the concept renders: Founder at the
+top, CEO beneath, five Department columns below, goals along the bottom, gold execution lines from work to goals.
+The reset is presentation-led on the same branch and Draft PR; the C5 runtime, authentication, Goal semantics,
+attention behaviour, communication, governed actions and history are preserved.
+
+**Decision.** (1) The home is a structured executive surface in DOM + SVG: a leadership spine (Founder emblem,
+attention chips beside it, one gold trunk to the CEO card), one column per Department in canonical order (name,
+accent, head-count, the Director first, then Managers / Leads, then Specialists; vacant seats keep their row;
+acting cover is its own node beside the person's own seat), and a strategic-direction band pinned to the bottom of
+the view holding the goals as mission objects. (2) Every line is a durable fact: reporting lines from the seat
+chain, execution lines from Goal → Work links (one per column and goal, weighted by the people serving), live
+typed relations drawn only on focus surfaces. (3) D-C5-02's `three` exception is retired: the UI has no
+dependency, the static server serves no vendor route, and there is no fallback renderer because there is nothing
+to fall back from. (4) D-C5-09 (Attention Orbits layout) and the orbit parts of D-C5-10 are superseded; the two
+motion layers survive as: ambient = one slow drift of the surface light; semantic = focus scroll, lit paths,
+relation pulse, arriving attention, flow along a running execution line; reduced motion keeps every mark.
+(5) The light executive theme is the committed world (warm paper, ink, one gold, five validated Department
+accents); the interface stays English with content as written (D-C5-13). (6) The mutation gates over the layout
+become `c5-rank-order-flattened` and `c5-department-column-collapsed`; the proof marker is
+`C5-PROOF: tree-of-light-layout`.
+
+**Consequences.** The Windows CI smoke no longer needs a GPU or software WebGL and is bounded to eight minutes.
+The proof's settle drives frames because a background headless tab advances its animation clock only when it
+paints. The concept renders that informed the choice (constellation, strategy flow, tree of light, board) are
+recorded in the report; the flow and relationship strengths live on inside Goal Focus and Employee Focus.

@@ -252,7 +252,8 @@ jobs:
         run: npm run c4:acceptance -- --workspace "${{ runner.temp }}/c4-acceptance"
       - name: C5 local acceptance (disposable workspace; Founder auth fail-closed, Goals, communication, attention, governed confirmation, projection, restart; fake provider)
         run: npm run c5:acceptance -- --workspace "${{ runner.temp }}/c5-acceptance"
-      - name: C5 browser smoke (the real UI in headless Chrome through CDP; boot, WebGL or fallback, selection, focus, reduced motion, no external asset)
+      - name: C5 browser smoke (the real UI in headless Chrome through CDP; the company surface renders, selection, focus, reduced motion, no external asset)
+        timeout-minutes: 8
         run: npm run c5:spike -- --workspace "${{ runner.temp }}/c5-spike"
 
   quality-gate:

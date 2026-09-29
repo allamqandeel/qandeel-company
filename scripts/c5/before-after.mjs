@@ -10,17 +10,18 @@ import { openPage } from './cdp.mjs';
 /** Scenes to compare: [title, before file, after file]. */
 const PAIRS = [
   ['Company Live', '01-company-live.png', '01-company-live.png'],
-  ['Goal Focus', '03-goal-focus.png', '03-goal-focus.png'],
   ['Employee Focus', '02-employee-focus.png', '02-employee-focus.png'],
-  ['Conversation', '04-founder-attention-ceo-brief.png', '04-conversation.png'],
-  ['Founder Attention', '04-founder-attention-ceo-brief.png', '05-founder-attention-ceo-brief.png'],
-  ['Governed action', '05-governed-action-preview.png', '06-governed-action-preview.png'],
+  ['Goal Focus', '03-goal-focus.png', '03-goal-focus.png'],
+  ['Conversation', '04-conversation.png', '04-conversation.png'],
+  ['Founder Attention', '05-founder-attention-ceo-brief.png', '05-founder-attention-ceo-brief.png'],
+  ['Governed action', '06-governed-action-preview.png', '06-governed-action-preview.png'],
+  ['Scale', '11-scale.png', '10-scale.png'],
 ];
 
 const dataUri = (file) => `data:image/png;base64,${readFileSync(file).toString('base64')}`;
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
-export async function contactSheet(port, { before, after, out, title = 'C5 Attention Orbits — presentation correction' }) {
+export async function contactSheet(port, { before, after, out, title = 'C5 — from the orbital direction to the Tree of Light' }) {
   const rows = PAIRS.map(([name, b, a]) => {
     const bf = path.join(before, b);
     const af = path.join(after, a);
@@ -39,7 +40,7 @@ export async function contactSheet(port, { before, after, out, title = 'C5 Atten
     img { width: 100%; display: block; border-radius: 8px; border: 1px solid rgba(186,182,226,0.18); }
     figcaption { margin-top: 6px; font-size: 12px; color: #837ea6; }
     .missing div { aspect-ratio: 16 / 10; display: grid; place-items: center; border: 1px dashed rgba(186,182,226,0.3); border-radius: 8px; color: #837ea6; }
-  </style></head><body><h1>${esc(title)}</h1><p class="lede">Same seeded company, same scenes, before and after the visual UX correction. Left: the previous proof. Right: the current head.</p>${rows}</body></html>`;
+  </style></head><body><h1>${esc(title)}</h1><p class="lede">Same seeded company, same scenes. Left: the rejected orbital direction (previous proof). Right: the accepted Tree of Light direction (current head).</p>${rows}</body></html>`;
   const file = path.join(after, 'before-after.html');
   writeFileSync(file, html);
   const page = await openPage(port, `file:///${file.replace(/\\/g, '/')}`);
