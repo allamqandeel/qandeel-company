@@ -76,6 +76,7 @@ import {
   ReviewStore,
   SkillStore,
   projectUniverse,
+  type AttentionSyncReport,
   type CompanyUniverse,
 } from '@qandeel-company/storage';
 import type { ProviderAdapter, ToolDriver } from '@qandeel-company/governance';
@@ -235,6 +236,42 @@ export interface ArtifactReadView {
   get(id: Id): ArtifactRecord;
   listForWorkItem(workItemId: Id): ArtifactRecord[];
   read(id: Id): Buffer;
+}
+
+/** How each public method of a Founder store relates to "the Founder's world changed" (D-C5-17). */
+interface SignallingContract {
+  /** Announces once after the call returns; a call that throws announces nothing. */
+  readonly mutating: readonly string[];
+  /** Announces nothing and wakes nothing. */
+  readonly reads: readonly string[];
+  /** Announces once only when the predicate holds for what the call returned. */
+  readonly conditional?: Readonly<Record<string, (result: unknown) => boolean>>;
+}
+
+/**
+ * A Founder store behind its explicit signalling contract. Every public method of the store must be
+ * classified, and every classified name must exist: a store that gains a method without a class is refused
+ * here, at construction, so nothing is ever defaulted to a write (or, worse, to a read).
+ */
+function signalling<T extends object>(target: T, changed: () => void, contract: SignallingContract): T {
+  const conditional = contract.conditional ?? {};
+  const classes = new Map<string, 'mutating' | 'read' | 'conditional'>();
+  for (const name of contract.mutating) classes.set(name, 'mutating');
+  for (const name of contract.reads) classes.set(name, 'read');
+  for (const name of Object.keys(conditional)) classes.set(name, 'conditional');
+  const methods = Object.getOwnPropertyNames(Object.getPrototypeOf(target) as object).filter((name) => name !== 'constructor' && typeof (target as Record<string, unknown>)[name] === 'function');
+  const unclassified = methods.filter((name) => !classes.has(name));
+  const unknown = [...classes.keys()].filter((name) => !methods.includes(name));
+  if (unclassified.length > 0 || unknown.length > 0) throw new QandeelError('VALIDATION_FAILED', 'founder store signalling contract is out of date', { store: target.constructor.name, unclassified: unclassified.join(','), unknown: unknown.join(',') });
+  const out: Record<string, unknown> = {};
+  for (const name of methods) {
+    const fn = (target as Record<string, (...args: unknown[]) => unknown>)[name] as (...args: unknown[]) => unknown;
+    const kind = classes.get(name);
+    if (kind === 'read') out[name] = (...args: unknown[]) => fn.apply(target, args);
+    else if (kind === 'mutating') out[name] = (...args: unknown[]) => { const result = fn.apply(target, args); changed(); return result; };
+    else out[name] = (...args: unknown[]) => { const result = fn.apply(target, args); if (conditional[name]?.(result)) changed(); return result; };
+  }
+  return Object.freeze(out) as unknown as T;
 }
 
 const clampInt = (v: number | undefined, d: number, min: number, max: number): number => {
@@ -695,39 +732,36 @@ export class CompanyRuntime {
   /**
    * C5 Founder surface administration: sessions (hashes only), Goals, Founder-facing communication,
    * Founder Attention, governed action previews and the derived Company Universe projection. A capability
-   * object like `org`: it executes and claims nothing; every write signals the dispatcher (a Founder message
-   * creates the reply Work Item; a confirmed approval releases work). Founder-authority writes fail closed
-   * outside a verified session (`auth.withSession`) — holding this object grants nothing.
+   * object like `org`: it executes and claims nothing. Founder-authority writes fail closed outside a
+   * verified session (`auth.withSession`) — holding this object grants nothing.
+   *
+   * The change-signalling contract (D-C5-17): "the Founder's world changed" is announced — and the dispatcher
+   * woken — only after a successful mutation, once. A read announces nothing and wakes nothing; a call that
+   * throws announces nothing; attention reconciliation announces only when it opened, signalled or resolved
+   * an item. Every method is classified explicitly (`signalling`); an unclassified one is refused at
+   * construction, never defaulted to a write. The surface subscribes to these announcements and refreshes
+   * itself with reads: reads that announced would close that loop into a refresh storm.
    */
   get founder(): FounderAdmin {
     if (!this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
     if (!this.#founderAdmin) {
-      const wake = (): void => {
+      const changed = (): void => {
         this.#wake.signal();
         this.#founderChanged();
       };
-      const wrap = <T extends object>(target: T): T =>
-        new Proxy(target, {
-          get(t, prop, receiver) {
-            const v = Reflect.get(t, prop, receiver) as unknown;
-            if (typeof v !== 'function') return v;
-            return (...args: unknown[]) => {
-              try {
-                return (v as (...a: unknown[]) => unknown).apply(t, args);
-              } finally {
-                wake();
-              }
-            };
-          },
-        });
       const s = this.#store;
       const auth = FounderAuthStore.for(s);
       this.#founderAdmin = Object.freeze({
         auth,
-        goals: wrap(GoalStore.for(s)),
-        communications: wrap(CommunicationStore.for(s)),
-        attention: wrap(AttentionStore.for(s)),
-        actions: wrap(FounderActionStore.for(s, auth)),
+        goals: signalling(GoalStore.for(s), changed, { mutating: ['propose', 'transition', 'linkWork', 'unlinkWork'], reads: ['get', 'list', 'history', 'links', 'stateAt'] }),
+        communications: signalling(CommunicationStore.for(s), changed, { mutating: ['openThread', 'directThread', 'send', 'requestCeoBrief', 'closeThread'], reads: ['thread', 'threads', 'message', 'messages', 'messageMeta', 'pendingReplies', 'health'] }),
+        attention: signalling(AttentionStore.for(s), changed, {
+          mutating: ['dismiss'],
+          reads: ['list', 'openAt', 'health'],
+          // Reconciliation is idempotent: a stable world reports zero deltas and stays silent.
+          conditional: { sync: (report) => { const r = report as AttentionSyncReport; return r.opened + r.signalled + r.resolved > 0; } },
+        }),
+        actions: signalling(FounderActionStore.for(s, auth), changed, { mutating: ['preview', 'confirm', 'reject', 'expireStale'], reads: ['get', 'list', 'employeeBudgetId'] }),
         universe: (options: { at?: string } = {}): CompanyUniverse => {
           if (options.at !== undefined && !isTimestamp(options.at)) throw new QandeelError('VALIDATION_FAILED', 'at must be a canonical UTC timestamp', { field: 'at' });
           return projectUniverse(s, options.at === undefined ? {} : { at: options.at });

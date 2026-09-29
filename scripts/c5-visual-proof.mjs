@@ -398,6 +398,34 @@ try {
     results.spike.lineLayer = detail;
     return detail;
   });
+  await step('spike-surface-idle-after-selection', async () => {
+    // The refresh-storm proof (D-C5-17): a selection and a return are the interaction that used to start it. The
+    // surface refreshes on the runtime's "changed" announcement and refreshes with Founder reads; while reads
+    // announced, one selection meant hundreds of requests a second, forever. After the return and a grace
+    // period for the return's own refresh, an idle surface must stop asking: at most one refresh cycle (a
+    // universe read and its companions) may still land in three seconds, never a storm.
+    const api = (list) => list.filter((u) => u.includes('/api/'));
+    const cycles = (list) => list.filter((u) => u.includes('/api/universe')).length;
+    await click(`.card[data-id="employee:${ceo}"]`);
+    await waitUntil(`!document.getElementById('focus').hidden && document.querySelector('#focus .sheet-title')`, 10_000);
+    await settle(400);
+    const whileOpen = requests.length;
+    await settle(1500);
+    const openIdle = api(requests.slice(whileOpen));
+    await escape();
+    await waitUntil(`document.documentElement.dataset.lens === 'LIVE'`, 10_000);
+    await settle(1000);
+    const from = requests.length;
+    await settle(3000);
+    const idle = api(requests.slice(from));
+    const byPath = {};
+    for (const u of idle) { const p = u.replace(/^https?:\/\/[^/]+/, '').replace(/[0-9a-f-]{36}/g, ':id').replace(/\?.*$/, ''); byPath[p] = (byPath[p] ?? 0) + 1; }
+    if (cycles(openIdle) > 1 || openIdle.length > 6) throw new Error(`the surface keeps refreshing while a sheet is open and nothing changes: ${openIdle.length} API requests in 1.5 s (${cycles(openIdle)} refresh cycles)`);
+    if (cycles(idle) > 1 || idle.length > 5) throw new Error(`the surface keeps refreshing while idle after a selection: ${idle.length} API requests in 3 s, ${cycles(idle)} refresh cycles: ${JSON.stringify(byPath)}`);
+    const detail = { sheetOpenIdleMs: 1500, apiRequestsWhileSheetOpen: openIdle.length, idleMs: 3000, apiRequestsWhileIdle: idle.length, refreshCyclesWhileIdle: cycles(idle), byPath };
+    results.spike.idle = detail;
+    return detail;
+  });
   await step('spike-reduced-motion-parity', async () => {
     // Parity of meaning, not of pixels: every card, goal, column name and line that Company Live shows in full
     // motion is still shown in reduced motion; only the tweens and the ambient drift go.

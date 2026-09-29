@@ -309,7 +309,8 @@ command on any CLI: a Founder reference is not authentication.
   `--before <previous proof dir>` adds a before/after board. `npm run c5:spike -- --workspace <dir>` runs only
   the technical smoke checks (the company surface renders — spine, five columns, goals, execution lines;
   English application with content as written; selection / focus / return; the line layer bounded across
-  redraws; reduced-motion parity, state-aware of the runner's own preference; no external asset). Every
+  redraws; the surface idle after a selection and return (no refresh storm); reduced-motion parity,
+  state-aware of the runner's own preference; no external asset). Every
   DevTools command the harness sends is bounded (`QANDEEL_CDP_TIMEOUT_MS`, default 20 s) and a command the
   browser never answers fails naming the method, the helper and the step, with the browser's process tree and
   log tail; every step records the timing of each helper call, and the browser's product and GPU backend are

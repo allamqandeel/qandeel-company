@@ -823,3 +823,90 @@ through the CSSOM). Recorded as a residual for a bounded visual correction with 
 - **MINOR (Product, visual):** the Department tint on context-sheet avatars and chips is blocked by the CSP
   (§24.7); the fix is to set `--dept` through `el.style.setProperty` as the columns do. Not changed here.
 - The 4 fps walkthrough (§23.3) stays a proof-only MINOR.
+
+## 25. The Founder change-signalling contract: the refresh storm (QANDEEL_COMPANY_C5_FOUNDER_CHANGE_SIGNAL_REFRESH_STORM_CORRECTION)
+
+Starting exact head `ab6d40d4698b6b0bae5f548644f5116aeb01889e`. The exact-head run on the GPU-less harness
+left Windows red for the deeper cause, which the runner's own log then named: the context sheet was rebuilt
+every ≈35 ms after a selection. Measured on the real surface on the Founder's host: idle after load **0
+requests / 4 s**; one CEO selection **605 requests / 4 s** (121 refresh cycles of universe + attention +
+calendar + timeline + employee); after Escape **720 / 4 s** (180 cycles), indefinitely; 955 then 1 468
+"Founder changed" announcements per 3 s. A fast host absorbs it invisibly (and burns CPU and SQLite reads
+forever after the first click); the runner's renderer saturates (185 CPU-seconds) and the browser wedges.
+
+### 25.1 The old contract (the defect)
+
+`CompanyRuntime.founder` wrapped `GoalStore`, `CommunicationStore`, `AttentionStore` and `FounderActionStore`
+in one generic Proxy: every function call ran `wake()` in `finally`, and `wake()` both signalled the
+dispatcher and announced "the Founder's world changed". So a pure read, a call that threw, and a zero-delta
+attention reconciliation all announced. The surface subscribes to those announcements, broadcasts SSE
+`changed`, refreshes, and the refresh itself performs Founder reads (`attention.sync` inside GET /api/universe,
+`communications.threads` inside GET /api/employees/:id, `goals.list`): a closed loop at API latency. It did not
+start at load only because the EventSource connects after the first refresh; the first interaction started it
+and nothing ended it.
+
+### 25.2 The new contract (D-C5-17, `packages/runtime/src/runtime.ts`)
+
+"The Founder's world changed" is announced — and the dispatcher woken — only after a **successful mutation**,
+once; a **read** announces nothing and wakes nothing; a call that **throws** announces nothing; **attention
+reconciliation** announces only when `opened + signalled + resolved > 0` and a stable world reconciles in
+silence; `founder.universe()` stays a pure projection. The generic Proxy is gone: `signalling(store, changed,
+contract)` builds each capability from an **explicit, audited classification** of every public method and
+refuses at construction any store method that is unclassified or any classified name that no longer exists
+(nothing is ever defaulted to a write).
+
+| store | mutating (announce once after success) | read-only (silent) | conditional |
+|---|---|---|---|
+| goals | `propose`, `transition`, `linkWork`, `unlinkWork` | `get`, `list`, `history`, `links`, `stateAt` | — |
+| communications | `openThread`, `directThread`, `send`, `requestCeoBrief`, `closeThread` | `thread`, `threads`, `message`, `messages`, `messageMeta`, `pendingReplies`, `health` | — |
+| attention | `dismiss` | `list`, `openAt`, `health` | `sync`: announce only on a delta |
+| actions | `preview`, `confirm`, `reject`, `expireStale` | `get`, `list`, `employeeBudgetId` | — |
+
+Store transaction semantics, the auth/security model, migration 0009, the attention and goal Product
+semantics, the surface and its refresh logic are unchanged; **no UI debounce or coalescing was added**
+(a masked producer would hide the next real event bug). An explicit user mutation that is internally a replay
+still announces once, bounded, as the task allows.
+
+### 25.3 Proofs
+
+`packages/runtime/test/c5/c5-founder-signal.test.ts` (5 proofs on the real runtime, `onFounderChange` and
+`diagnostics().wakeSignals` metered): **A.** nineteen representative reads across goals, communications,
+attention, actions and both universe projections → 0 announcements, 0 dispatcher wakes. **B.** four failing
+writes (a bad attention id, an invalid goal transition, an unverified session handle at `actions.confirm`, a
+non-Founder actor at `communications.send`) → each error preserved (`VALIDATION_FAILED` among them), 0
+announcements, 0 wakes. **C.** one `goals.propose` → exactly 1 announcement and 1 wake, delivered after the
+durable write (the goal is already listed inside the handler); two further mutations → exactly 2 more.
+**D.** a stable reconciliation → 0; a proposed company goal reconciled → `opened: 1`, 1 announcement, then two
+more reconciliations → still 1; the goal approved and reconciled → `resolved: 1`, 1 announcement, then silence.
+**Census:** every public method of every store is exactly the classified set; the capability objects are
+frozen. Two new mutations in `c5:mutation` (18/18 caught): reads announcing, and zero-delta sync announcing.
+
+`spike-surface-idle-after-selection` (browser smoke and full proof): select the CEO, hold the sheet open 1.5 s
+(≤ 1 refresh cycle allowed), return, one second of grace, then **three seconds idle with at most one refresh
+cycle and five API requests** — measured **0 / 0** with the fix in both motion conditions; on the previous
+runtime the same step fails (§25.4). The line-layer proof, the state-aware reduced-motion proof, the CDP
+timeouts and diagnostics, and the GPU-less launcher are all unchanged.
+
+### 25.4 Focused validation
+
+Runtime build + typecheck + tests 101/101 (the 5 new proofs included) · command-center tests 9/9 ·
+`eslint --max-warnings=0` clean · `c5:mutation` 18/18 · `c5:acceptance` PASS · `c5:spike` PASS in the host's
+default condition and with `--force-prefers-reduced-motion` (idle 0 requests / 3 s in both, 0 while the sheet
+is open) · the idle proof run against the previous `runtime.ts` (stashed, rebuilt): **FAIL, "210 API
+requests in 1.5 s (42 refresh cycles)" with the sheet open**. GitHub CI on the exact head is the full gate.
+
+### 25.5 Files changed
+
+`packages/runtime/src/runtime.ts` (`signalling`, the `founder` capability), `packages/runtime/test/c5/
+c5-founder-signal.test.ts` (new), `scripts/c5-mutation-check.mjs` (two mutations), `scripts/c5-visual-proof.mjs`
+(the idle proof), `README.md`, this report, `DECISION_LOG.md` (D-C5-17).
+
+### 25.6 G1 — Skills inspected / used
+
+No listed Skill covers a runtime signalling contract; the visual-design, motion and Arabic Skills were
+inspected and not used (no UI, motion, copy or chart changed). The proof harness reused the CDP tooling of
+§24.
+
+### 25.7 Residuals
+
+The CSP inline-style MINOR of §24.8 (out of scope here, recorded); the 4 fps walkthrough (§23.3).

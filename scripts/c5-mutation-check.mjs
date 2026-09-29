@@ -26,8 +26,10 @@ const STORAGE = { cwd: 'packages/storage', tests: ['dist/test/c5-founder-surface
 const SURFACE = { cwd: 'packages/command-center', tests: ['dist/test/surface.test.js'] };
 const SECURITY = { cwd: 'packages/command-center', tests: ['dist/test/security.test.js'] };
 const LAYOUT = { cwd: 'packages/command-center-ui', tests: ['dist/test/layout.test.js'] };
+const SIGNAL = { cwd: 'packages/runtime', tests: ['dist/test/c5/c5-founder-signal.test.js'] };
 
 const STORE = 'packages/storage/dist/src';
+const RT = 'packages/runtime/dist/src';
 const CC = 'packages/command-center/dist/src';
 const UI = 'packages/command-center-ui/dist/src';
 
@@ -127,6 +129,18 @@ const MUTATIONS = [
     gate: 'a Department goal derives only from a Founder-approved company goal',
     edits: [{ file: `${STORE}/goals.js`, search: "if (parent !== null && (parent.kind !== 'COMPANY' || (parent.state !== 'APPROVED' && parent.state !== 'ACTIVE')))", replace: 'if (false)', expectedCount: 1 }],
     runs: [STORAGE],
+  },
+  {
+    id: 'c5-founder-reads-announce-change',
+    gate: 'a Founder read never says the Founder\'s world changed (reads that announced closed the surface\'s refresh into a storm, D-C5-17)',
+    edits: [{ file: `${RT}/runtime.js`, search: "if (kind === 'read')\n            out[name] = (...args) => fn.apply(target, args);", replace: "if (kind === 'read')\n            out[name] = (...args) => { const result = fn.apply(target, args); changed(); return result; };", expectedCount: 1 }],
+    runs: [SIGNAL],
+  },
+  {
+    id: 'c5-zero-delta-attention-sync-announces',
+    gate: 'attention reconciliation announces a change only when it opened, signalled or resolved an item (D-C5-17)',
+    edits: [{ file: `${RT}/runtime.js`, search: 'if (conditional[name]?.(result))\n                changed();', replace: 'changed();', expectedCount: 1 }],
+    runs: [SIGNAL],
   },
 ];
 

@@ -2350,3 +2350,33 @@ canvas with WebCodecs, so no GPU is needed anywhere; the SwiftShader flags were 
 `QANDEEL_BROWSER_GPU=swiftshader` restores the old path for comparison. The browser log also surfaced a MINOR
 Product residual, recorded and not changed: the context sheets set the Department tint through a `style`
 attribute that the surface's own CSP blocks.
+
+## D-C5-17 — The Founder change-signalling contract: reads are silent, failures are silent, a successful mutation announces once, attention reconciliation announces only a delta (Technical Lead, C5; authorized by the Founder)
+
+**Context.** With the harness bounded and GPU-less, the Windows runner's own log named the remaining cause of
+its red smoke: the context sheet rebuilt every ≈35 ms after a selection. On the Founder's host the real
+surface went from 0 requests in 4 s idle to 605 in 4 s after one CEO selection and 720 in 4 s after the
+return, indefinitely (report §25). `CompanyRuntime.founder` wrapped its four stores in a generic Proxy whose
+`finally { wake() }` signalled the dispatcher and announced "the Founder's world changed" after every call —
+reads, failures and zero-delta attention reconciliation included — while the surface refreshes on that
+announcement with Founder reads: a closed loop at API latency, invisible on a fast host, fatal on the runner.
+
+**Decision.** (1) A Founder change announcement means *durable Founder-visible state materially changed*:
+announced, and the dispatcher woken, only after a successful mutation, once. (2) Reads announce nothing and
+wake nothing; a call that throws announces nothing; `attention.sync` announces only when it opened, signalled
+or resolved an item; `founder.universe` stays a pure projection. (3) No generic "every method is a write"
+proxy: `signalling` builds each capability from an explicit classification of every public method (goals:
+`propose`, `transition`, `linkWork`, `unlinkWork` mutate; communications: `openThread`, `directThread`, `send`,
+`requestCeoBrief`, `closeThread`; attention: `dismiss`, with `sync` conditional; actions: `preview`, `confirm`,
+`reject`, `expireStale`; everything else reads) and refuses at construction a method that is unclassified or a
+classified name that no longer exists. (4) No UI debounce or coalescing: the producer's contract is the fix;
+a masked producer would hide the next real event bug and add latency. (5) An explicit user mutation that is
+internally a replay may still announce once, bounded (no redesign of idempotent user commands for C5).
+
+**Consequences.** Five runtime proofs meter `onFounderChange` and `wakeSignals` (reads 0/0; failed writes 0/0
+with errors preserved; a mutation exactly 1/1 after the durable write; stable reconciliation 0, a real delta
+1 then silence; the method census exact and frozen); two `c5:mutation` gates (reads announcing, zero-delta
+sync announcing); the browser smoke proves the real surface idle after a selection and return (0 API
+requests in 3 s, at most one refresh cycle allowed). Store transactions, the auth/security model, migration
+0009, attention and goal semantics, the Tree of Light, layout and motion are unchanged. C5 remains NOT CLOSED
+pending exact-head CI, review and merge by the Technical Lead.
