@@ -1,0 +1,296 @@
+# C5 — Founder Command Center — Attention Orbits / Living Company Universe — Implementation Report
+
+**Status:** IMPLEMENTATION CANDIDATE / NOT CLOSED. C5 closes only after Technical Lead exact-head
+review, green CI, merge, post-merge proof and closure sync. This document is the pre-code design
+gate (sections 1–12) followed by the implementation record.
+
+## 1. Start gate (re-proved from repository truth, 2026-09-29)
+
+| Check | Result |
+|---|---|
+| Repository | `allamqandeel/qandeel-company` (confirmed through `gh api`) |
+| Remote truth | `origin/main` = `ff7f71cc8ed4378469ed23df6f3dadefaba631a8` — equals the expected canonical base. Fetched with GitHub Desktop's signed Git (system Git's HTTPS helper is blocked by Smart App Control on the Founder host, as recorded in `docs/environment/L0_READINESS_DECISION.md`). |
+| PR #8 | C4 implementation, merged 2026-09-28T21:53:37Z as `595083a3a98b4823698ea15eaf3d8efa12965e23` |
+| PR #9 | C4 closure / canonical sync, merged 2026-09-28T21:59:27Z as `ff7f71cc8ed4378469ed23df6f3dadefaba631a8` |
+| Commits on `main` after the expected SHA | none |
+| `docs/C4_CLOSURE_RECORD.md` | "CLOSED / MERGED / CANONICAL" |
+| `docs/architecture/IMPLEMENTATION_MAP.md` | `C5 … Not started` |
+| Working tree | clean before branching |
+| Engines | Node `v24.19.0`, npm `11.17.0` satisfy `>=24.12.0 <25` / `>=11.6.0 <12` |
+| Released migrations | `0001`–`0008` present; their SHA-256 pins are unchanged (re-verified by the storage migration test and `npm run verify` in the focused gate) |
+| Branch | `c5/founder-command-center-attention-orbits` created from exact `ff7f71cc` |
+
+Founder host constraints kept: Windows 11, Node 24 LTS, npm 11, Smart App Control ON, PowerShell,
+signed GitHub Desktop Git, no `tar.exe`, local-first, no Cloud-VM dependency after the task.
+
+## 2. G1 — Skills census
+
+Installed Skills were enumerated from the user skill directory, the plugin cache and the bundled
+set. Used means the Skill's guidance changed a concrete decision in this candidate.
+
+| Skill (as installed) | Used | Exact purpose in C5 |
+|---|---|---|
+| `impeccable` (SKILL.md + audit / critique / craft-floor; its `scripts/context.mjs` is absent on this host) | Yes | Operate-mode framing of the Founder surface; craft-floor checks (contrast, one authored motion moment, themed browser surfaces, no eyebrow labels, no card scaffolds) applied to the focus panel, command palette and attention rail; critique pass before the visual proof |
+| `ui-ux-pro-max` (2.13.0; `search.py` needs Python, which the host lacks — data files read directly) | Yes | `stacks/threejs.csv` (pin exact release, addon imports from the same release, dispose geometries/materials, `setPixelRatio` cap, resize handling), `ux-guidelines.csv` priorities 1–2 (contrast 4.5:1, keyboard navigation, 44px targets, no hover-only affordance), `motion.csv` (context-aware timing, reduced-motion) |
+| `frontend-design` (plugin) | Yes | Visual identity plan for the universe (palette / type / layout / principles) reviewed against the generic-default tells before coding; copy written from the Founder's perspective |
+| `dataviz` (bundled) | Yes | Status encoding by shape + text, never colour alone; categorical Department hues assigned in fixed order; sequential haze for time depth; legend always present for ≥2 encodings |
+| `animate` | Yes | Motion gate: which interactions must not animate (keyboard-initiated palette open, list navigation), easing tokens (`cubic-bezier(0.23,1,0.32,1)` out, `cubic-bezier(0.77,0,0.175,1)` in-out), durations ≤300 ms for UI, camera moves 400–600 ms, transitions over keyframes for interruptible focus changes, `prefers-reduced-motion` parity mode |
+| `emil-design-eng` | Yes | Press feedback (`scale(0.97)`), origin-aware popovers, `transform`/`opacity`-only UI animation, CSS/WAAPI over JS under load |
+| `sibawayh:designing-arabic-frontends` | Yes | `<html lang="ar" dir="rtl">`, Arabic font stack with line-height ≥1.6, logical CSS properties, LTR islands for IDs / SHAs, one numeral policy (`ar-EG` locale through one shared formatter), no letter-spacing on Arabic, icons mirrored by meaning, labels never rendered as WebGL text |
+| `sibawayh:writing-eloquent-arabic` | Yes | All Founder-facing Arabic copy (lens names, attention rail, action preview, errors) written in Arabic structure; register: فصحى for governed confirmations, warm for navigation |
+| `artifact-diagramming` (bundled) | Yes | Architecture / trust-boundary figures in this report |
+| `github-actions` | Yes | CI extension: parallel `c5-ui` job, docs fast path preserved, no `continue-on-error` |
+| `review-animations`, `improve-animations`, `find-animation-opportunities` | Partly | `review-animations` checklist applied as the self-review of the motion layer; the other two are audit tools for existing code and were not needed |
+| `animation-vocabulary` | No | Marketing-motion vocabulary; not an Operate surface concern |
+| `typegpu` | No | WebGPU-only; C5 keeps WebGL2 as the stable primary renderer (section 6) |
+| `prototype`, `detour`, `synced`, `moq-kit`, `fishjam`, `pulsar-haptics`, `radon-mcp`, `rnrepo`, all React Native / Expo Skills | No | Native-mobile or unrelated product areas |
+| `docs`, `docx`, `pptx`, `xlsx`, `pdf`, `morning`, `import-memory`, `setup-writing-style`, `skill-creator` | No | Document formats / assistant features unrelated to C5 |
+
+Relevant Skill families that are **not installed**: a dedicated security-review Skill, a dedicated
+testing / code-review Skill, and a dedicated accessibility-audit Skill. Their concerns were covered
+by the Stage 14 threat-boundary section, the adversarial test set and the accessibility section of
+this report instead.
+
+## 3. Research refresh (bounded, 2026-09-29, primary sources)
+
+| Topic | Finding | Consequence for C5 |
+|---|---|---|
+| TypeScript frontend build tooling | Vite 8.3 depends on `rolldown` and `lightningcss` (native binaries); Vite 5–7 depend on `esbuild` (native binary) and Rollup 4 (native `@rollup/rollup-win32-x64-msvc`). Those binaries are not Authenticode-signed and are blocked by Smart App Control on the Founder host (the same failure family L0 recorded for `tar.exe` and system Git). | **No bundler.** The UI is compiled by the repository's existing `typescript` (pure JS) to native ES2022 modules and served with an import map by the loopback server. |
+| 3D renderer | `three@0.186.1`: MIT, zero dependencies, no install scripts, pure JavaScript ESM (`build/three.module.js`, addons under `examples/jsm`). `WebGPURenderer` exists with automatic WebGL 2 fallback, but its API is still moving between releases. | `three` is the single runtime dependency of the UI package, served locally from `node_modules`. Primary renderer: `WebGLRenderer` (WebGL 2, stable for years). WebGPU is not adopted in C5. |
+| WebGL / WebGPU support and fallback | Edge 154 on the Founder host renders WebGL 2 even headless (SwiftShader). Any WebGL-unavailable case must still show the company. | Graceful fallback: the same universe rendered as SVG 2.5D by the same layout module (section 6). |
+| Arabic / RTL in 3D UI | Signed-distance-field text libraries (`troika-three-text`) ship their own shaper (Typr) without HarfBuzz; Arabic shaping and bidi remain partial. Browsers shape Arabic correctly in HTML/SVG. | Every label, name, number and message is HTML or SVG text positioned from the projected 3D coordinates; WebGL draws only geometry, light and atmosphere. |
+| Graph / spatial layout | A force layout would violate the stable-spatial-memory contract (random on reload). | Deterministic polar layout: radius from seat kind, angle from Department sector plus a stable hash of the seat / employee ID inside the sector; pure function, unit-tested. |
+| Accessibility and reduced motion | WCAG 2.2 keyboard / focus / 2.3.3 (animation from interactions) and `prefers-reduced-motion`. | Entities are real focusable DOM elements (roving tabindex) with accessible names / status; reduced motion is a parity mode (cuts / crossfades, no continuous drift) with every state still visible. |
+| Local-only browser UI security | Current advisories (2025–2026) on loopback servers: DNS rebinding through missing `Host` validation, CSRF against `localhost`, and unauthenticated local APIs. | Loopback bind only; `Host` and `Origin` allow-lists; HttpOnly `SameSite=Strict` session cookie whose value is stored only as a hash; per-session CSRF secret in a custom header for every state change; single-use launch tokens; fail-closed session checks (section 7). |
+| Testing a 3D UI without fragile CI | Pixel snapshots of WebGL are brittle; the Chrome DevTools Protocol is reachable with Node 24's built-in `WebSocket` and `fetch`, and Chrome / Edge exist on GitHub runners and on the Founder host. | Deterministic tests for layout / projection / intents / attention in `node:test`; one headless-browser smoke (boot, WebGL or fallback, selection, focus / return, reduced motion) through CDP with zero dependencies; it fails when no browser is found in CI and reports SKIPPED locally. |
+| Licensing and maintenance | `three` MIT (monthly releases, 15+ years); `@types/three` MIT (DefinitelyTyped, dev-only, pulls small typing-only dependencies). | Two additions total: one runtime (`three`), one dev (`@types/three`). No CDN, no remote asset, no native addon, no desktop shell. |
+
+## 4. Current-state dependency census (what C5 consumes, what it must not touch)
+
+| Existing mechanism | C5 use | Constraint kept |
+|---|---|---|
+| `principals` (`kind = FOUNDER`), `founderAdminWrite` chokepoint in `packages/storage/src/governance.ts` | The production Founder surface arms this chokepoint per verified session (section 7); every C2/C3/C4 Founder act keeps its existing signature | A Founder ref is never authentication (D-C2-13); the test seam stays test-only |
+| `approvals` + `GovernanceStore.decideApproval` | "Needs Me" items and the confirmed `APPROVE` / `REJECT` actions | R4 stays Founder-only and never approvable; R3 needs review and approval; self-approval refused |
+| `org_positions`, `position_assignments` (effective-dated), `run_org_snapshots`, `employees`, `departments` | Rank → radius, Department → sector, seat holders, vacancies, ACTING coverage, time-correct Historical Focus | Read only; organization truth changes only through the C4 acts |
+| `work_items`, `queue_jobs`, `runs`, `work_delegations`, `handoff_messages`, `review_requests`, `review_assignments`, `review_conflicts`, `quality_holds` | Live work, typed live relations (WORK / DELEGATION / SUPPORT / REVIEW / APPROVAL / HANDOFF / ESCALATION), blocked / waiting signals | Read only; edges are drawn only from live rows |
+| `c2.employee-task` governed loop, `ModelProposal`, `runtime-authority` fenced writes | Employee / CEO replies and CEO briefs are produced by governed runs proposing a new `MESSAGE` proposal type, recorded through a fenced write | No ungoverned model call; model output cannot name authority |
+| `queue_jobs` wake triggers, `WakeSignal`, `CompanyRuntime.onEvent` | A Founder message that needs a reply creates a Work Item (the queue trigger advances the wake generation); the UI is pushed a content-free "changed" signal over Server-Sent Events from the same process | No polling loop; no outbox dispatcher added; the `events.aggregate_type` CHECK is untouched (C5 emits audit rows, not new outbox event types) |
+| `OrganizationStore.calendar(from, to)`, `position_assignments.planned_to`, `work_items.due_at`, `approvals.expires_at`, `staffing_requests.decision_due_at`, `review_plans.deadline_at`, Goal horizons (new) | Calendar foundation as a projection | No calendar table |
+| `RELEASED_MIGRATIONS` 0001–0008 (pinned, frozen) | Migration `0009_c5_founder_surface.sql` appended | Released migrations untouched |
+| `scripts/verify-bootstrap.mjs` | Later-scope regexes narrowed to C6 / C7; `command-center*` packages allow-listed; `three` allow-listed for the UI package only; new C5 rules | Every prior rule keeps passing |
+| CI (`.github/workflows/ci.yml`) | UI build / typecheck / lint / tests run inside the existing `static` and `tests` jobs; `c5:acceptance` joins the `acceptance` job; `c5:mutation` shards join the `mutation` matrix on both OSes | No job removed; no `continue-on-error`; the parity gate is extended |
+
+Consumers of the changed modules were enumerated before editing: `governance.ts` (Founder chokepoint) is used by the C2 / C3 / C4 stores and their tests; `proposals.ts` by the model runtime and the employee loop; `runtime.ts` services by `employee-task.ts`; the verifier by CI on every path.
+
+## 5. C5 architecture map
+
+```
+Founder (human, Windows user session)
+   │  browser (Edge / Chrome), http://127.0.0.1:<port>/  — loopback only
+   ▼
+packages/command-center-ui        (browser; tsc → native ESM; three.js WebGL2 + HTML labels; SVG fallback)
+   │  JSON over same-origin fetch + one SSE stream; cookie session + CSRF header
+   ▼
+packages/command-center           (Node; the Founder local application surface)
+   ├── server/   loopback HTTP listener, Host/Origin allow-list, session cookie, CSRF, static files, SSE
+   ├── api/      explicit capabilities only (no "execute anything"): universe, focus, attention, goals,
+   │             threads, command (read intents), previews (mutating intents), confirm, timeline, calendar
+   ├── auth/     launch tokens, sessions (hashes only), fail-closed verification
+   └── cli.ts    `qandeel-founder serve --workspace <dir>` (runtime + surface in one process), `open`
+   ▼
+packages/runtime (CompanyRuntime) ── `founder` admin handle (goals, communications, attention, actions,
+   │                                  sessions, universe projection) — every call signals the dispatcher
+   ▼
+packages/storage                  ── founder-auth.ts (session scope), goals.ts, communications.ts,
+   │                                 attention.ts, founder-actions.ts, universe.ts (read model), 0009 migration
+   ▼
+SQLite/WAL (canonical truth)      ── C1–C4 tables unchanged + C5 tables
+```
+
+The UI never opens SQLite, never holds a `CompanyStore`, never imports `runtime-authority` or the test seam. The surface package holds the `CompanyRuntime` it started and reaches storage only through the runtime's admin handles and the exported stores, exactly like the engineering CLI.
+
+## 6. UI technology decision (technology selection gate)
+
+1. **Framework / build stack:** none. TypeScript (already in the repository) compiles `packages/command-center-ui/src` to ES2022 modules; the page loads them natively through an import map. No React, no Vite, no bundler.
+2. **3D renderer:** `three@0.186.1` `WebGLRenderer` (WebGL 2), served from `node_modules` by the loopback server.
+3. **Stable enough for Strong v1:** `three` core has shipped monthly for 15 years under MIT with zero dependencies; WebGL 2 is universally available on the Founder host's browsers (verified headless on Edge 154). The moving parts (WebGPU, TSL) are not used.
+4. **Dependency count:** one runtime dependency (`three`) in the UI package and one dev dependency (`@types/three`). A hand-written WebGL engine would be more code than the rest of C5 and could not be reviewed in one candidate; a Canvas 2D engine cannot deliver the volumetric atmosphere the Founder asked for.
+5. **Fallback:** the same layout module renders the universe as SVG 2.5D when WebGL 2 is unavailable (or on `?renderer=svg`), with the same labels, selection, focus lenses, attention rail and actions. It is not an Org Chart.
+6. **Arabic / RTL label strategy:** every string is HTML / SVG text (browser shaping and bidi), positioned from projected 3D coordinates; `<html lang="ar" dir="rtl">`; IBM Plex Sans Arabic bundled locally (OFL) with a Windows fallback stack; one numeral policy (`ar-EG`) through one formatter; LTR islands for IDs.
+7. **Windows + Smart App Control:** no native binary anywhere in the build or runtime path; the signed Node runtime serves signed browsers; assets are repository files.
+8. **Rejected alternatives:** Vite / esbuild / Rollup / Rolldown (native binaries blocked by Smart App Control); WebGPU-only (`typegpu`) (no stable fallback story, moving API); `troika-three-text` (partial Arabic shaping); Electron / Tauri (a shell adds signing and update surface without a C5 requirement); a force-directed graph library (violates stable spatial memory; a second graph model).
+
+### Technical spike (before the large build)
+
+The spike is the first cut of the real UI package, not a separate project. It must prove: the scene boots locally from the loopback server; Arabic and English labels are crisp; Founder centre plus three orbit levels render; pointer selection works; camera focus / return works; reduced motion removes continuous motion without losing meaning; no external network asset is loaded (checked by a verifier rule against `http(s)://` in UI sources and by the CSP `default-src 'self'`). Result recorded in section 14.
+
+## 7. Auth boundary (Stage 14 read in full; local threat boundary)
+
+**Threat model.** The adversary is (a) any web page open in any browser on the same machine (DNS rebinding, CSRF, cross-site SSE), (b) any local process that can reach loopback but is not acting for the Founder's Windows user, (c) forged or replayed UI payloads, (d) natural-language text that tries to self-authorize, (e) a stale or stolen session cookie. Out of scope for C5: a compromised Windows user account (that account already owns the SQLite file) and remote access (the surface never leaves loopback).
+
+**Controls.**
+- The listener binds `127.0.0.1` only; `Host` must be `127.0.0.1:<port>` or `localhost:<port>`; every state-changing request must carry `Origin` equal to the server's own origin and the `X-QANDEEL-Founder-CSRF` header equal to the session's CSRF secret; `Sec-Fetch-Site`, when present, must be `same-origin` or `none`. SSE and JSON reads require the session cookie too (nothing is readable anonymously except the launch page).
+- **Launch token:** `qandeel-founder open` (run by the Windows user against the workspace) mints a 32-byte random token, stores only its SHA-256 in `founder_launch_tokens` with a 90-second expiry, and opens `http://127.0.0.1:<port>/launch#<token>` (fragment: never sent to the server as a URL, never logged). The page posts the token once; the server hashes, matches, marks it consumed and issues a session.
+- **Session:** 32-byte random cookie value, `HttpOnly; SameSite=Strict; Path=/`, stored only as SHA-256 in `founder_sessions` with created / expires (8 hours) / last-seen / revoked columns and a per-session CSRF secret (also stored hashed; the plaintext is returned once to the page). Every request re-verifies the hash, expiry and revocation inside storage; on server stop all sessions are revoked. Expired / invalid / revoked → `FOUNDER_SESSION_INVALID` (HTTP 401), fail closed.
+- **Authority binding:** a verified session yields a `FounderSession` value that `founderSessionScope(store, session, fn)` uses to arm the Founder chokepoint synchronously for the duration of `fn` (storage calls are synchronous; nothing else can interleave). Outside that scope every Founder write still fails with `FOUNDER_SURFACE_UNAVAILABLE`. The test seam is untouched and unreachable in production.
+- **Privileged confirmation:** a mutating intent becomes a `founder_action_previews` row (structured, expiring after 10 minutes, bound to the session). Confirmation requires the session, the CSRF header, the preview id and the exact preview fingerprint; only then does the server call the real boundary (`decideApproval`, Goal approval, …) inside the session scope, and the preview is marked `CONFIRMED` with the resulting record id. Natural-language text never mutates anything by itself.
+- **Secrets:** no secret is persisted in plaintext (token and cookie values exist only in memory and in the browser); rows hold hashes. Windows user-scoped protection (DPAPI, proven in L0) is therefore not needed in C5; the seam for a persisted device key is recorded in section 11.
+- **Audit (content-free):** `founder.session_issued`, `founder.session_revoked`, `founder.launch_refused`, `founder.request_refused` (reason codes only), `founder.action_previewed`, `founder.action_confirmed`. Logs carry IDs, codes and counts only (Rule A).
+- **Headers:** CSP `default-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'`, plus `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` on API responses.
+
+## 8. Goal / communication / attention data model (migration 0009)
+
+| Table | Purpose | Key columns / invariants |
+|---|---|---|
+| `goals` | Durable Goal identity (Stage 2 Direction) | `kind` COMPANY / DEPARTMENT; `department_id` iff DEPARTMENT; `title`, `summary`, `success_criteria_json`; `state` DRAFT → PROPOSED → APPROVED → ACTIVE → (PAUSED) → ACHIEVED / CANCELLED / SUPERSEDED; `owner_ref`; `parent_goal_id` (a DEPARTMENT goal derives from a COMPANY goal); `horizon_from`, `horizon_to`; `approved_by_ref` (`founder:*`, required for a COMPANY goal to be APPROVED / ACTIVE — CHECK); `version`; no delete; superseding keeps history |
+| `goal_history` | Append-only lifecycle | `(goal_id, version)` unique, `from_state`, `to_state`, `reason_code`, `actor_ref` |
+| `goal_work_links` | Goal → Work traceability | `(goal_id, work_item_id)` unique; `link_kind` SERVES / DERIVED; `created_by_ref`; no delete (a link is ended with `ended_at`) |
+| `communication_threads` | Founder-facing threads | `kind` FOUNDER_CEO / FOUNDER_EMPLOYEE / CEO_BRIEF; `employee_id`; `context_kind` / `context_ref` (GOAL, WORK_ITEM, DECISION, REVIEW, APPROVAL, DEPARTMENT, INCIDENT); `access_scope` = FOUNDER_ONLY; `state` OPEN / CLOSED |
+| `communication_messages` | Durable messages (company content under a Stage 9 access scope — not telemetry) | `thread_id`, `seq`, `sender_kind` FOUNDER / EMPLOYEE, `sender_ref`, `purpose` (Stage 9 set + BRIEF), `attention_level` INFORMATIONAL / NEEDS_ATTENTION / NEEDS_DECISION / URGENT, `body` ≤ 4000, `body_sha256`, `brief_json` (what / why / recommend / decision) required when `purpose = BRIEF`, `response_required`, `reply_work_item_id` (the governed run that answers a Founder message), `run_id` for Employee messages, `superseded_by`; append-only |
+| `founder_attention_items` | Durable attention state (dedup, cooldown, resolution) | `dedup_key` unique (`approval:<id>`, `brief:<message id>`, `escalation:<delegation id>`, `conflict:<id>`, `thread:<id>`); `lane` NEEDS_ME / CEO_BRIEFS / THREADS; `level`; `source_kind`, `source_ref`; `state` OPEN / RESOLVED / DISMISSED; `first_seen_at`, `last_signal_at`, `signal_count`, `cooldown_until`, `resolved_at`, `resolved_reason` |
+| `founder_launch_tokens` | Single-use browser bootstrap | `token_sha256` unique, `expires_at`, `consumed_at`; hashes only |
+| `founder_sessions` | Authenticated Founder sessions | `token_sha256` unique, `csrf_sha256`, `created_at`, `expires_at`, `last_seen_at`, `revoked_at`, `revoke_reason` |
+| `founder_action_previews` | Governed confirmation boundary | `session_id`, `intent_kind` (closed set), `payload_json`, `fingerprint`, `state` PREVIEW / CONFIRMED / REJECTED / EXPIRED, `expires_at`, `result_ref` |
+
+Nothing above stores a secret (hash columns are named `*_sha256`); no table reuses `handoff_messages`; Message ≠ Decision ≠ Knowledge; Goal ≠ Work Item.
+
+## 9. Read-model projection (`packages/storage/src/universe.ts`)
+
+`projectUniverse(store, { at? })` → `CompanyUniverse`:
+- `founder` (principal ref or `unregistered`), `departments` (canonical order → sector index), `seats` (kind, department, reports-to, status, holder at `at`: PRIMARY / ACTING / vacant, `coversEmployeeId`), `employees` (name, state, seat, department, chain to Founder), `work` (live items with state, owner, department, goal links, blocked / waiting reason), `relations` (typed live edges: DELEGATION, SUPPORT, REVIEW, APPROVAL, HANDOFF, ESCALATION; each with `from`, `to`, `since`, `sourceRef`), `goals` (with anchor Departments), `attention` (open items), `signals` (counts: blocked, waiting review, waiting approval, running), `at`, `live`.
+- Deterministic: every array is sorted by stable IDs; the same store state yields byte-identical JSON.
+- Time-correct: with `at`, seats come from `position_assignments` effective ranges, work / delegation / review states from their history tables, goal states from `goal_history`.
+- Permission-aware: the Founder sees company content (names, titles, message bodies) but never App data (none exists in this repository) and never secrets (none stored). The projection is not canonical truth and is never written back.
+
+The UI layout module (`packages/command-center-ui/src/model/layout.ts`, pure) turns the projection into positions: `radius(kind)` — FOUNDER 0, CEO 1, DIRECTOR 2, MANAGER / LEAD 3, SPECIALIST 4; `sector(department)` — five equal angular sectors in canonical order plus a narrow company sector for company-scoped seats; the angle inside a sector comes from a stable hash of the seat code (seats, not people, own the angle: a transfer moves the person to the new seat's angle and a vacancy keeps its place); goals sit outside ring 4 at the mean angle of their Departments; attention items settle in the zone between the centre and ring 1.
+
+## 10. C1–C4 backward integration matrix
+
+| Contract | How C5 preserves it | Proof |
+|---|---|---|
+| C1 durable Work Items / runs, leases and fencing | Replies are Work Items processed by the governed loop; C5 fenced writes present the job fence; the surface never claims work | storage `c5-founder-surface.test.ts`, runtime `c5/c5-runtime.test.ts` |
+| C1 event-driven waiting, no polling | Reply work is enqueued through `queue_jobs` (wake triggers); the UI stream is pushed from the process that wrote | runtime test; verifier `no-network-in-runtime-code` still scans everything outside the surface listener |
+| C1 recovery / backups | New tables are STRICT, append-only history, no delete; `backup_records` unchanged | migrations test; acceptance restart step |
+| C2 Employee ≠ Model ≠ Session; R0–R4; Founder approval semantics | `decideApproval` unchanged; Founder authority only inside a verified session scope | storage `c5-founder-surface.test.ts` (a ref is not auth; an expired session fails closed), command-center `surface.test.ts` |
+| C2 budgets / tool governance / provider neutrality | Untouched; replies spend from the Employee's budget like any task | runtime test |
+| C3 Memory ≠ Truth; context assembly; no ungoverned model call | The reply run's context is assembled by C3; the Founder message reaches the model only as the Work Item's instructions | runtime test |
+| C4 CEO company scope, five Departments, Position / Assignment truth, time-correct attribution, delegation, Review Pool, R3 review + approval, R4 Founder-only, P-07 | Read-only projection; the Review Pool is not a sector; R4 approvals are never offered as confirmable actions | storage `c5-founder-surface.test.ts` (projection, attention), UI `layout.test.ts` |
+| Rule A | New audit / log calls carry IDs, codes, counts; verifier rule `c5-telemetry-content-free` scans the C5 modules for `body`, `title`, `summary`, `text`, `brief` in telemetry calls | verifier self-test + tests |
+
+## 11. C6 / C7 forward seams (nothing implemented here)
+
+- Stable IDs and lineage: `goals.id`, `goal_work_links`, `communication_threads.id`, `founder_attention_items.dedup_key` and `run_id` references let C6 compute outcome / attribution analytics without new identity.
+- The projection carries `signals` counts but no scores; C6 adds analytics behind a separate read model, not by widening `CompanyUniverse`.
+- `communication_threads.context_kind` is an open code set so C7 can add `CHANNEL` / `EXTERNAL` sources without changing meaning; no "the App is the only channel" assumption exists.
+- Auth seam: `founder_sessions` may later bind a DPAPI-protected device key (column reserved by name here, not created).
+
+## 12. Primary risk list
+
+| Risk | Mitigation in this candidate |
+|---|---|
+| Smart App Control blocks a transitive native binary | Only `three` (pure JS) and `@types/three` (types) are added; `npm ci` on the Founder host is part of the focused gate |
+| Session scope arming misused | The scope function is storage-internal, synchronous, and a verifier rule allows its internals only in `founder-auth.ts`; adversarial tests present refs, expired sessions and forged CSRF |
+| Spaghetti at scale | Edges only from live rows, per-lens culling, label LOD; a synthetic 60-employee organization in the layout tests and the scale proof frame |
+| Ambient motion mistaken for company events | The ambient layer has no colour meaning, no direction and no relation to any entity; semantic motion always starts and ends at an entity and is listed in the activity strip |
+| CI fragility of a browser smoke | Deterministic tests cover the logic; the browser smoke runs through CDP with a bounded budget and fails only on genuine boot / selection / fallback failures |
+| Stage 16 absence | Product direction is taken from the C5 brief; open questions are listed in section 16 rather than decided |
+
+---
+
+# Implementation record
+
+## 13. What C5 builds (files, sizes, decisions realized)
+
+| Area | Files | Notes |
+|---|---|---|
+| Storage (C5 modules, ~1 780 lines) | `packages/storage/src/founder-auth.ts`, `goals.ts`, `communications.ts`, `attention.ts`, `founder-actions.ts`, `universe.ts`, `universe-attention.ts`, `founder-records.ts`; `governance.ts` (+ `founderSessionInternals.scope`), `runtime-authority.ts` (+ `recordMessage`, `recordGoalAct`), `index.ts` | One migration `0009_c5_founder_surface.sql`, pinned in `RELEASED_MIGRATIONS` as `803f9eef58fad2afaabbca562c509648aaf59cc21ad647728957fa31d6ab00b1`; `0001`–`0008` untouched |
+| Governance kernel | `packages/governance/src/founder.ts` (goal lifecycle, message vocabulary, attention rules, `classifyFounderIntent`), `proposals.ts` (+ `MESSAGE`, `GOAL_ACTION`) | Pure, deterministic; no I/O |
+| Runtime | `packages/runtime/src/runtime.ts` (`founder` admin handle: `auth`, `goals`, `communications`, `attention`, `actions`, `universe`, `onFounderChange`), `c2/types.ts`, `c2/employee-task.ts` (MESSAGE / GOAL_ACTION proposals executed through fenced writes), `c2/deterministic-fakes.ts` (`defaultScript`, `{ hold, then }` entries) | The dispatcher is signalled by every Founder write; no polling |
+| Founder surface (~1 000 lines) | `packages/command-center/src/security.ts`, `static.ts`, `api.ts`, `server/listener.ts`, `briefing.ts`, `surface.ts`, `cli.ts` | The only network listener in the product; loopback only |
+| Browser UI (~2 300 lines TS + CSS + HTML) | `packages/command-center-ui/src/model/{types,layout,lenses,format}.ts` (pure), `src/app/{main,scene,labels,svg-renderer,panels,api,renderer,launch}.ts`, `public/{index.html,launch.html,styles.css,fonts/…}` | three.js WebGL 2 scene + HTML label layer; SVG 2.5D fallback; IBM Plex Sans Arabic bundled (OFL) |
+| Dependencies | `three@0.186.1` (runtime, UI package only), `@types/three@0.186.0` (dev) | Pure JavaScript; no install scripts; allow-listed in the verifier |
+| Verifier / CI | `scripts/verify-bootstrap.mjs` (5 new rules, later-scope regexes narrowed, `three` allow-list, synthetic-repo fixtures), `.github/workflows/ci.yml` (mutation shards `c5-1of1` on Windows and `c4-c5` on Ubuntu; `c5:acceptance` + `c5:spike` in `acceptance`), `scripts/ci/quality-gate.mjs` (parity covers `c5`) | Nothing removed; no `continue-on-error` |
+| Proof scripts | `scripts/c5-acceptance.mjs`, `scripts/c5-mutation-check.mjs` (16 mutations), `scripts/c5-visual-proof.mjs` + `scripts/c5/{seed-company,cdp,encoder}` | Browser driven through the DevTools Protocol with Node's built-in `WebSocket` / `fetch`; MP4 encoded in-browser with WebCodecs |
+| Tests | `packages/governance/test/c5-kernel.test.ts`, `packages/storage/test/c5-founder-surface.test.ts`, `packages/runtime/test/c5/c5-runtime.test.ts`, `packages/command-center/test/{security,briefing,surface}.test.ts`, `packages/command-center-ui/test/layout.test.ts` | `C5-PROOF` markers required by the verifier |
+
+**Design-gate deltas** (where the implementation names things differently from sections 5–9; recorded rather than silently rewritten):
+
+- The launcher commands are `qandeel-founder serve` and `qandeel-founder launch` (section 5 / 7 said `open`); neither offers a Founder write command.
+- The session scope is entered through `FounderAuthStore.withSession(session, fn)`; `founderSessionInternals.scope` lives in `governance.ts` and is importable by `founder-auth.ts` only (section 7 called it `founderSessionScope`).
+- Ring indices in section 9 map to scene radii `CEO 2.6`, `DIRECTOR 5.4`, `MANAGER / LEAD 8.2`, `SPECIALIST 11`, `GOAL 14.2`, attention `1.35` (D-C5-09); depth is a second rank cue.
+- The CSP carries a per-response nonce for the import map (`script-src 'self' 'nonce-…'`) in addition to the section 7 directives; `Cross-Origin-Opener-Policy: same-origin` is also set.
+- Refusals of a session or launch token are audited in their own transaction *after* the refusing transaction rolled back (an audit row written before the throw would have rolled back with it); the error carries codes only.
+- Attention markers keep their shape and glow on the map at every zoom, but their captions appear only in the Attention lens, when near, or when selected: the rail carries the words, so the CEO orbit never becomes a stack of captions.
+- The seven release-seeded canonical seats (CEO, five Directors, the App Store release lead) show Arabic titles in the UI through a table in `format.ts`; a seat the Founder creates keeps the title it was given.
+- Engineering defaults: launch token 90 s, session 8 h / 2 h idle, preview 10 min, attention re-signal cooldown 4 h, CEO brief cooldown 6 h (D-C5-12 item 4).
+
+## 14. Technical spike result (real UI, headless Edge 154 through CDP, before the large build)
+
+| Check | Result |
+|---|---|
+| Scene boots from the loopback server | PASS — renderer `webgl` (WebGL 2) |
+| Arabic and Latin labels are browser-shaped text with the bundled font | PASS — 9 Arabic labels, 3 Latin labels, font loaded |
+| Founder centre + orbit levels present | PASS — kinds `founder`, `employee`, `goal`, `attention`; 16 labelled levels |
+| No external asset | PASS — 29 requests, 0 external (CSP `default-src 'self'`, verifier rule) |
+| Pointer selection → Employee Focus → return to Live | PASS — selection `إيهاب طارق`, lens `EMPLOYEE`, back `LIVE` |
+| Reduced motion is a parity mode | PASS — the same pinned label set (12) after settling in reduced mode |
+
+The spike checks stay in `npm run c5:spike` and run in CI's acceptance job on both operating systems.
+
+## 15. Validation record (focused during development; one authoritative heavy gate on the final tree)
+
+| Gate | Result on the final tree (2026-09-29) |
+|---|---|
+| `npm run build` / `npm run typecheck` | clean (all workspaces, including the browser UI compiled by tsc) |
+| `npm run lint` | 0 problems (the UI package under its own DOM-globals / no-Node-import rules) |
+| `npm run verify` | 63 / 63 rules; self-test: 62 rules each proved able to fail (the 5 new C5 rules included) |
+| C5 unit / integration suites (`node:test`) | governance 7, UI layout 8, storage 8, runtime 3, command-center 9 → 35 passed, 0 failed |
+| `npm run c5:mutation` | 16 / 16 mutations caught (authority, privacy, truth and confirmation boundaries; none cosmetic) |
+| `npm run c5:acceptance` | `C5 LOCAL ACCEPTANCE — PASS`, 9 / 9 steps, sandbox removed; fake provider only, no network |
+| `npm run c5:visual-proof` | `C5 VISUAL PROOF — PASS`: 6 spike checks, Scenario A–H frames, scale frame (87 nodes, 77 employees, minimum employee spacing 0.85 units, layout 4 ms), `walkthrough.mp4` (33 frames, 8 s, 2.1 MB), `manifest.json` |
+| Authoritative heavy gate `npm ci` + `npm run ci` | see the closing line of this section |
+
+The focused cadence: the C5 suites, the verifier and the spike were re-run after every correction cycle; the heavy gate ran once on the candidate. Correction cycles per root cause never exceeded two (the two largest were the fake-provider routing in the brief proof and the CDP hand-off of the video frames; both are recorded in section 17's process notes where they changed a script).
+
+**Heavy gate result (2026-09-29, Founder host, Node 24.19.0 / npm 11.17.0):** `npm ci` (114 packages, 0 vulnerabilities) then `npm run ci` → **exit 0 in 1 981 s**: build, typecheck, lint, every workspace test (storage 284, runtime 96, governance / UI / command-center suites), mutation checks c1 6/6 · c2 19/19 · c3 40/40 · r1 45/45 · c4 25/25 · c5 16/16 (all caught), verifier 63/63 with self-test. The first attempt of the gate exposed a stale expectation in the C4 migration proof (`applied` must now include 9); after that one-line correction the gate was re-run in full. `npm run c5:acceptance` was then re-run on the gate-built tree: PASS.
+
+## 19. Branch, head and Draft PR
+
+- Branch `c5/founder-command-center-attention-orbits` from base `ff7f71cc8ed4378469ed23df6f3dadefaba631a8`.
+- The exact head SHA and the Draft PR link are recorded in the PR description (a report cannot carry the hash of the commit that contains it). The PR is a **Draft**; it is never merged by the implementer. C6, R2 and C7 are not started.
+
+## 16. Open Product questions (D-C5-12; fail-closed reading implemented)
+
+1. Stage 16 authority is still missing; this candidate follows the C5 brief for lenses, attention lanes and the confirmation boundary.
+2. Which company content the Founder surface should hide (reviewer rationale, staffing evidence): C5 shows objectives, goal text and messages only.
+3. Budget ceilings stated in another currency than the envelope's are refused (`CURRENCY_MISMATCH`); a conversion policy is a Product decision.
+4. The TTL / cooldown defaults listed in section 13 are engineering values.
+5. Department goal derivation is open to every Director seat holder pending Stage 10's reading of Engineering.
+
+## 17. Residuals (all MINOR; none reopens the gate)
+
+- Scope entry (`withSession`) re-checks revocation, expiry and principal but not the idle window; every HTTP request verifies the session (which applies the idle window and refreshes `last_seen_at`) before any scope is entered, so no idle session reaches a write.
+- The SVG fallback is 2.5D without the volumetric atmosphere by design; it keeps every label, lens, action and the attention rail.
+- The walkthrough MP4 needs WebCodecs (Edge / Chrome on the Founder host); CI runs the spike checks only, never the video.
+- `fetch` drops a caller-set `Host` header, so the DNS-rebinding proofs send the forged request over `node:http`.
+- `three` is served from the workspace's own `node_modules`; `npm ci` on the Founder host is part of the acceptance path.
+- The verifier's remote-URL rule exempts `http://www.w3.org/` namespace identifiers (names, never fetched).
+- The C4 migration proof `real released v6 → …` now expects the upgrade to apply `[7, 8, 9]`; every C4 assertion in it (adopted Departments, preserved rows, charters, foreign keys, integrity) is unchanged. No released migration was edited.
+- The walkthrough is encoded as H.264 Constrained Baseline level 4.0 (1440×900 frames; level 3.1 would close the codec) and the frames are handed to the encoder page in ~1 MB DevTools batches. The clip plays at 4 fps (about 8 s from the captured frames).
+- The seeded proof company carries realistic money caps (company 2,000,000 EGP; Department 250,000 EGP; Employee 20,000 EGP) so that Scenario E's "raise the ceiling to 50,000" is a real change inside the Department cap; an instruction that would exceed a parent cap is refused by the engine at confirmation (`BUDGET_EXHAUSTED`, HTTP 409), never silently clamped.
+- Process note: a PowerShell rewrite of the test files during lint clean-up double-encoded their Arabic strings (the host shell reads UTF-8 files as Windows-1252); the damage was reversed byte-exactly, every file was re-verified by Arabic character counts and the suites re-run green. The `.gitattributes` / UTF-8 policy is unchanged.
+
+## 18. G1 — concrete effect of each Skill used
+
+| Skill | Where it changed the candidate |
+|---|---|
+| `impeccable` | Focus panel and attention rail without card scaffolds or eyebrow labels; one authored motion moment (camera focus); themed browser surfaces (`color-scheme: dark`, scrollbar colour) |
+| `ui-ux-pro-max` (three.js stack, UX guidelines, motion) | Pinned `three` release with addon-free imports; `setPixelRatio` capped at 2; geometry / material disposal in `dispose()`; 44 px targets and keyboard paths; context-aware durations |
+| `frontend-design` | Visual identity plan reviewed against the generic-default tells (no warm-cream serif, no acid-green on black, no SaaS card kit); copy from the Founder's perspective; the activity strip's empty state names its job |
+| `dataviz` | Status by shape + words (never colour alone); Department hues assigned in fixed canonical order; legend present |
+| `animate` / `emil-design-eng` / `review-animations` | Keyboard-opened palette does not animate; `cubic-bezier(0.23,1,0.32,1)` / `(0.77,0,0.175,1)` tokens; camera focus 560 ms in-out; `transform` / `opacity` only; press feedback `scale(0.97)`; transitions over keyframes; reduced motion as a parity mode |
+| `sibawayh:designing-arabic-frontends` | `<html lang="ar" dir="rtl">`, bundled IBM Plex Sans Arabic with line-height ≥ 1.6, logical properties, one numeral / calendar policy (`ar-EG-u-ca-gregory`) in one formatter, LTR islands for IDs and codes, no letter-spacing on Arabic, labels never rendered as WebGL text |
+| `sibawayh:writing-eloquent-arabic` | Founder-facing strings written in Arabic structure (rail, focus, preview, empty states, errors); فصحى for governed confirmations, warm register for navigation |
+| `artifact-diagramming` | The architecture figure in section 5 |
+| `github-actions` | Matrix / acceptance changes in `ci.yml` without weakening any gate |
+

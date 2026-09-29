@@ -253,6 +253,54 @@ npm run c4:acceptance -- --workspace "D:\QANDEEL-C4-ACCEPTANCE\run-1"
 - **Result and cleanup:** it prints `C4 LOCAL ACCEPTANCE — PASS` and deletes only what it created.
 - **What it needs:** no credentials, no provider keys, no network.
 
+### C5 local acceptance (Founder host)
+
+```bash
+npm run c5:acceptance -- --workspace "D:\QANDEEL-C5-ACCEPTANCE\run-1"
+```
+
+- **What it proves:**
+  - production fail-closed first: a Founder reference is not authentication, a garbage session is refused,
+    the launcher CLI has no write command, a launch token is single-use and yields a session whose scope
+    arms Founder authority for exactly one synchronous call;
+  - then, through the **test-only** seam standing in for the launch-token session while seeding: a
+    representative organization (CEO, Directors, managers, specialists, a vacant Director seat covered
+    ACTING, vacant specialist seats), live work (running, blocked, awaiting Founder approval, delegated),
+    Goals with Goal → Work links, a Founder ↔ CEO thread answered by the CEO's own governed run, a CEO
+    brief in the Founder Communication Standard;
+  - the Company Universe projection (Founder centre, CEO nearest orbit, five sectors, truthful seats,
+    live-only relations, Goal traceability), deterministic and time-correct;
+  - Founder Attention lanes (Needs Me / CEO Briefs; routine work and plain FYIs excluded; no storm);
+  - the governed confirmation boundary over real loopback HTTP: natural language → structured preview →
+    explicit confirmation; forged CSRF, wrong fingerprint and a foreign Host are refused;
+  - conversation ≠ authority; restart durability with every session revoked; content-free logs / health.
+- **Result and cleanup:** it prints `C5 LOCAL ACCEPTANCE — PASS` and deletes only what it created.
+- **What it needs:** no credentials, no provider keys, no network.
+
+### C5 Founder Command Center (Attention Orbits)
+
+After `npm run build`:
+
+```bash
+node packages/command-center/dist/src/cli.js serve --workspace "D:\QANDEEL-COMPANY\workspace"
+```
+
+It starts the Company runtime and the loopback-only Founder surface in one process and prints a launch URL
+(`http://127.0.0.1:<port>/launch#<token>`; single-use, 90 seconds). Open it in Edge or Chrome on the same
+machine: the browser exchanges the token for a session (hashed at rest, HttpOnly, SameSite=Strict) and lands
+in **Company Live** — the Founder at the centre, the CEO on the nearest orbit, rank as radius, Departments as
+sectors, Goals as external beacons, live work as typed relations, and what needs the Founder inside the CEO
+orbit. `Ctrl+K` opens the command palette (Arabic or English): read commands change focus; a mutating
+instruction becomes a governed preview that the Founder confirms explicitly. `node … cli.js launch --workspace
+<dir> --port <port>` mints a fresh launch URL for a running surface. There is no approve / reject / register
+command on any CLI: a Founder reference is not authentication.
+
+- **Visual proof package (from the real UI):** `npm run c5:visual-proof -- --workspace <disposable dir> --out <dir>`
+  seeds a representative company, drives a headless Edge / Chrome through the DevTools Protocol (no
+  dependency) and writes the Scenario A–H frames, a short walkthrough MP4 (encoded offline in the browser) and
+  a manifest. `npm run c5:spike -- --workspace <dir>` runs only the technical spike checks (scene boots, Arabic
+  labels, orbits, selection / focus / return, reduced-motion parity, no external asset).
+
 ### Engineering CLI
 
 After `npm run build`: `node packages/runtime/dist/src/cli.js <command> --workspace <dir>`.

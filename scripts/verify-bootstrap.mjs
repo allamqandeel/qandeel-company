@@ -92,8 +92,9 @@ const IMPLEMENTATION_MAP = 'docs/architecture/IMPLEMENTATION_MAP.md';
 const C1_CLOSURE = /^docs\/C1_[^/]*CLOSURE[^/]*\.md$/i;
 
 // The change that adds a real package extends this list in the same change. A placeholder
-// package is a verifier failure. C1 added domain, storage and runtime; C2 governance; C3 mind.
-const ALLOWED_PACKAGES = ['bootstrap-contract', 'domain', 'governance', 'mind', 'storage', 'runtime'];
+// package is a verifier failure. C1 added domain, storage and runtime; C2 governance; C3 mind; C5 the
+// Founder Command Center surface (`command-center`) and its browser UI (`command-center-ui`).
+const ALLOWED_PACKAGES = ['bootstrap-contract', 'domain', 'governance', 'mind', 'storage', 'runtime', 'command-center', 'command-center-ui'];
 
 // C1 persistence boundary: `node:sqlite` (a Release Candidate API) is imported by exactly one module.
 const SQLITE_ADAPTER = 'packages/storage/src/sqlite/connection.ts';
@@ -102,7 +103,16 @@ const SQLITE_IMPORT = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\
 const NETWORK_MODULE = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?(?:http|https|http2|net|tls|dgram|dns|dns\/promises|undici|child_process|worker_threads)['"]|\bfetch\s*\(|\bnew\s+(?:WebSocket|XMLHttpRequest)\b/;
 // Runtime dependencies of workspace packages: only sibling workspaces unless a change adds a
 // reviewed exception here (no ORM, provider SDK, queue server, framework or native addon).
+// C5 (D-C5-02): `three` (MIT, pure JavaScript, zero dependencies, no install script) is the one renderer
+// dependency, allowed for the browser UI package only and served from the workspace's own node_modules.
 const ALLOWED_RUNTIME_DEPENDENCIES = [];
+const ALLOWED_PACKAGE_DEPENDENCIES = { 'packages/command-center-ui/package.json': ['three'] };
+// C5: the loopback Founder listener is the ONE network path in the repository, and the browser UI (which
+// runs in the Founder's browser, not in the Company runtime) talks to it with fetch / EventSource.
+const FOUNDER_LISTENER = 'packages/command-center/src/server/listener.ts';
+const UI_SRC = 'packages/command-center-ui/src/';
+// (The W3C XML namespace identifiers, e.g. the SVG namespace, are names, never fetched.)
+const REMOTE_URL = /\bhttps?:\/\/(?!127\.0\.0\.1\b|localhost\b|www\.w3\.org\/)[a-z0-9.-]+/i;
 const MIGRATIONS_DIR = 'packages/storage/migrations/';
 const MIGRATIONS_REGISTRY = 'packages/storage/src/migrations.ts';
 // Non-vacuity contract: the C1 proofs CI must execute. Removing one of these is a verifier failure.
@@ -130,7 +140,7 @@ const STORAGE_EXPORTS = ['.', './runtime-authority', './testing'];
 // D-C2-13: the test-only Founder seam resolves only under the `qandeel-test` export condition, and only
 // tests (plus the acceptance harness) may import it.
 const TEST_CONDITION = 'qandeel-test';
-const TEST_SEAM_HARNESSES = ['scripts/c2-acceptance.mjs', 'scripts/c3-acceptance.mjs', 'scripts/c4-acceptance.mjs'];
+const TEST_SEAM_HARNESSES = ['scripts/c2-acceptance.mjs', 'scripts/c3-acceptance.mjs', 'scripts/c4-acceptance.mjs', 'scripts/c5-acceptance.mjs', 'scripts/c5-visual-proof.mjs', 'scripts/c5/seed-company.mjs'];
 const FOUNDER_SEAM_FILES = ['packages/storage/src/governance.ts', 'packages/storage/src/testing/founder-seam.ts'];
 const CLI_SOURCE = 'packages/runtime/src/cli.ts';
 const AUTHORITY_SUBPATH = '@qandeel-company/storage/runtime-authority';
@@ -175,11 +185,21 @@ const FROZEN_MIGRATIONS = [
   { file: '0005_c3_memory_context.sql', sha256: '2c2f0d8092f108de2596c15e795ba6ba8d17b316761d0ac59e45d8845409e44a' },
   { file: '0006_c3_skills_academy.sql', sha256: 'a4b8709915fbad924212e3278b64d2f58d4d1e40c5ba1ff937cb7c50637d57d8' },
 ];
-// C5 / C6 / C7 subsystems must not appear before their work packages: the Founder Command Center and the
-// Founder ↔ CEO conversation (C5), dashboards (C6), APP-OPS (C7). The organization, Review Pool and delegation
-// are C4's own (C4 schema and code live in the existing storage / governance / runtime packages).
-const LATER_SCOPE_TABLE = /\bCREATE\s+(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(\w*(?:founder_ui|command_center|founder_conversation|ceo_conversation|conversation_thread|dashboard|app_ops|appops)\w*)/i;
-const LATER_SCOPE_PACKAGE = /^(?:command-center|founder-ui|founder-surface|dashboards?|app-ops|appops)$/;
+// C6 / C7 subsystems must not appear before their work packages: dashboards / analytics (C6), APP-OPS (C7).
+// The Founder Command Center, the Goal model, Founder-facing communication and Founder Attention are C5's own
+// (D-C5-01: `command-center*` packages; `goals`, `communication_*`, `founder_*` tables in migration 0009).
+const LATER_SCOPE_TABLE = /\bCREATE\s+(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(\w*(?:dashboard|app_ops|appops|performance_score|employee_score|analytics)\w*)/i;
+const LATER_SCOPE_PACKAGE = /^(?:dashboards?|analytics|app-ops|appops|web-ops|webops)$/;
+// --- C5 boundaries ------------------------------------------------------------------------------
+const C5_REPORT = 'docs/C5_IMPLEMENTATION_REPORT.md';
+const C5_CLOSURE = /^docs\/C5_[^/]*CLOSURE[^/]*\.md$/i;
+const C5_PROOF_MARKERS = ['C5-PROOF: c5-kernel', 'C5-PROOF: founder-surface', 'C5-PROOF: runtime-c5', 'C5-PROOF: founder-listener', 'C5-PROOF: attention-orbits-layout'];
+const C5_MUTATION_CHECK = 'scripts/c5-mutation-check.mjs';
+// The production Founder session scope is entered only by the auth module (a session, never a ref, arms it).
+const FOUNDER_AUTH = 'packages/storage/src/founder-auth.ts';
+// Rule A for C5: message bodies, briefs, goal text and command text never enter audit, events or logs.
+const C5_WRITERS = ['founder-auth', 'goals', 'communications', 'attention', 'founder-actions', 'universe'].map((m) => `packages/storage/src/${m}.ts`);
+const C5_CONTENT_IN_TELEMETRY = /\b(?:appendAudit|appendEvent|\.(?:info|warn|error|debug)|this\.#log|log)\s*\([^\n]*[{,]\s*(?:body|brief|title|summary|text|instructions|happening|matters|recommendation|decision|successCriteria|objective)\s*[,:}]/;
 const C2_PROOF_MARKERS = ['C2-PROOF: governance-kernel', 'C2-PROOF: storage-governance', 'C2-PROOF: concurrent-reservations', 'C2-PROOF: governed-runtime', 'C2-PROOF: governed-crash-recovery'];
 const C2_MUTATION_CHECK = 'scripts/c2-mutation-check.mjs';
 
@@ -272,6 +292,13 @@ const MUTATION_PINS = {
       'c4-quality-hold-ignored-in-selection', 'c4-decision-not-rechecked', 'c4-stale-subject-decision-counts', 'c4-action-review-gate-removed', 'c4-action-review-reusable', 'c4-rejected-action-rereviewed',
       'c4-review-wait-not-rechecked', 'c4-delegation-wait-free-wake', 'c4-open-handoff-completes', 'c4-p07-reservation-unchecked', 'c4-p07-router-unfiltered', 'c4-p07-release-covers-future',
       'c4-acting-never-expires', 'c4-acting-authority-outlives-cover', 'c4-ceo-needs-department', 'c4-calibration-counted-twice', 'c4-promotion-without-evidence', 'c4-org-managed-reassignable', 'c4-staffing-alternatives-optional',
+    ],
+  },
+  [C5_MUTATION_CHECK]: {
+    script: 'c5:mutation',
+    ids: [
+      'c5-founder-ref-is-authentication', 'c5-session-expiry-ignored', 'c5-session-scope-stays-armed', 'c5-csrf-gate-removed', 'c5-host-gate-removed', 'c5-text-mutates-without-confirmation', 'c5-preview-fingerprint-unchecked',
+      'c5-rank-radius-inverted', 'c5-department-sector-collapsed', 'c5-goal-work-link-dropped', 'c5-attention-widened-to-routine', 'c5-message-grants-authority', 'c5-message-body-in-audit', 'c5-history-uses-current-truth', 'c5-r4-offered-as-approvable', 'c5-company-goal-without-founder',
     ],
   },
   // R1 Independent Core Review: one mutation per fixed finding (docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md).
@@ -592,9 +619,10 @@ export const RULES = [
   },
   {
     id: 'no-network-in-runtime-code',
+    // C5: the loopback Founder listener and the browser UI are the two exceptions (rule `founder-listener-loopback-only`).
     check: ({ files, read }) =>
       files
-        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && NETWORK_MODULE.test(read(f) ?? ''))
+        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && f !== FOUNDER_LISTENER && !f.startsWith(UI_SRC) && NETWORK_MODULE.test(read(f) ?? ''))
         .map((f) => `${f} opens a network path or spawns processes (C1 runtime code has neither)`),
   },
   {
@@ -603,8 +631,33 @@ export const RULES = [
       allManifests({ files, read }).flatMap(([f, m]) => {
         const deps = Object.keys({ ...m.dependencies, ...m.optionalDependencies, ...m.peerDependencies });
         if (f === 'package.json') return deps.map((d) => `root package.json declares runtime dependency ${d} (devDependencies only)`);
-        return deps.filter((d) => !d.startsWith('@qandeel-company/') && !ALLOWED_RUNTIME_DEPENDENCIES.includes(d)).map((d) => `${f} depends on ${d}, which is not an allowlisted runtime dependency`);
+        const allowed = [...ALLOWED_RUNTIME_DEPENDENCIES, ...(ALLOWED_PACKAGE_DEPENDENCIES[f] ?? [])];
+        return deps.filter((d) => !d.startsWith('@qandeel-company/') && !allowed.includes(d)).map((d) => `${f} depends on ${d}, which is not an allowlisted runtime dependency`);
       }),
+  },
+  {
+    id: 'founder-listener-loopback-only',
+    // C5 (Stage 12 §47–§49): the one listener binds 127.0.0.1 only, never a wildcard or LAN address; nothing
+    // else in the surface package imports a network module; the UI loads no remote asset (no CDN, no font
+    // host, no analytics) and never spawns processes or touches SQLite.
+    check: ({ files, read }) => {
+      const problems = [];
+      const listener = read(FOUNDER_LISTENER);
+      if (listener !== undefined) {
+        if (!/host:\s*LOOPBACK_HOST/.test(listener) || !/LOOPBACK_HOST\s*=\s*'127\.0\.0\.1'/.test(read('packages/command-center/src/security.ts') ?? '')) problems.push(`${FOUNDER_LISTENER} does not bind the loopback host constant (127.0.0.1)`);
+        if (/['"](?:0\.0\.0\.0|::|::0)['"]/.test(listener) || /\.listen\(\s*\d/.test(listener)) problems.push(`${FOUNDER_LISTENER} binds a non-loopback address`);
+        if (/child_process|worker_threads|node:sqlite/.test(listener)) problems.push(`${FOUNDER_LISTENER} spawns processes or reaches SQLite`);
+      }
+      for (const f of files.filter((x) => x.startsWith('packages/command-center/src/') && x !== FOUNDER_LISTENER && isCode(x))) {
+        if (NETWORK_MODULE.test(read(f) ?? '')) problems.push(`${f} opens a network path outside the loopback listener`);
+      }
+      for (const f of files.filter((x) => (x.startsWith(UI_SRC) || x.startsWith('packages/command-center-ui/public/')) && /\.(?:[cm]?[jt]s|html|css)$/i.test(x))) {
+        const text = (read(f) ?? '').replace(/^\s*(?:\/\/|\*|\/\*|<!--).*$/gm, '');
+        if (REMOTE_URL.test(text)) problems.push(`${f} references a remote URL (the Founder UI loads no remote asset)`);
+        if (/node:(?:sqlite|child_process|fs|net|http)/.test(text)) problems.push(`${f} imports a Node module in the browser UI`);
+      }
+      return problems;
+    },
   },
   {
     id: 'migrations-immutable',
@@ -914,6 +967,69 @@ export const RULES = [
     },
   },
   {
+    id: 'c5-proofs-present',
+    check: ({ files, read }) => {
+      const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
+      const problems = C5_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
+      if (!files.includes(C5_MUTATION_CHECK)) problems.push(`missing ${C5_MUTATION_CHECK}`);
+      const ci = json(read('package.json'))?.scripts?.ci ?? '';
+      if (!/\bc5:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c5:mutation');
+      return problems;
+    },
+  },
+  {
+    id: 'c5-not-claimed-closed',
+    // C5 is an implementation candidate; it is closed only in the change that adds its record, and C6 / C7 /
+    // R2 do not start before it. No Stage 16 source is invented meanwhile (authority-import-integrity).
+    check: ({ files, read }) => {
+      if (files.some((f) => C5_CLOSURE.test(f))) return [];
+      const problems = [];
+      const map = read(IMPLEMENTATION_MAP);
+      const c5 = mapState(map, 'C5');
+      if (c5 !== undefined && /\bCLOSED\b/i.test(c5.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`C5 is marked ${JSON.stringify(c5)} but no docs/C5_*CLOSURE*.md record exists`);
+      const report = read(C5_REPORT);
+      if (report !== undefined && /\bC5\s*(?:—|-|:|is)?\s*CLOSED\b/i.test(report.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`${C5_REPORT} claims C5 is closed without a closure record`);
+      for (const id of ['C6', 'R2', 'C7']) {
+        const st = mapState(map, id);
+        if (st !== undefined && st !== 'Not started') problems.push(`${id} is ${JSON.stringify(st)} before C5 has a closure record`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'founder-session-scope-confined',
+    // C5 (D-C5-03): a Founder ref is still not authentication. The production session scope is entered only by
+    // the auth module; the surface package and the runtime never arm the chokepoint themselves, never mint or
+    // redeem a session outside the auth store, and the CLI still offers no Founder write command.
+    check: ({ files, read }) => {
+      const problems = [];
+      for (const f of files.filter((x) => /^packages\/[^/]+\/src\//.test(x) && isCode(x))) {
+        const text = (read(f) ?? '').replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, '');
+        if (f !== FOUNDER_AUTH && f !== 'packages/storage/src/governance.ts' && /\bfounderSessionInternals\b/.test(text)) problems.push(`${f} reaches the Founder session scope internals (only ${FOUNDER_AUTH} may)`);
+        if (f.startsWith('packages/command-center/src/') && /founder:[0-9a-f-]{36}|founder:unauthenticated/.test(text)) problems.push(`${f} carries a literal Founder reference (a ref is not authentication)`);
+        if (f.startsWith('packages/command-center/src/') && /INSERT\s+INTO\s+founder_sessions|UPDATE\s+founder_sessions/.test(text)) problems.push(`${f} writes sessions outside the auth store`);
+      }
+      const auth = read(FOUNDER_AUTH);
+      if (auth !== undefined) {
+        // The session INSERT binds only hashes: a bare `cookieValue` / `csrf` / `token` argument (not wrapped in `hash(`)
+        // would store the secret itself.
+        if (!/token_sha256/.test(auth) || /INSERT INTO founder_sessions[^;]*?(?<!hash\()\b(?:cookieValue|csrf|token)\s*[,)]/.test(auth)) problems.push(`${FOUNDER_AUTH} must store session tokens as SHA-256 hashes only`);
+        if (!/SameSite|revokeAll|expires_at/.test(auth + (read('packages/command-center/src/security.ts') ?? ''))) problems.push('the Founder surface lacks session expiry / revocation / SameSite cookies');
+      }
+      const cli = read('packages/command-center/src/cli.ts');
+      if (cli !== undefined && /case\s+['"](?:approve|reject|register-founder|decide|confirm)['"]/.test(cli)) problems.push('packages/command-center/src/cli.ts exposes a Founder write command (a ref is not authentication)');
+      return problems;
+    },
+  },
+  {
+    id: 'c5-telemetry-content-free',
+    // Rule A for C5: message bodies, briefs, goal titles / summaries, command text never enter audit, events or logs.
+    check: ({ files, read }) =>
+      files
+        .filter((f) => (C5_WRITERS.includes(f) || f.startsWith('packages/command-center/src/')) && isCode(f) && C5_CONTENT_IN_TELEMETRY.test(read(f) ?? ''))
+        .map((f) => `${f} passes content into audit / events / logs (Rule A)`),
+  },
+  {
     id: 'organization-writes-confined',
     // Durable C4 state changes only in the C4 storage modules; model output reaches it only through the
     // fenced runtime-authority acts; runtime code and the CLI never call a Founder organization / review act;
@@ -997,7 +1113,7 @@ export const RULES = [
         for (const os of CI_OPERATING_SYSTEMS) if (!job.includes(os)) problems.push(`${id} does not run on ${os}`);
       }
       const acceptance = ciJob(wf, 'acceptance') ?? '';
-      for (const c of ['c1', 'c2', 'c3', 'c4']) if (!new RegExp(`npm run ${c}:acceptance`).test(acceptance)) problems.push(`acceptance does not run ${c}:acceptance`);
+      for (const c of ['c1', 'c2', 'c3', 'c4', 'c5']) if (!new RegExp(`npm run ${c}:acceptance`).test(acceptance)) problems.push(`acceptance does not run ${c}:acceptance`);
       const tests = ciJob(wf, 'tests') ?? '';
       if (!/npm run test\b/.test(tests)) problems.push('tests must run every workspace test');
       const stat = ciJob(wf, 'static') ?? '';
@@ -1221,6 +1337,8 @@ const synthMutationScript = (ids) =>
   ].join('\n');
 const SYNTH_QUEUE ="export interface ClaimOptions {\n  readonly workerId: string;\n  readonly supervisor: SupervisorFence;\n}\n";
 const SYNTH_STORE = 'export class CompanyStore {\n  static open(root: string): CompanyStore {\n    return new CompanyStore();\n  }\n  wake(id: string): boolean {\n    return true;\n  }\n  readView(): CompanyReadView {\n    return view;\n  }\n}\n';
+const SYNTH_LISTENER = "import { createServer } from 'node:http';\nimport { LOOPBACK_HOST } from '../security.js';\nthis.#server.listen({ host: LOOPBACK_HOST, port: this.#port, exclusive: true }, () => resolve());\n";
+const SYNTH_AUTH = "import { founderSessionInternals } from './governance.js';\nctx.db.run('INSERT INTO founder_sessions (id, token_sha256, csrf_sha256, founder_ref, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)', id, hash(cookieValue), hash(csrf), founderRef, at, expiresAt);\nrevokeAll(reasonCode) {}\n";
 const SYNTH_RUNTIME = [
   "import { CompanyStore, type CompanyReadView } from '@qandeel-company/storage';",
   "import { claimNext } from '@qandeel-company/storage/runtime-authority';",
@@ -1244,7 +1362,7 @@ function syntheticRepo(overrides = {}) {
     [AUTHORITY_INDEX]: `## Missing\n\n**${STAGE_16_MISSING}.**\n`,
     [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT)),
     [SYNTH_SOURCE]: SYNTH_SOURCE_TEXT,
-    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation' } }),
+    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation' } }),
     'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'node --test dist/test' } }),
     'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'packages/bootstrap-contract': {}, 'node_modules/tar': { version: '7.0.0' } } }),
     '.gitattributes': '* text=auto eol=lf\n*.sh text eol=lf\n*.ps1 text eol=crlf\n*.png binary\n',
@@ -1289,6 +1407,14 @@ function syntheticRepo(overrides = {}) {
     // C4: proofs and the pinned C4 mutation check.
     'packages/runtime/test/c4/proofs.test.ts': C4_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
     [C4_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C4_MUTATION_CHECK].ids),
+    // C5: proofs, the pinned C5 mutation check, the loopback listener, the auth store and a clean UI.
+    'packages/runtime/test/c5/proofs.test.ts': C5_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
+    [C5_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C5_MUTATION_CHECK].ids),
+    [FOUNDER_LISTENER]: SYNTH_LISTENER,
+    'packages/command-center/src/security.ts': "export const LOOPBACK_HOST = '127.0.0.1';\nexport function sessionCookie(v) { return `${v}; HttpOnly; SameSite=Strict`; }\n",
+    [FOUNDER_AUTH]: SYNTH_AUTH,
+    'packages/command-center-ui/src/app/api.ts': "const res = await fetch(path, init);\n",
+    'packages/command-center-ui/package.json': JSON.stringify({ private: true, dependencies: { three: '0.186.1' }, scripts: { test: 'npm run build && node ../../scripts/run-node-tests.mjs' } }),
     [CONTEXT_ASSEMBLER]: SYNTH_ASSEMBLER,
     [MODEL_RUNTIME]: SYNTH_MODEL_RUNTIME,
     [RUNTIME_TYPES]: SYNTH_TYPES,
@@ -1462,16 +1588,45 @@ const VIOLATIONS = {
     { remove: [`${MIGRATIONS_DIR}0005_c3_memory_context.sql`] },
   ],
   'no-later-scope-leakage': [
-    { contents: { [`${MIGRATIONS_DIR}0005_c3.sql`]: `${SYNTH_C3_SQL}CREATE TABLE command_center_panels (id TEXT) STRICT;\n` } },
-    { contents: { [`${MIGRATIONS_DIR}0004_c2.sql`]: 'CREATE TABLE IF NOT EXISTS ceo_conversation_threads (id TEXT) STRICT;\n' } },
+    { contents: { [`${MIGRATIONS_DIR}0005_c3.sql`]: `${SYNTH_C3_SQL}CREATE TABLE employee_performance_scores (id TEXT) STRICT;\n` } },
+    { contents: { [`${MIGRATIONS_DIR}0004_c2.sql`]: 'CREATE TABLE IF NOT EXISTS reporting_analytics_runs (id TEXT) STRICT;\n' } },
     { contents: { [`${MIGRATIONS_DIR}0004_c2.sql`]: 'CREATE TABLE kpi_dashboard_tiles (id TEXT) STRICT;\n' } },
     { contents: { [`${MIGRATIONS_DIR}0004_c2.sql`]: 'CREATE TABLE app_ops_incidents (id TEXT) STRICT;\n' } },
-    { dirs: ['bootstrap-contract', 'command-center'] },
+    { dirs: ['bootstrap-contract', 'dashboards'] },
     { dirs: ['bootstrap-contract', 'app-ops'] },
+  ],
+  'founder-listener-loopback-only': [
+    { contents: { [FOUNDER_LISTENER]: SYNTH_LISTENER.replace('host: LOOPBACK_HOST', "host: '0.0.0.0'") } },
+    { contents: { 'packages/command-center/src/api.ts': "import { createServer } from 'node:http';" } },
+    { contents: { 'packages/command-center-ui/src/app/scene.ts': "const tex = loader.load('https://cdn.example.com/texture.png');" } },
+    { contents: { 'packages/command-center-ui/public/index.html': '<script src="https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js"></script>' } },
+    { contents: { 'packages/command-center-ui/src/app/main.ts': "import { readFileSync } from 'node:fs';" } },
+  ],
+  'c5-proofs-present': [
+    { contents: { 'packages/runtime/test/c5/proofs.test.ts': '// markers removed\n' } },
+    { remove: [C5_MUTATION_CHECK] },
+    { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation' } }) } },
+  ],
+  'c5-not-claimed-closed': [
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS')}| \`C5\` | Founder | Cloud | CLOSED / MERGED |\n` } },
+    { contents: { [C5_REPORT]: '# Report\n\nC5 — CLOSED.\n' } },
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS')}| \`C5\` | Founder | Cloud | IN PROGRESS |\n| \`C6\` | Reporting | Cloud | IN PROGRESS |\n` } },
+  ],
+  'founder-session-scope-confined': [
+    { contents: { 'packages/command-center/src/api.ts': "founderSessionInternals.scope(root, () => gov.decideApproval(ref, id, input));" } },
+    { contents: { 'packages/command-center/src/api.ts': "const founderRef = 'founder:unauthenticated';" } },
+    { contents: { [FOUNDER_AUTH]: SYNTH_AUTH.replace('hash(cookieValue)', 'cookieValue') } },
+    { contents: { 'packages/command-center/src/cli.ts': "switch (command) {\n  case 'approve':\n    break;\n}" } },
+    { contents: { 'packages/command-center/src/server/listener.ts': `${SYNTH_LISTENER}ctx.db.run('UPDATE founder_sessions SET expires_at = ? WHERE id = ?', later, id);\n` } },
+  ],
+  'c5-telemetry-content-free': [
+    { contents: { 'packages/storage/src/communications.ts': "appendAudit(ctx, 'communication.message', 'thread', t.id, { actorRef }, 'OK', m.purpose, { body: m.body });" } },
+    { contents: { 'packages/command-center/src/api.ts': "this.#log('founder.command', { text: body.text });" } },
+    { contents: { 'packages/storage/src/goals.ts': "appendEvent(ctx, 'goal.proposed', 'work_item', id, t, { title: input.title });" } },
   ],
   'ci-contract': [
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: r1-4of4, suite: 'r1:4/4' }\n", '') } },
-    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace(/- \{ os: ubuntu-latest, label: c4-1of1, suite: 'c4:1\/1' \}\n/, '') } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace(/- \{ os: ubuntu-latest, label: c4-c5, suite: 'c4:1\/1 c5:1\/1' \}\n/, '') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('acceptance]\n    if: always()\n', 'acceptance]\n    if: success()\n') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'actions/checkout@v7') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace(/os: \[windows-latest, ubuntu-latest\]/g, 'os: [ubuntu-latest]') } },
@@ -1631,6 +1786,13 @@ const MUST_PASS = [
   { id: 'model-calls-confined', scenario: { contents: { 'packages/runtime/test/c2/fake.test.ts': 'await provider.generate(req, signal); await driver.invoke(x, s);' } } },
   // C4 owns the organization, Review Pool and delegation schema (not later-scope leakage).
   { id: 'no-later-scope-leakage', scenario: { contents: { [`${MIGRATIONS_DIR}0007_c4.sql`]: 'CREATE TABLE org_positions (id TEXT) STRICT;\nCREATE TABLE reviewer_qualifications (id TEXT) STRICT;\nCREATE TABLE work_delegations (id TEXT) STRICT;\nCREATE TABLE authority_delegations (id TEXT) STRICT;\n' } } },
+  // C5 owns the Goal model, Founder-facing communication, Founder Attention, sessions and previews (D-C5-01).
+  { id: 'no-later-scope-leakage', scenario: { contents: { [`${MIGRATIONS_DIR}0009_c5.sql`]: 'CREATE TABLE goals (id TEXT) STRICT;\nCREATE TABLE communication_threads (id TEXT) STRICT;\nCREATE TABLE communication_messages (id TEXT) STRICT;\nCREATE TABLE founder_attention_items (id TEXT) STRICT;\nCREATE TABLE founder_sessions (id TEXT) STRICT;\nCREATE TABLE founder_action_previews (id TEXT) STRICT;\n' }, dirs: ['bootstrap-contract', 'command-center', 'command-center-ui'] } },
+  // A C5 candidate that is explicitly not closed; the surface may name loopback URLs; hashes and codes in telemetry are fine.
+  { id: 'c5-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS')}| \`C5\` | Founder | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n`, [C5_REPORT]: '# Report\n\nC5 is NOT CLOSED.\n' } } },
+  { id: 'founder-listener-loopback-only', scenario: { contents: { 'packages/command-center-ui/src/app/api.ts': "const res = await fetch('http://127.0.0.1:4173/api/universe');\n// see https://example.com/docs for the wire format\n" } } },
+  { id: 'c5-telemetry-content-free', scenario: { contents: { 'packages/storage/src/communications.ts': "appendAudit(ctx, 'communication.message', 'thread', t.id, { actorRef }, 'OK', m.purpose, { messageId: id, seq, bodySha256: sha, level: m.level });" } } },
+  { id: 'founder-session-scope-confined', scenario: { contents: { 'packages/command-center/src/api.ts': "return ctx.runtime.founder.auth.withSession(ctx.session, (founderRef) => store.send(founderRef, id, input));" } } },
   // The canonical five Departments seeded; a review request table carrying the R4 CHECK; tests seeding rows.
   { id: 'review-pool-not-department', scenario: { contents: { [`${MIGRATIONS_DIR}0007_c4.sql`]: CANONICAL_DEPARTMENTS.map((c, i) => `INSERT INTO departments (id, code, name) SELECT 'c4d00000-0000-4000-8000-00000000000${i + 1}', '${c}', 'x' WHERE 1;\n`).join('') } } },
   { id: 'r4-never-review-satisfied', scenario: { contents: { [`${MIGRATIONS_DIR}0008_c4.sql`]: "CREATE TABLE review_requests (\n  risk_level TEXT,\n  state TEXT,\n  CHECK (risk_level <> 'R4' OR state NOT IN ('SATISFIED', 'CONSUMED'))\n) STRICT;\n", [AUTHORITY_KERNEL]: "  if (req.risk === 'R4') return { effect: 'DENY', code: 'FOUNDER_ONLY' };\n" } } },

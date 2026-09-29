@@ -10,7 +10,7 @@ export { LOW_DISK_BYTES, inspectWorkspace, runtimeHealth, type HealthSnapshot, t
 export { Logger, errorCode, jsonLinesSink, silentLogger, type LogFields, type LogLevel, type LogRecord, type LogSink } from './logger.js';
 // runRecovery is internal: recovery writes belong to the Runtime Supervisor alone (D-C1-22).
 export type { RecoverySummary } from './recovery.js';
-export { CompanyRuntime, RUNTIME_VERSION, type GovernanceAdmin, type MindAdmin, type ArtifactReadView, type EventHandler, type RuntimeDiagnostics, type RuntimeFaultPoint, type RuntimeOptions, type RuntimeState } from './runtime.js';
+export { CompanyRuntime, RUNTIME_VERSION, type FounderAdmin, type GovernanceAdmin, type MindAdmin, type OrgAdmin, type ArtifactReadView, type EventHandler, type RuntimeDiagnostics, type RuntimeFaultPoint, type RuntimeOptions, type RuntimeState } from './runtime.js';
 export { WakeSignal, notifyRuntime } from './wake.js';
 // C2 governed execution: the only model-call and tool-driver paths, plus deterministic fakes.
 export { DeterministicFakeProvider, FakeToolDriver } from './c2/deterministic-fakes.js';
@@ -20,3 +20,6 @@ export { isGovernedProcessor, type GovernedProcessor, type GovernedRunServices, 
 // runtime: a processor reaches them only through its bound GovernedRunServices.
 export type { C3Health } from './c3/health.js';
 export type { MemoryProposal, MemoryProposalOutcome } from './c2/types.js';
+// C5: the Founder surface's proposal types (a message never carries authority; a goal act is fenced).
+export type { GoalActOutcome, GoalActProposal, MessageOutcome, MessageProposal } from './c2/types.js';
+export type { C4Health } from './c4/health.js';

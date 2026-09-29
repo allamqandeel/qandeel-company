@@ -47,6 +47,17 @@ export class DeterministicFakeProvider implements ProviderAdapter {
     return this;
   }
 
+  /**
+   * C5: a default script for a deployment when the instructions carry none (a Founder's plain-language
+   * message to an Employee, a CEO brief request). Deterministic per deployment code; never a real model.
+   */
+  defaultScript(deploymentCode: string, script: readonly unknown[]): this {
+    this.#defaults.set(deploymentCode, [...script]);
+    return this;
+  }
+
+  readonly #defaults = new Map<string, unknown[]>();
+
   async generate(request: ProviderRequest, signal: AbortSignal): Promise<ProviderResponse> {
     this.calls.set(request.deploymentCode, (this.calls.get(request.deploymentCode) ?? 0) + 1);
     if (signal.aborted) throw new ProviderError('TRANSIENT');
@@ -54,7 +65,7 @@ export class DeterministicFakeProvider implements ProviderAdapter {
     const injected = queued?.shift();
     if (injected) throw new ProviderError(injected.failure, injected.usage);
     const turn = request.messages.filter((m) => m.role === 'tool').length;
-    let script: unknown[] = [];
+    let script: unknown[] = this.#defaults.get(request.deploymentCode) ?? [];
     for (const m of request.messages) {
       if (m.role !== 'user') continue;
       // The whole message, or (C4) any one line of it: a review Work Item's instructions are the plan's
@@ -71,7 +82,22 @@ export class DeterministicFakeProvider implements ProviderAdapter {
         }
       }
     }
-    const entry = script[turn] ?? { type: 'FINAL', summaryCode: 'fake.done' };
+    let entry = script[turn] ?? { type: 'FINAL', summaryCode: 'fake.done' };
+    // C5: `{ hold: <ms>, then: <entry> }` keeps the call (and so the run) visibly in progress — a bounded,
+    // abortable wait, never a real model — so live proofs can show work that is running right now.
+    if (typeof entry === 'object' && entry !== null && 'hold' in entry) {
+      const { hold, then } = entry as { hold: unknown; then?: unknown };
+      const ms = Math.min(Math.max(0, Number(hold) || 0), 600_000);
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, ms);
+        signal.addEventListener('abort', () => {
+          clearTimeout(t);
+          resolve();
+        }, { once: true });
+      });
+      if (signal.aborted) throw new ProviderError('TRANSIENT');
+      entry = then ?? { type: 'FINAL', summaryCode: 'fake.done' };
+    }
     if (typeof entry === 'object' && entry !== null && 'fail' in entry) throw new ProviderError(String((entry as { fail: unknown }).fail) as ProviderFailureClass);
     const outputText = typeof entry === 'string' ? entry : JSON.stringify(entry);
     const inputBytes = request.messages.reduce((n, m) => n + Buffer.byteLength(m.content, 'utf8'), 0);

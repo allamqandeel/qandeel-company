@@ -6,6 +6,7 @@
  */
 import { boundedText, type JsonObject } from '@qandeel-company/domain';
 
+import { isAttentionLevel, isFounderBrief, isMessagePurpose, type AttentionLevel, type FounderBrief, type MessagePurpose } from './founder.js';
 import { isOrgAction, type OrgAction } from './organization.js';
 import { isReviewOutcome, type ReviewOutcome } from './review.js';
 
@@ -39,7 +40,20 @@ export type ModelProposal =
    * assignment, re-checks eligibility and the subject's version, and never lets it approve anything.
    */
   | { readonly type: 'REVIEW_DECISION'; readonly outcome: ReviewOutcome; readonly reasonCode: string; readonly rationale: string | null; readonly evidenceRefs: readonly string[] }
+  /**
+   * C5: a structured Founder-facing message (Stage 9): the Employee's reply in its own Founder thread, or a
+   * CEO brief in the Founder Communication Standard. Only a proposal: the runtime binds it to the thread its
+   * Work Item answers, re-checks the sender, and never lets a message decide, approve or grant anything
+   * (Conversation ≠ Authority). The body is company content, never telemetry.
+   */
+  | { readonly type: 'MESSAGE'; readonly purpose: MessagePurpose; readonly attentionLevel: AttentionLevel; readonly body: string; readonly brief: FounderBrief | null; readonly contextRefs: readonly string[] }
+  /** C5: a Director derives a Department goal or links its own work to a goal (fenced; seat and Department re-checked by the runtime). */
+  | { readonly type: 'GOAL_ACTION'; readonly action: GoalAction; readonly args: JsonObject }
   | { readonly type: 'INVALID'; readonly code: 'NOT_JSON' | 'UNKNOWN_TYPE' | 'MALFORMED' };
+
+export const GOAL_ACTIONS = ['goal.derive', 'goal.link'] as const;
+export type GoalAction = (typeof GOAL_ACTIONS)[number];
+export const isGoalAction = (v: unknown): v is GoalAction => typeof v === 'string' && (GOAL_ACTIONS as readonly string[]).includes(v);
 
 const CODE_SHAPE = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+){0,7}$/;
 /**
@@ -97,6 +111,23 @@ export function parseProposal(outputText: string): ModelProposal {
     const refs = o.evidenceRefs === undefined ? [] : o.evidenceRefs;
     if (!Array.isArray(refs) || refs.length > 16 || refs.some((r) => typeof r !== 'string' || r.length === 0 || r.length > 128 || !/^[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9._:-]{1,95}$/.test(r))) return { type: 'INVALID', code: 'MALFORMED' };
     return { type: 'REVIEW_DECISION', outcome: o.outcome, reasonCode: o.reasonCode, rationale: rationale as string | null, evidenceRefs: refs as string[] };
+  }
+  if (o.type === 'MESSAGE') {
+    const allowed = new Set(['type', 'purpose', 'attentionLevel', 'body', 'brief', 'contextRefs']);
+    if (Object.keys(o).some((k) => !allowed.has(k))) return { type: 'INVALID', code: 'MALFORMED' };
+    if (!isMessagePurpose(o.purpose) || !isAttentionLevel(o.attentionLevel)) return { type: 'INVALID', code: 'MALFORMED' };
+    if (typeof o.body !== 'string' || o.body.trim().length === 0 || o.body.length > 4_000) return { type: 'INVALID', code: 'MALFORMED' };
+    const brief = o.brief === undefined || o.brief === null ? null : o.brief;
+    if ((o.purpose === 'BRIEF') !== (brief !== null)) return { type: 'INVALID', code: 'MALFORMED' };
+    if (brief !== null && !isFounderBrief(brief)) return { type: 'INVALID', code: 'MALFORMED' };
+    const refs = o.contextRefs === undefined ? [] : o.contextRefs;
+    if (!Array.isArray(refs) || refs.length > 8 || refs.some((r) => typeof r !== 'string' || !/^[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9._:-]{1,95}$/.test(r))) return { type: 'INVALID', code: 'MALFORMED' };
+    return { type: 'MESSAGE', purpose: o.purpose, attentionLevel: o.attentionLevel, body: o.body, brief: brief as FounderBrief | null, contextRefs: refs as string[] };
+  }
+  if (o.type === 'GOAL_ACTION') {
+    if (keys !== 'action,args,type' || !isGoalAction(o.action)) return { type: 'INVALID', code: 'MALFORMED' };
+    if (typeof o.args !== 'object' || o.args === null || Array.isArray(o.args)) return { type: 'INVALID', code: 'MALFORMED' };
+    return { type: 'GOAL_ACTION', action: o.action, args: o.args as JsonObject };
   }
   return { type: 'INVALID', code: 'UNKNOWN_TYPE' };
 }

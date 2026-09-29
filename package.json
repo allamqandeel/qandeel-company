@@ -11,7 +11,9 @@
     "packages/governance",
     "packages/mind",
     "packages/storage",
-    "packages/runtime"
+    "packages/runtime",
+    "packages/command-center-ui",
+    "packages/command-center"
   ],
   "engines": {
     "node": ">=24.12.0 <25.0.0",
@@ -27,14 +29,18 @@
     "c1:faults": "npm run test:faults --workspace @qandeel-company/runtime",
     "c1:acceptance": "node scripts/c1-acceptance.mjs",
     "c1:mutation": "node scripts/c1-mutation-check.mjs",
-    "ci": "npm run build && npm run typecheck && npm run lint && npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run verify",
+    "ci": "npm run build && npm run typecheck && npm run lint && npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation && npm run verify",
     "c2:mutation": "node scripts/c2-mutation-check.mjs",
     "c2:acceptance": "node --conditions=qandeel-test scripts/c2-acceptance.mjs",
     "c3:mutation": "node scripts/c3-mutation-check.mjs",
     "c3:acceptance": "node --conditions=qandeel-test scripts/c3-acceptance.mjs",
     "r1:mutation": "node scripts/r1-mutation-check.mjs",
     "c4:mutation": "node scripts/c4-mutation-check.mjs",
-    "c4:acceptance": "node --conditions=qandeel-test scripts/c4-acceptance.mjs"
+    "c4:acceptance": "node --conditions=qandeel-test scripts/c4-acceptance.mjs",
+    "c5:mutation": "node scripts/c5-mutation-check.mjs",
+    "c5:acceptance": "node --conditions=qandeel-test scripts/c5-acceptance.mjs",
+    "c5:visual-proof": "node --conditions=qandeel-test scripts/c5-visual-proof.mjs",
+    "c5:spike": "node --conditions=qandeel-test scripts/c5-visual-proof.mjs --spike"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

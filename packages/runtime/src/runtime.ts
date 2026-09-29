@@ -65,17 +65,24 @@ import {
   type CompanyReadView,
   GovernanceStore,
   AcademyStore,
+  AttentionStore,
   CapabilityStore,
+  CommunicationStore,
+  FounderActionStore,
+  FounderAuthStore,
+  GoalStore,
   MemoryStore,
   OrganizationStore,
   ReviewStore,
   SkillStore,
+  projectUniverse,
+  type CompanyUniverse,
 } from '@qandeel-company/storage';
 import type { ProviderAdapter, ToolDriver } from '@qandeel-company/governance';
 
 import { GovernedModelRuntime } from './c2/model-runtime.js';
 import { ToolExecutor } from './c2/tool-executor.js';
-import { isGovernedProcessor, type GovernedRunServices, type MemoryProposal, type ModelCallOutcome, type ModelCallRequest, type OrgActProposal, type ReviewDecisionProposal, type ToolRequest } from './c2/types.js';
+import { isGovernedProcessor, type GoalActProposal, type GovernedRunServices, type MemoryProposal, type MessageProposal, type ModelCallOutcome, type ModelCallRequest, type OrgActProposal, type ReviewDecisionProposal, type ToolRequest } from './c2/types.js';
 import { assembleGovernedContext } from './c3/context-assembler.js';
 import { c3HealthOf, type C3Health } from './c3/health.js';
 import { proposeMemory } from './c3/memory-proposals.js';
@@ -92,6 +99,8 @@ import {
   releaseSupervisor,
   renewLease,
   renewSupervisor,
+  recordGoalAct,
+  recordMessage,
   recordOrgAct,
   recordReviewDecision,
   recordStepResult,
@@ -167,6 +176,15 @@ export interface MindAdmin {
 export interface OrgAdmin {
   readonly organization: OrganizationStore;
   readonly review: ReviewStore;
+}
+/** C5 Founder surface administration (see `CompanyRuntime.founder`). */
+export interface FounderAdmin {
+  readonly auth: FounderAuthStore;
+  readonly goals: GoalStore;
+  readonly communications: CommunicationStore;
+  readonly attention: AttentionStore;
+  readonly actions: FounderActionStore;
+  universe(options?: { at?: string }): CompanyUniverse;
 }
 
 const recoverGovernedOrphansCount = (g: { reservationsHeld: number; reservationsReleased: number; invocationsRetryable: number; invocationsHeld: number }): number =>
@@ -244,6 +262,8 @@ export class CompanyRuntime {
   #governanceAdmin: GovernanceAdmin | undefined;
   #mindAdmin: MindAdmin | undefined;
   #orgAdmin: OrgAdmin | undefined;
+  #founderAdmin: FounderAdmin | undefined;
+  readonly #founderHandlers = new Set<() => void>();
 
   #state: RuntimeState = 'CREATED';
   #store: CompanyStore | undefined;
@@ -672,6 +692,67 @@ export class CompanyRuntime {
     return this.#orgAdmin;
   }
 
+  /**
+   * C5 Founder surface administration: sessions (hashes only), Goals, Founder-facing communication,
+   * Founder Attention, governed action previews and the derived Company Universe projection. A capability
+   * object like `org`: it executes and claims nothing; every write signals the dispatcher (a Founder message
+   * creates the reply Work Item; a confirmed approval releases work). Founder-authority writes fail closed
+   * outside a verified session (`auth.withSession`) — holding this object grants nothing.
+   */
+  get founder(): FounderAdmin {
+    if (!this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
+    if (!this.#founderAdmin) {
+      const wake = (): void => {
+        this.#wake.signal();
+        this.#founderChanged();
+      };
+      const wrap = <T extends object>(target: T): T =>
+        new Proxy(target, {
+          get(t, prop, receiver) {
+            const v = Reflect.get(t, prop, receiver) as unknown;
+            if (typeof v !== 'function') return v;
+            return (...args: unknown[]) => {
+              try {
+                return (v as (...a: unknown[]) => unknown).apply(t, args);
+              } finally {
+                wake();
+              }
+            };
+          },
+        });
+      const s = this.#store;
+      const auth = FounderAuthStore.for(s);
+      this.#founderAdmin = Object.freeze({
+        auth,
+        goals: wrap(GoalStore.for(s)),
+        communications: wrap(CommunicationStore.for(s)),
+        attention: wrap(AttentionStore.for(s)),
+        actions: wrap(FounderActionStore.for(s, auth)),
+        universe: (options: { at?: string } = {}): CompanyUniverse => {
+          if (options.at !== undefined && !isTimestamp(options.at)) throw new QandeelError('VALIDATION_FAILED', 'at must be a canonical UTC timestamp', { field: 'at' });
+          return projectUniverse(s, options.at === undefined ? {} : { at: options.at });
+        },
+      });
+    }
+    return this.#founderAdmin;
+  }
+
+  /** In-process subscribers to "the Founder's world changed" (content-free; a nudge to re-project, never data). */
+  onFounderChange(handler: () => void): () => void {
+    this.#founderHandlers.add(handler);
+    return () => this.#founderHandlers.delete(handler);
+  }
+
+  #founderChanged(): void {
+    for (const h of this.#founderHandlers) {
+      try {
+        h();
+      } catch (error) {
+        this.#log.warn('founder.change_handler_failed', { code: errorCode(error) });
+      }
+    }
+  }
+
   /** C4 health counts (content-free). */
   orgHealth(): C4Health {
     if (!this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
@@ -1066,6 +1147,22 @@ export class CompanyRuntime {
         return { outcome: out.outcome, code: out.code };
       },
       openHandoffs: () => OrganizationStore.for(store).workDelegations({ parentWorkItemId: run.workItemId }).filter((d) => d.state === 'OFFERED' || d.state === 'ACCEPTED' || d.state === 'CLARIFICATION_REQUESTED' || d.state === 'ESCALATED').length,
+      // C5: Founder-facing messages and goal acts pass the fenced authority path; only codes and references
+      // are recorded for later context (the message body is company content, never a step result).
+      sendMessage: (proposal: MessageProposal, step: number) => {
+        const g = globalStep(step);
+        const out = recordMessage(store, claim.fence, { purpose: proposal.purpose, attentionLevel: proposal.attentionLevel, body: proposal.body, brief: proposal.brief, contextRefs: proposal.contextRefs });
+        recordStepResult(store, claim.fence, g, out.outcome === 'RECORDED' ? 'TOOL_RESULT' : 'TOOL_REFUSED', JSON.stringify({ message: out.outcome, code: out.code, purpose: proposal.purpose }));
+        this.#founderChanged();
+        return { outcome: out.outcome, code: out.code, messageId: out.messageId };
+      },
+      goalAct: (proposal: GoalActProposal, step: number) => {
+        const g = globalStep(step);
+        const out = recordGoalAct(store, claim.fence, proposal.action, proposal.args);
+        recordStepResult(store, claim.fence, g, out.outcome === 'DONE' ? 'TOOL_RESULT' : 'TOOL_REFUSED', JSON.stringify({ goalAction: proposal.action, outcome: out.outcome, code: out.code, ref: out.resultRef }));
+        this.#founderChanged();
+        return out;
+      },
     });
     return processor.runGoverned(context, services);
   }

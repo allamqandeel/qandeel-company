@@ -301,6 +301,30 @@ export const founderSurfaceInternals = Object.freeze({
 });
 
 /**
+ * C5 production Founder surface (storage-internal; imported only by `founder-auth.ts`, verifier rule
+ * `founder-session-scope-confined`). A VERIFIED Founder session arms the chokepoint for exactly the
+ * synchronous extent of `fn` — storage never awaits inside a scope, so nothing else can interleave — and
+ * disarms it afterwards. A workspace armed by the test seam stays armed (tests only). Holding a session
+ * value grants nothing by itself: `founder-auth.ts` re-verifies the session row before entering the scope.
+ */
+export const founderSessionInternals = Object.freeze({
+  scope<T>(root: string, fn: () => T): T {
+    const target = canonical(root);
+    const alreadyArmed = [...armedFounderSurfaces].some((armed) => canonical(armed) === target);
+    if (!alreadyArmed) armedFounderSurfaces.add(path.resolve(root));
+    try {
+      const out = fn() as unknown;
+      if (out !== null && typeof out === 'object' && typeof (out as { then?: unknown }).then === 'function') {
+        throw new QandeelError('ASYNC_IN_TRANSACTION', 'a Founder session scope is synchronous: nothing awaits inside it');
+      }
+      return out as T;
+    } finally {
+      if (!alreadyArmed) for (const armed of [...armedFounderSurfaces]) if (canonical(armed) === target) armedFounderSurfaces.delete(armed);
+    }
+  },
+});
+
+/**
  * The one Founder-authority write path shared by the C2 and C3 stores (storage-internal; the package
  * index does not export it). An administrative refusal rolls its transaction back; the refusal itself
  * is audited in its own transaction (content-free) so misuse attempts stay visible (D14-E.1).

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>C5 proof encoder</title></head>
+<body>
+<script type="module">
+// Encodes captured PNG frames into an H.264 MP4 with WebCodecs and a minimal muxer (ftyp/mdat/moov),
+// entirely offline in the headless browser. Driven by the proof runner through CDP (`window.encode`).
+const box = (type, ...parts) => concat([u32(8 + parts.reduce((n, p) => n + p.length, 0)), str(type), ...parts]);
+const full = (type, v, flags, ...parts) => box(type, new Uint8Array([v, (flags >> 16) & 255, (flags >> 8) & 255, flags & 255]), ...parts);
+const u32 = (n) => new Uint8Array([(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]);
+const u16 = (n) => new Uint8Array([(n >> 8) & 255, n & 255]);
+const str = (s) => new TextEncoder().encode(s);
+const concat = (arrs) => { const out = new Uint8Array(arrs.reduce((n, a) => n + a.length, 0)); let o = 0; for (const a of arrs) { out.set(a, o); o += a.length; } return out; };
+const MATRIX = concat([u32(0x10000), u32(0), u32(0), u32(0), u32(0x10000), u32(0), u32(0), u32(0), u32(0x40000000)]);
+function muxMp4(samples, avcC, fps, w, h) {
+  const T = 30000, delta = Math.round(T / fps), N = samples.length, D = N * delta;
+  const ftyp = box('ftyp', str('isom'), u32(0x200), str('isom'), str('iso2'), str('avc1'), str('mp41'));
+  const mdat = box('mdat', ...samples.map((s) => s.data));
+  const firstSample = ftyp.length + 8;
+  const avc1 = box('avc1', new Uint8Array(6), u16(1), new Uint8Array(16), u16(w), u16(h), u32(0x480000), u32(0x480000), u32(0), u16(1), new Uint8Array(32), u16(0x18), u16(0xffff), box('avcC', avcC));
+  const stsd = full('stsd', 0, 0, u32(1), avc1);
+  const stts = full('stts', 0, 0, u32(1), u32(N), u32(delta));
+  const keys = samples.map((s, i) => (s.key ? i + 1 : 0)).filter(Boolean);
+  const stss = full('stss', 0, 0, u32(keys.length), ...keys.map(u32));
+  const stsc = full('stsc', 0, 0, u32(1), u32(1), u32(N), u32(1));
+  const stsz = full('stsz', 0, 0, u32(0), u32(N), ...samples.map((s) => u32(s.data.length)));
+  const stco = full('stco', 0, 0, u32(1), u32(firstSample));
+  const stbl = box('stbl', stsd, stts, stss, stsc, stsz, stco);
+  const dinf = box('dinf', full('dref', 0, 0, u32(1), full('url ', 0, 1)));
+  const minf = box('minf', full('vmhd', 0, 1, new Uint8Array(8)), dinf, stbl);
+  const hdlr = full('hdlr', 0, 0, u32(0), str('vide'), new Uint8Array(12), str('VideoHandler'), new Uint8Array([0]));
+  const mdhd = full('mdhd', 0, 0, u32(0), u32(0), u32(T), u32(D), u16(0x55c4), u16(0));
+  const mdia = box('mdia', mdhd, hdlr, minf);
+  const tkhd = full('tkhd', 0, 7, u32(0), u32(0), u32(1), u32(0), u32(D), new Uint8Array(8), u16(0), u16(0), u16(0), u16(0), MATRIX, u32(w << 16), u32(h << 16));
+  const trak = box('trak', tkhd, mdia);
+  const mvhd = full('mvhd', 0, 0, u32(0), u32(0), u32(T), u32(D), u32(0x10000), u16(0x100), new Uint8Array(10), MATRIX, new Uint8Array(24), u32(2));
+  const moov = box('moov', mvhd, trak);
+  return concat([ftyp, mdat, moov]);
+}
+/** frames: data URLs (PNG); returns a base64 MP4. */
+window.encode = async function encode(frames, fps, width, height) {
+  const samples = [];
+  let avcC = null;
+  let failure = null;
+  const encoder = new VideoEncoder({ output: (chunk, meta) => { if (meta?.decoderConfig?.description && !avcC) avcC = new Uint8Array(meta.decoderConfig.description); const data = new Uint8Array(chunk.byteLength); chunk.copyTo(data); samples.push({ data, key: chunk.type === 'key', ts: chunk.timestamp }); }, error: (e) => { failure = e; } });
+  // Constrained Baseline, level 4.0 (1920×1080 frames); level 3.1 stops at 1280×720 and would close the codec.
+  const config = { codec: 'avc1.42E028', width, height, bitrate: 4_500_000, framerate: fps, avc: { format: 'avc' } };
+  const support = await VideoEncoder.isConfigSupported(config);
+  if (!support.supported) throw new Error(`H.264 ${width}x${height} is not supported by this browser's encoder`);
+  encoder.configure(config);
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  for (let i = 0; i < frames.length; i++) {
+    const img = new Image();
+    await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; img.src = frames[i]; });
+    ctx.fillStyle = '#0a0920'; ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+    if (failure) throw new Error(`encoder error: ${failure.message ?? failure}`);
+    const frame = new VideoFrame(canvas, { timestamp: Math.round((i * 1e6) / fps), duration: Math.round(1e6 / fps) });
+    encoder.encode(frame, { keyFrame: i % 60 === 0 });
+    frame.close();
+  }
+  await encoder.flush();
+  if (failure) throw new Error(`encoder error: ${failure.message ?? failure}`);
+  encoder.close();
+  samples.sort((a, b) => a.ts - b.ts);
+  const mp4 = muxMp4(samples, avcC ?? new Uint8Array(0), fps, width, height);
+  let bin = '';
+  for (let i = 0; i < mp4.length; i += 0x8000) bin += String.fromCharCode.apply(null, mp4.subarray(i, i + 0x8000));
+  return btoa(bin);
+};
+window.encoderReady = true;
+</script>
+</body>
+</html>

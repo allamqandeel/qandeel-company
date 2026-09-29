@@ -98,6 +98,17 @@ export type {
 // until C5 (D-C2-13); Employees act only through fenced runtime-authority acts.
 export { OrganizationStore, type CharterInput, type CreatePositionInput, type DelegateAuthorityInput, type EmployeeOrganization, type HireInput, type OrganizationHealth } from './organization.js';
 export { ReviewStore, type ReviewHealth } from './review.js';
+// C5 Founder Command Center: the authenticated Founder surface (sessions are hashes; a ref is not
+// authentication), the durable Goal model, Founder-facing structured communication, Founder Attention,
+// governed action previews and the derived Company Universe projection. Employee messages and Director goal
+// acts are written only through the fenced runtime-authority subpath.
+export { FounderAuthStore, LAUNCH_TOKEN_TTL_MS, SESSION_IDLE_MS, SESSION_TTL_MS, type FounderSession } from './founder-auth.js';
+export { GoalStore, type ProposeGoalInput } from './goals.js';
+export { CommunicationStore, FOUNDER_BRIEF_TASK_CLASS, FOUNDER_REPLY_TASK_CLASS, type FounderSendInput, type OpenThreadInput } from './communications.js';
+export { AttentionStore, ATTENTION_COOLDOWN_MS, type AttentionSyncReport } from './attention.js';
+export { FounderActionStore, PREVIEW_TTL_MS, type ConfirmResult } from './founder-actions.js';
+export { CANONICAL_DEPARTMENT_ORDER, projectUniverse, type CompanyUniverse, type RelationKind, type UniverseAttention, type UniverseDepartment, type UniverseEmployee, type UniverseGoal, type UniverseRelation, type UniverseSeat, type UniverseWork } from './universe.js';
+export type { ActionPreviewRecord, AttentionItemRecord, FounderSessionRecord, GoalHistoryRecord, GoalRecord, GoalWorkLinkRecord, MessageMeta, MessageRecord, ThreadRecord } from './founder-records.js';
 export type {
   AssignmentRecord,
   AuthorityDelegationRecord,

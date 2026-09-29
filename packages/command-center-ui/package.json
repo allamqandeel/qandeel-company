@@ -1,0 +1,30 @@
+{
+  "name": "@qandeel-company/command-center-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "C5 Attention Orbits — the Founder Command Center browser UI: the living Company Universe (three.js WebGL2 with HTML labels, SVG 2.5D fallback), lenses, Founder Attention, conversation, governed action confirmation and the timeline. Compiled by tsc to native ES modules; no bundler, no remote asset.",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=24.12.0 <25.0.0"
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node ../../scripts/run-node-tests.mjs"
+  },
+  "dependencies": {
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "@qandeel-company/storage": "0.1.0",
+    "@types/three": "0.186.0"
+  }
+}

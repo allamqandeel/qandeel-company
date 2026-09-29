@@ -1,0 +1,33 @@
+{
+  "name": "@qandeel-company/command-center",
+  "version": "0.1.0",
+  "private": true,
+  "description": "C5 Founder Command Center — the authenticated, loopback-only Founder application surface over the canonical runtime: sessions (hashes only), explicit capabilities, the Company Universe projection, Founder Attention, structured communication, governed action confirmation and the proactive CEO brief policy. No second backend, no direct SQLite, no test seam.",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=24.12.0 <25.0.0"
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node ../../scripts/run-node-tests.mjs"
+  },
+  "dependencies": {
+    "@qandeel-company/domain": "0.1.0",
+    "@qandeel-company/governance": "0.2.0",
+    "@qandeel-company/storage": "0.1.0",
+    "@qandeel-company/runtime": "0.1.0",
+    "@qandeel-company/command-center-ui": "0.1.0"
+  },
+  "bin": {
+    "qandeel-founder": "./dist/src/cli.js"
+  }
+}

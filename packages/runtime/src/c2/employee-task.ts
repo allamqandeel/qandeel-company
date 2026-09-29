@@ -199,6 +199,15 @@ export const employeeTaskProcessor: GovernedProcessor = {
         await save(ctx, s);
         continue;
       }
+      if (proposal.type === 'MESSAGE' || proposal.type === 'GOAL_ACTION') {
+        // C5: a message into the run's own Founder thread, or a Director's goal act. Both are fenced writes,
+        // idempotent per Work Item (a resumed run never posts or derives twice); the loop learns the code only.
+        if (proposal.type === 'MESSAGE') gov.sendMessage(proposal, s.turn);
+        else gov.goalAct(proposal, s.turn);
+        s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null };
+        await save(ctx, s);
+        continue;
+      }
       if (proposal.type === 'INVALID') {
         // Observable evidence (the output failed validation) may justify one escalation.
         s = { ...s, invalid: s.invalid + 1 };
