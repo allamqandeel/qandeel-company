@@ -76,16 +76,22 @@ let currentHelper = '';
 const setContext = () => {
   if (page) page.context = `${currentHelper ? `helper ${currentHelper}` : 'step body'}${currentStep ? ` in step ${currentStep}` : ''}`;
 };
+// Every helper call inside a step is timed into the step's record (`trace`, the last forty, as
+// "helper(arg) 123ms" or "outer > inner 123ms"): a step that is slow or never returns on one host says where
+// its time went, on PASS and on FAIL alike. Content-free: helper names, selectors, milliseconds.
+let stepTrace = [];
 const step = async (name, fn) => {
   const started = Date.now();
   currentStep = name;
+  stepTrace = [];
   setContext();
   try {
     const detail = (await fn()) ?? {};
-    results.steps.push({ step: name, result: 'PASS', ms: Date.now() - started, ...detail });
-    console.log(JSON.stringify({ step: name, result: 'PASS', ms: Date.now() - started, ...detail }));
+    const record = { step: name, result: 'PASS', ms: Date.now() - started, ...detail, trace: stepTrace.slice(-40) };
+    results.steps.push(record);
+    console.log(JSON.stringify(record));
   } catch (error) {
-    const fail = { step: name, result: 'FAIL', ms: Date.now() - started, message: String(error?.message ?? error).slice(0, 400), ...(error?.code ? { code: error.code } : {}) };
+    const fail = { step: name, result: 'FAIL', ms: Date.now() - started, message: String(error?.message ?? error).slice(0, 400), ...(error?.code ? { code: error.code } : {}), trace: stepTrace.slice(-40) };
     results.steps.push(fail);
     console.log(JSON.stringify(fail));
     throw error;
@@ -94,7 +100,7 @@ const step = async (name, fn) => {
     setContext();
   }
 };
-// QANDEEL_PROOF_TRACE=1 prints how long each helper call takes (tuning the harness, never part of the verdict).
+// QANDEEL_PROOF_TRACE=1 also prints each helper's timing as it completes (tuning the harness by hand).
 // Traced or not, a helper names itself in the context of every command it issues.
 const TRACE = process.env.QANDEEL_PROOF_TRACE === '1';
 const traced = (name, fn) => async (...args) => {
@@ -102,12 +108,14 @@ const traced = (name, fn) => async (...args) => {
   const outer = currentHelper;
   const arg = typeof args[0] === 'string' ? args[0].slice(0, 60) : args[0] === undefined ? undefined : JSON.stringify(args[0]).slice(0, 60);
   currentHelper = arg === undefined ? name : `${name}(${arg})`;
+  const label = currentHelper;
   setContext();
   try {
     return await fn(...args);
   } finally {
     currentHelper = outer;
     setContext();
+    stepTrace.push(`${outer ? `${outer} > ` : ''}${label} ${Date.now() - started}ms`);
     if (TRACE) console.error(JSON.stringify({ trace: name, ms: Date.now() - started, arg }));
   }
 };
@@ -263,6 +271,10 @@ try {
   // surface (lines, ports, cards) through it makes each interaction five to thirty times slower.
   await page.send('Page.bringToFront').catch(() => undefined);
   await page.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => undefined);
+  // Which browser, and how it draws on this host: the product and the GPU backend in use, recorded before the
+  // first interaction so a slow or wedged run names its backend (content-free; nothing from the page).
+  results.browser = { exe: path.basename(browser.exe), ...(await page.info()), processesAtStart: await browser.processes() };
+  console.log(JSON.stringify({ browser: results.browser }));
   const requests = [];
   const consoleLines = [];
   page.on('Network.requestWillBeSent', (p) => requests.push(p.request.url));
@@ -711,8 +723,15 @@ try {
 } catch (error) {
   // A command the browser never answered: say exactly which, from where, and whether the browser and the page
   // still answer at all (every probe bounded), so a CI failure is a diagnosis and never an eight-minute gap.
-  const postMortem = error?.code === 'CDP_TIMEOUT' && page ? await page.postMortem().catch((e) => ({ probeFailed: String(e?.message ?? e).slice(0, 120) })) : undefined;
-  console.error(JSON.stringify({ ok: false, code: error?.code ?? 'ERROR', message: String(error?.message ?? error).slice(0, 400), ...(error?.code === 'CDP_TIMEOUT' ? { method: error.method, timeoutMs: error.timeoutMs, context: error.context, postMortem } : {}), browser: browser ? { exe: path.basename(browser.exe), args: browser.args.filter((a) => !a.startsWith('--user-data-dir')) } : null, browserConsole: (results.console ?? []).slice(-12) }));
+  const postMortem = error?.code === 'CDP_TIMEOUT' && browser ? (page ? await page.postMortem().catch((e) => ({ probeFailed: String(e?.message ?? e).slice(0, 120) })) : { pageOpened: false }) : undefined;
+  // What the browser's processes were doing when the command went unanswered (a spinning renderer, a ballooning
+  // GPU process, a browser that is gone), and the browser's own log tail: the diagnosis of a wedge, not a guess.
+  if (postMortem) {
+    postMortem.browserAlive = browser.alive();
+    postMortem.processes = await browser.processes();
+    postMortem.browserLog = browser.logTail(40);
+  }
+  console.error(JSON.stringify({ ok: false, code: error?.code ?? 'ERROR', message: String(error?.message ?? error).slice(0, 400), ...(error?.code === 'CDP_TIMEOUT' ? { method: error.method, timeoutMs: error.timeoutMs, context: error.context, postMortem } : {}), browser: browser ? { ...(results.browser ?? { exe: path.basename(browser.exe) }), args: browser.args.filter((a) => !a.startsWith('--user-data-dir') && !a.startsWith('--log-file')) } : null, browserConsole: (results.console ?? []).slice(-12) }));
   process.exitCode = 1;
 } finally {
   stopCapture();

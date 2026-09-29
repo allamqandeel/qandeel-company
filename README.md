@@ -311,8 +311,10 @@ command on any CLI: a Founder reference is not authentication.
   English application with content as written; selection / focus / return; the line layer bounded across
   redraws; reduced-motion parity, state-aware of the runner's own preference; no external asset). Every
   DevTools command the harness sends is bounded (`QANDEEL_CDP_TIMEOUT_MS`, default 20 s) and a command the
-  browser never answers fails naming the method, the helper and the step; `QANDEEL_BROWSER_ARGS` passes extra
-  browser flags to reproduce a runner locally (for example `--force-prefers-reduced-motion`).
+  browser never answers fails naming the method, the helper and the step, with the browser's process tree and
+  log tail; every step records the timing of each helper call, and the browser's product and GPU backend are
+  recorded at start. `QANDEEL_BROWSER_ARGS` passes extra browser flags to reproduce a runner locally (for
+  example `--force-prefers-reduced-motion`).
 
 ### Engineering CLI
 

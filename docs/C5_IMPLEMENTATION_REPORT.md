@@ -770,6 +770,28 @@ drift resumes) and PASS with `--force-prefers-reduced-motion` (starts `reduced`,
 already`, toggle to `full` and back, drift stays none; reduced-motion step 1.2 s). GitHub CI on the exact head
 is the full gate.
 
-### 24.7 Residuals
+### 24.7 Exact-head CI on `87f48f66`, and the diagnostic follow-up
 
-None material. The 4 fps walkthrough (§23.3) stays a proof-only MINOR.
+Ubuntu acceptance GREEN (the smoke 7/7, the line-layer proof included), tests and static GREEN on both hosts,
+every mutation shard GREEN. **Windows acceptance RED**: the smoke failed bounded in `spike-selection-focus-return`
+after 86.9 s, `Runtime.evaluate did not answer within 20000 ms — helper escape`, post-mortem
+`browserAnswers: false, pageAnswers: false, crashes: [], socket: open` (the whole browser process stopped
+answering, not only the page). The history of that leg says this is not the growth defect alone: the Windows
+smoke has never been green on this branch (`8f10727e` never booted; `45a51fcc` hung eight minutes; `586ffd10`
+answered but ten to twenty times slower than Ubuntu in every step: selection 47 s against 3.7 s, a toggle step
+19.9 s against 1.1 s), while the same harness and the same flags are fast on Ubuntu and on the Founder's host.
+
+No Product change follows from that: the next commit is harness-only and makes the run diagnose itself instead
+of guessing. Every step's record now carries the timing of each helper call inside it (`trace`, PASS and FAIL
+alike); the browser's product and its GPU backend (`Browser.getVersion`, `SystemInfo.getInfo`: renderer,
+display type, Skia backend, compositing, crashes) are recorded before the first interaction; when a command is
+never answered the failure record adds whether the browser process is alive, its process tree (role, working
+set, CPU time; this profile only, no command lines) and the tail of the browser's own log (stderr, an
+in-memory ring, launch fragment and profile path redacted). On the Founder's host the backend reads
+`ANGLE_SWIFTSHADER` (Vulkan SwiftShader, Skia GaneshGL), fifteen processes, the smoke green in 2.7 s for
+selection.
+
+### 24.8 Residuals
+
+The Windows acceptance leg stays RED until the diagnostic run names the cause; the 4 fps walkthrough (§23.3)
+stays a proof-only MINOR.

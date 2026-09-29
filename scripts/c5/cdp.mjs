@@ -8,7 +8,7 @@
 // therefore never wait silently for a browser that stopped answering; the CI step's own timeout is only the
 // emergency ceiling.
 
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -69,12 +69,28 @@ export async function launchBrowser({ width = 1440, height = 900, headless = tru
     '--enable-unsafe-swiftshader',
     '--force-device-scale-factor=1',
     '--lang=ar',
+    // The browser's own log (GPU, renderer and crash diagnostics; no page content) on its stderr, kept in a
+    // bounded ring in memory and read back only when a command was never answered. No file: nothing to hold open.
+    '--enable-logging=stderr',
+    '--v=0',
     ...extraArgs,
     // Harness-only knobs for reproducing a runner locally (e.g. `--force-prefers-reduced-motion`); never product.
     ...(process.env.QANDEEL_BROWSER_ARGS ?? '').split(/\s+/).filter(Boolean),
     'about:blank',
   ];
-  const proc = spawn(exe, args, { stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true });
+  const proc = spawn(exe, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+  const logRing = [];
+  let logRest = '';
+  proc.stderr.on('data', (chunk) => {
+    const lines = (logRest + String(chunk)).split(/\r?\n/);
+    logRest = lines.pop() ?? '';
+    for (const l of lines) {
+      if (!l) continue;
+      logRing.push(l.replace(/launch#[^\s"'&]+/g, 'launch#<redacted>').replaceAll(profile, '<profile>').slice(0, 300));
+      if (logRing.length > 200) logRing.shift();
+    }
+  });
+  proc.stderr.on('error', () => undefined);
   const portFile = path.join(profile, 'DevToolsActivePort');
   const deadline = Date.now() + 30_000;
   let port = 0;
@@ -94,16 +110,68 @@ export async function launchBrowser({ width = 1440, height = 900, headless = tru
     exe,
     port,
     args,
+    pid: proc.pid,
+    /** Is the browser process itself still running (a wedged browser is alive; a crashed one is not)? */
+    alive: () => proc.exitCode === null && proc.signalCode === null,
+    /**
+     * The last lines of the browser's own log (every line redacted of the launch fragment and of the profile
+     * path). Diagnostics about the browser, never about the page.
+     */
+    logTail: (lines = 40) => logRing.slice(-lines),
+    /**
+     * The browser's process tree right now: each process's role (`--type=` — renderer, gpu-process, utility — or
+     * the browser itself), working set and CPU time, so a spinning or ballooning process is named in a failure.
+     * Only processes of this profile; no command lines are reported. Bounded; failures are reported, not thrown.
+     */
+    processes: () => sampleProcesses(exe, profile),
     async close() {
+      // The whole tree (GPU, renderers, utilities): on Windows a child can outlive the browser process for a
+      // moment and hold the profile (its log) open, which would leave the throwaway profile behind.
+      if (process.platform === 'win32' && proc.pid) {
+        await new Promise((resolve) => execFile('taskkill.exe', ['/PID', String(proc.pid), '/T', '/F'], { timeout: 10_000, windowsHide: true }, () => resolve()));
+      }
       try {
         proc.kill();
       } catch {
         // already gone
       }
       await sleep(300);
-      rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      try {
+        rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+      } catch {
+        // A profile the OS still holds is left to the temp directory; it carries nothing of the page.
+      }
     },
   };
+}
+
+async function sampleProcesses(exe, profile) {
+  const run = (file, args) => new Promise((resolve) => {
+    execFile(file, args, { timeout: 15_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => resolve(error && !stdout ? { error: String(error?.message ?? error).slice(0, 120) } : { stdout: String(stdout) }));
+  });
+  const image = path.basename(exe);
+  const rows = [];
+  if (process.platform === 'win32') {
+    // Single-quoted PowerShell literals (a quote doubled): no escaping of the path's backslashes.
+    const lit = (s) => `'${String(s).replace(/'/g, "''")}'`;
+    const script = `$ErrorActionPreference='SilentlyContinue'; $needle = ${lit(profile)}; Get-CimInstance Win32_Process -Filter "Name='${image.replace(/'/g, "''")}'" | ForEach-Object { $c = [string]$_.CommandLine; if ($c.Contains($needle)) { $t = 'browser'; if ($c -match '--type=([a-z-]+)') { $t = $Matches[1] }; '{0}|{1}|{2}|{3}' -f $_.ProcessId, $t, [math]::Round($_.WorkingSetSize / 1MB), [math]::Round(($_.KernelModeTime + $_.UserModeTime) / 1e7, 1) } }`;
+    const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script]);
+    if (r.error) return { error: r.error };
+    for (const line of r.stdout.split(/\r?\n/)) {
+      const [pid, type, wsMb, cpuS] = line.trim().split('|');
+      if (pid) rows.push({ pid: Number(pid), type, wsMb: Number(wsMb), cpuS: Number(cpuS) });
+    }
+  } else {
+    const r = await run('ps', ['-eo', 'pid=,rss=,time=,args=']);
+    if (r.error) return { error: r.error };
+    for (const line of r.stdout.split('\n')) {
+      const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
+      if (!m || !m[4].includes(profile)) continue;
+      const type = m[4].match(/--type=([a-z-]+)/)?.[1] ?? 'browser';
+      rows.push({ pid: Number(m[1]), type, wsMb: Math.round(Number(m[2]) / 1024), cpu: m[3] });
+    }
+  }
+  return { count: rows.length, processes: rows.sort((a, b) => b.wsMb - a.wsMb).slice(0, 12) };
 }
 
 /** One CDP page session: attach to a new target, send bounded commands, await events. */
@@ -145,6 +213,45 @@ export async function openPage(port, url = 'about:blank') {
       const buf = Buffer.from(data, 'base64');
       if (file) (await import('node:fs')).writeFileSync(file, buf);
       return buf;
+    },
+    /**
+     * What browser this is and how it draws (product and JavaScript engine; the GPU backend actually in use —
+     * renderer, vendor, whether compositing is hardware or software). Content-free facts about the browser, read
+     * once at start so a slow or wedged run on one host names its backend. Every probe is bounded and optional.
+     */
+    async info() {
+      const out = {};
+      try {
+        const v = await browser.send('Browser.getVersion', {}, undefined, { timeoutMs: 5_000, context: 'browser info' });
+        out.product = v.product;
+        out.jsVersion = v.jsVersion;
+      } catch (e) {
+        out.product = `unknown (${String(e?.message ?? e).slice(0, 60)})`;
+      }
+      try {
+        const s = await browser.send('SystemInfo.getInfo', {}, undefined, { timeoutMs: 5_000, context: 'browser info' });
+        const aux = s.gpu?.auxAttributes ?? {};
+        const status = s.gpu?.featureStatus ?? {};
+        out.gpu = {
+          glRenderer: aux.glRenderer ?? null,
+          glVendor: aux.glVendor ?? null,
+          glVersion: aux.glVersion ?? null,
+          displayType: aux.displayType ?? null,
+          skiaBackend: aux.skiaBackendType ?? null,
+          inProcessGpu: aux.inProcessGpu ?? null,
+          sandboxed: aux.sandboxed ?? null,
+          gpuCrashes: aux.processCrashCount ?? null,
+          initializationMs: aux.initializationTime ?? null,
+          compositing: status.gpu_compositing ?? null,
+          rasterization: status.rasterization ?? null,
+          canvas: status['2d_canvas'] ?? null,
+          devices: (s.gpu?.devices ?? []).map((d) => `${d.vendorString ?? d.vendorId ?? '?'} ${d.deviceString ?? d.deviceId ?? ''}`.trim()),
+        };
+        out.model = `${s.modelName ?? ''} ${s.modelVersion ?? ''}`.trim() || null;
+      } catch (e) {
+        out.gpu = `unavailable (${String(e?.message ?? e).slice(0, 60)})`;
+      }
+      return out;
     },
     /**
      * After a timeout: does the browser process still answer, does this page's renderer still answer, did the
