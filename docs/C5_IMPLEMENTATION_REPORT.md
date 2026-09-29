@@ -791,7 +791,35 @@ in-memory ring, launch fragment and profile path redacted). On the Founder's hos
 `ANGLE_SWIFTSHADER` (Vulkan SwiftShader, Skia GaneshGL), fifteen processes, the smoke green in 2.7 s for
 selection.
 
+**What the diagnostic run (`08900ac2`) said.** Ubuntu acceptance GREEN again. Windows: Edge 153 on the same
+backend as the host (`ANGLE_SWIFTSHADER`, Skia GaneshGL, GPU compositing and rasterization enabled). The
+selection step's trace: `click` 4 ms, the focus sheet up in 242 ms, then `count` 1 343 ms (a query that takes
+2 ms elsewhere), `untilPainted` 4 900 ms, `settle(800)` never answered. Post-mortem at 30 s: browser alive, no
+crash, neither the browser nor the page answering; the process tree: **gpu-process 137.7 CPU-seconds and
+209 MB**, the renderer 13.5 s, the browser 9.8 s. The SwiftShader GPU process was saturating every core of the
+runner to rasterize and composite the Focus state, the renderer stood behind it (frame back-pressure), and the
+browser stood behind both. The host copes with the same backend only because it has many fast cores. This is
+the cause of the 8-minute hangs, the 47 s selection and the 19.9 s toggle step, distinct from (and until now
+masked by) the line-layer growth.
+
+**The fix is in the harness, not the Product.** The surface is DOM + SVG and the walkthrough encoder is a 2D
+canvas with WebCodecs: nothing needs a GPU. The launcher now passes `--disable-gpu` (software compositing, CPU
+raster in the renderer, no GPU process work) in place of `--use-angle=swiftshader --enable-unsafe-swiftshader`
+(a flag pair left over from the WebGL era, retired with `three` in `a82bdf05`); `QANDEEL_BROWSER_GPU=swiftshader`
+restores the old path for comparison. On the host the backend now reads `disabled_software` for compositing
+and rasterization; selection 1.7 s (2.7 s before), `untilPainted` 27 ms (515 ms before); the smoke green in
+both motion conditions and the full proof (frames, close-ups, walkthrough MP4) green once.
+
+**A second, unrelated finding from the browser log (Product, MINOR, not changed here).** The runner's browser
+log shows, on every render of a context sheet, `Applying inline style violates the following Content Security
+Policy directive 'style-src 'self''` (two hashes, two values). The sheets set the Department tint on avatars
+and chips through a `style="--dept:…"` attribute (`panels.ts`, `personAvatar` and the department chip), which
+the surface's own CSP (`style-src 'self'`, `security.ts`) blocks in every browser: those avatars and chips
+render without their Department colour. The company columns are unaffected (they set the custom property
+through the CSSOM). Recorded as a residual for a bounded visual correction with the Founder's authorization.
+
 ### 24.8 Residuals
 
-The Windows acceptance leg stays RED until the diagnostic run names the cause; the 4 fps walkthrough (§23.3)
-stays a proof-only MINOR.
+- **MINOR (Product, visual):** the Department tint on context-sheet avatars and chips is blocked by the CSP
+  (§24.7); the fix is to set `--dept` through `el.style.setProperty` as the columns do. Not changed here.
+- The 4 fps walkthrough (§23.3) stays a proof-only MINOR.

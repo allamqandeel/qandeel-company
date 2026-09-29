@@ -2338,3 +2338,15 @@ in the runner; the surface no longer degrades with live refreshes on any host. N
 design or motion behaviour changed. Runtime, storage, governance, authentication, CSS and `main.ts` untouched;
 the quality gate and the Windows leg unchanged. C5 remains NOT CLOSED pending exact-head CI, review and merge by
 the Technical Lead.
+
+**Addendum (the harness renders without a GPU process).** The exact-head run on the line-layer fix left the
+Windows leg red for a second, distinct cause, which a harness-only diagnostic commit then named from the runner
+itself (report §24.7): every step records the timing of each helper call, the browser's product and GPU
+backend are recorded at start, and an unanswered command reports the process tree and the browser's log tail.
+The Windows post-mortem showed the SwiftShader GPU process at 137.7 CPU-seconds in thirty seconds against a
+renderer at 13.5, the browser blocked behind it. Decision: the harness launches the browser with
+`--disable-gpu` (software compositing, CPU raster) — the surface is DOM + SVG and the walkthrough encoder a 2D
+canvas with WebCodecs, so no GPU is needed anywhere; the SwiftShader flags were a WebGL-era leftover.
+`QANDEEL_BROWSER_GPU=swiftshader` restores the old path for comparison. The browser log also surfaced a MINOR
+Product residual, recorded and not changed: the context sheets set the Department tint through a `style`
+attribute that the surface's own CSP blocks.

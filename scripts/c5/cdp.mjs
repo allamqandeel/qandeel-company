@@ -65,8 +65,13 @@ export async function launchBrowser({ width = 1440, height = 900, headless = tru
     '--disable-component-update',
     '--disable-sync',
     '--disable-features=Translate,MediaRouter',
-    '--use-angle=swiftshader',
-    '--enable-unsafe-swiftshader',
+    // The surface is DOM + SVG and the walkthrough encoder is a 2D canvas with WebCodecs: nothing needs a GPU.
+    // Software compositing with CPU raster in the renderer (`--disable-gpu`) is the deterministic path on a
+    // host without a GPU. The previous path, a GPU process on SwiftShader (`--use-angle=swiftshader`), ate
+    // every core of the Windows runner (137 CPU-seconds in thirty seconds of wall time while the renderer used
+    // thirteen) and blocked the browser behind it; the runner's own post-mortem named it. QANDEEL_BROWSER_GPU=
+    // swiftshader restores that path for comparison (harness-only).
+    ...(process.env.QANDEEL_BROWSER_GPU === 'swiftshader' ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : ['--disable-gpu']),
     '--force-device-scale-factor=1',
     '--lang=ar',
     // The browser's own log (GPU, renderer and crash diagnostics; no page content) on its stderr, kept in a

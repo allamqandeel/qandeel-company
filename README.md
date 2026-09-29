@@ -313,8 +313,10 @@ command on any CLI: a Founder reference is not authentication.
   DevTools command the harness sends is bounded (`QANDEEL_CDP_TIMEOUT_MS`, default 20 s) and a command the
   browser never answers fails naming the method, the helper and the step, with the browser's process tree and
   log tail; every step records the timing of each helper call, and the browser's product and GPU backend are
-  recorded at start. `QANDEEL_BROWSER_ARGS` passes extra browser flags to reproduce a runner locally (for
-  example `--force-prefers-reduced-motion`).
+  recorded at start. The browser renders without a GPU process (`--disable-gpu`: the surface is DOM + SVG and
+  the encoder a 2D canvas; a SwiftShader GPU process saturated the Windows runner); `QANDEEL_BROWSER_GPU=swiftshader`
+  restores that path for comparison, and `QANDEEL_BROWSER_ARGS` passes extra browser flags to reproduce a
+  runner locally (for example `--force-prefers-reduced-motion`).
 
 ### Engineering CLI
 
