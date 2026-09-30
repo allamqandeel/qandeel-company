@@ -71,6 +71,7 @@ interface WorkItemCapabilityRow {
 }
 import { verifyFence } from './queue.js';
 import type { Fence } from './records.js';
+import type { SqlValue } from './sqlite/connection.js';
 import type { WorkItemRecord } from './records.js';
 
 // --- Constrained execution by non-ACTIVE Employees (Stage 6 §11) --------------------------------
@@ -332,6 +333,24 @@ export function insertLesson(ctx: StoreContext, f: { employeeId: Id; kind: 'OBSE
   ctx.db.run('INSERT INTO lesson_history (lesson_id, version, from_stage, to_stage, reason_code, actor_ref, occurred_at) VALUES (?, 1, NULL, ?, ?, ?, ?)', id, stage, 'learning.recorded', SYSTEM_MIND_REF, at);
   appendAudit(ctx, 'learning.recorded', 'lesson', id, { actorRef: SYSTEM_MIND_REF }, 'OK', stage, { employeeId: f.employeeId });
   return id;
+}
+
+/** A lesson's lifecycle step, recorded with its history and a content-free audit row (its gates run in the caller). */
+function lessonStep(ctx: StoreContext, l: { id: string; version: number; stage: string }, set: string, params: readonly SqlValue[], to: string, reasonCode: string, actorRef: string): void {
+  const changed = ctx.db.run(`UPDATE lessons SET ${set}, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, ...params, ts(ctx), l.id, l.version).changes;
+  if (changed !== 1) throw new QandeelError('VERSION_CONFLICT', 'the lesson changed concurrently', { lessonId: l.id });
+  ctx.db.run('INSERT INTO lesson_history (lesson_id, version, from_stage, to_stage, reason_code, actor_ref, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?)', l.id, l.version + 1, l.stage, to, reasonCode, actorRef, ts(ctx));
+  appendAudit(ctx, 'learning.stage', 'lesson', l.id, { actorRef }, 'OK', reasonCode, { from: l.stage, to });
+}
+
+/** LESSON_CANDIDATE → UNDER_REVIEW on the independent review path. */
+export function txLessonUnderReview(ctx: StoreContext, l: { id: string; version: number; stage: string }, reasonCode: string, actorRef: string): void {
+  lessonStep(ctx, l, `stage = 'UNDER_REVIEW', review_path = 'INDEPENDENT_REVIEW'`, [], 'UNDER_REVIEW', reasonCode, actorRef);
+}
+
+/** A lesson's decision (VALIDATED / REJECTED) on the Founder's or the independent review path (C6-R1; datastore: never its maker). */
+export function txRecordLessonDecision(ctx: StoreContext, l: { id: string; version: number; stage: string }, to: 'VALIDATED' | 'REJECTED', path: 'FOUNDER' | 'INDEPENDENT_REVIEW', decidedByRef: string, reasonCode: string): void {
+  lessonStep(ctx, l, 'stage = ?, review_path = ?, decided_by_ref = ?', [to, path, decidedByRef], to, reasonCode, decidedByRef);
 }
 
 /**

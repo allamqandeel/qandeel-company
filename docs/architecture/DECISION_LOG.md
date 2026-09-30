@@ -2412,6 +2412,8 @@ Work Item transition (`REVIEWED → OUTCOME_VERIFIED` with `ACHIEVED`, `REVIEWED
 A verification needs a reviewed Work Item (code and trigger); `EXTERNAL_OUTCOME` evidence is refused until a
 governed source exists (C7). A qualified outcome = independently reviewed AND verified achieved (kernel and a
 database trigger). Qualified reviewers verifying outcomes is a later extension (residual R-C6-04).
+**Superseded in part by D-C6-10 (C6-R1):** the Founder's verification stays as the exception / override path;
+ordinary outcome verification no longer needs the Founder where the Work Item's Review Plan delegates judgment.
 
 ## D-C6-03 — Evaluation, attribution and the Performance Profile (Technical Lead, C6)
 
@@ -2470,10 +2472,13 @@ processes; the passphrase is the portable trust anchor by design, D15-B.4).
 decisions announce once after success; 18 reads are silent; `evaluate`, `assessIntervention`, `generateReport`
 announce only when they recorded something new and `planIntervention` only when it planned or escalated.
 Proven by `c6-runtime` tests and two `c6:mutation` gates; the C5 census and signalling proofs are unchanged.
+C6-R1 (D-C6-10) adds `completeReviewedTraining` (announces once), the `judgments` read (silent), and two
+derivations that announce only on news (`requestLearningReview` when it drew a judge or recorded a candidate,
+`planReviewedIntervention` like `planIntervention`): 37 classified methods.
 
 ## D-C6-08 — C6 CI, verifier and proof parity (Technical Lead, C6)
 
-**Decision.** `c6:mutation` (29 semantic mutations, D-C6-09 included) joins the mutation matrix on both operating systems
+**Decision.** `c6:mutation` (40 semantic mutations, D-C6-09 and the eleven C6-R1 gates of D-C6-10 included) joins the mutation matrix on both operating systems
 (Windows two shards, Ubuntu one) and the quality gate's parity set; `c6:acceptance` joins the acceptance job on
 both operating systems; the verifier adds `c6-proofs-present`, `c6-not-claimed-closed`, `c6-no-universal-score`,
 `c6-telemetry-content-free`, `c6-recovery-secret-never-stored` and `c6-external-outcomes-unavailable`, each
@@ -2502,3 +2507,54 @@ changes). A `SYSTEMIC_PROBLEM` observation is never validated as a lesson about 
 amended and re-pinned rather than followed by an 0011 because it has never been released (it exists only on
 the unmerged C6 branch). Proven by kernel and storage proofs and the `c6-systemic-credit-misattributed` and
 `c6-systemic-credit-before-validation` mutations.
+
+## D-C6-10 — C6-R1: operational judgment delegated through the Review Pool; execution authority unchanged (Technical Lead, C6-R1)
+
+**Context.** Exact-head review of PR #11 (C6-R1 brief, Product Owner): C6 separated Completed ≠ Reviewed ≠
+Outcome Verified correctly, but outcome verification, attribution validation, lesson validation and ordinary
+retraining were effectively Founder-only, which makes the Founder an operational bottleneck. The correction must
+not widen any Employee's execution authority, spending, approvals, budgets, tools, routing or policy.
+
+**Decision.** *Operational judgment is delegated by evidence, qualification, review policy and risk; execution
+authority remains separately governed.* No second verifier system — the C4 Review Plan, Review Pool, fenced
+review decision and pre-authorized review budget carry it:
+- **Policy.** Stage 11 §1 ("a Review Plan may specify outcome verification"): the plan gains
+  `operationalJudgment` = `FOUNDER` (default, the previous behaviour) or `REVIEW_POOL`. A plan with a FOUNDER key
+  keeps Founder judgment (kernel + trigger); R4 is always Founder-only (`judgmentRoute`). A new 0010 column on the
+  0008 table, frozen per plan version.
+- **Outcome verification.** A counting reviewer may attach its own cited outcome judgment (verdict + evidence
+  classes; `EXTERNAL_OUTCOME` refused until C7) to its review decision. When the plan delegates judgment and the
+  keys themselves SATISFY the output review, the same transaction records the verification (`verifier_kind =
+  REVIEW_POOL`, the review request and every decision as evidence): all keys ACHIEVED → `OUTCOME_VERIFIED`; all
+  NOT_ACHIEVED → `CLOSED`; any key without a judgment → nothing is verified; INCONCLUSIVE or a disagreement →
+  `INCONCLUSIVE`, never averaged, surfaced in Founder Attention. A Founder resolution of a conflict / escalation
+  leaves the outcome to the Founder. Independence, qualification, the MANAGER key's qualification and subject
+  freshness are the C4 ones, re-checked at the decision boundary.
+- **Attribution and learning.** An attribution proposal, and a classified work-derived observation put up for
+  review (`requestLearningReview`: a lesson candidate UNDER_REVIEW on the independent path), each get ONE judge
+  drawn from the plan's Review Pool domain by the same eligibility SQL (`eligibleReviewers`), excluding the
+  executor, its delegation chain, the subject Employee and earlier judges. The judge acts from its own governed
+  Work Item funded from the plan's pre-authorized review budget and decides through the same fenced
+  REVIEW_DECISION: PASS validates, FAIL rejects, any uncertainty escalates to the Founder (Attention), never
+  re-drawn. A lesson still passes the C6 evidence gate: its judge is drawn only once the independent evidence
+  exists (a validated cause or a qualified evaluation wakes it); evidence that refuses the lesson escalates. Eligibility is re-checked at the
+  decision; a judge whose work ended undecided is replaced; a subject that found no eligible judge is picked up
+  when pool capacity returns (the C4 refill and the recovery sweep — no polling). Datastore triggers refuse a
+  judge who is unqualified, the executor or the subject, a judgment of R4 work, and any Employee name on a
+  decided attribution / lesson that is not its assigned judge.
+- **Retraining.** A lesson validated on the independent path may be retrained without the Founder
+  (`planReviewedIntervention`, `completeReviewedTraining`): an intervention record inside the Employee's
+  existing envelope, completed only on objective evidence (a retrained Academy remediation, or the lesson
+  delivered to the Employee's own Personal Lesson memory). Training completed is still not improvement.
+- **Unchanged.** Company / team / Department knowledge promotion, systemic-finding decisions, failure cases, the
+  Eval Registry, grants, budgets, approvals, R3 approval before execution and R4 sovereignty stay where they were
+  (grants and approval decisions are `founder:*` in the datastore). A judgment changes its subject's judgment
+  state only.
+
+**Consequences.** The ordinary loop runs with the Founder surface disarmed (storage proof and acceptance), and an
+authority / spend fingerprint (grants, budget caps, approvals, route / model / tool policy, seats, delegations,
+qualifications, certifications) is unchanged across it; new budgets are only review / judgment Work Item
+allocations within the plan's review budget. Eleven `c6r1-*` mutations guard the family. Migration 0010 is
+amended and re-pinned (never released). Residual R-C6-04 is closed. Systemic-finding diagnosis stays a Founder
+decision in this correction (the brief permits pool diagnosis; not needed for the ordinary loop), and no
+deterministic outcome verifier is added (no machine-verifiable outcome criteria source exists before C7).

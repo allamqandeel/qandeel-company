@@ -120,6 +120,10 @@ export function attention(ctx: ApiContext): Json {
         const f = store.improvement.systemicFindings().find((x) => x.id === id);
         return f ? { systemic: { id: f.id, targetKind: f.targetKind, targetRef: f.targetRef, cause: f.cause, origin: f.origin, contributorEmployeeId: f.contributorEmployeeId, occurrences: f.occurrences, distinctEmployees: f.distinctEmployees, recommendationCode: f.recommendationCode, state: f.state } } : {};
       }
+      if (kind === 'judgment_assignment') {
+        const j = store.improvement.judgments().find((x) => x.id === id);
+        return j ? { judgment: { id: j.id, subjectKind: j.subjectKind, subjectId: j.subjectId, workItemId: j.workItemId, judgeEmployeeId: j.judgeEmployeeId, reviewOutcome: j.reviewOutcome, reasonCode: j.reasonCode, state: j.state } } : {};
+      }
       if (kind === 'recovery_drill' || kind === 'portable_backup' || kind === 'maintenance') {
         return { resilience: { exceptions: ctx.runtime.resilience().exceptions.filter((x) => x.material && x.ref === i.sourceRef).map((x) => x.code) } };
       }

@@ -30,8 +30,12 @@ const KERNEL = { cwd: 'packages/mind', tests: ['dist/test/c6-kernel.test.js'] };
 const STORE = { cwd: 'packages/storage', tests: ['dist/test/c6-improvement.test.js'] };
 const RES = { cwd: 'packages/storage', tests: ['dist/test/c6-resilience.test.js'] };
 const SIGNAL = { cwd: 'packages/runtime', tests: ['dist/test/c6/c6-runtime.test.js'] };
+// C6-R1: operational judgment through the Review Pool (verification authority is never execution authority).
+const JUDGE_KERNEL = { cwd: 'packages/governance', tests: ['dist/test/c6r1-judgment.test.js'] };
+const FREE = { cwd: 'packages/storage', tests: ['dist/test/c6-founder-free.test.js'] };
 
 const MIND = 'packages/mind/dist/src';
+const GOV = 'packages/governance/dist/src';
 const STORAGE = 'packages/storage/dist/src';
 const RT = 'packages/runtime/dist/src';
 
@@ -86,8 +90,8 @@ const MUTATIONS = [
   },
   {
     id: 'c6-lesson-validation-skips-gate',
-    gate: 'the C3 lesson validation consults the C6 learning gate before VALIDATED',
-    edits: [{ file: `${STORAGE}/memory.js`, search: 'if (!gate.allowed)\n', replace: 'if (false)\n', expectedCount: 1 }],
+    gate: 'the C3 lesson validation consults the C6 learning gate before VALIDATED (Founder and pool paths share it)',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: 'if (!gate.allowed)\n', replace: 'if (false)\n', expectedCount: 1 }],
     runs: [STORE],
   },
   {
@@ -191,14 +195,82 @@ const MUTATIONS = [
   {
     id: 'c6-outcome-verified-before-review',
     gate: 'an outcome is verified only after independent review (completion is not success)',
-    edits: [{ file: `${STORAGE}/improvement.js`, search: "if (!['REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED'].includes(w.state))\n", replace: 'if (false)\n', expectedCount: 1 }],
+    edits: [{ file: `${STORAGE}/outcome-core.js`, search: "if (!['REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED'].includes(w.state))\n", replace: 'if (false)\n', expectedCount: 1 }],
     runs: [STORE],
   },
   {
     id: 'c6-external-outcome-invented',
     gate: 'external outcomes are unavailable until a governed source exists (C7); none is accepted as evidence',
-    edits: [{ file: `${STORAGE}/improvement.js`, search: "if (classes.includes('EXTERNAL_OUTCOME') && !EXTERNAL_OUTCOMES_AVAILABLE)\n", replace: 'if (false)\n', expectedCount: 1 }],
-    runs: [STORE],
+    edits: [{ file: `${STORAGE}/outcome-core.js`, search: "if (classes.includes('EXTERNAL_OUTCOME') && !EXTERNAL_OUTCOMES_AVAILABLE)\n", replace: 'if (false)\n', expectedCount: 1 }],
+    runs: [STORE, FREE],
+  },
+  // --- C6-R1: the Founder is not the operational bottleneck, and judgment never becomes execution authority ---
+  {
+    id: 'c6r1-ordinary-outcome-founder-only',
+    gate: 'an ordinary Work Item whose plan delegates judgment is verified, attributed and learned from by the Review Pool without the Founder',
+    edits: [{ file: `${GOV}/review.js`, search: "return { judge: 'REVIEW_POOL', reason: 'PLAN_DELEGATES_JUDGMENT' };", replace: "return { judge: 'FOUNDER', reason: 'PLAN_DELEGATES_JUDGMENT' };", expectedCount: 1 }],
+    runs: [JUDGE_KERNEL, FREE],
+  },
+  {
+    id: 'c6r1-r4-judged-by-pool',
+    gate: 'R4 stays Founder-only: no Review Pool judgment of R4 work, whatever its plan says',
+    edits: [{ file: `${GOV}/review.js`, search: "if (s.risk === 'R4')\n        return { judge: 'FOUNDER', reason: 'R4_FOUNDER_ONLY' };", replace: "if (false)\n        return { judge: 'FOUNDER', reason: 'R4_FOUNDER_ONLY' };", expectedCount: 1 }],
+    runs: [JUDGE_KERNEL],
+  },
+  {
+    id: 'c6r1-founder-key-pool-judgment',
+    gate: 'a plan that reserves a FOUNDER key keeps Founder judgment (the pool never stands in for it)',
+    edits: [{ file: `${GOV}/review.js`, search: "if (judgment === 'REVIEW_POOL' && keys.some((k) => k.kind === 'FOUNDER'))", replace: 'if (false)', expectedCount: 1 }],
+    runs: [JUDGE_KERNEL, FREE],
+  },
+  {
+    id: 'c6r1-outcome-conflict-averaged',
+    gate: 'review keys that disagree on an outcome are never averaged into a verdict (INCONCLUSIVE, for the Founder)',
+    edits: [{ file: `${GOV}/review.js`, search: "return { verdict: 'INCONCLUSIVE', reason: 'OUTCOME_CONFLICT' };", replace: "return { verdict: 'ACHIEVED', reason: 'OUTCOME_CONFLICT' };", expectedCount: 1 }],
+    runs: [JUDGE_KERNEL, FREE],
+  },
+  {
+    id: 'c6r1-pass-verifies-without-judgment',
+    gate: 'a passed review is not a verified outcome: every key must give its own cited outcome judgment',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'verdict: (r.verdict ?? null)', replace: "verdict: (r.verdict ?? 'ACHIEVED')", expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6r1-uncertainty-validates',
+    gate: 'a pool judge\'s uncertainty escalates to the Founder; it never validates',
+    edits: [{ file: `${GOV}/review.js`, search: "return 'ESCALATE';\n}", replace: "return 'VALIDATE';\n}", expectedCount: 1 }],
+    runs: [JUDGE_KERNEL, FREE],
+  },
+  {
+    id: 'c6r1-self-judgment',
+    gate: 'the executor, its delegation chain and the subject Employee are never drawn as the judge',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return [...new Set([...parties, ...prior])];', replace: 'return [...new Set([...prior])];', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6r1-judge-eligibility-not-rechecked',
+    gate: 'a judge\'s qualification and independence are re-checked when it decides, not inherited from assignment',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return { eligible: q !== undefined && independent,', replace: 'return { eligible: true,', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6r1-validated-lesson-shared-company-wide',
+    gate: 'validating a lesson never widens its force: team / Department / Company sharing stays separately governed',
+    edits: [{ file: `${STORAGE}/memory.js`, search: 'if (!requiresIndependentReview(target)) {', replace: 'if (true) {', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6r1-judgment-budget-inflated',
+    gate: 'a review / judgment Work Item consumes only the plan\'s pre-authorized review budget (a ceiling, never a target)',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: "{ money: plan.reviewBudgetMoney, tokens: plan.reviewBudgetTokens }, SYSTEM_REVIEW_REF, 'judgment.assignment'", replace: "{ money: plan.reviewBudgetMoney * 2, tokens: plan.reviewBudgetTokens * 2 }, SYSTEM_REVIEW_REF, 'judgment.assignment'", expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6r1-judgment-raises-budget',
+    gate: 'a judgment changes the judged subject only — never a budget cap, grant, approval, route or seat',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: "appendAudit(ctx, 'judgment.decided'", // The injected write is assembled at run time (see c6-recommendation-mutates-authority).
+    replace: `ctx.db.run([${JSON.stringify('UPDATE')}, 'budgets', "SET cap_money = cap_money + 1, version = version + 1 WHERE scope = 'EMPLOYEE'"].join(' ')); appendAudit(ctx, 'judgment.decided'`, expectedCount: 1 }],
+    runs: [FREE],
   },
   {
     id: 'c6-read-announces-change',

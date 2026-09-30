@@ -14,7 +14,7 @@
  * from a worker also present the supervisor fence.
  */
 import { QandeelError, isQandeelError, type Id, type JsonValue, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
-import type { DataClass, ProviderFailureClass } from '@qandeel-company/governance';
+import type { DataClass, OutcomeJudgment, ProviderFailureClass } from '@qandeel-company/governance';
 
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import {
@@ -406,8 +406,11 @@ export function recordOrgAct(store: CompanyStore, fence: Fence, step: number, ac
   return fenced(store, 'organization act', fence, (ctx) => txOrgAct(ctx, fence, step, action, args));
 }
 
-/** The reviewer's decision from inside its own review Work Item (re-checked at this boundary). */
-export function recordReviewDecision(store: CompanyStore, fence: Fence, input: { outcome: unknown; reasonCode: string; rationale: string | null; evidenceRefs: readonly string[] }): ReviewDecisionResult {
+/**
+ * The reviewer's decision from inside its own review Work Item (re-checked at this boundary) — or, C6-R1, a pool
+ * judge's decision on a C6 subject from its own judgment Work Item. An outcome judgment rides along optionally.
+ */
+export function recordReviewDecision(store: CompanyStore, fence: Fence, input: { outcome: unknown; reasonCode: string; rationale: string | null; evidenceRefs: readonly string[]; outcomeJudgment?: OutcomeJudgment | null }): ReviewDecisionResult {
   return fenced(store, 'review decision', fence, (ctx) => txReviewDecision(ctx, fence, input));
 }
 

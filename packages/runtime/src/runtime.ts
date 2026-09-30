@@ -801,13 +801,16 @@ export class CompanyRuntime {
         // C6 (D-C6-07): reads are silent; Founder decisions announce once; the system's idempotent derivations
         // (evaluate, assess, report, plan) announce only when they recorded something new.
         improvement: signalling(ImprovementStore.for(s), changed, {
-          mutating: ['registerDefinition', 'calibrateDefinition', 'activateDefinition', 'retireDefinition', 'verifyOutcome', 'decideAttribution', 'classifyObservation', 'completeTraining', 'decideSystemicFinding', 'openFailureCase', 'advanceFailureCase'],
-          reads: ['definitions', 'calibrationRuns', 'evaluation', 'evaluations', 'attributions', 'signals', 'learningGate', 'interventions', 'systemicFindings', 'failureCases', 'retrainingMaterial', 'latestReport', 'reports', 'profile', 'economics', 'reviewerCalibration', 'inspect', 'health'],
+          mutating: ['registerDefinition', 'calibrateDefinition', 'activateDefinition', 'retireDefinition', 'verifyOutcome', 'decideAttribution', 'classifyObservation', 'completeTraining', 'completeReviewedTraining', 'decideSystemicFinding', 'openFailureCase', 'advanceFailureCase'],
+          reads: ['definitions', 'calibrationRuns', 'evaluation', 'evaluations', 'attributions', 'signals', 'learningGate', 'judgments', 'interventions', 'systemicFindings', 'failureCases', 'retrainingMaterial', 'latestReport', 'reports', 'profile', 'economics', 'reviewerCalibration', 'inspect', 'health'],
           conditional: {
             evaluate: (r) => (r as { changed: boolean }).changed,
             assessIntervention: (r) => (r as { changed: boolean }).changed,
             generateReport: (r) => (r as { changed: boolean }).changed,
             planIntervention: (r) => (r as { outcome: string }).outcome !== 'AWAIT_EVIDENCE',
+            // C6-R1 system derivations: news only when they recorded something new.
+            requestLearningReview: (r) => (r as { changed: boolean }).changed,
+            planReviewedIntervention: (r) => (r as { outcome: string }).outcome !== 'AWAIT_EVIDENCE',
           },
         }),
         universe: (options: { at?: string } = {}): CompanyUniverse => {
@@ -1224,7 +1227,7 @@ export class CompanyRuntime {
       },
       submitReviewDecision: (proposal: ReviewDecisionProposal, step: number) => {
         const g = globalStep(step);
-        const out = recordReviewDecision(store, claim.fence, { outcome: proposal.outcome, reasonCode: proposal.reasonCode, rationale: proposal.rationale, evidenceRefs: proposal.evidenceRefs });
+        const out = recordReviewDecision(store, claim.fence, { outcome: proposal.outcome, reasonCode: proposal.reasonCode, rationale: proposal.rationale, evidenceRefs: proposal.evidenceRefs, outcomeJudgment: proposal.outcomeJudgment ?? null });
         recordStepResult(store, claim.fence, g, out.outcome === 'RECORDED' ? 'TOOL_RESULT' : 'TOOL_REFUSED', JSON.stringify({ reviewDecision: out.outcome, code: out.code }));
         return { outcome: out.outcome, code: out.code };
       },

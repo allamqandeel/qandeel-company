@@ -85,18 +85,38 @@ CREATE TRIGGER eval_calibration_runs_append_only_d BEFORE DELETE ON eval_calibra
 
 -- =====================================================================================================
 -- 2. Outcome verification (Completed != Reviewed != Outcome Verified): the evidence behind REVIEWED →
--- OUTCOME_VERIFIED (or → CLOSED with NOT_ACHIEVED). Founder-decided in C6. External outcomes are refused until
--- a governed source exists (C7): they are never invented.
+-- OUTCOME_VERIFIED (or → CLOSED with NOT_ACHIEVED). External outcomes are refused until a governed source exists
+-- (C7): they are never invented.
+-- Operational judgment (C6-R1): the verifier is either the Founder, or — only where the Work Item's Review Plan
+-- delegates judgment to the Review Pool — the independent qualified reviewers of its satisfied output review,
+-- every counting key agreeing from its own cited judgment. Verification is judgment, never execution authority.
 -- =====================================================================================================
+
+-- Stage 11 §1 (a Review Plan may specify outcome verification): who makes the C6 operational judgments on the
+-- plan's Work Item. A new column on the 0008 table (0008 is untouched); FOUNDER keeps the pre-C6-R1 behaviour.
+ALTER TABLE review_plans ADD COLUMN operational_judgment TEXT NOT NULL DEFAULT 'FOUNDER' CHECK (operational_judgment IN ('FOUNDER', 'REVIEW_POOL'));
+CREATE TRIGGER review_plans_judgment_immutable BEFORE UPDATE ON review_plans
+WHEN NEW.operational_judgment IS NOT OLD.operational_judgment
+BEGIN SELECT RAISE(ABORT, 'a review plan version is immutable; a new version supersedes it'); END;
+-- A plan that reserves a FOUNDER key keeps the Founder's judgment.
+CREATE TRIGGER review_plans_founder_key_reserves_judgment BEFORE INSERT ON review_plans
+WHEN NEW.operational_judgment = 'REVIEW_POOL' AND EXISTS (SELECT 1 FROM json_each(NEW.keys_json) k WHERE json_extract(k.value, '$.kind') = 'FOUNDER')
+BEGIN SELECT RAISE(ABORT, 'a plan with a FOUNDER key keeps Founder judgment'); END;
+
 CREATE TABLE outcome_verifications (
   id                     TEXT    NOT NULL PRIMARY KEY CHECK (length(id) = 36),
   work_item_id           TEXT    NOT NULL REFERENCES work_items (id) ON DELETE RESTRICT,
   verdict                TEXT    NOT NULL CHECK (verdict IN ('ACHIEVED', 'NOT_ACHIEVED', 'INCONCLUSIVE')),
   evidence_classes_json  TEXT    NOT NULL CHECK (json_valid(evidence_classes_json) AND json_type(evidence_classes_json) = 'array' AND json_array_length(evidence_classes_json) >= 1 AND length(evidence_classes_json) <= 512 AND evidence_classes_json NOT LIKE '%EXTERNAL_OUTCOME%'),
   evidence_refs_json     TEXT    NOT NULL CHECK (json_valid(evidence_refs_json) AND json_type(evidence_refs_json) = 'array' AND json_array_length(evidence_refs_json) >= 1 AND length(evidence_refs_json) <= 4096),
-  verifier_ref           TEXT    NOT NULL CHECK (verifier_ref GLOB 'founder:*'),
+  verifier_kind          TEXT    NOT NULL CHECK (verifier_kind IN ('FOUNDER', 'REVIEW_POOL')),
+  verifier_ref           TEXT    NOT NULL CHECK (verifier_ref GLOB 'founder:*' OR verifier_ref GLOB 'review_request:*'),
+  review_request_id      TEXT             REFERENCES review_requests (id) ON DELETE RESTRICT,
   reason_code            TEXT    NOT NULL CHECK (length(reason_code) BETWEEN 1 AND 64),
-  created_at             TEXT    NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z')
+  created_at             TEXT    NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
+  CHECK ((verifier_kind = 'FOUNDER') = (verifier_ref GLOB 'founder:*')),
+  CHECK ((verifier_kind = 'REVIEW_POOL') = (review_request_id IS NOT NULL)),
+  CHECK (review_request_id IS NULL OR verifier_ref = 'review_request:' || review_request_id)
 ) STRICT;
 -- One decisive verdict per Work Item (INCONCLUSIVE may precede it).
 CREATE UNIQUE INDEX outcome_verifications_one_decisive ON outcome_verifications (work_item_id) WHERE verdict <> 'INCONCLUSIVE';
@@ -106,6 +126,36 @@ CREATE TRIGGER outcome_verifications_append_only_d BEFORE DELETE ON outcome_veri
 CREATE TRIGGER outcome_verifications_need_review BEFORE INSERT ON outcome_verifications
 WHEN NOT EXISTS (SELECT 1 FROM work_items w WHERE w.id = NEW.work_item_id AND w.state IN ('REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED'))
 BEGIN SELECT RAISE(ABORT, 'an outcome is verified only after independent review'); END;
+
+-- A reviewer's own outcome judgment, recorded with its counting review decision of an output (the decision is
+-- the C4 one; this is its C6 companion). Cited to evidence classes; never an external outcome.
+CREATE TABLE review_outcome_judgments (
+  decision_id            TEXT    NOT NULL PRIMARY KEY REFERENCES review_decisions (id) ON DELETE RESTRICT,
+  request_id             TEXT    NOT NULL REFERENCES review_requests (id) ON DELETE RESTRICT,
+  verdict                TEXT    NOT NULL CHECK (verdict IN ('ACHIEVED', 'NOT_ACHIEVED', 'INCONCLUSIVE')),
+  evidence_classes_json  TEXT    NOT NULL CHECK (json_valid(evidence_classes_json) AND json_type(evidence_classes_json) = 'array' AND json_array_length(evidence_classes_json) BETWEEN 1 AND 8 AND length(evidence_classes_json) <= 512 AND evidence_classes_json NOT LIKE '%EXTERNAL_OUTCOME%'),
+  created_at             TEXT    NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z')
+) STRICT;
+CREATE INDEX review_outcome_judgments_request ON review_outcome_judgments (request_id);
+CREATE TRIGGER review_outcome_judgments_append_only_u BEFORE UPDATE ON review_outcome_judgments BEGIN SELECT RAISE(ABORT, 'outcome judgments are append-only'); END;
+CREATE TRIGGER review_outcome_judgments_append_only_d BEFORE DELETE ON review_outcome_judgments BEGIN SELECT RAISE(ABORT, 'outcome judgments are append-only'); END;
+-- Only a counting Employee decision of a required output review carries one (never a shadow, never the executor).
+CREATE TRIGGER review_outcome_judgments_of_counting_review BEFORE INSERT ON review_outcome_judgments
+WHEN NOT EXISTS (SELECT 1 FROM review_decisions d JOIN review_requests r ON r.id = d.request_id JOIN work_items w ON w.id = r.work_item_id
+                 WHERE d.id = NEW.decision_id AND d.request_id = NEW.request_id AND d.counts = 1 AND d.reviewer_employee_id IS NOT NULL
+                   AND r.kind = 'REQUIRED' AND r.subject_kind = 'OUTPUT' AND w.owner_ref IS NOT 'employee:' || d.reviewer_employee_id)
+BEGIN SELECT RAISE(ABORT, 'an outcome judgment belongs to an independent counting output review decision'); END;
+
+-- A REVIEW_POOL verification rests on a satisfied required output review of this Work Item under a plan that
+-- delegates judgment (never R4), and a decisive verdict on every passing key agreeing (never averaged).
+CREATE TRIGGER outcome_verifications_by_review_keys BEFORE INSERT ON outcome_verifications
+WHEN NEW.verifier_kind = 'REVIEW_POOL' AND (
+     NOT EXISTS (SELECT 1 FROM review_requests r JOIN review_plans p ON p.id = r.plan_id
+                 WHERE r.id = NEW.review_request_id AND r.work_item_id = NEW.work_item_id AND r.kind = 'REQUIRED' AND r.subject_kind = 'OUTPUT'
+                   AND r.state = 'SATISFIED' AND r.risk_level <> 'R4' AND p.operational_judgment = 'REVIEW_POOL')
+  OR (NEW.verdict <> 'INCONCLUSIVE' AND EXISTS (SELECT 1 FROM review_decisions d WHERE d.request_id = NEW.review_request_id AND d.counts = 1 AND d.outcome = 'PASS'
+                 AND NOT EXISTS (SELECT 1 FROM review_outcome_judgments j WHERE j.decision_id = d.id AND j.verdict = NEW.verdict))))
+BEGIN SELECT RAISE(ABORT, 'a pool verification rests on a satisfied review whose passing keys all judged this verdict'); END;
 
 -- =====================================================================================================
 -- 3. Evaluation results: one live result per (Work Item, definition); a re-evaluation supersedes. Built only
@@ -247,6 +297,69 @@ WHEN NEW.stage = 'VALIDATED' AND OLD.stage <> 'VALIDATED' AND EXISTS (SELECT 1 F
   OR EXISTS (SELECT 1 FROM learning_signals s WHERE s.observation_id = NEW.observation_id AND s.kind = 'NEAR_MISS_WARNING' AND s.source = 'REFLECTION'
              AND NOT EXISTS (SELECT 1 FROM causal_attributions a WHERE a.work_item_id = s.work_item_id AND a.state = 'VALIDATED')))
 BEGIN SELECT RAISE(ABORT, 'learning is validated only on independent evidence (reflection is a hypothesis)'); END;
+
+-- =====================================================================================================
+-- 5b. Operational judgment through the Review Pool (C6-R1). Where a Work Item's Review Plan delegates judgment,
+-- an attribution proposal or a lesson under review is judged by ONE independent, qualified reviewer drawn from
+-- the plan's Review Pool domain — acting from its own governed review Work Item, funded from the plan's
+-- pre-authorized review budget, deciding through the same fenced review decision as any review. The judge is
+-- never the executor or the subject Employee; a title never qualifies anyone; a judgment grants nothing.
+-- =====================================================================================================
+CREATE TABLE judgment_assignments (
+  id                     TEXT    NOT NULL PRIMARY KEY CHECK (length(id) = 36),
+  subject_kind           TEXT    NOT NULL CHECK (subject_kind IN ('ATTRIBUTION', 'LESSON')),
+  subject_id             TEXT    NOT NULL CHECK (length(subject_id) = 36),
+  work_item_id           TEXT    NOT NULL REFERENCES work_items (id) ON DELETE RESTRICT,
+  plan_id                TEXT    NOT NULL REFERENCES review_plans (id) ON DELETE RESTRICT,
+  judge_employee_id      TEXT    NOT NULL REFERENCES employees (id) ON DELETE RESTRICT,
+  qualification_id       TEXT    NOT NULL REFERENCES reviewer_qualifications (id) ON DELETE RESTRICT,
+  judge_work_item_id     TEXT    NOT NULL UNIQUE REFERENCES work_items (id) ON DELETE RESTRICT,
+  state                  TEXT    NOT NULL CHECK (state IN ('ASSIGNED', 'DECIDED', 'ESCALATED', 'WITHDRAWN')),
+  review_outcome         TEXT             CHECK (review_outcome IS NULL OR review_outcome IN ('PASS', 'FAIL', 'UNCERTAIN', 'INSUFFICIENT_EVIDENCE', 'NEEDS_SPECIALIST', 'ESCALATE')),
+  decision               TEXT             CHECK (decision IS NULL OR decision IN ('VALIDATE', 'REJECT', 'ESCALATE')),
+  reason_code            TEXT             CHECK (reason_code IS NULL OR length(reason_code) BETWEEN 1 AND 64),
+  evidence_refs_json     TEXT    NOT NULL CHECK (json_valid(evidence_refs_json) AND json_type(evidence_refs_json) = 'array' AND length(evidence_refs_json) <= 2048),
+  run_id                 TEXT             REFERENCES runs (id) ON DELETE RESTRICT,
+  qualification_version  INTEGER          CHECK (qualification_version IS NULL OR qualification_version >= 1),
+  version                INTEGER NOT NULL CHECK (version >= 1),
+  created_at             TEXT    NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
+  updated_at             TEXT    NOT NULL CHECK (updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
+  CHECK ((state IN ('DECIDED', 'ESCALATED')) = (review_outcome IS NOT NULL AND decision IS NOT NULL AND run_id IS NOT NULL)),
+  CHECK (state <> 'DECIDED' OR decision IN ('VALIDATE', 'REJECT')),
+  CHECK (state = 'ASSIGNED' OR reason_code IS NOT NULL)
+) STRICT;
+CREATE UNIQUE INDEX judgment_assignments_one_open ON judgment_assignments (subject_kind, subject_id) WHERE state = 'ASSIGNED';
+CREATE INDEX judgment_assignments_state ON judgment_assignments (state);
+CREATE TRIGGER judgment_assignments_no_delete BEFORE DELETE ON judgment_assignments BEGIN SELECT RAISE(ABORT, 'judgment assignments are durable history'); END;
+CREATE TRIGGER judgment_assignments_forward BEFORE UPDATE ON judgment_assignments
+WHEN NEW.id IS NOT OLD.id OR NEW.subject_kind IS NOT OLD.subject_kind OR NEW.subject_id IS NOT OLD.subject_id OR NEW.work_item_id IS NOT OLD.work_item_id
+  OR NEW.plan_id IS NOT OLD.plan_id OR NEW.judge_employee_id IS NOT OLD.judge_employee_id OR NEW.qualification_id IS NOT OLD.qualification_id
+  OR NEW.judge_work_item_id IS NOT OLD.judge_work_item_id OR NEW.created_at IS NOT OLD.created_at OR NEW.version <> OLD.version + 1 OR OLD.state <> 'ASSIGNED'
+BEGIN SELECT RAISE(ABORT, 'a judgment assignment is decided, escalated or withdrawn once'); END;
+-- Independence and qualification, in the datastore: an ACTIVE qualification in the plan's domain, a plan that
+-- delegates judgment, never R4, never the executor of the judged work, never the subject Employee, and the judge's
+-- own Work Item is the judge's.
+CREATE TRIGGER judgment_assignments_independent BEFORE INSERT ON judgment_assignments
+WHEN NOT EXISTS (SELECT 1 FROM reviewer_qualifications q JOIN review_plans p ON p.id = NEW.plan_id
+                 WHERE q.id = NEW.qualification_id AND q.employee_id = NEW.judge_employee_id AND q.mode = 'ACTIVE' AND q.domain = p.domain
+                   AND p.work_item_id = NEW.work_item_id AND p.operational_judgment = 'REVIEW_POOL')
+  OR EXISTS (SELECT 1 FROM work_items w WHERE w.id = NEW.work_item_id AND (w.risk_level = 'R4' OR w.owner_ref = 'employee:' || NEW.judge_employee_id))
+  OR NOT EXISTS (SELECT 1 FROM work_items j WHERE j.id = NEW.judge_work_item_id AND j.owner_ref = 'employee:' || NEW.judge_employee_id)
+  OR (NEW.subject_kind = 'ATTRIBUTION' AND NOT EXISTS (SELECT 1 FROM causal_attributions a WHERE a.id = NEW.subject_id AND a.work_item_id = NEW.work_item_id AND a.employee_id IS NOT NEW.judge_employee_id))
+  OR (NEW.subject_kind = 'LESSON' AND NOT EXISTS (SELECT 1 FROM lessons l WHERE l.id = NEW.subject_id AND l.employee_id <> NEW.judge_employee_id AND l.event_ref = 'work_item:' || NEW.work_item_id))
+BEGIN SELECT RAISE(ABORT, 'a judge is an independent, qualified pool reviewer of work whose plan delegates judgment'); END;
+
+-- Nobody forges a pool judge: an Employee's name on a decided attribution or lesson is exactly the judge of a
+-- DECIDED assignment of that subject (and never the subject Employee — the CHECK / trigger above and below).
+CREATE TRIGGER causal_attributions_judged_by_assignment BEFORE UPDATE ON causal_attributions
+WHEN NEW.state IN ('VALIDATED', 'REJECTED') AND OLD.state = 'PROPOSED' AND NEW.decided_by_ref GLOB 'employee:*'
+  AND NOT EXISTS (SELECT 1 FROM judgment_assignments ja WHERE ja.subject_kind = 'ATTRIBUTION' AND ja.subject_id = NEW.id AND ja.state = 'DECIDED' AND 'employee:' || ja.judge_employee_id = NEW.decided_by_ref)
+BEGIN SELECT RAISE(ABORT, 'an attribution is decided by the Founder or by its assigned pool judge'); END;
+CREATE TRIGGER lessons_judged_by_assignment BEFORE UPDATE ON lessons
+WHEN NEW.stage IN ('VALIDATED', 'REJECTED') AND OLD.stage NOT IN ('VALIDATED', 'REJECTED') AND NEW.decided_by_ref GLOB 'employee:*'
+  AND (NEW.decided_by_ref = 'employee:' || NEW.employee_id
+    OR NOT EXISTS (SELECT 1 FROM judgment_assignments ja WHERE ja.subject_kind = 'LESSON' AND ja.subject_id = NEW.id AND ja.state = 'DECIDED' AND 'employee:' || ja.judge_employee_id = NEW.decided_by_ref))
+BEGIN SELECT RAISE(ABORT, 'a lesson is decided by the Founder or by its assigned pool judge, never by its maker'); END;
 
 -- =====================================================================================================
 -- 6. Learning interventions and their verified effect (training completed is not learning proven).

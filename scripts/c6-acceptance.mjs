@@ -16,6 +16,10 @@
 //   NOT_YET_TESTED until later comparable work proves IMPROVEMENT_OBSERVED, successful patterns candidate-first,
 //   repeated failures across Employees → a systemic finding in Founder Attention, a Gold case bound to a hidden
 //   holdout, typed reports without any score, cost per qualified outcome, the C5 change-signalling contract;
+// - C6-R1: the ordinary Work → Review → Verify → Evaluate → Attribute → Learn → Retrain → Later-evidence cycle with
+//   the Founder surface DISARMED (every Founder act fails closed): the Review Pool verifies, attributes and
+//   validates, and an authority / spend fingerprint (grants, budget caps, approvals, routing, seats, delegations,
+//   qualifications, certifications) is unchanged; a plan that keeps Founder judgment stays waiting for the Founder;
 // - resilience: an encrypted portable package in a disposable external directory (honestly SAME_VOLUME, then an
 //   attested off-device one), tamper / wrong-key refusal, generational retention, a restore drill, a clean-device
 //   restore preserving identities / work / evaluation / learning / audit lineage / artifacts with the lost device's
@@ -43,7 +47,7 @@ const { AcademyStore, ArtifactStore, CompanyStore, DirectoryDestination, Founder
 const { ASSESSMENT_DIMENSIONS, DEFAULT_CRITICAL_DIMENSIONS, DETERMINISTIC_DIMENSIONS, standardWorkOutcomeDefinition } = await import('@qandeel-company/mind');
 const { classifyFounderIntent } = await import('@qandeel-company/governance');
 // Test-only seam: resolvable only because this harness runs with --conditions=qandeel-test.
-const { activateEmployeeForTest, armFounderTestSurface, createWorkspaceAtVersionForTest } = await import('@qandeel-company/storage/testing');
+const { activateEmployeeForTest, armFounderTestSurface, createWorkspaceAtVersionForTest, disarmFounderTestSurface } = await import('@qandeel-company/storage/testing');
 
 function refuse(message) {
   console.error(JSON.stringify({ ok: false, verdict: 'REFUSED', message }));
@@ -113,7 +117,7 @@ await step('production-c6-authority-closed', () => {
     const f = 'founder:00000000-0000-4000-8000-000000000000';
     const m = ImprovementStore.for(store);
     check(refusedWith(() => m.registerDefinition(f, standardWorkOutcomeDefinition()), 'FOUNDER_SURFACE_UNAVAILABLE'), 'the Eval Registry changes only through the authenticated Founder surface');
-    check(refusedWith(() => m.verifyOutcome(f, '00000000-0000-4000-8000-000000000001', { verdict: 'ACHIEVED', evidenceClasses: ['REVIEW_DECISION'], evidenceRefs: ['work_item:x'], reasonCode: 'x' }), 'FOUNDER_SURFACE_UNAVAILABLE'), 'outcome verification is a Founder act');
+    check(refusedWith(() => m.verifyOutcome(f, '00000000-0000-4000-8000-000000000001', { verdict: 'ACHIEVED', evidenceClasses: ['REVIEW_DECISION'], evidenceRefs: ['work_item:x'], reasonCode: 'x' }), 'FOUNDER_SURFACE_UNAVAILABLE'), 'the Founder\'s own (exception) outcome verification needs the authenticated Founder surface');
   } finally {
     store.close();
   }
@@ -437,6 +441,90 @@ try {
       m.off();
     }
     return { announcements: 0 };
+  });
+
+  await step('founder-free-ordinary-judgment-cycle-changes-no-authority-or-spend', async () => {
+    // Content-free fingerprint of everything that is authority, money ceilings or policy (public reads only).
+    const authorityFingerprint = () => {
+      const gov = runtime.governance;
+      const employees = gov.listEmployees().map((e) => ({ id: e.id, state: e.state, roleRef: e.roleRef, departmentId: e.departmentId }));
+      const envelopes = [['COMPANY', 'company'], ...gov.listDepartments().map((d) => ['DEPARTMENT', d.id]), ...employees.map((e) => ['EMPLOYEE', e.id])];
+      return JSON.stringify({
+        employees,
+        grants: employees.flatMap((e) => gov.grants(e.id).map((g) => [g.id, g.capability, g.resourceScope, g.riskCeiling, g.dataClassCeiling, g.expiresAt, g.maxUses, g.status])),
+        budgets: envelopes.map(([s, id]) => gov.budgetFor(s, id)).filter(Boolean).map((b) => [b.id, b.capMoney, b.capTokens, b.runCapMoney, b.runCapTokens, b.status]),
+        approvals: gov.listApprovals().map((a) => [a.id, a.state]),
+        routing: ((r) => ({ policy: r.policy, deployments: r.deployments.map((d) => [d.id, d.status, d.qualification, d.reasoningClass, d.egressMaxDataClass, d.priceCard]) }))(gov.routingSnapshot('draft.memo')),
+        seats: runtime.org.organization.positions().map((p) => [p.id, p.status, p.roleRef, p.reportsToPositionId]),
+        delegations: runtime.org.organization.authorityDelegations().map((d) => [d.id, d.status]),
+        qualifications: review.qualifications().map((q) => [q.id, q.employeeId, q.domain, q.level, q.mode, q.maxDataClass]),
+        certifications: employees.flatMap((e) => runtime.mind.academy.certifications(e.id).map((c) => [c.id, c.status, c.roleRef, c.validUntil])),
+      });
+    };
+    // Established beforehand by the Founder (setup, never a judgment): Work Item budgets and Review Plans that
+    // delegate operational judgment to the Review Pool; the reviewer's own run cites its outcome judgment.
+    const poolPlan = (verdict) => ({ ...reviewPlan(), operationalJudgment: 'REVIEW_POOL', reviewerInstructions: script({ type: 'REVIEW_DECISION', outcome: 'PASS', reasonCode: 'rubric.applied', rationale: 'Checked against the rubric and the outcome evidence.', evidenceRefs: ['evidence:rubric'], outcomeVerdict: verdict, outcomeEvidence: ['REVIEW_DECISION', 'WORK_LINEAGE'] }, FINAL('review.done')) });
+    const prepare = (instructions, plan) => {
+      const { workItem } = runtime.submitWorkItem({ objective: 'ordinary governed work', ownerRef: world.analyst.ref, processorKind: 'c2.employee-task', processorInput: { taskClass: 'draft.memo', maxOutputTokens: 256, instructions } });
+      runtime.governance.createBudget(world.founder, { scope: 'WORK_ITEM', scopeId: workItem.id, capMoney: 1_000_000, capTokens: 1_000_000, reasonCode: 'acceptance' });
+      review.declarePlan(world.founder, workItem.id, plan);
+      return workItem.id;
+    };
+    const w1 = prepare(script({ type: 'OBSERVATION', topic: 'drafting.sources', content: 'I suspect I cited stale sources because I did not re-check them before submitting.' }, FINAL('draft.done')), poolPlan('NOT_ACHIEVED'));
+    const later = [prepare(script(FINAL('later.pool.a')), poolPlan('ACHIEVED')), prepare(script(FINAL('later.pool.b')), poolPlan('ACHIEVED'))];
+    const founderPlanned = prepare(script(FINAL('founder.judged')), reviewPlan());
+    const before = authorityFingerprint();
+    const memory = runtime.mind.memory;
+    let detail;
+    disarmFounderTestSurface(company);
+    try {
+      check(refusedWith(() => verify(w1, 'ACHIEVED'), 'FOUNDER_SURFACE_UNAVAILABLE'), 'from here on every Founder act fails closed');
+      // Work within the existing grant and budget → independent qualified review → the keys verify the outcome.
+      runtime.transitionWorkItem(w1, { to: 'READY', reasonCode: 'assigned' });
+      await until(() => stateOf(w1) === 'CLOSED', 'reviewed and verified NOT_ACHIEVED by the Review Pool');
+      // Evaluation → an attribution proposal → an independent pool judge (never the subject) validates it from its own run.
+      im().evaluate(w1);
+      const a = im().attributions({ workItemId: w1 })[0];
+      check(a?.state === 'PROPOSED' && a.overall === 'EMPLOYEE_JUDGMENT', 'the evaluator proposes; nobody has decided yet');
+      check(im().judgments({ subjectId: a.id })[0]?.judgeEmployeeId === world.reviewer.id, 'an independent, qualified pool judge — never the subject Employee');
+      await until(() => im().attributions({ workItemId: w1 })[0]?.state === 'VALIDATED', 'the pool judge validates the cause');
+      check(im().attributions({ workItemId: w1 })[0].decidedByRef === `employee:${world.reviewer.id}`, 'the validator is the assigned judge');
+      // The reflection is a hypothesis → classified → independent Review Pool review → VALIDATED.
+      const obs = memory.lessons(world.analyst.id).find((l) => l.stage === 'OBSERVATION' && l.eventRef === `work_item:${w1}`);
+      check(obs && im().classifyObservation(obs.id, 'MISTAKE_LESSON').source === 'REFLECTION', 'an Employee reflection');
+      const lr = im().requestLearningReview(obs.id);
+      await until(() => memory.lesson(lr.lessonId).stage === 'VALIDATED', 'the pool judge validates the lesson');
+      const lesson = memory.lesson(lr.lessonId);
+      check(lesson.reviewPath === 'INDEPENDENT_REVIEW' && lesson.decidedByRef === `employee:${world.reviewer.id}`, 'validated on the independent review path, never by its maker');
+      check(memory.requestPromotion('system:learning', lesson.id, 'COMPANY').state === 'PENDING_REVIEW', 'a validated lesson never becomes Company knowledge by itself');
+      check(memory.requestPromotion('system:learning', lesson.id, 'PERSONAL').state === 'APPROVED', 'the lesson is delivered to its own Employee');
+      // Targeted retraining inside the existing envelope; training completed is not improvement.
+      const planned = im().planReviewedIntervention(lesson.id, 'TARGETED_RETRAINING');
+      check(planned.outcome === 'PLANNED' && planned.intervention.remediationId === null, 'ordinary retraining is planned without new budget or authority');
+      await sleep(5);
+      im().completeReviewedTraining(planned.intervention.id);
+      check(im().assessIntervention(planned.intervention.id).intervention.effect === 'NOT_YET_TESTED', 'training completed is not learning proven');
+      // Later comparable work decides the effect.
+      await sleep(5);
+      for (const id of later) {
+        runtime.transitionWorkItem(id, { to: 'READY', reasonCode: 'assigned' });
+        await until(() => stateOf(id) === 'OUTCOME_VERIFIED', 'reviewed and verified ACHIEVED by the Review Pool');
+        check(im().evaluate(id).evaluation.qualifiedOutcome, 'a pool-verified ACHIEVED is a qualified outcome');
+      }
+      const effect = im().assessIntervention(planned.intervention.id).intervention.effect;
+      check(effect === 'IMPROVEMENT_OBSERVED', `later comparable, qualified evidence decides the effect (saw ${effect})`);
+      // A plan that keeps the Founder's judgment keeps it: reviewed, never verified without the Founder.
+      runtime.transitionWorkItem(founderPlanned, { to: 'READY', reasonCode: 'assigned' });
+      await until(() => stateOf(founderPlanned) === 'REVIEWED', 'reviewed under a Founder-judgment plan');
+      await sleep(50);
+      check(stateOf(founderPlanned) === 'REVIEWED', 'a case that needs the Founder stays waiting for the Founder');
+      detail = { verifier: 'REVIEW_POOL', attribution: 'POOL_VALIDATED', lesson: 'POOL_VALIDATED', effect, founderActsDuringCycle: 0 };
+    } finally {
+      armFounderTestSurface(company);
+    }
+    check(authorityFingerprint() === before, 'grants, budget caps, approvals, routing, seats, delegations, qualifications and certifications are unchanged');
+    check(verify(founderPlanned, 'ACHIEVED').state === 'OUTCOME_VERIFIED', 'the Founder remains the exception authority');
+    return detail;
   });
 
   await step('encrypted-portable-backup-honest-failure-domain-and-attention', async () => {

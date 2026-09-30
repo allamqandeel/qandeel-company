@@ -200,7 +200,7 @@ const C5_MUTATION_CHECK = 'scripts/c5-mutation-check.mjs';
 const C6_REPORT = 'docs/C6_IMPLEMENTATION_REPORT.md';
 const C6_CLOSURE = /^docs\/C6_[^/]*CLOSURE[^/]*\.md$/i;
 const C7_CLOSURE = /^docs\/C7_[^/]*CLOSURE[^/]*\.md$/i;
-const C6_PROOF_MARKERS = ['C6-PROOF: improvement-kernel', 'C6-PROOF: storage-improvement', 'C6-PROOF: storage-resilience', 'C6-PROOF: runtime-c6'];
+const C6_PROOF_MARKERS = ['C6-PROOF: improvement-kernel', 'C6-PROOF: storage-improvement', 'C6-PROOF: storage-resilience', 'C6-PROOF: runtime-c6', 'C6-PROOF: storage-founder-free'];
 const C6_MUTATION_CHECK = 'scripts/c6-mutation-check.mjs';
 // Rule A for C6: evaluations, attributions, learning, reports and recovery carry ids, states, codes and counts only.
 const C6_WRITERS = ['improvement', 'improvement-core', 'resilience', 'maintenance', 'update-hold'].map((m) => `packages/storage/src/${m}.ts`);
@@ -321,7 +321,11 @@ const MUTATION_PINS = {
       'c6-completion-counts-as-success', 'c6-activity-boosts-performance', 'c6-insufficient-evidence-judged', 'c6-system-cause-blamed-on-employee', 'c6-tool-failure-unmapped', 'c6-non-employee-negative-counted', 'c6-evaluator-cannot-return-unknown',
       'c6-reflection-bypasses-validation', 'c6-lesson-validation-skips-gate', 'c6-pattern-auto-shared', 'c6-holdout-leaks-to-trainee', 'c6-training-equals-improvement', 'c6-retraining-loops-forever', 'c6-systemic-credit-misattributed', 'c6-systemic-credit-before-validation', 'c6-recommendation-mutates-authority',
       'c6-universal-score-reintroduced', 'c6-cost-rewards-cheap-failure', 'c6-backup-encryption-bypassed', 'c6-backup-checksum-ignored', 'c6-retention-keeps-only-latest', 'c6-update-activates-before-verification', 'c6-update-hold-ignored',
-      'c6-restore-releases-uncertain-effect', 'c6-report-judgement-without-evidence', 'c6-outcome-verified-before-review', 'c6-external-outcome-invented', 'c6-read-announces-change', 'c6-unchanged-derivation-announces',
+      'c6-restore-releases-uncertain-effect', 'c6-report-judgement-without-evidence', 'c6-outcome-verified-before-review', 'c6-external-outcome-invented',
+      // C6-R1: operational judgment through the Review Pool; verification authority is never execution authority.
+      'c6r1-ordinary-outcome-founder-only', 'c6r1-r4-judged-by-pool', 'c6r1-founder-key-pool-judgment', 'c6r1-outcome-conflict-averaged', 'c6r1-pass-verifies-without-judgment', 'c6r1-uncertainty-validates',
+      'c6r1-self-judgment', 'c6r1-judge-eligibility-not-rechecked', 'c6r1-validated-lesson-shared-company-wide', 'c6r1-judgment-budget-inflated', 'c6r1-judgment-raises-budget',
+      'c6-read-announces-change', 'c6-unchanged-derivation-announces',
     ],
   },
   // R1 Independent Core Review: one mutation per fixed finding (docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md).

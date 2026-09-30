@@ -32,7 +32,7 @@ import {
 } from '@qandeel-company/mind';
 
 import { founder, founderAdminWrite } from './governance.js';
-import { txLearningValidationGate, txPatternShareGate } from './improvement.js';
+import { txDecideLesson, txPatternShareGate, txRequestLessonJudgment } from './improvement.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
 import { SYSTEM_MIND_REF, assertNotContradictingCanonical, getKnowledgeRow, getMemoryRow, indexItemTerms, indexTerms, insertMemory, setMemoryStatus, wakeEmployeeWaits } from './mind-core.js';
 import {
@@ -383,7 +383,8 @@ export class MemoryStore {
 
   /**
    * Nominates a recorded observation as a lesson candidate. Deliberate and attributed (a mistake is not
-   * automatically a lesson): reviewer authority — the Founder in Strong v1 (the Review Pool is C4).
+   * automatically a lesson): the Founder's path. Classified, work-derived learning under a Review Plan that
+   * delegates judgment goes to independent Review Pool review instead (ImprovementStore.requestLearningReview).
    * The observation stays as recorded; the candidate links to it.
    */
   nominateLesson(actorRef: string, observationId: string, reasonCode: string): LessonRecord {
@@ -399,31 +400,27 @@ export class MemoryStore {
     });
   }
 
-  /** Requests validation of a lesson candidate. The independent review path (C4) does not exist, so it waits. */
+  /**
+   * Requests independent review of a lesson candidate. Where its work's Review Plan delegates judgment (C6-R1),
+   * one independent qualified judge is drawn from the C4 Review Pool; otherwise it waits for the Founder.
+   */
   requestLessonReview(lessonId: string): LessonRecord {
     return this.#write('request lesson review', (ctx) => {
       const l = getLesson(ctx, assertId(lessonId, 'lessonId'));
       if (l.stage !== 'LESSON_CANDIDATE') throw new QandeelError('INVALID_TRANSITION', 'only a lesson candidate goes to review', { lessonId: l.id, stage: l.stage });
       ctx.db.run(`UPDATE lessons SET stage = 'UNDER_REVIEW', review_path = 'INDEPENDENT_REVIEW', version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, ts(ctx), l.id, l.version);
-      lessonHistory(ctx, l, 'UNDER_REVIEW', 'REVIEW_PATH_UNAVAILABLE', SYSTEM_MIND_REF);
+      lessonHistory(ctx, l, 'UNDER_REVIEW', 'lesson.review_requested', SYSTEM_MIND_REF);
+      txRequestLessonJudgment(ctx, l.id);
       return getLesson(ctx, l.id);
     });
   }
 
-  /** Validates or rejects a lesson (Founder review path; the maker is never the validator). */
+  /** Validates or rejects a lesson on the Founder's path (the maker is never the validator; C6 gate in txDecideLesson). */
   validateLesson(actorRef: string, lessonId: string, input: { decision: 'VALIDATE' | 'REJECT'; reasonCode: string }): LessonRecord {
     return founderAdminWrite(this.#store, 'validate lesson', actorRef, (ctx) => {
       const l = getLesson(ctx, assertId(lessonId, 'lessonId'));
       const p = founder(ctx, actorRef, `employee:${l.employeeId}`, 'lesson validation');
-      if (!['LESSON_CANDIDATE', 'UNDER_REVIEW'].includes(l.stage)) throw new QandeelError('INVALID_TRANSITION', 'only a lesson candidate is validated', { lessonId: l.id, stage: l.stage });
-      const to = input.decision === 'VALIDATE' ? 'VALIDATED' : 'REJECTED';
-      // C6: classified learning is validated only on independent evidence (a reflection is a hypothesis).
-      if (to === 'VALIDATED') {
-        const gate = txLearningValidationGate(ctx, l.id);
-        if (!gate.allowed) throw new QandeelError('LEARNING_GATE', 'this learning is not validated without independent evidence', { lessonId: l.id, reason: gate.reason });
-      }
-      ctx.db.run(`UPDATE lessons SET stage = ?, review_path = 'FOUNDER', decided_by_ref = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, to, p.ref, ts(ctx), l.id, l.version);
-      lessonHistory(ctx, l, to, assertCode(input.reasonCode, 'reasonCode'), p.ref);
+      txDecideLesson(ctx, l.id, input.decision === 'VALIDATE' ? 'VALIDATE' : 'REJECT', assertCode(input.reasonCode, 'reasonCode'), { ref: p.ref, path: 'FOUNDER' });
       return getLesson(ctx, l.id);
     });
   }
@@ -460,7 +457,10 @@ export class MemoryStore {
     });
   }
 
-  /** Decides a shared promotion (independent review — the Founder in Strong v1; the Review Pool is C4). */
+  /**
+   * Decides a shared promotion. Widening a lesson's force beyond its Employee (team, Department, Company) is
+   * governed scope expansion and stays the Founder's decision: validating a lesson (C6-R1) never shares it.
+   */
   decidePromotion(actorRef: string, promotionId: string, input: { decision: 'APPROVE' | 'REJECT'; reasonCode: string; dataClass?: DataClass }): PromotionRecord {
     return founderAdminWrite(this.#store, 'decide promotion', actorRef, (ctx) => {
       const pr = mapPromotion(ctx.db.get('SELECT * FROM lesson_promotions WHERE id = ?', assertId(promotionId, 'promotionId')) ?? notFound('promotion', promotionId));

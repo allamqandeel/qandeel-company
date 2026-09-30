@@ -9,13 +9,18 @@
  *   interventions, systemic decisions, failure cases) pass the Founder chokepoint and fail closed outside an
  *   authenticated session; system acts (evaluate, classify, assess, report) derive records from canonical rows
  *   only and change no authority, role, certification, policy or Goal;
+ * - C6-R1: operational judgment is delegated by evidence, qualification, review policy and risk. Where a Work
+ *   Item's Review Plan says REVIEW_POOL (never R4, never with a FOUNDER key), its independent qualified reviewers
+ *   verify the outcome and one independent pool judge validates an attribution or a lesson — through the C4 Review
+ *   Pool, from their own governed review Work Items. The Founder stays the exception / override authority;
+ *   verification authority is never execution authority (no grant, budget, approval, route or risk ceiling);
  * - a recommendation, a readiness signal or a report is never permission to act.
  *
  * Audit carries ids, states and codes only (Rule A).
  */
 import { QandeelError, assertCode, assertId, canonicalJson, isTimestamp, newId, sha256Hex, type Id } from '@qandeel-company/domain';
+import { judgmentFromReview, judgmentRoute, type DataClass, type ReviewOutcome } from '@qandeel-company/governance';
 import {
-  EVIDENCE_CLASSES,
   EXTERNAL_OUTCOMES_AVAILABLE,
   LEARNING_KINDS,
   assertCauses,
@@ -62,10 +67,13 @@ import {
 import { founder, founderAdminWrite } from './governance.js';
 import { attributionFacts, followupFacts, gatherWorkEvidence, latestVerdict, liveEvaluations, subjectOf, validatedAttributionFacts } from './improvement-core.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
-import { insertLesson } from './mind-writes.js';
+import { mapLesson } from './mind-records.js';
+import { insertLesson, txLessonUnderReview, txRecordLessonDecision } from './mind-writes.js';
+import { mapJudgmentAssignment, type JudgmentAssignmentRecord } from './org-records.js';
+import { assertOutcomeClasses, txRecordOutcome } from './outcome-core.js';
 import { txResilienceStatus } from './resilience.js';
+import { activePlan, assignJudge, judgeStillEligible, judgmentSubjectEmployee, withdrawJudgment, type JudgmentSubjectKind } from './review-core.js';
 import { storeContext, type CompanyStore } from './store.js';
-import { applyTransition } from './work-core.js';
 
 export const SYSTEM_EVALUATOR_REF = 'system:evaluator';
 export const SYSTEM_REPORTER_REF = 'system:reporter';
@@ -297,15 +305,131 @@ function insertAttribution(ctx: StoreContext, f: { workItemId: Id; evaluationId:
   );
   attributionHistory(ctx, id, 1, null, f.state, f.reasonCode, f.actorRef);
   appendAudit(ctx, f.state === 'VALIDATED' ? 'attribution.validated' : 'attribution.proposed', 'causal_attribution', id, { actorRef: f.actorRef }, 'OK', f.reasonCode, { workItemId: f.workItemId, overall: summary.overall, employeeAccountable: summary.employeeAccountable });
+  if (f.state === 'VALIDATED') wakeLessonJudgments(ctx, f.workItemId);
   return id;
 }
 
 function setAttributionState(ctx: StoreContext, a: AttributionRecord, to: AttributionRecord['state'], actorRef: string, reasonCode: string): void {
   const version = Number(ctx.db.get<{ v: number }>('SELECT version AS v FROM causal_attributions WHERE id = ?', a.id)?.v ?? 1);
   const decided = to === 'VALIDATED' || to === 'REJECTED';
+  // A pending pool judgment of this proposal ends with it (the Founder decided first, or the proposal was superseded).
+  withdrawOpenJudgment(ctx, 'ATTRIBUTION', a.id, to === 'SUPERSEDED' ? 'SUBJECT_SUPERSEDED' : 'DECIDED_ELSEWHERE');
   ctx.db.run(`UPDATE causal_attributions SET state = ?, decided_by_ref = COALESCE(decided_by_ref, ?), reason_code = COALESCE(reason_code, ?), version = version + 1, updated_at = ? WHERE id = ?`, to, decided ? actorRef : null, decided ? reasonCode : null, ts(ctx), a.id);
   attributionHistory(ctx, a.id, version + 1, a.state, to, reasonCode, actorRef);
   appendAudit(ctx, `attribution.${to.toLowerCase()}`, 'causal_attribution', a.id, { actorRef }, 'OK', reasonCode, { workItemId: a.workItemId });
+  if (to === 'VALIDATED') wakeLessonJudgments(ctx, a.workItemId);
+}
+
+function withdrawOpenJudgment(ctx: StoreContext, kind: JudgmentSubjectKind, subjectId: Id, reasonCode: string): void {
+  const open = ctx.db.get(`SELECT * FROM judgment_assignments WHERE subject_kind = ? AND subject_id = ? AND state = 'ASSIGNED'`, kind, subjectId);
+  if (open) withdrawJudgment(ctx, mapJudgmentAssignment(open), reasonCode);
+}
+
+/**
+ * Decides a lesson under review (the C3 lifecycle; C6 gate: classified learning is validated only on independent
+ * evidence — a reflection is a hypothesis). The decider is the Founder or the lesson's assigned pool judge; the
+ * datastore refuses its maker and any Employee who is not that judge.
+ */
+export function txDecideLesson(ctx: StoreContext, lessonId: Id, decision: 'VALIDATE' | 'REJECT', reasonCode: string, decider: { readonly ref: string; readonly path: 'FOUNDER' | 'INDEPENDENT_REVIEW' }): void {
+  const l = mapLesson(ctx.db.get('SELECT * FROM lessons WHERE id = ?', lessonId) ?? notFoundLesson(lessonId));
+  if (!['LESSON_CANDIDATE', 'UNDER_REVIEW'].includes(l.stage)) throw new QandeelError('INVALID_TRANSITION', 'only a lesson candidate is validated', { lessonId: l.id, stage: l.stage });
+  const to = decision === 'VALIDATE' ? 'VALIDATED' : 'REJECTED';
+  if (to === 'VALIDATED') {
+    const gate = txLearningValidationGate(ctx, l.id);
+    if (!gate.allowed) throw new QandeelError('LEARNING_GATE', 'this learning is not validated without independent evidence', { lessonId: l.id, reason: gate.reason });
+  }
+  if (decider.path === 'FOUNDER') withdrawOpenJudgment(ctx, 'LESSON', l.id, 'DECIDED_ELSEWHERE');
+  txRecordLessonDecision(ctx, l, to, decider.path, decider.ref, reasonCode);
+}
+
+const notFoundLesson = (id: string): never => {
+  throw new QandeelError('NOT_FOUND', 'lesson not found', { lessonId: id.slice(0, 64) });
+};
+
+/** C6 gate reasons that mean "the independent evidence has not arrived yet" (not a refusal of the lesson). */
+const EVIDENCE_PENDING: ReadonlySet<string> = new Set(['ATTRIBUTION_NOT_VALIDATED', 'SUCCESS_NOT_QUALIFIED', 'REFLECTION_IS_A_HYPOTHESIS']);
+
+/**
+ * A lesson UNDER_REVIEW: its pool judge, where its work's plan delegates judgment (otherwise the Founder decides) —
+ * drawn only once its independent evidence exists, so no judge is spent (or escalated) on a hypothesis still
+ * waiting for its attribution or qualified evaluation.
+ */
+export function txRequestLessonJudgment(ctx: StoreContext, lessonId: Id): Id | null {
+  const l = ctx.db.get<{ id: string; employee_id: string; stage: string; event_ref: string }>('SELECT id, employee_id, stage, event_ref FROM lessons WHERE id = ?', lessonId);
+  const m = l ? /^work_item:([0-9a-f-]{36})$/.exec(l.event_ref) : null;
+  if (!l || l.stage !== 'UNDER_REVIEW' || !m) return null;
+  const gate = txLearningValidationGate(ctx, l.id as Id);
+  if (!gate.allowed && EVIDENCE_PENDING.has(gate.reason)) return null;
+  return assignJudge(ctx, { subjectKind: 'LESSON', subjectId: l.id as Id, workItemId: m[1] as Id, subjectEmployeeId: l.employee_id as Id })?.id ?? null;
+}
+
+/** New independent evidence on a Work Item (a validated cause, a qualified evaluation): its waiting lessons get their judge. */
+function wakeLessonJudgments(ctx: StoreContext, workItemId: Id): void {
+  for (const r of ctx.db.all<{ id: string }>(`SELECT id FROM lessons WHERE stage = 'UNDER_REVIEW' AND review_path = 'INDEPENDENT_REVIEW' AND event_ref = ? ORDER BY created_at, id`, `work_item:${workItemId}`)) txRequestLessonJudgment(ctx, r.id as Id);
+}
+
+export interface JudgmentResult {
+  readonly outcome: 'RECORDED' | 'REFUSED';
+  readonly code: string;
+  readonly decision: 'VALIDATE' | 'REJECT' | 'ESCALATE' | null;
+}
+
+/**
+ * Applies a pool judge's review decision to its C6 subject (called from the judge's own fenced review run —
+ * `txReviewDecision`). Re-checked at THIS boundary: the judge is the assigned one, still an eligible, independent,
+ * qualified pool reviewer under the same plan, and the subject is still pending. PASS validates, FAIL rejects, any
+ * uncertainty escalates to the Founder (never guessed). A judgment changes the subject's judgment state only:
+ * no grant, budget, approval, route, risk ceiling, role or certification — and nothing executes.
+ */
+export function txApplyJudgment(ctx: StoreContext, ja: JudgmentAssignmentRecord, judge: { readonly employeeId: Id; readonly ref: string; readonly runId: Id }, d: { readonly outcome: ReviewOutcome; readonly reasonCode: string; readonly evidenceRefs: readonly string[] }): JudgmentResult {
+  const refuse = (code: string): JudgmentResult => ({ outcome: 'REFUSED', code, decision: null });
+  if (ja.judgeEmployeeId !== judge.employeeId) return refuse('NOT_THE_ASSIGNED_REVIEWER');
+  if (ja.state === 'DECIDED' || ja.state === 'ESCALATED') return { outcome: 'RECORDED', code: 'ALREADY_DECIDED', decision: ja.decision };
+  if (ja.state !== 'ASSIGNED') return refuse('ASSIGNMENT_WITHDRAWN');
+  const subjectEmployee = judgmentSubjectEmployee(ctx, ja.subjectKind, ja.subjectId);
+  const pending = ja.subjectKind === 'ATTRIBUTION'
+    ? ctx.db.get(`SELECT 1 AS x FROM causal_attributions WHERE id = ? AND state = 'PROPOSED'`, ja.subjectId)
+    : ctx.db.get(`SELECT 1 AS x FROM lessons WHERE id = ? AND stage = 'UNDER_REVIEW'`, ja.subjectId);
+  if (!pending) {
+    withdrawJudgment(ctx, ja, 'SUBJECT_CHANGED');
+    return refuse('REVIEW_STALE');
+  }
+  const now = judgeStillEligible(ctx, ja, subjectEmployee);
+  if (!now.eligible) {
+    withdrawJudgment(ctx, ja, 'REVIEWER_NOT_ELIGIBLE');
+    assignJudge(ctx, { subjectKind: ja.subjectKind, subjectId: ja.subjectId, workItemId: ja.workItemId, subjectEmployeeId: subjectEmployee });
+    return refuse('REVIEWER_NOT_ELIGIBLE');
+  }
+  let decision = judgmentFromReview(d.outcome);
+  let reason = assertCode(d.reasonCode, 'reasonCode');
+  // A lesson is never validated on a judge's word alone: evidence still pending → the judge stands down and the
+  // lesson is judged again when the evidence arrives; evidence that refuses the lesson → the Founder decides.
+  if (decision === 'VALIDATE' && ja.subjectKind === 'LESSON') {
+    const gate = txLearningValidationGate(ctx, ja.subjectId);
+    if (!gate.allowed && EVIDENCE_PENDING.has(gate.reason)) {
+      withdrawJudgment(ctx, ja, 'EVIDENCE_PENDING');
+      return { outcome: 'RECORDED', code: 'EVIDENCE_PENDING', decision: null };
+    }
+    if (!gate.allowed) {
+      decision = 'ESCALATE';
+      reason = gate.reason.toLowerCase().slice(0, 64);
+    }
+  }
+  const at = ts(ctx);
+  ctx.db.run(
+    `UPDATE judgment_assignments SET state = ?, review_outcome = ?, decision = ?, reason_code = ?, evidence_refs_json = ?, run_id = ?, qualification_version = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`,
+    decision === 'ESCALATE' ? 'ESCALATED' : 'DECIDED', d.outcome, decision, reason, JSON.stringify(d.evidenceRefs.slice(0, 16)), judge.runId, now.qualificationVersion, at, ja.id, ja.version,
+  );
+  appendAudit(ctx, 'judgment.decided', 'judgment_assignment', ja.id, { actorRef: judge.ref }, 'OK', decision, { subjectKind: ja.subjectKind, subjectId: ja.subjectId, reviewOutcome: d.outcome, qualificationId: ja.qualificationId, runId: judge.runId });
+  if (decision === 'ESCALATE') return { outcome: 'RECORDED', code: 'ESCALATED', decision };
+  if (ja.subjectKind === 'ATTRIBUTION') {
+    const a = mapAttribution(present(ctx.db.get('SELECT * FROM causal_attributions WHERE id = ?', ja.subjectId)));
+    setAttributionState(ctx, a, decision === 'VALIDATE' ? 'VALIDATED' : 'REJECTED', judge.ref, reason);
+    if (decision === 'VALIDATE') detectAndRecordSystemic(ctx, SYSTEM_EVALUATOR_REF);
+  } else {
+    txDecideLesson(ctx, ja.subjectId, decision, reason, { ref: judge.ref, path: 'INDEPENDENT_REVIEW' });
+  }
+  return { outcome: 'RECORDED', code: 'RECORDED', decision };
 }
 
 const TARGET_RECOMMENDATION: Record<string, string> = {
@@ -459,6 +583,58 @@ function txReviewerCalibration(ctx: StoreContext): ReviewerMetaEvaluation[] {
 
 // ---------------------------------------------------------------------------------------------------------
 
+export type InterventionPlan = { outcome: 'PLANNED' | 'AWAIT_EVIDENCE' | 'ESCALATED_SYSTEMIC'; intervention: InterventionRecord | null; findingId: Id | null };
+
+/** Plans one learning intervention of a validated lesson (shared by the Founder and the C6-R1 system path). */
+function txPlanIntervention(ctx: StoreContext, lessonId: Id, input: { kind: 'TARGETED_RETRAINING' | 'PATTERN_REUSE'; employeeId?: string; comparableKey?: string; remediationId?: string }, actorRef: string): InterventionPlan {
+  const l = ctx.db.get<{ id: string; employee_id: string; stage: string; observation_id: string | null }>('SELECT id, employee_id, stage, observation_id FROM lessons WHERE id = ?', lessonId);
+  if (!l) throw new QandeelError('NOT_FOUND', 'lesson not found', { lessonId: String(lessonId).slice(0, 64) });
+  if (l.stage !== 'VALIDATED') throw new QandeelError('LEARNING_GATE', 'an intervention follows a validated lesson', { lessonId: l.id, reason: 'LESSON_NOT_VALIDATED' });
+  const sig = l.observation_id ? ctx.db.get('SELECT * FROM learning_signals WHERE observation_id = ?', l.observation_id) : undefined;
+  const signal = sig ? mapSignal(sig) : null;
+  const attr = signal ? ctx.db.get(`SELECT * FROM causal_attributions WHERE work_item_id = ? AND state = 'VALIDATED'`, signal.workItemId) : undefined;
+  const attribution = attr ? mapAttribution(attr) : null;
+  const targetCause: DirectCause = (attribution?.causes.find((c) => c.role === 'PRIMARY')?.category ?? 'EMPLOYEE_JUDGMENT') as DirectCause;
+  const comparableKey = (input.comparableKey ?? attribution?.comparableKey ?? (signal ? liveEvaluationRow(ctx, signal.workItemId)?.comparableKey : undefined) ?? 'unclassified').slice(0, 96);
+  const employeeId = assertId(input.employeeId ?? l.employee_id, 'employeeId');
+  if (input.kind === 'PATTERN_REUSE' && signal?.kind !== 'SUCCESSFUL_PATTERN') throw new QandeelError('LEARNING_GATE', 'only a validated successful pattern is reused', { lessonId: l.id, reason: 'NOT_A_PATTERN' });
+  if (input.kind === 'TARGETED_RETRAINING') {
+    const prior = ctx.db.all<{ effect: string }>(`SELECT effect FROM learning_interventions WHERE lesson_id = ? AND kind = 'TARGETED_RETRAINING' AND state <> 'CANCELLED' ORDER BY cycle_no`, l.id).map((r) => r.effect as LearningEffect);
+    const decision = nextInterventionDecision(prior);
+    if (decision.decision === 'AWAIT_EVIDENCE') return { outcome: 'AWAIT_EVIDENCE' as const, intervention: null, findingId: null };
+    if (decision.decision === 'ESCALATE_SYSTEMIC') {
+      const f = upsertSystemic(ctx, { targetKind: 'SKILL', targetRef: comparableKey, cause: targetCause, occurrences: prior.length, distinctEmployees: 1, evidenceRefs: [`lesson:${l.id}`, ...ctx.db.all<{ id: string }>('SELECT id FROM learning_interventions WHERE lesson_id = ?', l.id).map((r) => `learning_intervention:${r.id}`)] }, 'RETRAINING_EXHAUSTED', actorRef);
+      return { outcome: 'ESCALATED_SYSTEMIC' as const, intervention: null, findingId: f.id };
+    }
+  }
+  const remediation = input.remediationId === undefined ? null : assertId(input.remediationId, 'remediationId');
+  const baseline = followupFacts(ctx, employeeId, comparableKey).map((f) => f.evaluationId);
+  const cycle = Number(ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM learning_interventions WHERE lesson_id = ? AND kind = ?', l.id, input.kind)?.n ?? 0) + 1;
+  const id = newId();
+  const at = ts(ctx);
+  ctx.db.run(
+    `INSERT INTO learning_interventions (id, lesson_id, employee_id, kind, cycle_no, target_cause, comparable_key, remediation_id, baseline_json, state, effect, effect_basis, evidence_refs_json, training_completed_at, assessed_at, created_by_ref, version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PLANNED', 'NOT_YET_TESTED', NULL, '[]', NULL, NULL, ?, 1, ?, ?)`,
+    id, l.id, employeeId, input.kind, cycle, targetCause, comparableKey, remediation, JSON.stringify(baseline.slice(0, 100)), actorRef, at, at,
+  );
+  ctx.db.run('INSERT INTO learning_intervention_history (intervention_id, version, state, effect, reason_code, actor_ref, occurred_at) VALUES (?, 1, ?, ?, ?, ?, ?)', id, 'PLANNED', 'NOT_YET_TESTED', 'intervention.planned', actorRef, at);
+  appendAudit(ctx, 'learning.intervention_planned', 'learning_intervention', id, { actorRef: actorRef }, 'OK', input.kind, { lessonId: l.id, cycle });
+  return { outcome: 'PLANNED' as const, intervention: mapIntervention(present(ctx.db.get('SELECT * FROM learning_interventions WHERE id = ?', id))), findingId: null };
+}
+
+function txCompleteTraining(ctx: StoreContext, i: InterventionRecord, reasonCode: string, actorRef: string): InterventionRecord {
+  if (i.state !== 'PLANNED') throw new QandeelError('INVALID_TRANSITION', 'only a planned intervention completes its training', { interventionId: i.id, state: i.state });
+  if (i.remediationId !== null) {
+    const r = ctx.db.get<{ state: string }>('SELECT state FROM academy_remediations WHERE id = ?', i.remediationId);
+    if (r?.state !== 'RETESTED' && r?.state !== 'RETEST_READY') throw new QandeelError('LEARNING_GATE', 'the linked Academy remediation has not completed its retraining', { interventionId: i.id, reason: 'REMEDIATION_NOT_COMPLETE' });
+  }
+  const at = ts(ctx);
+  ctx.db.run(`UPDATE learning_interventions SET state = 'TRAINING_COMPLETED', training_completed_at = ?, version = version + 1, updated_at = ? WHERE id = ?`, at, at, i.id);
+  ctx.db.run('INSERT INTO learning_intervention_history (intervention_id, version, state, effect, reason_code, actor_ref, occurred_at) SELECT id, version, state, effect, ?, ?, ? FROM learning_interventions WHERE id = ?', reasonCode, actorRef, at, i.id);
+  appendAudit(ctx, 'learning.training_completed', 'learning_intervention', i.id, { actorRef }, 'OK', reasonCode, {});
+  return mapIntervention(present(ctx.db.get('SELECT * FROM learning_interventions WHERE id = ?', i.id)));
+}
+
 export class ImprovementStore {
   readonly #store: CompanyStore;
 
@@ -574,21 +750,11 @@ export class ImprovementStore {
       const subject = subjectOf(ctx, w.id);
       const p = founder(ctx, actorRef, subject.employeeId ? `employee:${subject.employeeId}` : null, 'outcome verification');
       if (!['ACHIEVED', 'NOT_ACHIEVED', 'INCONCLUSIVE'].includes(input.verdict)) throw new QandeelError('VALIDATION_FAILED', 'verdict is ACHIEVED, NOT_ACHIEVED or INCONCLUSIVE', { field: 'verdict' });
-      const classes = [...new Set(input.evidenceClasses)];
-      if (classes.length === 0 || !classes.every((c) => (EVIDENCE_CLASSES as readonly string[]).includes(c))) throw new QandeelError('EVIDENCE_REQUIRED', 'an outcome verification names its evidence classes', { field: 'evidenceClasses' });
-      if (classes.includes('EXTERNAL_OUTCOME') && !EXTERNAL_OUTCOMES_AVAILABLE) throw new QandeelError('EVIDENCE_REQUIRED', 'external outcomes are unavailable until a governed source exists (C7)', { reason: 'EXTERNAL_OUTCOME_UNAVAILABLE' });
+      const classes = assertOutcomeClasses(input.evidenceClasses);
       const refs = [...new Set(input.evidenceRefs)];
       if (refs.length === 0 || refs.length > 50 || !refs.every((r) => typeof r === 'string' && /^[a-z_]{2,32}:[A-Za-z0-9._:-]{1,96}$/.test(r))) throw new QandeelError('EVIDENCE_REQUIRED', 'an outcome verification cites its evidence records', { field: 'evidenceRefs' });
-      if (!['REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED'].includes(w.state)) throw new QandeelError('INVALID_TRANSITION', 'an outcome is verified only after independent review (completion is not success)', { workItemId: w.id, state: w.state, reason: 'NOT_REVIEWED' });
-      if (input.verdict !== 'INCONCLUSIVE' && w.state !== 'REVIEWED') throw new QandeelError('INVALID_TRANSITION', 'this Work Item already has its verified outcome', { workItemId: w.id, state: w.state });
-      const reason = assertCode(input.reasonCode, 'reasonCode');
-      const id = newId();
-      ctx.db.run(`INSERT INTO outcome_verifications (id, work_item_id, verdict, evidence_classes_json, evidence_refs_json, verifier_ref, reason_code, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, w.id, input.verdict, JSON.stringify(classes), JSON.stringify(refs), p.ref, reason, ts(ctx));
-      let state: string = w.state;
-      if (input.verdict === 'ACHIEVED') state = applyTransition(ctx, w, 'OUTCOME_VERIFIED', { reasonCode: 'outcome.verified', outcome: 'ACHIEVED', trace: { correlationId: w.correlationId, actorRef: p.ref } }).state;
-      if (input.verdict === 'NOT_ACHIEVED') state = applyTransition(ctx, w, 'CLOSED', { reasonCode: 'outcome.not_achieved', outcome: 'NOT_ACHIEVED', trace: { correlationId: w.correlationId, actorRef: p.ref } }).state;
-      appendAudit(ctx, 'outcome.verified', 'work_item', w.id, { actorRef: p.ref }, 'OK', reason, { verificationId: id, verdict: input.verdict, evidenceClasses: classes.length });
-      return { verificationId: id, state };
+      // The Founder remains the exception / override authority for any outcome (including one the pool left inconclusive).
+      return txRecordOutcome(ctx, w, { verdict: input.verdict, classes, refs, reasonCode: assertCode(input.reasonCode, 'reasonCode') }, { kind: 'FOUNDER', ref: p.ref });
     });
   }
 
@@ -622,6 +788,7 @@ export class ImprovementStore {
         JSON.stringify(evidence.cost), JSON.stringify(evidence.activity), JSON.stringify({ refs, classes: evidence.evidenceClasses }), evidenceSha, SYSTEM_EVALUATOR_REF, at,
       );
       appendAudit(ctx, 'evaluation.recorded', 'evaluation', id, { actorRef: SYSTEM_EVALUATOR_REF }, 'OK', outcome.evidenceState, { workItemId: wid, qualified: outcome.qualifiedOutcome, definitionId: def.id });
+      if (outcome.qualifiedOutcome) wakeLessonJudgments(ctx, wid);
       // Attribution: proposed from evidence when something went wrong; validated only by an independent decision.
       let attributionId: Id | null;
       const proposal = proposeAttribution(evidence);
@@ -637,6 +804,8 @@ export class ImprovementStore {
         setAttributionState(ctx, current, 'SUPERSEDED', SYSTEM_EVALUATOR_REF, 'evidence.not_adverse');
         attributionId = null;
       } else attributionId = current?.id ?? null;
+      // A live proposal goes to an independent pool judge where the plan delegates judgment (otherwise: the Founder).
+      if (attributionId !== null && liveAttribution(ctx, wid)?.state === 'PROPOSED') assignJudge(ctx, { subjectKind: 'ATTRIBUTION', subjectId: attributionId, workItemId: wid, subjectEmployeeId: evidence.employeeId as Id | null });
       // Candidate-first learning signals (never validated here).
       const signals: Id[] = [];
       if (evidence.employeeId !== null && outcome.evidenceState === 'SUFFICIENT_EVIDENCE') {
@@ -728,44 +897,68 @@ export class ImprovementStore {
     return this.#read((ctx) => txLearningValidationGate(ctx, lessonId));
   }
 
+  /**
+   * C6-R1 (system): puts a classified, work-derived observation up for independent review where its work's plan
+   * delegates judgment: a lesson CANDIDATE is recorded (a candidate is not a lesson), goes UNDER_REVIEW on the
+   * independent path, and one pool judge is drawn. Elsewhere the Founder nominates and decides (LEARNING_GATE
+   * FOUNDER_JUDGMENT). Idempotent per observation; a systemic problem is a finding, never a lesson.
+   */
+  requestLearningReview(observationId: string): { lessonId: Id; judgmentId: Id | null; changed: boolean } {
+    return this.#system('request learning review', (ctx) => {
+      const o = ctx.db.get<{ id: string; kind: string; employee_id: string; event_ref: string; topic: string; claim_key: string | null; claim_value: string | null; content: string; data_class: string; market_ref: string | null; candidate_id: string | null }>('SELECT * FROM lessons WHERE id = ?', assertId(observationId, 'observationId'));
+      if (!o || o.kind !== 'OBSERVATION') throw new QandeelError('NOT_FOUND', 'observation not found', { observationId: String(observationId).slice(0, 64) });
+      const sig = ctx.db.get('SELECT * FROM learning_signals WHERE observation_id = ?', o.id);
+      if (!sig) throw new QandeelError('LEARNING_GATE', 'only a classified observation goes to review', { reason: 'UNCLASSIFIED' });
+      const signal = mapSignal(sig);
+      if (signal.kind === 'SYSTEMIC_PROBLEM') throw new QandeelError('LEARNING_GATE', 'a systemic problem is a finding about the company, never a lesson', { reason: 'SYSTEMIC_PROBLEM_IS_A_FINDING' });
+      const w = getWorkItemRow(ctx, signal.workItemId);
+      if (judgmentRoute({ planJudgment: activePlan(ctx, w.id)?.operationalJudgment ?? null, risk: w.riskLevel }).judge !== 'REVIEW_POOL') throw new QandeelError('LEARNING_GATE', 'this learning is judged by the Founder (its work\'s plan does not delegate judgment)', { reason: 'FOUNDER_JUDGMENT' });
+      const existing = ctx.db.get<{ id: string; stage: string }>('SELECT id, stage FROM lessons WHERE observation_id = ?', o.id);
+      if (existing) {
+        const before = ctx.db.get(`SELECT 1 AS x FROM judgment_assignments WHERE subject_kind = 'LESSON' AND subject_id = ? AND state = 'ASSIGNED'`, existing.id) !== undefined;
+        const judgmentId = txRequestLessonJudgment(ctx, existing.id as Id);
+        return { lessonId: existing.id as Id, judgmentId, changed: !before && judgmentId !== null };
+      }
+      const lessonId = insertLesson(ctx, { employeeId: o.employee_id as Id, kind: 'LESSON', observationId: o.id as Id, eventRef: o.event_ref, topic: o.topic, claimKey: o.claim_key, claimValue: o.claim_value, content: o.content, dataClass: o.data_class as DataClass, marketRef: o.market_ref, candidateId: (o.candidate_id ?? null) as Id | null });
+      txLessonUnderReview(ctx, { id: lessonId, version: 1, stage: 'LESSON_CANDIDATE' }, 'lesson.review_requested', SYSTEM_EVALUATOR_REF);
+      appendAudit(ctx, 'learning.review_requested', 'lesson', lessonId, { actorRef: SYSTEM_EVALUATOR_REF }, 'OK', signal.kind, { observationId: o.id, workItemId: w.id });
+      return { lessonId, judgmentId: txRequestLessonJudgment(ctx, lessonId), changed: true };
+    });
+  }
+
+  /** C6-R1: the pool judgments of C6 subjects (content-free). */
+  judgments(filter: { subjectKind?: JudgmentSubjectKind; subjectId?: Id; workItemId?: Id; state?: JudgmentAssignmentRecord['state'] } = {}): JudgmentAssignmentRecord[] {
+    return this.#read((ctx) =>
+      ctx.db
+        .all('SELECT * FROM judgment_assignments ORDER BY created_at, id')
+        .map(mapJudgmentAssignment)
+        .filter((x) => (filter.subjectKind === undefined || x.subjectKind === filter.subjectKind) && (filter.subjectId === undefined || x.subjectId === filter.subjectId) && (filter.workItemId === undefined || x.workItemId === filter.workItemId) && (filter.state === undefined || x.state === filter.state)),
+    );
+  }
+
   // --- Learning interventions and their verified effect --------------------------------------------------
 
-  planIntervention(actorRef: string, lessonId: string, input: { kind: 'TARGETED_RETRAINING' | 'PATTERN_REUSE'; employeeId?: string; comparableKey?: string; remediationId?: string }): { outcome: 'PLANNED' | 'AWAIT_EVIDENCE' | 'ESCALATED_SYSTEMIC'; intervention: InterventionRecord | null; findingId: Id | null } {
+  planIntervention(actorRef: string, lessonId: string, input: { kind: 'TARGETED_RETRAINING' | 'PATTERN_REUSE'; employeeId?: string; comparableKey?: string; remediationId?: string }): InterventionPlan {
     return this.#admin('plan learning intervention', actorRef, (ctx) => {
-      const l = ctx.db.get<{ id: string; employee_id: string; stage: string; observation_id: string | null }>('SELECT id, employee_id, stage, observation_id FROM lessons WHERE id = ?', assertId(lessonId, 'lessonId'));
+      const l = ctx.db.get<{ id: string }>('SELECT id FROM lessons WHERE id = ?', assertId(lessonId, 'lessonId'));
       if (!l) throw new QandeelError('NOT_FOUND', 'lesson not found', { lessonId: String(lessonId).slice(0, 64) });
       const p = founder(ctx, actorRef, null, 'learning intervention');
-      if (l.stage !== 'VALIDATED') throw new QandeelError('LEARNING_GATE', 'an intervention follows a validated lesson', { lessonId: l.id, reason: 'LESSON_NOT_VALIDATED' });
-      const sig = l.observation_id ? ctx.db.get('SELECT * FROM learning_signals WHERE observation_id = ?', l.observation_id) : undefined;
-      const signal = sig ? mapSignal(sig) : null;
-      const attr = signal ? ctx.db.get(`SELECT * FROM causal_attributions WHERE work_item_id = ? AND state = 'VALIDATED'`, signal.workItemId) : undefined;
-      const attribution = attr ? mapAttribution(attr) : null;
-      const targetCause: DirectCause = (attribution?.causes.find((c) => c.role === 'PRIMARY')?.category ?? 'EMPLOYEE_JUDGMENT') as DirectCause;
-      const comparableKey = (input.comparableKey ?? attribution?.comparableKey ?? (signal ? liveEvaluationRow(ctx, signal.workItemId)?.comparableKey : undefined) ?? 'unclassified').slice(0, 96);
-      const employeeId = assertId(input.employeeId ?? l.employee_id, 'employeeId');
-      if (input.kind === 'PATTERN_REUSE' && signal?.kind !== 'SUCCESSFUL_PATTERN') throw new QandeelError('LEARNING_GATE', 'only a validated successful pattern is reused', { lessonId: l.id, reason: 'NOT_A_PATTERN' });
-      if (input.kind === 'TARGETED_RETRAINING') {
-        const prior = ctx.db.all<{ effect: string }>(`SELECT effect FROM learning_interventions WHERE lesson_id = ? AND kind = 'TARGETED_RETRAINING' AND state <> 'CANCELLED' ORDER BY cycle_no`, l.id).map((r) => r.effect as LearningEffect);
-        const decision = nextInterventionDecision(prior);
-        if (decision.decision === 'AWAIT_EVIDENCE') return { outcome: 'AWAIT_EVIDENCE' as const, intervention: null, findingId: null };
-        if (decision.decision === 'ESCALATE_SYSTEMIC') {
-          const f = upsertSystemic(ctx, { targetKind: 'SKILL', targetRef: comparableKey, cause: targetCause, occurrences: prior.length, distinctEmployees: 1, evidenceRefs: [`lesson:${l.id}`, ...ctx.db.all<{ id: string }>('SELECT id FROM learning_interventions WHERE lesson_id = ?', l.id).map((r) => `learning_intervention:${r.id}`)] }, 'RETRAINING_EXHAUSTED', p.ref);
-          return { outcome: 'ESCALATED_SYSTEMIC' as const, intervention: null, findingId: f.id };
-        }
-      }
-      const remediation = input.remediationId === undefined ? null : assertId(input.remediationId, 'remediationId');
-      const baseline = followupFacts(ctx, employeeId, comparableKey).map((f) => f.evaluationId);
-      const cycle = Number(ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM learning_interventions WHERE lesson_id = ? AND kind = ?', l.id, input.kind)?.n ?? 0) + 1;
-      const id = newId();
-      const at = ts(ctx);
-      ctx.db.run(
-        `INSERT INTO learning_interventions (id, lesson_id, employee_id, kind, cycle_no, target_cause, comparable_key, remediation_id, baseline_json, state, effect, effect_basis, evidence_refs_json, training_completed_at, assessed_at, created_by_ref, version, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PLANNED', 'NOT_YET_TESTED', NULL, '[]', NULL, NULL, ?, 1, ?, ?)`,
-        id, l.id, employeeId, input.kind, cycle, targetCause, comparableKey, remediation, JSON.stringify(baseline.slice(0, 100)), p.ref, at, at,
-      );
-      ctx.db.run('INSERT INTO learning_intervention_history (intervention_id, version, state, effect, reason_code, actor_ref, occurred_at) VALUES (?, 1, ?, ?, ?, ?, ?)', id, 'PLANNED', 'NOT_YET_TESTED', 'intervention.planned', p.ref, at);
-      appendAudit(ctx, 'learning.intervention_planned', 'learning_intervention', id, { actorRef: p.ref }, 'OK', input.kind, { lessonId: l.id, cycle });
-      return { outcome: 'PLANNED' as const, intervention: mapIntervention(present(ctx.db.get('SELECT * FROM learning_interventions WHERE id = ?', id))), findingId: null };
+      return txPlanIntervention(ctx, l.id as Id, input, p.ref);
+    });
+  }
+
+  /**
+   * C6-R1 (system): ordinary retraining of a lesson the independent review path validated, inside the Employee's
+   * existing envelope: a PLANNED intervention record — no remediation, budget, grant, route or certification
+   * change. Bounded exactly like the Founder's (await the effect; escalate to systemic after repeated failure).
+   */
+  planReviewedIntervention(lessonId: string, kind: 'TARGETED_RETRAINING' | 'PATTERN_REUSE'): InterventionPlan {
+    return this.#system('plan reviewed intervention', (ctx) => {
+      const l = ctx.db.get<{ id: string; review_path: string | null }>('SELECT id, review_path FROM lessons WHERE id = ?', assertId(lessonId, 'lessonId'));
+      if (!l) throw new QandeelError('NOT_FOUND', 'lesson not found', { lessonId: String(lessonId).slice(0, 64) });
+      if (l.review_path !== 'INDEPENDENT_REVIEW') throw new QandeelError('LEARNING_GATE', 'ordinary retraining follows a lesson validated by independent review; otherwise the Founder plans it', { lessonId: l.id, reason: 'FOUNDER_JUDGMENT' });
+      if (kind !== 'TARGETED_RETRAINING' && kind !== 'PATTERN_REUSE') throw new QandeelError('VALIDATION_FAILED', 'kind is TARGETED_RETRAINING or PATTERN_REUSE', { field: 'kind' });
+      return txPlanIntervention(ctx, l.id as Id, { kind }, SYSTEM_EVALUATOR_REF);
     });
   }
 
@@ -774,16 +967,22 @@ export class ImprovementStore {
     return this.#admin('complete intervention training', actorRef, (ctx) => {
       const p = founder(ctx, actorRef, null, 'learning intervention');
       const i = must(ctx.db.get('SELECT * FROM learning_interventions WHERE id = ?', assertId(interventionId, 'interventionId')), mapIntervention, 'intervention', interventionId);
-      if (i.state !== 'PLANNED') throw new QandeelError('INVALID_TRANSITION', 'only a planned intervention completes its training', { interventionId: i.id, state: i.state });
-      if (i.remediationId !== null) {
-        const r = ctx.db.get<{ state: string }>('SELECT state FROM academy_remediations WHERE id = ?', i.remediationId);
-        if (r?.state !== 'RETESTED' && r?.state !== 'RETEST_READY') throw new QandeelError('LEARNING_GATE', 'the linked Academy remediation has not completed its retraining', { interventionId: i.id, reason: 'REMEDIATION_NOT_COMPLETE' });
-      }
-      const at = ts(ctx);
-      ctx.db.run(`UPDATE learning_interventions SET state = 'TRAINING_COMPLETED', training_completed_at = ?, version = version + 1, updated_at = ? WHERE id = ?`, at, at, i.id);
-      ctx.db.run('INSERT INTO learning_intervention_history (intervention_id, version, state, effect, reason_code, actor_ref, occurred_at) SELECT id, version, state, effect, ?, ?, ? FROM learning_interventions WHERE id = ?', assertCode(reasonCode, 'reasonCode'), p.ref, at, i.id);
-      appendAudit(ctx, 'learning.training_completed', 'learning_intervention', i.id, { actorRef: p.ref }, 'OK', reasonCode, {});
-      return mapIntervention(present(ctx.db.get('SELECT * FROM learning_interventions WHERE id = ?', i.id)));
+      return txCompleteTraining(ctx, i, assertCode(reasonCode, 'reasonCode'), p.ref);
+    });
+  }
+
+  /**
+   * C6-R1 (system): the training of an ordinary retraining is complete on objective evidence only — its linked
+   * Academy remediation retrained, or (without one) the validated lesson delivered into the Employee's own
+   * Personal Lesson memory. Training completed is still not improvement: later comparable work decides that.
+   */
+  completeReviewedTraining(interventionId: string): InterventionRecord {
+    return this.#system('complete reviewed training', (ctx) => {
+      const i = must(ctx.db.get('SELECT * FROM learning_interventions WHERE id = ?', assertId(interventionId, 'interventionId')), mapIntervention, 'intervention', interventionId);
+      const path = ctx.db.get<{ p: string | null }>('SELECT review_path AS p FROM lessons WHERE id = ?', i.lessonId)?.p ?? null;
+      if (path !== 'INDEPENDENT_REVIEW') throw new QandeelError('LEARNING_GATE', 'ordinary retraining follows a lesson validated by independent review; otherwise the Founder confirms it', { interventionId: i.id, reason: 'FOUNDER_JUDGMENT' });
+      if (i.remediationId === null && !ctx.db.get(`SELECT 1 AS x FROM lesson_promotions WHERE lesson_id = ? AND target = 'PERSONAL' AND state = 'APPROVED'`, i.lessonId)) throw new QandeelError('LEARNING_GATE', 'training is complete only on evidence: a retrained remediation or the lesson delivered to the Employee', { interventionId: i.id, reason: 'TRAINING_EVIDENCE_MISSING' });
+      return txCompleteTraining(ctx, i, i.remediationId === null ? 'training.lesson_delivered' : 'training.remediation_retrained', SYSTEM_EVALUATOR_REF);
     });
   }
 

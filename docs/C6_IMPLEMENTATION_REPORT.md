@@ -83,20 +83,30 @@ missing and is not reconstructed.
 - **Runtime / surface:** a `founder.improvement` capability classified under the C5 signalling contract;
   read-only API routes for reports and evidence inspection; CLI commands for portable backup, restore,
   drills, retention and safe upgrade. No Tree of Light change.
-- **Authority:** Founder decides validations, activations, promotions and outcome verification (the
-  existing chokepoint); the system evaluator writes only evaluation evidence derived from canonical rows; no
-  C6 output changes authority, role, certification or policy; recommendations are text codes, not acts.
+- **Authority:** Founder decides activations, promotions and Eval Registry acts (the existing chokepoint);
+  operational judgment (outcome verification, attribution validation, lesson validation, ordinary retraining)
+  is delegated by evidence, qualification, review policy and risk — the Review Pool of a plan that says
+  `REVIEW_POOL` decides it, the Founder remains the exception / override authority (C6-R1, D-C6-10); the system
+  evaluator writes only evaluation evidence derived from canonical rows; no C6 output or judgment changes
+  authority, role, certification, budget, approval, route or policy; recommendations are text codes, not acts.
 - **Privacy:** C6 reads Company-side work lineage only; no App data, no private content; audit carries ids,
   states and codes (Rule A).
 
 ## 5. What C6 makes QANDEEL capable of (plain language)
 
 - **Know whether work succeeded.** "Done" is not "good": a Work Item counts as a qualified outcome only after an
-  independent reviewer passed it AND the Founder recorded that it achieved its purpose, with evidence.
+  independent reviewer passed it AND its achievement was verified with evidence — by the qualified independent
+  reviewers themselves where the work's Review Plan delegates that judgment (each cites its own judgment; a
+  disagreement is never averaged and goes to the Founder), otherwise by the Founder.
 - **Know why.** When something goes wrong the evaluator reads the work's real record (reviews, runs, tools,
   context, costs) and proposes a cause — the Employee's judgement, or a tool, model, provider, context,
-  workflow, requirement or external dependency. The Founder confirms or corrects it. An Employee is never
-  blamed for a broken tool.
+  workflow, requirement or external dependency. An independent qualified reviewer from the Review Pool (never
+  the Employee concerned) confirms or rejects it; any doubt goes to the Founder. An Employee is never blamed for
+  a broken tool.
+- **Without making the Founder the bottleneck — and without loosening money or authority.** Ordinary judging,
+  verifying and learning run without the Founder; a judgment never grants a tool, a budget, an approval, a
+  higher risk ceiling or a route, R3 still needs the Founder's approval before it acts, and R4 stays the
+  Founder's alone. The Founder still decides what is exceptional: disagreements, uncertainty, R4, policy.
 - **Judge people fairly.** Each Employee has a profile of eight dimensions with how much evidence stands behind
   each one. One good task is "not enough evidence yet", never "excellent". There is no single score, no rank,
   no leaderboard; "ready for greater responsibility" is a prompt for the Founder's review, never a promotion.
@@ -116,17 +126,19 @@ missing and is not reconstructed.
   restored company resumes without repeating an uncertain external action. Schema updates are rehearsed on a
   snapshot first; a failure rolls back and holds the company safely until the operator decides.
 
-## 6. Schema (migration `0010_c6_improvement_engine.sql`, pinned `9bcc6ff7…`)
+## 6. Schema (migration `0010_c6_improvement_engine.sql`, pinned `a8696420…`)
 
 | Table | Source of truth / writer | Readers | Lifecycle / idempotency | Retention / privacy |
 |---|---|---|---|---|
 | `eval_definitions` (+`_history`) | Founder (registry acts) | evaluator, Founder surface | DRAFT → ACTIVE (only with a passed own-spec calibration run, trigger) → SUPERSEDED / RETIRED; spec immutable per version; one ACTIVE per code | never deleted; codes and spec JSON (no content) |
 | `eval_calibration_runs` | Founder-triggered, deterministic | Founder, R2 | append-only; bound to the spec hash | never deleted; case ids and verdict codes |
-| `outcome_verifications` | Founder | evaluator, reports | append-only; one decisive verdict per Work Item; needs a reviewed Work Item (trigger); no `EXTERNAL_OUTCOME` (CHECK) | never deleted; evidence refs only |
+| `outcome_verifications` | Founder, or the review keys of a satisfied output review under a `REVIEW_POOL` plan (`verifier_kind`, `review_request_id`) | evaluator, reports, attention | append-only; one decisive verdict per Work Item; needs a reviewed Work Item (trigger); a pool verdict needs every passing key's matching judgment and a pool-delegated, non-R4 plan (trigger); no `EXTERNAL_OUTCOME` (CHECK) | never deleted; evidence refs only |
+| `review_outcome_judgments` | a counting Employee review decision of an output (its C6 companion) | pool verification | append-only; only on an independent counting output decision (trigger) | never deleted; verdict + evidence classes |
+| `judgment_assignments` | system (drawn from the plan's Review Pool); the judge's fenced review decision | attention, reads | ASSIGNED → DECIDED / ESCALATED / WITHDRAWN once; one open per subject; qualified, independent, non-R4, pool-delegated (trigger) | never deleted; ids, codes |
 | `evaluation_results` | system evaluator (derived from canonical rows) | profiles, reports, inspection | one live per (Work Item, definition); re-evaluation supersedes; unchanged evidence is a no-op (evidence hash); qualified needs an ACHIEVED verification and an ACTIVE definition (triggers) | never deleted; counts, codes, refs |
-| `causal_attributions` (+`_history`) | evaluator proposal / Founder decision | profiles, learning, systemic detection | one live per Work Item; PROPOSED → VALIDATED / REJECTED / SUPERSEDED; the subject Employee never decides (CHECK) | never deleted; cause codes |
+| `causal_attributions` (+`_history`) | evaluator proposal / Founder or assigned pool judge decision | profiles, learning, systemic detection | one live per Work Item; PROPOSED → VALIDATED / REJECTED / SUPERSEDED; the subject Employee never decides (CHECK); an Employee decider is exactly its DECIDED judge (trigger) | never deleted; cause codes |
 | `learning_signals` | evaluator / classification act | learning gates, reports, systemic provenance | append-only; one per observation; classifies C3 observations only (trigger); a `SYSTEMIC_PROBLEM` signal is never validated as a lesson (trigger) | never deleted; codes |
-| `learning_interventions` (+`_history`) | Founder plan / completion; system assessment | profiles, reports | PLANNED → TRAINING_COMPLETED → EFFECT_ASSESSED; decisive effect final; retraining bound (trigger); only on VALIDATED lessons (trigger) | never deleted; refs, codes |
+| `learning_interventions` (+`_history`) | Founder plan / completion, or the system for a lesson validated on the independent path (completion only on objective evidence); system assessment | profiles, reports | PLANNED → TRAINING_COMPLETED → EFFECT_ASSESSED; decisive effect final; retraining bound (trigger); only on VALIDATED lessons (trigger) | never deleted; refs, codes |
 | `systemic_findings` (+`_history`) | system detection (upsert by dedup key) or a classified `SYSTEMIC_PROBLEM` observation on a validated system cause; Founder decision | attention, reports, System Contribution | CANDIDATE → VALIDATED / REJECTED → ADDRESSED; evidence only grows while a candidate; provenance (`origin`, `source_signal_id`, `contributor_employee_id`) fixed at creation — a contributor is exactly the author of a reflected source observation, or nobody (CHECKs + trigger) | never deleted; refs, codes, ids |
 | `failure_cases` (+`_history`) | Founder | Academy material, R2 | REAL_FAILURE → … → REGRESSION_CASE / GOLD_CASE / REJECTED; hidden ⇔ HOLDOUT scenario (trigger) | never deleted; ids |
 | `report_snapshots` | system reporter | Founder surface, CLI | append-only; idempotent per (cadence, period end, claims hash) | never deleted; claim codes / refs / counts |
@@ -135,9 +147,12 @@ missing and is not reconstructed.
 | `recovery_drills` | resilience | status, attention | append-only | codes, durations |
 | `maintenance_records` | maintenance (post-hoc) | status | append-only | versions, checksum, code |
 
-Two new triggers guard existing C3 tables: `lessons_c6_validation_gate` (classified learning is validated only
-on independent evidence) and `lesson_promotions_c6_pattern_gate` (a pattern is shared only after two verified
-reuses). Everything else from 0001–0009 is unchanged.
+New triggers guard existing C3 tables: `lessons_c6_validation_gate` (classified learning is validated only
+on independent evidence), `lesson_promotions_c6_pattern_gate` (a pattern is shared only after two verified
+reuses) and `lessons_judged_by_assignment` (an Employee decider is the lesson's assigned judge, never its maker).
+C6-R1 adds one column to the 0008 `review_plans` table, `operational_judgment` (`FOUNDER` default /
+`REVIEW_POOL`), frozen per plan version and refused beside a FOUNDER key (triggers). Everything else from
+0001–0009 is unchanged.
 
 ## 7. Implementation record
 
@@ -178,13 +193,33 @@ reuses). Everything else from 0001–0009 is unchanged.
      system cause, and the credit counts only once the Founder validates the finding. Guarded by kernel and
      storage proofs and the `c6-systemic-credit-misattributed` / `c6-systemic-credit-before-validation`
      mutations.
+  5. *C6-R1 corrective amendment (exact-head review of PR #11, Product Owner brief, D-C6-10):* ordinary outcome
+     verification, attribution validation, lesson validation and retraining were effectively Founder-only — an
+     operational bottleneck. Root cause: C6 bound every judgment to the Founder chokepoint instead of to the C4
+     review policy that already models who may judge. Fix, extending C4 only: the Review Plan's
+     `operationalJudgment` (`FOUNDER` default / `REVIEW_POOL`; never beside a FOUNDER key; never R4); the review
+     keys' own cited outcome judgments verify the outcome when they satisfy the review (disagreement →
+     INCONCLUSIVE, never averaged); one independent qualified pool judge, drawn by the C4 eligibility SQL and
+     funded from the plan's review budget, validates or rejects an attribution or a lesson through the same fenced
+     review decision, escalating any uncertainty to the Founder; ordinary retraining on objective evidence. The
+     stale C3 wording ("the independent review path does not exist") is corrected. Proven with the Founder
+     surface disarmed and an unchanged authority / spend fingerprint (storage proof and acceptance), kernel proofs
+     and eleven `c6r1-*` mutations. Found while building it (root cause first): the verifier confines lesson
+     writes to the C3 modules, so the two lesson steps live in `mind-writes.ts`; a C4 mutation anchor
+     (`...(executor ? [executor] : [])`) must stay unique in `review-core.js`, so the judge exclusions are
+     written differently; a judge's subject must not wait forever for capacity, so the C4 refill and recovery
+     sweep also draw waiting judges.
   No root-cause family recurred a second time.
 
 ## 8. Validation (see the PR description for the exact head and GitHub runs)
 
 Focused during the build: kernel 37 tests, storage C6 18 tests (plus the full storage suite), runtime C6 3 tests
 (plus the full runtime suite, C5 signalling proofs included), `c6:mutation` 29/29 caught, `c6:acceptance`
-20/20 PASS, verifier 69/69 with every new rule self-tested, `eslint --max-warnings=0` clean. The full local
+20/20 PASS, verifier 69/69 with every new rule self-tested, `eslint --max-warnings=0` clean.
+C6-R1, focused: governance judgment kernel 5 tests (governance 65), storage C6-R1 proofs 5 tests (storage 24 files /
+307 tests), runtime 104, command-center 9, `c6:mutation` 40/40 caught (11 new `c6r1-*`), every C1–C6 / R1
+mutation anchor re-checked against the rebuilt output (179 anchors), `c6:acceptance` 21/21 PASS (the new
+Founder-free step), verifier 69/69, lint clean. The full local
 gate (`npm ci`, `npm run ci`, C1–C6 acceptances, the C5 browser smoke) runs once on the closure-candidate tree
 before the PR; GitHub CI (Windows + Ubuntu) on the exact PR head is the confirmation.
 
@@ -194,6 +229,8 @@ before the PR; GitHub CI (Windows + Ubuntu) on the exact PR head is the confirma
 |---|---|---|
 | `code-review` (high) | yes | Independent correctness review of the full C6 diff before the PR: ten findings, all ten fixed with proofs (§7.3, §7.4) |
 | `security-review` | attempted | Could not launch: it shells out through the Bash tool, which exits 2 on every command on this host (known Founder-host quirk); replaced by a manual security pass over the crypto / recovery path (AES-256-GCM with header AAD and per-package random IV, pinned scrypt parameters, entry allow-list, contained paths, passphrase never stored) and the verifier rule `c6-recovery-secret-never-stored` |
+| `code-review` (high), C6-R1 | yes | Review of the C6-R1 working-tree diff: five findings — a lesson put up for review before its cause was judged escalated permanently to the Founder (fixed: a lesson judge is drawn only once its evidence exists; a judge who PASSes too early stands down; validated causes and qualified evaluations wake waiting lessons); the decision-time eligibility re-check lacked the open-envelope condition (fixed); three kept as documented: PERSONAL-delivery as training evidence (effect still needs later evidence), NEEDS_SPECIALIST escalates rather than reassigns, refill scans all domains (bounded) |
+| `security-review`, C6-R1 | attempted | Failed again at launch (it runs `git status` through the unavailable Bash tool). Replaced by a manual authority / spend boundary pass: grants and approval decisions are `founder:*` in the datastore; a judge's only budget is a Work Item allocation within the plan's review budget from its own envelope; no route, deployment, tool, seat, delegation or certification write exists on any judgment path; R4 refused in kernel, trigger and C4 review; identities come from the run fence and forged judges / verifiers are refused by triggers — each backed by a proof or a `c6r1-*` mutation |
 | `dataviz`, `artifact-diagramming`, `impeccable`, `frontend-design`, `animate`, `emil-design-eng`, `ui-ux-pro-max`, `sibawayh:*` | no | C6 changes no visual surface (Tree of Light frozen; two intent labels only), draws no chart and writes no Arabic UI copy |
 | `claude-api` | no | C6 makes no model call (the evaluator is deterministic; `MODEL_GRADER` is an unexecuted seam) |
 | `workflow-authoring`, `simplify`, `docs`, `docx`, `pptx`, `xlsx`, `pdf`, React Native / Expo / media skills | no | Not relevant to a backend evaluation / recovery engine |
@@ -206,8 +243,12 @@ before the PR; GitHub CI (Windows + Ubuntu) on the exact PR head is the confirma
   intents and the CLI; a dedicated report view inside the Tree of Light is not built (the surface is frozen).
 - **R-C6-03 (MINOR):** portable packages are built in memory (bounded at 1.5 GiB, refused above); streaming
   encryption for larger companies is future work.
-- **R-C6-04 (Product decision needed):** outcome verification is Founder-only in C6; delegating it to qualified
-  reviewers (or to validated external evidence) is a later decision.
+- **R-C6-04:** closed by C6-R1 (§7.5, D-C6-10) — ordinary outcome verification, attribution and learning
+  validation are delegated to the Review Pool by the plan; the Founder remains the exception authority.
+- **R-C6-06 (MINOR, C6-R1 scope):** a systemic finding's diagnosis is still decided by the Founder (the brief
+  permits Review Pool diagnosis; the ordinary loop does not need it, and remediation keeps its own authority);
+  no deterministic outcome verifier is added (no machine-verifiable outcome criteria source exists before C7);
+  judge capacity is bounded by the reviewer's open review assignments only.
 - **R-C6-05:** minimum-sample, trend, retraining-bound and RPO / RTO values are conservative Strong-v1 defaults
   to be calibrated in the Pilot, not statistically derived thresholds.
 - **Carried from C5 (unchanged):** the CSP-blocked Department tint on context-sheet avatars; the 4 fps

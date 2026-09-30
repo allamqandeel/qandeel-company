@@ -106,8 +106,14 @@ getting better, not merely remember more. It extends the C1–C5 mechanisms and 
   passes its own calibration — known-good passes, known-bad fails, ambiguous evidence stays unknown, a
   non-employee cause is not blamed, a valid creative path is not penalized;
 - **Completed ≠ Reviewed ≠ Outcome Verified**: a governed outcome verification (evidence classes and
-  references, Founder-decided) is the only way to `OUTCOME_VERIFIED`; a qualified outcome is reviewed AND
-  verified; external outcomes are stated unavailable until C7 provides a governed source;
+  references) is the only way to `OUTCOME_VERIFIED`; a qualified outcome is reviewed AND verified; external
+  outcomes are stated unavailable until C7 provides a governed source;
+- **operational judgment without a Founder bottleneck (C6-R1)**: where a Work Item's Review Plan says
+  `REVIEW_POOL` (never R4, never beside a FOUNDER key), its independent qualified reviewers verify the outcome
+  from their own cited judgments (a disagreement is never averaged) and one independent pool judge validates an
+  attribution or a lesson from its own governed, pre-budgeted review run; uncertainty escalates to the Founder,
+  who stays the exception authority. Verification authority is never execution authority: no judgment grants,
+  funds, approves, routes or raises a risk ceiling, R3 still needs the Founder's approval and R4 stays the Founder's alone;
 - evidence-based **evaluation** of each Work Item from its real lineage (reviews, runs, tools, context, usage,
   interventions); activity is observability only; insufficient or conflicting evidence stays so;
 - **causal attribution** (Employee judgement, model, tool, context retrieval, workflow, provider, requirement,

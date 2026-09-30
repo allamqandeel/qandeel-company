@@ -4,7 +4,7 @@
  * rationale, reviewer instructions) is exposed only as a content hash here; it never enters telemetry.
  */
 import type { Id, Timestamp } from '@qandeel-company/domain';
-import type { DataClass, PositionKind, PositionScope, PositionStatus, ReviewApplies, ReviewKeyKind, ReviewOutcome, ReviewerLevel, StaffingState } from '@qandeel-company/governance';
+import type { DataClass, OperationalJudgment, PositionKind, PositionScope, PositionStatus, ReviewApplies, ReviewKeyKind, ReviewOutcome, ReviewerLevel, StaffingState } from '@qandeel-company/governance';
 
 import type { Row, SqlValue } from './sqlite/connection.js';
 
@@ -294,9 +294,12 @@ export interface ReviewPlanRecord {
   readonly deadlineAt: Timestamp | null;
   readonly declaredByRef: string;
   readonly createdAt: Timestamp;
+  /** C6-R1: who makes the operational judgments (outcome, attribution, learning) on this plan's Work Item. */
+  readonly operationalJudgment: OperationalJudgment;
 }
 
 export const mapReviewPlan = (r: Row): ReviewPlanRecord => ({
+  operationalJudgment: (r.operational_judgment === 'REVIEW_POOL' ? 'REVIEW_POOL' : 'FOUNDER') as OperationalJudgment,
   id: str(r.id) as Id,
   workItemId: str(r.work_item_id) as Id,
   version: num(r.version),
@@ -457,6 +460,47 @@ export const mapReviewDecision = (r: Row): ReviewDecisionRecord => ({
   independence: JSON.parse(str(r.independence_json)) as Record<string, unknown>,
   counts: num(r.counts) === 1,
   runId: optStr(r.run_id) as Id | null,
+  createdAt: str(r.created_at) as Timestamp,
+});
+
+/** C6-R1: one Review Pool judge of a C6 subject (an attribution proposal, a lesson under review). */
+export interface JudgmentAssignmentRecord {
+  readonly id: Id;
+  readonly subjectKind: 'ATTRIBUTION' | 'LESSON';
+  readonly subjectId: Id;
+  readonly workItemId: Id;
+  readonly planId: Id;
+  readonly judgeEmployeeId: Id;
+  readonly qualificationId: Id;
+  readonly judgeWorkItemId: Id;
+  readonly state: 'ASSIGNED' | 'DECIDED' | 'ESCALATED' | 'WITHDRAWN';
+  readonly reviewOutcome: ReviewOutcome | null;
+  readonly decision: 'VALIDATE' | 'REJECT' | 'ESCALATE' | null;
+  readonly reasonCode: string | null;
+  readonly evidenceRefs: readonly string[];
+  readonly runId: Id | null;
+  readonly qualificationVersion: number | null;
+  readonly version: number;
+  readonly createdAt: Timestamp;
+}
+
+export const mapJudgmentAssignment = (r: Row): JudgmentAssignmentRecord => ({
+  id: str(r.id) as Id,
+  subjectKind: str(r.subject_kind) as JudgmentAssignmentRecord['subjectKind'],
+  subjectId: str(r.subject_id) as Id,
+  workItemId: str(r.work_item_id) as Id,
+  planId: str(r.plan_id) as Id,
+  judgeEmployeeId: str(r.judge_employee_id) as Id,
+  qualificationId: str(r.qualification_id) as Id,
+  judgeWorkItemId: str(r.judge_work_item_id) as Id,
+  state: str(r.state) as JudgmentAssignmentRecord['state'],
+  reviewOutcome: optStr(r.review_outcome) as ReviewOutcome | null,
+  decision: optStr(r.decision) as JudgmentAssignmentRecord['decision'],
+  reasonCode: optStr(r.reason_code),
+  evidenceRefs: arr(r.evidence_refs_json),
+  runId: optStr(r.run_id) as Id | null,
+  qualificationVersion: optNum(r.qualification_version),
+  version: num(r.version),
   createdAt: str(r.created_at) as Timestamp,
 });
 
