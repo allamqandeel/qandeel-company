@@ -19,6 +19,7 @@ import {
   detectSystemicCandidates,
   disjointVerifiedReuses,
   evaluateWork,
+  eventPhase,
   learningValidationGate,
   nearMissCodes,
   nextInterventionDecision,
@@ -30,8 +31,10 @@ import {
   standardReferenceCases,
   standardWorkOutcomeDefinition,
   systemicContributor,
+  type AdverseSourceEvent,
   type EvaluationFact,
   type FollowupFact,
+  type LearningEffect,
   type ReportFacts,
   type WorkEvidence,
 } from '../src/index.js';
@@ -341,12 +344,20 @@ describe('C6 learning closure', () => {
     assert.deepEqual(nearMissCodes(ev), ['REVIEW_CAUGHT_BEFORE_RELEASE', 'GATE_STOPPED_A_RISK']);
     assert.equal(ev.outcome, 'ACHIEVED');
   });
-  const follow = (patch: Partial<FollowupFact>): FollowupFact => ({ ...fact({ at: '2026-09-20T00:00:00.000Z' }), workStartedAt: '2026-09-20T00:00:00.000Z', lastWorkAt: '2026-09-20T00:00:00.000Z', attributionState: 'NONE', accountableCauses: [], ...patch });
+  const follow = (patch: Partial<FollowupFact>): FollowupFact => ({ ...fact({ at: '2026-09-20T00:00:00.000Z' }), workStartedAt: '2026-09-20T00:00:00.000Z', attributionState: 'NONE', accountableCauses: [], adverseEvents: [], ...patch });
+  // FB-1: an adverse source event — by default a failed review of output produced AFTER the training (2026-09-10),
+  // validated as the Employee's own judgement.
+  let evSeq = 0;
+  const event = (patch: Partial<AdverseSourceEvent> = {}): AdverseSourceEvent => {
+    evSeq++;
+    return { sourceRef: `review_decision:d${evSeq}`, kind: 'REVIEW_DECISION', actStartedAt: '2026-09-12T00:00:00.000Z', actEndedAt: '2026-09-12T01:00:00.000Z', attributionRef: `causal_attribution:a${evSeq}`, attributionState: 'VALIDATED', attributionDue: true, accountableCauses: ['EMPLOYEE_JUDGMENT'], attributionUnresolved: false, ...patch };
+  };
+  const BEFORE = { actStartedAt: '2026-09-04T00:00:00.000Z', actEndedAt: '2026-09-04T01:00:00.000Z' };
   test('training completed is not improvement: later comparable evidence decides', () => {
     assert.equal(assessLearningEffect({ trainingCompletedAt: '2026-09-10T00:00:00.000Z', targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [] }).effect, 'NOT_YET_TESTED');
     assert.equal(assessLearningEffect({ trainingCompletedAt: null, targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [follow({}), follow({})] }).effect, 'NOT_YET_TESTED');
     assert.equal(assessLearningEffect({ trainingCompletedAt: '2026-09-10T00:00:00.000Z', targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [follow({}), follow({})] }).effect, 'IMPROVEMENT_OBSERVED');
-    const recurred = assessLearningEffect({ trainingCompletedAt: '2026-09-10T00:00:00.000Z', targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [follow({ accountableCauses: ['EMPLOYEE_JUDGMENT'] })], followups: [follow({ accountableCauses: ['EMPLOYEE_JUDGMENT'], qualifiedOutcome: false }), follow({})] });
+    const recurred = assessLearningEffect({ trainingCompletedAt: '2026-09-10T00:00:00.000Z', targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [follow({ accountableCauses: ['EMPLOYEE_JUDGMENT'] })], followups: [follow({ qualifiedOutcome: false, adverseEvents: [event()] }), follow({})] });
     assert.equal(recurred.effect, 'NO_IMPROVEMENT');
   });
   test('R2-15: "later" is when the work started, not when it was evaluated; evidence names the Work Items', () => {
@@ -360,33 +371,137 @@ describe('C6 learning closure', () => {
     assert.deepEqual(judged.evidenceRefs, later.map((f) => `work_item:${f.workItemId}`));
   });
   test('R2-17: an adverse follow-up whose cause is pending keeps the effect open', () => {
-    const adverse = (attributionState: FollowupFact['attributionState']): FollowupFact => follow({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE', QUALITY: 'NEGATIVE' }, attributionState, attributionDue: true });
+    const adverse = (attributionState: AdverseSourceEvent['attributionState']): FollowupFact => follow({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE', QUALITY: 'NEGATIVE' }, attributionDue: true, adverseEvents: [event({ attributionState, accountableCauses: [] })] });
     const run = (f: FollowupFact) => assessLearningEffect({ trainingCompletedAt: '2026-09-10T00:00:00.000Z', targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [f, follow({}), follow({})] });
     for (const state of ['NONE', 'PROPOSED'] as const) assert.deepEqual([run(adverse(state)).effect, run(adverse(state)).basis], ['NOT_YET_TESTED', 'ATTRIBUTION_PENDING'], state);
     // Validated as someone else's cause (not a recurrence): the effect is decided.
     assert.equal(run(adverse('VALIDATED')).effect, 'IMPROVEMENT_OBSERVED');
-    assert.equal(run({ ...adverse('VALIDATED'), accountableCauses: ['EMPLOYEE_JUDGMENT'] }).effect, 'NO_IMPROVEMENT');
+    assert.equal(run(follow({ qualifiedOutcome: false, adverseEvents: [event()] })).effect, 'NO_IMPROVEMENT');
   });
-  test('RR3-A: an adverse follow-up whose cause was REJECTED is decided — the effect is INCONCLUSIVE (recorded, non-final), never untested forever and never "no recurrence"', () => {
+  test('RR3-A / FB-1 matrix 6: an adverse event whose cause was REJECTED is decided — the effect is INCONCLUSIVE (recorded, non-final, reassessable), never untested forever and never "no recurrence"', () => {
     const run = (f: FollowupFact) => assessLearningEffect({ trainingCompletedAt: '2026-09-10T00:00:00.000Z', targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [f, follow({}), follow({})] });
-    for (const f of [follow({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE', QUALITY: 'NEGATIVE' }, attributionState: 'REJECTED', attributionDue: true }), follow({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE' }, attributionState: 'NONE', attributionDue: false })]) {
-      assert.deepEqual([run(f).effect, run(f).basis], ['INCONCLUSIVE', 'ADVERSE_WITHOUT_ACCOUNTABLE_CAUSE'], f.attributionState);
+    for (const e of [event({ attributionState: 'REJECTED', accountableCauses: [] }), event({ attributionState: 'NONE', attributionDue: false, accountableCauses: [], attributionRef: null })]) {
+      const f = follow({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE' }, adverseEvents: [e] });
+      assert.deepEqual([run(f).effect, run(f).basis, run(f).recurrences], ['INCONCLUSIVE', 'ADVERSE_WITHOUT_ACCOUNTABLE_CAUSE', 0], e.attributionState);
     }
     // INCONCLUSIVE does not block the next cycle.
     assert.equal(nextInterventionDecision(['INCONCLUSIVE']).decision, 'ALLOW_INTERVENTION');
   });
-  test('RR3-E: the same mistake made AFTER the training on work started before it is a recurrence (or holds the effect); positive evidence is only work started after it', () => {
-    const trained = '2026-09-10T00:00:00.000Z';
-    const reworked = (patch: Partial<FollowupFact>): FollowupFact => follow({ workStartedAt: '2026-09-05T00:00:00.000Z', lastWorkAt: '2026-09-12T00:00:00.000Z', qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE', QUALITY: 'NEGATIVE' }, attributionDue: true, ...patch });
-    const run = (f: FollowupFact) => assessLearningEffect({ trainingCompletedAt: trained, targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [follow({ accountableCauses: ['EMPLOYEE_JUDGMENT'] })], followups: [f, follow({}), follow({})] });
-    const recurred = run(reworked({ attributionState: 'VALIDATED', accountableCauses: ['EMPLOYEE_JUDGMENT'] }));
-    assert.deepEqual([recurred.effect, recurred.recurrences], ['NO_IMPROVEMENT', 1], 'a validated post-training recurrence is never excluded');
-    assert.ok(recurred.evidenceRefs.length === 3);
-    assert.deepEqual([run(reworked({ attributionState: 'PROPOSED' })).effect, run(reworked({ attributionState: 'PROPOSED' })).basis], ['NOT_YET_TESTED', 'ATTRIBUTION_PENDING']);
-    // Positive evidence stays asymmetric: older work that went well after the training proves nothing.
-    const olderSuccess = follow({ workStartedAt: '2026-09-05T00:00:00.000Z', lastWorkAt: '2026-09-12T00:00:00.000Z' });
-    const onlyOlder = assessLearningEffect({ trainingCompletedAt: trained, targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [olderSuccess, { ...olderSuccess, workItemId: 'other' }] });
-    assert.equal(onlyOlder.effect, 'NOT_YET_TESTED');
+
+  describe('FB-1: learning is timed by the event that happened, not the date someone judged it', () => {
+    const T = '2026-09-10T00:00:00.000Z';
+    const spanning = (patch: Partial<FollowupFact>): FollowupFact => follow({ workStartedAt: '2026-09-04T00:00:00.000Z', ...patch });
+    const assess = (followups: FollowupFact[], baseline: FollowupFact[] = [follow({ accountableCauses: ['EMPLOYEE_JUDGMENT'] })]) =>
+      assessLearningEffect({ trainingCompletedAt: T, targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline, followups });
+    test('eventPhase: before = the act ended by the training; after = it started after; spanning or unknown = unplaceable', () => {
+      assert.equal(eventPhase(BEFORE, T), 'BEFORE_TRAINING');
+      assert.equal(eventPhase({ actStartedAt: '2026-09-09T23:00:00.000Z', actEndedAt: T }, T), 'BEFORE_TRAINING');
+      assert.equal(eventPhase({ actStartedAt: '2026-09-10T00:00:00.001Z', actEndedAt: '2026-09-10T00:00:00.001Z' }, T), 'AFTER_TRAINING');
+      assert.equal(eventPhase({ actStartedAt: '2026-09-09T00:00:00.000Z', actEndedAt: '2026-09-11T00:00:00.000Z' }, T), 'UNPLACEABLE');
+      assert.equal(eventPhase({ actStartedAt: null, actEndedAt: null }, T), 'UNPLACEABLE');
+      assert.equal(eventPhase({ actStartedAt: null, actEndedAt: '2026-09-11T00:00:00.000Z' }, T), 'UNPLACEABLE');
+    });
+    test('matrix 1: mistakes made BEFORE the training, reviewed / evaluated / attributed after it, are never a recurrence', () => {
+      // Two failed reviews of pre-training output, a validated (true) attribution of them, the work finished correctly after.
+      const f1 = spanning({ verdicts: { OUTCOME: 'POSITIVE', QUALITY: 'NEUTRAL' }, attributionState: 'VALIDATED', accountableCauses: ['EMPLOYEE_JUDGMENT'], adverseEvents: [event(BEFORE), event(BEFORE)] });
+      const later = [follow({}), follow({})];
+      const r = assess([f1, ...later]);
+      assert.deepEqual([r.effect, r.basis, r.recurrences], ['IMPROVEMENT_OBSERVED', 'NO_RECURRENCE_ON_QUALIFIED_WORK', 0]);
+      assert.ok(!r.evidenceRefs.includes(`work_item:${f1.workItemId}`), 'the pre-training mistakes are not evidence about the training');
+      // Even an adverse item-level verdict does not move a pre-training event after the training.
+      const g = assess([{ ...f1, verdicts: { OUTCOME: 'NEGATIVE', QUALITY: 'NEGATIVE' }, qualifiedOutcome: false }, ...later]);
+      assert.deepEqual([g.effect, g.recurrences], ['IMPROVEMENT_OBSERVED', 0]);
+    });
+    test('matrix 2: work started before the training whose same mistake truly recurs after it is a recurrence', () => {
+      const w = spanning({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE', QUALITY: 'NEGATIVE' }, adverseEvents: [event({ kind: 'OUTCOME_VERIFICATION', sourceRef: 'outcome_verification:v1' })] });
+      const r = assess([w, follow({}), follow({})]);
+      assert.deepEqual([r.effect, r.basis, r.recurrences], ['NO_IMPROVEMENT', 'SAME_MISTAKE_RECURRED', 1]);
+      assert.ok(r.evidenceRefs.includes(`work_item:${w.workItemId}`) && r.evidenceRefs.includes('outcome_verification:v1'));
+    });
+    test('matrix 3: work started before the training and finished cleanly after it is neither positive nor negative evidence', () => {
+      const clean = spanning({});
+      const withOldMistake = spanning({ adverseEvents: [event(BEFORE)] });
+      const only = assess([clean, withOldMistake]);
+      assert.deepEqual([only.effect, only.basis, only.followups], ['NOT_YET_TESTED', 'NO_COMPARABLE_WORK_YET', 0], 'no credit for finishing older work');
+      const one = assess([clean, withOldMistake, follow({})]);
+      assert.deepEqual([one.effect, one.basis, one.followups], ['NOT_YET_TESTED', 'TOO_FEW_SUFFICIENT_FOLLOWUPS', 1], 'not counted as a follow-up either');
+    });
+    test('matrix 4: work started after the training that became a qualified outcome is eligible positive evidence', () => {
+      const later = [follow({}), follow({})];
+      const r = assess(later);
+      assert.deepEqual([r.effect, r.followups, r.evidenceRefs], ['IMPROVEMENT_OBSERVED', 2, later.map((f) => `work_item:${f.workItemId}`)]);
+      assert.deepEqual([assess([follow({ qualifiedOutcome: false }), follow({})]).effect], ['INCONCLUSIVE'], 'unqualified later work proves nothing');
+    });
+    test('matrix 5: an adverse event after the training whose attribution is PROPOSED (or due and missing) is pending — never clean', () => {
+      for (const e of [event({ attributionState: 'PROPOSED', accountableCauses: [] }), event({ attributionState: 'NONE', attributionRef: null, accountableCauses: [] })]) {
+        const r = assess([follow({ adverseEvents: [e] }), follow({}), follow({})]);
+        assert.deepEqual([r.effect, r.basis], ['NOT_YET_TESTED', 'ATTRIBUTION_PENDING'], e.attributionState);
+      }
+      // Also on older work: a post-training event of spanning work holds the effect open.
+      const r = assess([spanning({ adverseEvents: [event({ attributionState: 'PROPOSED', accountableCauses: [] })] }), follow({}), follow({})]);
+      assert.deepEqual([r.effect, r.basis], ['NOT_YET_TESTED', 'ATTRIBUTION_PENDING']);
+    });
+    test('matrix 7: a Founder-corrected attribution explains its events at their ORIGINAL time', () => {
+      // The corrected (Founder) attribution was decided after the training; the events it explains happened before.
+      const corrected = spanning({ adverseEvents: [event({ ...BEFORE, attributionRef: 'causal_attribution:founder-corrected' })] });
+      assert.deepEqual([assess([corrected, follow({}), follow({})]).effect, assess([corrected, follow({}), follow({})]).recurrences], ['IMPROVEMENT_OBSERVED', 0]);
+      const correctedAfter = spanning({ adverseEvents: [event({ attributionRef: 'causal_attribution:founder-corrected' })] });
+      assert.equal(assess([correctedAfter, follow({}), follow({})]).recurrences, 1);
+    });
+    test('matrix 8: one pre- and one post-training adverse event on the same work — only the post-training one counts', () => {
+      const pre = event({ ...BEFORE, sourceRef: 'review_decision:pre' });
+      const post = event({ sourceRef: 'outcome_verification:post', kind: 'OUTCOME_VERIFICATION' });
+      const r = assess([spanning({ qualifiedOutcome: false, adverseEvents: [pre, post] }), follow({}), follow({})]);
+      assert.deepEqual([r.effect, r.recurrences], ['NO_IMPROVEMENT', 1]);
+      assert.ok(r.evidenceRefs.includes('outcome_verification:post') && !r.evidenceRefs.includes('review_decision:pre'));
+      // The post-training event decides: REJECTED there → INCONCLUSIVE, whatever the validated pre-training one says.
+      const rejectedPost = assess([spanning({ qualifiedOutcome: false, adverseEvents: [pre, { ...post, attributionState: 'REJECTED', accountableCauses: [] }] }), follow({}), follow({})]);
+      assert.deepEqual([rejectedPost.effect, rejectedPost.recurrences], ['INCONCLUSIVE', 0]);
+    });
+    test('matrix 9: one source event is never multiplied — duplicates (re-evaluations, repeated reads) count once; the share unit is the Work Item', () => {
+      const e = event({ sourceRef: 'review_decision:same' });
+      const w = follow({ qualifiedOutcome: false, adverseEvents: [e, { ...e }] });
+      const r = assess([w, { ...w, evaluationId: 'e-superseding' }, follow({}), follow({})]);
+      assert.deepEqual([r.recurrences, r.followups, r.evidenceRefs.filter((x) => x === 'review_decision:same').length], [1, 3, 1]);
+      // Two distinct events of one Work Item: one recurring Work Item (share unit), both events named.
+      const two = assess([follow({ qualifiedOutcome: false, adverseEvents: [event({ sourceRef: 'run:r1', kind: 'RUN_FAILURE' }), event({ sourceRef: 'run:r2', kind: 'RUN_FAILURE' })] }), follow({})]);
+      assert.deepEqual([two.recurrences, two.evidenceRefs.filter((x) => x.startsWith('run:')).length], [1, 2]);
+    });
+    test('matrix 10: an event that cannot be placed in time, an unresolved attribution, or adverse work without provenance never yields a final NO_IMPROVEMENT / REGRESSION', () => {
+      const straddling = event({ actStartedAt: '2026-09-09T00:00:00.000Z', actEndedAt: '2026-09-11T00:00:00.000Z' });
+      for (const f of [spanning({ qualifiedOutcome: false, adverseEvents: [straddling] }), follow({ qualifiedOutcome: false, adverseEvents: [event({ attributionUnresolved: true, attributionState: 'NONE', attributionDue: false, accountableCauses: [] })] }), follow({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE' }, adverseEvents: [] })]) {
+        const r = assess([f, follow({}), follow({})]);
+        assert.deepEqual([r.effect, r.basis], ['INCONCLUSIVE', 'ADVERSE_EVENT_NOT_PLACEABLE']);
+      }
+      // A definite recurrence beside unplaceable ones: final only when no placement could change it.
+      const recurring = follow({ qualifiedOutcome: false, adverseEvents: [event()] });
+      const unplaceable = spanning({ qualifiedOutcome: false, adverseEvents: [straddling] });
+      // Baseline share 1/3: one definite recurrence of four (1/4) is below it, but with the unplaceable one (2/4) above it.
+      const third = [follow({ accountableCauses: ['EMPLOYEE_JUDGMENT'] }), follow({}), follow({})];
+      const open = assess([recurring, unplaceable, follow({}), follow({})], third);
+      assert.deepEqual([open.effect, open.basis, open.recurrences], ['INCONCLUSIVE', 'RECURRENCE_SHARE_NOT_ESTABLISHED', 1]);
+      assert.equal(assess([recurring, unplaceable, follow({}), follow({})], [follow({ accountableCauses: ['EMPLOYEE_JUDGMENT'] })]).effect, 'NO_IMPROVEMENT', 'even every unplaceable one counted cannot exceed the baseline');
+      assert.equal(assess([recurring, unplaceable, follow({})], [follow({})]).effect, 'REGRESSION', 'the definite recurrences alone exceed the baseline');
+    });
+    test('matrix 11: the baseline recurrence share is unchanged — read from the evidence that justified the lesson', () => {
+      const recurring = follow({ qualifiedOutcome: false, adverseEvents: [event()] });
+      assert.equal(assess([recurring, follow({})], [follow({ accountableCauses: ['EMPLOYEE_JUDGMENT'] })]).effect, 'NO_IMPROVEMENT', 'later share 1/2 ≤ baseline 1');
+      assert.equal(assess([recurring, follow({})], [follow({ accountableCauses: ['EMPLOYEE_JUDGMENT'] }), follow({}), follow({})]).effect, 'REGRESSION', 'later share 1/2 > baseline 1/3');
+      assert.equal(assess([recurring, follow({})], []).effect, 'NO_IMPROVEMENT', 'no baseline = share 1');
+    });
+    test('matrix 12: the corrected effect is what retraining exhaustion and LEARNING_VELOCITY consume', () => {
+      // Two cycles each judged on work whose every mistake was pre-training: never ineffective, never exhausted.
+      const cycle = (): LearningEffect => assess([spanning({ qualifiedOutcome: false, verdicts: { OUTCOME: 'POSITIVE', QUALITY: 'NEGATIVE' }, adverseEvents: [event(BEFORE), event(BEFORE)] }), follow({}), follow({})]).effect;
+      const effects = [cycle(), cycle()];
+      assert.deepEqual(effects, ['IMPROVEMENT_OBSERVED', 'IMPROVEMENT_OBSERVED']);
+      assert.equal(nextInterventionDecision(effects).decision, 'ALLOW_INTERVENTION');
+      const p = buildPerformanceProfile({ employeeId: 'emp', at: AT, evaluations: [], attributions: [], learningEffects: effects.map((effect, i) => ({ interventionId: `i${i}`, effect })), contributions: { validatedPatterns: [], verifiedPatternReuses: [], validatedSystemicFindings: [] } });
+      const lv = req(p.dimensions.find((d) => d.dimension === 'LEARNING_VELOCITY'));
+      assert.deepEqual([lv.positive, lv.accountableNegative, lv.level], [2, 0, 'STRONG']);
+      // True post-training recurrences in two cycles still exhaust retraining (escalation is kept, not weakened).
+      const real = (): LearningEffect => assess([spanning({ qualifiedOutcome: false, adverseEvents: [event()] }), follow({})]).effect;
+      assert.equal(nextInterventionDecision([real(), real()]).decision, 'ESCALATE_SYSTEMIC');
+    });
   });
   test('R2-16: verified reuses count only on pairwise-disjoint evidence', () => {
     assert.equal(disjointVerifiedReuses([['work_item:a', 'work_item:b'], ['work_item:a', 'work_item:b']]), 1, 'the same evidence twice is one reuse');

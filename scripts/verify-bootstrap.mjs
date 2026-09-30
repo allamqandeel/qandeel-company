@@ -347,6 +347,8 @@ const MUTATION_PINS = {
       'c6-pending-adverse-reads-clean', 'c6-disputed-cause-dead-end', 'c6-decided-finding-silences-recurrence', 'c6-retraining-exhaustion-swallowed', 'c6-billed-cost-as-economic', 'c6-zero-cost-efficient',
       // R2 second wave (cluster Q3): one meaning of adverse evidence in every attribution state (RR3).
       'c6-rejected-cause-pending-forever', 'c6-rejected-cause-reads-clean', 'c6-rejected-attribution-unread', 'c6-corrected-causes-dropped', 'c6-non-adverse-negative-pending', 'c6-post-training-recurrence-excluded',
+      // R2 Architecture Closure Correction FB-1: learning is timed by the source evidence event.
+      'fb1-pre-training-event-counted', 'fb1-review-timed-by-decision', 'fb1-source-event-multiplied', 'fb1-unplaceable-event-final', 'fb1-proposal-misses-new-events',
       // C6-R1: operational judgment through the Review Pool; verification authority is never execution authority.
       'c6r1-ordinary-outcome-founder-only', 'c6r1-r4-judged-by-pool', 'c6r1-founder-key-pool-judgment', 'c6r1-outcome-conflict-averaged', 'c6r1-pass-verifies-without-judgment', 'c6r1-uncertainty-validates',
       'c6r1-self-judgment', 'c6r1-judge-eligibility-not-rechecked', 'c6r1-validated-lesson-shared-company-wide', 'c6r1-judgment-budget-inflated', 'c6r1-judgment-raises-budget',

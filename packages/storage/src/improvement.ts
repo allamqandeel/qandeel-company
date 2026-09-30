@@ -67,7 +67,7 @@ import {
 } from '@qandeel-company/mind';
 
 import { founder, founderAdminWrite } from './governance.js';
-import { LATEST_LIVE_EVALUATION, attributionFacts, followupFacts, gatherWorkEvidence, latestVerdict, liveEvaluations, subjectOf, validatedAttributionFacts } from './improvement-core.js';
+import { EVIDENCE_REF_CAP, LATEST_LIVE_EVALUATION, adverseSourceEvents, attributionFacts, followupFacts, gatherWorkEvidence, latestVerdict, liveEvaluations, subjectOf, validatedAttributionFacts } from './improvement-core.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { mapLesson } from './mind-records.js';
 import { insertLesson, txLessonUnderReview, txRecordLessonDecision } from './mind-writes.js';
@@ -310,7 +310,7 @@ function insertAttribution(ctx: StoreContext, f: { workItemId: Id; evaluationId:
     `INSERT INTO causal_attributions (id, work_item_id, evaluation_id, employee_id, comparable_key, overall, causes_json, employee_accountable, confidence, source, state, proposed_by_ref, decided_by_ref, reason_code, evidence_refs_json, version, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
     id, f.workItemId, f.evaluationId, f.employeeId, f.comparableKey, summary.overall, JSON.stringify(summary.causes), summary.employeeAccountable ? 1 : 0, summary.confidence, f.source, f.state, f.actorRef,
-    f.state === 'VALIDATED' ? f.actorRef : null, f.state === 'VALIDATED' ? f.reasonCode : null, JSON.stringify(f.evidenceRefs.slice(0, 60)), at, at,
+    f.state === 'VALIDATED' ? f.actorRef : null, f.state === 'VALIDATED' ? f.reasonCode : null, JSON.stringify(f.evidenceRefs.slice(0, EVIDENCE_REF_CAP)), at, at,
   );
   attributionHistory(ctx, id, 1, null, f.state, f.reasonCode, f.actorRef);
   appendAudit(ctx, f.state === 'VALIDATED' ? 'attribution.validated' : 'attribution.proposed', 'causal_attribution', id, { actorRef: f.actorRef }, 'OK', f.reasonCode, { workItemId: f.workItemId, overall: summary.overall, employeeAccountable: summary.employeeAccountable });
@@ -889,7 +889,9 @@ export class ImprovementStore {
       const current = liveAttribution(ctx, wid);
       if (due) {
         if (current === null) attributionId = insertAttribution(ctx, { workItemId: wid, evaluationId: id, employeeId: evidence.employeeId as Id | null, comparableKey: evidence.comparableKey, causes: proposal.causes, source: 'EVALUATOR_PROPOSAL', state: 'PROPOSED', actorRef: SYSTEM_EVALUATOR_REF, reasonCode: 'evaluator.proposed', evidenceRefs: refs });
-        else if (current.state === 'PROPOSED' && canonicalJson(current.causes) !== canonicalJson(proposal.causes)) {
+        // FB-1: an undecided proposal is re-proposed when its causes changed OR new adverse source events arrived that its
+        // evidence does not hold — whoever decides it decides every event it explains (a decided one is never reopened).
+        else if (current.state === 'PROPOSED' && (canonicalJson(current.causes) !== canonicalJson(proposal.causes) || adverseSourceEvents(ctx, wid).some((e) => refs.includes(e.sourceRef) && !current.evidenceRefs.includes(e.sourceRef)))) {
           setAttributionState(ctx, current, 'SUPERSEDED', SYSTEM_EVALUATOR_REF, 'evidence.changed');
           attributionId = insertAttribution(ctx, { workItemId: wid, evaluationId: id, employeeId: evidence.employeeId as Id | null, comparableKey: evidence.comparableKey, causes: proposal.causes, source: 'EVALUATOR_PROPOSAL', state: 'PROPOSED', actorRef: SYSTEM_EVALUATOR_REF, reasonCode: 'evaluator.reproposed', evidenceRefs: refs });
         } else attributionId = current.id;
