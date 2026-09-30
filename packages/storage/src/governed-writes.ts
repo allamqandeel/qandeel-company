@@ -25,7 +25,6 @@ import {
   assertArgsSchema,
   assertCognitiveProfile,
   canExecute,
-  checkReservation,
   dataRank,
   isDataClass,
   isReasoningClass,
@@ -43,10 +42,13 @@ import {
 } from '@qandeel-company/governance';
 
 import {
+  admitBudgetWaiters,
   applyBudgetDelta,
+  budgetCapacityCheck,
   budgetChain,
   budgetFor,
   chargedExclusions,
+  consumeBudgetAdmission,
   employeeIdFromRef,
   getEmployeeRow,
   getReservationRow,
@@ -55,7 +57,6 @@ import {
   releaseReservationTx,
   setEmployeeState,
   settleReservationTx,
-  wakeBudgetWaiters,
   wakeWorkItemJob,
   type SettleUsage,
 } from './governance-core.js';
@@ -348,7 +349,8 @@ export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput):
   const wiChain = workItemChain(ctx, a);
   if (!wiChain) return refuse('BUDGET_MISSING', 'WORK_ITEM_CHAIN');
   const chain = runBudget(ctx, fence, wiChain);
-  const check = checkReservation(chain, input.money, input.tokens);
+  // FA-1: capacity admitted to OTHER waiters is taken; this job's own admission is what it now consumes.
+  const check = budgetCapacityCheck(ctx, chain, input.money, input.tokens, job.id);
   if (!check.ok) {
     // RR2-1: the refusal's need, durably, in this transaction — the only thing its wait resumes on.
     const refused = chain.find((b) => b.id === check.budgetId) as BudgetRecord;
@@ -381,6 +383,7 @@ export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput):
     input.purpose === 'MODEL_CALL' ? input.contextManifestId : null,
   );
   appendAudit(ctx, 'budget.reserved', 'reservation', id, { actorRef: SYSTEM_RUNTIME_REF }, 'OK', null, { runId: fence.runId, purpose: input.purpose, attemptKind: input.attemptKind, money: input.money, tokens: input.tokens });
+  consumeBudgetAdmission(ctx, job.id, { id, money: input.money, tokens: input.tokens });
   return { ok: true, reservation: getReservationRow(ctx, id) };
 }
 
@@ -722,7 +725,7 @@ export function txHoldUnsettledModelCalls(ctx: StoreContext, runId: Id): number 
  * holds, and wakes the job at once if it does not:
  * - AWAITING_APPROVAL holds while this Work Item still has a PENDING tool approval;
  * - BUDGET_EXHAUSTED holds while the need its refusal recorded does not fit again (RR2-1: the one resume
- *   predicate of `wakeBudgetWaiters`, evaluated here for this job alone).
+ *   admission of `admitBudgetWaiters`, evaluated here for this job alone — FA-1).
  * A spurious wake is harmless: the next run re-checks every gate before any spend.
  */
 export const GOVERNED_WAITS = ['AWAITING_APPROVAL', 'BUDGET_EXHAUSTED', 'AWAITING_INDEPENDENT_REVIEW', 'AWAITING_DELEGATION', 'AWAITING_CLARIFICATION', 'AWAITING_ESCALATION'] as const;
@@ -773,7 +776,7 @@ export function txRecheckGovernedWait(ctx: StoreContext, workItemId: Id, runId: 
   // raise, settle or release committed while the job was still CLAIMED (its wake found nothing parked) is seen
   // here from the budgets themselves. No scan of historical reservations or cap history.
   const jobId = ctx.db.get<{ j: string }>('SELECT job_id AS j FROM runs WHERE id = ?', runId)?.j;
-  if (jobId !== undefined) wakeBudgetWaiters(ctx, null, 'budget.rechecked', jobId as Id);
+  if (jobId !== undefined) admitBudgetWaiters(ctx, null, 'budget.rechecked', jobId as Id);
 }
 
 // --- Recovery ---------------------------------------------------------------------------------------

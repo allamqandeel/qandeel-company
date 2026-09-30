@@ -161,3 +161,62 @@ BEGIN
   UPDATE work_delegations SET state = 'CANCELLED', response_reason_code = 'PARENT_ENDED', version = version + 1, updated_at = NEW.updated_at
    WHERE parent_work_item_id = NEW.id AND state IN ('OFFERED', 'ACCEPTED', 'CLARIFICATION_REQUESTED', 'ESCALATED');
 END;
+
+-- -----------------------------------------------------------------------------------------------------
+-- FA-1 (R2-03 family, architecture correction): budget capacity is ADMITTED, not broadcast. Freed headroom has one
+-- durable owner before a BUDGET_EXHAUSTED waiter resumes: the admission pass (one serialized write transaction)
+-- admits waiters in order (priority, then FIFO, then id) against the remaining capacity of every level of the
+-- waiter's chain (its Work Item level and ancestors — never a Run level: the next run's Run budget is fresh), and
+-- records each admission here before it wakes the job, so the next waiter sees that capacity as taken. Every
+-- reservation check subtracts OTHER jobs' outstanding ADMITTED amounts; the admitted job's first reservation
+-- CONSUMES its own admission (never counted twice). Admissions are not reservations: the budgets' reserved / spent
+-- truth is unchanged. State moves once: ADMITTED -> CONSUMED | RELEASED. Never deleted. Content-free.
+-- -----------------------------------------------------------------------------------------------------
+CREATE TABLE budget_admissions (
+  id                       TEXT    NOT NULL PRIMARY KEY CHECK (length(id) = 36),
+  job_id                   TEXT    NOT NULL REFERENCES queue_jobs (id) ON DELETE RESTRICT,
+  work_item_id             TEXT    NOT NULL REFERENCES work_items (id) ON DELETE RESTRICT,
+  -- The need it admits (the job's latest budget_wait_needs row); NULL only for a wait parked before needs existed.
+  need_seq                 INTEGER REFERENCES budget_wait_needs (seq) ON DELETE RESTRICT,
+  -- The levels whose capacity it holds, leaf (Work Item) first: JSON array of budget ids.
+  levels_json              TEXT    NOT NULL CHECK (json_valid(levels_json) AND json_type(levels_json) = 'array' AND json_array_length(levels_json) BETWEEN 1 AND 5),
+  money                    INTEGER NOT NULL CHECK (money BETWEEN 0 AND 1000000000000000),
+  tokens                   INTEGER NOT NULL CHECK (tokens BETWEEN 0 AND 1000000000000),
+  state                    TEXT    NOT NULL CHECK (state IN ('ADMITTED', 'CONSUMED', 'RELEASED')),
+  reason_code              TEXT    NOT NULL CHECK (length(reason_code) BETWEEN 1 AND 64),
+  end_reason_code          TEXT    CHECK (end_reason_code IS NULL OR length(end_reason_code) BETWEEN 1 AND 64),
+  consumed_reservation_id  TEXT    REFERENCES budget_reservations (id) ON DELETE RESTRICT,
+  admitted_at              TEXT    NOT NULL CHECK (admitted_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
+  ended_at                 TEXT    CHECK (ended_at IS NULL OR ended_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
+  CHECK ((state = 'ADMITTED') = (ended_at IS NULL)),
+  CHECK ((state = 'ADMITTED') = (end_reason_code IS NULL)),
+  CHECK ((state = 'CONSUMED') = (consumed_reservation_id IS NOT NULL))
+) STRICT;
+-- Never two outstanding admissions of one job (and so never two owners of one job's admitted headroom).
+CREATE UNIQUE INDEX budget_admissions_one_outstanding ON budget_admissions (job_id) WHERE state = 'ADMITTED';
+CREATE INDEX budget_admissions_outstanding ON budget_admissions (state, admitted_at) WHERE state = 'ADMITTED';
+CREATE TRIGGER budget_admissions_no_delete BEFORE DELETE ON budget_admissions BEGIN SELECT RAISE(ABORT, 'a budget admission is durable history'); END;
+CREATE TRIGGER budget_admissions_end_once BEFORE UPDATE ON budget_admissions
+WHEN NEW.id IS NOT OLD.id OR NEW.job_id IS NOT OLD.job_id OR NEW.work_item_id IS NOT OLD.work_item_id OR NEW.need_seq IS NOT OLD.need_seq
+  OR NEW.levels_json IS NOT OLD.levels_json OR NEW.money IS NOT OLD.money OR NEW.tokens IS NOT OLD.tokens OR NEW.reason_code IS NOT OLD.reason_code
+  OR NEW.admitted_at IS NOT OLD.admitted_at OR OLD.state <> 'ADMITTED' OR NEW.state NOT IN ('CONSUMED', 'RELEASED')
+BEGIN SELECT RAISE(ABORT, 'a budget admission moves once, ADMITTED to CONSUMED or RELEASED, and is never rewritten'); END;
+-- Admitted only for a parked budget waiter, on existing non-Run levels, against the need it currently has.
+CREATE TRIGGER budget_admissions_admit_waiter BEFORE INSERT ON budget_admissions
+WHEN NEW.state <> 'ADMITTED'
+  OR NOT EXISTS (SELECT 1 FROM queue_jobs j WHERE j.id = NEW.job_id AND j.work_item_id = NEW.work_item_id AND j.state = 'WAITING' AND j.wait_reason = 'BUDGET_EXHAUSTED')
+  OR (SELECT COUNT(*) FROM json_each(NEW.levels_json) l JOIN budgets b ON b.id = l.value WHERE b.scope <> 'RUN') <> json_array_length(NEW.levels_json)
+  OR NEW.need_seq IS NOT (SELECT MAX(n.seq) FROM budget_wait_needs n WHERE n.job_id = NEW.job_id)
+BEGIN SELECT RAISE(ABORT, 'a budget admission admits a parked budget waiter on its current need and non-Run levels'); END;
+-- Durable backstops (the application releases first and re-runs admission for the freed levels in the same
+-- transaction; these make a missed path fail safe, never leak): a job that leaves QUEUED / CLAIMED for any other
+-- state, or whose need is replaced by a later refusal, no longer owns admitted capacity.
+CREATE TRIGGER budget_admissions_follow_job AFTER UPDATE OF state ON queue_jobs
+WHEN NEW.state IS NOT OLD.state AND NEW.state NOT IN ('QUEUED', 'CLAIMED')
+BEGIN
+  UPDATE budget_admissions SET state = 'RELEASED', end_reason_code = 'JOB_LEFT_QUEUE', ended_at = NEW.updated_at WHERE job_id = NEW.id AND state = 'ADMITTED';
+END;
+CREATE TRIGGER budget_admissions_follow_need AFTER INSERT ON budget_wait_needs
+BEGIN
+  UPDATE budget_admissions SET state = 'RELEASED', end_reason_code = 'NEED_REPLACED', ended_at = NEW.created_at WHERE job_id = NEW.job_id AND state = 'ADMITTED';
+END;

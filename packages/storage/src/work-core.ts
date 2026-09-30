@@ -18,6 +18,7 @@ import {
   type WorkItemState,
 } from '@qandeel-company/domain';
 
+import { releaseBudgetAdmission } from './governance-core.js';
 import { appendAudit, appendEvent, getWorkItemRow, liveJobFor, ts, type StoreContext, type TraceContext } from './internal.js';
 import type { JobRecord, WorkItemRecord } from './records.js';
 import { releaseAbandonedReviewWork } from './review-core.js';
@@ -181,6 +182,8 @@ export function withdrawJob(ctx: StoreContext, item: WorkItemRecord, trace: Trac
   if (job.state === 'CLAIMED' || job.state === 'RECONCILIATION_HOLD') {
     throw new QandeelError('STORAGE_INVARIANT', 'a claimed or held job cannot be withdrawn', { jobId: job.id, state: job.state });
   }
+  // FA-1 (A5): a withdrawn (admitted, not yet running) job's budget capacity goes to the next eligible waiter now.
+  releaseBudgetAdmission(ctx, job.id, 'JOB_LEFT_QUEUE');
   ctx.db.run(`UPDATE queue_jobs SET state = 'CANCELLED', updated_at = ?, wait_reason = NULL WHERE id = ? AND state = ?`, ts(ctx), job.id, job.state);
   appendAudit(ctx, 'job.withdrawn', 'job', job.id, trace, 'OK', reasonCode, { workItemId: item.id, from: job.state });
 }

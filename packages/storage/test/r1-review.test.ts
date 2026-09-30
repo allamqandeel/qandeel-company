@@ -10,10 +10,10 @@ import { describe, test } from 'node:test';
 import { QandeelError, isQandeelError, type Id } from '@qandeel-company/domain';
 
 import { AcademyStore, MemoryStore } from '../src/index.js';
-import { beginGovernedRun, claimJob, containProviderFault, holdReservation, recordStepResult, recordToolIntent, recordToolResult, recoverBudgetWaits, releaseReservation, reserveBudget, settle, settleReservation, type Claim } from '../src/runtime-authority.js';
+import { beginGovernedRun, claimJob, containProviderFault, holdReservation, interruptClaim, recordStepResult, recordToolIntent, recordToolResult, recoverBudgetWaits, releaseReservation, reserveBudget, settle, settleReservation, type Claim } from '../src/runtime-authority.js';
 import { storeContext } from '../src/store.js';
 import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
-import { C2_KINDS, GOVERNED_KIND, claimGoverned, governedItem, seed, testManifest, type Seed } from './c2-helpers.js';
+import { C2_KINDS, GOVERNED_KIND, claimGoverned, governedItem, grantAll, hire, seed, testManifest, type Seed } from './c2-helpers.js';
 import { activeReviewer, intentThroughReview, reviewPlan } from './c4-helpers.js';
 import { academyWorld, assemble, attempt, claimFor, complete, propose, workItem } from './c3-helpers.js';
 import { TEST_SUPERVISOR_TTL_MS, backoff, harness, type Harness } from './helpers.js';
@@ -548,6 +548,314 @@ describe('R2-03: a Work Item parked BUDGET_EXHAUSTED resumes when real headroom 
       for (const wi of big) assert.deepEqual([jobState(h, wi), woken(wi)], ['WAITING', 0], 'no wake, no run, no event for headroom the waiter cannot use');
       assert.deepEqual(ctx.db.all<{ s: string; w: string }>(`SELECT refused_scope AS s, (SELECT scope FROM budgets WHERE id = wait_budget_id) AS w FROM budget_wait_needs WHERE work_item_id IN (SELECT value FROM json_each(?)) ORDER BY seq`, JSON.stringify(big)).map((r) => `${r.s}>${r.w}`), ['EMPLOYEE>EMPLOYEE', 'EMPLOYEE>EMPLOYEE', 'RUN>WORK_ITEM', 'RUN>WORK_ITEM', 'RUN>WORK_ITEM'], 'each refusal recorded where it was refused and the level its wait depends on');
       assert.throws(() => ctx.db.immediate('test: tamper', () => ctx.db.run('DELETE FROM budget_wait_needs')), (e: unknown) => /append-only/.test(String((e as Error).cause)));
+    } finally {
+      h.close();
+    }
+  });
+});
+
+describe('FA-1: budget capacity is admitted, not broadcast — freed capacity has one durable owner before a waiter resumes', () => {
+  const call = (h: Harness, s: Seed, claim: Claim, money: number, tokens = 100, employeeId: Id = s.employee.id) => ({ purpose: 'MODEL_CALL' as const, attemptKind: 'PRIMARY' as const, deploymentId: s.deploymentId, priceCardId: s.priceCardId, routePolicyId: s.policyId, money, tokens, contextManifestId: testManifest(h, claim.fence, employeeId) });
+  const usage = { inputTokens: 1, outputTokens: 1, withinBounds: true, sessionId: null, outcome: 'OK' as const };
+  let worker = 0;
+  /** A released Work Item whose job is created 1 ms after the previous one (FIFO order is the durable created time). */
+  const item = (h: Harness, s: Seed, e: Seed['employee'], opts: Parameters<typeof governedItem>[3]): Id => {
+    h.clock.advance(1);
+    return governedItem(h, s, e, opts);
+  };
+  /** One run: claims the released Work Item, is refused, parks BUDGET_EXHAUSTED. Returns the refusal detail. */
+  const park = (h: Harness, s: Seed, wi: Id, money: number, tokens = 100, employeeId: Id = s.employee.id): string => {
+    const c = claimFor(h, wi, `wp${worker++}`).claim;
+    const r = reserveBudget(h.store, c.fence, call(h, s, c, money, tokens, employeeId));
+    assert.equal(r.ok, false, 'the waiter is refused');
+    settle(h.store, c.fence, { type: 'WAIT', reasonCode: 'BUDGET_EXHAUSTED' }, { backoff });
+    return r.ok ? '' : r.detail;
+  };
+  type AdmissionRow = { job_id: string; state: string; money: number; tokens: number; reason_code: string; end_reason_code: string | null; consumed_reservation_id: string | null };
+  const admissionsOf = (h: Harness, wi: Id): AdmissionRow[] =>
+    storeContext(h.store).db.all<AdmissionRow>('SELECT * FROM budget_admissions WHERE work_item_id = ? ORDER BY admitted_at, id', wi);
+  const outstanding = (h: Harness): number => Number(storeContext(h.store).db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM budget_admissions WHERE state = 'ADMITTED'`)?.n);
+  const states = (h: Harness, ...wis: Id[]): string[] => wis.map((wi) => jobState(h, wi));
+
+  /** The FA-1 reproduction: N waiters each needing 5 000 on one 8 000 Employee envelope, a holder in flight. */
+  function drain(n: number): { served: number; wokenPerSettle: number[]; runsAfterPark: number; refusalsAfterPark: number } {
+    const h = harness();
+    try {
+      const s = seed(h.store, { employeeCap: 8_000 });
+      const ctx = storeContext(h.store);
+      const refused = (): number => Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM audit_events WHERE action = 'budget.refused'`)?.n);
+      const a = item(h, s, s.employee, { cap: 8_000 });
+      let holder = claimFor(h, a, 'wh').claim;
+      let held = reserveBudget(h.store, holder.fence, call(h, s, holder, 5_000));
+      const waiters: Id[] = [];
+      for (let i = 0; i < n; i++) {
+        const wi = item(h, s, s.employee, { cap: 8_000 });
+        park(h, s, wi, 5_000);
+        waiters.push(wi);
+      }
+      const refusedAtPark = refused();
+      const served = new Set<Id>();
+      const wokenPerSettle: number[] = [];
+      let runsAfterPark = 0;
+      for (let round = 0; round < n && held.ok; round++) {
+        settleReservation(h.store, holder.fence, held.reservation.id, usage);
+        settle(h.store, holder.fence, { type: 'COMPLETED', evidence: { summaryCode: 'done' } }, { backoff });
+        const woken = waiters.filter((wi) => !served.has(wi) && jobState(h, wi) === 'QUEUED');
+        wokenPerSettle.push(woken.length);
+        // The runtime claims every QUEUED job; the first to reserve holds the envelope, any other re-parks (a wasted run).
+        let next: { c: Claim; r: typeof held } | null = null;
+        for (const wi of woken) {
+          h.clock.advance(10);
+          const c = claimFor(h, wi, `wr${worker++}`).claim;
+          runsAfterPark++;
+          const r = reserveBudget(h.store, c.fence, call(h, s, c, 5_000));
+          if (r.ok && next === null) {
+            next = { c, r };
+            served.add(wi);
+            const [admission] = admissionsOf(h, wi);
+            assert.deepEqual([admission?.state, admission?.consumed_reservation_id], ['CONSUMED', r.reservation.id], 'the reservation consumed its own admission (never counted twice)');
+          } else settle(h.store, c.fence, { type: 'WAIT', reasonCode: 'BUDGET_EXHAUSTED' }, { backoff });
+        }
+        if (next === null) break;
+        holder = next.c;
+        held = next.r;
+      }
+      assert.equal(outstanding(h), 0, 'no admission outlives the drain');
+      return { served: served.size, wokenPerSettle, runsAfterPark, refusalsAfterPark: refused() - refusedAtPark };
+    } finally {
+      h.close();
+    }
+  }
+
+  test('FA-1 reproduction: one settle that frees room for ONE need admits and wakes exactly one of 10 equal waiters — N runs, 0 re-parks', () => {
+    const r = drain(10);
+    assert.deepEqual(r.wokenPerSettle, Array.from({ length: 10 }, () => 1), 'one owner per freed need (start head: 10, 9, 8, …)');
+    assert.deepEqual([r.served, r.runsAfterPark, r.refusalsAfterPark], [10, 10, 0], 'every waiter served by exactly one run after its park; no useless re-park run (start head: 55 runs, 45 refusals)');
+  });
+
+  test('RR2-1 need semantics kept: a need above a fresh Run budget is never admitted, however much room every level has', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store, { employeeCap: 8_000 });
+      const a = item(h, s, s.employee, { cap: 8_000 });
+      const ca = claimFor(h, a, 'wa').claim;
+      const ra = reserveBudget(h.store, ca.fence, call(h, s, ca, 8_000));
+      const w = item(h, s, s.employee, { cap: 8_000, runCap: 1_000 });
+      assert.equal(park(h, s, w, 2_000), 'RUN:MONEY');
+      if (ra.ok) releaseReservation(h.store, ca.fence, ra.reservation.id, 'CALL_NOT_SENT'); // 8 000 on every level
+      assert.deepEqual([jobState(h, w), admissionsOf(h, w).length], ['WAITING', 0], 'no fresh run of this Work Item could take the need');
+    } finally {
+      h.close();
+    }
+  });
+
+  test('a sequential drain is linear: twice the waiters, exactly twice the runs', () => {
+    const [ten, twenty] = [drain(10), drain(20)];
+    assert.deepEqual([ten.runsAfterPark, twenty.runsAfterPark, twenty.refusalsAfterPark], [10, 20, 0], 'Q waiters drain in Q runs (start head: Q²/2)');
+  });
+
+  test('mixed needs: an older waiter that does not fit never blocks a later one that does, and is admitted once its need fits', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store, { employeeCap: 8_000 });
+      const a = item(h, s, s.employee, { cap: 8_000 });
+      const ca = claimFor(h, a, 'wa').claim;
+      const ra = reserveBudget(h.store, ca.fence, call(h, s, ca, 6_000));
+      const c = item(h, s, s.employee, { cap: 8_000 });
+      const cc = claimFor(h, c, 'wc').claim;
+      const rc = reserveBudget(h.store, cc.fence, call(h, s, cc, 2_000));
+      assert.ok(ra.ok && rc.ok);
+      const [big, small1, small2] = [item(h, s, s.employee, { cap: 8_000 }), item(h, s, s.employee, { cap: 8_000 }), item(h, s, s.employee, { cap: 8_000 })];
+      park(h, s, big, 6_000);
+      park(h, s, small1, 2_000);
+      park(h, s, small2, 2_000);
+      if (rc.ok) releaseReservation(h.store, cc.fence, rc.reservation.id, 'CALL_NOT_SENT'); // 2 000 return
+      assert.deepEqual(states(h, big, small1, small2), ['WAITING', 'QUEUED', 'WAITING'], 'the older big need stays parked; the first fitting need owns the 2 000; the second does not (start head: both woken)');
+      if (ra.ok) releaseReservation(h.store, ca.fence, ra.reservation.id, 'CALL_NOT_SENT'); // 6 000 return; 2 000 stay admitted to small1
+      assert.deepEqual(states(h, big, small2), ['QUEUED', 'WAITING'], 'the older waiter is admitted first once its need fits; nothing is left for the later one');
+      assert.deepEqual(admissionsOf(h, big).map((x) => [x.state, x.money]), [['ADMITTED', 6_000]]);
+    } finally {
+      h.close();
+    }
+  });
+
+  test('both dimensions: a token need is admitted like a money need — one owner per freed token headroom', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store, { employeeCap: 8_000 });
+      const employee = s.gov.budgetFor('EMPLOYEE', s.employee.id);
+      s.gov.changeBudgetCap(s.founder, employee?.id as Id, { capMoney: 8_000, capTokens: 150_000, reasonCode: 'founder.lower' });
+      const a = item(h, s, s.employee, { cap: 8_000 });
+      const ca = claimFor(h, a, 'wa').claim;
+      const ra = reserveBudget(h.store, ca.fence, call(h, s, ca, 100, 100_000));
+      assert.ok(ra.ok);
+      const [t1, t2] = [item(h, s, s.employee, { cap: 8_000 }), item(h, s, s.employee, { cap: 8_000 })];
+      assert.deepEqual([park(h, s, t1, 100, 80_000), park(h, s, t2, 100, 80_000)], ['EMPLOYEE:TOKENS', 'EMPLOYEE:TOKENS']);
+      if (ra.ok) settleReservation(h.store, ca.fence, ra.reservation.id, usage); // ~100 000 tokens return: room for ONE 80 000 need
+      assert.deepEqual(states(h, t1, t2), ['QUEUED', 'WAITING'], 'start head: both woken for one token headroom');
+      assert.deepEqual(admissionsOf(h, t1).map((x) => [x.state, x.money, x.tokens]), [['ADMITTED', 100, 80_000]]);
+    } finally {
+      h.close();
+    }
+  });
+
+  test('multi-level: a Department envelope binds while each Employee envelope has room — admitted once, at the binding level', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store, { companyCap: 10_000, employeeCap: 8_000 });
+      const company = s.gov.budgetFor('COMPANY', 'company');
+      s.gov.changeBudgetCap(s.founder, company?.id as Id, { capMoney: 50_000, capTokens: company?.capTokens as number, reasonCode: 'founder.raise' });
+      const [e2, e3] = [hire(s.gov, s.founder, s.departmentId), hire(s.gov, s.founder, s.departmentId)];
+      for (const e of [e2, e3]) {
+        s.gov.createBudget(s.founder, { scope: 'EMPLOYEE', scopeId: e.id, capMoney: 8_000, capTokens: 1_000_000, reasonCode: 'seed' });
+        grantAll(s.gov, s.founder, e.id);
+      }
+      const hold = item(h, s, e3, { cap: 8_000 });
+      const ch = claimFor(h, hold, 'wh').claim;
+      const rh = reserveBudget(h.store, ch.fence, call(h, s, ch, 8_000, 100, e3.id)); // the Department (10 000) has 2 000 left
+      assert.ok(rh.ok);
+      const [w1, w2] = [item(h, s, s.employee, { cap: 8_000 }), item(h, s, e2, { cap: 8_000 })];
+      assert.deepEqual([park(h, s, w1, 6_000), park(h, s, w2, 6_000, 100, e2.id)], ['DEPARTMENT:MONEY', 'DEPARTMENT:MONEY']);
+      if (rh.ok) settleReservation(h.store, ch.fence, rh.reservation.id, usage); // the Department has ~10 000: room for ONE 6 000 need
+      assert.deepEqual(states(h, w1, w2), ['QUEUED', 'WAITING'], 'each Employee envelope could take 6 000; the Department can take one (start head: both woken)');
+    } finally {
+      h.close();
+    }
+  });
+
+  test('no double allocation: a second capacity change and an ordinary reservation never take admitted headroom', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store, { employeeCap: 8_000 });
+      const a = item(h, s, s.employee, { cap: 8_000 });
+      const ca = claimFor(h, a, 'wa').claim;
+      const ra = reserveBudget(h.store, ca.fence, call(h, s, ca, 5_000));
+      const [w1, w2] = [item(h, s, s.employee, { cap: 8_000 }), item(h, s, s.employee, { cap: 8_000 })];
+      park(h, s, w1, 5_000);
+      park(h, s, w2, 5_000);
+      if (ra.ok) releaseReservation(h.store, ca.fence, ra.reservation.id, 'CALL_NOT_SENT');
+      assert.deepEqual(states(h, w1, w2), ['QUEUED', 'WAITING']);
+      // A second capacity change: +1 000 on the envelope. 9 000 − 5 000 admitted = 4 000 < 5 000: nobody else is admitted.
+      const employee = s.gov.budgetFor('EMPLOYEE', s.employee.id);
+      s.gov.changeBudgetCap(s.founder, employee?.id as Id, { capMoney: 9_000, capTokens: employee?.capTokens as number, reasonCode: 'founder.raise' });
+      assert.deepEqual(states(h, w1, w2), ['QUEUED', 'WAITING'], 'the raise re-runs admission against the remaining capacity, not the unadmitted headroom');
+      // An ordinary reservation of fresh work racing the admitted waiter cannot take its 5 000 — only what is left.
+      const x = item(h, s, s.employee, { cap: 8_000 });
+      const cx = claimFor(h, x, 'wx').claim;
+      assert.deepEqual(reserveBudget(h.store, cx.fence, call(h, s, cx, 5_000)), { ok: false, code: 'BUDGET_EXHAUSTED', detail: 'EMPLOYEE:MONEY' });
+      assert.ok(reserveBudget(h.store, cx.fence, call(h, s, cx, 4_000)).ok);
+      // The admitted waiter's reservation still fits: its capacity was never allocated twice.
+      const c1 = claimFor(h, w1, 'w1').claim;
+      const r1 = reserveBudget(h.store, c1.fence, call(h, s, c1, 5_000));
+      assert.ok(r1.ok, 'the admitted owner reserves its admitted capacity');
+      assert.deepEqual(admissionsOf(h, w1).map((x) => x.state), ['CONSUMED']);
+      assert.deepEqual(s.gov.accountingInvariants(), []);
+    } finally {
+      h.close();
+    }
+  });
+
+  test('crash after admission, before reservation: the recovered job keeps its one admission; restart admits no second owner', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store, { employeeCap: 8_000 });
+      const a = item(h, s, s.employee, { cap: 8_000 });
+      const ca = claimFor(h, a, 'wa').claim;
+      const ra = reserveBudget(h.store, ca.fence, call(h, s, ca, 5_000));
+      const [w1, w2] = [item(h, s, s.employee, { cap: 8_000 }), item(h, s, s.employee, { cap: 8_000 })];
+      park(h, s, w1, 5_000);
+      park(h, s, w2, 5_000);
+      if (ra.ok) settleReservation(h.store, ca.fence, ra.reservation.id, usage);
+      assert.deepEqual(states(h, w1, w2), ['QUEUED', 'WAITING']);
+      // The admitted job is claimed; its worker dies before reserving; lease recovery returns it to QUEUED.
+      const c1 = claimFor(h, w1, 'w1-dead').claim;
+      h.clock.advance(700_000);
+      assert.equal(interruptClaim(h.store, h.supervisor, c1.fence.jobId, 'LEASE_EXPIRED')?.jobState, 'QUEUED');
+      assert.deepEqual(admissionsOf(h, w1).map((x) => x.state), ['ADMITTED'], 'the recovered job keeps its admission');
+      // Restart: a new store handle on the same database runs the startup pass.
+      const reopened = h.open();
+      assert.equal(recoverBudgetWaits(reopened, h.supervisor), 0, 'the startup pass admits no second owner of the admitted headroom');
+      assert.deepEqual([outstanding(h), ...states(h, w1, w2)], [1, 'QUEUED', 'WAITING']);
+      const c1b = claimFor(h, w1, 'w1-new').claim;
+      assert.ok(reserveBudget(h.store, c1b.fence, call(h, s, c1b, 5_000)).ok);
+      assert.deepEqual([admissionsOf(h, w1).map((x) => x.state), jobState(h, w2)], [['CONSUMED'], 'WAITING']);
+    } finally {
+      h.close();
+    }
+  });
+
+  test('cancelling an admitted waiter releases its capacity to the next eligible waiter in the same transaction', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store, { employeeCap: 8_000 });
+      const a = item(h, s, s.employee, { cap: 8_000 });
+      const ca = claimFor(h, a, 'wa').claim;
+      const ra = reserveBudget(h.store, ca.fence, call(h, s, ca, 5_000));
+      const [w1, w2] = [item(h, s, s.employee, { cap: 8_000 }), item(h, s, s.employee, { cap: 8_000 })];
+      park(h, s, w1, 5_000);
+      park(h, s, w2, 5_000);
+      if (ra.ok) settleReservation(h.store, ca.fence, ra.reservation.id, usage);
+      assert.deepEqual(states(h, w1, w2), ['QUEUED', 'WAITING']);
+      const g0 = h.store.wakeGeneration();
+      h.store.requestCancellation(w1, { reasonCode: 'founder.cancel', actorRef: s.founder });
+      assert.deepEqual(states(h, w1, w2), ['CANCELLED', 'QUEUED'], 'the freed admission went to the next waiter at once (no lost wake)');
+      assert.ok(h.store.wakeGeneration() > g0);
+      assert.deepEqual(admissionsOf(h, w1).map((x) => [x.state, x.end_reason_code]), [['RELEASED', 'JOB_LEFT_QUEUE']]);
+      assert.deepEqual(admissionsOf(h, w2).map((x) => [x.state, x.reason_code]), [['ADMITTED', 'budget.readmitted']]);
+    } finally {
+      h.close();
+    }
+  });
+
+  test('a lowered cap never strands or overcommits admitted capacity: the admission it cannot cover is released', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store, { employeeCap: 8_000 });
+      const a = item(h, s, s.employee, { cap: 5_000 });
+      const ca = claimFor(h, a, 'wa').claim;
+      const ra = reserveBudget(h.store, ca.fence, call(h, s, ca, 5_000));
+      const [w1, w2] = [item(h, s, s.employee, { cap: 5_000 }), item(h, s, s.employee, { cap: 5_000 })];
+      park(h, s, w1, 5_000);
+      park(h, s, w2, 5_000);
+      if (ra.ok) settleReservation(h.store, ca.fence, ra.reservation.id, usage); // a few micros spent; w1 admitted 5 000
+      const employee = s.gov.budgetFor('EMPLOYEE', s.employee.id);
+      assert.ok((employee?.spentMoney ?? 0) > 0);
+      s.gov.changeBudgetCap(s.founder, employee?.id as Id, { capMoney: 5_000, capTokens: employee?.capTokens as number, reasonCode: 'founder.lower' });
+      assert.deepEqual(admissionsOf(h, w1).map((x) => [x.state, x.end_reason_code]), [['RELEASED', 'CAP_LOWERED']], 'spent + admitted no longer fits the new cap');
+      assert.deepEqual([outstanding(h), ...states(h, w1, w2)], [0, 'QUEUED', 'WAITING'], 'the released job re-checks at its reservation; nothing else fits');
+    } finally {
+      h.close();
+    }
+  });
+
+  test('an admission is not spend: no reservation, no usage record, no reserved / spent change; durable, guarded, content-free', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store, { employeeCap: 8_000 });
+      const ctx = storeContext(h.store);
+      const count = (table: string): number => Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`)?.n);
+      const a = item(h, s, s.employee, { cap: 8_000 });
+      const ca = claimFor(h, a, 'wa').claim;
+      const ra = reserveBudget(h.store, ca.fence, call(h, s, ca, 8_000));
+      if (ra.ok) holdReservation(h.store, ca.fence, ra.reservation.id, 'PROVIDER_TIMEOUT');
+      const w1 = item(h, s, s.employee, { cap: 8_000 });
+      park(h, s, w1, 5_000);
+      const before = { reservations: count('budget_reservations'), usage: count('usage_records'), employee: s.gov.budgetFor('EMPLOYEE', s.employee.id) };
+      s.gov.changeBudgetCap(s.founder, before.employee?.id as Id, { capMoney: 20_000, capTokens: before.employee?.capTokens as number, reasonCode: 'founder.raise' });
+      assert.equal(jobState(h, w1), 'QUEUED');
+      const after = s.gov.budgetFor('EMPLOYEE', s.employee.id);
+      assert.deepEqual([count('budget_reservations'), count('usage_records')], [before.reservations, before.usage], 'no reservation, no usage record');
+      assert.deepEqual([after?.reservedMoney, after?.spentMoney, after?.reservedTokens, after?.spentTokens], [before.employee?.reservedMoney, before.employee?.spentMoney, before.employee?.reservedTokens, before.employee?.spentTokens]);
+      assert.deepEqual(s.gov.accountingInvariants(), []);
+      const tamper = (sql: string, ...args: (string | number)[]): void => ctx.db.immediate('test: tamper', () => void ctx.db.run(sql, ...args));
+      const cause = (re: RegExp) => (e: unknown): boolean => re.test(String((e as Error).cause));
+      assert.throws(() => tamper('DELETE FROM budget_admissions'), cause(/durable history/));
+      assert.throws(() => tamper(`UPDATE budget_admissions SET money = 1`), cause(/moves once/));
+      const holderJob = h.store.jobsFor(a).at(-1)?.id as string;
+      assert.throws(() => tamper(`INSERT INTO budget_admissions (id, job_id, work_item_id, need_seq, levels_json, money, tokens, state, reason_code, admitted_at) VALUES (?, ?, ?, NULL, '[]', 0, 0, 'ADMITTED', 'x', '2026-01-01T00:00:00.000Z')`, '00000000-0000-4000-8000-000000000000', holderJob, a), cause(/parked budget waiter/));
+      // The durable backstop: whatever path moves an admitted job out of QUEUED / CLAIMED, its admission is released.
+      tamper(`UPDATE queue_jobs SET state = 'CANCELLED', updated_at = '2026-01-01T00:00:00.000Z' WHERE id = ?`, h.store.jobsFor(w1).at(-1)?.id as string);
+      assert.deepEqual(admissionsOf(h, w1).map((x) => [x.state, x.end_reason_code]), [['RELEASED', 'JOB_LEFT_QUEUE']]);
     } finally {
       h.close();
     }

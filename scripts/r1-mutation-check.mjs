@@ -69,25 +69,25 @@ const MUTATIONS = [
   {
     id: 'r2-03-freed-headroom-wakes-nothing',
     finding: 'R2-03',
-    edits: [{ file: `${S}/governance-core.js`, search: "wakeBudgetWaiters(ctx, chain.map((b) => b.id), 'budget.freed');", replace: 'void chain; /* mutation: settle / release wake no budget waiter */', expectedCount: 2 }],
+    edits: [{ file: `${S}/governance-core.js`, search: "admitBudgetWaiters(ctx, chain.map((b) => b.id), 'budget.freed');", replace: 'void chain; /* mutation: settle / release wake no budget waiter */', expectedCount: 2 }],
     runs: [STORAGE],
   },
   {
     id: 'r2-03-budget-wake-ignores-headroom',
     finding: 'R2-03',
-    edits: [{ file: `${S}/governance-core.js`, search: "if (budgetWaitResolved(w) && wakeWorkItemJob(ctx, workItemId, ['BUDGET_EXHAUSTED'], reasonCode))", replace: "if (wakeWorkItemJob(ctx, workItemId, ['BUDGET_EXHAUSTED'], reasonCode))", expectedCount: 1 }],
+    edits: [{ file: `${S}/governance-core.js`, search: 'const amount = admissibleAmount(w, remaining);', replace: 'const amount = (void remaining, { money: 0, tokens: 0 }); /* mutation: every waiter is admitted, fitting or not */', expectedCount: 1 }],
     runs: [STORAGE],
   },
   {
     id: 'r2-03-budget-recheck-ignores-freed-headroom',
     finding: 'R2-03',
-    edits: [{ file: `${S}/governed-writes.js`, search: "        wakeBudgetWaiters(ctx, null, 'budget.rechecked', jobId);", replace: '        void jobId; /* mutation: the WAIT settle never re-checks a budget wait */', expectedCount: 1 }],
+    edits: [{ file: `${S}/governed-writes.js`, search: "        admitBudgetWaiters(ctx, null, 'budget.rechecked', jobId);", replace: '        void jobId; /* mutation: the WAIT settle never re-checks a budget wait */', expectedCount: 1 }],
     runs: [STORAGE],
   },
   {
     id: 'rr2-1-budget-wake-ignores-recorded-need',
     finding: 'RR2-1',
-    edits: [{ file: `${S}/governance-core.js`, search: '    if (w.need === null)\n        return chainHasHeadroom(w.levels);\n', replace: '    if (w.need !== undefined)\n        return chainHasHeadroom(w.levels); /* mutation: any headroom wakes (the storm) */\n', expectedCount: 1 }],
+    edits: [{ file: `${S}/governance-core.js`, search: '    if (w.need === null) {\n', replace: '    if (w.need !== undefined) { /* mutation: any headroom admits (the storm) */\n', expectedCount: 1 }],
     runs: [STORAGE],
   },
   {
@@ -99,10 +99,43 @@ const MUTATIONS = [
   {
     id: 'rr2-1-budget-wake-ignores-fresh-run-cap',
     finding: 'RR2-1',
-    edits: [{ file: `${S}/governance-core.js`, search: '    if (w.need.money > runCapMoney || w.need.tokens > runCapTokens)\n        return false;\n', replace: '    /* mutation: a need above the per-run cap is woken anyway */\n', expectedCount: 1 }],
+    edits: [{ file: `${S}/governance-core.js`, search: '    if (need.money > runCapMoney || need.tokens > runCapTokens)\n        return null;\n', replace: '    /* mutation: a need above the per-run cap is woken anyway */\n', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  // --- FA-1 (R2-03 family, architecture correction): budget capacity is admitted, not broadcast ---
+  {
+    id: 'fa1-admission-not-subtracted',
+    finding: 'FA-1',
+    edits: [{ file: `${S}/governance-core.js`, search: '            r.money -= amount.money;\n            r.tokens -= amount.tokens;\n', replace: '            void r; /* mutation: the pass never subtracts what it admitted (every fitting waiter wakes) */\n', expectedCount: 1 }],
     runs: [STORAGE],
   },
   {
+    id: 'fa1-reservation-ignores-admissions',
+    finding: 'FA-1',
+    edits: [{ file: `${S}/governance-core.js`, search: '        const held = admittedOn(ctx, b.id, exceptJobId);\n', replace: '        const held = (void exceptJobId, { money: 0, tokens: 0 }); /* mutation: a reservation takes admitted headroom */\n', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'fa1-release-not-readmitted',
+    finding: 'FA-1',
+    edits: [{ file: `${S}/governance-core.js`, search: "    if (readmit)\n        admitBudgetWaiters(ctx, JSON.parse(row.levels_json), 'budget.readmitted');\n", replace: '    void readmit; /* mutation: a released admission is a lost wake */\n', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'fa1-admission-never-consumed',
+    finding: 'FA-1',
+    edits: [{ file: `${S}/governed-writes.js`, search: '    consumeBudgetAdmission(ctx, job.id, { id, money: input.money, tokens: input.tokens });\n', replace: '    /* mutation: the reservation never consumes its admission (capacity counted twice) */\n', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'fa1-job-exit-keeps-admission',
+    finding: 'FA-1',
+    edits: [
+      { file: `${S}/work-core.js`, search: "    releaseBudgetAdmission(ctx, job.id, 'JOB_LEFT_QUEUE');\n", replace: '    /* mutation: a withdrawn job keeps its admitted capacity */\n', expectedCount: 1 },
+      { file: `${S}/queue.js`, search: "        releaseBudgetAdmission(ctx, job.id, 'JOB_LEFT_QUEUE');\n", replace: '        /* mutation: a job leaving the queue keeps its admitted capacity */\n', expectedCount: 1 },
+    ],
+    runs: [STORAGE],
+  },  {
     id: 'r1-12-stale-knowledge-eligible',
     finding: 'R1-12',
     edits: [{ file: `${S}/mind-writes.js`, search: 'const kEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND (x.review_at IS NULL OR x.review_at > ?)`;', replace: 'const kEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND ? IS NOT NULL`;', expectedCount: 1 }],

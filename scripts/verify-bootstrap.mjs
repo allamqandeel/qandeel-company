@@ -374,6 +374,8 @@ const MUTATION_PINS = {
       'r2-03-freed-headroom-wakes-nothing', 'r2-03-budget-wake-ignores-headroom', 'r2-03-budget-recheck-ignores-freed-headroom',
       // RR2-1 (second-wave cluster Q1): a budget wait resumes on the need its refusal recorded.
       'rr2-1-budget-wake-ignores-recorded-need', 'rr2-1-budget-need-not-recorded', 'rr2-1-budget-wake-ignores-fresh-run-cap',
+      // FA-1 (R2 architecture correction): budget capacity is admitted, not broadcast.
+      'fa1-admission-not-subtracted', 'fa1-reservation-ignores-admissions', 'fa1-release-not-readmitted', 'fa1-admission-never-consumed', 'fa1-job-exit-keeps-admission',
     ],
   },
 };
