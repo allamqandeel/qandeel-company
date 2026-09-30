@@ -7,7 +7,7 @@
  * stored as integers; the budget CHECK constraints are a second, independent guard.
  */
 import { QandeelError, newId, type Id, type Timestamp } from '@qandeel-company/domain';
-import { PROVIDER_FAILURE_CLASSES, addMoney, addTokens, costOf, failureDisposition, subMoney, subTokens, type PriceCard, type PrincipalKind } from '@qandeel-company/governance';
+import { PROVIDER_FAILURE_CLASSES, addMoney, addTokens, checkReservation, costOf,failureDisposition, subMoney, subTokens, type PriceCard, type PrincipalKind } from '@qandeel-company/governance';
 
 import { mapBudget, mapEmployee, mapPriceCard, mapPrincipal, mapReservation, type BudgetRecord, type EmployeeRecord, type PrincipalRecord, type ReservationRecord } from './governance-records.js';
 
@@ -374,24 +374,78 @@ export function chainHasHeadroom(chain: readonly BudgetRecord[]): boolean {
   return chain.every((b) => b.scope === 'RUN' || (addMoney(b.reservedMoney, b.spentMoney) < b.capMoney && addTokens(b.reservedTokens, b.spentTokens) < b.capTokens));
 }
 
+// --- Budget waits (RR2-1: the refusal's need is the resume condition) --------------------------------------
+
 /**
- * R2-03: the one resume predicate of a BUDGET_EXHAUSTED wait (Stage 3 §6: work waits on budget contention, and
- * resumes when the budget can take it again). Headroom returns on a settle below the worst case, a release (runtime
- * or Founder reconciliation) and a cap raise; each calls this with the budgets it freed (`null`: any, the startup
- * pass). Waiter-driven — every parked job is considered, never a window of budgets — and headroom-gated: only a
- * waiter whose chain shares a freed level AND whose every non-Run level now has real headroom is woken, so work
- * that is truly exhausted stays asleep. A wake that proves insufficient costs one run that re-parks before any
- * spend (every gate re-runs, the reservation first). The queue_jobs trigger advances the wake generation.
+ * RR2-1: records, in the refusing reservation transaction, WHAT a BUDGET_EXHAUSTED refusal needs and WHERE it was
+ * refused (append-only, content-free: IDs, a scope, a dimension, amounts). The wait level is the refusing level —
+ * or, for a Run-level refusal, its Work Item level: the next run gets a fresh Run budget under it.
  */
-export function wakeBudgetWaiters(ctx: StoreContext, freedBudgetIds: readonly Id[] | null, reasonCode: string): number {
-  const freed = freedBudgetIds === null ? null : new Set<string>(freedBudgetIds);
+export function recordBudgetWaitNeed(ctx: StoreContext, w: { jobId: Id; runId: Id; workItemId: Id }, refused: BudgetRecord, dimension: 'MONEY' | 'TOKENS', waitLevel: BudgetRecord, money: number, tokens: number): void {
+  ctx.db.run(
+    `INSERT INTO budget_wait_needs (job_id, run_id, work_item_id, refused_budget_id, refused_scope, dimension, wait_budget_id, need_money, need_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    w.jobId, w.runId, w.workItemId, refused.id, refused.scope, dimension, waitLevel.id, money, tokens, ts(ctx),
+  );
+}
+
+interface BudgetWait {
+  /** The Work Item budget: a fresh Run budget of the next run is capped by it. */
+  readonly workItem: BudgetRecord;
+  /** The levels the wait depends on: the recorded wait level and its ancestors (leaf first). */
+  readonly levels: readonly BudgetRecord[];
+  /** The recorded need; `null` only for a wait parked before RR2-1 recorded needs. */
+  readonly need: { readonly money: number; readonly tokens: number } | null;
+}
+
+/** The current budget wait of a parked job: its LATEST recorded need (a later refusal re-binds it), indexed by job. */
+function budgetWaitOf(ctx: StoreContext, jobId: Id, workItemId: Id): BudgetWait | null {
+  const leaf = budgetFor(ctx, 'WORK_ITEM', workItemId);
+  if (!leaf) return null;
+  const chain = budgetChain(ctx, leaf.id);
+  const n = ctx.db.get<{ wait_budget_id: string; need_money: number; need_tokens: number }>('SELECT wait_budget_id, need_money, need_tokens FROM budget_wait_needs WHERE job_id = ? ORDER BY seq DESC LIMIT 1', jobId);
+  if (!n) return { workItem: leaf, levels: chain, need: null };
+  const bound = getBudgetRow(ctx, n.wait_budget_id as Id);
+  // A CLOSED Employee envelope (the placement moved, D-C4-02) is followed by its successor on the current chain.
+  let at = chain.findIndex((b) => b.id === bound.id);
+  if (at < 0) at = chain.findIndex((b) => b.scope === bound.scope);
+  return { workItem: leaf, levels: chain.slice(Math.max(at, 0)), need: { money: Number(n.need_money), tokens: Number(n.need_tokens) } };
+}
+
+/**
+ * RR2-1: THE resume predicate of a BUDGET_EXHAUSTED wait. The wait holds until what its refusal needed fits again:
+ * a fresh Run budget of the Work Item can take the need, and its wait level and every ancestor now have headroom ≥
+ * the need in both dimensions (the reservation check's own arithmetic). Positive headroom smaller than the need
+ * wakes nothing (no wake storm). A wait parked before needs were recorded keeps the R2-03 headroom test.
+ */
+function budgetWaitResolved(w: BudgetWait): boolean {
+  if (w.need === null) return chainHasHeadroom(w.levels);
+  const runCapMoney = Math.min(w.workItem.runCapMoney ?? w.workItem.capMoney, w.workItem.capMoney);
+  const runCapTokens = Math.min(w.workItem.runCapTokens ?? w.workItem.capTokens, w.workItem.capTokens);
+  if (w.need.money > runCapMoney || w.need.tokens > runCapTokens) return false;
+  return checkReservation(w.levels, w.need.money, w.need.tokens).ok;
+}
+
+/**
+ * RR2-1: the one resume decision of a BUDGET_EXHAUSTED wait (Stage 3 §6: work waits on budget contention and resumes
+ * when the budget can take it again). Every path that returns headroom calls it with the levels it changed — a
+ * settle below the worst case and a release (their whole chain), a cap raise (that level), `null` for the startup
+ * pass — and the WAIT settle re-check calls it for its own job. A waiter is considered only when a changed level is
+ * one its wait depends on, and woken only when `budgetWaitResolved` holds: no scan of historical reservations, no
+ * wake for headroom the waiter cannot use. The queue_jobs trigger advances the durable wake generation.
+ */
+export function wakeBudgetWaiters(ctx: StoreContext, changedBudgetIds: readonly Id[] | null, reasonCode: string, onlyJobId?: Id): number {
+  const changed = changedBudgetIds === null ? null : new Set<string>(changedBudgetIds);
   let woken = 0;
-  for (const { work_item_id: workItemId } of ctx.db.all<{ work_item_id: string }>(`SELECT work_item_id FROM queue_jobs WHERE state = 'WAITING' AND wait_reason = 'BUDGET_EXHAUSTED' ORDER BY priority DESC, created_at, id`)) {
-    const leaf = budgetFor(ctx, 'WORK_ITEM', workItemId);
-    if (!leaf) continue;
-    const chain = budgetChain(ctx, leaf.id);
-    if (freed !== null && !chain.some((b) => freed.has(b.id))) continue;
-    if (chainHasHeadroom(chain) && wakeWorkItemJob(ctx, workItemId as Id, ['BUDGET_EXHAUSTED'], reasonCode)) woken++;
+  const waiters = ctx.db.all<{ id: string; work_item_id: string }>(
+    `SELECT id, work_item_id FROM queue_jobs WHERE state = 'WAITING' AND wait_reason = 'BUDGET_EXHAUSTED' AND (? IS NULL OR id = ?) ORDER BY priority DESC, created_at, id`,
+    onlyJobId ?? null,
+    onlyJobId ?? null,
+  );
+  for (const { id, work_item_id: workItemId } of waiters) {
+    const w = budgetWaitOf(ctx, id as Id, workItemId as Id);
+    if (!w) continue;
+    if (changed !== null && !w.levels.some((b) => changed.has(b.id))) continue;
+    if (budgetWaitResolved(w) && wakeWorkItemJob(ctx, workItemId as Id, ['BUDGET_EXHAUSTED'], reasonCode)) woken++;
   }
   return woken;
 }

@@ -190,12 +190,20 @@ export const employeeTaskProcessor: GovernedProcessor = {
         // Accountability stays with the delegator (Stage 8 §23): work with open handoffs does not finish; it
         // waits (zero tokens) and resumes when a delegate answers or its work ends.
         if (gov.openHandoffs() > 0) {
+          // R2-04: a delegate's pending question is this run's to answer (`handoff.clarify`): parking would wait on
+          // itself. RR2-2: the refused FINAL is recorded as this step's result (code FINAL_REFUSED_CLARIFICATION_PENDING,
+          // naming the delegations that asked), so the next turn's governed context tells the model why it cannot
+          // finish and what to answer. The loop continues (bounded by maxTurns; a delegator that ends unfinished
+          // closes its handoffs and cancels the work it delegated). Every other open handoff — offered, accepted,
+          // escalated to the Founder — parks the work at zero tokens.
+          if (gov.clarificationsRequested() > 0) {
+            gov.refuseFinal(s.turn, 'FINAL_REFUSED_CLARIFICATION_PENDING');
+            s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null };
+            await save(ctx, s);
+            continue;
+          }
           s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null };
           await save(ctx, s);
-          // R2-04: a delegate's pending question is this run's to answer (`handoff.clarify`): parking would wait on
-          // itself. The loop continues to the next model turn (bounded by maxTurns); every other open handoff —
-          // offered, accepted, escalated to the Founder — parks the work at zero tokens.
-          if (gov.clarificationsRequested() > 0) continue;
           return { type: 'WAIT', reasonCode: 'AWAITING_DELEGATION' };
         }
         await save(ctx, { ...s, phase: 'FINAL', pending: null, summaryCode: proposal.summaryCode });

@@ -46,15 +46,16 @@ import {
   applyBudgetDelta,
   budgetChain,
   budgetFor,
-  chainHasHeadroom,
   chargedExclusions,
   employeeIdFromRef,
   getEmployeeRow,
   getReservationRow,
   holdReservationTx,
+  recordBudgetWaitNeed,
   releaseReservationTx,
   setEmployeeState,
   settleReservationTx,
+  wakeBudgetWaiters,
   wakeWorkItemJob,
   type SettleUsage,
 } from './governance-core.js';
@@ -348,7 +349,12 @@ export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput):
   if (!wiChain) return refuse('BUDGET_MISSING', 'WORK_ITEM_CHAIN');
   const chain = runBudget(ctx, fence, wiChain);
   const check = checkReservation(chain, input.money, input.tokens);
-  if (!check.ok) return refuse('BUDGET_EXHAUSTED', `${check.scope}:${check.dimension}`);
+  if (!check.ok) {
+    // RR2-1: the refusal's need, durably, in this transaction — the only thing its wait resumes on.
+    const refused = chain.find((b) => b.id === check.budgetId) as BudgetRecord;
+    recordBudgetWaitNeed(ctx, { jobId: job.id, runId: fence.runId, workItemId: a.workItemId }, refused, check.dimension, refused.scope === 'RUN' ? (wiChain[0] as BudgetRecord) : refused, input.money, input.tokens);
+    return refuse('BUDGET_EXHAUSTED', `${check.scope}:${check.dimension}`);
+  }
   applyBudgetDelta(ctx, chain, { reservedMoney: input.money, reservedTokens: input.tokens });
   const id = newId();
   ctx.db.run(
@@ -715,9 +721,8 @@ export function txHoldUnsettledModelCalls(ctx: StoreContext, runId: Id): number 
  * did nothing. The WAIT settle therefore re-checks, in its own transaction, whether the wait still
  * holds, and wakes the job at once if it does not:
  * - AWAITING_APPROVAL holds while this Work Item still has a PENDING tool approval;
- * - BUDGET_EXHAUSTED holds unless headroom returned since the run began — a cap on this Work Item's budget
- *   chain changed, or another run's reservation was settled below its worst case or released (exactly the
- *   events whose waiter wake could have been missed) — and every non-Run level now has real headroom (R2-03).
+ * - BUDGET_EXHAUSTED holds while the need its refusal recorded does not fit again (RR2-1: the one resume
+ *   predicate of `wakeBudgetWaiters`, evaluated here for this job alone).
  * A spurious wake is harmless: the next run re-checks every gate before any spend.
  */
 export const GOVERNED_WAITS = ['AWAITING_APPROVAL', 'BUDGET_EXHAUSTED', 'AWAITING_INDEPENDENT_REVIEW', 'AWAITING_DELEGATION', 'AWAITING_CLARIFICATION', 'AWAITING_ESCALATION'] as const;
@@ -764,21 +769,11 @@ export function txRecheckGovernedWait(ctx: StoreContext, workItemId: Id, runId: 
     if (!pending || decidedDuringRun) wakeWorkItemJob(ctx, workItemId, ['AWAITING_APPROVAL'], 'approval.rechecked');
     return;
   }
-  const wi = budgetFor(ctx, 'WORK_ITEM', workItemId);
-  if (started === undefined || !wi) return;
-  const chain = budgetChain(ctx, wi.id);
-  const ids = chain.map((b) => b.id);
-  const raised = ctx.db.get(`SELECT 1 AS x FROM budget_history WHERE change_kind = 'CAP_CHANGED' AND occurred_at >= ? AND budget_id IN (SELECT value FROM json_each(?)) LIMIT 1`, started, JSON.stringify(ids));
-  // R2-03: another run's reservation gave headroom back (settled below its worst case, or released) while this
-  // run was in flight — the settle's own waiter wake found this job still CLAIMED. Every chain shares the Company
-  // level, so any such reservation freed a level of this chain; this run's own reservations never count.
-  const freed = ctx.db.get(
-    `SELECT 1 AS x FROM budget_reservations r LEFT JOIN usage_records u ON u.reservation_id = r.id
-      WHERE r.run_id <> ? AND r.updated_at >= ? AND (r.state = 'RELEASED' OR (r.state = 'SETTLED' AND (u.economic_micros < r.money OR u.charged_tokens < r.tokens))) LIMIT 1`,
-    runId,
-    started,
-  );
-  if ((raised || freed) && chainHasHeadroom(chain)) wakeWorkItemJob(ctx, workItemId, ['BUDGET_EXHAUSTED'], 'budget.rechecked');
+  // RR2-1: BUDGET_EXHAUSTED — the same resume predicate as every freeing path, on this job's recorded need: a cap
+  // raise, settle or release committed while the job was still CLAIMED (its wake found nothing parked) is seen
+  // here from the budgets themselves. No scan of historical reservations or cap history.
+  const jobId = ctx.db.get<{ j: string }>('SELECT job_id AS j FROM runs WHERE id = ?', runId)?.j;
+  if (jobId !== undefined) wakeBudgetWaiters(ctx, null, 'budget.rechecked', jobId as Id);
 }
 
 // --- Recovery ---------------------------------------------------------------------------------------

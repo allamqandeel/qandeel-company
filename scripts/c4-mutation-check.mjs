@@ -132,8 +132,26 @@ const MUTATIONS = [
   {
     id: 'c4-delegator-waits-on-own-clarification',
     gate: 'R2-04: a delegate\'s pending question is answered by the delegator\'s next turn, never waited on',
-    edits: [{ file: `${RT}/c2/employee-task.js`, search: '                    if (gov.clarificationsRequested() > 0)\n                        continue;\n', replace: '                    /* mutation: the delegator parks on its own pending question */\n', expectedCount: 1 }],
+    edits: [{ file: `${RT}/c2/employee-task.js`, search: '                    if (gov.clarificationsRequested() > 0) {\n', replace: '                    if (false) { /* mutation: the delegator parks on its own pending question */\n', expectedCount: 1 }],
     runs: [RUNTIME],
+  },
+  {
+    id: 'rr2-2-final-refusal-silent',
+    gate: 'RR2-2: a FINAL refused for a pending question is told to the model (a step result), never a silent continue',
+    edits: [{ file: `${RT}/c2/employee-task.js`, search: "                        gov.refuseFinal(s.turn, 'FINAL_REFUSED_CLARIFICATION_PENDING');\n", replace: '                        /* mutation: the refusal is silent */\n', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'rr2-2-failed-delegator-keeps-children',
+    gate: 'RR2-2: a delegator that FAILS cancels the work it delegated (no child left waiting under a dead parent)',
+    edits: [{ file: `${STORE}/work-core.js`, search: '    if (to === \'FAILED\')\n        cancelDelegatedChildren(ctx, item.id, opts.trace);\n', replace: '    /* mutation: a FAILED delegator leaves its delegated work running */\n', expectedCount: 1 }],
+    runs: [ORG],
+  },
+  {
+    id: 'rr2-5-rework-under-ended-lineage',
+    gate: 'RR2-5: work never re-enters the queue under an ended delegator (retained completed child sent back to rework)',
+    edits: [{ file: `${STORE}/work-core.js`, search: '    if (ended !== null) {', replace: '    if (false) { /* mutation: re-queued under a dead parent */', expectedCount: 1 }],
+    runs: [ORG],
   },
   {
     id: 'c4-restart-answers-clarification',

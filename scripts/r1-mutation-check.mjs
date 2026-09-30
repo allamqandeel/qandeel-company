@@ -75,13 +75,31 @@ const MUTATIONS = [
   {
     id: 'r2-03-budget-wake-ignores-headroom',
     finding: 'R2-03',
-    edits: [{ file: `${S}/governance-core.js`, search: "if (chainHasHeadroom(chain) && wakeWorkItemJob(ctx, workItemId, ['BUDGET_EXHAUSTED'], reasonCode))", replace: "if (wakeWorkItemJob(ctx, workItemId, ['BUDGET_EXHAUSTED'], reasonCode))", expectedCount: 1 }],
+    edits: [{ file: `${S}/governance-core.js`, search: "if (budgetWaitResolved(w) && wakeWorkItemJob(ctx, workItemId, ['BUDGET_EXHAUSTED'], reasonCode))", replace: "if (wakeWorkItemJob(ctx, workItemId, ['BUDGET_EXHAUSTED'], reasonCode))", expectedCount: 1 }],
     runs: [STORAGE],
   },
   {
     id: 'r2-03-budget-recheck-ignores-freed-headroom',
     finding: 'R2-03',
-    edits: [{ file: `${S}/governed-writes.js`, search: 'if ((raised || freed) && chainHasHeadroom(chain))', replace: 'if (raised && chainHasHeadroom(chain))', expectedCount: 1 }],
+    edits: [{ file: `${S}/governed-writes.js`, search: "        wakeBudgetWaiters(ctx, null, 'budget.rechecked', jobId);", replace: '        void jobId; /* mutation: the WAIT settle never re-checks a budget wait */', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'rr2-1-budget-wake-ignores-recorded-need',
+    finding: 'RR2-1',
+    edits: [{ file: `${S}/governance-core.js`, search: '    if (w.need === null)\n        return chainHasHeadroom(w.levels);\n', replace: '    if (w.need !== undefined)\n        return chainHasHeadroom(w.levels); /* mutation: any headroom wakes (the storm) */\n', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'rr2-1-budget-need-not-recorded',
+    finding: 'RR2-1',
+    edits: [{ file: `${S}/governed-writes.js`, search: "        recordBudgetWaitNeed(ctx, { jobId: job.id, runId: fence.runId, workItemId: a.workItemId }, refused, check.dimension, refused.scope === 'RUN' ? wiChain[0] : refused, input.money, input.tokens);\n", replace: '        void refused; /* mutation: the refusal forgets what it needed */\n', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'rr2-1-budget-wake-ignores-fresh-run-cap',
+    finding: 'RR2-1',
+    edits: [{ file: `${S}/governance-core.js`, search: '    if (w.need.money > runCapMoney || w.need.tokens > runCapTokens)\n        return false;\n', replace: '    /* mutation: a need above the per-run cap is woken anyway */\n', expectedCount: 1 }],
     runs: [STORAGE],
   },
   {

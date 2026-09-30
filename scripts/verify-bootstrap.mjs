@@ -318,6 +318,8 @@ const MUTATION_PINS = {
       'c4r2-rubric-hold-not-rechecked', 'c4r2-action-subject-truncated', 'c4r2-oversized-subject-admitted', 'c4r2-secret-arguments-reach-reviewer', 'c4r2-dead-letter-keeps-review-key',
       // R2 K2: one open-handoff set; a delegator answers its own delegate's question.
       'c4-open-handoff-set-narrowed', 'c4-delegator-waits-on-own-clarification', 'c4-restart-answers-clarification',
+      // RR2-2 / RR2-5 (second-wave cluster Q1): a refused FINAL is told; a handoff never outlives its delegator.
+      'rr2-2-final-refusal-silent', 'rr2-2-failed-delegator-keeps-children', 'rr2-5-rework-under-ended-lineage',
     ],
   },
   [C5_MUTATION_CHECK]: {
@@ -362,6 +364,8 @@ const MUTATION_PINS = {
       'r2-12-local-settlement-blamed-on-provider', 'r2-12-vocabulary-incomplete', 'r2-12-pg11-family-invented',
       // R2-03 (R2 cluster K2): a budget wait resumes on real headroom.
       'r2-03-freed-headroom-wakes-nothing', 'r2-03-budget-wake-ignores-headroom', 'r2-03-budget-recheck-ignores-freed-headroom',
+      // RR2-1 (second-wave cluster Q1): a budget wait resumes on the need its refusal recorded.
+      'rr2-1-budget-wake-ignores-recorded-need', 'rr2-1-budget-need-not-recorded', 'rr2-1-budget-wake-ignores-fresh-run-cap',
     ],
   },
 };
