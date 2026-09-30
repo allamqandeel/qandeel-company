@@ -759,6 +759,17 @@ Start gate: branch `review/r2-full-strong-v1` at `ce7448b` locally and on `origi
 
 Migration 0011 amended (unreleased) and re-pinned (`97ab99ee…`); 0001–0010 untouched; no 0012.
 
+**Exact-head correction (Technical Lead, on PR #12 head `658ce02`): learning provenance.** The learning-specific
+single-attribution readers (`txLearningValidationGate`, `txPlanIntervention`, the `classifyObservation`
+SYSTEMIC_PROBLEM path) had read the Work Item's latest VALIDATED generation, so an old lesson could silently use a
+later, unrelated generation's cause. They now resolve `signalAttributionRow`: the signal's own attribution, or — when
+it was SUPERSEDED (Founder corrected causes / re-proposal) — its earliest VALIDATED successor covering all of its
+evidence references; the Work Item fallback applies only to a signal recorded without an attribution. Regression
+`c6-improvement` "Provenance: … a lesson behind generation 1 (EMPLOYEE_JUDGMENT, Founder-corrected successor) is
+validated and planned on THAT cause, never a later TOOL generation" — fails with the previous lookup (the lesson gate
+refuses: `LEARNING_GATE`), passes with the fix. Focused: storage typecheck and lint clean; `c6-improvement`,
+`c6-founder-free`, `c6-resilience`, `c5-founder-surface` 93 / 93. No migration change.
+
 **Focused validation (once):** build and typecheck clean; lint (`packages`, `scripts`) clean; mind 114 / 114, storage
 403 / 403 (24 files, incl. `r1-review`, `c6-improvement`, `c6-founder-free`, `c6-resilience`, `migrations`), runtime C6
 5 / 5; verifier 69 / 69. Not re-run by instruction: mutation matrices, acceptances, full local `npm run ci`, any

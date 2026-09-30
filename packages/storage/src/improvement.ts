@@ -274,6 +274,27 @@ function latestValidatedRow(ctx: StoreContext, workItemId: Id): Record<string, u
   return ctx.db.get(`SELECT * FROM causal_attributions WHERE work_item_id = ? AND state = 'VALIDATED' ORDER BY updated_at DESC, rowid DESC LIMIT 1`, workItemId);
 }
 
+/**
+ * The VALIDATED attribution a learning signal belongs to (provenance, never "the latest generation of its Work Item"):
+ * the signal's own attribution when VALIDATED; when a later decision SUPERSEDED it (the Founder's corrected causes, or a
+ * re-proposal before anyone decided it), the earliest VALIDATED successor on the same Work Item whose evidence holds
+ * every reference the signal's attribution held. A signal whose attribution is still undecided, was rejected or has no
+ * validated successor has none. Only a signal recorded with NO attribution falls back to its Work Item's latest one.
+ */
+function signalAttributionRow(ctx: StoreContext, signal: { workItemId: Id; attributionId: Id | null }): Record<string, unknown> | undefined {
+  if (signal.attributionId === null) return latestValidatedRow(ctx, signal.workItemId);
+  const own = ctx.db.get<{ state: string; work_item_id: string; evidence_refs_json: string; updated_at: string }>('SELECT * FROM causal_attributions WHERE id = ?', signal.attributionId);
+  if (!own) return undefined;
+  if (own.state === 'VALIDATED') return own;
+  if (own.state !== 'SUPERSEDED') return undefined;
+  return ctx.db.get(
+    `SELECT * FROM causal_attributions c WHERE c.work_item_id = ? AND c.state = 'VALIDATED' AND c.created_at >= ?
+        AND NOT EXISTS (SELECT 1 FROM json_each(?) r WHERE r.value NOT IN (SELECT value FROM json_each(c.evidence_refs_json)))
+      ORDER BY c.created_at, c.rowid LIMIT 1`,
+    own.work_item_id, own.updated_at, own.evidence_refs_json,
+  );
+}
+
 /** PO-R2-A: a proposal a pool judge escalated belongs to the Founder until decided — evidence never replaces it. */
 function escalatedToFounder(ctx: StoreContext, attributionId: Id): boolean {
   return ctx.db.get(`SELECT 1 AS x FROM judgment_assignments WHERE subject_kind = 'ATTRIBUTION' AND subject_id = ? AND state = 'ESCALATED' LIMIT 1`, attributionId) !== undefined;
@@ -294,7 +315,7 @@ export function txLearningValidationGate(ctx: StoreContext, lessonId: Id): { all
   const sig = ctx.db.get('SELECT * FROM learning_signals WHERE observation_id = ?', l.observation_id);
   if (!sig) return { allowed: true, reason: 'UNCLASSIFIED' };
   const signal = mapSignal(sig);
-  const a = latestValidatedRow(ctx, signal.workItemId) as { state: string; employee_accountable: number } | undefined;
+  const a = signalAttributionRow(ctx, signal) as { state: string; employee_accountable: number } | undefined;
   // R2-14: the Work Item's latest live evaluation speaks for it.
   const qualified = liveEvaluationRow(ctx, signal.workItemId)?.qualifiedOutcome === true;
   return learningValidationGate({ source: signal.source, kind: signal.kind, attribution: a ? { state: 'VALIDATED', employeeAccountable: a.employee_accountable === 1 } : null, qualifiedEvaluation: qualified });
@@ -693,7 +714,7 @@ function txPlanIntervention(ctx: StoreContext, lessonId: Id, input: { kind: 'TAR
   if (l.stage !== 'VALIDATED') throw new QandeelError('LEARNING_GATE', 'an intervention follows a validated lesson', { lessonId: l.id, reason: 'LESSON_NOT_VALIDATED' });
   const sig = l.observation_id ? ctx.db.get('SELECT * FROM learning_signals WHERE observation_id = ?', l.observation_id) : undefined;
   const signal = sig ? mapSignal(sig) : null;
-  const attr = signal ? latestValidatedRow(ctx, signal.workItemId) : undefined;
+  const attr = signal ? signalAttributionRow(ctx, signal) : undefined;
   const attribution = attr ? mapAttribution(attr) : null;
   const targetCause: DirectCause = (attribution?.causes.find((c) => c.role === 'PRIMARY')?.category ?? 'EMPLOYEE_JUDGMENT') as DirectCause;
   const comparableKey = (input.comparableKey ?? attribution?.comparableKey ?? (signal ? liveEvaluationRow(ctx, signal.workItemId)?.comparableKey : undefined) ?? 'unclassified').slice(0, 96);
@@ -1013,7 +1034,7 @@ export class ImprovementStore {
       // A systemic problem becomes a finding only on independent evidence (the gate throws and the whole
       // classification rolls back); the reflection alone never makes one. Its provenance is the signal.
       if (kind === 'SYSTEMIC_PROBLEM' && signal.kind === 'SYSTEMIC_PROBLEM') {
-        const v = latestValidatedRow(ctx, workItemId);
+        const v = signalAttributionRow(ctx, signal);
         const a = v ? mapAttribution(v) : null;
         const candidate = reportedSystemicCandidate({ signalId: signal.id, observationId: o.id, attribution: a && { attributionId: a.id, workItemId, employeeId: a.employeeId, comparableKey: a.comparableKey, overall: a.overall as CauseCategory, causes: a.causes } });
         // R2-19: after a terminal decision on this problem, only a cause validated after that decision reports a recurrence.

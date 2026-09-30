@@ -1134,6 +1134,38 @@ describe('FB-1: learning is timed by the event that happened, not the date someo
   });
 });
 
+describe('Provenance: a learning signal keeps the attribution generation it was classified on', () => {
+  test('a lesson behind generation 1 (EMPLOYEE_JUDGMENT, Founder-corrected successor) is validated and planned on THAT cause, never a later TOOL generation of the same Work Item', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const mem = MemoryStore.for(h.store);
+      const { workItemId: w, observationId } = reviewedWork(h, s, s.employee, { failFirst: true, reflection: 'I skipped sourcing the figures.' });
+      m.evaluate(w);
+      const proposal = m.attributions({ workItemId: w }).find((a) => a.state === 'PROPOSED');
+      assert.ok(proposal);
+      // The observation is classified while generation 1 is undecided: the signal records the proposal itself.
+      const signal = m.classifyObservation(observationId as Id, 'MISTAKE_LESSON');
+      assert.equal(signal.attributionId, proposal.id);
+      // The Founder validates CORRECTED causes: the proposal is superseded by the Founder's validated successor.
+      const gen1 = m.decideAttribution(s.founder, proposal.id, { decision: 'VALIDATE', reasonCode: 'founder.corrected', causes: [{ category: 'EMPLOYEE_JUDGMENT', role: 'PRIMARY', confidence: 'HIGH', basis: 'SKIPPED_SOURCING' }] }).attribution;
+      assert.notEqual(gen1.id, proposal.id);
+      // A later, unrelated adverse event on the same Work Item gets its own generation, validated as a TOOL cause.
+      verify(s, m, w, 'NOT_ACHIEVED');
+      m.evaluate(w);
+      const next = m.attributions({ workItemId: w }).find((a) => a.state === 'PROPOSED');
+      assert.ok(next && next.id !== gen1.id);
+      const gen2 = m.decideAttribution(s.founder, next.id, { decision: 'VALIDATE', reasonCode: 'founder.cause', causes: [{ category: 'TOOL', role: 'PRIMARY', confidence: 'HIGH', basis: 'TOOL_RETURNED_STALE_DATA' }] }).attribution;
+      assert.deepEqual(m.attributions({ workItemId: w, state: 'VALIDATED' }).map((a) => a.id).sort(), [gen1.id, gen2.id].sort());
+      // The original lesson is validated and planned on ITS generation: EMPLOYEE_JUDGMENT (accountable), not TOOL.
+      const lesson = mem.nominateLesson(s.founder, observationId as Id, 'founder.nominated');
+      mem.validateLesson(s.founder, lesson.id, { decision: 'VALIDATE', reasonCode: 'founder.validated' });
+      const plan = m.planIntervention(s.founder, lesson.id, { kind: 'TARGETED_RETRAINING' });
+      assert.equal(plan.intervention?.targetCause, 'EMPLOYEE_JUDGMENT', 'the lesson trains the cause it was learned from');
+    });
+  });
+});
+
 /** A pool judge decides an attribution from its own judgment Work Item (the only path an Employee judges through). */
 function poolJudge(h: Harness, m: ImprovementStore, subjectId: Id, outcome: 'PASS' | 'FAIL'): string {
   const j = m.judgments({ subjectId, state: 'ASSIGNED' })[0];

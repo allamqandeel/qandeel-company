@@ -2859,3 +2859,7 @@ unchanged. PG-08 Department-scoped grants are not implemented; no migration.
   by the generation whose refs hold it. Work-Item-level readers collapse generations to one unit: the undecided one
   first, else the VALIDATED ones (accountable when any is; the union of their causes), else the latest REJECTED; single
   VALIDATED lookups read the latest; a systemic candidate counts distinct Work Items.
+- **Learning provenance.** A learning signal keeps the generation it was classified on: the lesson validation gate,
+  intervention planning and a reported systemic problem read the signal's own `attribution_id` (when a decision
+  SUPERSEDED it — Founder corrected causes or a re-proposal — its earliest VALIDATED successor whose evidence holds all
+  of its references); only a signal recorded without an attribution falls back to its Work Item's latest VALIDATED one.
