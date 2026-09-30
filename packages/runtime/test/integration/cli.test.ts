@@ -51,6 +51,14 @@ describe('engineering CLI (signed Node, no shell, explicit workspace)', () => {
       const check = cli('restore-check', '--workspace', root, '--backup', String(backup.json.backupId), '--target', restore);
       assert.equal(check.status, 0, check.stderr);
       assert.equal(check.json.quickCheck, 'ok');
+      // RR4-1: the target is a verification copy — it says so, and it can never be started or un-held.
+      assert.deepEqual([check.json.restoreKind, check.json.startable, check.json.hold], ['VERIFICATION_COPY', false, 'RESTORE_CHECK_COPY']);
+      const startCopy = cli('start', '--workspace', restore, '--concurrency', '1');
+      assert.equal(startCopy.status, 1, 'the runtime refuses to start a verification copy');
+      assert.equal(JSON.parse(startCopy.stderr.trim().split('\n').at(-1) ?? '{}').code, 'UPDATE_HOLD');
+      const clearCopy = cli('clear-update-hold', '--workspace', restore, '--reason', 'operator.reviewed');
+      assert.equal(JSON.parse(clearCopy.stderr.trim().split('\n').at(-1) ?? '{}').code, 'MAINTENANCE_REFUSED', 'its hold cannot be cleared');
+      assert.equal(cli('health', '--workspace', restore).status, 0, 'read-only inspection still works');
       assert.equal(cli('verify-artifacts', '--workspace', root).status, 0);
 
       // C3 read-only inspection: counts / IDs / codes only.

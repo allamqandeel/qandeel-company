@@ -34,7 +34,7 @@ import {
   type SupervisorLease,
 } from './runtime-state.js';
 import { SqliteConnection } from './sqlite/connection.js';
-import { assertNoUpdateHold } from './update-hold.js';
+import { assertNoUpdateHold, isRestoreCheckCopy } from './update-hold.js';
 import { openWorkspace, type WorkspaceLayout } from './workspace.js';
 import {
   dependencies,
@@ -88,6 +88,11 @@ interface InternalOpenOptions extends OpenStoreOptions {
    * check) and by storage tests that exercise the migration files themselves.
    */
   readonly liveSchemaUpdate?: boolean;
+  /**
+   * The isolated restore check's own open of the verification copy it just made (RR4-1): passes ONLY the copy's
+   * permanent RESTORE_CHECK_COPY hold, never any other hold. Never set by the public `open`.
+   */
+  readonly verificationCopy?: boolean;
 }
 
 const OPEN_INTERNAL: unique symbol = Symbol('CompanyStore.openInternal');
@@ -142,7 +147,8 @@ export class CompanyStore {
     const workspace = openWorkspace(workspaceRoot, { create: options.create ?? true });
     // D15-D.5: a workspace held after a failed update is never opened to migrate or run (so never re-migrated in a loop);
     // read-only inspection (migrationMode: 'verify', which never migrates) still sees it.
-    if (options.migrationMode !== 'verify') assertNoUpdateHold(workspace.root);
+    // RR4-1: a restore-check verification copy is refused the same way (permanently); only the check itself opens it.
+    if (options.migrationMode !== 'verify' && !(options.verificationCopy === true && isRestoreCheckCopy(workspace.root))) assertNoUpdateHold(workspace.root);
     const clock = options.clock ?? systemClock;
     const db = SqliteConnection.open({ path: workspace.databasePath, busyTimeoutMs: options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS });
     try {
@@ -544,10 +550,11 @@ export function openStoreForTests(workspaceRoot: string, options: InternalOpenOp
  * restore never migrates an old snapshot forward through plain open) or, for a disposable isolated restore drill,
  * migrated as its compatibility check. Only released, pinned migrations; never caller SQL.
  */
-export function openRestoredStore(workspaceRoot: string, options: { clock?: Clock; atVersion?: number; liveSchemaUpdate?: boolean }): CompanyStore {
+export function openRestoredStore(workspaceRoot: string, options: { clock?: Clock; atVersion?: number; liveSchemaUpdate?: boolean; verificationCopy?: boolean }): CompanyStore {
   return CompanyStore[OPEN_INTERNAL](workspaceRoot, {
     ...(options.clock ? { clock: options.clock } : {}),
     ...(options.atVersion !== undefined ? { migrations: loadReleasedMigrations(options.atVersion) } : {}),
     ...(options.liveSchemaUpdate === true ? { liveSchemaUpdate: true } : {}),
+    ...(options.verificationCopy === true ? { verificationCopy: true } : {}),
   });
 }

@@ -29,6 +29,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const KERNEL = { cwd: 'packages/mind', tests: ['dist/test/c6-kernel.test.js'] };
 const STORE = { cwd: 'packages/storage', tests: ['dist/test/c6-improvement.test.js'] };
 const RES = { cwd: 'packages/storage', tests: ['dist/test/c6-resilience.test.js'] };
+const BACKUP = { cwd: 'packages/storage', tests: ['dist/test/backup.test.js'] };
 const SIGNAL = { cwd: 'packages/runtime', tests: ['dist/test/c6/c6-runtime.test.js'] };
 // C6-R1: operational judgment through the Review Pool (verification authority is never execution authority).
 const JUDGE_KERNEL = { cwd: 'packages/governance', tests: ['dist/test/c6r1-judgment.test.js'] };
@@ -439,6 +440,25 @@ const MUTATIONS = [
     gate: 'm-11: a judge Work Item that ends without its decision releases the judgment in the same transaction',
     edits: [{ file: `${STORAGE}/review-core.js`, search: '    releaseAbandonedJudgment(ctx, workItemId);\n}', replace: '}', expectedCount: 1 }],
     runs: [FREE],
+  },
+  // --- R2 second-wave remediation, cluster Q4 (RR4-1): a restore-check target is never a Company ---
+  {
+    id: 'c6q4-restore-check-copy-unmarked',
+    gate: 'RR4-1: an isolated restore-check target is held (RESTORE_CHECK_COPY) before its database exists, so no ordinary open starts it',
+    edits: [{ file: `${STORAGE}/backup.js`, search: 'markRestoreCheckCopy(layout.root, {', replace: 'void (layout.root, {', expectedCount: 1 }],
+    runs: [BACKUP],
+  },
+  {
+    id: 'c6q4-restore-check-hold-clearable',
+    gate: "RR4-1: clear-update-hold never clears a verification copy's permanent hold",
+    edits: [{ file: `${STORAGE}/update-hold.js`, search: 'if (isRestoreCheckCopy(root))', replace: 'if (false)', expectedCount: 1 }],
+    runs: [BACKUP],
+  },
+  {
+    id: 'c6q4-restore-check-copy-opens',
+    gate: 'RR4-1: only the isolated check itself passes the verification-copy hold; every ordinary open refuses it',
+    edits: [{ file: `${STORAGE}/store.js`, search: 'options.verificationCopy === true && isRestoreCheckCopy(workspace.root)', replace: 'isRestoreCheckCopy(workspace.root)', expectedCount: 1 }],
+    runs: [BACKUP],
   },
 ];
 

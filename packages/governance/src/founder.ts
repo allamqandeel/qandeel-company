@@ -171,31 +171,17 @@ function amountOf(text: string): { currency: string; value: number } | null {
 
 interface Pattern {
   readonly re: RegExp;
-  readonly intent: ReadIntent | MutatingIntent;
-  readonly kind: 'READ' | 'MUTATING';
-  readonly decision?: 'APPROVE' | 'REJECT';
+  readonly intent: ReadIntent;
+  readonly kind: 'READ';
 }
 
-// Order matters: the first match wins; mutating verbs are tested before generic "show" reads. A word ends
-// at whitespace or the end of input (`\b` is ASCII-only and never sits between an Arabic letter and a space);
-// a decision verb also starts a word (S), so a verb inside another word ("deactivate") is not that verb.
-// A named act (a goal, a staffing request, a conflict) is matched before the generic approve / reject, so a
-// word in its argument (a goal titled "Deny …") never turns it into another act (R2-24).
+// READ patterns. Order matters: the first match wins. A word ends at whitespace or the end of input (`\b` is
+// ASCII-only and never sits between an Arabic letter and a space). Mutating intents are NOT matched here: they
+// come only from the command's own leading verb (`mutatingOf`, RR1-1), so a verb inside an argument never
+// selects an act.
 const W = String.raw`(?=\s|$)`;
-const S = String.raw`(?:^|\s)`;
-const APPROVE_VERBS = 'وافق|اعتمد|اقبل|approve|accept|grant';
-const REJECT_VERBS = 'ارفض|refuse|reject|deny';
 const PATTERNS: readonly Pattern[] = [
   { re: /^(?:رجوع|ارجع|عوده|عد)(?:\s+(?:الي|ل))?\s*(?:الحي|المباشر|live)?$|^(?:return|back|go back)(?:\s+to)?\s*live$|^live$/, intent: 'RETURN_TO_LIVE', kind: 'READ' },
-  { re: new RegExp(String.raw`(?:وافق|اعتمد|approve|accept|شغل|نفذ|run|launch|start|حدد|set)${W}.*(?:ميزانيه|budget|سقف|ceiling)`), intent: 'BUDGET_CEILING', kind: 'MUTATING' },
-  { re: new RegExp(String.raw`${S}(?:حل|resolve|${APPROVE_VERBS}|${REJECT_VERBS}|pass|rework)${W}.*(?:تعارض|خلاف|conflict)`), intent: 'CONFLICT_RESOLVE', kind: 'MUTATING' },
-  { re: new RegExp(String.raw`${S}(?:${APPROVE_VERBS}|${REJECT_VERBS})${W}.*(?:توظيف|staffing|hiring|hire)|(?:توظيف|staffing|hire)${W}`), intent: 'STAFFING_DECIDE', kind: 'MUTATING' },
-  { re: new RegExp(String.raw`${S}(?:${APPROVE_VERBS})${W}.*(?:هدف|goal)`), intent: 'GOAL_APPROVE', kind: 'MUTATING' },
-  { re: new RegExp(String.raw`${S}(?:${REJECT_VERBS})${W}`), intent: 'APPROVAL_DECIDE', kind: 'MUTATING', decision: 'REJECT' },
-  { re: new RegExp(String.raw`${S}(?:${APPROVE_VERBS})${W}`), intent: 'APPROVAL_DECIDE', kind: 'MUTATING', decision: 'APPROVE' },
-  { re: new RegExp(String.raw`(?:اقترح|انشئ|انشيء|add|create|propose)${W}.*(?:هدف|goal)`), intent: 'GOAL_PROPOSE', kind: 'MUTATING' },
-  { re: new RegExp(String.raw`${S}(?:اوقف|فعل|activate|pause|resume|achieve|cancel|الغ|الغي)${W}.*(?:هدف|goal)`), intent: 'GOAL_STATE', kind: 'MUTATING' },
-  { re: new RegExp(String.raw`(?:فوض|delegate|assign)${W}`), intent: 'DELEGATE_WORK', kind: 'MUTATING' },
   { re: new RegExp(String.raw`(?:مين|من)\s+(?:بيشتغل|يشتغل|يعمل|شغال)\s+(?:علي|في)${W}|who(?:'s| is)?\s+working\s+on${W}`), intent: 'WHO_WORKS_ON', kind: 'READ' },
   { re: /(?:ايه|ما|ماذا)\s*(?:اللي|الذي)?\s*(?:ال)?(?:متوقف|معطل|محجوز|blocked)|what(?:'s| is)?\s+blocked/, intent: 'WHAT_IS_BLOCKED', kind: 'READ' },
   { re: /(?:محتاج|يحتاج|بحاجه|في انتظار|ينتظر)\s*(?:ل)?(?:موافقتي|قراري|مني)|needs?\s+my\s+(?:approval|decision)|pending\s+approvals?/, intent: 'NEEDS_MY_APPROVAL', kind: 'READ' },
@@ -210,39 +196,167 @@ const PATTERNS: readonly Pattern[] = [
   { re: /(?:افتح|اعرض|اظهر|open|show)\s+(.+)/, intent: 'OPEN_EMPLOYEE', kind: 'READ' },
 ];
 
-const ARGUMENT_STRIP = /^(?:افتح|اعرض|اظهر|عرض|show|open|approve|accept|grant|reject|refuse|deny|وافق|اعتمد|اقبل|ارفض|delegate|فوض|فوّض|activate|pause|resume|achieve|cancel|فعل|اوقف|أوقف|الغ|الغي|propose|create|add|اقترح|انشئ|أنشئ|resolve|حل)\s+/;
+const ARGUMENT_STRIP = /^(?:افتح|اعرض|اظهر|عرض|show|open)\s+/;
 
-/** The target state a goal-state verb names (R2-23). Every verb of the GOAL_STATE pattern maps; anything else is null. */
-const GOAL_STATE_VERB = new RegExp(String.raw`${S}(اوقف|فعل|activate|pause|resume|achieve|cancel|الغ|الغي)${W}`);
-function goalStateOf(normalized: string): GoalState | null {
-  const verb = GOAL_STATE_VERB.exec(normalized)?.[1];
-  if (verb === 'pause' || verb === 'اوقف') return 'PAUSED';
-  if (verb === 'cancel' || verb === 'الغ' || verb === 'الغي') return 'CANCELLED';
-  if (verb === 'achieve') return 'ACHIEVED';
-  if (verb === 'activate' || verb === 'resume' || verb === 'فعل') return 'ACTIVE';
+// --- The command's own verb (RR1-1) --------------------------------------------------------------------
+// A mutating intent comes ONLY from the command's leading verb (after polite words and an addressee): the
+// verb selects the intent family and the decision; the object's head noun right after the verb, or the
+// trailing noun of "the <title> goal", selects the act within that family. Words inside the argument (a goal
+// title, a work objective, a position title) never select or change the intent or the decision, and a
+// command with no leading verb is never an act guessed from a verb further in. The grammar stays closed and
+// deterministic (D-C5-07).
+
+type VerbFamily = 'APPROVE' | 'REJECT' | 'RESOLVE' | 'GOAL_STATE' | 'PROPOSE' | 'RUN' | 'DELEGATE' | 'STAFFING';
+const LEAD_VERBS: ReadonlyMap<string, VerbFamily> = new Map<string, VerbFamily>([
+  ...['وافق', 'اعتمد', 'اقبل', 'approve', 'accept', 'grant'].map((v) => [v, 'APPROVE'] as const),
+  ...['ارفض', 'refuse', 'reject', 'deny'].map((v) => [v, 'REJECT'] as const),
+  ...['حل', 'resolve'].map((v) => [v, 'RESOLVE'] as const),
+  ...['اوقف', 'فعل', 'activate', 'pause', 'resume', 'achieve', 'cancel', 'الغ', 'الغي'].map((v) => [v, 'GOAL_STATE'] as const),
+  ...['اقترح', 'انشئ', 'انشيء', 'add', 'create', 'propose'].map((v) => [v, 'PROPOSE'] as const),
+  ...['شغل', 'نفذ', 'run', 'launch', 'start', 'حدد', 'set'].map((v) => [v, 'RUN'] as const),
+  ...['فوض', 'delegate', 'assign'].map((v) => [v, 'DELEGATE'] as const),
+  ...['توظيف', 'staffing', 'hire'].map((v) => [v, 'STAFFING'] as const),
+]);
+
+/** The target state each goal-state verb names (R2-23): read from the leading verb only, never from the argument. */
+const GOAL_STATE_OF_VERB: ReadonlyMap<string, GoalState> = new Map<string, GoalState>([
+  ['pause', 'PAUSED'], ['اوقف', 'PAUSED'],
+  ['cancel', 'CANCELLED'], ['الغ', 'CANCELLED'], ['الغي', 'CANCELLED'],
+  ['achieve', 'ACHIEVED'],
+  ['activate', 'ACTIVE'], ['resume', 'ACTIVE'], ['فعل', 'ACTIVE'],
+]);
+
+/** Words that may precede (or follow) the command's own verb and carry no meaning. */
+const POLITE_LEAD = /^(?:please|pls|kindly|ok|okay|now|so|then|can you|could you|would you|من فضلك|لو سمحت|رجاء|رجاءا|ياريت|يا ريت|ممكن|طيب|الان|دلوقتي)\s+/;
+const POLITE_TAIL = /\s+(?:please|pls|now|thanks|thank you|من فضلك|لو سمحت|الان|دلوقتي|شكرا)$/;
+/** An addressee before the verb: one word followed by a comma ("Ehab, run …"), or the Arabic vocative "يا <name>". */
+const VOCATIVE_COMMA = /^\s*([^\s,،]+)\s*[,،]\s*/;
+const VOCATIVE_YA = /^يا\s+(\S+)\s+/;
+/** Connective words between the verb and its object. */
+const OBJECT_FILLER = /^(?:علي|في|the|a|an|to|for|on|ال|ل)$/;
+
+type ObjectNoun = 'GOAL' | 'BUDGET' | 'STAFFING' | 'CONFLICT';
+function nounOf(word: string | undefined): ObjectNoun | null {
+  if (word === undefined) return null;
+  if (/^(?:ال)?هدف$|^goal$/.test(word)) return 'GOAL';
+  if (/^(?:ب|لل|ل)?(?:ال)?(?:ميزانيه|سقف)$|^(?:budget|ceiling)$/.test(word)) return 'BUDGET';
+  if (/^(?:ال)?توظيف$|^(?:staffing|hiring)$/.test(word)) return 'STAFFING';
+  if (/^(?:ال)?(?:تعارض|خلاف)$|^conflict$/.test(word)) return 'CONFLICT';
+  return null;
+}
+const REQUEST_WORD = /^(?:طلب|request|requests)$/;
+/** The noun right after the verb ("goal <title>", "staffing request <title>", "طلب توظيف …", "conflict …"). */
+function headNoun(obj: readonly string[]): ObjectNoun | null {
+  const n = nounOf(obj[0]);
+  if (n !== null) return n;
+  return REQUEST_WORD.test(obj[0] ?? '') && nounOf(obj[1]) === 'STAFFING' ? 'STAFFING' : null;
+}
+/** A closing budget clause: a budget word followed only by an amount and its connectives ("… with a budget of EGP 50,000", "… بميزانيه ٥٠ الف جنيه"). */
+const BUDGET_TAIL_WORD = /^(?:of|a|an|the|max|maximum|up|to|at|is|be|من|قدرها|قدره|حد|اقصي|الاقصي|egp|usd|sar|dollars?|جنيه|ريال|دولار|k|الف|\$?[0-9٠-٩۰-۹][0-9٠-٩۰-۹._]*(?:k|الف)?)$/;
+function budgetClause(obj: readonly string[]): boolean {
+  let i = obj.length - 1;
+  while (i >= 0 && nounOf(obj[i]) !== 'BUDGET') i -= 1;
+  if (i < 0) return false;
+  const after = obj.slice(i + 1);
+  return after.length > 0 && after.length <= 8 && after.every((w) => BUDGET_TAIL_WORD.test(w)) && after.some((w) => /[0-9٠-٩۰-۹]/.test(w));
+}
+/** The noun closing the object ("the <title> goal", "… staffing request", a budget clause). */
+function tailNoun(obj: readonly string[]): ObjectNoun | null {
+  if (budgetClause(obj)) return 'BUDGET';
+  const last = obj[obj.length - 1];
+  const n = nounOf(last);
+  if (n !== null) return n;
+  return REQUEST_WORD.test(last ?? '') && nounOf(obj[obj.length - 2]) === 'STAFFING' ? 'STAFFING' : null;
+}
+/** A decision stated as the command's closing modifier ("… with rework", "… as pass"); never read from inside the argument. */
+function closingDecision(obj: readonly string[]): 'APPROVE' | 'REJECT' | null {
+  const last = obj[obj.length - 1] ?? '';
+  if (/^(?:ارفض|refuse|reject|deny|rework)$/.test(last)) return 'REJECT';
+  if (/^(?:وافق|اعتمد|اقبل|approve|accept|grant|pass)$/.test(last)) return 'APPROVE';
   return null;
 }
 
-/**
- * The decision a staffing / conflict command states in words (R2-24): a reject / rework word, or an approve /
- * pass / hire word — never both, never assumed. Null when the words state no decision.
- */
-const REJECT_WORD = new RegExp(String.raw`${S}(?:${REJECT_VERBS}|rework)${W}`);
-const APPROVE_WORD = new RegExp(String.raw`${S}(?:${APPROVE_VERBS}|pass|hire)${W}`);
-function statedDecision(normalized: string): 'APPROVE' | 'REJECT' | null {
-  const reject = REJECT_WORD.test(normalized);
-  const approve = APPROVE_WORD.test(normalized);
-  return reject === approve ? null : reject ? 'REJECT' : 'APPROVE';
+interface MutatingClass {
+  readonly intent: MutatingIntent;
+  readonly decision: 'APPROVE' | 'REJECT' | null;
 }
+/** The act a leading verb names, given the object's own head / closing noun; null when the verb names no act here. */
+function actOf(family: VerbFamily, verb: string, obj: readonly string[]): MutatingClass | null {
+  const head = headNoun(obj);
+  const tail = obj.length > 1 ? tailNoun(obj) : null;
+  // "goal <title>" and "the <title> goal" both name a goal: the title between them is only an argument.
+  const noun: ObjectNoun | null = head === 'GOAL' || tail === 'GOAL' ? 'GOAL' : (head ?? tail);
+  switch (family) {
+    case 'APPROVE':
+      if (noun === 'GOAL') return { intent: 'GOAL_APPROVE', decision: null };
+      if (noun === 'BUDGET') return { intent: 'BUDGET_CEILING', decision: null };
+      if (noun === 'STAFFING') return { intent: 'STAFFING_DECIDE', decision: 'APPROVE' };
+      if (noun === 'CONFLICT') return { intent: 'CONFLICT_RESOLVE', decision: 'APPROVE' };
+      return { intent: 'APPROVAL_DECIDE', decision: 'APPROVE' };
+    case 'REJECT':
+      if (noun === 'STAFFING') return { intent: 'STAFFING_DECIDE', decision: 'REJECT' };
+      if (noun === 'CONFLICT') return { intent: 'CONFLICT_RESOLVE', decision: 'REJECT' };
+      return { intent: 'APPROVAL_DECIDE', decision: 'REJECT' };
+    case 'RESOLVE':
+      return noun === 'CONFLICT' ? { intent: 'CONFLICT_RESOLVE', decision: closingDecision(obj) } : null;
+    case 'GOAL_STATE':
+      return noun === 'GOAL' ? { intent: 'GOAL_STATE', decision: null } : null;
+    case 'PROPOSE':
+      return noun === 'GOAL' ? { intent: 'GOAL_PROPOSE', decision: null } : null;
+    case 'RUN':
+      return head === 'BUDGET' || tail === 'BUDGET' ? { intent: 'BUDGET_CEILING', decision: null } : null;
+    case 'DELEGATE':
+      return { intent: 'DELEGATE_WORK', decision: null };
+    case 'STAFFING':
+      return { intent: 'STAFFING_DECIDE', decision: verb === 'hire' ? 'APPROVE' : closingDecision(obj) };
+  }
+}
+
+/** A mutating command's argument: the object after the verb, without its connectives and (for a goal) the goal noun. */
+function mutatingArgument(obj: readonly string[], intent: MutatingIntent, addressee: string | null): string | null {
+  let words = [...obj];
+  if (intent === 'GOAL_APPROVE' || intent === 'GOAL_STATE' || intent === 'GOAL_PROPOSE') {
+    if (nounOf(words[0]) === 'GOAL') words = words.slice(1);
+    if (words.length > 0 && nounOf(words[words.length - 1]) === 'GOAL') words = words.slice(0, -1);
+    while (words.length > 0 && OBJECT_FILLER.test(words[0] ?? '')) words = words.slice(1);
+  }
+  if (intent === 'BUDGET_CEILING' && addressee !== null) words = [addressee, ...words];
+  const rest = words.join(' ');
+  return rest.length > 0 && rest.length <= 120 ? rest : null;
+}
+
+/** The command without its polite words and addressee; the addressee (a name) is kept separately. */
+function commandCore(input: string): { readonly text: string; readonly addressee: string | null } {
+  let raw = input.slice(0, COMMAND_MAX).normalize('NFC');
+  let addressee: string | null = null;
+  const comma = VOCATIVE_COMMA.exec(raw);
+  if (comma?.[1] !== undefined && !LEAD_VERBS.has(normalize(comma[1]))) {
+    addressee = normalize(comma[1]);
+    raw = raw.slice(comma[0].length);
+  }
+  let text = normalize(raw);
+  for (let i = 0; i < 4; i += 1) {
+    const before = text;
+    text = text.replace(POLITE_LEAD, '').replace(POLITE_TAIL, '');
+    const ya = VOCATIVE_YA.exec(text);
+    if (ya?.[1] !== undefined && addressee === null && !LEAD_VERBS.has(ya[1])) {
+      addressee = ya[1];
+      text = text.slice(ya[0].length);
+    }
+    if (text === before) break;
+  }
+  return { text: text.trim(), addressee: addressee !== null && addressee.length > 0 ? addressee : null };
+}
+
 const FILLERS = /^(?:علي|على|في|the|a|an|ال|لـ|ل|to|for|on)\s+/;
 
-function argumentOf(normalized: string, intent: ReadIntent | MutatingIntent): string | null {
+function argumentOf(normalized: string, intent: ReadIntent): string | null {
   let rest = normalized.replace(ARGUMENT_STRIP, '').trim();
   if (intent === 'WHO_WORKS_ON') {
     const m = /(?:علي|على|في|on)\s+(.+)$/.exec(rest);
     rest = m?.[1] ?? '';
   }
-  if (intent === 'SHOW_GOAL' || intent === 'GOAL_APPROVE' || intent === 'GOAL_STATE' || intent === 'GOAL_PROPOSE') rest = rest.replace(/^(?:هدف|goal)\s*/, '').replace(/\s*(?:هدف|goal)$/, '');
+  if (intent === 'SHOW_GOAL') rest = rest.replace(FILLERS, '').replace(/^(?:هدف|goal)\s*/, '').replace(/\s*(?:هدف|goal)$/, '');
   if (intent === 'SHOW_DEPARTMENT') rest = rest.replace(/^(?:قسم|اداره|إدارة|department)\s*/, '');
   if (intent === 'SHOW_REPORT') return /weekly|اسبوع/.test(rest) ? 'WEEKLY' : /monthly|شهر/.test(rest) ? 'MONTHLY' : 'DAILY';
   if (intent === 'SHOW_PERFORMANCE') rest = (/(?:performance|اداء)\s+(?:of\s+)?(.+)$/.exec(rest)?.[1] ?? /how\s+is\s+(.+?)\s+(?:doing|performing)/.exec(rest)?.[1] ?? '').trim();
@@ -256,18 +370,25 @@ function argumentOf(normalized: string, intent: ReadIntent | MutatingIntent): st
  */
 export function classifyFounderIntent(input: string): FounderIntent {
   if (typeof input !== 'string') return { kind: 'UNKNOWN' };
-  const text = normalize(input.slice(0, COMMAND_MAX));
+  const { text, addressee } = commandCore(input);
   if (text.length === 0) return { kind: 'UNKNOWN' };
+  const words = text.split(' ');
+  const verb = words[0] ?? '';
+  const family = LEAD_VERBS.get(verb);
+  if (family !== undefined) {
+    // The command's own verb leads: it is an act of that verb's family, or nothing — never a read, never
+    // another family's act picked out of the argument.
+    const obj = words.slice(1);
+    while (obj.length > 0 && OBJECT_FILLER.test(obj[0] ?? '')) obj.shift();
+    const act = actOf(family, verb, obj);
+    if (act === null) return { kind: 'UNKNOWN' };
+    return { kind: 'MUTATING', intent: act.intent, argument: mutatingArgument(obj, act.intent, addressee), amount: amountOf(input), decision: act.decision, goalState: act.intent === 'GOAL_STATE' ? (GOAL_STATE_OF_VERB.get(verb) ?? null) : null };
+  }
   for (const p of PATTERNS) {
     if (!p.re.test(text)) continue;
     const argument = argumentOf(text, p.intent);
-    if (p.kind === 'READ') {
-      if (p.intent === 'OPEN_EMPLOYEE' && argument === null) return { kind: 'UNKNOWN' };
-      return { kind: 'READ', intent: p.intent as ReadIntent, argument: p.intent === 'RETURN_TO_LIVE' || p.intent === 'WHAT_IS_BLOCKED' || p.intent === 'NEEDS_MY_APPROVAL' || p.intent === 'SHOW_BRIEFS' || p.intent === 'SHOW_CEO' || p.intent === 'SHOW_TIMELINE' ? null : argument };
-    }
-    const intent = p.intent as MutatingIntent;
-    const decision = p.decision ?? (intent === 'STAFFING_DECIDE' || intent === 'CONFLICT_RESOLVE' ? statedDecision(text) : null);
-    return { kind: 'MUTATING', intent, argument, amount: amountOf(input), decision, goalState: intent === 'GOAL_STATE' ? goalStateOf(text) : null };
+    if (p.intent === 'OPEN_EMPLOYEE' && argument === null) return { kind: 'UNKNOWN' };
+    return { kind: 'READ', intent: p.intent, argument: p.intent === 'RETURN_TO_LIVE' || p.intent === 'WHAT_IS_BLOCKED' || p.intent === 'NEEDS_MY_APPROVAL' || p.intent === 'SHOW_BRIEFS' || p.intent === 'SHOW_CEO' || p.intent === 'SHOW_TIMELINE' ? null : argument };
   }
   return { kind: 'UNKNOWN' };
 }
