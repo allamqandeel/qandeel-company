@@ -440,6 +440,49 @@ const MUTATIONS = [
     edits: [{ file: `${STORAGE}/review-core.js`, search: '    releaseAbandonedJudgment(ctx, workItemId);\n}', replace: '}', expectedCount: 1 }],
     runs: [FREE],
   },
+  // R2 second wave, RR1-2: freed reviewer capacity is a wake; REQUIRED reviews before pool judgments.
+  {
+    id: 'c6rr1-decided-judgment-frees-nothing',
+    gate: 'RR1-2: a decided judgment frees its judge\'s slot for the waiting reviews in the same transaction',
+    edits: [{ file: `${STORAGE}/org-writes.js`, search: 'reviewerCapacityFreed(ctx, e.id);', replace: 'void 0;', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6rr1-withdrawn-judgment-frees-nothing',
+    gate: 'RR1-2: a withdrawn judgment (the Founder decided its subject) frees its judge\'s slot in the same transaction',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'reviewerCapacityFreed(ctx, ja.judgeEmployeeId, { kind: ja.subjectKind, id: ja.subjectId });', replace: 'void 0;', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6rr1-withdrawal-redraws-its-subject',
+    gate: 'RR1-2: the refill a judgment withdrawal runs never re-draws the very subject being withdrawn',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'reviewerCapacityFreed(ctx, ja.judgeEmployeeId, { kind: ja.subjectKind, id: ja.subjectId });', replace: 'reviewerCapacityFreed(ctx, ja.judgeEmployeeId, null);', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6rr1-decided-key-frees-nothing',
+    gate: 'RR1-2: a decided review key frees its reviewer\'s slot for the next waiting review in the same transaction',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: '        reviewerCapacityFreed(ctx, a.reviewerEmployeeId);\n        return { ...out,', replace: '        return { ...out,', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6rr1-released-key-frees-nothing',
+    gate: 'RR1-2: a released review key (its review work ended undecided) frees its reviewer\'s slot in the same transaction',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: '    reviewerCapacityFreed(ctx, a.reviewerEmployeeId);\n}', replace: '}', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6rr1-judgments-before-reviews',
+    gate: 'RR1-2: every refill fills the waiting REQUIRED reviews before any pool judgment (a blocking gate is never starved)',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return refillWaitingRequests(ctx, domain, limit) + refillJudgments(ctx, Math.min(200, limit), domain, except);', replace: 'return refillJudgments(ctx, Math.min(200, limit), domain, except) + refillWaitingRequests(ctx, domain, limit);', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6rr1-sweep-skips-waiting-actions',
+    gate: 'RR1-2: the restart sweep refills every OPEN request waiting for a reviewer (ACTION too) before drawing judgments',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return n + refillDomain(ctx, null, limit);', replace: 'return n + refillJudgments(ctx, limit);', expectedCount: 1 }],
+    runs: [FREE],
+  },
 ];
 
 // --shard i/n (1-based) runs a disjoint slice; --report <file> records the ids run and caught.

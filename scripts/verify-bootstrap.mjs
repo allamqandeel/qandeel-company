@@ -347,6 +347,7 @@ const MUTATION_PINS = {
       'c6-separate-volume-counts-as-off-device', 'c6-restore-dispatches-past-backup-point', 'c6-existing-company-migrated-at-open', 'c6-start-skips-safe-upgrade', 'c6-maintenance-ignores-open-connection', 'c6-rollback-discards-post-update-work', 'c6-restore-hold-left-to-operator',
       // R2 K1: pool judges — one eligibility predicate, gated lesson draws, release on every end path.
       'c6r2-lesson-judge-drawn-before-evidence', 'c6r2-judge-rubric-hold-not-rechecked', 'c6r2-withdrawn-judge-excluded-forever', 'c6r2-judgment-survives-qualification', 'c6r2-ended-judge-keeps-judgment',
+      'c6rr1-decided-judgment-frees-nothing', 'c6rr1-withdrawn-judgment-frees-nothing', 'c6rr1-withdrawal-redraws-its-subject', 'c6rr1-decided-key-frees-nothing', 'c6rr1-released-key-frees-nothing', 'c6rr1-judgments-before-reviews', 'c6rr1-sweep-skips-waiting-actions',
     ],
   },
   // R1 Independent Core Review: one mutation per fixed finding (docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md).

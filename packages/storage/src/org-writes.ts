@@ -44,7 +44,7 @@ import { mapJudgmentAssignment, mapReviewAssignment, mapWorkDelegation, type Wor
 import { getStaffingRequest, txDecideStaffing, txHireForRequest } from './organization.js';
 import { verifyFence } from './queue.js';
 import type { Fence } from './records.js';
-import { recordDecision, txDeclarePlan } from './review-core.js';
+import { recordDecision, reviewerCapacityFreed, txDeclarePlan } from './review-core.js';
 import { applyTransition, enqueueJob } from './work-core.js';
 import { txCreateWorkItem } from './work-items.js';
 
@@ -497,6 +497,8 @@ export function txReviewDecision(ctx: StoreContext, fence: Fence, input: { outco
   if (rationale !== null && containsSecretMaterial(rationale)) return deny('SECRET_MATERIAL');
   if (!assignment) {
     const j = txApplyJudgment(ctx, mapJudgmentAssignment(judgment ?? {}), { employeeId: e.id, ref: e.ref, runId: fence.runId }, { outcome: input.outcome as ReviewOutcome, reasonCode: input.reasonCode, evidenceRefs: input.evidenceRefs });
+    // RR1-2: a decided (or escalated) judgment frees the judge's slot — a wake in this transaction, REQUIRED reviews first.
+    if (j.outcome === 'RECORDED') reviewerCapacityFreed(ctx, e.id);
     return j.outcome === 'RECORDED' ? { outcome: 'RECORDED', code: j.code, requestState: j.decision } : deny(j.code);
   }
   const r = recordDecision(ctx, assignment, e.ref, { outcome: input.outcome as ReviewOutcome, reasonCode: input.reasonCode, rationale, evidenceRefs: input.evidenceRefs, outcomeJudgment: input.outcomeJudgment ?? null }, fence.runId);
