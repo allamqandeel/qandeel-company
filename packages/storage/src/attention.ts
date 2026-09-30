@@ -98,9 +98,39 @@ export function collectSignals(ctx: StoreContext): Signal[] {
   )) {
     out.push({ dedupKey: `outcome:${v.work_item_id}`, lane: 'NEEDS_ME', level: 'NEEDS_DECISION', sourceKind: 'DECISION_REQUEST', sourceRef: `work_item:${v.work_item_id}`, ownerRef: null, changedAt: v.created_at as Timestamp });
   }
+  // R2-22: uncertain external effects and escalated required reviews wait for the Founder — one item per entity,
+  // each decidable now (R2-21), with the held row's own change time (never "now") so a stable world stays silent.
+  // A reservation owned by an uncertain tool invocation is decided with that invocation; a held governed job
+  // surfaces once its tool decision is made (the job decision never overtakes it, R1-04).
+  const owner = (employeeId: string | null): string | null => (employeeId === null ? null : `employee:${employeeId}`);
+  for (const t of ctx.db.all<{ id: string; employee_id: string | null; updated_at: string }>(`SELECT id, employee_id, updated_at FROM tool_invocations WHERE state = 'RECONCILIATION_REQUIRED' ORDER BY created_at, id`)) {
+    out.push({ dedupKey: `tool:${t.id}`, lane: 'NEEDS_ME', level: 'NEEDS_DECISION', sourceKind: 'DECISION_REQUEST', sourceRef: `tool_invocation:${t.id}`, ownerRef: owner(t.employee_id), changedAt: t.updated_at as Timestamp });
+  }
+  for (const r of ctx.db.all<{ id: string; employee_id: string | null; updated_at: string }>(
+    `SELECT r.id, r.employee_id, r.updated_at FROM budget_reservations r WHERE r.state = 'RECONCILIATION_REQUIRED'
+        AND NOT EXISTS (SELECT 1 FROM tool_invocations t WHERE t.reservation_id = r.id AND t.state = 'RECONCILIATION_REQUIRED')
+      ORDER BY r.created_at, r.id`,
+  )) {
+    out.push({ dedupKey: `reservation:${r.id}`, lane: 'NEEDS_ME', level: 'NEEDS_DECISION', sourceKind: 'DECISION_REQUEST', sourceRef: `budget_reservation:${r.id}`, ownerRef: owner(r.employee_id), changedAt: r.updated_at as Timestamp });
+  }
+  for (const j of ctx.db.all<{ id: string; owner_ref: string; updated_at: string }>(
+    `SELECT j.id, w.owner_ref, j.updated_at FROM queue_jobs j JOIN work_items w ON w.id = j.work_item_id WHERE j.state = 'RECONCILIATION_HOLD'
+        AND EXISTS (SELECT 1 FROM run_attributions a JOIN runs r ON r.id = a.run_id WHERE r.job_id = j.id)
+        AND NOT EXISTS (SELECT 1 FROM tool_invocations t WHERE t.work_item_id = j.work_item_id AND t.state = 'RECONCILIATION_REQUIRED')
+      ORDER BY j.created_at, j.id`,
+  )) {
+    out.push({ dedupKey: `job:${j.id}`, lane: 'NEEDS_ME', level: 'NEEDS_DECISION', sourceKind: 'DECISION_REQUEST', sourceRef: `queue_job:${j.id}`, ownerRef: j.owner_ref, changedAt: j.updated_at as Timestamp });
+  }
+  for (const q of ctx.db.all<{ id: string; owner_ref: string; updated_at: string }>(
+    `SELECT q.id, w.owner_ref, q.updated_at FROM review_requests q JOIN work_items w ON w.id = q.work_item_id WHERE q.state = 'ESCALATED' AND q.kind = 'REQUIRED' ORDER BY q.created_at, q.id`,
+  )) {
+    out.push({ dedupKey: `review_escalation:${q.id}`, lane: 'NEEDS_ME', level: 'NEEDS_DECISION', sourceKind: 'DECISION_REQUEST', sourceRef: `review_request:${q.id}`, ownerRef: q.owner_ref, changedAt: q.updated_at as Timestamp });
+  }
+  // R2-25: one item per exception INSTANCE (a later failed drill is a new exception, not the first one again);
+  // the superseded instance leaves the signals and resolves.
   const resilience = txResilienceStatus(ctx, ts(ctx));
   for (const x of resilience.exceptions.filter((e) => e.material)) {
-    out.push({ dedupKey: `resilience:${x.code}`, lane: 'NEEDS_ME', level: 'NEEDS_ATTENTION', sourceKind: 'DECISION_REQUEST', sourceRef: x.ref, ownerRef: null, changedAt: x.at as Timestamp });
+    out.push({ dedupKey: `resilience:${x.code}:${x.ref}`, lane: 'NEEDS_ME', level: 'NEEDS_ATTENTION', sourceKind: 'DECISION_REQUEST', sourceRef: x.ref, ownerRef: null, changedAt: x.at as Timestamp });
   }
   return out;
 }
@@ -132,9 +162,11 @@ export function txSyncAttention(ctx: StoreContext, actorRef: string): AttentionS
       continue;
     }
     const item = mapAttentionItem(row);
-    if (item.state === 'DISMISSED') continue; // the Founder's dismissal stands until the source resolves
-    if (item.state === 'RESOLVED') {
-      // The source came back (a re-request, a reopened conflict): it is a new signal on the same key.
+    // The Founder's dismissal stands until the source CHANGES (D-C5-06, R2-25): a later change of the source (a new
+    // URGENT message in the thread, a re-signalled request) reopens the item as a new signal.
+    if (item.state === 'DISMISSED' && (item.resolvedAt === null || s.changedAt <= item.resolvedAt)) continue;
+    if (item.state === 'RESOLVED' || item.state === 'DISMISSED') {
+      // The source came back or changed (a re-request, a reopened conflict, a new message): a new signal on the same key.
       ctx.db.run(`UPDATE founder_attention_items SET state = 'OPEN', level = ?, resolved_at = NULL, resolved_reason = NULL, last_signal_at = ?, signal_count = signal_count + 1, cooldown_until = ?, version = version + 1 WHERE id = ?`, s.level, now, later(now, ATTENTION_COOLDOWN_MS), item.id);
       opened++;
       continue;

@@ -9,11 +9,14 @@
  */
 import { QandeelError, assertCode, assertId, boundedJson, boundedText, isTimestamp, newId, type Id, type Timestamp } from '@qandeel-company/domain';
 import { assertGoalTransition, goalTransitionNeedsFounder, isGoalKind, isGoalState, type GoalKind, type GoalState } from '@qandeel-company/governance';
+import { containsSecretMaterial } from '@qandeel-company/mind';
 
 import { getEmployeeRow } from './governance-core.js';
 import { founder, founderAdminWrite } from './governance.js';
 import { mapGoal, mapGoalHistory, mapGoalWorkLink, mustRow, type GoalHistoryRecord, type GoalRecord, type GoalWorkLinkRecord } from './founder-records.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
+import { enforceRoleCertification } from './mind-core.js';
+import { academyRun } from './mind-writes.js';
 import { holdsSeat } from './org-core.js';
 import { storeContext, type CompanyStore } from './store.js';
 
@@ -59,6 +62,10 @@ export function txInsertGoal(ctx: StoreContext, input: ProposeGoalInput, actorRe
   if (from !== null && to !== null && to < from) throw new QandeelError('VALIDATION_FAILED', 'horizonTo precedes horizonFrom', { field: 'horizonTo' });
   const criteria = (input.successCriteria ?? []).map((c, i) => boundedText(c, `successCriteria[${i}]`, 400));
   if (criteria.length > 12) throw new QandeelError('VALIDATION_FAILED', 'too many success criteria', { field: 'successCriteria' });
+  // m-20: goal text (Founder-typed or model-authored through `goal.derive`) is secret-scanned like every sibling text.
+  for (const [field, text] of [['title', input.title], ['summary', input.summary], ...criteria.map((c, i) => [`successCriteria[${i}]`, c] as const)] as const) {
+    if (typeof text === 'string' && containsSecretMaterial(text)) throw new QandeelError('VALIDATION_FAILED', 'goal text carries secret material', { field, reason: 'SECRET_MATERIAL' });
+  }
   const id = newId();
   const at = ts(ctx);
   ctx.db.run(
@@ -107,10 +114,13 @@ export function txLinkGoalWork(ctx: StoreContext, goalId: Id, workItemId: Id, li
 }
 
 /** Fenced Director act (reached through runtime-authority only): derive a Department goal or link own work to a goal. */
-export function txGoalAct(ctx: StoreContext, employeeId: Id, employeeRef: string, departmentId: Id | null, workItemId: Id, action: 'goal.derive' | 'goal.link', args: Record<string, unknown>): { outcome: 'DONE' | 'REFUSED'; code: string; resultRef: string | null } {
+export function txGoalAct(ctx: StoreContext, employeeId: Id, employeeRef: string, departmentId: Id | null, workItemId: Id, runId: Id, action: 'goal.derive' | 'goal.link', args: Record<string, unknown>): { outcome: 'DONE' | 'REFUSED'; code: string; resultRef: string | null } {
   const at = ts(ctx);
-  const e = getEmployeeRow(ctx, employeeId);
+  // m-21: the same eligibility boundary as an organizational act (`txOrgAct`): a lapsed role certification
+  // moves an ACTIVE Employee to RETRAINING here, and a constrained Academy / shadow run acts on nothing.
+  const e = enforceRoleCertification(ctx, getEmployeeRow(ctx, employeeId));
   if (e.state !== 'ACTIVE') return { outcome: 'REFUSED', code: 'EMPLOYEE_NOT_ELIGIBLE', resultRef: null };
+  if (academyRun(ctx, runId)) return { outcome: 'REFUSED', code: 'ACADEMY_CONSTRAINED', resultRef: null };
   try {
     if (action === 'goal.derive') {
       if (departmentId === null || holdsSeat(ctx, employeeId, 'DIRECTOR', departmentId, at, 'goal.derive') === null) return { outcome: 'REFUSED', code: 'SEAT_NOT_HELD', resultRef: null };
@@ -128,7 +138,7 @@ export function txGoalAct(ctx: StoreContext, employeeId: Id, employeeRef: string
     const link = txLinkGoalWork(ctx, goal.id, workItemId, 'SERVES', employeeRef);
     return { outcome: 'DONE', code: 'GOAL_LINKED', resultRef: `goal_work_link:${link.id}` };
   } catch (error) {
-    if (error instanceof QandeelError) return { outcome: 'REFUSED', code: error.code, resultRef: null };
+    if (error instanceof QandeelError) return { outcome: 'REFUSED', code: error.details['reason'] === 'SECRET_MATERIAL' ? 'SECRET_MATERIAL' : error.code, resultRef: null };
     throw error;
   }
 }

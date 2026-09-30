@@ -551,7 +551,9 @@ try {
     const status = runtime.resilience();
     check(status.exceptions.some((x) => x.code === 'OFF_DEVICE_NOT_PROVEN' && x.material), 'the status says the off-device objective is not met');
     runtime.founder.attention.sync(world.founder);
-    check(runtime.founder.attention.list().some((i) => i.dedupKey === 'resilience:OFF_DEVICE_NOT_PROVEN'), 'a material recovery exception reaches Founder Attention');
+    // One attention item per exception instance (R2-25): keyed by the failure class AND the package it names.
+    const notProven = status.exceptions.find((x) => x.code === 'OFF_DEVICE_NOT_PROVEN');
+    check(runtime.founder.attention.list().some((i) => i.dedupKey === `resilience:OFF_DEVICE_NOT_PROVEN:${notProven?.ref}` && i.sourceRef === notProven?.ref), 'a material recovery exception reaches Founder Attention');
     const off = await runtime.portableBackup({ destination: new DirectoryDestination(attested, { attestOffDevice: true }), passphrase: PASSPHRASE });
     check(off.failureDomain === 'ATTESTED_OFF_DEVICE' && runtime.resilience().portableBackup.withinOffDeviceRpo, 'an operator-attested off-device package meets the objective');
     world.package = { name: off.name, dir: attested, artifacts: off.artifacts };

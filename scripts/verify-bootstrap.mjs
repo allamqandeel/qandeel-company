@@ -318,6 +318,8 @@ const MUTATION_PINS = {
     ids: [
       'c5-founder-ref-is-authentication', 'c5-session-expiry-ignored', 'c5-session-scope-stays-armed', 'c5-csrf-gate-removed', 'c5-host-gate-removed', 'c5-text-mutates-without-confirmation', 'c5-preview-fingerprint-unchecked',
       'c5-rank-order-flattened', 'c5-department-column-collapsed', 'c5-goal-work-link-dropped', 'c5-attention-widened-to-routine', 'c5-message-grants-authority', 'c5-message-body-in-audit', 'c5-history-uses-current-truth', 'c5-r4-offered-as-approvable', 'c5-company-goal-without-founder', 'c5-founder-reads-announce-change', 'c5-zero-delta-attention-sync-announces',
+      // R2 remediation (cluster K5): confirm atomicity, the exception loop, attention identity, intent resolution.
+      'c5-confirm-effect-commits-alone', 'c5-exception-decision-overtakes-tool', 'c5-attention-misses-uncertain-effects', 'c5-dismissal-swallows-source-changes', 'c5-resilience-keyed-per-class', 'c5-goal-state-verb-lost', 'c5-unmatched-argument-falls-back',
     ],
   },
   [C6_MUTATION_CHECK]: {

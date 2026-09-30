@@ -324,14 +324,44 @@ export const founderSessionInternals = Object.freeze({
   },
 });
 
+/** The store context of the Founder confirm now in progress (R2-26), or null. Set only by `founderConfirmInternals.join`. */
+let joinedConfirm: StoreContext | null = null;
+
+/**
+ * R2-26: a governed Founder confirmation is ONE `BEGIN IMMEDIATE` — preview check, the effect at its real
+ * boundary, CONFIRMED and the audit commit together or not at all (storage-internal; imported only by
+ * `founder-actions.ts`). While `join` runs inside the confirm's own write transaction, a Founder-authority
+ * write on the same store (`founderAdminWrite`) runs as a savepoint of that transaction instead of opening
+ * its own: the connection refuses nested transactions, and a separately committed effect would outlive an
+ * interrupted confirm (a retry would repeat it). Synchronous by construction: nothing awaits inside it.
+ */
+export const founderConfirmInternals = Object.freeze({
+  join<T>(ctx: StoreContext, fn: () => T): T {
+    if (!ctx.db.inTransaction) throw new QandeelError('STORAGE_INVARIANT', 'a Founder confirm joins its own write transaction');
+    if (joinedConfirm !== null) throw new QandeelError('STORAGE_INVARIANT', 'Founder confirmations do not nest');
+    joinedConfirm = ctx;
+    try {
+      const out = fn() as unknown;
+      if (out !== null && typeof out === 'object' && typeof (out as { then?: unknown }).then === 'function') {
+        throw new QandeelError('ASYNC_IN_TRANSACTION', 'a Founder confirm is synchronous: nothing awaits inside it');
+      }
+      return out as T;
+    } finally {
+      joinedConfirm = null;
+    }
+  },
+});
+
 /**
  * The one Founder-authority write path shared by the C2 and C3 stores (storage-internal; the package
  * index does not export it). An administrative refusal rolls its transaction back; the refusal itself
- * is audited in its own transaction (content-free) so misuse attempts stay visible (D14-E.1).
+ * is audited in its own transaction (content-free) so misuse attempts stay visible (D14-E.1). Inside a
+ * joined Founder confirm (R2-26) the write is a savepoint of the confirm's transaction.
  */
 export function founderAdminWrite<T>(store: CompanyStore, operation: string, actorRef: string, fn: (ctx: StoreContext) => T): T {
   const write = <R>(op: string, f: (ctx: StoreContext) => R): R => {
     const ctx = storeContext(store);
+    if (joinedConfirm === ctx && ctx.db.inTransaction) return ctx.db.savepoint(op, () => f(ctx));
     return ctx.db.immediate(op, () => f(ctx));
   };
   try {

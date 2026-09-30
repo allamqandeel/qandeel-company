@@ -9,24 +9,60 @@
  *
  * Previews grant nothing, never widen an intent, and R4 (Founder-only sovereignty) is never offered as an
  * approvable action: a Founder decides R4 work outside the approval engine, as before.
+ *
+ * R2-21: the Founder's exception decisions (an uncertain tool effect, a held reservation or governed job, an
+ * escalated review, a systemic finding, an escalated attribution / lesson, a pool-inconclusive outcome, a
+ * lesson promotion) are structured-only intents of this same boundary. R2-26: a confirmation is ONE
+ * `BEGIN IMMEDIATE` — the check, the effect, CONFIRMED and the audit commit together or not at all.
  */
 import { QandeelError, assertCode, assertId, boundedJson, canonicalJson, isTimestamp, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { isGoalState, isMutatingIntent, type GoalState, type MutatingIntent } from '@qandeel-company/governance';
+import { assertGoalTransition, isGoalState, isMutatingIntent, type GoalState, type MutatingIntent } from '@qandeel-company/governance';
 
 import { getBudgetRow, budgetFor } from './governance-core.js';
-import { GovernanceStore } from './governance.js';
+import { GovernanceStore, founderConfirmInternals, isGovernedJob, resolveGovernedReconciliation } from './governance.js';
 import { getGoal, GoalStore } from './goals.js';
 import { mapActionPreview, type ActionPreviewRecord } from './founder-records.js';
+import { ImprovementStore } from './improvement.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
+import { MemoryStore } from './memory.js';
 import { OrganizationStore } from './organization.js';
 import { getStaffingRequest } from './organization.js';
+import { assertOutcomeClasses } from './outcome-core.js';
+import { txResolveReconciliation } from './queue.js';
 import { ReviewStore } from './review.js';
 import { storeContext, type CompanyStore } from './store.js';
 import type { FounderAuthStore, FounderSession } from './founder-auth.js';
 
 export const PREVIEW_TTL_MS = 10 * 60_000;
 
-type Payload = Record<string, string | number | boolean | null>;
+type Payload = Record<string, string | number | boolean | null | readonly string[]>;
+
+const OUTCOME_REF = /^[a-z_]{2,32}:[A-Za-z0-9._:-]{1,96}$/;
+
+/** One of `allowed`, or a typed refusal naming the field. */
+function oneOf<T extends string>(raw: Record<string, unknown>, field: string, allowed: readonly T[]): T {
+  const v = raw[field];
+  if (typeof v !== 'string' || !(allowed as readonly string[]).includes(v)) throw new QandeelError('VALIDATION_FAILED', `${field} is ${allowed.join(' or ')}`, { field });
+  return v as T;
+}
+
+/** A bounded token count reported by the provider (an integer, never a guess). */
+function tokens(raw: Record<string, unknown>, field: string): number {
+  const v = raw[field];
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 1_000_000_000) throw new QandeelError('VALIDATION_FAILED', `${field} is a token count`, { field });
+  return v;
+}
+
+/** The row a decision targets, in the state the decision needs (IDs / states only). */
+function heldRow<R extends { state: string }>(ctx: StoreContext, sql: string, id: Id, what: string, states: readonly string[]): R {
+  const r = ctx.db.get<R>(sql, id);
+  if (!r) throw new QandeelError('NOT_FOUND', `${what} not found`, { id });
+  if (!states.includes(r.state)) throw new QandeelError('INVALID_TRANSITION', `this ${what} is not awaiting that decision`, { id, state: r.state });
+  return r;
+}
+
+const uncertainToolOn = (ctx: StoreContext, column: 'reservation_id' | 'work_item_id', id: string): boolean =>
+  ctx.db.get(`SELECT 1 AS x FROM tool_invocations WHERE ${column} = ? AND state = 'RECONCILIATION_REQUIRED' LIMIT 1`, id) !== undefined;
 
 const later = (at: Timestamp, ms: number): Timestamp => new Date(Date.parse(at) + ms).toISOString() as Timestamp;
 
@@ -57,6 +93,8 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
       const g = getGoal(ctx, assertId(raw.goalId, 'goalId'));
       const to = raw.to;
       if (!isGoalState(to)) throw new QandeelError('VALIDATION_FAILED', 'unknown goal state', { field: 'to' });
+      // A preview never offers a step the lifecycle refuses (an ACTIVE goal is not "activated" again, R2-23).
+      assertGoalTransition(g.state, to);
       return { goalId: g.id, to, reasonCode: assertCode(raw.reasonCode ?? 'goal.state', 'reasonCode'), title: g.title.slice(0, 120) };
     }
     case 'GOAL_PROPOSE': {
@@ -103,6 +141,79 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
       if (!ctx.db.get('SELECT 1 AS ok FROM employees WHERE id = ?', employeeId)) throw new QandeelError('NOT_FOUND', 'employee not found', { employeeId });
       return { employeeId, capability, expiresAt, purposeCode: assertCode(raw.purposeCode ?? 'founder.delegation', 'purposeCode'), reasonCode: assertCode(raw.reasonCode ?? 'founder.delegated', 'reasonCode') };
     }
+    // --- R2-21: the Founder's exception decisions (structured only; each guarded by the state it decides) ---
+    case 'TOOL_RECONCILE': {
+      // The Founder checked external reality: the uncertain effect did or did not happen (Stage 12 §27).
+      const invocationId = assertId(raw.invocationId, 'invocationId');
+      const outcome = oneOf(raw, 'outcome', ['CONFIRMED_SUCCEEDED', 'CONFIRMED_NOT_EXECUTED'] as const);
+      const t = heldRow<{ state: string; work_item_id: string }>(ctx, 'SELECT state, work_item_id FROM tool_invocations WHERE id = ?', invocationId, 'tool invocation', ['RECONCILIATION_REQUIRED']);
+      return { invocationId, outcome, reasonCode: assertCode(raw.reasonCode ?? 'founder.reconciled', 'reasonCode'), workItemId: t.work_item_id };
+    }
+    case 'RESERVATION_RECONCILE': {
+      // Charge what the provider reports, or release what was provably not billed (D-C2-07).
+      const reservationId = assertId(raw.reservationId, 'reservationId');
+      const decision = oneOf(raw, 'decision', ['RELEASE', 'CHARGE'] as const);
+      const r = heldRow<{ state: string; work_item_id: string | null }>(ctx, 'SELECT state, work_item_id FROM budget_reservations WHERE id = ?', reservationId, 'reservation', ['RECONCILIATION_REQUIRED']);
+      if (uncertainToolOn(ctx, 'reservation_id', reservationId)) throw new QandeelError('INVALID_TRANSITION', 'this reservation belongs to an uncertain tool invocation; decide the invocation instead', { reservationId });
+      const charge = decision === 'CHARGE';
+      return { reservationId, decision, inputTokens: charge ? tokens(raw, 'inputTokens') : null, outputTokens: charge ? tokens(raw, 'outputTokens') : null, reasonCode: assertCode(raw.reasonCode ?? 'founder.reconciled', 'reasonCode'), workItemId: r.work_item_id };
+    }
+    case 'JOB_RECONCILE': {
+      // Governed work held after an uncertain effect (R1-04): its tool decision comes first.
+      const jobId = assertId(raw.jobId, 'jobId');
+      const decision = oneOf(raw, 'decision', ['RETRY', 'CONFIRMED_COMPLETED', 'FAILED'] as const);
+      const j = heldRow<{ state: string; work_item_id: string }>(ctx, 'SELECT state, work_item_id FROM queue_jobs WHERE id = ?', jobId, 'job', ['RECONCILIATION_HOLD']);
+      if (!isGovernedJob(ctx, jobId)) throw new QandeelError('VALIDATION_FAILED', 'plain C1 work keeps the operator decision; the Founder decides governed work', { jobId, reason: 'NOT_GOVERNED_WORK' });
+      if (uncertainToolOn(ctx, 'work_item_id', j.work_item_id)) throw new QandeelError('INVALID_TRANSITION', 'decide the uncertain tool invocation first', { jobId });
+      return { jobId, decision, reasonCode: assertCode(raw.reasonCode ?? 'founder.reconciled', 'reasonCode'), workItemId: j.work_item_id };
+    }
+    case 'REVIEW_ESCALATION_RESOLVE': {
+      // An escalated required review (explicit reviewer uncertainty): PASS or REWORK. R4 is never made executable by review.
+      const requestId = assertId(raw.requestId, 'requestId');
+      const decision = oneOf(raw, 'decision', ['PASS', 'REWORK'] as const);
+      const r = heldRow<{ state: string; kind: string; risk_level: string; work_item_id: string }>(ctx, 'SELECT state, kind, risk_level, work_item_id FROM review_requests WHERE id = ?', requestId, 'review request', ['ESCALATED']);
+      if (r.kind !== 'REQUIRED') throw new QandeelError('INVALID_TRANSITION', 'only an escalated required review is resolved here', { requestId });
+      if (decision === 'PASS' && r.risk_level === 'R4') throw new QandeelError('FOUNDER_ONLY', 'R4 work is never made executable by review', { requestId, risk: 'R4' });
+      return { requestId, decision, reasonCode: assertCode(raw.reasonCode ?? 'founder.resolved', 'reasonCode'), risk: r.risk_level, workItemId: r.work_item_id };
+    }
+    case 'SYSTEMIC_DECIDE': {
+      const findingId = assertId(raw.findingId, 'findingId');
+      const decision = oneOf(raw, 'decision', ['VALIDATE', 'REJECT', 'ADDRESSED'] as const);
+      heldRow(ctx, 'SELECT state FROM systemic_findings WHERE id = ?', findingId, 'systemic finding', decision === 'ADDRESSED' ? ['VALIDATED'] : ['CANDIDATE']);
+      return { findingId, decision, reasonCode: assertCode(raw.reasonCode ?? 'founder.decided', 'reasonCode') };
+    }
+    case 'ATTRIBUTION_DECIDE': {
+      // The Founder validates or rejects the proposed causes as they stand (a cause correction stays on the API boundary).
+      const attributionId = assertId(raw.attributionId, 'attributionId');
+      const decision = oneOf(raw, 'decision', ['VALIDATE', 'REJECT'] as const);
+      const a = heldRow<{ state: string; work_item_id: string }>(ctx, 'SELECT state, work_item_id FROM causal_attributions WHERE id = ?', attributionId, 'attribution', ['PROPOSED']);
+      return { attributionId, decision, reasonCode: assertCode(raw.reasonCode ?? 'founder.decided', 'reasonCode'), workItemId: a.work_item_id };
+    }
+    case 'LESSON_DECIDE': {
+      const lessonId = assertId(raw.lessonId, 'lessonId');
+      const decision = oneOf(raw, 'decision', ['VALIDATE', 'REJECT'] as const);
+      heldRow(ctx, 'SELECT stage AS state FROM lessons WHERE id = ?', lessonId, 'lesson', ['LESSON_CANDIDATE', 'UNDER_REVIEW']);
+      return { lessonId, decision, reasonCode: assertCode(raw.reasonCode ?? 'founder.decided', 'reasonCode') };
+    }
+    case 'OUTCOME_VERIFY': {
+      // Values the Founder states (evidence classes and records) arrive through the structured API only (PG-04).
+      const workItemId = assertId(raw.workItemId, 'workItemId');
+      const verdict = oneOf(raw, 'verdict', ['ACHIEVED', 'NOT_ACHIEVED', 'INCONCLUSIVE'] as const);
+      heldRow(ctx, 'SELECT state FROM work_items WHERE id = ?', workItemId, 'work item', ['REVIEWED']);
+      const list = (field: string, max: number, shape: RegExp): string[] => {
+        const v = raw[field];
+        if (!Array.isArray(v) || v.length === 0 || v.length > max || !v.every((x) => typeof x === 'string' && shape.test(x))) throw new QandeelError('EVIDENCE_REQUIRED', 'an outcome verification names its evidence', { field });
+        return [...new Set(v as string[])];
+      };
+      const evidenceClasses = assertOutcomeClasses(list('evidenceClasses', 8, /^[A-Z_]{2,48}$/));
+      return { workItemId, verdict, evidenceClasses, evidenceRefs: list('evidenceRefs', 16, OUTCOME_REF), reasonCode: assertCode(raw.reasonCode ?? 'founder.verified', 'reasonCode') };
+    }
+    case 'PROMOTION_DECIDE': {
+      const promotionId = assertId(raw.promotionId, 'promotionId');
+      const decision = oneOf(raw, 'decision', ['APPROVE', 'REJECT'] as const);
+      const pr = heldRow<{ state: string; target: string }>(ctx, 'SELECT state, target FROM lesson_promotions WHERE id = ?', promotionId, 'promotion', ['PENDING_REVIEW']);
+      return { promotionId, decision, target: pr.target, reasonCode: assertCode(raw.reasonCode ?? 'founder.decided', 'reasonCode') };
+    }
     default:
       throw new QandeelError('VALIDATION_FAILED', 'unknown intent', { field: 'intent' });
   }
@@ -112,6 +223,19 @@ function getPreview(ctx: StoreContext, id: Id): ActionPreviewRecord {
   const r = ctx.db.get('SELECT * FROM founder_action_previews WHERE id = ?', id);
   if (!r) throw new QandeelError('NOT_FOUND', 'action preview not found', { previewId: id });
   return mapActionPreview(r);
+}
+
+/** A confirmation presents a live preview of its own session with the exact fingerprint (typed refusal otherwise). */
+function checkPreview(ctx: StoreContext, session: FounderSession, previewId: string, fingerprint: unknown): ActionPreviewRecord {
+  const preview = getPreview(ctx, assertId(previewId, 'previewId'));
+  const refuse = (code: string): never => {
+    // The refusal is audited in its own transaction (this one rolls back with the throw).
+    throw new QandeelError('FOUNDER_CONFIRMATION_REQUIRED', 'the action was not confirmed', { reason: code, previewId: preview.id });
+  };
+  if (preview.sessionId !== session.id) refuse('SESSION_MISMATCH');
+  if (preview.state !== 'PREVIEW') refuse(`ALREADY_${preview.state}`);
+  if (typeof fingerprint !== 'string' || fingerprint !== preview.fingerprint) refuse('FINGERPRINT_MISMATCH');
+  return preview;
 }
 
 export interface ConfirmResult {
@@ -174,7 +298,10 @@ export class FounderActionStore {
 
   /**
    * Confirms exactly one preview: same session, same fingerprint, not expired. The real boundary is called
-   * inside the Founder session scope; the outcome (a record ref or a refusal code) is durable on the preview.
+   * inside the Founder session scope and inside ONE write transaction with the preview check, CONFIRMED and
+   * the audit (R2-26): an interrupted confirm leaves neither the effect nor a decided preview, so a retry can
+   * never repeat an act, and FAILED always means "not executed". A typed refusal records nothing; any other
+   * failure rolls the whole confirm back and records FAILED in its own transaction.
    */
   confirm(session: FounderSession, previewId: string, fingerprint: unknown): ConfirmResult {
     // A stale preview is expired durably first (its own transaction), then refused.
@@ -183,40 +310,43 @@ export class FounderActionStore {
       const now = ts(ctx);
       ctx.db.run(`UPDATE founder_action_previews SET state = 'EXPIRED', decided_at = ?, result_code = 'EXPIRED' WHERE id = ? AND state = 'PREVIEW' AND expires_at <= ?`, now, id, now);
     });
-    const p = this.#write('founder action check', (ctx) => {
-      const preview = getPreview(ctx, assertId(previewId, 'previewId'));
-      const refuse = (code: string): never => {
-        // The refusal is audited in its own transaction below (this one rolls back with the throw).
-        throw new QandeelError('FOUNDER_CONFIRMATION_REQUIRED', 'the action was not confirmed', { reason: code, previewId: preview.id });
-      };
-      if (preview.sessionId !== session.id) refuse('SESSION_MISMATCH');
-      if (preview.state !== 'PREVIEW') refuse(`ALREADY_${preview.state}`);
-      if (typeof fingerprint !== 'string' || fingerprint !== preview.fingerprint) refuse('FINGERPRINT_MISMATCH');
-      return preview;
-    }, (code) => this.#write('audit refused confirmation', (ctx) => appendAudit(ctx, 'founder.action_refused', 'founder_action', String(previewId).slice(0, 36), { actorRef: session.founderRef }, 'REJECTED', code, { sessionId: session.id })));
-    let resultRef: string;
+    const refused = (code: string): void => this.#write('audit refused confirmation', (ctx) => appendAudit(ctx, 'founder.action_refused', 'founder_action', String(previewId).slice(0, 36), { actorRef: session.founderRef }, 'REJECTED', code, { sessionId: session.id }));
+    const p = this.#write('founder action check', (ctx) => checkPreview(ctx, session, previewId, fingerprint), refused);
     try {
-      resultRef = this.#auth.withSession(session, (founderRef) => this.#execute(founderRef, p));
+      return this.#auth.withSession(session, (founderRef) =>
+        this.#write('founder action confirm', (ctx) => {
+          // Re-checked inside the one transaction: a concurrent confirm of the same preview cannot also execute.
+          const live = checkPreview(ctx, session, p.id, fingerprint);
+          const resultRef = founderConfirmInternals.join(ctx, () => this.#execute(ctx, founderRef, live));
+          ctx.db.run(`UPDATE founder_action_previews SET state = 'CONFIRMED', decided_at = ?, result_ref = ?, result_code = 'DONE' WHERE id = ? AND state = 'PREVIEW'`, ts(ctx), resultRef, live.id);
+          appendAudit(ctx, 'founder.action_confirmed', 'founder_action', live.id, { actorRef: session.founderRef }, 'OK', live.intentKind, { resultRef: resultRef.slice(0, 128) });
+          return { preview: getPreview(ctx, live.id), resultRef };
+        }, refused),
+      );
     } catch (error) {
+      // A refused confirmation decided nothing and is already audited: the preview stays as it was.
+      if (error instanceof QandeelError && error.code === 'FOUNDER_CONFIRMATION_REQUIRED') throw error;
       const code = error instanceof QandeelError ? error.code : 'UNCLASSIFIED_ERROR';
-      this.#write('founder action failed', (ctx) => {
-        ctx.db.run(`UPDATE founder_action_previews SET state = 'FAILED', decided_at = ?, result_code = ? WHERE id = ? AND state = 'PREVIEW'`, ts(ctx), code.slice(0, 64), p.id);
-        appendAudit(ctx, 'founder.action_failed', 'founder_action', p.id, { actorRef: session.founderRef }, 'ERROR', code.slice(0, 64), { intent: p.intentKind });
-      });
+      try {
+        this.#write('founder action failed', (ctx) => {
+          ctx.db.run(`UPDATE founder_action_previews SET state = 'FAILED', decided_at = ?, result_code = ? WHERE id = ? AND state = 'PREVIEW'`, ts(ctx), code.slice(0, 64), p.id);
+          appendAudit(ctx, 'founder.action_failed', 'founder_action', p.id, { actorRef: session.founderRef }, 'ERROR', code.slice(0, 64), { intent: p.intentKind });
+        });
+      } catch {
+        // Recording the failure never masks it (the preview then simply expires).
+      }
       throw error;
     }
-    const preview = this.#write('founder action confirmed', (ctx) => {
-      ctx.db.run(`UPDATE founder_action_previews SET state = 'CONFIRMED', decided_at = ?, result_ref = ?, result_code = 'DONE' WHERE id = ? AND state = 'PREVIEW'`, ts(ctx), resultRef, p.id);
-      appendAudit(ctx, 'founder.action_confirmed', 'founder_action', p.id, { actorRef: session.founderRef }, 'OK', p.intentKind, { resultRef: resultRef.slice(0, 128) });
-      return getPreview(ctx, p.id);
-    });
-    return { preview, resultRef };
   }
 
-  /** Executes a confirmed preview at its real boundary (inside the session scope; each call is its own transaction). */
-  #execute(founderRef: string, p: ActionPreviewRecord): string {
+  /**
+   * Executes a confirmed preview at its real boundary, inside the session scope and the confirm's own
+   * transaction (every boundary here is a synchronous Founder-authority write that joins it).
+   */
+  #execute(ctx: StoreContext, founderRef: string, p: ActionPreviewRecord): string {
     const pl = p.payload;
     const str = (k: string): string => String(pl[k]);
+    const strings = (k: string): string[] => (Array.isArray(pl[k]) ? (pl[k] as readonly string[]).map(String) : []);
     switch (p.intentKind) {
       case 'APPROVAL_DECIDE': {
         const a = GovernanceStore.for(this.#store).decideApproval(founderRef, str('approvalId'), { decision: pl.decision as 'APPROVE' | 'REJECT', reasonCode: str('reasonCode') });
@@ -224,7 +354,7 @@ export class FounderActionStore {
       }
       case 'GOAL_APPROVE': {
         const goals = GoalStore.for(this.#store);
-        const g = getGoal(storeContext(this.#store), str('goalId') as Id);
+        const g = getGoal(ctx, str('goalId') as Id);
         let cur = g;
         if (cur.state === 'DRAFT') cur = goals.transition(founderRef, cur.id, { to: 'PROPOSED', reasonCode: str('reasonCode') });
         cur = goals.transition(founderRef, cur.id, { to: 'APPROVED', reasonCode: str('reasonCode') });
@@ -259,6 +389,46 @@ export class FounderActionStore {
       case 'DELEGATE_WORK': {
         const d = OrganizationStore.for(this.#store).delegateAuthority(founderRef, { employeeId: str('employeeId'), capability: str('capability'), expiresAt: str('expiresAt'), purposeCode: str('purposeCode'), reasonCode: str('reasonCode') });
         return `authority_delegation:${d.id}`;
+      }
+      // --- R2-21: each exception decision at its EXISTING boundary (no second implementation) ---
+      case 'TOOL_RECONCILE': {
+        const t = GovernanceStore.for(this.#store).resolveToolInvocation(founderRef, str('invocationId'), pl.outcome as 'CONFIRMED_SUCCEEDED' | 'CONFIRMED_NOT_EXECUTED', str('reasonCode'));
+        return `tool_invocation:${t.id}`;
+      }
+      case 'RESERVATION_RECONCILE': {
+        const decision = pl.decision === 'CHARGE' ? { kind: 'CHARGE' as const, inputTokens: Number(pl.inputTokens), outputTokens: Number(pl.outputTokens) } : { kind: 'RELEASE' as const };
+        const r = GovernanceStore.for(this.#store).reconcileReservation(founderRef, str('reservationId'), decision, str('reasonCode'));
+        return `budget_reservation:${r.id}`;
+      }
+      case 'JOB_RECONCILE': {
+        // The governed path of the C1 decision (R1-04): Founder authority, after the tool decision.
+        const jobId = str('jobId') as Id;
+        resolveGovernedReconciliation(this.#store, jobId, founderRef, (c, trace) => txResolveReconciliation(c, jobId, pl.decision as 'RETRY' | 'CONFIRMED_COMPLETED' | 'FAILED', str('reasonCode'), trace));
+        return `queue_job:${jobId}`;
+      }
+      case 'REVIEW_ESCALATION_RESOLVE': {
+        const r = ReviewStore.for(this.#store).resolveEscalation(founderRef, str('requestId'), pl.decision as 'PASS' | 'REWORK', str('reasonCode'));
+        return `review_request:${r.id}`;
+      }
+      case 'SYSTEMIC_DECIDE': {
+        const f = ImprovementStore.for(this.#store).decideSystemicFinding(founderRef, str('findingId'), { decision: pl.decision as 'VALIDATE' | 'REJECT' | 'ADDRESSED', reasonCode: str('reasonCode') });
+        return `systemic_finding:${f.id}`;
+      }
+      case 'ATTRIBUTION_DECIDE': {
+        const out = ImprovementStore.for(this.#store).decideAttribution(founderRef, str('attributionId'), { decision: pl.decision as 'VALIDATE' | 'REJECT', reasonCode: str('reasonCode') });
+        return `causal_attribution:${out.attribution.id}`;
+      }
+      case 'LESSON_DECIDE': {
+        const l = MemoryStore.for(this.#store).validateLesson(founderRef, str('lessonId'), { decision: pl.decision as 'VALIDATE' | 'REJECT', reasonCode: str('reasonCode') });
+        return `lesson:${l.id}`;
+      }
+      case 'OUTCOME_VERIFY': {
+        const v = ImprovementStore.for(this.#store).verifyOutcome(founderRef, str('workItemId'), { verdict: pl.verdict as 'ACHIEVED' | 'NOT_ACHIEVED' | 'INCONCLUSIVE', evidenceClasses: strings('evidenceClasses'), evidenceRefs: strings('evidenceRefs'), reasonCode: str('reasonCode') });
+        return `outcome_verification:${v.verificationId}`;
+      }
+      case 'PROMOTION_DECIDE': {
+        const pr = MemoryStore.for(this.#store).decidePromotion(founderRef, str('promotionId'), { decision: pl.decision as 'APPROVE' | 'REJECT', reasonCode: str('reasonCode') });
+        return `lesson_promotion:${pr.id}`;
       }
     }
   }

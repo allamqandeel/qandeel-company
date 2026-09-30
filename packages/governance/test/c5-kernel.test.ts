@@ -55,6 +55,39 @@ describe('C5 kernel — Founder command intents', () => {
     for (const r of [budget, approve, reject, goal]) assert.ok(r.kind === 'READ' || r.kind === 'MUTATING' || r.kind === 'UNKNOWN');
   });
 
+  test('R2-23: a goal-state command carries the target state of its own verb; the verb is never lost to argument stripping', () => {
+    const stateOf = (text: string): [string | null, string | null, string | null] => {
+      const r = classifyFounderIntent(text);
+      return r.kind === 'MUTATING' ? [r.intent, (r as { goalState?: string | null }).goalState ?? null, r.argument] : [intentOf(r), null, null];
+    };
+    assert.deepEqual(stateOf('pause the growth engine goal'), ['GOAL_STATE', 'PAUSED', 'growth engine']);
+    assert.deepEqual(stateOf('cancel the growth engine goal'), ['GOAL_STATE', 'CANCELLED', 'growth engine']);
+    assert.deepEqual(stateOf('achieve goal growth engine'), ['GOAL_STATE', 'ACHIEVED', 'growth engine']);
+    assert.deepEqual(stateOf('resume goal growth engine'), ['GOAL_STATE', 'ACTIVE', 'growth engine']);
+    assert.deepEqual(stateOf('activate goal growth engine'), ['GOAL_STATE', 'ACTIVE', 'growth engine']);
+    assert.deepEqual(stateOf('أوقف هدف growth engine'), ['GOAL_STATE', 'PAUSED', 'growth engine']);
+    assert.deepEqual(stateOf('الغ هدف growth engine'), ['GOAL_STATE', 'CANCELLED', 'growth engine']);
+    assert.deepEqual(stateOf('فعل هدف growth engine'), ['GOAL_STATE', 'ACTIVE', 'growth engine']);
+    assert.notDeepEqual(stateOf('deactivate goal growth engine').slice(0, 2), ['GOAL_STATE', 'ACTIVE'], 'a verb inside another word is not that verb');
+    const other = classifyFounderIntent('approve the campaign request');
+    assert.ok(other.kind === 'MUTATING' && (other as { goalState?: string | null }).goalState === null, 'only a goal-state command carries a goal state');
+  });
+
+  test('R2-24: a named act routes to its own intent with an explicit decision; a noun in the argument never flips it into another act', () => {
+    const r = (text: string): [string | null, string | null, string | null] => {
+      const x = classifyFounderIntent(text);
+      return x.kind === 'MUTATING' ? [x.intent, x.decision, x.argument] : [intentOf(x), null, null];
+    };
+    assert.deepEqual(r('approve goal Deny competitor entry'), ['GOAL_APPROVE', null, 'deny competitor entry'], 'a goal title is an argument, never a verb');
+    assert.deepEqual(r('reject the staffing request analyst'), ['STAFFING_DECIDE', 'REJECT', 'staffing request analyst']);
+    assert.deepEqual(r('approve staffing request analyst'), ['STAFFING_DECIDE', 'APPROVE', 'staffing request analyst']);
+    assert.equal(r('staffing analyst')[1], null, 'no decision stated: none is assumed');
+    assert.deepEqual(r('resolve the conflict with rework').slice(0, 2), ['CONFLICT_RESOLVE', 'REJECT']);
+    assert.deepEqual(r('resolve the conflict as pass').slice(0, 2), ['CONFLICT_RESOLVE', 'APPROVE']);
+    assert.equal(r('resolve the conflict')[1], null, 'no silent default decision');
+    assert.deepEqual(r('ارفض الطلب').slice(0, 2), ['APPROVAL_DECIDE', 'REJECT']);
+  });
+
   test('C5-PROOF: unknown / empty / oversized input is UNKNOWN, never a guessed act', () => {
     assert.deepEqual(classifyFounderIntent(''), { kind: 'UNKNOWN' });
     assert.deepEqual(classifyFounderIntent('   '), { kind: 'UNKNOWN' });

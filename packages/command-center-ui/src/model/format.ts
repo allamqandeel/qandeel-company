@@ -138,8 +138,37 @@ export const INTENT_LABEL: Readonly<Record<string, string>> = {
   GOAL_PROPOSE: 'Propose a goal',
   STAFFING_DECIDE: 'Decide a staffing request',
   CONFLICT_RESOLVE: 'Resolve a review conflict',
-  BUDGET_CEILING: 'Raise a budget ceiling',
+  BUDGET_CEILING: 'Set a budget ceiling',
   DELEGATE_WORK: 'Delegate authority',
+  TOOL_RECONCILE: 'Settle an uncertain external effect',
+  RESERVATION_RECONCILE: 'Settle held money',
+  JOB_RECONCILE: 'Decide held work',
+  REVIEW_ESCALATION_RESOLVE: 'Resolve an escalated review',
+  SYSTEMIC_DECIDE: 'Decide a systemic finding',
+  ATTRIBUTION_DECIDE: 'Decide the cause of an outcome',
+  LESSON_DECIDE: 'Decide a lesson',
+  OUTCOME_VERIFY: 'Verify an outcome',
+  PROMOTION_DECIDE: 'Decide sharing a lesson',
+};
+
+/** Decisions and outcomes in a preview, in words. */
+export const DECISION_LABEL: Readonly<Record<string, string>> = {
+  APPROVE: 'Approve',
+  REJECT: 'Reject',
+  PASS: 'Pass',
+  REWORK: 'Send back for rework',
+  VALIDATE: 'Validate',
+  ADDRESSED: 'Addressed',
+  RELEASE: 'Release',
+  CHARGE: 'Charge',
+  RETRY: 'Retry',
+  CONFIRMED_COMPLETED: 'Completed',
+  FAILED: 'Failed',
+  CONFIRMED_SUCCEEDED: 'It happened',
+  CONFIRMED_NOT_EXECUTED: 'It did not happen',
+  ACHIEVED: 'Achieved',
+  NOT_ACHIEVED: 'Not achieved',
+  INCONCLUSIVE: 'Inconclusive',
 };
 
 /** Preview payload fields in words; a field this table does not know is spelled out from its code. */
@@ -162,10 +191,35 @@ export const FIELD_LABEL: Readonly<Record<string, string>> = {
   capability: 'Capability',
   expiresAt: 'Expires',
   purposeCode: 'Purpose',
+  outcome: 'What happened',
+  verdict: 'Verdict',
+  inputTokens: 'Input tokens',
+  outputTokens: 'Output tokens',
+  evidenceClasses: 'Evidence',
+  evidenceRefs: 'Evidence records',
+  risk: 'Risk',
+  target: 'Shared with',
+  title: 'Goal',
 };
 
 export const SCOPE_LABEL: Readonly<Record<string, string>> = { EMPLOYEE: 'Employee', DEPARTMENT: 'Department', COMPANY: 'Company', WORK_ITEM: 'Work item' };
-export const RESULT_LABEL: Readonly<Record<string, string>> = { budget: 'budget ceiling', approval: 'approval', goal: 'goal', staffing_request: 'staffing request', review_conflict: 'review conflict', authority_delegation: 'authority delegation' };
+export const RESULT_LABEL: Readonly<Record<string, string>> = {
+  budget: 'budget ceiling',
+  approval: 'approval',
+  goal: 'goal',
+  staffing_request: 'staffing request',
+  review_conflict: 'review conflict',
+  authority_delegation: 'authority delegation',
+  tool_invocation: 'external effect',
+  budget_reservation: 'held money',
+  queue_job: 'held work',
+  review_request: 'escalated review',
+  systemic_finding: 'systemic finding',
+  causal_attribution: 'cause of an outcome',
+  lesson: 'lesson',
+  outcome_verification: 'outcome verification',
+  lesson_promotion: 'lesson sharing',
+};
 export const CALENDAR_LABEL: Readonly<Record<string, string>> = { ACTING_ENDS: 'Acting cover ends', DELEGATION_DUE: 'Delegation due', STAFFING_DECISION_DUE: 'Staffing decision due', GOAL_HORIZON: 'Goal horizon', WORK_DUE: 'Work due', APPROVAL_EXPIRES: 'Approval expires', SESSION_EXPIRES: 'Your session ends' };
 
 /** A table lookup that never leaks a code: unknown codes become readable words ("work_item.execute" → "work item execute"). */

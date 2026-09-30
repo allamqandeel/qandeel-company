@@ -9,13 +9,13 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { isQandeelError, type Id } from '@qandeel-company/domain';
+import { QandeelError, isQandeelError, type Id } from '@qandeel-company/domain';
 
-import { AttentionStore, CommunicationStore, FounderActionStore, FounderAuthStore, GoalStore, OrganizationStore, LAUNCH_TOKEN_TTL_MS, SESSION_TTL_MS, projectUniverse } from '../src/index.js';
-import { recordMessage, settle } from '../src/runtime-authority.js';
+import { AttentionStore, CommunicationStore, FounderActionStore, FounderAuthStore, GoalStore, OrganizationStore, LAUNCH_TOKEN_TTL_MS, ReviewStore, SESSION_TTL_MS, projectUniverse, runRestoreDrill } from '../src/index.js';
+import { recordGoalAct, recordMessage, recordToolIntent, recordToolResult, settle } from '../src/runtime-authority.js';
 import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
-import { GOVERNED_KIND, hire, seed, type Seed } from './c2-helpers.js';
-import { claimItem, newSeat, placed, seat } from './c4-helpers.js';
+import { GOVERNED_KIND, claimGoverned, governedItem, hire, seed, type Seed } from './c2-helpers.js';
+import { activeReviewer, claimItem, decideAssignment, newSeat, placed, reviewPlan, runFor, seat } from './c4-helpers.js';
 import { backoff, harness, type Harness } from './helpers.js';
 
 /** The value a proof relies on, present by construction of the fixture. */
@@ -270,6 +270,180 @@ describe('C5 governed action previews', () => {
       assert.throws(() => actions.preview(sess, 'APPROVAL_DECIDE', { approvalId: r4Approval.id, decision: 'APPROVE' }), code('FOUNDER_ONLY'));
       const audits = h.store.auditByAction('founder.action_confirmed');
       assert.ok(audits.length === 1 && !JSON.stringify(audits).includes('campaign'));
+    });
+  });
+});
+
+/** A governed job held after an uncertain UNSAFE tool effect (the invocation and the job both wait for the Founder). */
+function heldExternalEffect(h: Harness, s: Seed): { wi: Id; jobId: Id; invocationId: Id } {
+  const tool = s.gov.registerTool(s.founder, { code: 'syncer', driverCode: 'fake-syncer', egress: 'NONE' });
+  s.gov.registerToolAction(s.founder, { toolId: tool.id, code: 'sync', risk: 'R1', sideEffects: 'UNSAFE', mutatesExternal: false, dataClassCeiling: 'D3', argsSchema: { fields: {} }, costPerCallMicros: 100 });
+  s.gov.grant(s.founder, { employeeId: s.employee.id, capability: 'tool:syncer.sync', riskCeiling: 'R1', dataClassCeiling: 'D3', reasonCode: 'seed' });
+  const wi = governedItem(h, s);
+  const { claim } = claimGoverned(h);
+  const intent = recordToolIntent(h.store, claim.fence, { toolCode: 'syncer', actionCode: 'sync', args: {}, idempotencyKey: `wi:${wi}:s0` });
+  if (intent.kind !== 'EXECUTE') throw new Error(intent.kind);
+  assert.equal(recordToolResult(h.store, claim.fence, intent.invocationId, { ok: false, code: 'DRIVER_OUTCOME_UNKNOWN', sent: 'UNKNOWN' }), 'RECONCILIATION_REQUIRED');
+  settle(h.store, claim.fence, { type: 'RECONCILIATION_REQUIRED', code: 'TOOL_OUTCOME_UNCERTAIN' }, { backoff });
+  assert.equal(h.store.getJob(claim.fence.jobId).state, 'RECONCILIATION_HOLD');
+  return { wi, jobId: claim.fence.jobId, invocationId: intent.invocationId };
+}
+
+describe('R2 — the Founder exception loop, attention identity and confirm atomicity', () => {
+  test('R2-26: a confirm is one transaction — an interruption after the effect leaves no effect and no half-decided preview; a multi-step goal act is all-or-nothing', () => {
+    withSeed((h, s) => {
+      const { auth, session: sess } = session(h);
+      const actions = FounderActionStore.for(h.store, auth);
+      const goals = GoalStore.for(h.store);
+      const propose = GoalStore.prototype.propose;
+      const transition = GoalStore.prototype.transition;
+      try {
+        const p = actions.preview(sess, 'GOAL_PROPOSE', { kind: 'COMPANY', title: 'Launch KSA', summary: 's', ownerRef: s.employee.ref });
+        // The process is interrupted right after the effect (STORAGE_BUSY on the next write, a crash, …).
+        GoalStore.prototype.propose = function (this: GoalStore, ...args: Parameters<GoalStore['propose']>) {
+          propose.apply(this, args);
+          throw new QandeelError('STORAGE_BUSY', 'interrupted after the effect');
+        };
+        assert.throws(() => actions.confirm(sess, p.id, p.fingerprint), code('STORAGE_BUSY'));
+        GoalStore.prototype.propose = propose;
+        assert.deepEqual([actions.get(p.id).state, goals.list().length], ['FAILED', 0], 'the effect rolled back with the confirm: FAILED means not executed');
+        assert.throws(() => actions.confirm(sess, p.id, p.fingerprint), code('FOUNDER_CONFIRMATION_REQUIRED'));
+        assert.equal(goals.list().length, 0, 'a retry never re-executes the act');
+        // A multi-step act (approve + activate) commits all of its steps or none.
+        const g = goals.propose(s.founder, { kind: 'COMPANY', title: 'Growth Engine', summary: 's', ownerRef: s.employee.ref });
+        const q = actions.preview(sess, 'GOAL_APPROVE', { goalId: g.id, activate: true });
+        GoalStore.prototype.transition = function (this: GoalStore, actorRef: string, goalId: string, input: Parameters<GoalStore['transition']>[2]) {
+          if (input.to === 'ACTIVE') throw new QandeelError('STORAGE_BUSY', 'interrupted between steps');
+          return transition.call(this, actorRef, goalId, input);
+        };
+        assert.throws(() => actions.confirm(sess, q.id, q.fingerprint), code('STORAGE_BUSY'));
+        GoalStore.prototype.transition = transition;
+        assert.deepEqual([goals.get(g.id).state, actions.get(q.id).state], ['PROPOSED', 'FAILED'], 'no half-approved goal');
+        const r = actions.preview(sess, 'GOAL_APPROVE', { goalId: g.id, activate: true });
+        const out = actions.confirm(sess, r.id, r.fingerprint);
+        assert.deepEqual([out.preview.state, goals.get(g.id).state, goals.history(g.id).map((x) => x.toState).join('>')], ['CONFIRMED', 'ACTIVE', 'PROPOSED>APPROVED>ACTIVE'], 'the effect and CONFIRMED commit together');
+      } finally {
+        GoalStore.prototype.propose = propose;
+        GoalStore.prototype.transition = transition;
+      }
+    });
+  });
+
+  test('R2-21 / R2-22: an uncertain external effect and an escalated review reach Founder Attention per entity and are decided through governed previews in the session (no test seam)', () => {
+    withSeed((h, s) => {
+      const held = heldExternalEffect(h, s);
+      activeReviewer(h, s);
+      const review = ReviewStore.for(h.store);
+      const { workItemId: reviewedWi, claim } = runFor(h, s, s.employee, { reviewPlan: reviewPlan({ appliesTo: 'OUTPUT' }) });
+      settle(h.store, claim.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.ready' } }, { backoff });
+      const request = must(review.requests({ workItemId: reviewedWi }).find((r) => r.state === 'OPEN'));
+      const key = must(review.assignments(request.id).find((a) => a.keyKind !== 'SHADOW' && a.state === 'ASSIGNED'));
+      decideAssignment(h, must(key.reviewWorkItemId), 'INSUFFICIENT_EVIDENCE');
+      assert.equal(review.request(request.id).state, 'ESCALATED');
+      const attention = AttentionStore.for(h.store);
+      const first = attention.sync();
+      const open = (): string[] => attention.list({ state: 'OPEN' }).map((i) => i.sourceRef).sort();
+      assert.ok(open().includes(`tool_invocation:${held.invocationId}`), 'the uncertain external effect needs the Founder');
+      assert.ok(open().includes(`review_request:${request.id}`), 'the escalated required review needs the Founder');
+      assert.ok(!open().includes(`queue_job:${held.jobId}`), 'the held job waits for its tool decision first (only decidable items are surfaced)');
+      assert.ok(first.opened >= 2);
+      const stable = attention.sync();
+      assert.deepEqual([stable.opened, stable.signalled, stable.resolved], [0, 0, 0], 'a stable change time: zero-delta syncs stay silent');
+      // Production: only an authenticated session arms Founder authority.
+      const { auth, session: sess } = session(h);
+      const actions = FounderActionStore.for(h.store, auth);
+      disarmFounderTestSurface(h.root);
+      try {
+        assert.throws(() => actions.preview(sess, 'JOB_RECONCILE', { jobId: held.jobId, decision: 'RETRY' }), code('INVALID_TRANSITION'), 'the tool decision comes first');
+        assert.throws(() => actions.preview(sess, 'TOOL_RECONCILE', { invocationId: held.invocationId, outcome: 'MAYBE' }), code('VALIDATION_FAILED'));
+        const t = actions.preview(sess, 'TOOL_RECONCILE', { invocationId: held.invocationId, outcome: 'CONFIRMED_SUCCEEDED' });
+        assert.equal(s.gov.toolInvocations(held.wi)[0]?.state, 'RECONCILIATION_REQUIRED', 'a preview decides nothing');
+        assert.equal(actions.confirm(sess, t.id, t.fingerprint).resultRef, `tool_invocation:${held.invocationId}`);
+        assert.equal(s.gov.toolInvocations(held.wi)[0]?.state, 'SUCCEEDED', 'decided at the real boundary, inside the session scope');
+        assert.throws(() => actions.preview(sess, 'TOOL_RECONCILE', { invocationId: held.invocationId, outcome: 'CONFIRMED_SUCCEEDED' }), code('INVALID_TRANSITION'), 'decided once');
+        const afterTool = attention.sync();
+        assert.ok(afterTool.resolved >= 1 && open().includes(`queue_job:${held.jobId}`) && !open().includes(`tool_invocation:${held.invocationId}`), 'the tool item resolves; the job is now decidable and surfaced');
+        const j = actions.preview(sess, 'JOB_RECONCILE', { jobId: held.jobId, decision: 'RETRY' });
+        actions.confirm(sess, j.id, j.fingerprint);
+        assert.equal(h.store.getJob(held.jobId).state, 'QUEUED');
+        assert.throws(() => actions.preview(sess, 'REVIEW_ESCALATION_RESOLVE', { requestId: request.id, decision: 'MAYBE' }), code('VALIDATION_FAILED'));
+        const e = actions.preview(sess, 'REVIEW_ESCALATION_RESOLVE', { requestId: request.id, decision: 'REWORK' });
+        actions.confirm(sess, e.id, e.fingerprint);
+        assert.equal(h.store.getWorkItem(reviewedWi).state, 'READY', 'rework resolved the escalation');
+        const done = attention.sync();
+        assert.ok(done.resolved >= 2 && !open().some((x) => x.startsWith('queue_job:') || x.startsWith('review_request:')), 'every decided item leaves attention');
+        // A payload carries IDs / codes / bounded numbers only; unknown or oversized values are refused.
+        assert.throws(() => actions.preview(sess, 'RESERVATION_RECONCILE', { reservationId: held.wi, decision: 'CHARGE', inputTokens: -1, outputTokens: 0 }), (x: unknown) => isQandeelError(x) && ['VALIDATION_FAILED', 'NOT_FOUND'].includes(x.code));
+        assert.throws(() => actions.preview(sess, 'SYSTEMIC_DECIDE', { findingId: held.wi, decision: 'VALIDATE' }), code('NOT_FOUND'));
+        assert.throws(() => actions.preview(sess, 'OUTCOME_VERIFY', { workItemId: held.wi, verdict: 'ACHIEVED', evidenceClasses: [], evidenceRefs: [] }), (x: unknown) => isQandeelError(x));
+      } finally {
+        armFounderTestSurface(h.root);
+      }
+      const audit = JSON.stringify(h.store.auditByAction('founder.action_confirmed'));
+      assert.ok(audit.includes('TOOL_RECONCILE') && audit.includes('JOB_RECONCILE') && audit.includes('REVIEW_ESCALATION_RESOLVE'));
+    });
+  });
+
+  test('R2-25: a resilience exception is one item per instance, and a dismissed item reopens when its source changes', () => {
+    withSeed((h, s) => {
+      const attention = AttentionStore.for(h.store);
+      assert.equal(runRestoreDrill(h.store).result, 'FAIL');
+      attention.sync();
+      const first = must(attention.list({ state: 'OPEN' }).find((i) => i.dedupKey.startsWith('resilience:')));
+      attention.dismiss(s.founder, first.id, 'founder.dismissed');
+      h.clock.advance(5 * 3_600_000);
+      assert.equal(runRestoreDrill(h.store).result, 'FAIL');
+      const later = attention.sync();
+      const now = attention.list({ state: 'OPEN' }).filter((i) => i.dedupKey.startsWith('resilience:'));
+      assert.equal(later.opened, 1, 'a later failed drill is a new exception, never swallowed by an earlier dismissal');
+      assert.equal(now.length, 1);
+      assert.notEqual(must(now[0]).sourceRef, first.sourceRef, 'the item points at the new failure');
+      // A dismissed thread reopens when a later message arrives in it.
+      const ceo = placed(h, s, 'company.ceo');
+      const comm = CommunicationStore.for(h.store);
+      const thread = comm.directThread(s.founder, null);
+      const ask = (body: string): void => {
+        const sent = comm.send(s.founder, thread.id, { purpose: 'QUESTION', body });
+        const c = claimItem(h, must(sent.replyWorkItemId), `w-${body}`);
+        assert.equal(recordMessage(h.store, c.fence, { purpose: 'QUESTION', attentionLevel: 'URGENT', body: `${body}?`, brief: null, contextRefs: [] }).outcome, 'RECORDED');
+        settle(h.store, c.fence, { type: 'COMPLETED' }, { backoff });
+      };
+      ask('one');
+      attention.sync();
+      const item = must(attention.list({ state: 'OPEN' }).find((i) => i.sourceRef === `thread:${thread.id}`));
+      attention.dismiss(s.founder, item.id, 'founder.later');
+      assert.equal(attention.sync().opened, 0, 'the dismissal stands while the thread is unchanged');
+      h.clock.advance(60_000);
+      ask('two');
+      const reopened = attention.sync();
+      const again = must(attention.list({}).find((i) => i.id === item.id));
+      assert.deepEqual([reopened.opened, again.state, again.signalCount > item.signalCount], [1, 'OPEN', true], 'a later URGENT message in a dismissed thread is not silent');
+      void ceo;
+    });
+  });
+
+  test('m-20: model-authored goal text is secret-scanned like its siblings (Founder proposal and Director derivation)', () => {
+    withSeed((h, s) => {
+      const goals = GoalStore.for(h.store);
+      // A bearer-shaped credential built at run time (the repository holds no secret-shaped literal).
+      const secret = ['Bearer ', 'abcdefghjkmnpqrstuvwxyz23456789a'].join('');
+      assert.throws(() => goals.propose(s.founder, { kind: 'COMPANY', title: 'x', summary: `key ${secret}`, ownerRef: s.employee.ref }), (e: unknown) => isQandeelError(e) && e.details['reason'] === 'SECRET_MATERIAL');
+      assert.throws(() => goals.propose(s.founder, { kind: 'COMPANY', title: 'x', summary: 'y', successCriteria: [`use ${secret}`], ownerRef: s.employee.ref }), (e: unknown) => isQandeelError(e) && e.details['reason'] === 'SECRET_MATERIAL');
+      let parent = goals.propose(s.founder, { kind: 'COMPANY', title: 'p', summary: 's', ownerRef: s.employee.ref });
+      parent = goals.transition(s.founder, parent.id, { to: 'APPROVED', reasonCode: 'ok' });
+      const director = placed(h, s, 'director.product');
+      const { claim } = runFor(h, s, director);
+      const refused = recordGoalAct(h.store, claim.fence, 'goal.derive', { parentGoalId: parent.id, title: 't', summary: `token ${secret}` });
+      assert.deepEqual([refused.outcome, refused.code], ['REFUSED', 'SECRET_MATERIAL']);
+      assert.equal(goals.list({ kind: 'DEPARTMENT' }).length, 0);
+      const ok = recordGoalAct(h.store, claim.fence, 'goal.derive', { parentGoalId: parent.id, title: 't', summary: 'clean' });
+      assert.equal(ok.outcome, 'DONE');
+      // A model-authored CEO brief is scanned field by field, like a message body.
+      placed(h, s, 'company.ceo');
+      const b = CommunicationStore.for(h.store).requestCeoBrief({ subject: 's', contextKind: 'APPROVAL', contextRef: 'approval:1', reasonCode: 'brief.test', instructions: 'brief' });
+      const bc = claimItem(h, b.workItemId, 'w-brief-secret');
+      const brief = recordMessage(h.store, bc.fence, { purpose: 'BRIEF', attentionLevel: 'INFORMATIONAL', body: 'brief', brief: { happening: `a ${secret}`, matters: 'b', recommendation: 'c', decisionNeeded: false }, contextRefs: [] });
+      assert.deepEqual([brief.outcome, brief.code], ['REFUSED', 'SECRET_MATERIAL']);
     });
   });
 });
