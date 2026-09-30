@@ -1,9 +1,9 @@
 # R2 — Full Strong-v1 Independent Review Report
 
-**Status:** **IN REVIEW — ARCHITECTURE CORRECTION (§16).** The final fresh re-review (§15) reproduced a third
-recurrence in three root-cause families (budget-wait resume, C6 evidence time, restore lifecycle); by rule no third
-patch was made and the families were returned to the Technical Lead / Founder. The Product Owner then approved one
-bounded architecture correction (R2-ARCH-CLOSE, §16) for those families and AC-01. **Not ready for C7.**
+**Status:** **STOPPED — NOT CLOSED (§16.7).** The final fresh re-review (§15) reproduced a third recurrence in
+three root-cause families; the Product Owner then approved one bounded architecture correction (R2-ARCH-CLOSE, §16)
+for those families and AC-01. Its one targeted re-review closed FB-2 and AC-01 but reproduced MAJOR defects in the
+corrected FA-1 (RA-1) and FB-1 (RB-1, RB-2) families; by rule no patch loop followed. **Not ready for C7.**
 §1–§11 are the register frozen at `dc408a3` before any code change; §12–§15 record the remediation waves and
 re-reviews; the identity and root cause of every frozen finding stay traceable.
 
@@ -655,3 +655,91 @@ link through `GOAL_ACTION` (D-C5-04 "a Director … links").
 `security-review` (G1) was attempted again and failed at launch: its first step is a shell command
 (`git diff origin/HEAD...`) and the Bash tool does not run on this host. The environment was not changed; the manual
 security / boundary review the brief defines is recorded in §16.6.
+
+### 16.5 The one targeted independent re-review (head `609caf3`)
+
+Two independent reviewers (neither wrote any of the fixes), isolated worktrees reset to `609caf3`, scope locked to
+the four corrected families and their seams, each applying the `code-review` skill's high-effort angles inline
+(line scan, removed-behaviour audit, cross-file tracer, altitude, CLAUDE.md conventions) — the skill's own fan-out
+was folded into the two permitted reviewers. Every BLOCKER / MAJOR below was **re-run by the orchestrator on the main
+integrated build at `609caf3`** with the reviewer's probe re-pointed (`scratchpad/r2-arch-probes/ra1`, `…/rb`) and
+reproduced with the same output.
+
+| Id | Family | Severity | Verdict | Defect | Reproduction (orchestrator re-run) |
+|---|---|---|---|---|---|
+| **RA-1** | **FA-1** | **MAJOR** | CONFIRMED | Lowering a cap releases the admissions it can no longer cover without re-admission (`releaseBudgetAdmission(…, 'CAP_LOWERED', false)`) and then re-offers the freed capacity only on the LOWERED level (`trimBudgetAdmissions`, `governance-core.ts:560`, `admitBudgetWaiters(ctx, [b.id], …)`). The released admission also held that capacity on every ancestor level of its `levels_json` (Employee, Department, Company); a waiter under those ancestors but not under the lowered level is never re-offered it — a lost wake until an unrelated capacity event on its chain or the next startup pass. Every other release path re-admits on the admission's full `levels_json`. | `p1-trim-lost-wake.mjs`: X (Product) and Y (Engineering) park on the Company level; X is admitted 5 000; the Founder lowers X's Work Item cap → X's admission RELEASED `CAP_LOWERED`; "Company remaining for Y: 5990 … Y need: 5000"; "one hour later, no event: { Y: 'WAITING' }"; only "startup pass admitted: 1 Y: QUEUED". Fails closed (no overcommit, no spend). |
+| **RB-1** | **FB-1** | **MAJOR** | CONFIRMED | Once a Work Item holds a VALIDATED attribution, no later adverse source event on it can ever be attributed: `evaluate()` re-proposes only over a PROPOSED attribution, `decideAttribution` only corrects a proposal, and 0010 allows one live attribution per Work Item; `explainEvent` (`improvement-core.ts` ~377) marks the new event `attributionUnresolved`, `assessLearningEffect` puts the item in `uncertain` → INCONCLUSIVE, and `nextInterventionDecision` never counts INCONCLUSIVE toward `RETRAINING_EXHAUSTED`. A genuine post-training recurrence of the target cause on work started before training — acceptance case 2 of the brief (PO-R2-C "a real post-training occurrence may count") — is permanently unresolvable. The implementer listed this as a residual; the re-review shows it is reachable and blocks the learning loop. | `rb1-validated-then-recur.mjs`: pre-training FAIL on W validated EMPLOYEE_JUDGMENT; post-training rework fails review, NOT_ACHIEVED; "W attributions [["VALIDATED",1]]", "effect: INCONCLUSIVE ADVERSE_EVENT_NOT_PLACEABLE", "open proposals on W after re-evaluate: 0", "re-assess: … changed false" (expected NO_IMPROVEMENT with baseline share 1). |
+| **RB-2** | **FB-1** (the widened `evaluate()` re-proposal) | **MAJOR** | CONFIRMED | Re-proposing on any new adverse source event (`improvement.ts` ~894–896) supersedes a proposal a pool judge DISPUTED and escalated to the Founder with an identical-cause proposal, draws a fresh pool judge, and that judge's PASS validates the disputed cause (including the pre-dispute evidence) while the Founder attention item closes — the Founder's decision (PO-R2-A / D-R2-06 / R2-18) is bypassed. The pre-FB-1 condition compared causes only and would not fire here. | `rb2-dispute-reproposal.mjs`: "pool judge on A1 FAILs (disputes): ESCALATED"; "after re-evaluate: [["A1","SUPERSEDED",…],["A2","PROPOSED",…]]"; "pool judge on A2 PASSes: RECORDED"; "A2 final state: VALIDATED decidedBy employee:…"; "Founder attention item for the A1 dispute still OPEN: false". |
+
+MINOR (residual, not reopened): RA-2 `org.goal.*` is also grantable through the Founder-only C2 `GovernanceStore.grant`
+(no expiry / delegation record — as `org.work.*` already is; still Founder-only, no Employee path); RA-3 `goal.link`
+onto a live link another actor made is DONE and consumes a grant use with no new effect; RA-4 (PLAUSIBLE) a goal-act
+denial that triggers the containment pause does not end the run at once (the pause is durable; the next call is
+refused); RB-3 a crash / failed write between creating `maintenance/` and the marker leaves a target that
+`restore-portable` refuses as not empty even with `--discard-partial-restore` (fail-closed, no database); FA-1 design
+note: a large older need can wait behind a stream of smaller fitting needs (bounded by load; D-R2-16's
+no-head-of-line-blocking trade-off).
+
+Held and evidenced: FA-1 one owner per freed need, order, money + tokens, multi-level, no double allocation, crash
+after admission, cancel releases, not spend, release on every job exit (`setJob`, `withdrawJob`, need trigger), wake
+generation, no runtime-level herd; AC-01 seat AND grant, derive ≠ link, expiry / revocation / ceilings / use limit,
+acting window, message ≠ authority, Founder path unchanged, replay cannot create a new effect without a grant
+(`p2-ac01.mjs`); FB-2 real child-process crashes on an Arabic path at before / mid / after DB copy, before / in
+controlled restore, after commit and after phase COMMITTED — every ordinary, verify-mode and safe-upgrade open refused
+`UPDATE_HOLD RESTORE_IN_PROGRESS`, `clear-update-hold` refused, same-package resume REDONE / FINALIZED with exactly one
+audit row and both effect-capable jobs held; 543 truncation lengths of a partial database all redo; junctions out of
+the target refused with the outside file intact; bypass reachable only internally and bound to attempt + package
+(`mid-artifacts` did not fire in the reviewer's package, which has no artifacts; the implementation suite covers it);
+FB-1 pre-training mistakes reviewed / attributed later excluded (the f1 case), OUTPUT reviews timed by the reviewed
+run, REJECTED → INCONCLUSIVE, dedupe by source ref, content-free provenance.
+
+### 16.6 Manual security / boundary review (G1, `security-review` unavailable)
+
+- **Restore marker / internal bypass.** `assertRestoreGate` runs first in `CompanyStore[OPEN_INTERNAL]`, before
+  `openWorkspace`; an unbound open of a `RESTORE_IN_PROGRESS` target is refused in every mode; a bound open passes only
+  when the marker names exactly that attempt id (random UUID written by the lifecycle) and the authenticated package
+  id; the binding exists only on the internal open (not in the public options, not exported) and cannot combine with
+  the verify, verification-copy or live-schema-update bypasses. In-package code could forge a binding by reading the
+  marker — an in-package trust boundary, like every other internal open. Held.
+- **Filesystem durability.** Marker `wx` + write + fsync + directory fsync (maintenance dir, target, its parent)
+  before the first DB byte; phase changes write a durable sibling and rename over the hold (the hold exists at every
+  instant); lift by rename to history after commit + close; directory-fsync errors tolerated only for EPERM / EISDIR on
+  win32 (verified EPERM on an Arabic-named directory on this host). Windows power-loss durability of directory entries
+  relies on NTFS journalling. RB-3 (MINOR) is the only fail-closed gap found. Held.
+- **Founder session revocation.** Unchanged, inside the controlled-restore transaction (sessions and launch tokens),
+  exactly once; a finalize after a post-commit crash applies nothing twice. Held.
+- **Goal grant enforcement.** Seat AND grant, through `decideOrgAct` / `recordDenial` / `consumeGrant`; `org.goal.*`
+  grantable only by Founder-guarded paths (`governance.ts` ~928, `organization.ts` ~462 are the only grant inserts).
+  RA-2 / RA-3 / RA-4 MINOR. Held.
+- **Admission ownership / accounting.** Admissions are not reservations; reserved / spent / `accountingInvariants`
+  unchanged; other jobs' admissions counted in every reservation check; SQL guards (one outstanding per job, no delete,
+  end once, insert only for a waiter at its latest need). Ownership and accounting held; **RA-1 is a liveness defect of
+  the release path (lost wake), not an accounting or authority breach.**
+- **Privacy.** Admission rows, restore markers / status and learning provenance carry ids, kinds, codes, amounts and
+  times only (Rule A); no path to private user content (Rule B); no human review of content (Rule C).
+
+### 16.7 STOP — targeted re-review found MAJOR defects in corrected families
+
+The brief's stop rule applies: the one targeted re-review reproduced a MAJOR in **FA-1** (RA-1) and two MAJORs in
+**FB-1** (RB-1, RB-2). **No patch was made**, no new review loop was started, the final full preflight was not run,
+nothing of this correction has been pushed (`origin` still holds `65319ec`), and **no PR was opened**. FB-2 and AC-01 passed the
+targeted re-review with MINOR findings only.
+
+| Family | State at `609caf3` |
+|---|---|
+| FA-1 budget-wait admission | Herd closed (21 runs vs 66; linear drain; one owner; crash-safe); **NOT CLOSED — RA-1 lost wake on cap lowering** |
+| FB-1 learning evidence time | f1 misclassification closed (pre-training mistakes excluded); **NOT CLOSED — RB-1 (post-training recurrence on already-attributed work is never resolvable), RB-2 (re-proposal bypasses the Founder's decision on a disputed attribution)** |
+| FB-2 live restore crash safety | **Passed the targeted re-review** (MINOR RB-3) |
+| AC-01 Department Goal authority | **Passed the targeted re-review** (MINOR RA-2..RA-4) |
+
+What each open item needs (for the Technical Lead; no code was written for it):
+- RA-1: the trim path must re-offer every released admission's own levels (as every other release path does) —
+  the fix is local, but by rule it is not applied inside this correction.
+- RB-1: an architecture / Product question — attributions are one live row per Work Item (0010), while event-level
+  evidence needs a cause for each post-training adverse event: either attributions per source event (or per post-
+  training event set) or a rule for re-opening a VALIDATED attribution when new adverse events arrive.
+- RB-2: the re-proposal on new evidence must never supersede an attribution that is ESCALATED to the Founder (or
+  must carry the escalation forward); tied to the RB-1 answer.
+
+Migration 0011 stays **unreleased** (now also holding `budget_admissions`). **READY FOR C7: NO.** R2 is **not
+closed**; the branch is ready for Technical Lead review of this STOP head, not a closure candidate.
