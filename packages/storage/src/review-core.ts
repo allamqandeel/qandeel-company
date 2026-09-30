@@ -92,10 +92,11 @@ export function txDeclarePlan(ctx: StoreContext, item: WorkItemRecord, input: un
   if (containsSecretMaterial(plan.reviewerInstructions)) throw new QandeelError('VALIDATION_FAILED', 'reviewer instructions carry secret material', { field: 'reviewerInstructions' });
   const current = activePlan(ctx, item.id);
   const version = Number(ctx.db.get<{ v: number }>('SELECT COALESCE(MAX(version), 0) AS v FROM review_plans WHERE work_item_id = ?', item.id)?.v ?? 0) + 1;
+  const freed: (Id | null)[] = [];
   if (current) {
     ctx.db.run(`UPDATE review_plans SET status = 'SUPERSEDED' WHERE id = ?`, current.id);
     for (const r of ctx.db.all(`SELECT * FROM review_requests WHERE plan_id = ? AND state IN ('OPEN', 'SATISFIED', 'CONFLICT', 'ESCALATED')`, current.id).map(mapReviewRequest)) {
-      for (const a of assignmentsOf(ctx, r.id)) withdrawAssignment(ctx, a, 'PLAN_SUPERSEDED');
+      freed.push(...withdrawAll(ctx, r.id, 'PLAN_SUPERSEDED'));
       setRequestState(ctx, r, 'STALE', 'review.plan_superseded', actorRef);
     }
   }
@@ -121,6 +122,8 @@ export function txDeclarePlan(ctx: StoreContext, item: WorkItemRecord, input: un
   // R2-02: an executor parked on an action review whose request just went STALE (or that waited for a plan
   // reviewing actions) re-presents its action under this plan — a targeted wake in this transaction.
   wakeStrandedActionWait(ctx, item.id);
+  // RR1-2: the slots the superseded reviews held are free again.
+  for (const e of new Set(freed)) reviewerCapacityFreed(ctx, e);
   return declared;
 }
 
@@ -250,6 +253,13 @@ function assignmentsOf(ctx: StoreContext, requestId: Id): ReviewAssignmentRecord
   return ctx.db.all('SELECT * FROM review_assignments WHERE request_id = ? ORDER BY created_at, id', requestId).map(mapReviewAssignment);
 }
 
+/** Withdraws every open assignment of a request; the Employees whose slots it freed (the caller wakes them, RR1-2). */
+function withdrawAll(ctx: StoreContext, requestId: Id, reasonCode: string): (Id | null)[] {
+  const open = assignmentsOf(ctx, requestId).filter((a) => a.state === 'ASSIGNED');
+  for (const a of open) withdrawAssignment(ctx, a, reasonCode);
+  return open.map((a) => a.reviewerEmployeeId);
+}
+
 /**
  * Who must not review this subject: its executor, the delegation chain, and everyone holding or having decided a
  * key of the request (R2-07 / m-12: a reviewer withdrawn for a transient reason — a lifted hold, a reinstated
@@ -366,9 +376,10 @@ export function fillAssignments(ctx: StoreContext, request: ReviewRequestRecord)
     // Fail closed: nobody reviews an action it cannot be shown in full. The request goes STALE and the waiting
     // executor re-presents the action, which opens a request with its durable subject.
     const stale = setRequestState(ctx, request, 'STALE', 'review.subject_missing', SYSTEM_REVIEW_REF);
-    for (const a of assignmentsOf(ctx, request.id)) withdrawAssignment(ctx, a, 'SUBJECT_CHANGED');
+    const freed = withdrawAll(ctx, request.id, 'SUBJECT_CHANGED');
     wakeStrandedActionWait(ctx, request.workItemId);
-    return stale;
+    for (const e of new Set(freed)) reviewerCapacityFreed(ctx, e);
+    return getRequest(ctx, stale.id);
   }
   const plan = request.planId === null ? null : mapReviewPlan(ctx.db.get('SELECT * FROM review_plans WHERE id = ?', request.planId) ?? {});
   const keys = request.kind === 'OVERSIGHT' ? [{ kind: 'OVERSIGHT' as const }] : (plan?.keys ?? []);
@@ -442,8 +453,10 @@ export function ensureRequest(ctx: StoreContext, s: { item: WorkItemRecord; subj
       if (now.state !== 'STALE') return now;
     } else {
       // Reviewed under a superseded plan: that review no longer counts; the subject is reviewed afresh.
-      for (const a of assignmentsOf(ctx, r.id)) withdrawAssignment(ctx, a, 'PLAN_SUPERSEDED');
+      const freed = withdrawAll(ctx, r.id, 'PLAN_SUPERSEDED');
       setRequestState(ctx, r, 'STALE', 'review.plan_superseded', SYSTEM_REVIEW_REF);
+      // RR1-2: the slots it held are a wake (before this subject's own request, which competes for them in order).
+      for (const e of new Set(freed)) reviewerCapacityFreed(ctx, e);
     }
   }
   // R2-11: an ACTION subject is shown whole with the plan's instructions, or not at all (never cut to fit).
@@ -496,6 +509,17 @@ export function withdrawAssignment(ctx: StoreContext, a: ReviewAssignmentRecord,
  * and independent. Then evaluates the request and applies its consequences in the same transaction.
  */
 export function recordDecision(ctx: StoreContext, a: ReviewAssignmentRecord, reviewerRef: string, d: DecisionInput, runId: Id | null): { recorded: boolean; code: string; request: ReviewRequestRecord } {
+  const out = decideAssignment(ctx, a, reviewerRef, d, runId);
+  // RR1-2: a decision (or a withdrawal at the decision boundary) frees the slot the reviewer held — a wake of the
+  // requests and judgments waiting for it, in this same transaction.
+  if (a.state === 'ASSIGNED' && a.reviewerEmployeeId !== null && ctx.db.get(`SELECT 1 AS x FROM review_assignments WHERE id = ? AND state <> 'ASSIGNED'`, a.id) !== undefined) {
+    reviewerCapacityFreed(ctx, a.reviewerEmployeeId);
+    return { ...out, request: getRequest(ctx, out.request.id) };
+  }
+  return out;
+}
+
+function decideAssignment(ctx: StoreContext, a: ReviewAssignmentRecord, reviewerRef: string, d: DecisionInput, runId: Id | null): { recorded: boolean; code: string; request: ReviewRequestRecord } {
   let request = getRequest(ctx, a.requestId);
   if (a.state === 'DECIDED') return { recorded: false, code: 'ALREADY_DECIDED', request };
   if (a.state !== 'ASSIGNED') return { recorded: false, code: 'ASSIGNMENT_WITHDRAWN', request };
@@ -771,14 +795,86 @@ export function recheckReviewWait(ctx: StoreContext, workItemId: Id, runId: Id):
   else wakeStrandedActionWait(ctx, workItemId);
 }
 
-/** New reviewer capacity in a domain (admission, promotion, hold lifted): refill the requests waiting for it. */
-export function refillDomain(ctx: StoreContext, domain: string | null): number {
-  const rows = ctx.db.all(
-    `SELECT r.* FROM review_requests r LEFT JOIN review_plans p ON p.id = r.plan_id WHERE r.state = 'OPEN' AND r.waiting_reason IS NOT NULL AND (? IS NULL OR p.domain = ?) ORDER BY r.created_at LIMIT 500`,
-    domain, domain,
-  ).map(mapReviewRequest);
-  for (const r of rows) fillAssignments(ctx, r);
-  return rows.length + refillJudgments(ctx);
+// --- Reviewer capacity is a wake (RR1-2) -------------------------------------------------------------------
+
+/** The connections currently inside a capacity refill (a nested freeing is covered by the refill already running). */
+const refilling = new WeakSet<object>();
+
+/** A pool judgment subject that is being withdrawn right now: never re-drawn by the refill its own withdrawal runs. */
+interface JudgmentSubject {
+  readonly kind: JudgmentSubjectKind;
+  readonly id: Id;
+}
+
+/** Some ACTIVE reviewer of the domain has a free slot (keys AND judgments counted, as selection counts them). */
+function domainHasFreeSlot(ctx: StoreContext, domain: string): boolean {
+  return ctx.db.get(`SELECT 1 AS x FROM reviewer_qualifications q WHERE q.domain = ? AND q.mode = 'ACTIVE' AND ${OPEN_LOAD} < ? LIMIT 1`, domain, MAX_OPEN_REVIEWS_PER_REVIEWER) !== undefined;
+}
+
+/**
+ * RR1-2: the OPEN requests of a domain (every domain: null) waiting for a reviewer are filled — REQUIRED requests
+ * (blocking gates: an executor's action, an output's completion) before Independent Oversight, oldest first (insertion order breaks
+ * a timestamp tie: a deterministic FIFO). Each is
+ * re-read before its fill (never a stale version) and filled through `fillAssignments`, whose selection decides every
+ * eligibility condition in SQL before its LIMIT; a domain refill stops as soon as no ACTIVE reviewer of the domain
+ * has a free slot. Bounded.
+ */
+function refillWaitingRequests(ctx: StoreContext, domain: string | null, limit: number): number {
+  let n = 0;
+  for (const { id } of ctx.db.all<{ id: string }>(
+    `SELECT r.id FROM review_requests r
+      WHERE r.state = 'OPEN' AND r.waiting_reason IS NOT NULL
+        AND (? IS NULL OR COALESCE((SELECT p.domain FROM review_plans p WHERE p.id = r.plan_id), (SELECT p2.domain FROM review_plans p2 WHERE p2.work_item_id = r.work_item_id ORDER BY p2.version DESC LIMIT 1)) = ?)
+      ORDER BY (CASE r.kind WHEN 'REQUIRED' THEN 0 ELSE 1 END), r.created_at, r.rowid LIMIT ?`,
+    domain, domain, Math.max(1, Math.min(500, limit)),
+  )) {
+    if (domain !== null && !domainHasFreeSlot(ctx, domain)) break;
+    const r = getRequest(ctx, id as Id);
+    if (r.state !== 'OPEN' || r.waitingReason === null) continue;
+    fillAssignments(ctx, r);
+    n++;
+  }
+  return n;
+}
+
+/**
+ * Reviewer capacity became available in a domain (null: every domain) — a reviewer admitted, promoted or reinstated,
+ * a hold lifted (review.ts), or a held slot freed (RR1-2: a review key or a judgment decided, withdrawn or released,
+ * `reviewerCapacityFreed`). In the caller's transaction: the waiting REQUIRED requests first (a blocking gate is never
+ * starved by non-blocking learning judgments), then oversight, then the pending pool judgments. Never a polling loop:
+ * every wake is the transaction that changed the capacity. Returns what it filled or drew.
+ */
+export function refillDomain(ctx: StoreContext, domain: string | null, limit = 500, except: JudgmentSubject | null = null): number {
+  if (refilling.has(ctx.db)) return 0;
+  refilling.add(ctx.db);
+  try {
+    return refillWaitingRequests(ctx, domain, limit) + refillJudgments(ctx, Math.min(200, limit), domain, except);
+  } finally {
+    refilling.delete(ctx.db);
+  }
+}
+
+/**
+ * RR1-2: a slot this Employee held (a review key or a judgment) was freed — decided, withdrawn or released. Freed
+ * capacity IS a wake: every domain it actively reviews in is refilled in the same transaction. (A suspended or
+ * revoked reviewer's slot helps nobody: it reviews in no ACTIVE domain.)
+ */
+export function reviewerCapacityFreed(ctx: StoreContext, employeeId: Id | null, except: JudgmentSubject | null = null): number {
+  if (employeeId === null || refilling.has(ctx.db)) return 0;
+  let n = 0;
+  for (const { d } of ctx.db.all<{ d: string }>(`SELECT DISTINCT domain AS d FROM reviewer_qualifications WHERE employee_id = ? AND mode = 'ACTIVE' ORDER BY domain`, employeeId)) n += refillDomain(ctx, d, 500, except);
+  return n;
+}
+
+/** RR1-2: a judge is drawn only after the domain's waiting REQUIRED requests had the capacity first. */
+function yieldToWaitingReviews(ctx: StoreContext, domain: string): void {
+  if (refilling.has(ctx.db) || !domainHasFreeSlot(ctx, domain)) return;
+  refilling.add(ctx.db);
+  try {
+    refillWaitingRequests(ctx, domain, 500);
+  } finally {
+    refilling.delete(ctx.db);
+  }
 }
 
 /**
@@ -801,6 +897,8 @@ export function releaseAbandonedAssignment(ctx: StoreContext, reviewWorkItemId: 
   withdrawAssignment(ctx, a, 'REVIEW_WORK_ENDED');
   const r = getRequest(ctx, a.requestId);
   if (r.state === 'OPEN') fillAssignments(ctx, r);
+  // RR1-2: the slot its reviewer held is free again: a wake of what waits for it.
+  reviewerCapacityFreed(ctx, a.reviewerEmployeeId);
 }
 
 /** m-11: every end path of a review / judge Work Item (terminal transition, completion, dead letter) frees what it held. */
@@ -822,7 +920,8 @@ export function reviewAfterCompletion(ctx: StoreContext, wi: WorkItemRecord): vo
 /**
  * Recovery sweep (bounded; runtime startup recovery): output subjects waiting for review without a live request,
  * executors stranded on an action review whose request went STALE (R2-02), abandoned or dead-lettered
- * assignments and judgments (m-11), and pool judgments still undrawn.
+ * assignments and judgments (m-11), every OPEN request still waiting for a reviewer (RR1-2: ACTION requests too),
+ * and — after them — pool judgments still undrawn.
  */
 export function sweepReviews(ctx: StoreContext, limit: number): number {
   let n = 0;
@@ -848,7 +947,9 @@ export function sweepReviews(ctx: StoreContext, limit: number): number {
     releaseAbandonedJudgment(ctx, w as Id);
     n++;
   }
-  return n + refillJudgments(ctx, limit);
+  // RR1-2: every OPEN request still waiting for a reviewer (an ACTION request too, whose executor waits on it) is
+  // refilled — REQUIRED first — and only then the pool judgments still undrawn.
+  return n + refillDomain(ctx, null, limit);
 }
 
 // --- C6-R1: operational judgment through the Review Pool ----------------------------------------------------
@@ -918,6 +1019,8 @@ export function assignJudge(ctx: StoreContext, s: { subjectKind: JudgmentSubject
   const plan = activePlan(ctx, item.id);
   if (!plan || judgmentRoute({ planJudgment: plan.operationalJudgment, risk: item.riskLevel }).judge !== 'REVIEW_POOL') return null;
   if (ctx.db.get(`SELECT 1 AS x FROM quality_holds WHERE state = 'ACTIVE' AND ((target_kind = 'DOMAIN' AND target_ref = ?) OR (target_kind = 'RUBRIC' AND target_ref = ?)) LIMIT 1`, plan.domain, `${plan.rubricCode}@${plan.rubricVersion}`)) return null;
+  // RR1-2: a non-blocking judgment never takes the slot a blocking review waits for.
+  yieldToWaitingReviews(ctx, plan.domain);
   const executor = employeeIdFromRef(item.ownerRef);
   const dataClass = effectiveDataClass(ctx, item.id);
   const excluded = judgmentExclusions(ctx, s.subjectKind, s.subjectId, item.id, s.subjectEmployeeId);
@@ -963,6 +1066,10 @@ export function withdrawJudgment(ctx: StoreContext, ja: JudgmentAssignmentRecord
   if (ja.state !== 'ASSIGNED') return;
   ctx.db.run(`UPDATE judgment_assignments SET state = 'WITHDRAWN', reason_code = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, reasonCode, ts(ctx), ja.id, ja.version);
   appendAudit(ctx, 'judgment.withdrawn', 'judgment_assignment', ja.id, { actorRef: SYSTEM_REVIEW_REF }, 'OK', reasonCode, { subjectKind: ja.subjectKind, subjectId: ja.subjectId });
+  // RR1-2: the judge's slot is free (whoever withdrew it — the Founder deciding the subject, a stale subject, a
+  // release): a wake in this transaction. The withdrawn subject itself is left to its own path (re-drawn by the caller
+  // through its gate, or about to be decided), never re-drawn by this refill.
+  reviewerCapacityFreed(ctx, ja.judgeEmployeeId, { kind: ja.subjectKind, id: ja.subjectId });
 }
 
 /** The subject Employee of a judgment subject (never its judge). */
@@ -976,19 +1083,20 @@ export function judgmentSubjectEmployee(ctx: StoreContext, kind: JudgmentSubject
  * draw one now. Called when pool capacity returns (admission, promotion, reinstatement, a lifted hold) and by the
  * bounded recovery sweep — never a polling loop. An escalated or decided subject is never re-drawn.
  */
-export function refillJudgments(ctx: StoreContext, limit = 200): number {
+export function refillJudgments(ctx: StoreContext, limit = 200, domain: string | null = null, except: JudgmentSubject | null = null): number {
   let n = 0;
   const pending = `NOT EXISTS (SELECT 1 FROM judgment_assignments j WHERE j.subject_kind = ? AND j.subject_id = s.id AND j.state IN ('ASSIGNED', 'DECIDED', 'ESCALATED'))`;
+  const skip = (kind: JudgmentSubjectKind, id: string): boolean => except !== null && except.kind === kind && except.id === id;
   for (const a of ctx.db.all<{ id: string; work_item_id: string; employee_id: string | null }>(
     `SELECT s.id, s.work_item_id, s.employee_id FROM causal_attributions s JOIN review_plans p ON p.work_item_id = s.work_item_id AND p.status = 'ACTIVE' AND p.operational_judgment = 'REVIEW_POOL'
-      WHERE s.state = 'PROPOSED' AND ${pending} ORDER BY s.created_at, s.id LIMIT ?`,
-    'ATTRIBUTION', limit,
-  )) if (assignJudge(ctx, { subjectKind: 'ATTRIBUTION', subjectId: a.id as Id, workItemId: a.work_item_id as Id, subjectEmployeeId: (a.employee_id ?? null) as Id | null })) n++;
+      WHERE s.state = 'PROPOSED' AND (? IS NULL OR p.domain = ?) AND ${pending} ORDER BY s.created_at, s.id LIMIT ?`,
+    domain, domain, 'ATTRIBUTION', limit,
+  )) if (!skip('ATTRIBUTION', a.id) && assignJudge(ctx, { subjectKind: 'ATTRIBUTION', subjectId: a.id as Id, workItemId: a.work_item_id as Id, subjectEmployeeId: (a.employee_id ?? null) as Id | null })) n++;
   for (const l of ctx.db.all<{ id: string; w: string; employee_id: string }>(
     `SELECT s.id, substr(s.event_ref, 11) AS w, s.employee_id FROM lessons s JOIN review_plans p ON p.work_item_id = substr(s.event_ref, 11) AND p.status = 'ACTIVE' AND p.operational_judgment = 'REVIEW_POOL'
-      WHERE s.stage = 'UNDER_REVIEW' AND s.event_ref GLOB 'work_item:*' AND ${pending} ORDER BY s.created_at, s.id LIMIT ?`,
-    'LESSON', limit,
-  )) if (drawJudge(ctx, { subjectKind: 'LESSON', subjectId: l.id as Id, workItemId: l.w as Id, subjectEmployeeId: l.employee_id as Id })) n++;
+      WHERE s.stage = 'UNDER_REVIEW' AND s.event_ref GLOB 'work_item:*' AND (? IS NULL OR p.domain = ?) AND ${pending} ORDER BY s.created_at, s.id LIMIT ?`,
+    domain, domain, 'LESSON', limit,
+  )) if (!skip('LESSON', l.id) && drawJudge(ctx, { subjectKind: 'LESSON', subjectId: l.id as Id, workItemId: l.w as Id, subjectEmployeeId: l.employee_id as Id })) n++;
   return n;
 }
 

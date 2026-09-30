@@ -9,11 +9,11 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { isQandeelError, newId, type Id } from '@qandeel-company/domain';
-import type { OutcomeJudgment } from '@qandeel-company/governance';
+import { MAX_OPEN_REVIEWS_PER_REVIEWER, type OutcomeJudgment } from '@qandeel-company/governance';
 import { standardWorkOutcomeDefinition } from '@qandeel-company/mind';
 
 import { AttentionStore, ImprovementStore, MemoryStore, ReviewStore, type EmployeeRecord } from '../src/index.js';
-import { recordReviewDecision, settle } from '../src/runtime-authority.js';
+import { reconcileOrganization, recordReviewDecision, recordToolIntent, settle } from '../src/runtime-authority.js';
 import { storeContext } from '../src/store.js';
 import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
 import { GOVERNED_KIND, seed, type Seed } from './c2-helpers.js';
@@ -430,6 +430,130 @@ describe('R2 K1: pool judges — one eligibility predicate, gated lesson draws, 
       const claim = claimItem(h, j?.judgeWorkItemId as Id, `w-${newId().slice(0, 8)}`);
       settle(h.store, claim.fence, { type: 'PERMANENT_FAILURE', code: 'PROVIDER_REFUSED' }, { backoff });
       assert.equal(m.judgments({ subjectId: a1 }).find((x) => x.id === j?.id)?.state, 'WITHDRAWN', 'never left ASSIGNED until a restart');
+    });
+  });
+});
+
+describe('RR1-2: freed reviewer capacity is a wake — a blocking review is never starved by pool judgments', () => {
+  /**
+   * The only reviewer's capacity is full of pool judgments (plus `extra` attributions still waiting for a judge); then
+   * an OUTPUT review and an ACTION review (its executor parked on AWAITING_INDEPENDENT_REVIEW) wait for a reviewer.
+   */
+  function saturated(h: Harness, s: Seed, m: ImprovementStore, extra: number): { wOut: Id; wAct: Id; attributions: Id[] } {
+    const works = Array.from({ length: MAX_OPEN_REVIEWS_PER_REVIEWER + extra }, () => {
+      const w = prepared(h, s, s.employee);
+      execute(h, w);
+      review(h, w, 'PASS', judged('NOT_ACHIEVED'));
+      return w;
+    });
+    for (const w of works) m.evaluate(w);
+    const attributions = works.map((w) => (m.attributions({ workItemId: w }).find((x) => x.state === 'PROPOSED') as { id: Id }).id);
+    assert.equal(m.judgments({ state: 'ASSIGNED' }).length, MAX_OPEN_REVIEWS_PER_REVIEWER, 'the judgments fill the pool');
+    const wOut = prepared(h, s, s.employee, reviewPlan({ appliesTo: 'OUTPUT' }));
+    execute(h, wOut);
+    const wAct = prepared(h, s, s.employee, reviewPlan({ appliesTo: 'ACTIONS' }));
+    h.store.transitionWorkItem(wAct, { to: 'READY', reasonCode: 'release' });
+    const claim = claimItem(h, wAct, `w-${newId().slice(0, 8)}`);
+    assert.equal(recordToolIntent(h.store, claim.fence, { toolCode: 'review', actionCode: 'merge', args: { text: 'a' }, idempotencyKey: `wi:${wAct}:s1` }).kind, 'REVIEW_REQUIRED');
+    settle(h.store, claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_INDEPENDENT_REVIEW' }, { backoff });
+    return { wOut, wAct, attributions };
+  }
+  const waiting = (h: Harness, workItemId: Id): { reason: string | null; assigned: number } => {
+    const rv = ReviewStore.for(h.store);
+    const r = rv.requests({ workItemId }).find((x) => x.state === 'OPEN');
+    assert.ok(r, 'the review request is open');
+    return { reason: r.waitingReason, assigned: rv.assignments(r.id).filter((a) => a.state === 'ASSIGNED').length };
+  };
+
+  test('a decided judgment wakes the waiting REQUIRED reviews in the same transaction — before any waiting judgment', () => {
+    withSeed((h, s, m) => {
+      activeReviewer(h, s);
+      const { wOut, wAct, attributions } = saturated(h, s, m, 1);
+      const sixth = attributions.at(-1) as Id;
+      assert.deepEqual(waiting(h, wOut), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      assert.deepEqual(waiting(h, wAct), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      assert.equal(m.judgments({ subjectId: sixth }).length, 0, 'the sixth attribution waits for a judge');
+      const decideOne = (): void => {
+        const j = m.judgments({ state: 'ASSIGNED' }).find((x) => x.subjectId !== sixth);
+        assert.equal(judge(h, m, j?.subjectId as Id, 'PASS').code, 'RECORDED');
+      };
+      decideOne();
+      assert.deepEqual(waiting(h, wOut), { reason: null, assigned: 1 }, 'the freed slot went to the oldest waiting REQUIRED review at once (no restart)');
+      assert.deepEqual(waiting(h, wAct), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      assert.equal(m.judgments({ subjectId: sixth }).length, 0, 'a waiting judgment never takes a slot a REQUIRED review waits for');
+      decideOne();
+      assert.deepEqual(waiting(h, wAct), { reason: null, assigned: 1 }, 'the ACTION review its executor waits on is assigned');
+      assert.equal(m.judgments({ subjectId: sixth }).length, 0);
+      decideOne();
+      assert.equal(m.judgments({ subjectId: sixth, state: 'ASSIGNED' }).length, 1, 'with no REQUIRED review waiting, the judgment gets the next freed slot');
+    });
+  });
+
+  test('a Founder decision that withdraws a pool judgment is a wake too — and never re-draws the subject it decided', () => {
+    withSeed((h, s, m) => {
+      activeReviewer(h, s);
+      const { wOut, wAct, attributions } = saturated(h, s, m, 0);
+      const [a1, a2, a3] = attributions as [Id, Id, Id];
+      m.decideAttribution(s.founder, a1, { decision: 'VALIDATE', reasonCode: 'founder.decided' });
+      assert.deepEqual(waiting(h, wOut), { reason: null, assigned: 1 }, 'the withdrawn judge\'s slot went to the waiting review');
+      m.decideAttribution(s.founder, a2, { decision: 'VALIDATE', reasonCode: 'founder.decided' });
+      assert.deepEqual(waiting(h, wAct), { reason: null, assigned: 1 });
+      m.decideAttribution(s.founder, a3, { decision: 'VALIDATE', reasonCode: 'founder.decided' });
+      assert.equal(m.judgments({ subjectId: a3, state: 'ASSIGNED' }).length, 0, 'the subject the Founder decided is not re-drawn by its own withdrawal');
+    });
+  });
+
+  test('a released or decided review key is a wake too: the next waiting review is assigned, past one nobody can fill', () => {
+    withSeed((h, s) => {
+      activeReviewer(h, s);
+      const plan = reviewPlan({ appliesTo: 'OUTPUT' });
+      const works = Array.from({ length: MAX_OPEN_REVIEWS_PER_REVIEWER + 2 }, () => {
+        const w = prepared(h, s, s.employee, plan);
+        execute(h, w);
+        return w;
+      });
+      const [w1, w2] = works as [Id, Id];
+      const [w6, w7] = works.slice(-2) as [Id, Id];
+      assert.deepEqual(waiting(h, w6), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      assert.deepEqual(waiting(h, w7), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      // The review Work Item of w1 ends without its decision: its reviewer may not take w1 again, but its slot is free.
+      const rv = ReviewStore.for(h.store);
+      const key = rv.assignments((rv.requests({ workItemId: w1 }).find((r) => r.state === 'OPEN') as { id: Id }).id).find((a) => a.state === 'ASSIGNED');
+      const claim = claimItem(h, key?.reviewWorkItemId as Id, `w-${newId().slice(0, 8)}`);
+      settle(h.store, claim.fence, { type: 'PERMANENT_FAILURE', code: 'PROVIDER_REFUSED' }, { backoff });
+      assert.deepEqual(waiting(h, w1), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      assert.deepEqual(waiting(h, w6), { reason: null, assigned: 1 }, 'the released slot went to the next waiting review in the same transaction');
+      assert.deepEqual(waiting(h, w7), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      review(h, w2, 'PASS');
+      assert.deepEqual(waiting(h, w7), { reason: null, assigned: 1 }, 'a decided key wakes the next waiting review — an unfillable one ahead never blocks it');
+    });
+  });
+
+  test('the restart sweep assigns OPEN waiting ACTION (and OUTPUT) reviews before drawing pool judgments', () => {
+    withSeed((h, s, m) => {
+      activeReviewer(h, s);
+      const { wOut, wAct } = saturated(h, s, m, 0);
+      // Capacity freed by a database written before freed capacity was a wake: nothing refilled at the time.
+      storeContext(h.store).db.run(`UPDATE judgment_assignments SET state = 'WITHDRAWN', reason_code = 'DECIDED_ELSEWHERE', version = version + 1 WHERE state = 'ASSIGNED'`);
+      assert.deepEqual(waiting(h, wAct), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      reconcileOrganization(h.store, h.supervisor, 500);
+      assert.deepEqual(waiting(h, wOut), { reason: null, assigned: 1 });
+      assert.deepEqual(waiting(h, wAct), { reason: null, assigned: 1 }, 'an executor on AWAITING_INDEPENDENT_REVIEW is never stranded across a restart');
+      assert.equal(m.judgments({ state: 'ASSIGNED' }).length, MAX_OPEN_REVIEWS_PER_REVIEWER - 2, 'the pool judgments get only what the REQUIRED reviews left');
+    });
+  });
+
+  test('the restart sweep itself refills a waiting ACTION review (no judgment draw needed to reach it)', () => {
+    withSeed((h, s, m) => {
+      activeReviewer(h, s);
+      const { wAct } = saturated(h, s, m, 0);
+      // The judged subjects were settled and their slots freed by a database written before freed capacity was a wake.
+      const db = storeContext(h.store).db;
+      db.run(`UPDATE judgment_assignments SET state = 'WITHDRAWN', reason_code = 'SUBJECT_SUPERSEDED', version = version + 1 WHERE state = 'ASSIGNED'`);
+      db.run(`UPDATE causal_attributions SET state = 'SUPERSEDED', version = version + 1 WHERE state = 'PROPOSED'`);
+      assert.deepEqual(waiting(h, wAct), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      reconcileOrganization(h.store, h.supervisor, 500);
+      assert.deepEqual(waiting(h, wAct), { reason: null, assigned: 1 }, 'the sweep refills OPEN waiting ACTION requests');
     });
   });
 });
