@@ -331,6 +331,8 @@ const MUTATION_PINS = {
       'c5-confirm-effect-commits-alone', 'c5-exception-decision-overtakes-tool', 'c5-attention-misses-uncertain-effects', 'c5-dismissal-swallows-source-changes', 'c5-resilience-keyed-per-class', 'c5-goal-state-verb-lost', 'c5-unmatched-argument-falls-back',
       // R2 second wave (cluster Q4): the command's own verb decides the intent (RR1-1).
       'c5-argument-verb-selects-intent', 'c5-argument-noun-selects-act',
+      // R2 Architecture Closure Correction AC-01 (PO-R2-D): a goal act needs the Director seat AND its own grant.
+      'c5-goal-derive-grant-skipped', 'c5-goal-link-grant-skipped', 'c5-goal-link-seat-skipped', 'c5-goal-derive-seat-skipped', 'c5-goal-grant-use-not-consumed',
     ],
   },
   [C6_MUTATION_CHECK]: {

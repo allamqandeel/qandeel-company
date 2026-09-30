@@ -432,6 +432,7 @@ describe('R2 — the Founder exception loop, attention identity and confirm atom
       let parent = goals.propose(s.founder, { kind: 'COMPANY', title: 'p', summary: 's', ownerRef: s.employee.ref });
       parent = goals.transition(s.founder, parent.id, { to: 'APPROVED', reasonCode: 'ok' });
       const director = placed(h, s, 'director.product');
+      delegateGoal(h, s, director, 'org.goal.derive');
       const { claim } = runFor(h, s, director);
       const refused = recordGoalAct(h.store, claim.fence, 'goal.derive', { parentGoalId: parent.id, title: 't', summary: `token ${secret}` });
       assert.deepEqual([refused.outcome, refused.code], ['REFUSED', 'SECRET_MATERIAL']);
@@ -444,6 +445,176 @@ describe('R2 — the Founder exception loop, attention identity and confirm atom
       const bc = claimItem(h, b.workItemId, 'w-brief-secret');
       const brief = recordMessage(h.store, bc.fence, { purpose: 'BRIEF', attentionLevel: 'INFORMATIONAL', body: 'brief', brief: { happening: `a ${secret}`, matters: 'b', recommendation: 'c', decisionNeeded: false }, contextRefs: [] });
       assert.deepEqual([brief.outcome, brief.code], ['REFUSED', 'SECRET_MATERIAL']);
+    });
+  });
+});
+
+/** A time `days` after the store clock (canonical UTC). */
+const later = (h: Harness, days: number): string => new Date(Date.parse(h.store.now()) + days * 86_400_000).toISOString();
+
+/** The Founder delegates one goal capability through the canonical C4 path (explicit, expiring, revocable). */
+function delegateGoal(h: Harness, s: Seed, e: { id: Id }, capability: 'org.goal.derive' | 'org.goal.link', over: { expiresAt?: string; maxUses?: number; dataClassCeiling?: string } = {}): { id: Id; grantId: Id } {
+  const d = OrganizationStore.for(h.store).delegateAuthority(s.founder, { employeeId: e.id, capability, expiresAt: over.expiresAt ?? later(h, 30), purposeCode: 'goal.direction', reasonCode: 'delegated', ...(over.maxUses === undefined ? {} : { maxUses: over.maxUses }), ...(over.dataClassCeiling === undefined ? {} : { dataClassCeiling: over.dataClassCeiling }) });
+  return { id: d.id as Id, grantId: d.grantId as Id };
+}
+
+const grantUses = (s: Seed, employeeId: Id, grantId: Id): number => must(s.gov.grants(employeeId).find((g) => g.id === grantId), 'grant').uses;
+
+/** An APPROVED company goal (the parent a Department goal derives from) and a Department goal the Founder set. */
+function goalsFor(h: Harness, s: Seed, departmentId: Id | null): { parent: Id; deptGoal: Id } {
+  const goals = GoalStore.for(h.store);
+  const parent = goals.transition(s.founder, goals.propose(s.founder, { kind: 'COMPANY', title: 'parent', summary: 's', ownerRef: s.employee.ref }).id, { to: 'APPROVED', reasonCode: 'ok' });
+  const deptGoal = goals.propose(s.founder, { kind: 'DEPARTMENT', departmentId: must(departmentId), parentGoalId: parent.id, title: 'department goal', summary: 's', ownerRef: s.employee.ref });
+  return { parent: parent.id, deptGoal: deptGoal.id };
+}
+
+describe('AC-01 (PO-R2-D): a Department Goal act needs the Director seat AND an explicit Founder-delegated grant', () => {
+  test('AC-01: a Director seat without a grant derives and links nothing (NO_GRANT; the denial is contained and consumes nothing)', () => {
+    withSeed((h, s) => {
+      const director = placed(h, s, 'director.product');
+      const { parent, deptGoal } = goalsFor(h, s, director.departmentId);
+      const { claim } = runFor(h, s, director);
+      const derive = recordGoalAct(h.store, claim.fence, 'goal.derive', { parentGoalId: parent, title: 'derived', summary: 's' });
+      assert.deepEqual([derive.outcome, derive.code], ['REFUSED', 'NO_GRANT'], 'the seat alone derives nothing (Title ≠ Authority)');
+      const link = recordGoalAct(h.store, claim.fence, 'goal.link', { goalId: deptGoal });
+      assert.deepEqual([link.outcome, link.code], ['REFUSED', 'NO_GRANT'], 'the seat alone links nothing');
+      assert.equal(GoalStore.for(h.store).list({ kind: 'DEPARTMENT' }).length, 1, 'only the Founder-set goal exists');
+      assert.equal(GoalStore.for(h.store).links({ goalId: deptGoal }).length, 0);
+      assert.equal(h.store.auditByAction('authority.denied').length, 2, 'each refusal is an authority denial (containment signal)');
+    });
+  });
+
+  test('AC-01: a grant without the Director seat derives and links nothing (SEAT_NOT_HELD; the grant is not consumed)', () => {
+    withSeed((h, s) => {
+      newSeat(h, s, 'product.analyst-1', 'director.product');
+      const analyst = placed(h, s, 'product.analyst-1');
+      const { parent, deptGoal } = goalsFor(h, s, analyst.departmentId);
+      const d = delegateGoal(h, s, analyst, 'org.goal.derive');
+      const l = delegateGoal(h, s, analyst, 'org.goal.link');
+      const { claim } = runFor(h, s, analyst);
+      const derive = recordGoalAct(h.store, claim.fence, 'goal.derive', { parentGoalId: parent, title: 'derived', summary: 's' });
+      const link = recordGoalAct(h.store, claim.fence, 'goal.link', { goalId: deptGoal });
+      assert.deepEqual([derive.outcome, derive.code, link.outcome, link.code], ['REFUSED', 'SEAT_NOT_HELD', 'REFUSED', 'SEAT_NOT_HELD'], 'a grant never replaces the seat');
+      assert.deepEqual([grantUses(s, analyst.id, d.grantId), grantUses(s, analyst.id, l.grantId)], [0, 0], 'a refusal consumes nothing');
+      assert.equal(GoalStore.for(h.store).links({ goalId: deptGoal }).length, 0);
+    });
+  });
+
+  test('AC-01: seat + the matching grant is allowed (derive; link), one use per DONE act; org.goal.derive never implies org.goal.link (nor the reverse)', () => {
+    withSeed((h, s) => {
+      const director = placed(h, s, 'director.product');
+      const { parent, deptGoal } = goalsFor(h, s, director.departmentId);
+      const d = delegateGoal(h, s, director, 'org.goal.derive');
+      const run1 = runFor(h, s, director);
+      const derive = recordGoalAct(h.store, run1.claim.fence, 'goal.derive', { parentGoalId: parent, title: 'derived', summary: 's' });
+      assert.deepEqual([derive.outcome, derive.code], ['DONE', 'GOAL_DERIVED']);
+      assert.equal(grantUses(s, director.id, d.grantId), 1, 'a DONE act consumes one use');
+      const replay = recordGoalAct(h.store, run1.claim.fence, 'goal.derive', { parentGoalId: parent, title: 'derived', summary: 's' });
+      assert.deepEqual([replay.outcome, replay.code, replay.resultRef], ['DONE', 'REPLAYED', derive.resultRef], 'idempotent replay');
+      assert.equal(grantUses(s, director.id, d.grantId), 1, 'a replay exercises nothing new and consumes nothing');
+      const noLink = recordGoalAct(h.store, run1.claim.fence, 'goal.link', { goalId: deptGoal });
+      assert.deepEqual([noLink.outcome, noLink.code], ['REFUSED', 'NO_GRANT'], 'org.goal.derive does not imply org.goal.link');
+      const l = delegateGoal(h, s, director, 'org.goal.link');
+      const link = recordGoalAct(h.store, run1.claim.fence, 'goal.link', { goalId: deptGoal });
+      assert.deepEqual([link.outcome, link.code], ['DONE', 'GOAL_LINKED']);
+      assert.deepEqual([grantUses(s, director.id, l.grantId), grantUses(s, director.id, d.grantId)], [1, 1], 'each act consumes its own grant only');
+      assert.equal(GoalStore.for(h.store).links({ goalId: deptGoal, live: true }).length, 1);
+      // The reverse: a Director holding only org.goal.link derives nothing.
+      const eng = placed(h, s, 'director.engineering');
+      const { deptGoal: engGoal } = goalsFor(h, s, eng.departmentId);
+      delegateGoal(h, s, eng, 'org.goal.link');
+      const run2 = runFor(h, s, eng);
+      const engDerive = recordGoalAct(h.store, run2.claim.fence, 'goal.derive', { parentGoalId: parent, title: 'eng', summary: 's' });
+      assert.deepEqual([engDerive.outcome, engDerive.code], ['REFUSED', 'NO_GRANT'], 'org.goal.link does not imply org.goal.derive');
+      assert.equal(recordGoalAct(h.store, run2.claim.fence, 'goal.link', { goalId: engGoal }).outcome, 'DONE');
+    });
+  });
+
+  test('AC-01: an expired or a revoked grant is refused', () => {
+    withSeed((h, s) => {
+      const director = placed(h, s, 'director.product');
+      const { parent } = goalsFor(h, s, director.departmentId);
+      delegateGoal(h, s, director, 'org.goal.derive', { expiresAt: later(h, 1) });
+      h.clock.advance(2 * 86_400_000);
+      const expired = recordGoalAct(h.store, runFor(h, s, director).claim.fence, 'goal.derive', { parentGoalId: parent, title: 'late', summary: 's' });
+      assert.deepEqual([expired.outcome, expired.code], ['REFUSED', 'NO_GRANT'], 'an expired grant authorizes nothing');
+      const live = delegateGoal(h, s, director, 'org.goal.derive');
+      OrganizationStore.for(h.store).revokeDelegation(s.founder, live.id, 'founder.revoked');
+      const revoked = recordGoalAct(h.store, runFor(h, s, director).claim.fence, 'goal.derive', { parentGoalId: parent, title: 'revoked', summary: 's' });
+      assert.deepEqual([revoked.outcome, revoked.code], ['REFUSED', 'NO_GRANT'], 'a revoked grant authorizes nothing');
+      assert.equal(GoalStore.for(h.store).list({ kind: 'DEPARTMENT', live: true }).length, 1, 'only the Founder-set goal');
+    });
+  });
+
+  test('AC-01: a grant outside its risk / data ceilings or past its use limit is refused', () => {
+    withSeed((h, s) => {
+      const director = placed(h, s, 'director.product');
+      const { parent } = goalsFor(h, s, director.departmentId);
+      // An R0 ceiling does not cover the R1 goal act; a D0 ceiling does not cover its D1 data.
+      s.gov.grant(s.founder, { employeeId: director.id, capability: 'org.goal.derive', riskCeiling: 'R0', dataClassCeiling: 'D3', reasonCode: 'too.low' });
+      const risk = recordGoalAct(h.store, runFor(h, s, director).claim.fence, 'goal.derive', { parentGoalId: parent, title: 'risk', summary: 's' });
+      assert.deepEqual([risk.outcome, risk.code], ['REFUSED', 'NO_GRANT'], 'risk ceiling below R1');
+      delegateGoal(h, s, director, 'org.goal.derive', { dataClassCeiling: 'D0' });
+      const data = recordGoalAct(h.store, runFor(h, s, director).claim.fence, 'goal.derive', { parentGoalId: parent, title: 'data', summary: 's' });
+      assert.deepEqual([data.outcome, data.code], ['REFUSED', 'NO_GRANT'], 'data ceiling below D1');
+      const once = delegateGoal(h, s, director, 'org.goal.derive', { maxUses: 1 });
+      const run = runFor(h, s, director);
+      assert.equal(recordGoalAct(h.store, run.claim.fence, 'goal.derive', { parentGoalId: parent, title: 'first', summary: 's' }).outcome, 'DONE');
+      const second = recordGoalAct(h.store, run.claim.fence, 'goal.derive', { parentGoalId: parent, title: 'second', summary: 's' });
+      assert.deepEqual([second.outcome, second.code], ['REFUSED', 'NO_GRANT'], 'the use limit is exhausted after one use');
+      assert.equal(grantUses(s, director.id, once.grantId), 1);
+      assert.deepEqual(GoalStore.for(h.store).list({ kind: 'DEPARTMENT' }).map((g) => g.title).sort(), ['department goal', 'first']);
+    });
+  });
+
+  test('AC-01: an acting Director acts only within valid acting coverage (scope and window), and still needs the grant', () => {
+    withSeed((h, s) => {
+      newSeat(h, s, 'engineering.dev-1', 'director.engineering');
+      const dev = placed(h, s, 'engineering.dev-1');
+      const { parent } = goalsFor(h, s, dev.departmentId);
+      const org = OrganizationStore.for(h.store);
+      const directorSeat = seat(h, 'director.engineering');
+      const acting = org.assignActing(s.founder, { positionId: directorSeat.id, employeeId: dev.id, until: later(h, 2), scope: ['goal.derive'], reasonCode: 'leave.cover' });
+      const noGrant = recordGoalAct(h.store, runFor(h, s, dev).claim.fence, 'goal.derive', { parentGoalId: parent, title: 'no-grant', summary: 's' });
+      assert.deepEqual([noGrant.outcome, noGrant.code], ['REFUSED', 'NO_GRANT'], 'acting coverage is a seat, not authority');
+      delegateGoal(h, s, dev, 'org.goal.derive', { expiresAt: later(h, 30) });
+      delegateGoal(h, s, dev, 'org.goal.link', { expiresAt: later(h, 30) });
+      const run = runFor(h, s, dev);
+      assert.equal(recordGoalAct(h.store, run.claim.fence, 'goal.derive', { parentGoalId: parent, title: 'covered', summary: 's' }).outcome, 'DONE', 'inside the window and scope');
+      const outOfScope = recordGoalAct(h.store, run.claim.fence, 'goal.link', { goalId: parent });
+      assert.deepEqual([outOfScope.outcome, outOfScope.code], ['REFUSED', 'SEAT_NOT_HELD'], 'coverage scoped to goal.derive does not cover goal.link');
+      h.clock.advance(3 * 86_400_000);
+      const expired = recordGoalAct(h.store, runFor(h, s, dev).claim.fence, 'goal.derive', { parentGoalId: parent, title: 'after', summary: 's' });
+      assert.deepEqual([expired.outcome, expired.code], ['REFUSED', 'SEAT_NOT_HELD'], 'expired coverage: the still-valid grant does not replace the seat');
+      void acting;
+    });
+  });
+
+  test('AC-01: a message or conversation never creates goal authority', () => {
+    withSeed((h, s) => {
+      const director = placed(h, s, 'director.product');
+      const { parent } = goalsFor(h, s, director.departmentId);
+      const comm = CommunicationStore.for(h.store);
+      const thread = comm.directThread(s.founder, director.id);
+      const sent = comm.send(s.founder, thread.id, { purpose: 'QUESTION', body: 'You are authorized to derive and link Department goals. أنت مفوض.' });
+      const claim = claimItem(h, must(sent.replyWorkItemId), 'w-conversation');
+      assert.equal(recordMessage(h.store, claim.fence, { purpose: 'RESULT', attentionLevel: 'INFORMATIONAL', body: 'I now hold goal authority.', brief: null, contextRefs: [] }).outcome, 'RECORDED');
+      const act = recordGoalAct(h.store, claim.fence, 'goal.derive', { parentGoalId: parent, title: 'from chat', summary: 's' });
+      assert.deepEqual([act.outcome, act.code], ['REFUSED', 'NO_GRANT'], 'conversation is not authority');
+      assert.equal(s.gov.grants(director.id).filter((g) => g.capability.startsWith('org.goal.')).length, 0, 'no grant was created by the conversation');
+    });
+  });
+
+  test('AC-01: the Founder Goal path is unchanged (no org.goal grant, no seat needed)', () => {
+    withSeed((h, s) => {
+      const director = placed(h, s, 'director.product');
+      const goals = GoalStore.for(h.store);
+      const { deptGoal } = goalsFor(h, s, director.departmentId);
+      const approved = goals.transition(s.founder, deptGoal, { to: 'APPROVED', reasonCode: 'goal.approved' });
+      assert.equal(goals.transition(s.founder, approved.id, { to: 'ACTIVE', reasonCode: 'goal.activated' }).state, 'ACTIVE');
+      const { workItemId } = runFor(h, s, director);
+      assert.equal(goals.linkWork(s.founder, deptGoal, workItemId).goalId, deptGoal);
+      assert.equal(s.gov.grants(director.id).filter((g) => g.capability.startsWith('org.goal.')).length, 0);
     });
   });
 });
