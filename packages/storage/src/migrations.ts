@@ -116,17 +116,37 @@ export interface MigrationReport {
 export type MigrationFaultHook = (version: number) => void;
 
 /**
+ * An EXISTING Company: a database with schema (user_version ≥ 1) AND history — rows that no migration ever writes
+ * (audit, events, Work Items, runtime instances). A fresh database (including one a concurrent first opener is still
+ * migrating: nothing but migration rows yet) has none. Read inside the caller's snapshot.
+ */
+function hasCompanyHistory(connection: SqliteConnection): boolean {
+  const present = new Set(connection.all<{ name: string }>(`SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN ('audit_events', 'events', 'work_items', 'runtime_instances')`).map((r) => r.name));
+  for (const table of ['audit_events', 'events', 'work_items', 'runtime_instances']) {
+    if (present.has(table) && connection.get(`SELECT 1 AS x FROM ${table} LIMIT 1`) !== undefined) return true;
+  }
+  return false;
+}
+
+/**
  * Brings the schema to `migrations.length`, or refuses to continue. Never downgrades.
  * `readOnlyCheck` validates without applying (used when opening backup snapshots).
+ * `refuseExistingCompany` (the ordinary open path, R2-30): an existing Company with pending migrations is never
+ * migrated live here — it is upgraded only through the safe-upgrade lifecycle (Preflight → Backup → Rehearse →
+ * Verify → Activate). Fresh creation still migrates at open.
  */
 export function migrate(
   connection: SqliteConnection,
   migrations: readonly Migration[],
-  { clock, runtimeVersion, readOnlyCheck = false, beforeCommit }: { clock: Clock; runtimeVersion: string; readOnlyCheck?: boolean; beforeCommit?: MigrationFaultHook },
+  { clock, runtimeVersion, readOnlyCheck = false, beforeCommit, refuseExistingCompany = false }: { clock: Clock; runtimeVersion: string; readOnlyCheck?: boolean; beforeCommit?: MigrationFaultHook; refuseExistingCompany?: boolean },
 ): MigrationReport {
   assertOrdered(migrations);
-  // One read snapshot: a concurrent opener may commit a migration between two separate reads.
-  const { applied, fromVersion } = connection.snapshot(() => ({ applied: appliedMigrations(connection), fromVersion: userVersion(connection) }));
+  // One read snapshot: a concurrent opener may commit a migration between two separate reads (and history is judged
+  // in the same snapshot, so a concurrent first open that finished meanwhile is never mistaken for an old Company).
+  const { applied, fromVersion, existing } = connection.snapshot(() => {
+    const v = userVersion(connection);
+    return { applied: appliedMigrations(connection), fromVersion: v, existing: refuseExistingCompany && v >= 1 && v < migrations.length && hasCompanyHistory(connection) };
+  });
   const known = migrations.length;
 
   if (fromVersion > known || applied.some((a) => a.version > known)) {
@@ -145,6 +165,9 @@ export function migrate(
   if (readOnlyCheck) {
     if (pending.length) throw new QandeelError('SCHEMA_NOT_READY', 'database is behind this runtime', { databaseVersion: fromVersion, runtimeVersion: known });
     return { fromVersion, toVersion: fromVersion, applied: [] };
+  }
+  if (pending.length && existing) {
+    throw new QandeelError('SCHEMA_UPDATE_REQUIRED', 'this Company has pending migrations; upgrade it through safe-upgrade (Preflight → Backup → Rehearse → Verify → Activate), never live at open', { databaseVersion: fromVersion, runtimeVersion: known, next: 'safe-upgrade' });
   }
   const done: number[] = [];
   for (const m of pending) {

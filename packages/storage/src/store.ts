@@ -82,6 +82,12 @@ export interface OpenStoreOptions {
 interface InternalOpenOptions extends OpenStoreOptions {
   readonly migrations?: readonly Migration[];
   readonly migrationFault?: MigrationFaultHook;
+  /**
+   * Migrate an EXISTING Company live at open. Never set by the public `open` (R2-30: an existing Company is upgraded
+   * only through safe-upgrade). Set only for a disposable isolated restore copy (its migration IS the compatibility
+   * check) and by storage tests that exercise the migration files themselves.
+   */
+  readonly liveSchemaUpdate?: boolean;
 }
 
 const OPEN_INTERNAL: unique symbol = Symbol('CompanyStore.openInternal');
@@ -114,8 +120,10 @@ export class CompanyStore {
   }
 
   /**
-   * Validates the workspace, opens the WAL database and completes migrations. A store is never
-   * returned before its schema is current: readiness depends on this.
+   * Validates the workspace, opens the WAL database and completes migrations of a FRESH database. A store is never
+   * returned before its schema is current: readiness depends on this. An EXISTING Company with pending migrations
+   * is refused (`SCHEMA_UPDATE_REQUIRED`): it is upgraded only through safe-upgrade (R2-30), which
+   * `CompanyRuntime.start` runs automatically.
    */
   static open(workspaceRoot: string, options: OpenStoreOptions = {}): CompanyStore {
     // Public entry: only the released, pinned migrations; unknown option keys carry no weight.
@@ -143,6 +151,8 @@ export class CompanyStore {
         clock,
         runtimeVersion: options.runtimeVersion ?? STORAGE_VERSION,
         readOnlyCheck: options.migrationMode === 'verify',
+        // R2-30: an existing Company with pending migrations is refused here (SCHEMA_UPDATE_REQUIRED → safe-upgrade).
+        refuseExistingCompany: options.liveSchemaUpdate !== true,
         ...(options.migrationFault ? { beforeCommit: options.migrationFault } : {}),
       });
       const ctx: StoreContext = { db, clock, fault: options.fault ?? noFault };
@@ -527,4 +537,17 @@ export type { BackoffPolicy, Claim, SettleOutcome, ReconciliationDecision };
 /** Storage tests only (not exported by the package): open with a fixture migration set. */
 export function openStoreForTests(workspaceRoot: string, options: InternalOpenOptions): CompanyStore {
   return CompanyStore[OPEN_INTERNAL](workspaceRoot, options);
+}
+
+/**
+ * Storage-internal (not exported by the package): a restored copy opened either at its own schema version (a clean
+ * restore never migrates an old snapshot forward through plain open) or, for a disposable isolated restore drill,
+ * migrated as its compatibility check. Only released, pinned migrations; never caller SQL.
+ */
+export function openRestoredStore(workspaceRoot: string, options: { clock?: Clock; atVersion?: number; liveSchemaUpdate?: boolean }): CompanyStore {
+  return CompanyStore[OPEN_INTERNAL](workspaceRoot, {
+    ...(options.clock ? { clock: options.clock } : {}),
+    ...(options.atVersion !== undefined ? { migrations: loadReleasedMigrations(options.atVersion) } : {}),
+    ...(options.liveSchemaUpdate === true ? { liveSchemaUpdate: true } : {}),
+  });
 }

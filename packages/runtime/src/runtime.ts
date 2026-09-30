@@ -82,6 +82,7 @@ import {
   prunePortableBackups,
   resilienceStatus,
   runRestoreDrill,
+  safeUpgrade,
   type BackupDestination,
   type PortableBackupResult,
   type ResilienceStatus,
@@ -365,12 +366,26 @@ export class CompanyRuntime {
     this.#state = 'STARTING';
     this.#startedAt = this.#clock.nowMs();
     try {
-      const store = CompanyStore.open(this.#opts.workspace, {
-        clock: this.#clock,
-        runtimeVersion: RUNTIME_VERSION,
-        ...(this.#opts.busyTimeoutMs !== undefined ? { busyTimeoutMs: this.#opts.busyTimeoutMs } : {}),
-        ...(this.#opts.storageFault ? { fault: this.#opts.storageFault } : {}),
-      });
+      const open = (): CompanyStore =>
+        CompanyStore.open(this.#opts.workspace, {
+          clock: this.#clock,
+          runtimeVersion: RUNTIME_VERSION,
+          ...(this.#opts.busyTimeoutMs !== undefined ? { busyTimeoutMs: this.#opts.busyTimeoutMs } : {}),
+          ...(this.#opts.storageFault ? { fault: this.#opts.storageFault } : {}),
+        });
+      let store: CompanyStore;
+      try {
+        store = open();
+      } catch (error) {
+        // R2-30 / Stage 12 §38: an existing Company with pending migrations is upgraded only through the safe-upgrade
+        // lifecycle (pre-update snapshot, rehearsal, verification, activation) — run automatically, before any open
+        // that could run on the new schema. A rolled-back update leaves the workspace in UPDATE_HOLD: refuse to start.
+        if (!isQandeelError(error, 'SCHEMA_UPDATE_REQUIRED')) throw error;
+        const upgrade = await safeUpgrade(this.#opts.workspace, { clock: this.#clock, runtimeVersion: RUNTIME_VERSION });
+        this.#log.info('runtime.safe_upgrade', { instanceId: this.instanceId, outcome: upgrade.outcome, code: upgrade.code, fromVersion: upgrade.fromVersion, toVersion: upgrade.toVersion });
+        if (upgrade.outcome === 'ROLLED_BACK_UPDATE_HOLD') throw new QandeelError('UPDATE_HOLD', 'the automatic schema update failed and was rolled back; the workspace is held until the operator clears it', { updateId: upgrade.updateId, code: upgrade.code });
+        store = open();
+      }
       this.#store = store;
       this.#artifacts = new ArtifactStore(store);
       registerInstance(store, this.instanceId, process.pid, RUNTIME_VERSION);

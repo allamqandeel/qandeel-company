@@ -9,13 +9,18 @@
  * - Any failure stops: the live database is restored from the compatible pre-update snapshot (never an
  *   automatic downgrade script) and the workspace enters UPDATE_HOLD — `CompanyStore.open` refuses it, so no
  *   runtime re-attempts the migration in a loop. The operator clears the hold explicitly.
- * - The runtime must be stopped (no live supervisor lease): maintenance never races a running Company.
- * - The previous known-good snapshots stay available for a bounded rollback period (the last two updates).
+ * - The runtime must be stopped (no live supervisor lease) and no other connection may hold the database open:
+ *   maintenance never races a running Company. The hold is written BEFORE any restore touches a file.
+ * - This is the ONLY path that migrates an existing Company (R2-30): `CompanyStore.open` refuses one with pending
+ *   migrations (SCHEMA_UPDATE_REQUIRED) and `CompanyRuntime.start` runs this lifecycle automatically.
+ * - The previous known-good snapshots stay available for a bounded rollback period (the last two updates). A
+ *   rollback never discards post-activation work silently: it is refused unless acknowledged, and the replaced
+ *   live database is retained as a pre-rollback snapshot (R2-31).
  *
  * The journal lives on disk (`<workspace>/maintenance/`) because a failed update may leave no usable
  * database to write into; a successful or rolled-back update is also recorded in `maintenance_records`.
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { QandeelError, canonicalJson, newId, now, sha256Hex, systemClock, type Clock, type Id } from '@qandeel-company/domain';
@@ -101,6 +106,7 @@ export async function safeUpgradeInternal(root: string, options: SafeUpgradeOpti
   } finally {
     probe.close();
   }
+  assertDatabaseNotInUse(layout.databasePath);
 
   // 2. Backup: the known-good pre-update snapshot and its manifest.
   const updateId = newId();
@@ -126,8 +132,8 @@ export async function safeUpgradeInternal(root: string, options: SafeUpgradeOpti
   }
   renameSync(`${snapshotPath}.partial`, snapshotPath);
   const snapshotSha256 = sha256Hex(readFileSync(snapshotPath));
-  const journal = (state: string, code: string): void => {
-    writeFileSync(path.join(dir, 'journal.json'), `${JSON.stringify({ updateId, state, code, fromVersion, toVersion: target, snapshotSha256, runtimeVersion, counts: before, migrations: migrations.map((m) => ({ version: m.version, sha256: m.sha256 })), startedAt, at: now(clock) }, null, 2)}\n`);
+  const journal = (state: string, code: string, extra: Record<string, unknown> = {}): void => {
+    writeFileSync(path.join(dir, 'journal.json'), `${JSON.stringify({ updateId, state, code, fromVersion, toVersion: target, snapshotSha256, runtimeVersion, counts: before, migrations: migrations.map((m) => ({ version: m.version, sha256: m.sha256 })), startedAt, at: now(clock), ...extra }, null, 2)}\n`);
   };
   journal('BACKED_UP', 'PRE_UPDATE_SNAPSHOT');
 
@@ -187,24 +193,46 @@ export async function safeUpgradeInternal(root: string, options: SafeUpgradeOpti
     live.close();
   }
   if (failure !== null) {
-    restoreLiveFromSnapshot(layout.databasePath, snapshotPath);
+    // m-22: the hold (journal first) is in force BEFORE the restore touches any file, so a restore that fails (e.g. a
+    // file still open on Windows) can never leave a migrated-but-unverified database that ordinary opens would run.
     const report = hold(`LIVE_${failure}`.slice(0, 64));
+    try {
+      restoreLiveFromSnapshot(layout.databasePath, snapshotPath);
+    } catch (error) {
+      journal('UPDATE_HOLD', 'RESTORE_FAILED', { restoreError: error instanceof QandeelError ? error.code : 'FILE_ERROR' });
+      throw new QandeelError('MAINTENANCE_FAILED', 'the live database could not be restored from the pre-update snapshot; the workspace stays in UPDATE_HOLD', { updateId, reason: 'RESTORE_FAILED', hold: true }, { cause: error });
+    }
     recordMaintenance(layout.databasePath, { updateId, fromVersion, toVersion: target, snapshotSha256, outcome: 'ROLLED_BACK_UPDATE_HOLD', code: report.code, runtimeVersion, startedAt, clock });
     return report;
   }
 
-  // 6. Activate.
+  // 6. Activate. The journal keeps the activation baseline (row counts, last audit row) so a later rollback can tell
+  // exactly what happened after activation (R2-31).
   recordMaintenance(layout.databasePath, { updateId, fromVersion, toVersion: target, snapshotSha256, outcome: 'ACTIVATED', code: 'VERIFIED_AND_ACTIVATED', runtimeVersion, startedAt, clock });
-  journal('ACTIVATED', 'VERIFIED_AND_ACTIVATED');
+  const activatedAt = now(clock);
+  journal('ACTIVATED', 'VERIFIED_AND_ACTIVATED', { activatedAt, activation: readBaseline(layout.databasePath) });
   pruneOldUpdates(layout.root, updateId);
   return { outcome: 'ACTIVATED', updateId, fromVersion, toVersion: target, code: 'VERIFIED_AND_ACTIVATED', snapshotSha256 };
 }
 
+/**
+ * Removes one file; a missing file is fine. `unlinkSync`, not `rmSync`: on the Founder's Windows host (Node 24),
+ * `rmSync` of a file another process holds open under a non-ASCII path (e.g. an Arabic workspace name) terminates
+ * the process (0xC0000409) instead of throwing; `unlinkSync` reports EBUSY / EPERM as an ordinary error.
+ */
+function removeFile(file: string): void {
+  try {
+    unlinkSync(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
 /** Restores the live database from a compatible pre-update snapshot (runtime stopped; WAL files discarded). */
 function restoreLiveFromSnapshot(databasePath: string, snapshotPath: string): void {
-  for (const suffix of ['-wal', '-shm', '-journal']) rmSync(`${databasePath}${suffix}`, { force: true });
+  for (const suffix of ['-wal', '-shm', '-journal']) removeFile(`${databasePath}${suffix}`);
   copyFileSync(snapshotPath, `${databasePath}.restoring`);
-  rmSync(databasePath, { force: true });
+  removeFile(databasePath);
   renameSync(`${databasePath}.restoring`, databasePath);
   // Reopening returns the file to WAL mode (SqliteConnection enforces it) and proves it opens cleanly.
   const check = SqliteConnection.open({ path: databasePath, busyTimeoutMs: DEFAULT_BUSY_TIMEOUT_MS });
@@ -249,10 +277,81 @@ function pruneOldUpdates(root: string, current: Id): void {
 }
 
 /**
- * Operator rollback inside the bounded period: restores the live database from an update's pre-update snapshot
- * and places an UPDATE_HOLD (the new runtime would otherwise migrate it again). The runtime must be stopped.
+ * m-22: preflight runs with the runtime stopped, but another process (a Command Center, an inspection tool) may still
+ * hold the database open — and on Windows an open file cannot be replaced, so a later restore would fail half-way.
+ * SQLite removes the `-wal` / `-shm` files when the LAST connection closes; after the preflight probe closed, their
+ * presence means another connection is open. Refused before anything is written.
  */
-export function rollbackSchemaUpdate(root: string, updateId: string, options: { clock?: Clock } = {}): { restored: true; fromVersion: number } {
+function assertDatabaseNotInUse(databasePath: string): void {
+  if (existsSync(`${databasePath}-wal`) || existsSync(`${databasePath}-shm`)) {
+    throw new QandeelError('MAINTENANCE_REFUSED', 'another connection has the Company database open; close every process using this workspace first', { reason: 'DATABASE_IN_USE' });
+  }
+}
+
+interface Baseline {
+  readonly counts: Record<string, number>;
+  readonly lastAuditId: number;
+}
+
+function baselineOf(db: SqliteConnection): Baseline {
+  return { counts: tableCounts(db), lastAuditId: Number(db.get<{ n: number | null }>('SELECT MAX(id) AS n FROM audit_events')?.n ?? 0) };
+}
+
+function readBaseline(databasePath: string): Baseline {
+  const db = SqliteConnection.open({ path: databasePath, busyTimeoutMs: DEFAULT_BUSY_TIMEOUT_MS });
+  try {
+    return db.snapshot(() => baselineOf(db));
+  } finally {
+    db.close();
+  }
+}
+
+/** An application-consistent, self-contained, integrity-checked copy of the live database (the same method as the pre-update snapshot). */
+async function consistentSnapshot(databasePath: string, target: string): Promise<string> {
+  const source = SqliteConnection.open({ path: databasePath, busyTimeoutMs: DEFAULT_BUSY_TIMEOUT_MS });
+  try {
+    await source.backupTo(`${target}.partial`);
+  } finally {
+    source.close();
+  }
+  const snap = SqliteConnection.open({ path: `${target}.partial`, busyTimeoutMs: DEFAULT_BUSY_TIMEOUT_MS, keepJournalMode: true });
+  try {
+    snap.convertSnapshotToRollbackJournal();
+    const integrity = snap.integrityCheck();
+    if (integrity.length !== 1 || integrity[0] !== 'ok') throw new QandeelError('BACKUP_INTEGRITY', 'the snapshot failed integrity_check');
+  } finally {
+    snap.close();
+  }
+  renameSync(`${target}.partial`, target);
+  return sha256Hex(readFileSync(target));
+}
+
+export interface RollbackReport {
+  readonly restored: true;
+  readonly updateId: Id;
+  readonly rollbackId: Id;
+  readonly fromVersion: number;
+  readonly activatedAt: string | null;
+  /** Work recorded after activation that the rollback discarded from the live database (counts only; kept in the pre-rollback snapshot). */
+  readonly postUpdateWork: { readonly exists: boolean; readonly auditRowsAfterActivation: number; readonly rowsAddedAfterActivation: Readonly<Record<string, number>> };
+  readonly discardAcknowledged: boolean;
+  /** The retained application-consistent copy of the live database taken just before the rollback (never pruned). */
+  readonly preRollbackSnapshot: { readonly file: string; readonly sha256: string };
+  readonly hold: 'OPERATOR_ROLLBACK';
+  readonly next: 'clear-update-hold, then safe-upgrade (the runtime runs it at start)';
+}
+
+/**
+ * Operator rollback inside the bounded period (R2-31): restores the live database from an update's pre-update snapshot.
+ * It destroys nothing silently: post-activation work (rows and audit after the recorded activation baseline) is
+ * measured first and the rollback is REFUSED unless the operator explicitly acknowledges discarding it; the hold and
+ * rollback journal are written before anything changes; an application-consistent copy of the current live database
+ * is taken and RETAINED (`maintenance/<updateId>/rb-<id>.sqlite3`, never pruned); the report states the discarded counts, the
+ * activation time and that copy's checksum. The workspace ends in UPDATE_HOLD; after the operator clears it, the next
+ * upgrade goes through safe-upgrade (an existing Company is never migrated live at open). The runtime must be stopped.
+ * When the rollback window ends ("proven stable") is a Product decision (PG-09), not a time bound here.
+ */
+export async function rollbackSchemaUpdate(root: string, updateId: string, options: { clock?: Clock; discardPostUpdateWork?: boolean } = {}): Promise<RollbackReport> {
   const clock = options.clock ?? systemClock;
   const layout = layoutFor(path.resolve(root));
   if (!/^[0-9a-f-]{36}$/.test(updateId)) throw new QandeelError('VALIDATION_FAILED', 'updateId is an id', { field: 'updateId' });
@@ -260,17 +359,68 @@ export function rollbackSchemaUpdate(root: string, updateId: string, options: { 
   const snapshotPath = path.join(dir, 'pre-update.sqlite3');
   const journalPath = path.join(dir, 'journal.json');
   if (!existsSync(snapshotPath) || !existsSync(journalPath)) throw new QandeelError('NOT_FOUND', 'no pre-update snapshot is kept for that update (outside the rollback period)', { updateId });
-  const j = JSON.parse(readFileSync(journalPath, 'utf8')) as { snapshotSha256: string; fromVersion: number };
+  const j = JSON.parse(readFileSync(journalPath, 'utf8')) as { snapshotSha256: string; fromVersion: number; toVersion?: number; counts?: Record<string, number>; activatedAt?: string; activation?: Baseline };
   if (sha256Hex(readFileSync(snapshotPath)) !== j.snapshotSha256) throw new QandeelError('BACKUP_INTEGRITY', 'the pre-update snapshot does not match its journal', { updateId });
+
+  // Preflight (read-only): runtime stopped, nobody else has the database open, and what happened since activation.
   const probe = SqliteConnection.open({ path: layout.databasePath, busyTimeoutMs: DEFAULT_BUSY_TIMEOUT_MS });
+  let current: Baseline;
   try {
     const lease = probe.get<{ expires_at: string }>(`SELECT expires_at FROM runtime_leases WHERE name = 'supervisor'`);
     if (lease && lease.expires_at > now(clock)) throw new QandeelError('MAINTENANCE_REFUSED', 'stop the runtime before a rollback', { reason: 'RUNTIME_RUNNING' });
+    current = probe.snapshot(() => baselineOf(probe));
   } finally {
     probe.close();
   }
-  restoreLiveFromSnapshot(layout.databasePath, snapshotPath);
+  assertDatabaseNotInUse(layout.databasePath);
+  // The baseline is the activation state (the journal of an older release has only the pre-update counts: then the
+  // activation's own record counts as divergence — conservative, never silent).
+  const base = j.activation ?? { counts: j.counts ?? {}, lastAuditId: -1 };
+  const added = Object.fromEntries(Object.entries(current.counts).map(([t, n]) => [t, Math.max(0, n - (base.counts[t] ?? 0))]).filter(([, n]) => Number(n) > 0)) as Record<string, number>;
+  const auditAfter = base.lastAuditId < 0 ? (added.audit_events ?? 0) : Math.max(0, current.lastAuditId - base.lastAuditId);
+  const exists = auditAfter > 0 || Object.keys(added).length > 0;
+  const acknowledged = options.discardPostUpdateWork === true;
+  if (exists && !acknowledged) {
+    throw new QandeelError('MAINTENANCE_REFUSED', 'work was recorded after this update was activated; a rollback would discard it (acknowledge explicitly with --discard-post-update-work)', { reason: 'POST_UPDATE_WORK_EXISTS', updateId, auditRowsAfterActivation: auditAfter, workItemsAdded: added.work_items ?? 0, activatedAt: j.activatedAt ?? null });
+  }
+
+  // Hold and journal FIRST: from here on no ordinary open can run on a database in transition.
+  const rollbackId = newId();
+  const rollbackJournal = (state: string, code: string, extra: Record<string, unknown> = {}): void => {
+    writeFileSync(path.join(dir, `rollback-${rollbackId}.json`), `${JSON.stringify({ rollbackId, updateId, state, code, fromVersion: j.fromVersion, activatedAt: j.activatedAt ?? null, postUpdateWork: { exists, auditRowsAfterActivation: auditAfter, rowsAddedAfterActivation: added }, discardAcknowledged: acknowledged, at: now(clock), ...extra }, null, 2)}\n`);
+  };
+  rollbackJournal('ROLLBACK_STARTED', 'OPERATOR_ROLLBACK');
   mkdirSync(maintenanceDir(layout.root), { recursive: true });
   writeFileSync(path.join(maintenanceDir(layout.root), HOLD_FILE), `${JSON.stringify({ updateId, code: 'OPERATOR_ROLLBACK', fromVersion: j.fromVersion, toVersion: CURRENT_SCHEMA_VERSION, at: now(clock) })}\n`);
-  return { restored: true, fromVersion: j.fromVersion };
+
+  // The current live database (post-activation audit, the maintenance record, any work) is retained before it is replaced.
+  // A short name: SQLite's Windows VFS does not take paths beyond MAX_PATH, and the workspace path is the operator's.
+  const preRollbackFile = `rb-${rollbackId.slice(0, 8)}.sqlite3`;
+  let preRollbackSha: string;
+  try {
+    preRollbackSha = await consistentSnapshot(layout.databasePath, path.join(dir, preRollbackFile));
+  } catch (error) {
+    rollbackJournal('UPDATE_HOLD', 'PRE_ROLLBACK_SNAPSHOT_FAILED');
+    throw new QandeelError('MAINTENANCE_FAILED', 'the pre-rollback snapshot could not be taken; nothing was restored and the workspace stays in UPDATE_HOLD', { updateId, reason: 'PRE_ROLLBACK_SNAPSHOT_FAILED', hold: true }, { cause: error });
+  }
+  rollbackJournal('PRE_ROLLBACK_SNAPSHOT', 'RETAINED', { preRollbackSnapshot: { file: preRollbackFile, sha256: preRollbackSha } });
+  try {
+    restoreLiveFromSnapshot(layout.databasePath, snapshotPath);
+  } catch (error) {
+    rollbackJournal('UPDATE_HOLD', 'RESTORE_FAILED', { preRollbackSnapshot: { file: preRollbackFile, sha256: preRollbackSha } });
+    throw new QandeelError('MAINTENANCE_FAILED', 'the live database could not be restored from the pre-update snapshot; the workspace stays in UPDATE_HOLD (the pre-rollback snapshot is kept)', { updateId, reason: 'RESTORE_FAILED', hold: true }, { cause: error });
+  }
+  rollbackJournal('ROLLED_BACK', 'OPERATOR_ROLLBACK', { preRollbackSnapshot: { file: preRollbackFile, sha256: preRollbackSha } });
+  return {
+    restored: true,
+    updateId: updateId as Id,
+    rollbackId,
+    fromVersion: j.fromVersion,
+    activatedAt: j.activatedAt ?? null,
+    postUpdateWork: { exists, auditRowsAfterActivation: auditAfter, rowsAddedAfterActivation: added },
+    discardAcknowledged: acknowledged,
+    preRollbackSnapshot: { file: preRollbackFile, sha256: preRollbackSha },
+    hold: 'OPERATOR_ROLLBACK',
+    next: 'clear-update-hold, then safe-upgrade (the runtime runs it at start)',
+  };
 }

@@ -75,6 +75,10 @@ export const ERROR_CODES = [
   'LEARNING_GATE',
   'UPDATE_HOLD',
   'MAINTENANCE_REFUSED',
+  // R2 (K6): an existing Company with pending migrations is upgraded only through safe-upgrade; a maintenance step
+  // that failed after the hold was written (the hold stays in force).
+  'SCHEMA_UPDATE_REQUIRED',
+  'MAINTENANCE_FAILED',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

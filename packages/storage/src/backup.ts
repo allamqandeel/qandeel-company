@@ -18,7 +18,7 @@ import { QandeelError, assertId, canonicalJson, isQandeelError, newId, sha256Hex
 import { appendAudit, ts } from './internal.js';
 import { CURRENT_SCHEMA_VERSION, RELEASED_MIGRATIONS, appliedMigrations, loadReleasedMigrations, migrate, userVersion } from './migrations.js';
 import { SqliteConnection } from './sqlite/connection.js';
-import { CompanyStore, DEFAULT_BUSY_TIMEOUT_MS, storeContext } from './store.js';
+import { CompanyStore, DEFAULT_BUSY_TIMEOUT_MS, openRestoredStore, storeContext } from './store.js';
 import { assertLocalPathSyntax, containedPath, isWithin, layoutFor, openWorkspace, DATABASE_FILE } from './workspace.js';
 
 export const BACKUP_FORMAT = 'qandeel-company-backup/1';
@@ -494,7 +494,8 @@ export function restoreToIsolatedWorkspace(
   }
   const layout = openWorkspace(target.root, { create: true });
   copyFileSync(path.join(directory, DATABASE_FILE), layout.databasePath, fsConstants.COPYFILE_EXCL);
-  const restored = CompanyStore.open(layout.root, { clock });
+  // A disposable isolated copy: migrating it forward IS the compatibility check (never the live Company, R2-30).
+  const restored = openRestoredStore(layout.root, { clock, liveSchemaUpdate: true });
   try {
     const quick = restored.quickCheck();
     if (quick !== 'ok') throw new QandeelError('BACKUP_INTEGRITY', 'restored workspace failed quick_check', { backupId: verification.backupId });

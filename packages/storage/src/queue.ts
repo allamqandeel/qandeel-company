@@ -13,6 +13,7 @@ import {
   QandeelError,
   assertCode,
   boundedJson,
+  canTransition,
   classifyInterruptedRun,
   decideRetry,
   isId,
@@ -477,6 +478,32 @@ function hold(ctx: StoreContext, job: JobRecord, item: WorkItemRecord, trace: Tr
   appendEvent(ctx, 'job.reconciliation_required', 'job', job.id, trace, { code });
   appendAudit(ctx, 'job.reconciliation_required', 'job', job.id, trace, 'OK', code, {});
   return { jobState: 'RECONCILIATION_HOLD', runState: 'RECONCILIATION_REQUIRED', workItemState: wi.state };
+}
+
+/**
+ * Holds a non-terminal job (QUEUED, WAITING or CLAIMED) for reconciliation outside any run — the same hold as an
+ * uncertain settle (fence token bumped, lease released, content-free event and audit), used when the Company cannot
+ * know whether the work already happened (a clean restore past its backup point, R2-29). A CLAIMED job's orphaned run
+ * is closed INTERRUPTED / RECONCILIATION_REQUIRED. The Work Item is BLOCKED where the state machine allows; otherwise
+ * it keeps its state (the job hold alone stops dispatch). Resolved only through `txResolveReconciliation`.
+ * Returns false when the job is not live (nothing to hold).
+ */
+export function txHoldForReconciliation(ctx: StoreContext, jobId: Id, code: string): boolean {
+  const job = getJobRow(ctx, jobId);
+  if (job.state !== 'QUEUED' && job.state !== 'WAITING' && job.state !== 'CLAIMED') return false;
+  const trace: TraceContext = { correlationId: job.correlationId, causationId: job.currentRunId };
+  if (job.state === 'CLAIMED' && job.currentRunId && ctx.db.get(`SELECT 1 AS x FROM runs WHERE id = ? AND state = 'RUNNING'`, job.currentRunId)) {
+    endRun(ctx, job.currentRunId, 'INTERRUPTED', { failureCategory: 'INTERRUPTED', failureCode: code, disposition: 'RECONCILIATION_REQUIRED' });
+  }
+  const item = getWorkItemRow(ctx, job.workItemId);
+  if (canTransition(item.state, 'BLOCKED')) {
+    hold(ctx, job, item, trace, code);
+    return true;
+  }
+  setJob(ctx, job, 'RECONCILIATION_HOLD', { lastFailureCode: code, bumpToken: true });
+  appendEvent(ctx, 'job.reconciliation_required', 'job', job.id, trace, { code });
+  appendAudit(ctx, 'job.reconciliation_required', 'job', job.id, trace, 'OK', code, {});
+  return true;
 }
 
 /**
