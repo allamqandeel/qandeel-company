@@ -17,6 +17,7 @@ import { standardWorkOutcomeDefinition } from '@qandeel-company/mind';
 
 import {
   ArtifactStore,
+  AttentionStore,
   CURRENT_SCHEMA_VERSION,
   CompanyStore,
   DirectoryDestination,
@@ -275,6 +276,12 @@ describe('C6 recovery never repeats an uncertain external effect; a substituted 
         assert.equal(restored.getJob(job(readerItem) as never).state, 'QUEUED', 'effect-free governed work is not held');
         assert.equal(restored.getJob(job(noop) as never).state, 'QUEUED', 'effect-free C1 work is not held');
         assert.equal(restored.auditByAction('job.reconciliation_required').length, 2);
+        // R2 integration (R2-29 × R2-21 / R2-22): a job held before it ever ran has no attributed run, yet it is an
+        // Employee's work — it reaches Founder Attention and is the Founder's decision, never the C1 operator's.
+        const surfaced = (AttentionStore.for(restored).sync(), AttentionStore.for(restored).list({ state: 'OPEN' }).map((i) => i.sourceRef));
+        for (const id of [claim.fence.jobId, job(queuedItem)]) assert.ok(surfaced.includes(`queue_job:${id}`), `the restore hold ${id} reaches Founder Attention`);
+        assert.throws(() => restored.resolveReconciliation(job(queuedItem) as never, 'RETRY', 'LOST_DEVICE_REVIEWED', 'operator:cli'), (e: unknown) => isQandeelError(e), 'a never-run Employee job is not decided through the operator entry point');
+        assert.equal(restored.getJob(job(queuedItem) as never).state, 'RECONCILIATION_HOLD');
         // Resolvable per job through the existing reconciliation path (governed work through Founder authority).
         assert.equal(restored.resolveReconciliation(claim.fence.jobId as never, 'FAILED', 'LOST_DEVICE_REVIEWED', s.founder).jobState, 'FAILED');
         assert.equal(restored.resolveReconciliation(job(queuedItem) as never, 'RETRY', 'LOST_DEVICE_REVIEWED', s.founder).jobState, 'QUEUED');

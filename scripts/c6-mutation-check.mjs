@@ -199,6 +199,12 @@ const MUTATIONS = [
     runs: [RES],
   },
   {
+    id: 'c6-restore-hold-left-to-operator',
+    gate: 'R2 integration: a job held by a restore before it ever ran is an Employee\'s governed work — surfaced to and decided by the Founder, never the C1 operator',
+    edits: [{ file: `${STORAGE}/governance.js`, search: "OR EXISTS (SELECT 1 FROM work_items gw WHERE gw.id = j.work_item_id AND gw.owner_ref GLOB 'employee:*'))", replace: ')', expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
     id: 'c6-existing-company-migrated-at-open',
     gate: 'R2-30: an existing Company with pending migrations is never migrated live at open (safe-upgrade only)',
     edits: [{ file: `${STORAGE}/store.js`, search: 'refuseExistingCompany: options.liveSchemaUpdate !== true,', replace: 'refuseExistingCompany: false,', expectedCount: 1 }],

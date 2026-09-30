@@ -13,7 +13,7 @@
 import { QandeelError, assertCode, assertId, newId, type Timestamp } from '@qandeel-company/domain';
 import { warrantsFounderAttention, type AttentionLane, type AttentionLevel, type MessagePurpose } from '@qandeel-company/governance';
 
-import { founder, founderAdminWrite } from './governance.js';
+import { GOVERNED_JOB_SQL, founder, founderAdminWrite } from './governance.js';
 import { mapAttentionItem, mustRow, type AttentionItemRecord } from './founder-records.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
 import { txResilienceStatus } from './resilience.js';
@@ -115,7 +115,7 @@ export function collectSignals(ctx: StoreContext): Signal[] {
   }
   for (const j of ctx.db.all<{ id: string; owner_ref: string; updated_at: string }>(
     `SELECT j.id, w.owner_ref, j.updated_at FROM queue_jobs j JOIN work_items w ON w.id = j.work_item_id WHERE j.state = 'RECONCILIATION_HOLD'
-        AND EXISTS (SELECT 1 FROM run_attributions a JOIN runs r ON r.id = a.run_id WHERE r.job_id = j.id)
+        AND ${GOVERNED_JOB_SQL}
         AND NOT EXISTS (SELECT 1 FROM tool_invocations t WHERE t.work_item_id = j.work_item_id AND t.state = 'RECONCILIATION_REQUIRED')
       ORDER BY j.created_at, j.id`,
   )) {

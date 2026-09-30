@@ -459,9 +459,16 @@ export function txReassignEmployee(ctx: StoreContext, id: Id, input: { roleRef?:
   return next;
 }
 
-/** A job is governed when any of its runs was attributed to an Employee (C2 execution). */
+/**
+ * A job is governed when any of its runs was attributed to an Employee (C2 execution) OR its Work Item is an
+ * Employee's (R2: a job held by a clean restore before it ever ran has no attributed run, yet its work may reach
+ * an external effect — it is the Founder's decision, never the C1 operator's opaque entry point, R1-04). One SQL
+ * predicate over a `queue_jobs` alias `j`, shared with Founder Attention.
+ */
+export const GOVERNED_JOB_SQL = `(EXISTS (SELECT 1 FROM run_attributions ga JOIN runs gr ON gr.id = ga.run_id WHERE gr.job_id = j.id)
+  OR EXISTS (SELECT 1 FROM work_items gw WHERE gw.id = j.work_item_id AND gw.owner_ref GLOB 'employee:*'))`;
 export function isGovernedJob(ctx: StoreContext, jobId: Id): boolean {
-  return ctx.db.get('SELECT 1 AS x FROM run_attributions a JOIN runs r ON r.id = a.run_id WHERE r.job_id = ? LIMIT 1', jobId) !== undefined;
+  return ctx.db.get(`SELECT 1 AS x FROM queue_jobs j WHERE j.id = ? AND ${GOVERNED_JOB_SQL}`, jobId) !== undefined;
 }
 
 /**
