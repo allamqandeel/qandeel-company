@@ -390,9 +390,9 @@ const MUTATIONS = [
     runs: [KERNEL, STORE],
   },
   {
-    id: 'fb1-proposal-misses-new-events',
-    gate: 'an undecided proposal is re-proposed when new adverse source events arrive, so its decision covers every event it explains (FB-1 B2)',
-    edits: [{ file: `${STORAGE}/improvement.js`, search: ' || adverseSourceEvents(ctx, wid).some((e) => refs.includes(e.sourceRef) && !current.evidenceRefs.includes(e.sourceRef))', replace: '', expectedCount: 1 }],
+    id: 'rb2-pending-proposal-replaced-by-new-evidence',
+    gate: 'new adverse evidence never supersedes an undecided (or Founder-escalated) proposal: new events wait for its decision, then get their own generation (D-R2-20, RB-2)',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: "const pending = current !== null && current.state === 'PROPOSED' ? current : null;", replace: "const pending = (current !== null && current.state === 'PROPOSED' && due && setAttributionState(ctx, current, 'SUPERSEDED', SYSTEM_EVALUATOR_REF, 'evidence.changed'), null);", expectedCount: 1 }],
     runs: [STORE],
   },
   // --- C6-R1: the Founder is not the operational bottleneck, and judgment never becomes execution authority ---
