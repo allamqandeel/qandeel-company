@@ -608,7 +608,15 @@ explicit Founder-delegated grant). The "confirmation requested" notes on D-R2-06
 | FA-1 | `fa2-herd-storage.mjs` (10 waiters of 5 000 on one 8 000 envelope) | "N=10 waiters served 10; runs 66 (minimum 11); budget.refused 55; events 429" |
 | FB-1 | `f1-effect-time.mjs` (all mistakes before training, clean rework after) | "NO_IMPROVEMENT SAME_MISTAKE_RECURRED \| counts the pre-training mistakes as recurrence: true" |
 | FB-2 | `f3-portable-crash.mjs crash / inspect` (process exit right after the DB copy) | "update hold: null", "ordinary (runtime) open: OK, schema 11", jobs CLAIMED / QUEUED, 0 `recovery.clean_restore` rows |
-| AC-01 | `txGoalAct` (`goals.ts` ~117) by inspection, proved by the fail-first tests of §16.4 | `goal.derive` checks the Director seat only; `goal.link` checks neither seat nor grant |
+| AC-01 | `ac01-failfirst.mjs` (a placed `director.product` with NO explicit goal grant — no `org.goal.*` capability exists at the start head — acts from its governed run through `recordGoalAct`) | "seat + NO grant, goal.derive: DONE GOAL_DERIVED"; "seat + NO grant, goal.link: DONE GOAL_LINKED" — the unauthorized success reproduced (`txGoalAct`, `goals.ts` ~117: derive checks the seat only, link checks neither) |
+
+All four were run on the start-head code (the built worktree at `a56bc06`, whose `packages/` tree is identical to
+`65319ec`; `65319ec` changed documents only).
+
+**Integration ownership.** The four corrections are implemented in parallel, one isolated worktree each, but the
+orchestrator is the sole integration owner of migration 0011 and of every shared cross-family invariant (the
+reservation / headroom check, job-state transitions, the store-open refusal chain, the grant decision): conflicting
+schema or design choices are resolved by design review at integration, never by a mechanical merge.
 
 `security-review` (G1) was attempted again and failed at launch: its first step is a shell command
 (`git diff origin/HEAD...`) and the Bash tool does not run on this host. The environment was not changed; the manual
