@@ -424,4 +424,63 @@ Everything else in §8.5 stays residual.
 | m-54 | A start within the previous supervisor lease's TTL (≤ 30 s after a crash) with a pending migration refuses (`RUNTIME_RUNNING`) instead of waiting — fail-closed |
 | m-55 | A Founder-REJECTED attribution leaves its negative pending (disclosed, holds readiness) — the Founder's call; correcting causes is API-only (PG-04) |
 | m-56 | `REASONING_ABOVE_CEILING`, `INTEGRITY_FAILURE` and storage recovery / interrupt codes are outside the classified run-failure families (PG-11) |
-| m-57 | The PERSONAL promotion path performs no canonical-truth check at promotion time (existing C3 proof asserts it on the policy path) — to be confirmed by the re-review |
+| m-57 | ~~The PERSONAL promotion path performs no canonical-truth check at promotion time~~ — refuted by the re-review: canonical truth is re-checked on insert |
+
+## 13. Fresh independent re-review (head `9a8f537`)
+
+Four reviewers who wrote none of the fixes read the corrected code in isolated worktrees, re-ran every original
+finder probe against it, ran scenarios the fixers did not author, and hunted for regressions (RR1 authority /
+review / Founder; RR2 Work OS / money / tool; RR3 C6 / C3; RR4 resilience / proof / cross-cluster seams). RR4
+also rebuilt real pre-R2 (schema 10) Companies from the previous release's acceptance runs and packages.
+
+### 13.1 Original findings re-verified
+
+FIXED at the root, with the original probe now refused / correct: R2-01 (plus delegate-declares-on-parent and
+self-delegation refused), R2-02, R2-05, R2-06, R2-07, R2-08, R2-09, R2-10, R2-11, R2-12 (named cases), R2-13, R2-14,
+R2-15 (as specified), R2-16, R2-17, R2-19, R2-20, R2-21 (API), R2-22, R2-23 (reported cases), R2-24 (rail), R2-25,
+R2-26 (join and session scope reset in `finally`; savepoints sound), R2-27, R2-28, R2-29 (portable restore), R2-30,
+R2-31, R2-32 (neutering the trigger now fails the proof), R2-33, R2-34, R2-35; m-01, m-05, m-11, m-12, m-15, m-17,
+m-19. The Founder's real pre-R2 workspace upgrades 10 → 11 automatically at start (Command Center path included,
+Arabic path included, `founder_action_previews` rows kept). AC-01 untouched. Six new mutations were applied by
+hand and each failed on its intended assertion (no load-error catches). All seven mutation suites pass on the
+merged tree (c1 6, c2 21, c3 46, r1 57, c4 39, c5 25, c6 65); `npm test` 683 / 683.
+
+Partly fixed: R2-03 (lost wakes closed, but see RR2-1), R2-04 (escalation closed, but see RR2-2), R2-18 (pool
+dispute escalates, but see RR3-A).
+
+### 13.2 New findings of the re-review
+
+| ID | Severity | Family (cycle) | Finding | Reproduction |
+|---|---|---|---|---|
+| RR2-1 | MAJOR | R2-03 (2nd) | The headroom-gated budget wake gates on "any headroom", not on what the waiter was refused for; every chain shares the Company level, so every settle wakes every parked waiter, which re-parks — durable runs / events / audit grow ≈ settles × waiters and real work is starved (no spend) | `rr2/r2c/rr1-wake-storm.mjs` (N=20: +200 runs, 1 300 events per 10 settles; N=150: sibling 7× slower) |
+| RR2-2 | MAJOR | R2-04 (2nd) | A FINAL refused for a pending clarification tells the model nothing; a delegator can spend every turn to MAX_TURNS and FAIL, leaving the handoff and the child open under a FAILED parent | `rr2/r2-ah/rr3-clarify-spin.mjs` |
+| RR2-5 | MINOR | R2-05 seam | A CANCELLED parent leaves an ACCEPTED delegation whose retained child later reworks | `rr2/r2-ah/rr5-cancel-parent-open-handoff.mjs` |
+| RR2-3 | MINOR | R2-12 | `NO_ELIGIBLE_ROUTE` classified PROVIDER though mostly configuration / privacy / input gates | `rr2/r2-e/rr4-no-route-family.mjs` |
+| RR2-4 | MINOR | R2-06 | A COMPLETED (no required review) child can be re-released through optional review after its parent was lowered below its cap (money still bounded by the chain check) | `rr2/r2c/rr2-floor-revive.mjs` |
+| RR2-6 | PROOF / MINOR | R2-12 / R2-05 | C1-layer run codes missing from the vocabulary table; no repair of rows closed early by 0010 (m-49) | source |
+| RR3-A | MAJOR | R2-17 / R2-18 (2nd) | A Founder REJECT of a proposed cause is a dead end: the production intent cannot correct causes, nothing re-proposes, the intervention stays NOT_YET_TESTED forever and retraining waits forever | `rr3/pa-founder-reject-dead-end.mjs` |
+| RR3-B | MAJOR | R2-18 (introduced) | Non-adverse negatives (EFFICIENCY / INDEPENDENCE) on qualified items are counted "pending attribution" though no attribution can exist — readiness held 90 days | `rr3/pb-nonadverse-negative-holds-readiness.mjs` |
+| RR3-E | MAJOR (borderline) | R2-15 (2nd) | A comparable item started before training, reworked after it and failed is neither baseline nor follow-up — a final IMPROVEMENT_OBSERVED follows | `rr3/pd-cross-code-and-rework-timing.mjs` |
+| RR3-D | MINOR | R2-14 | Latest live evaluation across codes can hide a qualified outcome under a stricter code; tie-break differs between two readers (no production caller passes another code) | same |
+| RR3-F | MINOR | docs | `txApplyJudgment` docstring still says FAIL rejects attributions (D-R2-06 records the amendment) | source |
+| RR3-G | MINOR | R2-27 | PERSONAL promotion skips the policy's DUPLICATE refusal (a second equal memory) | source |
+| RR1-1 | MAJOR | R2-23 / R2-24 (2nd) | A verb inside a goal's title overrides the command's own verb: "cancel the accept vendor returns goal" previews and confirms approve-and-activate | `rr1/n2-goal-verb-crossover.mjs` |
+| RR1-2 | MAJOR | R2-02 / R2-08 (2nd; introduced by the m-13 fold) | Open judgments now count toward reviewer capacity, but freed capacity wakes nothing and the startup sweep has no clause for a waiting ACTION request — C6 judgments starve a blocking review; the executor stays stranded across restarts | `rr1/r2-ah/n3-judgments-starve-reviews.mjs` |
+| RR1-3 | MINOR | R2-07 | The MANAGER exemption at decision does not re-check that the holder is still the executor's manager | source |
+| RR1-6 | MINOR | R2-21 | PROMOTION_DECIDE and SYSTEMIC ADDRESSED have no attention source / UI entry (API only) | source |
+| RR1-7 | MINOR / PG | R2-11 | Plan instructions + a large action can exceed the 12 000-character reviewer bound (refused until re-planned); a restore-held never-run job's primary rail button reads "Confirm completed" | source |
+| RR4-1 | MAJOR | R2-29 / R2-30 (2nd) | `restore-check` leaves a startable, live-migrated Company with no restore holds at an operator path — two Companies can perform the same external effect | `rr4/p4-restore-check-startable.mjs` |
+| RR4-2 | MINOR | m-53 | `rmSync` remains at other maintenance / resilience sites; a prune racing a reader under an Arabic path kills the process | `rr4/p3-rmsync-locked.mjs`, `rr4/p6-prune-locked.mjs` |
+| RR4-3 | MINOR | R2-31 | The automatic upgrade at start writes lifecycle audit rows, so every rollback needs the discard acknowledgement | `rr4/p5-rollback-after-autostart.mjs` |
+| RR4-4 | MINOR | R2-30 | A start within ~30 s of a crash on a new release is refused (`RUNTIME_RUNNING`) instead of waiting (m-54) | source |
+| RR4-5 | PROOF / MINOR | R2-33 | 0011 is not yet frozen (it joins at release); a frozen-file edit reports "SELF-TEST FAILED" (still exit 2, file named) | experiment |
+| RR1-4 / RR1-5 | — | — | c1 anchor count and missing decision records — already closed in `989e9fe` (the re-review ran on `9a8f537`) | — |
+
+PG note (extends PG-01): a delegator writes the child's version-1 plan, not bound by the parent's plan — a FOUNDER
+key on the parent can be dropped by delegating the same action (bounded by delegation limits; Stage 11 silent).
+
+**Disposition.** Eight MAJORs, all in families already corrected once (none is a new family). Under the brief's
+rule this is the **second and last** correction cycle for each of them: one architecture-level correction per
+family (§14), then a focused re-verification. A third recurrence of any of these families stops R2 and returns it
+to the Technical Lead / Founder as an architecture problem. MINORs are fixed only where narrow and in the same root
+change (RR2-3, RR2-5, RR2-6 vocabulary, RR1-3, RR3-F, RR4-2, RR4-3); the rest are residuals.
