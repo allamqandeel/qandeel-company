@@ -10,7 +10,7 @@ import { describe, test } from 'node:test';
 import { QandeelError, isQandeelError, type Id } from '@qandeel-company/domain';
 
 import { AcademyStore, MemoryStore } from '../src/index.js';
-import { beginGovernedRun, claimJob, containProviderFault, recordStepResult, recordToolIntent, recordToolResult, reserveBudget, settle, settleReservation, type Claim } from '../src/runtime-authority.js';
+import { beginGovernedRun, claimJob, containProviderFault, holdReservation, recordStepResult, recordToolIntent, recordToolResult, recoverBudgetWaits, releaseReservation, reserveBudget, settle, settleReservation, type Claim } from '../src/runtime-authority.js';
 import { storeContext } from '../src/store.js';
 import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
 import { C2_KINDS, GOVERNED_KIND, claimGoverned, governedItem, seed, testManifest, type Seed } from './c2-helpers.js';
@@ -384,6 +384,123 @@ describe('R1-06: a C2 wait decided while the job is still claimed is not lost', 
       settle(h.store, c2.claim.fence, { type: 'WAIT', reasonCode: 'BUDGET_EXHAUSTED' }, { backoff });
       assert.equal(jobState(h, other), 'WAITING');
     });
+  });
+});
+
+describe('R2-03: a Work Item parked BUDGET_EXHAUSTED resumes when real headroom returns, not only on a cap raise', () => {
+  const call = (h: Harness, s: Seed, claim: Claim, money: number) => ({ purpose: 'MODEL_CALL' as const, attemptKind: 'PRIMARY' as const, deploymentId: s.deploymentId, priceCardId: s.priceCardId, routePolicyId: s.policyId, money, tokens: 100, contextManifestId: testManifest(h, claim.fence, s.employee.id) });
+  const usage = { inputTokens: 1, outputTokens: 1, withinBounds: true, sessionId: null, outcome: 'OK' as const };
+
+  test('a sibling settling below its worst case, or a Founder release, wakes exactly the waiters that now have headroom', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store, { employeeCap: 8_000 });
+      // C exhausts its OWN Work Item budget with a held reservation: no sibling's release can help it.
+      const c = governedItem(h, s, s.employee, { cap: 1_000 });
+      const cc = claimFor(h, c, 'wc').claim;
+      const held = reserveBudget(h.store, cc.fence, call(h, s, cc, 1_000));
+      assert.ok(held.ok);
+      if (!held.ok) return;
+      holdReservation(h.store, cc.fence, held.reservation.id, 'PROVIDER_TIMEOUT');
+      assert.equal(reserveBudget(h.store, cc.fence, call(h, s, cc, 100)).ok, false);
+      settle(h.store, cc.fence, { type: 'WAIT', reasonCode: 'BUDGET_EXHAUSTED' }, { backoff });
+      // A's transient worst case holds the shared Employee envelope; B parks on it.
+      const a = governedItem(h, s, s.employee, { cap: 8_000 });
+      const ca = claimFor(h, a, 'wa').claim;
+      const ra = reserveBudget(h.store, ca.fence, call(h, s, ca, 5_000));
+      assert.ok(ra.ok);
+      const b = governedItem(h, s, s.employee, { cap: 8_000 });
+      const cb = claimFor(h, b, 'wb').claim;
+      assert.deepEqual(reserveBudget(h.store, cb.fence, call(h, s, cb, 5_000)), { ok: false, code: 'BUDGET_EXHAUSTED', detail: 'EMPLOYEE:MONEY' });
+      settle(h.store, cb.fence, { type: 'WAIT', reasonCode: 'BUDGET_EXHAUSTED' }, { backoff });
+      assert.deepEqual([jobState(h, b), jobState(h, c)], ['WAITING', 'WAITING']);
+      const g0 = h.store.wakeGeneration();
+      // A's call comes back cheap: the unused worst case returns to the envelope.
+      if (ra.ok) settleReservation(h.store, ca.fence, ra.reservation.id, usage);
+      assert.equal(jobState(h, b), 'QUEUED', 'the waiter is woken in the settle transaction');
+      assert.ok(h.store.wakeGeneration() > g0, 'the durable wake generation advanced with it');
+      assert.equal(jobState(h, c), 'WAITING', 'no headroom on its own Work Item budget: it stays asleep (no wake storm)');
+      // The Founder releases C's held reservation: C's own budget has headroom again.
+      s.gov.reconcileReservation(s.founder, held.reservation.id, { kind: 'RELEASE' }, 'founder.not_billed');
+      assert.equal(jobState(h, c), 'QUEUED');
+    } finally {
+      h.close();
+    }
+  });
+
+  test('headroom returned while the waiter was still claimed wakes it at its WAIT settle; nothing returned keeps it parked', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store, { employeeCap: 8_000 });
+      const a = governedItem(h, s, s.employee, { cap: 8_000 });
+      const ca = claimFor(h, a, 'wa').claim;
+      const ra = reserveBudget(h.store, ca.fence, call(h, s, ca, 5_000));
+      const b = governedItem(h, s, s.employee, { cap: 8_000 });
+      const cb = claimFor(h, b, 'wb').claim;
+      assert.equal(reserveBudget(h.store, cb.fence, call(h, s, cb, 5_000)).ok, false);
+      if (ra.ok) releaseReservation(h.store, ca.fence, ra.reservation.id, 'CALL_NOT_SENT'); // B's job is still CLAIMED
+      settle(h.store, cb.fence, { type: 'WAIT', reasonCode: 'BUDGET_EXHAUSTED' }, { backoff });
+      assert.equal(jobState(h, b), 'QUEUED');
+      h.clock.advance(1_000);
+      const cb2 = claimFor(h, b, 'wb2').claim;
+      const rb = reserveBudget(h.store, cb2.fence, call(h, s, cb2, 7_000));
+      assert.ok(rb.ok);
+      assert.equal(reserveBudget(h.store, cb2.fence, call(h, s, cb2, 5_000)).ok, false);
+      settle(h.store, cb2.fence, { type: 'WAIT', reasonCode: 'BUDGET_EXHAUSTED' }, { backoff });
+      assert.equal(jobState(h, b), 'WAITING', 'only its own reservation moved during the run: no free wake');
+    } finally {
+      h.close();
+    }
+  });
+
+  test('restart: startup recovery wakes a waiter whose headroom returned while nothing could wake it', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store, { employeeCap: 8_000 });
+      const a = governedItem(h, s, s.employee, { cap: 8_000 });
+      const ca = claimFor(h, a, 'wa').claim;
+      const ra = reserveBudget(h.store, ca.fence, call(h, s, ca, 8_000));
+      const b = governedItem(h, s, s.employee, { cap: 8_000 });
+      const cb = claimFor(h, b, 'wb').claim;
+      assert.equal(reserveBudget(h.store, cb.fence, call(h, s, cb, 5_000)).ok, false);
+      settle(h.store, cb.fence, { type: 'WAIT', reasonCode: 'BUDGET_EXHAUSTED' }, { backoff });
+      // A's worst case (the whole envelope) stays held (its outcome is uncertain): there is no headroom, so the pass wakes nothing.
+      if (ra.ok) holdReservation(h.store, ca.fence, ra.reservation.id, 'PROVIDER_TIMEOUT');
+      assert.equal(jobState(h, b), 'WAITING');
+      assert.equal(recoverBudgetWaits(h.store, h.supervisor), 0, 'still no headroom: the pass wakes nothing');
+      // A waiter stranded by a database written before R2-03 (headroom returned; no freeing path woke it then).
+      const employee = s.gov.budgetFor('EMPLOYEE', s.employee.id);
+      const ctx = storeContext(h.store);
+      ctx.db.immediate('test: pre-R2-03 stranded waiter', () => ctx.db.run(`UPDATE budgets SET reserved_money = 0, version = version + 1 WHERE id = ?`, employee?.id as Id));
+      assert.equal(recoverBudgetWaits(h.store, h.supervisor), 1);
+      assert.equal(jobState(h, b), 'QUEUED');
+    } finally {
+      h.close();
+    }
+  });
+
+  test('m-05: a cap raise wakes a waiter however many Work Items the raised budget has', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store, { employeeCap: 8_000 });
+      for (let i = 0; i < 1_001; i++) {
+        const { workItem } = h.store.createWorkItem({ objective: `old ${i}`, ownerRef: s.employee.ref, processorKind: GOVERNED_KIND, processorInput: { taskClass: 'draft.memo', dataClass: 'D1', instructions: 'x' } });
+        s.gov.createBudget(s.founder, { scope: 'WORK_ITEM', scopeId: workItem.id, capMoney: 1, capTokens: 1, reasonCode: 'seed' });
+      }
+      const a = governedItem(h, s, s.employee, { cap: 8_000 });
+      const ca = claimFor(h, a, 'wa').claim;
+      const ra = reserveBudget(h.store, ca.fence, call(h, s, ca, 5_000));
+      if (ra.ok) holdReservation(h.store, ca.fence, ra.reservation.id, 'PROVIDER_TIMEOUT');
+      const b = governedItem(h, s, s.employee, { cap: 8_000 });
+      const cb = claimFor(h, b, 'wb').claim;
+      assert.equal(reserveBudget(h.store, cb.fence, call(h, s, cb, 5_000)).ok, false);
+      settle(h.store, cb.fence, { type: 'WAIT', reasonCode: 'BUDGET_EXHAUSTED' }, { backoff });
+      const employee = s.gov.budgetFor('EMPLOYEE', s.employee.id);
+      s.gov.changeBudgetCap(s.founder, employee?.id as Id, { capMoney: 20_000, capTokens: employee?.capTokens as number, reasonCode: 'founder.raise' });
+      assert.equal(jobState(h, b), 'QUEUED');
+    } finally {
+      h.close();
+    }
   });
 });
 

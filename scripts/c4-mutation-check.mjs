@@ -124,6 +124,24 @@ const MUTATIONS = [
     runs: [RUNTIME],
   },
   {
+    id: 'c4-open-handoff-set-narrowed',
+    gate: 'R2-04: one open-handoff set — an escalated handoff parks the delegator (no re-run per WAIT settle)',
+    edits: [{ file: `${STORE}/org-core.js`, search: "export const OPEN_HANDOFF_STATES = ['OFFERED', 'ACCEPTED', 'CLARIFICATION_REQUESTED', 'ESCALATED'];", replace: "export const OPEN_HANDOFF_STATES = ['OFFERED', 'ACCEPTED'];", expectedCount: 1 }],
+    runs: [ORG, RUNTIME],
+  },
+  {
+    id: 'c4-delegator-waits-on-own-clarification',
+    gate: 'R2-04: a delegate\'s pending question is answered by the delegator\'s next turn, never waited on',
+    edits: [{ file: `${RT}/c2/employee-task.js`, search: '                    if (gov.clarificationsRequested() > 0)\n                        continue;\n', replace: '                    /* mutation: the delegator parks on its own pending question */\n', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'c4-restart-answers-clarification',
+    gate: 'm-01: starting work again accepts only an OFFERED handoff (a pending question stays open)',
+    edits: [{ file: `${STORE}/org-core.js`, search: "AND delegate_employee_id = ? AND state = 'OFFERED'`", replace: "AND delegate_employee_id = ? AND state IN ('OFFERED', 'CLARIFICATION_REQUESTED')`", expectedCount: 1 }],
+    runs: [ORG],
+  },
+  {
     id: 'c4-p07-reservation-unchecked',
     gate: 'P-07: the reserving transaction refuses a charged-failure deployment for the same Work Item',
     edits: [{ file: `${STORE}/governed-writes.js`, search: 'if (chargedExclusions(ctx, a.workItemId).includes(input.deploymentId))', replace: 'if (false)', expectedCount: 1 }],

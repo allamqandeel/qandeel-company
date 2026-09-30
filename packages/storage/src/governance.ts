@@ -78,6 +78,7 @@ import {
 } from '@qandeel-company/governance';
 
 import {
+  CHILD_CAN_SPEND_SQL,
   budgetChain,
   budgetFor,
   chargedExclusions,
@@ -91,6 +92,7 @@ import {
   resolvePrincipal,
   setEmployeeState,
   settleReservationTx,
+  wakeBudgetWaiters,
   wakeWorkItemJob,
   writeEmployeeHistory,
   type Principal,
@@ -1096,15 +1098,17 @@ export class GovernanceStore {
         const parent = getBudgetRow(ctx, b.parentId);
         if (capMoney > parent.capMoney || capTokens > parent.capTokens) throw new QandeelError('BUDGET_EXHAUSTED', 'a child budget cap cannot exceed its parent cap', { budgetId: b.id, parentId: parent.id });
       }
-      const children = ctx.db.get<{ m: number | null; t: number | null }>('SELECT MAX(cap_money) AS m, MAX(cap_tokens) AS t FROM budgets WHERE parent_id = ?', b.id);
-      if (capMoney < Number(children?.m ?? 0) || capTokens < Number(children?.t ?? 0)) throw new QandeelError('VALIDATION_FAILED', 'a cap cannot drop below a child budget\'s cap; lower the children first', { budgetId: b.id });
+      // R2-06: only children that can still spend hold the cap up — an OPEN budget whose Work Item can still execute
+      // (not terminal, not past completion unless its review can send it back) or whose run is still RUNNING.
+      // Finished children keep their history; every reservation still checks every level of its chain.
+      const children = ctx.db.get<{ m: number | null; t: number | null }>(`SELECT MAX(c.cap_money) AS m, MAX(c.cap_tokens) AS t FROM budgets c WHERE c.parent_id = ? AND ${CHILD_CAN_SPEND_SQL}`, b.id);
+      if (capMoney < Number(children?.m ?? 0) || capTokens < Number(children?.t ?? 0)) throw new QandeelError('VALIDATION_FAILED', 'a cap cannot drop below the cap of a child that can still spend; lower the children first', { budgetId: b.id });
       if (capMoney + b.overrunMoney < b.reservedMoney + b.spentMoney || capTokens + b.overrunTokens < b.reservedTokens + b.spentTokens) throw new QandeelError('VALIDATION_FAILED', 'a cap cannot drop below what is already reserved and spent', { budgetId: b.id });
       ctx.db.run('UPDATE budgets SET cap_money = ?, cap_tokens = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?', capMoney, capTokens, at(ctx), b.id, b.version);
       const actor = resolvePrincipal(ctx, actorRef);
       budgetHistory(ctx, b.id, 'CAP_CHANGED', capMoney, capTokens, assertCode(input.reasonCode, 'reasonCode'), actor.ref);
-      if (capMoney > b.capMoney || capTokens > b.capTokens) {
-        for (const w of workItemsUnderBudget(ctx, b)) wakeWorkItemJob(ctx, w, ['BUDGET_EXHAUSTED'], 'budget.raised');
-      }
+      // R2-03 / m-05: every waiter under the raised level that now has real headroom (no window of Work Items).
+      if (capMoney > b.capMoney || capTokens > b.capTokens) wakeBudgetWaiters(ctx, [b.id], 'budget.raised');
       return getBudgetRow(ctx, b.id);
     });
   }
@@ -1270,9 +1274,11 @@ export class GovernanceStore {
         if (e.sm !== b.spentMoney || e.st !== b.spentTokens) violations.push(`budget ${b.id} (${b.scope}) spent ${b.spentMoney}/${b.spentTokens} != usage ${e.sm}/${e.st}`);
         if (b.reservedMoney + b.spentMoney > b.capMoney + b.overrunMoney || b.reservedTokens + b.spentTokens > b.capTokens + b.overrunTokens) violations.push(`budget ${b.id} exceeds its cap`);
       }
+      // R2-06: the child-within-parent invariant binds the children that can still spend (a finished one keeps its cap).
+      const live = new Set(ctx.db.all<{ id: string }>(`SELECT c.id FROM budgets c WHERE ${CHILD_CAN_SPEND_SQL}`).map((r) => r.id));
       for (const b of budgets) {
         const parent = b.parentId ? byId.get(b.parentId) : undefined;
-        if (parent && (b.capMoney > parent.capMoney || b.capTokens > parent.capTokens)) violations.push(`budget ${b.id} (${b.scope}) cap exceeds its parent's cap`);
+        if (parent && live.has(b.id) && (b.capMoney > parent.capMoney || b.capTokens > parent.capTokens)) violations.push(`budget ${b.id} (${b.scope}) cap exceeds its parent's cap`);
       }
       const n = (sql: string): number => Number(ctx.db.get<{ n: number }>(sql)?.n ?? 0);
       const usageOnOpen = n(`SELECT COUNT(*) AS n FROM usage_records u JOIN budget_reservations r ON r.id = u.reservation_id WHERE r.state <> 'SETTLED'`);
@@ -1423,17 +1429,6 @@ function budgetSubjectRef(ctx: StoreContext, b: BudgetRecord): string | null {
     return a ? `employee:${a.employee_id}` : null;
   }
   return null;
-}
-
-/** Work Items whose chain includes budget `b` (targeted wake after a cap increase). */
-function workItemsUnderBudget(ctx: StoreContext, b: BudgetRecord): Id[] {
-  const leaves = ctx.db.all<{ scope_id: string }>(
-    `WITH RECURSIVE sub(id, scope, scope_id) AS (SELECT id, scope, scope_id FROM budgets WHERE id = ?
-       UNION ALL SELECT c.id, c.scope, c.scope_id FROM budgets c JOIN sub ON c.parent_id = sub.id)
-     SELECT scope_id FROM sub WHERE scope = 'WORK_ITEM' LIMIT 1000`,
-    b.id,
-  );
-  return leaves.map((r) => r.scope_id as Id);
 }
 
 /** Builds the routing inputs (policy + deployment views) for one task class. */

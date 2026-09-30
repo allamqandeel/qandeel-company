@@ -190,7 +190,12 @@ export const employeeTaskProcessor: GovernedProcessor = {
         // Accountability stays with the delegator (Stage 8 §23): work with open handoffs does not finish; it
         // waits (zero tokens) and resumes when a delegate answers or its work ends.
         if (gov.openHandoffs() > 0) {
-          await save(ctx, { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null });
+          s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null };
+          await save(ctx, s);
+          // R2-04: a delegate's pending question is this run's to answer (`handoff.clarify`): parking would wait on
+          // itself. The loop continues to the next model turn (bounded by maxTurns); every other open handoff —
+          // offered, accepted, escalated to the Founder — parks the work at zero tokens.
+          if (gov.clarificationsRequested() > 0) continue;
           return { type: 'WAIT', reasonCode: 'AWAITING_DELEGATION' };
         }
         await save(ctx, { ...s, phase: 'FINAL', pending: null, summaryCode: proposal.summaryCode });

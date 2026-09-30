@@ -292,7 +292,7 @@ const MUTATION_PINS = {
   [MUTATION_CHECK]: { script: 'c1:mutation', ids: ['claim-without-supervisor-verification', 'recovery-without-supervisor-verification', 'heartbeat-without-wake-reconciliation', 'backup-finalization-without-retry', 'backup-failure-leaves-attempt', 'backup-record-not-idempotent'] },
   [C2_MUTATION_CHECK]: {
     script: 'c2:mutation',
-    ids: ['authority-no-default-deny', 'authority-r4-not-founder-only', 'authority-r3-without-founder-approval', 'governance-admin-not-founder-only', 'approval-self-decision-allowed', 'reservation-without-headroom-check', 'ineligible-employee-can-run', 'denied-tool-reaches-driver', 'idempotent-replay-removed', 'call-despite-refused-reservation', 'd4-external-egress-allowed', 'silent-expensive-fallback', 'processor-can-widen-egress', 'tool-result-does-not-raise-class', 'escalation-on-self-reported-uncertainty', 'founder-ref-is-authentication', 'activation-without-certification', 'd3-external-egress-allowed', 'd3-external-reservation-allowed'],
+    ids: ['authority-no-default-deny', 'authority-r4-not-founder-only', 'authority-r3-without-founder-approval', 'governance-admin-not-founder-only', 'approval-self-decision-allowed', 'reservation-without-headroom-check', 'ineligible-employee-can-run', 'denied-tool-reaches-driver', 'idempotent-replay-removed', 'call-despite-refused-reservation', 'd4-external-egress-allowed', 'silent-expensive-fallback', 'processor-can-widen-egress', 'tool-result-does-not-raise-class', 'escalation-on-self-reported-uncertainty', 'founder-ref-is-authentication', 'activation-without-certification', 'd3-external-egress-allowed', 'd3-external-reservation-allowed', 'budget-floor-counts-finished-children', 'budget-floor-ignores-running-run'],
   },
   [C3_MUTATION_CHECK]: {
     script: 'c3:mutation',
@@ -316,6 +316,8 @@ const MUTATION_PINS = {
       // R2 K1: review integrity and Review Pool eligibility.
       'c4r2-executor-redesigns-own-plan', 'c4r2-rework-scoped-by-plan', 'c4r2-stranded-action-wait-not-woken', 'c4r2-manager-key-department-bound', 'c4r2-manager-key-filled-last', 'c4r2-withdrawn-reviewer-excluded-forever',
       'c4r2-rubric-hold-not-rechecked', 'c4r2-action-subject-truncated', 'c4r2-oversized-subject-admitted', 'c4r2-secret-arguments-reach-reviewer', 'c4r2-dead-letter-keeps-review-key',
+      // R2 K2: one open-handoff set; a delegator answers its own delegate's question.
+      'c4-open-handoff-set-narrowed', 'c4-delegator-waits-on-own-clarification', 'c4-restart-answers-clarification',
     ],
   },
   [C5_MUTATION_CHECK]: {
@@ -358,6 +360,8 @@ const MUTATION_PINS = {
       // R2-10 / R2-12 (R2 cluster K3): the tool-driver boundary and the run-failure vocabulary.
       'r2-10-raw-tool-answer-passed-on', 'r2-10-tool-result-not-reparsed', 'r2-10-secret-driver-code-recorded', 'r2-10-storage-code-unscreened', 'r2-10-storage-rereads-outcome', 'r2-10-storage-guard-reads-driver-object',
       'r2-12-local-settlement-blamed-on-provider', 'r2-12-vocabulary-incomplete', 'r2-12-pg11-family-invented',
+      // R2-03 (R2 cluster K2): a budget wait resumes on real headroom.
+      'r2-03-freed-headroom-wakes-nothing', 'r2-03-budget-wake-ignores-headroom', 'r2-03-budget-recheck-ignores-freed-headroom',
     ],
   },
 };

@@ -19,13 +19,14 @@ import {
   recoverGovernedOrphans,
   releaseReservation,
   reserveBudget,
+  settle,
   settleReservation,
 } from '../src/runtime-authority.js';
 import { storeContext } from '../src/store.js';
 import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
 import { C2_KINDS, claimGoverned, governedItem, hire, seed, testManifest } from './c2-helpers.js';
 import { activeReviewer, decideActionReview, reviewPlan } from './c4-helpers.js';
-import { harness } from './helpers.js';
+import { backoff, harness } from './helpers.js';
 
 const code = (c: string) => (e: unknown): boolean => isQandeelError(e) && e.code === c;
 
@@ -384,6 +385,40 @@ describe('C2 budgets: reserve before spend, settle actual, hard refusal, coheren
       assert.ok(c2 && c2.workItem.id === workItem.id);
       beginGovernedRun(h.store, c2.fence);
       assert.deepEqual(reserveBudget(h.store, c2.fence, modelReserve(h, c2.fence, s, 1)), { ok: false, code: 'BUDGET_MISSING', detail: 'WORK_ITEM_CHAIN' });
+      assert.deepEqual(s.gov.accountingInvariants(), []);
+    } finally {
+      h.close();
+    }
+  });
+
+  test('R2-06: a cap is lowered below finished children (Work Items, their Run budgets, closed envelopes); never below a child that can still spend, nor below reserved + spent', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store);
+      const done = governedItem(h, s, s.employee, { cap: 1_000_000 });
+      const { claim } = claimGoverned(h);
+      const r = reserveBudget(h.store, claim.fence, modelReserve(h, claim.fence, s, 5_000));
+      if (r.ok) settleReservation(h.store, claim.fence, r.reservation.id, { inputTokens: 100, outputTokens: 50, withinBounds: true, sessionId: null, outcome: 'OK' });
+      settle(h.store, claim.fence, { type: 'COMPLETED', evidence: { summaryCode: 'done' } }, { backoff });
+      assert.equal(h.store.getWorkItem(done).state, 'COMPLETED');
+      const envelope = () => s.gov.budgetFor('EMPLOYEE', s.employee.id);
+      const doneBudget = s.gov.budgetFor('WORK_ITEM', done);
+      assert.equal(s.gov.budgetFor('RUN', claim.fence.runId)?.capMoney, 1_000_000, 'the finished Run budget defaulted to the full Work Item cap');
+      // Finished work can spend nothing more: it no longer holds its parent's cap up.
+      s.gov.changeBudgetCap(s.founder, envelope()?.id as Id, { capMoney: 500_000, capTokens: envelope()?.capTokens as number, reasonCode: 'founder.cut' });
+      s.gov.changeBudgetCap(s.founder, doneBudget?.id as Id, { capMoney: 1_000, capTokens: doneBudget?.capTokens as number, reasonCode: 'founder.cut' });
+      assert.throws(() => s.gov.changeBudgetCap(s.founder, doneBudget?.id as Id, { capMoney: 599, capTokens: doneBudget?.capTokens as number, reasonCode: 'founder.cut' }), code('VALIDATION_FAILED'), 'never below what is already spent');
+      // The Employee's OPEN envelope is a child that can still spend: it bounds its Department.
+      const dept = s.gov.budgetFor('DEPARTMENT', s.departmentId);
+      assert.throws(() => s.gov.changeBudgetCap(s.founder, dept?.id as Id, { capMoney: 499_999, capTokens: dept?.capTokens as number, reasonCode: 'founder.cut' }), code('VALIDATION_FAILED'), 'the open envelope still bounds its Department');
+      // Work that can still spend keeps the floor: a released Work Item, and a running run's budget.
+      const live = governedItem(h, s, s.employee, { cap: 400_000 });
+      assert.throws(() => s.gov.changeBudgetCap(s.founder, envelope()?.id as Id, { capMoney: 399_999, capTokens: envelope()?.capTokens as number, reasonCode: 'founder.cut' }), code('VALIDATION_FAILED'));
+      const running = claimGoverned(h, 'w2');
+      assert.equal(running.claim.workItem.id, live);
+      assert.ok(reserveBudget(h.store, running.claim.fence, modelReserve(h, running.claim.fence, s, 1_000)).ok);
+      const liveBudget = s.gov.budgetFor('WORK_ITEM', live);
+      assert.throws(() => s.gov.changeBudgetCap(s.founder, liveBudget?.id as Id, { capMoney: 300_000, capTokens: liveBudget?.capTokens as number, reasonCode: 'founder.cut' }), code('VALIDATION_FAILED'), 'the RUNNING run budget still bounds its Work Item');
       assert.deepEqual(s.gov.accountingInvariants(), []);
     } finally {
       h.close();

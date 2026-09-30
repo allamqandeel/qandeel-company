@@ -67,6 +67,24 @@ const MUTATIONS = [
     runs: [STORAGE],
   },
   {
+    id: 'r2-03-freed-headroom-wakes-nothing',
+    finding: 'R2-03',
+    edits: [{ file: `${S}/governance-core.js`, search: "wakeBudgetWaiters(ctx, chain.map((b) => b.id), 'budget.freed');", replace: 'void chain; /* mutation: settle / release wake no budget waiter */', expectedCount: 2 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r2-03-budget-wake-ignores-headroom',
+    finding: 'R2-03',
+    edits: [{ file: `${S}/governance-core.js`, search: "if (chainHasHeadroom(chain) && wakeWorkItemJob(ctx, workItemId, ['BUDGET_EXHAUSTED'], reasonCode))", replace: "if (wakeWorkItemJob(ctx, workItemId, ['BUDGET_EXHAUSTED'], reasonCode))", expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r2-03-budget-recheck-ignores-freed-headroom',
+    finding: 'R2-03',
+    edits: [{ file: `${S}/governed-writes.js`, search: 'if ((raised || freed) && chainHasHeadroom(chain))', replace: 'if (raised && chainHasHeadroom(chain))', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
     id: 'r1-12-stale-knowledge-eligible',
     finding: 'R1-12',
     edits: [{ file: `${S}/mind-writes.js`, search: 'const kEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND (x.review_at IS NULL OR x.review_at > ?)`;', replace: 'const kEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND ? IS NOT NULL`;', expectedCount: 1 }],

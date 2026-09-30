@@ -177,6 +177,43 @@ describe('C2 runtime: budgets are hard limits', () => {
       assert.deepEqual(rt.governance.accountingInvariants(), []);
     }));
 
+  test('R2-03: work parked on a sibling\'s transient worst-case reservation resumes when that sibling settles — no cap raise, no restart', async () => {
+    const root = tempRoot('c2-budget-transient');
+    const w = seedWorld(root);
+    const f = fakes();
+    let rt = governedRuntime(root, f);
+    try {
+      await rt.start();
+      // The worst-case reservation of this exact task shape.
+      const cal = submitTask(rt, w, { instructions: script(final('cal')) });
+      assert.equal(await settled(rt, cal), 'COMPLETED');
+      const worst = rt.governance.reservations(rt.view.runsForWorkItem(cal)[0]?.id as Id)[0]?.money as number;
+      await rt.stop();
+      // An Employee whose envelope fits one worst case in flight, not two.
+      const envelope = Math.floor(worst * 1.6);
+      const store = CompanyStore.open(root);
+      const e2 = (() => {
+        try {
+          return hireActive(GovernanceStore.for(store), w.founder, w.departmentId, { budget: envelope });
+        } finally {
+          store.close();
+        }
+      })();
+      rt = governedRuntime(root, f);
+      await rt.start();
+      const a = submitTask(rt, w, { instructions: script({ hold: 1_500, then: final('a') }) }, { employee: e2, cap: envelope });
+      await eventually(() => rt.governance.reservationsInState('RESERVED').some((r) => r.workItemId === a) || undefined, 10_000, 'A holds its worst case');
+      const b = submitTask(rt, w, { instructions: script(final('b')) }, { employee: e2, cap: envelope });
+      await eventually(() => (rt.view.jobsFor(b)[0]?.waitReason === 'BUDGET_EXHAUSTED' ? true : undefined), 10_000, 'B parked on the shared envelope');
+      assert.equal(await settled(rt, a, ['COMPLETED', 'FAILED']), 'COMPLETED');
+      assert.equal(await settled(rt, b, ['COMPLETED', 'FAILED']), 'COMPLETED', 'A\'s settle returned the headroom and woke B');
+      assert.deepEqual(rt.governance.accountingInvariants(), []);
+    } finally {
+      await rt.stop().catch(() => undefined);
+      removeRoot(root);
+    }
+  });
+
   test('retry and fallback are separate, attributed attempts; the fallback stays inside the envelope', () =>
     withWorld('c2-fallback', async ({ w, f, rt }) => {
       f.cloud.failNext('cloud-e1', 'TRANSIENT', 'TRANSIENT');

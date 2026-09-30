@@ -39,7 +39,7 @@ import { txApplyJudgment } from './improvement.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { enforceRoleCertification } from './mind-core.js';
 import { academyRun } from './mind-writes.js';
-import { delegationChain, delegationDepth, delegationHistory, getPosition, heldSeatsAt, holdsSeat, newOrgId, primaryAssignmentAt, seatHolder, staffingHistory, directorSeatOf } from './org-core.js';
+import { OPEN_HANDOFF_STATES, delegationChain, delegationDepth, delegationHistory, getPosition, heldSeatsAt, holdsSeat, newOrgId, primaryAssignmentAt, seatHolder, staffingHistory, directorSeatOf } from './org-core.js';
 import { mapJudgmentAssignment, mapReviewAssignment, mapWorkDelegation, type WorkDelegationRecord } from './org-records.js';
 import { getStaffingRequest, txDecideStaffing, txHireForRequest } from './organization.js';
 import { verifyFence } from './queue.js';
@@ -49,7 +49,7 @@ import { applyTransition, enqueueJob } from './work-core.js';
 import { txCreateWorkItem } from './work-items.js';
 
 const EMPLOYEE_TASK = 'c2.employee-task';
-const OPEN_DELEGATION: readonly string[] = ['OFFERED', 'ACCEPTED', 'CLARIFICATION_REQUESTED', 'ESCALATED'];
+const OPEN_DELEGATION: readonly string[] = OPEN_HANDOFF_STATES;
 
 /** What the processor does after the act: continue its loop, or end / park the run. */
 export type OrgActAfter = 'CONTINUE' | 'END_REFUSED' | 'WAIT_CLARIFICATION' | 'WAIT_ESCALATION';
@@ -145,7 +145,7 @@ function delegateWork(ctx: StoreContext, fence: Fence, step: number, actorId: Id
   const root = getWorkItemRow(ctx, item.rootId);
   const rootOwner = employeeIdFromRef(root.ownerRef);
   if (delegationCycle([...delegationChain(ctx, item.id), ...(rootOwner ? [rootOwner] : [])], delegateId)) refuse('DELEGATION_CYCLE');
-  const open = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM work_delegations WHERE parent_work_item_id = ? AND state IN ('OFFERED', 'ACCEPTED', 'CLARIFICATION_REQUESTED', 'ESCALATED')`, item.id)?.n ?? 0);
+  const open = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM work_delegations WHERE parent_work_item_id = ? AND state IN (SELECT value FROM json_each(?))`, item.id, JSON.stringify(OPEN_DELEGATION))?.n ?? 0);
   const depth = delegationDepth(ctx, item.id) + 1;
   try {
     assertDelegationBounds(depth, open);
