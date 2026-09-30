@@ -392,6 +392,10 @@ function perform(ctx: StoreContext, fence: Fence, step: number, e: { id: Id; ref
       // The accountable party declares how its work is reviewed: the owner of the Work Item, or its delegator.
       const delegator = ctx.db.get(`SELECT 1 AS x FROM work_delegations WHERE child_work_item_id = ? AND delegator_employee_id = ?`, target.id, e.id);
       if (target.ownerRef !== e.ref && !delegator) refuse('NOT_ACCOUNTABLE');
+      // R2-01: the executor never re-designs its own review (Stage 11 §1 / §3; D-C4-05). Its owner may declare
+      // version 1 before the first run (the 0008 trigger refuses it after); once a plan exists, only the Founder or
+      // the delegator supersedes it (the 0011 trigger backs this up).
+      if (target.ownerRef === e.ref && ctx.db.get('SELECT 1 AS x FROM review_plans WHERE work_item_id = ? LIMIT 1', target.id)) refuse('SELF_REVIEW_REDESIGN');
       try {
         const plan = txDeclarePlan(ctx, target, own(a, 'plan'), e.ref, runId);
         return `review_plan:${plan.id}`;

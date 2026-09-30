@@ -40,6 +40,7 @@ import { delegationChain, founderPrincipalRef, getPosition, primaryAssignmentAt,
 import { mapJudgmentAssignment, mapQualification, mapReviewAssignment, mapReviewPlan, mapReviewRequest, type JudgmentAssignmentRecord, type ReviewAssignmentRecord, type ReviewPlanRecord, type ReviewRequestRecord } from './org-records.js';
 import { assertOutcomeClasses, txRecordOutcome } from './outcome-core.js';
 import type { WorkItemRecord } from './records.js';
+import type { SqlValue } from './sqlite/connection.js';
 import { applyTransition, enqueueJob, resolveDependents } from './work-core.js';
 import { txCreateWorkItem } from './work-items.js';
 
@@ -117,7 +118,23 @@ export function txDeclarePlan(ctx: StoreContext, item: WorkItemRecord, input: un
   const declared = mapReviewPlan(ctx.db.get('SELECT * FROM review_plans WHERE id = ?', id) ?? {});
   // A subject already waiting for review under this plan is picked up at once.
   if (getWorkItemRow(ctx, item.id).state === 'WAITING_REVIEW') ensureOutputReview(ctx, item.id);
+  // R2-02: an executor parked on an action review whose request just went STALE (or that waited for a plan
+  // reviewing actions) re-presents its action under this plan — a targeted wake in this transaction.
+  wakeStrandedActionWait(ctx, item.id);
   return declared;
+}
+
+/**
+ * R2-02: the executor's AWAITING_INDEPENDENT_REVIEW wait can no longer resolve on its own when an ACTIVE plan
+ * reviews actions but no live ACTION request of the Work Item exists (the one it waited on went STALE, or it
+ * waited for such a plan). Its next run re-presents the action to the gate, which opens the request afresh.
+ * Guarded by the active plan: a Work Item still without a plan for actions keeps waiting (never a model loop).
+ */
+export function wakeStrandedActionWait(ctx: StoreContext, workItemId: Id): void {
+  const plan = activePlan(ctx, workItemId);
+  if (!plan || !planAppliesTo(plan.appliesTo, 'ACTION')) return;
+  if (ctx.db.get(`SELECT 1 AS x FROM review_requests WHERE work_item_id = ? AND subject_kind = 'ACTION' AND kind = 'REQUIRED' AND state IN ('OPEN', 'SATISFIED', 'CONFLICT', 'ESCALATED') LIMIT 1`, workItemId)) return;
+  wakeWorkItemJob(ctx, workItemId, ['AWAITING_INDEPENDENT_REVIEW'], 'review.plan_changed');
 }
 
 // --- Subjects ------------------------------------------------------------------------------------------
@@ -147,33 +164,30 @@ function outputSubjectText(ctx: StoreContext, item: WorkItemRecord): string {
 
 // --- Reviewer selection (eligibility BEFORE the LIMIT) ------------------------------------------------------
 
-export interface SelectionFilter {
+/** Who may review or judge one subject now: the conditions every selection AND every decision re-check share. */
+export interface Eligibility {
   readonly domain: string;
   readonly mode: 'ACTIVE' | 'CALIBRATION';
   readonly dataClass: DataClass;
   readonly excluded: readonly string[];
   readonly excludeDepartmentId: Id | null;
   readonly minLevelRank: number;
+  /** The plan's `rubric_code@rubric_version` (a RUBRIC Quality Hold on it stops all reliance), or null. */
+  readonly rubricRef: string | null;
+}
+
+export interface SelectionFilter extends Eligibility {
   readonly onlyEmployeeId: Id | null;
   readonly limit: number;
 }
 
 /**
- * The qualified, independent, available reviewers for one key — every eligibility condition in the WHERE
- * clause, so nothing ineligible can crowd an eligible reviewer out of the bounded page (R1-12 family).
- * Seniority, titles and Positions play no part: only qualification evidence and current state.
+ * R2-07 / R2-08: ONE eligibility predicate (over `reviewer_qualifications q`, `employees e`, `certifications c`)
+ * for reviewer and judge selection and for every decision-boundary re-check, so what selection allowed the
+ * decision never refuses, and what stops reliance (a RUBRIC hold, a closed envelope) stops it at both. Capacity
+ * is the only selection-only condition (an assigned slot is the slot its holder already has).
  */
-export function eligibleReviewers(ctx: StoreContext, f: SelectionFilter): { qualificationId: Id; employeeId: Id; level: string; qualificationVersion: number }[] {
-  const at = ts(ctx);
-  return ctx.db
-    .all<{ qid: string; eid: string; level: string; qv: number }>(
-      `SELECT q.id AS qid, q.employee_id AS eid, q.level AS level, q.qualification_version AS qv,
-              (SELECT COUNT(*) FROM review_assignments ra WHERE ra.reviewer_employee_id = q.employee_id AND ra.state = 'ASSIGNED') AS open_count
-         FROM reviewer_qualifications q
-         JOIN employees e ON e.id = q.employee_id
-         JOIN certifications c ON c.id = q.certification_id
-        WHERE q.domain = ? AND q.mode = ?
-          AND (? IS NULL OR q.employee_id = ?)
+const ELIGIBLE = `q.domain = ? AND q.mode = ?
           AND e.state = 'ACTIVE'
           AND c.employee_id = q.employee_id AND c.status = 'VALID' AND c.valid_until > ? AND c.role_ref = ?
           AND q.max_data_rank >= ?
@@ -183,28 +197,71 @@ export function eligibleReviewers(ctx: StoreContext, f: SelectionFilter): { qual
           AND NOT EXISTS (SELECT 1 FROM quality_holds h WHERE h.state = 'ACTIVE' AND (
                 (h.target_kind = 'REVIEWER' AND h.target_ref = 'employee:' || q.employee_id)
              OR (h.target_kind = 'QUALIFICATION' AND h.target_ref = q.id)
-             OR (h.target_kind = 'DOMAIN' AND h.target_ref = q.domain)))
+             OR (h.target_kind = 'DOMAIN' AND h.target_ref = q.domain)
+             OR (h.target_kind = 'RUBRIC' AND ? IS NOT NULL AND h.target_ref = ?)))
           AND NOT EXISTS (SELECT 1 FROM json_each(c.skill_pins_json) p JOIN skill_versions v ON v.id = json_extract(p.value, '$.skillVersionId')
                            WHERE v.freshness IN ('SECURITY_HOLD', 'RETIRED') OR v.integrity <> 'OK')
-          AND EXISTS (SELECT 1 FROM budgets b WHERE b.scope = 'EMPLOYEE' AND b.scope_id = q.employee_id AND b.status = 'OPEN')
-          AND (SELECT COUNT(*) FROM review_assignments ra WHERE ra.reviewer_employee_id = q.employee_id AND ra.state = 'ASSIGNED') < ?
+          AND EXISTS (SELECT 1 FROM budgets b WHERE b.scope = 'EMPLOYEE' AND b.scope_id = q.employee_id AND b.status = 'OPEN')`;
+
+function eligibleParams(ctx: StoreContext, f: Eligibility): SqlValue[] {
+  return [f.domain, f.mode, ts(ctx), reviewerRoleFor(f.domain), dataRank(f.dataClass), f.minLevelRank, JSON.stringify(f.excluded), f.excludeDepartmentId, f.excludeDepartmentId, f.rubricRef, f.rubricRef];
+}
+
+/** A reviewer's open load (m-13): its assigned review keys AND its assigned judgments. */
+const OPEN_LOAD = `((SELECT COUNT(*) FROM review_assignments ra WHERE ra.reviewer_employee_id = q.employee_id AND ra.state = 'ASSIGNED')
+              + (SELECT COUNT(*) FROM judgment_assignments ja WHERE ja.judge_employee_id = q.employee_id AND ja.state = 'ASSIGNED'))`;
+
+/**
+ * The qualified, independent, available reviewers for one key — every eligibility condition in the WHERE
+ * clause, so nothing ineligible can crowd an eligible reviewer out of the bounded page (R1-12 family).
+ * Seniority, titles and Positions play no part: only qualification evidence and current state.
+ */
+export function eligibleReviewers(ctx: StoreContext, f: SelectionFilter): { qualificationId: Id; employeeId: Id; level: string; qualificationVersion: number }[] {
+  return ctx.db
+    .all<{ qid: string; eid: string; level: string; qv: number }>(
+      `SELECT q.id AS qid, q.employee_id AS eid, q.level AS level, q.qualification_version AS qv, ${OPEN_LOAD} AS open_count
+         FROM reviewer_qualifications q
+         JOIN employees e ON e.id = q.employee_id
+         JOIN certifications c ON c.id = q.certification_id
+        WHERE ${ELIGIBLE}
+          AND (? IS NULL OR q.employee_id = ?)
+          AND ${OPEN_LOAD} < ?
         ORDER BY open_count ASC, (CASE q.level WHEN 'EXPERT' THEN 0 WHEN 'SENIOR' THEN 1 ELSE 2 END), q.employee_id
         LIMIT ?`,
-      f.domain, f.mode, f.onlyEmployeeId, f.onlyEmployeeId, at, reviewerRoleFor(f.domain), dataRank(f.dataClass), f.minLevelRank,
-      JSON.stringify(f.excluded), f.excludeDepartmentId, f.excludeDepartmentId, MAX_OPEN_REVIEWS_PER_REVIEWER, Math.max(1, Math.min(50, f.limit)),
+      ...eligibleParams(ctx, f), f.onlyEmployeeId, f.onlyEmployeeId, MAX_OPEN_REVIEWS_PER_REVIEWER, Math.max(1, Math.min(50, f.limit)),
     )
     .map((r) => ({ qualificationId: r.qid as Id, employeeId: r.eid as Id, level: r.level, qualificationVersion: Number(r.qv) }));
 }
+
+/** The decision-boundary re-check of an assigned reviewer / judge: the shared predicate, capacity excluded. Its qualification version, or null. */
+function stillEligible(ctx: StoreContext, qualificationId: Id | null, employeeId: Id, f: Eligibility): number | null {
+  if (qualificationId === null) return null;
+  const r = ctx.db.get<{ v: number }>(
+    `SELECT q.qualification_version AS v FROM reviewer_qualifications q JOIN employees e ON e.id = q.employee_id JOIN certifications c ON c.id = q.certification_id
+      WHERE q.id = ? AND q.employee_id = ? AND ${ELIGIBLE}`,
+    qualificationId, employeeId, ...eligibleParams(ctx, f),
+  );
+  return r === undefined ? null : Number(r.v);
+}
+
+const rubricRefOf = (plan: ReviewPlanRecord | null): string | null => (plan === null ? null : `${plan.rubricCode}@${plan.rubricVersion}`);
 
 function assignmentsOf(ctx: StoreContext, requestId: Id): ReviewAssignmentRecord[] {
   return ctx.db.all('SELECT * FROM review_assignments WHERE request_id = ? ORDER BY created_at, id', requestId).map(mapReviewAssignment);
 }
 
-/** Who must not review this subject: its executor, the delegation chain, and everyone already on the request. */
+/**
+ * Who must not review this subject: its executor, the delegation chain, and everyone holding or having decided a
+ * key of the request (R2-07 / m-12: a reviewer withdrawn for a transient reason — a lifted hold, a reinstated
+ * qualification — may return; one whose own review work ended without a decision does not).
+ */
 function exclusionsFor(ctx: StoreContext, request: ReviewRequestRecord, exceptAssignmentId: Id | null = null, extra: readonly string[] = []): { executor: Id | null; excluded: string[] } {
   const item = getWorkItemRow(ctx, request.workItemId);
   const executor = employeeIdFromRef(item.ownerRef);
-  const prior = assignmentsOf(ctx, request.id).filter((a) => a.id !== exceptAssignmentId).map((a) => a.reviewerEmployeeId).filter((x): x is Id => x !== null);
+  const prior = assignmentsOf(ctx, request.id)
+    .filter((a) => a.id !== exceptAssignmentId && (a.state === 'ASSIGNED' || a.state === 'DECIDED' || a.withdrawReason === 'REVIEW_WORK_ENDED'))
+    .map((a) => a.reviewerEmployeeId)
+    .filter((x): x is Id => x !== null);
   // Oversight is independent of the required review it audits: its reviewers are excluded too.
   const required = request.kind === 'OVERSIGHT'
     ? ctx.db.all<{ e: string }>(`SELECT DISTINCT a.reviewer_employee_id AS e FROM review_assignments a JOIN review_requests r ON r.id = a.request_id WHERE r.work_item_id = ? AND r.kind = 'REQUIRED' AND a.reviewer_employee_id IS NOT NULL`, request.workItemId).map((x) => x.e)
@@ -226,9 +283,22 @@ function managerOf(ctx: StoreContext, executorId: Id | null): { kind: 'FOUNDER' 
 
 const founderRef = founderPrincipalRef;
 
+/**
+ * The reviewer's / judge's input bound: the governed employee-task processor accepts at most this many
+ * characters of instructions. R2-11: a subject is never cut to fit — an action subject that does not fit is
+ * refused before its request exists (`REVIEW_SUBJECT_TOO_LARGE`); every other subject is bounded by construction.
+ */
+export const REVIEWER_INPUT_MAX = 12_000;
+
+function reviewerInstructions(ctx: StoreContext, planId: Id, subjectText: string): string {
+  const instructions = `${planInstructions(ctx, planId)}\n${subjectText}`;
+  if (instructions.length > REVIEWER_INPUT_MAX) throw new QandeelError('STORAGE_INVARIANT', 'a review subject never exceeds the reviewer input bound', { planId, reason: 'REVIEW_SUBJECT_TOO_LARGE' });
+  return instructions;
+}
+
 /** Creates the reviewer's own governed review Work Item (owned by the reviewer, budgeted within its envelope). */
 function reviewWorkItem(ctx: StoreContext, plan: ReviewPlanRecord, request: ReviewRequestRecord, assignmentId: Id, reviewerId: Id, subjectText: string): Id {
-  const instructions = `${planInstructions(ctx, plan.id)}\n${subjectText}`.slice(0, 11_000);
+  const instructions = reviewerInstructions(ctx, plan.id, subjectText);
   const created = txCreateWorkItem(
     ctx,
     {
@@ -267,18 +337,39 @@ function insertAssignment(ctx: StoreContext, request: ReviewRequestRecord, keyIn
   return id;
 }
 
-function subjectTextFor(ctx: StoreContext, request: ReviewRequestRecord, actionText: string | null): string {
-  if (request.subjectKind === 'ACTION') return actionText ?? `Subject: action ${request.subjectRef} proposed in Work Item ${request.workItemId}.`;
+/**
+ * R2-11: what every reviewer of the request is shown. An ACTION subject is the durable text written once when
+ * the request was created (the whole action and its canonical arguments, exactly what the fingerprint binds) —
+ * never rebuilt, never cut. Null: an ACTION request without its durable subject (created before 0011).
+ */
+function subjectTextFor(ctx: StoreContext, request: ReviewRequestRecord): string | null {
+  if (request.subjectKind === 'ACTION') {
+    const r = ctx.db.get<{ t: string; s: string }>('SELECT subject_text AS t, subject_sha256 AS s FROM review_action_subjects WHERE request_id = ?', request.id);
+    if (r && sha256Hex(r.t) !== r.s) throw new QandeelError('STORAGE_INVARIANT', 'an action review subject failed its integrity check', { requestId: request.id });
+    return r?.t ?? null;
+  }
   return outputSubjectText(ctx, getWorkItemRow(ctx, request.workItemId));
 }
+
+/** Fill order (R2-07): the keys only one principal can hold (MANAGER, FOUNDER) before keys any pool member can. */
+const keyFillRank = (kind: string): number => (kind === 'MANAGER' || kind === 'FOUNDER' ? 0 : 1);
 
 /**
  * Fills every unassigned key of an OPEN request with an eligible reviewer (and one shadow / calibration
  * reviewer when available). A key that no eligible reviewer can fill leaves the request OPEN and visible
  * (`REVIEWER_UNAVAILABLE`) — never filled by someone ineligible, never silently skipped.
  */
-export function fillAssignments(ctx: StoreContext, request: ReviewRequestRecord, actionText: string | null = null): ReviewRequestRecord {
+export function fillAssignments(ctx: StoreContext, request: ReviewRequestRecord): ReviewRequestRecord {
   if (request.state !== 'OPEN') return request;
+  const text = subjectTextFor(ctx, request);
+  if (text === null) {
+    // Fail closed: nobody reviews an action it cannot be shown in full. The request goes STALE and the waiting
+    // executor re-presents the action, which opens a request with its durable subject.
+    const stale = setRequestState(ctx, request, 'STALE', 'review.subject_missing', SYSTEM_REVIEW_REF);
+    for (const a of assignmentsOf(ctx, request.id)) withdrawAssignment(ctx, a, 'SUBJECT_CHANGED');
+    wakeStrandedActionWait(ctx, request.workItemId);
+    return stale;
+  }
   const plan = request.planId === null ? null : mapReviewPlan(ctx.db.get('SELECT * FROM review_plans WHERE id = ?', request.planId) ?? {});
   const keys = request.kind === 'OVERSIGHT' ? [{ kind: 'OVERSIGHT' as const }] : (plan?.keys ?? []);
   const domain = plan?.domain ?? ctx.db.get<{ d: string }>(`SELECT domain AS d FROM review_plans WHERE work_item_id = ? ORDER BY version DESC LIMIT 1`, request.workItemId)?.d ?? '';
@@ -290,8 +381,8 @@ export function fillAssignments(ctx: StoreContext, request: ReviewRequestRecord,
     return exec ? getEmployeeRow(ctx, exec).departmentId : null;
   })();
   let unfilled = 0;
-  const text = subjectTextFor(ctx, request, actionText);
-  for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
+  const order = keys.map((_, i) => i).sort((x, y) => keyFillRank((keys[x] as { kind: string }).kind) - keyFillRank((keys[y] as { kind: string }).kind) || x - y);
+  for (const keyIndex of order) {
     const all = assignmentsOf(ctx, request.id);
     if (all.some((a) => a.keyIndex === keyIndex && a.state === 'ASSIGNED')) continue;
     const decided = all.filter((a) => a.keyIndex === keyIndex && a.state === 'DECIDED').at(-1);
@@ -301,7 +392,7 @@ export function fillAssignments(ctx: StoreContext, request: ReviewRequestRecord,
     const { executor, excluded } = exclusionsFor(ctx, request);
     // NEEDS_SPECIALIST: a stronger reviewer than the one who asked for it.
     const minLevelRank = decided && decided.qualificationId ? Math.min(2, reviewerLevelRank((mapQualification(ctx.db.get('SELECT * FROM reviewer_qualifications WHERE id = ?', decided.qualificationId) ?? {})).level) + 1) : 0;
-    const filter: SelectionFilter = { domain, mode: 'ACTIVE', dataClass: request.dataClass, excluded, excludeDepartmentId: plan?.excludeSameDepartment ? executorDept : null, minLevelRank, onlyEmployeeId: null, limit: 1 };
+    const filter: SelectionFilter = { domain, mode: 'ACTIVE', dataClass: request.dataClass, excluded, excludeDepartmentId: plan?.excludeSameDepartment ? executorDept : null, minLevelRank, rubricRef: rubricRefOf(plan), onlyEmployeeId: null, limit: 1 };
     let chosen: { employeeId: Id; qualificationId: Id } | { founderRef: string } | null = null;
     if (key.kind === 'FOUNDER') {
       const f = founderRef(ctx);
@@ -328,7 +419,7 @@ export function fillAssignments(ctx: StoreContext, request: ReviewRequestRecord,
   // Calibration: one shadow reviewer in CALIBRATION mode, whose decision never counts (Stage 11 §14).
   if (request.kind === 'REQUIRED' && plan && !assignmentsOf(ctx, request.id).some((a) => a.keyKind === 'SHADOW')) {
     const { excluded } = exclusionsFor(ctx, request);
-    const shadow = eligibleReviewers(ctx, { domain, mode: 'CALIBRATION', dataClass: request.dataClass, excluded, excludeDepartmentId: null, minLevelRank: 0, onlyEmployeeId: null, limit: 1 })[0];
+    const shadow = eligibleReviewers(ctx, { domain, mode: 'CALIBRATION', dataClass: request.dataClass, excluded, excludeDepartmentId: null, minLevelRank: 0, rubricRef: rubricRefOf(plan), onlyEmployeeId: null, limit: 1 })[0];
     if (shadow) insertAssignment(ctx, request, 7, 'SHADOW', shadow, plan, text);
   }
   const want = unfilled > 0 ? 'REVIEWER_UNAVAILABLE' : null;
@@ -340,26 +431,34 @@ export function fillAssignments(ctx: StoreContext, request: ReviewRequestRecord,
  * Ensures a REQUIRED review request exists for a subject under the Work Item's ACTIVE plan (created and
  * assigned in the caller's transaction). No applicable plan → `PLAN_MISSING`: the subject waits, fail closed.
  */
-export function ensureRequest(ctx: StoreContext, s: { item: WorkItemRecord; subjectKind: 'OUTPUT' | 'ACTION'; fingerprint: string; subjectRef: string; dataClass: DataClass; risk: string; actionText: string | null }): ReviewRequestRecord | 'PLAN_MISSING' {
+export function ensureRequest(ctx: StoreContext, s: { item: WorkItemRecord; subjectKind: 'OUTPUT' | 'ACTION'; fingerprint: string; subjectRef: string; dataClass: DataClass; risk: string; actionSubject: string | null }): ReviewRequestRecord | 'PLAN_MISSING' | 'SUBJECT_TOO_LARGE' {
   const plan = activePlan(ctx, s.item.id);
   if (!plan || !planAppliesTo(plan.appliesTo, s.subjectKind)) return 'PLAN_MISSING';
   const live = ctx.db.get(`SELECT * FROM review_requests WHERE work_item_id = ? AND subject_fingerprint = ? AND kind = 'REQUIRED' AND state IN ('OPEN', 'SATISFIED', 'CONFLICT', 'ESCALATED')`, s.item.id, s.fingerprint);
   if (live) {
     const r = mapReviewRequest(live);
-    if (r.planId === plan.id) return r.state === 'OPEN' ? fillAssignments(ctx, r, s.actionText) : r;
-    // Reviewed under a superseded plan: that review no longer counts; the subject is reviewed afresh.
-    for (const a of assignmentsOf(ctx, r.id)) withdrawAssignment(ctx, a, 'PLAN_SUPERSEDED');
-    setRequestState(ctx, r, 'STALE', 'review.plan_superseded', SYSTEM_REVIEW_REF);
+    if (r.planId === plan.id) {
+      const now = r.state === 'OPEN' ? fillAssignments(ctx, r) : r;
+      if (now.state !== 'STALE') return now;
+    } else {
+      // Reviewed under a superseded plan: that review no longer counts; the subject is reviewed afresh.
+      for (const a of assignmentsOf(ctx, r.id)) withdrawAssignment(ctx, a, 'PLAN_SUPERSEDED');
+      setRequestState(ctx, r, 'STALE', 'review.plan_superseded', SYSTEM_REVIEW_REF);
+    }
   }
+  // R2-11: an ACTION subject is shown whole with the plan's instructions, or not at all (never cut to fit).
+  if (s.subjectKind === 'ACTION' && (s.actionSubject === null || planInstructions(ctx, plan.id).length + 1 + s.actionSubject.length > REVIEWER_INPUT_MAX)) return 'SUBJECT_TOO_LARGE';
   const id = newId();
   const at = ts(ctx);
   ctx.db.run(
     `INSERT INTO review_requests (id, kind, plan_id, work_item_id, subject_kind, subject_fingerprint, subject_ref, data_class, risk_level, state, version, created_at, updated_at) VALUES (?, 'REQUIRED', ?, ?, ?, ?, ?, ?, ?, 'OPEN', 1, ?, ?)`,
     id, plan.id, s.item.id, s.subjectKind, s.fingerprint, s.subjectRef.slice(0, 161), s.dataClass, s.risk, at, at,
   );
+  // Written once, with the request: every fill, refill and reassignment reads exactly this (local governed evidence, never telemetry).
+  if (s.subjectKind === 'ACTION' && s.actionSubject !== null) ctx.db.run('INSERT INTO review_action_subjects (request_id, subject_text, subject_sha256, created_at) VALUES (?, ?, ?, ?)', id, s.actionSubject, sha256Hex(s.actionSubject), at);
   requestHistory(ctx, id as Id, 1, null, 'OPEN', 'review.requested', SYSTEM_REVIEW_REF);
   appendAudit(ctx, 'review.requested', 'review_request', id, { actorRef: SYSTEM_REVIEW_REF }, 'OK', null, { workItemId: s.item.id, subjectKind: s.subjectKind });
-  return fillAssignments(ctx, getRequest(ctx, id as Id), s.actionText);
+  return fillAssignments(ctx, getRequest(ctx, id as Id));
 }
 
 /** Output review of a Work Item waiting for review (idempotent; called at completion, reconciliation and recovery). */
@@ -369,7 +468,8 @@ export function ensureOutputReview(ctx: StoreContext, workItemId: Id): ReviewReq
   const subject = currentOutputSubject(ctx, item);
   // The subject's EFFECTIVE class: declared, every assembled context and every tool result (the reviewer sees the output).
   const dataClass = effectiveDataClass(ctx, item.id);
-  return ensureRequest(ctx, { item, subjectKind: 'OUTPUT', fingerprint: subject.fingerprint, subjectRef: subject.ref, dataClass, risk: item.riskLevel, actionText: null });
+  const r = ensureRequest(ctx, { item, subjectKind: 'OUTPUT', fingerprint: subject.fingerprint, subjectRef: subject.ref, dataClass, risk: item.riskLevel, actionSubject: null });
+  return r === 'SUBJECT_TOO_LARGE' ? null : r;
 }
 
 // --- Decisions ------------------------------------------------------------------------------------------
@@ -408,6 +508,8 @@ export function recordDecision(ctx: StoreContext, a: ReviewAssignmentRecord, rev
   if (request.kind === 'REQUIRED' && plan?.status !== 'ACTIVE') {
     withdrawAssignment(ctx, a, 'PLAN_SUPERSEDED');
     request = setRequestState(ctx, request, 'STALE', 'review.plan_superseded', SYSTEM_REVIEW_REF);
+    // R2-02: the executor waiting on this action review re-presents it under the active plan.
+    if (request.subjectKind === 'ACTION') wakeStrandedActionWait(ctx, request.workItemId);
     return { recorded: false, code: 'REVIEW_STALE', request };
   }
   const item = getWorkItemRow(ctx, request.workItemId);
@@ -425,13 +527,17 @@ export function recordDecision(ctx: StoreContext, a: ReviewAssignmentRecord, rev
     const q = mapQualification(ctx.db.get('SELECT * FROM reviewer_qualifications WHERE id = ?', a.qualificationId) ?? {});
     const { excluded } = exclusionsFor(ctx, request, a.id);
     const exec = employeeIdFromRef(item.ownerRef);
-    // Same conditions as selection, except capacity (this very assignment is the slot it holds).
-    if (!reviewerEligibleIgnoringOwnSlot(ctx, a, q.domain, request, excluded, plan?.excludeSameDepartment === true && exec ? getEmployeeRow(ctx, exec).departmentId : null)) {
+    // The same predicate as selection, except capacity (this very assignment is the slot it holds) — including the
+    // exemptions selection made: the manager's own key and the shadow key are not subject to department independence.
+    const departmentBound = plan?.excludeSameDepartment === true && exec !== null && a.keyKind !== 'MANAGER' && a.keyKind !== 'SHADOW';
+    qualificationVersion = stillEligible(ctx, a.qualificationId, a.reviewerEmployeeId, {
+      domain: q.domain, mode: a.keyKind === 'SHADOW' ? 'CALIBRATION' : 'ACTIVE', dataClass: request.dataClass, excluded, excludeDepartmentId: departmentBound ? getEmployeeRow(ctx, exec).departmentId : null, minLevelRank: 0, rubricRef: rubricRefOf(plan),
+    });
+    if (qualificationVersion === null) {
       withdrawAssignment(ctx, a, 'REVIEWER_NOT_ELIGIBLE');
       request = fillAssignments(ctx, request);
       return { recorded: false, code: 'REVIEWER_NOT_ELIGIBLE', request };
     }
-    qualificationVersion = q.qualificationVersion;
   }
   const counts = a.keyKind === 'SHADOW' ? 0 : 1;
   // C6-R1: an outcome judgment is kept only where it can count (an independent Employee key of an output
@@ -459,20 +565,6 @@ export function recordDecision(ctx: StoreContext, a: ReviewAssignmentRecord, rev
   appendAudit(ctx, 'review.decided', 'review_decision', id, { actorRef: reviewerRef }, 'OK', d.outcome, { requestId: request.id, keyKind: a.keyKind, counts: counts === 1, outcomeVerdict: judgment?.verdict ?? null });
   request = counts === 1 ? resolveRequest(ctx, request.id) : getRequest(ctx, request.id);
   return { recorded: true, code: 'RECORDED', request };
-}
-
-/** Eligibility of an already-assigned reviewer (its own open slot does not count against its capacity). */
-function reviewerEligibleIgnoringOwnSlot(ctx: StoreContext, a: ReviewAssignmentRecord, domain: string, request: ReviewRequestRecord, excluded: readonly string[], excludeDepartmentId: Id | null): boolean {
-  if (a.reviewerEmployeeId === null || excluded.includes(a.reviewerEmployeeId)) return false;
-  const at = ts(ctx);
-  return ctx.db.get(
-    `SELECT 1 AS ok FROM reviewer_qualifications q JOIN employees e ON e.id = q.employee_id JOIN certifications c ON c.id = q.certification_id
-      WHERE q.id = ? AND q.domain = ? AND q.mode = ? AND e.state = 'ACTIVE' AND c.status = 'VALID' AND c.valid_until > ? AND c.role_ref = ? AND q.max_data_rank >= ?
-        AND (? IS NULL OR e.department_id IS NOT ?)
-        AND NOT EXISTS (SELECT 1 FROM quality_holds h WHERE h.state = 'ACTIVE' AND ((h.target_kind = 'REVIEWER' AND h.target_ref = 'employee:' || q.employee_id) OR (h.target_kind = 'QUALIFICATION' AND h.target_ref = q.id) OR (h.target_kind = 'DOMAIN' AND h.target_ref = q.domain)))
-        AND NOT EXISTS (SELECT 1 FROM json_each(c.skill_pins_json) p JOIN skill_versions v ON v.id = json_extract(p.value, '$.skillVersionId') WHERE v.freshness IN ('SECURITY_HOLD', 'RETIRED') OR v.integrity <> 'OK')`,
-    a.qualificationId, domain, a.keyKind === 'SHADOW' ? 'CALIBRATION' : 'ACTIVE', at, reviewerRoleFor(domain), dataRank(request.dataClass), excludeDepartmentId, excludeDepartmentId,
-  ) !== undefined;
 }
 
 /**
@@ -621,25 +713,33 @@ function applyOversight(ctx: StoreContext, request: ReviewRequestRecord, state: 
 
 // --- Action review gate (txToolIntent) ---------------------------------------------------------------------
 
-export type ActionGate = { kind: 'SATISFIED'; requestId: Id } | { kind: 'REWORK'; requestId: Id } | { kind: 'WAIT'; code: 'REVIEW_PLAN_MISSING' | 'REVIEW_PENDING' | 'REVIEW_CONFLICT' | 'REVIEW_ESCALATED'; requestId: Id | null };
+export type ActionGate =
+  | { kind: 'SATISFIED'; requestId: Id }
+  | { kind: 'REWORK'; requestId: Id }
+  /** The action cannot be shown whole to a reviewer (R2-11): refused, never truncated; a smaller action is a new subject. */
+  | { kind: 'REFUSED'; code: 'REVIEW_SUBJECT_TOO_LARGE' }
+  | { kind: 'WAIT'; code: 'REVIEW_PLAN_MISSING' | 'REVIEW_PENDING' | 'REVIEW_CONFLICT' | 'REVIEW_ESCALATED'; requestId: Id | null };
 
 /**
  * The independent-review gate of an R2 / R3 action, inside the tool-intent transaction: the review must be
  * of exactly this action (its approval-scope fingerprint), under the Work Item's active plan. A satisfied
- * review is consumed by the one intent it authorized (like an approval's single use).
+ * review is consumed by the one intent it authorized (like an approval's single use). `actionSubject` is the
+ * whole action as its reviewers are shown it — stored once with the request (R2-11).
  */
-export function actionReviewGate(ctx: StoreContext, s: { item: WorkItemRecord; fingerprint: string; subjectRef: string; dataClass: DataClass; risk: string; actionText: string }): ActionGate {
+export function actionReviewGate(ctx: StoreContext, s: { item: WorkItemRecord; fingerprint: string; subjectRef: string; dataClass: DataClass; risk: string; actionSubject: string }): ActionGate {
   const plan = activePlan(ctx, s.item.id);
   if (!plan || !planAppliesTo(plan.appliesTo, 'ACTION')) return { kind: 'WAIT', code: 'REVIEW_PLAN_MISSING', requestId: null };
-  // A rework verdict on exactly this action (under the active plan) refuses it for good, like a rejected
-  // approval; the model may propose something else, which is a new subject reviewed afresh.
+  // A rework verdict on exactly this action refuses it for good, like a rejected approval — under every plan
+  // version (R2-01, D-C4-05: a new plan never re-opens a rejected exact action); the model may propose something
+  // else, which is a new subject reviewed afresh.
   const live = ctx.db.get(`SELECT 1 AS x FROM review_requests WHERE work_item_id = ? AND subject_fingerprint = ? AND kind = 'REQUIRED' AND state IN ('OPEN', 'SATISFIED', 'CONFLICT', 'ESCALATED')`, s.item.id, s.fingerprint);
   if (!live) {
-    const rejected = ctx.db.get<{ id: string }>(`SELECT id FROM review_requests WHERE work_item_id = ? AND subject_fingerprint = ? AND kind = 'REQUIRED' AND state = 'REWORK' AND plan_id = ? LIMIT 1`, s.item.id, s.fingerprint, plan.id);
+    const rejected = ctx.db.get<{ id: string }>(`SELECT id FROM review_requests WHERE work_item_id = ? AND subject_fingerprint = ? AND kind = 'REQUIRED' AND state = 'REWORK' LIMIT 1`, s.item.id, s.fingerprint);
     if (rejected) return { kind: 'REWORK', requestId: rejected.id as Id };
   }
-  const r = ensureRequest(ctx, { item: s.item, subjectKind: 'ACTION', fingerprint: s.fingerprint, subjectRef: s.subjectRef, dataClass: s.dataClass, risk: s.risk, actionText: s.actionText });
+  const r = ensureRequest(ctx, { item: s.item, subjectKind: 'ACTION', fingerprint: s.fingerprint, subjectRef: s.subjectRef, dataClass: s.dataClass, risk: s.risk, actionSubject: s.actionSubject });
   if (r === 'PLAN_MISSING') return { kind: 'WAIT', code: 'REVIEW_PLAN_MISSING', requestId: null };
+  if (r === 'SUBJECT_TOO_LARGE') return { kind: 'REFUSED', code: 'REVIEW_SUBJECT_TOO_LARGE' };
   if (r.state === 'SATISFIED') return { kind: 'SATISFIED', requestId: r.id };
   if (r.state === 'CONFLICT') return { kind: 'WAIT', code: 'REVIEW_CONFLICT', requestId: r.id };
   if (r.state === 'ESCALATED') return { kind: 'WAIT', code: 'REVIEW_ESCALATED', requestId: r.id };
@@ -666,6 +766,9 @@ export function recheckReviewWait(ctx: StoreContext, workItemId: Id, runId: Id):
   if (started === undefined) return;
   const decided = ctx.db.get(`SELECT 1 AS x FROM review_requests WHERE work_item_id = ? AND subject_kind = 'ACTION' AND state IN ('SATISFIED', 'REWORK') AND decided_at >= ? LIMIT 1`, workItemId, started);
   if (decided) wakeWorkItemJob(ctx, workItemId, ['AWAITING_INDEPENDENT_REVIEW'], 'review.rechecked');
+  // R2-02: the plan changed during the run (its request went STALE while the job was still claimed). Guarded by an
+  // active plan for actions, so a Work Item still waiting for such a plan is never woken into a loop.
+  else wakeStrandedActionWait(ctx, workItemId);
 }
 
 /** New reviewer capacity in a domain (admission, promotion, hold lifted): refill the requests waiting for it. */
@@ -678,16 +781,32 @@ export function refillDomain(ctx: StoreContext, domain: string | null): number {
   return rows.length + refillJudgments(ctx);
 }
 
-/** A review Work Item that ended without a decision (failed, cancelled): its key is withdrawn and refilled. */
+/**
+ * A review / judge Work Item has ended without its decision: finished (failed, cancelled, superseded, completed)
+ * or dead-lettered (BLOCKED on its DEAD_LETTER job — m-11: until a Founder requeue it never runs again).
+ */
+const ENDED_STATES: readonly string[] = ['FAILED', 'CANCELLED', 'SUPERSEDED', 'COMPLETED', 'CLOSED', 'WAITING_REVIEW', 'REVIEWED'];
+const ENDED_SQL = `(i.state IN ('FAILED', 'CANCELLED', 'SUPERSEDED', 'COMPLETED', 'CLOSED') OR (i.state = 'BLOCKED' AND EXISTS (SELECT 1 FROM queue_jobs j WHERE j.work_item_id = i.id AND j.state = 'DEAD_LETTER')))`;
+function reviewWorkEnded(ctx: StoreContext, workItemId: Id): boolean {
+  const item = getWorkItemRow(ctx, workItemId);
+  return ENDED_STATES.includes(item.state) || (item.state === 'BLOCKED' && ctx.db.get(`SELECT 1 AS x FROM queue_jobs WHERE work_item_id = ? AND state = 'DEAD_LETTER' LIMIT 1`, workItemId) !== undefined);
+}
+
+/** A review Work Item that ended without a decision (failed, cancelled, dead-lettered): its key is withdrawn and refilled. */
 export function releaseAbandonedAssignment(ctx: StoreContext, reviewWorkItemId: Id): void {
   const row = ctx.db.get(`SELECT * FROM review_assignments WHERE review_work_item_id = ? AND state = 'ASSIGNED'`, reviewWorkItemId);
   if (!row) return;
   const a = mapReviewAssignment(row);
-  const item = getWorkItemRow(ctx, reviewWorkItemId);
-  if (!['FAILED', 'CANCELLED', 'SUPERSEDED', 'COMPLETED', 'CLOSED', 'WAITING_REVIEW', 'REVIEWED'].includes(item.state)) return;
+  if (!reviewWorkEnded(ctx, reviewWorkItemId)) return;
   withdrawAssignment(ctx, a, 'REVIEW_WORK_ENDED');
   const r = getRequest(ctx, a.requestId);
   if (r.state === 'OPEN') fillAssignments(ctx, r);
+}
+
+/** m-11: every end path of a review / judge Work Item (terminal transition, completion, dead letter) frees what it held. */
+export function releaseAbandonedReviewWork(ctx: StoreContext, workItemId: Id): void {
+  releaseAbandonedAssignment(ctx, workItemId);
+  releaseAbandonedJudgment(ctx, workItemId);
 }
 
 /**
@@ -697,22 +816,35 @@ export function releaseAbandonedAssignment(ctx: StoreContext, reviewWorkItemId: 
  */
 export function reviewAfterCompletion(ctx: StoreContext, wi: WorkItemRecord): void {
   if (wi.state === 'WAITING_REVIEW') ensureOutputReview(ctx, wi.id);
-  releaseAbandonedAssignment(ctx, wi.id);
-  releaseAbandonedJudgment(ctx, wi.id);
+  releaseAbandonedReviewWork(ctx, wi.id);
 }
 
-/** Recovery sweep (bounded): output subjects waiting for review without a live request, and abandoned assignments. */
+/**
+ * Recovery sweep (bounded; runtime startup recovery): output subjects waiting for review without a live request,
+ * executors stranded on an action review whose request went STALE (R2-02), abandoned or dead-lettered
+ * assignments and judgments (m-11), and pool judgments still undrawn.
+ */
 export function sweepReviews(ctx: StoreContext, limit: number): number {
   let n = 0;
   for (const { id } of ctx.db.all<{ id: string }>(`SELECT w.id FROM work_items w WHERE w.state = 'WAITING_REVIEW' AND EXISTS (SELECT 1 FROM review_plans p WHERE p.work_item_id = w.id AND p.status = 'ACTIVE') ORDER BY w.updated_at LIMIT ?`, limit)) {
     const r = ensureOutputReview(ctx, id as Id);
     if (r !== null) n++;
   }
-  for (const { w } of ctx.db.all<{ w: string }>(`SELECT a.review_work_item_id AS w FROM review_assignments a JOIN work_items i ON i.id = a.review_work_item_id WHERE a.state = 'ASSIGNED' AND i.state IN ('FAILED', 'CANCELLED', 'SUPERSEDED', 'COMPLETED', 'CLOSED') LIMIT ?`, limit)) {
+  for (const { w } of ctx.db.all<{ w: string }>(
+    `SELECT DISTINCT j.work_item_id AS w FROM queue_jobs j WHERE j.state = 'WAITING' AND j.wait_reason = 'AWAITING_INDEPENDENT_REVIEW'
+        AND EXISTS (SELECT 1 FROM review_plans p WHERE p.work_item_id = j.work_item_id AND p.status = 'ACTIVE')
+        AND NOT EXISTS (SELECT 1 FROM review_requests r WHERE r.work_item_id = j.work_item_id AND r.subject_kind = 'ACTION' AND r.kind = 'REQUIRED' AND r.state IN ('OPEN', 'SATISFIED', 'CONFLICT', 'ESCALATED'))
+      LIMIT ?`,
+    limit,
+  )) {
+    wakeStrandedActionWait(ctx, w as Id);
+    n++;
+  }
+  for (const { w } of ctx.db.all<{ w: string }>(`SELECT a.review_work_item_id AS w FROM review_assignments a JOIN work_items i ON i.id = a.review_work_item_id WHERE a.state = 'ASSIGNED' AND ${ENDED_SQL} LIMIT ?`, limit)) {
     releaseAbandonedAssignment(ctx, w as Id);
     n++;
   }
-  for (const { w } of ctx.db.all<{ w: string }>(`SELECT a.judge_work_item_id AS w FROM judgment_assignments a JOIN work_items i ON i.id = a.judge_work_item_id WHERE a.state = 'ASSIGNED' AND i.state IN ('FAILED', 'CANCELLED', 'SUPERSEDED', 'COMPLETED', 'CLOSED') LIMIT ?`, limit)) {
+  for (const { w } of ctx.db.all<{ w: string }>(`SELECT a.judge_work_item_id AS w FROM judgment_assignments a JOIN work_items i ON i.id = a.judge_work_item_id WHERE a.state = 'ASSIGNED' AND ${ENDED_SQL} LIMIT ?`, limit)) {
     releaseAbandonedJudgment(ctx, w as Id);
     n++;
   }
@@ -723,13 +855,40 @@ export function sweepReviews(ctx: StoreContext, limit: number): number {
 
 export type JudgmentSubjectKind = JudgmentAssignmentRecord['subjectKind'];
 
-/** Who must not judge: the executor of the judged work, its delegation chain, the subject Employee, and every earlier judge of the subject. */
-function judgmentExclusions(ctx: StoreContext, kind: JudgmentSubjectKind, subjectId: Id, workItemId: Id, subjectEmployeeId: Id | null): string[] {
+/** The parties of a judged subject, who never judge it: the executor of the judged work, the subject Employee, and the delegation chain. */
+function judgmentParties(ctx: StoreContext, workItemId: Id, subjectEmployeeId: Id | null): Id[] {
   const executor = employeeIdFromRef(getWorkItemRow(ctx, workItemId).ownerRef);
-  // A judge who stood down only because the evidence was still pending may judge the subject again.
-  const prior = ctx.db.all<{ e: string }>(`SELECT judge_employee_id AS e FROM judgment_assignments WHERE subject_kind = ? AND subject_id = ? AND reason_code IS NOT 'EVIDENCE_PENDING'`, kind, subjectId).map((r) => r.e);
-  const parties = [executor, subjectEmployeeId, ...delegationChain(ctx, workItemId)].filter((x): x is Id => x !== null);
-  return [...new Set([...parties, ...prior])];
+  return [executor, subjectEmployeeId, ...delegationChain(ctx, workItemId)].filter((x): x is Id => x !== null);
+}
+
+/**
+ * Who must not judge: the parties, and every judge holding, having decided or having escalated the subject, or
+ * whose own judgment work ended undecided. A judge withdrawn for a transient reason (a lifted hold, pending
+ * evidence, a reinstated qualification) may judge it again (R2-07 / m-12).
+ */
+function judgmentExclusions(ctx: StoreContext, kind: JudgmentSubjectKind, subjectId: Id, workItemId: Id, subjectEmployeeId: Id | null): string[] {
+  const prior = ctx.db.all<{ e: string }>(
+    `SELECT judge_employee_id AS e FROM judgment_assignments WHERE subject_kind = ? AND subject_id = ? AND (state IN ('ASSIGNED', 'DECIDED', 'ESCALATED') OR reason_code = 'JUDGMENT_WORK_ENDED')`,
+    kind, subjectId,
+  ).map((r) => r.e);
+  return [...new Set([...judgmentParties(ctx, workItemId, subjectEmployeeId), ...prior])];
+}
+
+/**
+ * R2-09: a LESSON judge is drawn only through the lesson evidence gate (`txRequestLessonJudgment`, improvement.ts),
+ * which registers itself here — review-core never imports improvement.ts (no import cycle). Unregistered, no
+ * lesson judge is drawn at all (fail closed); `assignJudge` refuses a LESSON draw that did not pass the gate.
+ */
+type LessonJudgeDraw = (ctx: StoreContext, lessonId: Id) => Id | null;
+let lessonJudgeDraw: LessonJudgeDraw | null = null;
+export function registerLessonJudgeDraw(draw: LessonJudgeDraw): void {
+  lessonJudgeDraw = draw;
+}
+
+/** Draws a judge for a pending C6 subject through its gated path (the one entry the refill, release and reassignment paths use). */
+export function drawJudge(ctx: StoreContext, s: { subjectKind: JudgmentSubjectKind; subjectId: Id; workItemId: Id; subjectEmployeeId: Id | null }): boolean {
+  if (s.subjectKind === 'LESSON') return lessonJudgeDraw !== null && lessonJudgeDraw(ctx, s.subjectId) !== null;
+  return assignJudge(ctx, s) !== null;
 }
 
 /** What the judge is shown (local governed context of its own Work Item, never telemetry). */
@@ -748,9 +907,11 @@ function judgmentSubjectText(ctx: StoreContext, kind: JudgmentSubjectKind, subje
  * governed Work Item funded from the plan's pre-authorized review budget, exactly like a reviewer. Idempotent;
  * no eligible judge (or a Quality Hold) → null: the subject waits, visible, and the Founder can always decide it.
  */
-export function assignJudge(ctx: StoreContext, s: { subjectKind: JudgmentSubjectKind; subjectId: Id; workItemId: Id; subjectEmployeeId: Id | null }): JudgmentAssignmentRecord | null {
+export function assignJudge(ctx: StoreContext, s: { subjectKind: JudgmentSubjectKind; subjectId: Id; workItemId: Id; subjectEmployeeId: Id | null; lessonEvidenceReady?: true }): JudgmentAssignmentRecord | null {
   const open = ctx.db.get(`SELECT * FROM judgment_assignments WHERE subject_kind = ? AND subject_id = ? AND state = 'ASSIGNED'`, s.subjectKind, s.subjectId);
   if (open) return mapJudgmentAssignment(open);
+  // R2-09: no judge is spent on a lesson whose independent evidence has not arrived (the gate decides that).
+  if (s.subjectKind === 'LESSON' && s.lessonEvidenceReady !== true) return null;
   // An escalated judgment belongs to the Founder now: it is never re-drawn until someone else answers.
   if (ctx.db.get(`SELECT 1 AS x FROM judgment_assignments WHERE subject_kind = ? AND subject_id = ? AND state IN ('DECIDED', 'ESCALATED')`, s.subjectKind, s.subjectId)) return null;
   const item = getWorkItemRow(ctx, s.workItemId);
@@ -760,10 +921,10 @@ export function assignJudge(ctx: StoreContext, s: { subjectKind: JudgmentSubject
   const executor = employeeIdFromRef(item.ownerRef);
   const dataClass = effectiveDataClass(ctx, item.id);
   const excluded = judgmentExclusions(ctx, s.subjectKind, s.subjectId, item.id, s.subjectEmployeeId);
-  const judge = eligibleReviewers(ctx, { domain: plan.domain, mode: 'ACTIVE', dataClass, excluded, excludeDepartmentId: plan.excludeSameDepartment && executor ? getEmployeeRow(ctx, executor).departmentId : null, minLevelRank: 0, onlyEmployeeId: null, limit: 1 })[0];
+  const judge = eligibleReviewers(ctx, { domain: plan.domain, mode: 'ACTIVE', dataClass, excluded, excludeDepartmentId: plan.excludeSameDepartment && executor ? getEmployeeRow(ctx, executor).departmentId : null, minLevelRank: 0, rubricRef: rubricRefOf(plan), onlyEmployeeId: null, limit: 1 })[0];
   if (!judge) return null;
   const id = newId();
-  const instructions = `${planInstructions(ctx, plan.id)}\n${judgmentSubjectText(ctx, s.subjectKind, s.subjectId, item.id)}`.slice(0, 11_000);
+  const instructions = reviewerInstructions(ctx, plan.id, judgmentSubjectText(ctx, s.subjectKind, s.subjectId, item.id));
   const created = txCreateWorkItem(
     ctx,
     { objective: `Independent judgment ${s.subjectKind.toLowerCase()} ${s.subjectId} (assignment ${id})`, ownerRef: `employee:${judge.employeeId}`, riskLevel: 'R1', processorKind: REVIEW_PROCESSOR, processorInput: { taskClass: plan.reviewTaskClass, dataClass, instructions, maxTurns: 4 }, dedupeKey: `judgment-assignment:${id}`, ...(plan.deadlineAt !== null ? { dueAt: plan.deadlineAt } : {}), initialState: 'PROPOSED' },
@@ -789,19 +950,13 @@ export function judgeStillEligible(ctx: StoreContext, ja: JudgmentAssignmentReco
   const item = getWorkItemRow(ctx, ja.workItemId);
   if (!plan || plan.id !== ja.planId || judgmentRoute({ planJudgment: plan.operationalJudgment, risk: item.riskLevel }).judge !== 'REVIEW_POOL') return { eligible: false, qualificationVersion: null };
   const executor = employeeIdFromRef(item.ownerRef);
-  const independent = ja.judgeEmployeeId !== executor && ja.judgeEmployeeId !== subjectEmployeeId && !delegationChain(ctx, item.id).includes(ja.judgeEmployeeId)
-    && !(plan.excludeSameDepartment && executor !== null && getEmployeeRow(ctx, executor).departmentId !== null && getEmployeeRow(ctx, executor).departmentId === getEmployeeRow(ctx, ja.judgeEmployeeId).departmentId);
-  // Capacity is not re-counted here: this assignment is the slot the judge already holds.
-  const at = ts(ctx);
-  const q = ctx.db.get<{ v: number }>(
-    `SELECT q.qualification_version AS v FROM reviewer_qualifications q JOIN employees e ON e.id = q.employee_id JOIN certifications c ON c.id = q.certification_id
-      WHERE q.id = ? AND q.employee_id = ? AND q.domain = ? AND q.mode = 'ACTIVE' AND e.state = 'ACTIVE' AND c.status = 'VALID' AND c.valid_until > ? AND c.role_ref = ? AND q.max_data_rank >= ?
-        AND EXISTS (SELECT 1 FROM budgets b WHERE b.scope = 'EMPLOYEE' AND b.scope_id = q.employee_id AND b.status = 'OPEN')
-        AND NOT EXISTS (SELECT 1 FROM quality_holds h WHERE h.state = 'ACTIVE' AND ((h.target_kind = 'REVIEWER' AND h.target_ref = 'employee:' || q.employee_id) OR (h.target_kind = 'QUALIFICATION' AND h.target_ref = q.id) OR (h.target_kind = 'DOMAIN' AND h.target_ref = q.domain)))
-        AND NOT EXISTS (SELECT 1 FROM json_each(c.skill_pins_json) p JOIN skill_versions v ON v.id = json_extract(p.value, '$.skillVersionId') WHERE v.freshness IN ('SECURITY_HOLD', 'RETIRED') OR v.integrity <> 'OK')`,
-    ja.qualificationId, ja.judgeEmployeeId, plan.domain, at, reviewerRoleFor(plan.domain), dataRank(effectiveDataClass(ctx, item.id)),
-  );
-  return { eligible: q !== undefined && independent, qualificationVersion: q ? Number(q.v) : null };
+  // The shared predicate (R2-08: incl. a RUBRIC hold on the plan's rubric and the judge's OPEN envelope); capacity is
+  // not re-counted here: this assignment is the slot the judge already holds.
+  const v = stillEligible(ctx, ja.qualificationId, ja.judgeEmployeeId, {
+    domain: plan.domain, mode: 'ACTIVE', dataClass: effectiveDataClass(ctx, item.id), excluded: judgmentParties(ctx, item.id, subjectEmployeeId),
+    excludeDepartmentId: plan.excludeSameDepartment && executor !== null ? getEmployeeRow(ctx, executor).departmentId : null, minLevelRank: 0, rubricRef: rubricRefOf(plan),
+  });
+  return { eligible: v !== null, qualificationVersion: v };
 }
 
 export function withdrawJudgment(ctx: StoreContext, ja: JudgmentAssignmentRecord, reasonCode: string): void {
@@ -833,21 +988,26 @@ export function refillJudgments(ctx: StoreContext, limit = 200): number {
     `SELECT s.id, substr(s.event_ref, 11) AS w, s.employee_id FROM lessons s JOIN review_plans p ON p.work_item_id = substr(s.event_ref, 11) AND p.status = 'ACTIVE' AND p.operational_judgment = 'REVIEW_POOL'
       WHERE s.stage = 'UNDER_REVIEW' AND s.event_ref GLOB 'work_item:*' AND ${pending} ORDER BY s.created_at, s.id LIMIT ?`,
     'LESSON', limit,
-  )) if (assignJudge(ctx, { subjectKind: 'LESSON', subjectId: l.id as Id, workItemId: l.w as Id, subjectEmployeeId: l.employee_id as Id })) n++;
+  )) if (drawJudge(ctx, { subjectKind: 'LESSON', subjectId: l.id as Id, workItemId: l.w as Id, subjectEmployeeId: l.employee_id as Id })) n++;
   return n;
 }
 
-/** A judge's Work Item that ended without a decision: the assignment is withdrawn and another judge drawn. */
+/** A judge's Work Item that ended without a decision (incl. dead-lettered): the assignment is withdrawn and another judge drawn. */
 export function releaseAbandonedJudgment(ctx: StoreContext, judgeWorkItemId: Id): void {
   const row = ctx.db.get(`SELECT * FROM judgment_assignments WHERE judge_work_item_id = ? AND state = 'ASSIGNED'`, judgeWorkItemId);
   if (!row) return;
   const ja = mapJudgmentAssignment(row);
-  if (!['FAILED', 'CANCELLED', 'SUPERSEDED', 'COMPLETED', 'CLOSED', 'WAITING_REVIEW', 'REVIEWED'].includes(getWorkItemRow(ctx, judgeWorkItemId).state)) return;
+  if (!reviewWorkEnded(ctx, judgeWorkItemId)) return;
   withdrawJudgment(ctx, ja, 'JUDGMENT_WORK_ENDED');
+  withdrawnJudgmentRedraw(ctx, ja);
+}
+
+/** After a judgment was withdrawn: a still-pending subject gets another judge, through its gated path. */
+export function withdrawnJudgmentRedraw(ctx: StoreContext, ja: JudgmentAssignmentRecord): void {
   const pending = ja.subjectKind === 'ATTRIBUTION'
     ? ctx.db.get(`SELECT 1 AS x FROM causal_attributions WHERE id = ? AND state = 'PROPOSED'`, ja.subjectId)
     : ctx.db.get(`SELECT 1 AS x FROM lessons WHERE id = ? AND stage = 'UNDER_REVIEW'`, ja.subjectId);
-  if (pending) assignJudge(ctx, { subjectKind: ja.subjectKind, subjectId: ja.subjectId, workItemId: ja.workItemId, subjectEmployeeId: judgmentSubjectEmployee(ctx, ja.subjectKind, ja.subjectId) });
+  if (pending) drawJudge(ctx, { subjectKind: ja.subjectKind, subjectId: ja.subjectId, workItemId: ja.workItemId, subjectEmployeeId: judgmentSubjectEmployee(ctx, ja.subjectKind, ja.subjectId) });
 }
 
 export const isoNow = (ctx: StoreContext): Timestamp => ts(ctx);

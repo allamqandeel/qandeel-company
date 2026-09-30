@@ -32,7 +32,7 @@ import {
 
 import { appendAudit, appendEvent, getJobRow, getWorkItemRow, mapCheckpoint, mapJob, mapRun, ts, type StoreContext, type TraceContext } from './internal.js';
 import type { CheckpointRecord, Fence, JobRecord, RunRecord, SupervisorFence, WorkItemRecord } from './records.js';
-import { reviewAfterCompletion } from './review-core.js';
+import { releaseAbandonedReviewWork, reviewAfterCompletion } from './review-core.js';
 import { applyTransition, defaultPropagationPolicy, failDependents, futureTimestamp, newTerminationOutcome, resolveDependents, terminateNow, type TerminationOutcome } from './work-core.js';
 
 export const CHECKPOINT_MAX_BYTES = 65_536;
@@ -467,6 +467,8 @@ export function txSettle(ctx: StoreContext, fence: Fence, result: ProcessorResul
 function deadLetter(ctx: StoreContext, job: JobRecord, item: WorkItemRecord, trace: TraceContext, failed: number, code: string, reason: string): SettleOutcome {
   setJob(ctx, job, 'DEAD_LETTER', { attemptCount: Math.min(failed, job.maxAttempts), deadLetterReason: reason, lastFailureCode: code, bumpToken: true });
   const wi = applyTransition(ctx, item, 'BLOCKED', { reasonCode: 'job.dead_lettered', trace, blockedReason: reason, blockerRef: `job:${job.id}` });
+  // m-11: a dead-lettered review / judge Work Item never runs again on its own: its key / judgment is released now.
+  releaseAbandonedReviewWork(ctx, wi.id);
   appendEvent(ctx, 'job.dead_lettered', 'job', job.id, trace, { attempts: failed, code, reason });
   appendAudit(ctx, 'job.dead_lettered', 'job', job.id, trace, 'OK', reason, { attempts: failed, code });
   return { jobState: 'DEAD_LETTER', runState: 'FAILED_RETRYABLE', workItemState: wi.state };

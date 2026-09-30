@@ -543,8 +543,12 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
   // Approve: a satisfied review never approves anything, and a missing plan or reviewer fails closed.
   let reviewRequestId: Id | null = null;
   if (decision.review === 'INDEPENDENT') {
-    const actionText = `Subject: the proposed action ${input.toolCode}.${input.actionCode} (risk ${action.risk}, data class ${dataClass}) in Work Item ${item.id}, with arguments ${canonicalJson(args).slice(0, 3000)}`;
-    const reviewGate = actionReviewGate(ctx, { item, fingerprint: approvalFingerprint(scope), subjectRef: `tool_action:${action.id}`, dataClass, risk: action.risk, actionText });
+    // R2-11: the reviewer is shown the whole action — every canonical argument the fingerprint binds, never cut —
+    // and nothing secret-shaped ever reaches a reviewer's Work Item: refused before any request exists.
+    const actionSubject = `Subject: the proposed action ${input.toolCode}.${input.actionCode} (risk ${action.risk}, data class ${dataClass}) in Work Item ${item.id}, with arguments ${canonicalJson(args)}`;
+    if (containsSecretMaterial(actionSubject)) return deny('SECRET_MATERIAL', { toolActionId: action.id });
+    const reviewGate = actionReviewGate(ctx, { item, fingerprint: approvalFingerprint(scope), subjectRef: `tool_action:${action.id}`, dataClass, risk: action.risk, actionSubject });
+    if (reviewGate.kind === 'REFUSED') return deny(reviewGate.code, { toolActionId: action.id });
     if (reviewGate.kind === 'REWORK') {
       // A reviewer rejected exactly this action: refused (not an authority violation); a changed action is a new subject.
       appendAudit(ctx, 'tool.review_rejected', 'run', fence.runId, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', 'REVIEW_REJECTED', { toolActionId: action.id, reviewRequestId: reviewGate.requestId });
