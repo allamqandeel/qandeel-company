@@ -118,6 +118,26 @@ function evidence(ctx: StoreContext, e: EnrollmentRecord) {
   return { def, attempts, completed, review, calibration, passed, blockedDims };
 }
 
+/**
+ * The enrollment's simulations (in trial order) that may decide the SIMULATION / FEEDBACK gates: after a
+ * retrained SIMULATION failure, only its retest and later simulations — never the failure it retrained, nor
+ * a simulation started before the retraining (R2-34). Before any retraining, all of them.
+ */
+function simulationsSinceRetraining(ctx: StoreContext, e: EnrollmentRecord, attempts: readonly AttemptRecord[]): AttemptRecord[] {
+  const sims = attempts.filter((a) => a.kind === 'SIMULATION').sort((a, b) => a.trialNo - b.trialNo);
+  const r = ctx.db.get<{ state: string; failed_trial: number; retest: string | null }>(
+    `SELECT r.state, a.trial_no AS failed_trial, r.retest_attempt_id AS retest FROM academy_remediations r JOIN academy_attempts a ON a.id = r.attempt_id
+      WHERE r.enrollment_id = ? AND a.kind = 'SIMULATION' AND r.state IN ('RETEST_READY', 'RETESTED') ORDER BY a.trial_no DESC LIMIT 1`,
+    e.id,
+  );
+  if (!r) return sims;
+  const retest = sims.find((a) => a.id === r.retest);
+  if (retest) return sims.filter((a) => a.trialNo >= retest.trialNo);
+  // Retrained, retest not started yet: nothing decides the gate until it is. (A retest linked to a non-simulation
+  // attempt: the simulations after the retrained failure.)
+  return r.state === 'RETEST_READY' ? [] : sims.filter((a) => a.trialNo > Number(r.failed_trial));
+}
+
 export class AcademyStore {
   readonly #store: CompanyStore;
 
@@ -255,24 +275,30 @@ export class AcademyStore {
   #nextStage(ctx: StoreContext, e: EnrollmentRecord): { to: LearningStage; reason: string } | null {
     const ev = evidence(ctx, e);
     const modules = (pred: (c: string) => boolean): boolean => ev.def.curriculum.filter((m) => pred(m.category)).every((m) => ev.completed.has(m.code));
-    const sims = ev.attempts.filter((a) => a.kind === 'SIMULATION' && a.state === 'EVALUATED');
+    // After a retrained SIMULATION failure only the retest and later simulations count (R2-34): the failed
+    // simulation it retrained never decides the path again (the ASSESSMENT gate's "retrained" guard, for SIMULATION).
+    const sinceRetraining = simulationsSinceRetraining(ctx, e, ev.attempts);
+    const sims = sinceRetraining.filter((a) => a.state === 'EVALUATED');
     switch (e.stage) {
       case 'LEARN':
         return modules((c) => c !== 'REAL_CASE_STUDIES') ? { to: 'CASE_STUDIES', reason: 'CURRICULUM_COMPLETED' } : null;
       case 'CASE_STUDIES':
         return modules((c) => c === 'REAL_CASE_STUDIES') ? { to: 'SIMULATION', reason: 'CASE_STUDIES_COMPLETED' } : null;
       case 'SIMULATION':
-        return sims.length > 0 && !ev.attempts.some((a) => a.kind === 'SIMULATION' && a.state === 'OPEN') ? { to: 'FEEDBACK', reason: 'SIMULATION_EVALUATED' } : null;
+        return sims.length > 0 && !sinceRetraining.some((a) => a.state === 'OPEN') ? { to: 'FEEDBACK', reason: 'SIMULATION_EVALUATED' } : null;
       case 'FEEDBACK':
         return sims.at(-1)?.outcome === 'PASS' ? { to: 'ASSESSMENT', reason: 'SIMULATION_PASSED' } : { to: 'RETRY', reason: 'SIMULATION_FAILED' };
       case 'RETRY': {
         // Retraining completed → re-test what failed: the simulation, the assessment, or (after a failed
         // probation) new shadow work in a new evidence epoch.
-        const rem = ctx.db.get<{ state: string; attempt_id: string | null; probation_review_id: string | null }>('SELECT state, attempt_id, probation_review_id FROM academy_remediations WHERE enrollment_id = ? ORDER BY created_at DESC, id DESC LIMIT 1', e.id);
-        if (!rem || rem.state !== 'RETEST_READY') return null;
-        if (rem.probation_review_id !== null) return { to: 'SHADOW_WORK', reason: 'RETRAINING_COMPLETED' };
+        const rem = ctx.db.get<{ state: string; attempt_id: string | null; probation_review_id: string | null }>('SELECT state, attempt_id, probation_review_id FROM academy_remediations WHERE enrollment_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', e.id);
+        if (!rem) return null;
+        if (rem.probation_review_id !== null) return rem.state === 'RETEST_READY' ? { to: 'SHADOW_WORK', reason: 'RETRAINING_COMPLETED' } : null;
         const failedKind = ev.attempts.find((a) => a.id === rem.attempt_id)?.kind;
-        return failedKind === 'SIMULATION' ? { to: 'SIMULATION', reason: 'RETRAINING_COMPLETED' } : { to: 'ASSESSMENT', reason: 'RETRAINING_COMPLETED' };
+        // A simulation retest may already have started from RETRY (the remediation is then RETESTED): it is
+        // judged in SIMULATION, which counts only simulations since the retraining.
+        if (failedKind === 'SIMULATION') return rem.state === 'RETEST_READY' || rem.state === 'RETESTED' ? { to: 'SIMULATION', reason: 'RETRAINING_COMPLETED' } : null;
+        return rem.state === 'RETEST_READY' ? { to: 'ASSESSMENT', reason: 'RETRAINING_COMPLETED' } : null;
       }
       case 'ASSESSMENT': {
         if (ev.blockedDims.length > 0) return { to: 'BLOCKED', reason: 'REPEATED_CRITICAL_FAILURE' };
@@ -343,7 +369,9 @@ export class AcademyStore {
         `INSERT INTO academy_attempts (id, enrollment_id, scenario_id, kind, trial_no, work_item_id, holdout, holdout_clean, state, epoch, version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, 1, ?)`,
         id, e.id, s.id, input.kind, trial, workItem.id, s.kind === 'HOLDOUT' ? 1 : 0, s.kind === 'HOLDOUT' && exposed === 0 ? 1 : 0, e.evidenceEpoch, ts(ctx),
       );
-      const rem = ctx.db.get<{ id: string }>(`SELECT id FROM academy_remediations WHERE enrollment_id = ? AND state = 'RETEST_READY' AND attempt_id IS NOT NULL`, e.id);
+      // Only an attempt of the failed kind re-tests it: practice in RETRY never consumes a retrained assessment
+      // failure's retest (RETESTED would leave RETRY without an exit, R2-34).
+      const rem = ctx.db.get<{ id: string }>(`SELECT r.id FROM academy_remediations r JOIN academy_attempts f ON f.id = r.attempt_id WHERE r.enrollment_id = ? AND r.state = 'RETEST_READY' AND f.kind = ?`, e.id, input.kind);
       if (rem) {
         ctx.db.run(`UPDATE academy_remediations SET retest_attempt_id = ? WHERE id = ?`, id, rem.id);
         remediationState(ctx, rem.id as Id, 'RETEST_READY', 'RETESTED', 'academy.retest_started', SYSTEM_MIND_REF);
