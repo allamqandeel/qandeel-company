@@ -220,3 +220,14 @@ CREATE TRIGGER budget_admissions_follow_need AFTER INSERT ON budget_wait_needs
 BEGIN
   UPDATE budget_admissions SET state = 'RELEASED', end_reason_code = 'NEED_REPLACED', ended_at = NEW.created_at WHERE job_id = NEW.job_id AND state = 'ADMITTED';
 END;
+
+-- -----------------------------------------------------------------------------------------------------
+-- RB-1 / RB-2 (FB-1 family, PO-R2-A / PO-R2-C): causal attributions are sequential GENERATIONS per Work Item.
+-- Learning evidence is timed by the adverse source event, so a genuinely new adverse event on a Work Item that
+-- already holds a decided attribution needs its own causal decision (a new generation for the events no decided
+-- generation covers). At most ONE undecided (PROPOSED) attribution per Work Item — it is never replaced by new
+-- evidence, and an escalated one is the Founder's until decided; any number of decided generations are history.
+-- Replaces the 0010 "one PROPOSED-or-VALIDATED per Work Item" index (same table, no second attribution engine).
+-- -----------------------------------------------------------------------------------------------------
+DROP INDEX causal_attributions_one_live;
+CREATE UNIQUE INDEX causal_attributions_one_proposed ON causal_attributions (work_item_id) WHERE state = 'PROPOSED';

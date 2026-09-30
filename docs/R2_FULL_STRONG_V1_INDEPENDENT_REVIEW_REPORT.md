@@ -1,9 +1,10 @@
 # R2 — Full Strong-v1 Independent Review Report
 
-**Status:** **STOPPED — NOT CLOSED (§16.7).** The final fresh re-review (§15) reproduced a third recurrence in
-three root-cause families; the Product Owner then approved one bounded architecture correction (R2-ARCH-CLOSE, §16)
-for those families and AC-01. Its one targeted re-review closed FB-2 and AC-01 but reproduced MAJOR defects in the
-corrected FA-1 (RA-1) and FB-1 (RB-1, RB-2) families; by rule no patch loop followed. **Not ready for C7.**
+**Status:** **CLOSURE CANDIDATE — READY FOR TECHNICAL LEAD EXACT-HEAD REVIEW (§17).** The final fresh re-review
+(§15) reproduced a third recurrence in three root-cause families; the Product Owner approved one bounded architecture
+correction (R2-ARCH-CLOSE, §16), whose targeted re-review closed FB-2 and AC-01 and stopped on RA-1, RB-1, RB-2
+(§16.7); the final simple closure fix (§17) fixed exactly those three. R2 is **not closed** until the Technical Lead's
+exact-head review and the merge. C7 not started.
 §1–§11 are the register frozen at `dc408a3` before any code change; §12–§15 record the remediation waves and
 re-reviews; the identity and root cause of every frozen finding stay traceable.
 
@@ -743,3 +744,25 @@ What each open item needs (for the Technical Lead; no code was written for it):
 
 Migration 0011 stays **unreleased** (now also holding `budget_admissions`). **READY FOR C7: NO.** R2 is **not
 closed**; the branch is ready for Technical Lead review of this STOP head, not a closure candidate.
+
+## 17. Final simple closure fix (R2-FINAL-SIMPLE-CLOSE)
+
+After the Technical Lead reviewed the §16.7 STOP head (`ce7448b`, pushed), the smallest possible fix for exactly
+RA-1, RB-1 and RB-2 — no agents, no new review, no mutation or acceptance matrices, no other MINOR or Product gap.
+Start gate: branch `review/r2-full-strong-v1` at `ce7448b` locally and on `origin`; `main` at `b4f91ca`; clean; no PR.
+
+| Id | Fix (D-R2-20) | Proof | Result |
+|---|---|---|---|
+| **RA-1** | `trimBudgetAdmissions` collects every released admission's `levels_json` and re-admits once on their UNION, in the same transaction (was: the lowered level only) | `r1-review` "RA-1: a trimmed admission re-offers EVERY level it held …" (X and Y share only the Company level; X admitted; the Founder lowers X's Work Item cap → X released `CAP_LOWERED`, Y ADMITTED / QUEUED in that transaction, wake generation advanced, Company reserved / spent unchanged, one outstanding admission). The reviewer's `p1-trim-lost-wake.mjs` now prints "after lower: { X: 'QUEUED', Y: 'QUEUED' }" and "startup pass admitted: 0" | **CLOSED** |
+| **RB-1** | Sequential attribution generations on the same table: 0011 replaces the 0010 `causal_attributions_one_live` index with `causal_attributions_one_proposed` (at most one PROPOSED per Work Item; decided generations are history). With no undecided proposal, the adverse source events no decided generation covers get ONE new generation holding only them — also on an unchanged-evidence re-evaluation after a decision; `explainEvent` binds each event to the generation whose refs hold it (an uncovered event waits on an undecided one, else the evaluation's due flag decides — never "unresolvable"). Readers made ambiguous collapse generations to one Work Item: `attributionFacts`, the accountable map of `followupFacts` (union of causes), single VALIDATED lookups (latest), `liveAttribution` (undecided first), `detectSystemicCandidates` (distinct Work Items) | `c6-improvement` "RB-1: a new post-training adverse event on work that already holds a VALIDATED attribution gets its own generation and is assessed" (new PROPOSED generation, old VALIDATED unchanged, the pre-training event not in it; NOT_YET_TESTED while undecided; after validation NO_IMPROVEMENT / SAME_MISTAKE_RECURRED); `c6-kernel` "RB-1: two VALIDATED generations of ONE Work Item are one systemic occurrence". The reviewer's `rb1` probe now shows `[["VALIDATED",1],["PROPOSED",2]]` and a pending (resolvable) effect instead of a permanent INCONCLUSIVE | **CLOSED** |
+| **RB-2** | An undecided proposal is never superseded because new evidence arrived (only a changed cause re-proposes it), and never at all while a pool judge's escalation makes it the Founder's (`escalatedToFounder`); `assignJudge` already never re-draws an escalated subject | `c6-improvement` "RB-2: a proposal a pool judge disputed is the Founder's until decided …" (A1 ESCALATED; new failing rework + re-evaluation → A1 the same PROPOSED, no A2, no ASSIGNED judge, Founder Attention still open; after the Founder decides A1, a new generation holds only the uncovered event) and "RB-2 / generations: …" (the replaced FB-1 "B2" test). The reviewer's `rb2` probe now stops at "after re-evaluate: [["A1","PROPOSED","EMPLOYEE_JUDGMENT"]]" | **CLOSED** |
+
+Migration 0011 amended (unreleased) and re-pinned (`97ab99ee…`); 0001–0010 untouched; no 0012.
+
+**Focused validation (once):** build and typecheck clean; lint (`packages`, `scripts`) clean; mind 114 / 114, storage
+403 / 403 (24 files, incl. `r1-review`, `c6-improvement`, `c6-founder-free`, `c6-resilience`, `migrations`), runtime C6
+5 / 5; verifier 69 / 69. Not re-run by instruction: mutation matrices, acceptances, full local `npm run ci`, any
+reviewer. GitHub CI on the PR head is the full-system gate.
+
+**State:** RA-1, RB-1, RB-2 closed; FB-2 and AC-01 closed at §16.5. **CLOSURE CANDIDATE — READY FOR TECHNICAL LEAD
+EXACT-HEAD REVIEW.** No closure record is written before that review and the merge. C7 not started.

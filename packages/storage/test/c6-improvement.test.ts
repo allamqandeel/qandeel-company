@@ -13,7 +13,7 @@ import { standardWorkOutcomeDefinition } from '@qandeel-company/mind';
 
 import { AttentionStore, FounderActionStore, FounderAuthStore, ImprovementStore, MemoryStore, ReviewStore, type Claim, type EmployeeRecord } from '../src/index.js';
 import { insertLesson } from '../src/mind-writes.js';
-import { reserveBudget, settle, settleReservation } from '../src/runtime-authority.js';
+import { recordReviewDecision, reserveBudget, settle, settleReservation } from '../src/runtime-authority.js';
 import { storeContext } from '../src/store.js';
 import { grantAll, hire, seed, testManifest, type Seed } from './c2-helpers.js';
 import { propose } from './c3-helpers.js';
@@ -1019,7 +1019,7 @@ describe('FB-1: learning is timed by the event that happened, not the date someo
     });
   });
 
-  test('B2: an undecided proposal is re-proposed when new adverse source events arrive — whoever decides it decides every event it explains', () => {
+  test('RB-2 / generations: new adverse evidence never replaces an undecided proposal; once it is decided, only the events it does not cover get a new generation', () => {
     withSeed((h, s, m) => {
       activate(s, m);
       activeReviewer(h, s);
@@ -1029,27 +1029,120 @@ describe('FB-1: learning is timed by the event that happened, not the date someo
       m.evaluate(w);
       const first = m.attributions({ workItemId: w }).find((a) => a.state === 'PROPOSED');
       assert.ok(first);
+      const [firstFail] = failedReviewRefs(h, w);
       const again = claimItem(h, w, 'w-rework-1');
       settle(h.store, again.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v2' } }, { backoff });
       decideOpenReview(h, w, 'FAIL');
-      const third = claimItem(h, w, 'w-rework-2');
-      settle(h.store, third.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v3' } }, { backoff });
-      decideOpenReview(h, w, 'PASS');
-      verify(s, m, w, 'ACHIEVED');
       m.evaluate(w);
-      const live = m.attributions({ workItemId: w }).find((a) => a.state === 'PROPOSED');
-      assert.ok(live);
-      assert.deepEqual(live.causes, first.causes, 'the same proposed causes');
-      assert.notEqual(live.id, first.id, 'yet a new proposal: the second failure is new evidence to decide');
-      assert.equal(m.attributions({ workItemId: w }).find((a) => a.id === first.id)?.state, 'SUPERSEDED');
-      const failed = failedReviewRefs(h, w);
-      assert.equal(failed.length, 2);
-      assert.ok(failed.every((r) => live.evidenceRefs.includes(r)), 'the live proposal holds every failed review it will decide');
-      // Unchanged evidence re-evaluates to nothing new (no churn).
-      assert.equal(m.evaluate(w).changed, false);
+      assert.deepEqual(m.attributions({ workItemId: w }).map((a) => [a.id, a.state]), [[first.id, 'PROPOSED']], 'the same undecided proposal: the new event waits for its decision');
+      const secondFail = failedReviewRefs(h, w).find((r) => r !== firstFail);
+      assert.ok(first.evidenceRefs.includes(firstFail as string) && !first.evidenceRefs.includes(secondFail as string));
+      m.decideAttribution(s.founder, first.id, { decision: 'VALIDATE', reasonCode: 'founder.confirmed' });
+      m.evaluate(w);
+      const rows = m.attributions({ workItemId: w });
+      const next = rows.find((a) => a.state === 'PROPOSED');
+      assert.ok(next && next.id !== first.id, 'a new generation for the event the decided one does not cover');
+      assert.equal(rows.find((a) => a.id === first.id)?.state, 'VALIDATED', 'the decided generation is never reopened');
+      assert.ok(next.evidenceRefs.includes(secondFail as string) && !next.evidenceRefs.includes(firstFail as string), 'the new generation holds only the uncovered event');
+      assert.equal(m.evaluate(w).changed, false, 'unchanged evidence re-evaluates to nothing new');
+      assert.equal(m.attributions({ workItemId: w }).filter((a) => a.state === 'PROPOSED').length, 1);
+    });
+  });
+
+  test('RB-2: a proposal a pool judge disputed is the Founder\'s until decided — new evidence neither replaces it nor draws a fresh judge', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const pool = reviewPlan({ appliesTo: 'OUTPUT', operationalJudgment: 'REVIEW_POOL' });
+      const { workItemId: w, claim } = runFor(h, s, s.employee, { reviewPlan: pool });
+      settle(h.store, claim.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.ready' } }, { backoff });
+      decideOpenReview(h, w, 'FAIL');
+      m.evaluate(w);
+      const a1 = m.attributions({ workItemId: w }).find((a) => a.state === 'PROPOSED');
+      assert.ok(a1);
+      const [firstFail] = failedReviewRefs(h, w);
+      assert.equal(poolJudge(h, m, a1.id, 'FAIL'), 'ESCALATED', 'the judge disputes the cause: it goes to the Founder');
+      const attention = AttentionStore.for(h.store);
+      const escalation = (): boolean => { attention.sync(); return attention.list().some((i) => i.state === 'OPEN' && i.sourceRef === `judgment_assignment:${m.judgments({ subjectId: a1.id })[0]?.id}`); };
+      assert.ok(escalation());
+      h.clock.advance(60_000);
+      const again = claimItem(h, w, 'w-rework-after-dispute');
+      settle(h.store, again.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v2' } }, { backoff });
+      decideOpenReview(h, w, 'FAIL');
+      m.evaluate(w);
+      assert.deepEqual(m.attributions({ workItemId: w }).map((a) => [a.id, a.state]), [[a1.id, 'PROPOSED']], 'A1 stays the one pending Founder decision: no A2');
+      assert.deepEqual(m.judgments({ subjectId: a1.id }).map((j) => j.state), ['ESCALATED'], 'no fresh judge while A1 is unresolved');
+      assert.equal(m.judgments({ state: 'ASSIGNED' }).filter((j) => j.subjectKind === 'ATTRIBUTION').length, 0);
+      assert.ok(escalation(), 'the Founder Attention item stays open');
+      // The Founder decides A1; only then does a later evaluation give the uncovered event its own generation.
+      m.decideAttribution(s.founder, a1.id, { decision: 'VALIDATE', reasonCode: 'founder.decided' });
+      m.evaluate(w);
+      const rows = m.attributions({ workItemId: w });
+      assert.equal(rows.find((a) => a.id === a1.id)?.state, 'VALIDATED');
+      const a2 = rows.find((a) => a.state === 'PROPOSED');
+      const secondFail = failedReviewRefs(h, w).find((r) => r !== firstFail);
+      assert.ok(a2 && a2.evidenceRefs.includes(secondFail as string) && !a2.evidenceRefs.includes(firstFail as string), 'the new generation covers only the event A1 did not');
+    });
+  });
+
+  test('RB-1: a new post-training adverse event on work that already holds a VALIDATED attribution gets its own generation and is assessed — never permanently INCONCLUSIVE', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const lessonId = validatedMistakeLesson(h, s, m);
+      const iid = m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' }).intervention?.id as Id;
+      h.clock.advance(60_000);
+      const { workItemId: w, claim } = runFor(h, s, s.employee, { reviewPlan: PLAN });
+      settle(h.store, claim.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.ready' } }, { backoff });
+      decideOpenReview(h, w, 'FAIL');
+      m.evaluate(w);
+      const old = m.attributions({ workItemId: w }).find((a) => a.state === 'PROPOSED');
+      assert.ok(old);
+      const [preTrainingFail] = failedReviewRefs(h, w);
+      m.decideAttribution(s.founder, old.id, { decision: 'VALIDATE', reasonCode: 'founder.confirmed' });
+      h.clock.advance(HOUR);
+      m.completeTraining(s.founder, iid);
+      h.clock.advance(HOUR);
+      // AFTER the training: the same mistake again on W (a true post-training act), then verified NOT_ACHIEVED.
+      const r2 = claimItem(h, w, 'w-rework-after');
+      settle(h.store, r2.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v2' } }, { backoff });
+      decideOpenReview(h, w, 'FAIL');
+      const r3 = claimItem(h, w, 'w-rework-after-2');
+      settle(h.store, r3.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v3' } }, { backoff });
+      decideOpenReview(h, w, 'PASS');
+      verify(s, m, w, 'NOT_ACHIEVED');
+      m.evaluate(w);
+      const rows = m.attributions({ workItemId: w });
+      const fresh = rows.find((a) => a.state === 'PROPOSED');
+      assert.ok(fresh && fresh.id !== old.id, 'a new generation for the new event');
+      assert.deepEqual(rows.find((a) => a.id === old.id)?.state, 'VALIDATED', 'the old VALIDATED generation is unchanged');
+      assert.ok(!fresh.evidenceRefs.includes(preTrainingFail as string), 'the pre-training event stays with its own generation');
+      for (let i = 0; i < 2; i++) {
+        h.clock.advance(HOUR);
+        laterWork(h, s, m, s.employee, 'SUCCESS');
+      }
+      assert.equal(m.assessIntervention(iid).intervention?.effect, 'NOT_YET_TESTED', 'pending while the new generation is undecided (never clean)');
+      m.decideAttribution(s.founder, fresh.id, { decision: 'VALIDATE', reasonCode: 'founder.confirmed' });
+      const after = m.assessIntervention(iid).intervention;
+      assert.equal(after?.effect, 'NO_IMPROVEMENT', 'the post-training recurrence is assessed, not left INCONCLUSIVE');
+      assert.equal(after?.effectBasis, 'SAME_MISTAKE_RECURRED');
+      // One Work Item stays ONE unit in the Employee's profile whatever its generations.
+      const outcome = m.profile(s.employee.id).dimensions.find((d) => d.dimension === 'OUTCOME');
+      assert.equal(new Set(m.attributions({ workItemId: w, state: 'VALIDATED' }).map((a) => a.workItemId)).size, 1);
+      assert.ok((outcome?.accountableNegative ?? 0) <= (outcome?.sample ?? 0));
     });
   });
 });
+
+/** A pool judge decides an attribution from its own judgment Work Item (the only path an Employee judges through). */
+function poolJudge(h: Harness, m: ImprovementStore, subjectId: Id, outcome: 'PASS' | 'FAIL'): string {
+  const j = m.judgments({ subjectId, state: 'ASSIGNED' })[0];
+  if (!j) return 'NO_JUDGE_ASSIGNED';
+  const c = claimItem(h, j.judgeWorkItemId, `w-judge-${newId().slice(0, 8)}`);
+  const out = recordReviewDecision(h.store, c.fence, { outcome, reasonCode: 'judgment.applied', rationale: null, evidenceRefs: ['evidence:attribution'] });
+  settle(h.store, c.fence, { type: 'COMPLETED' }, { backoff });
+  return out.code;
+}
 
 function activateSecond(s: Seed): Id {
   // A second ACTIVE, budgeted, granted Employee of the same role (the C2 fixture path).

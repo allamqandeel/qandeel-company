@@ -338,7 +338,8 @@ export function detectSystemicCandidates(facts: readonly ValidatedAttributionFac
       if (c.role !== 'PRIMARY') continue;
       const k = `${c.category}|${f.comparableKey}`;
       const g = groups.get(k) ?? { cause: c.category, key: f.comparableKey, items: [] };
-      g.items.push(f);
+      // RB-1: one Work Item is one occurrence, whatever number of validated generations it holds.
+      if (!g.items.some((i) => i.workItemId === f.workItemId)) g.items.push(f);
       groups.set(k, g);
     }
   }

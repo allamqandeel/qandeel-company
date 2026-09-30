@@ -523,6 +523,14 @@ describe('C6 learning closure', () => {
     assert.equal(c.length, 1);
     assert.equal(req(c[0]).targetKind, 'WORKFLOW');
   });
+  test('RB-1: two VALIDATED generations of ONE Work Item are one systemic occurrence, not two', () => {
+    const f = (i: number, workItemId: string, emp: string) => ({ attributionId: `a${i}`, workItemId, employeeId: emp, comparableKey: 'growth.brief', overall: 'TOOL' as const, causes: [{ category: 'TOOL' as const, role: 'PRIMARY' as const, confidence: 'MEDIUM' as const, basis: 'X' }] });
+    const three = [f(1, 'w1', 'a'), f(2, 'w2', 'b'), f(3, 'w3', 'a')];
+    assert.equal(req(detectSystemicCandidates(three)[0]).occurrences, 3);
+    // w1 holds a second validated generation: still three Work Items, and two Work Items alone never reach the bound.
+    assert.equal(req(detectSystemicCandidates([...three, f(4, 'w1', 'a')])[0]).occurrences, 3);
+    assert.deepEqual(detectSystemicCandidates([f(1, 'w1', 'a'), f(4, 'w1', 'a'), f(2, 'w2', 'b')]), []);
+  });
   test('a reported systemic problem needs a validated system cause, credits only a reflecting author, and is never a lesson', () => {
     const a = (category: 'TOOL' | 'EMPLOYEE_JUDGMENT') => ({ attributionId: 'a1', workItemId: 'w1', employeeId: 'emp', comparableKey: 'growth.brief', overall: category, causes: [{ category, role: 'PRIMARY' as const, confidence: 'HIGH' as const, basis: 'X' }] });
     assert.throws(() => reportedSystemicCandidate({ signalId: 's', observationId: 'o', attribution: null }), (e: unknown) => isQandeelError(e) && e.details.reason === 'ATTRIBUTION_NOT_VALIDATED');

@@ -828,6 +828,48 @@ describe('FA-1: budget capacity is admitted, not broadcast — freed capacity ha
     }
   });
 
+  test('RA-1: a trimmed admission re-offers EVERY level it held — a waiter under a shared ancestor only is admitted at once', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store, { companyCap: 10_000, employeeCap: 10_000 });
+      const eng = s.gov.departmentByCode('engineering');
+      assert.ok(eng);
+      s.gov.createBudget(s.founder, { scope: 'DEPARTMENT', scopeId: eng.id, capMoney: 10_000, capTokens: 10_000_000, reasonCode: 'seed' });
+      const e2 = hire(s.gov, s.founder, eng.id);
+      s.gov.createBudget(s.founder, { scope: 'EMPLOYEE', scopeId: e2.id, capMoney: 10_000, capTokens: 1_000_000, reasonCode: 'seed' });
+      grantAll(s.gov, s.founder, e2.id);
+      // A (Product) holds 4 000 in flight; F (Engineering) holds 4 000 uncertain: the Company has 2 000 left.
+      const a = item(h, s, s.employee, { cap: 10_000 });
+      const ca = claimFor(h, a, 'wa').claim;
+      const rA = reserveBudget(h.store, ca.fence, call(h, s, ca, 4_000));
+      const f = item(h, s, e2, { cap: 10_000 });
+      const cf = claimFor(h, f, 'wf').claim;
+      const rF = reserveBudget(h.store, cf.fence, call(h, s, cf, 4_000, 100, e2.id));
+      if (rF.ok) holdReservation(h.store, cf.fence, rF.reservation.id, 'PROVIDER_TIMEOUT');
+      // X (Product) and Y (Engineering) share only the Company level; both wait on it.
+      const x = item(h, s, s.employee, { cap: 10_000 });
+      const y = item(h, s, e2, { cap: 10_000 });
+      assert.deepEqual([park(h, s, x, 5_000), park(h, s, y, 5_000, 100, e2.id)], ['COMPANY:MONEY', 'COMPANY:MONEY']);
+      if (rA.ok) settleReservation(h.store, ca.fence, rA.reservation.id, usage);
+      assert.deepEqual(states(h, x, y), ['QUEUED', 'WAITING'], 'X (older) owns the freed Company capacity; Y does not fit beside it');
+      const company = s.gov.budgetFor('COMPANY', 'company');
+      const before = { reserved: company?.reservedMoney, spent: company?.spentMoney };
+      const g0 = h.store.wakeGeneration();
+      // The Founder lowers X's own Work Item cap below X's admitted need: the admission is released.
+      const xb = s.gov.budgetFor('WORK_ITEM', x);
+      s.gov.changeBudgetCap(s.founder, xb?.id as Id, { capMoney: 4_000, capTokens: xb?.capTokens as number, reasonCode: 'founder.lower' });
+      assert.deepEqual(admissionsOf(h, x).map((r) => [r.state, r.end_reason_code]), [['RELEASED', 'CAP_LOWERED']]);
+      assert.deepEqual(states(h, x, y), ['QUEUED', 'QUEUED'], 'the freed Company capacity went to Y in the same transaction — no restart, no unrelated event');
+      assert.deepEqual(admissionsOf(h, y).map((r) => [r.state, r.reason_code, r.money]), [['ADMITTED', 'budget.readmitted', 5_000]]);
+      assert.ok(h.store.wakeGeneration() > g0, 'the admission advanced the durable wake generation');
+      const after = s.gov.budgetFor('COMPANY', 'company');
+      assert.deepEqual({ reserved: after?.reservedMoney, spent: after?.spentMoney }, before, 'an admission is not spend or reservation');
+      assert.equal(outstanding(h), 1, 'one owner of the freed headroom: no overcommit');
+    } finally {
+      h.close();
+    }
+  });
+
   test('an admission is not spend: no reservation, no usage record, no reserved / spent change; durable, guarded, content-free', () => {
     const h = harness();
     try {

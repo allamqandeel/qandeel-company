@@ -543,21 +543,25 @@ export function consumeBudgetAdmission(ctx: StoreContext, jobId: Id, reservation
  */
 export function trimBudgetAdmissions(ctx: StoreContext, budgetId: Id): number {
   const b = getBudgetRow(ctx, budgetId);
-  const rows = ctx.db.all<{ job_id: string; money: number; tokens: number }>(
-    `SELECT a.job_id, a.money, a.tokens FROM budget_admissions a, json_each(a.levels_json) l WHERE a.state = 'ADMITTED' AND l.value = ? ORDER BY a.admitted_at DESC, a.id DESC`,
+  const rows = ctx.db.all<{ job_id: string; money: number; tokens: number; levels_json: string }>(
+    `SELECT a.job_id, a.money, a.tokens, a.levels_json FROM budget_admissions a, json_each(a.levels_json) l WHERE a.state = 'ADMITTED' AND l.value = ? ORDER BY a.admitted_at DESC, a.id DESC`,
     b.id,
   );
   let money = rows.reduce((s, r) => s + Number(r.money), b.reservedMoney + b.spentMoney);
   let tokens = rows.reduce((s, r) => s + Number(r.tokens), b.reservedTokens + b.spentTokens);
+  // RA-1: a released admission freed capacity on EVERY level it held (the lowered one and its ancestors), so the
+  // re-admission covers the union of those levels — as every other release path does — never only the lowered one.
+  const freed = new Set<string>();
   let released = 0;
   for (const r of rows) {
     if (money <= b.capMoney && tokens <= b.capTokens) break;
     releaseBudgetAdmission(ctx, r.job_id as Id, 'CAP_LOWERED', false);
+    for (const level of JSON.parse(r.levels_json) as string[]) freed.add(level);
     money -= Number(r.money);
     tokens -= Number(r.tokens);
     released++;
   }
-  if (released > 0) admitBudgetWaiters(ctx, [b.id], 'budget.readmitted');
+  if (released > 0) admitBudgetWaiters(ctx, [...freed], 'budget.readmitted');
   return released;
 }
 

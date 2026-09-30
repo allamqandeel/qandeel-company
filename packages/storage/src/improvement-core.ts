@@ -311,7 +311,7 @@ export function liveEvaluations(ctx: StoreContext, filter: { employeeId?: Id; de
 
 /**
  * RR3: the attribution of each Work Item as EVERY reader sees it (profile, readiness, learning effect, reports): its
- * live one (PROPOSED / VALIDATED — at most one per Work Item), else its latest REJECTED one (a decided "no accountable
+ * live one (its undecided generation, else its VALIDATED generations collapsed), else its latest REJECTED one (a decided "no accountable
  * cause"), else none. `adverseStanding` gives each of these states its one meaning.
  */
 export function attributionFacts(ctx: StoreContext, employeeId: Id): AttributionFact[] {
@@ -320,12 +320,16 @@ export function attributionFacts(ctx: StoreContext, employeeId: Id): Attribution
     `SELECT work_item_id, state, employee_accountable, overall FROM causal_attributions WHERE employee_id = ? AND state IN ('PROPOSED', 'VALIDATED', 'REJECTED') ORDER BY updated_at, rowid`,
     employeeId,
   );
+  // RB-1: one Work Item is one unit whatever its generations — an undecided generation speaks first (pending, never
+  // clean), else its VALIDATED generations (accountable when any is), else its latest REJECTED one.
+  const rank = { PROPOSED: 3, VALIDATED: 2, REJECTED: 1 } as const;
   for (const r of rows) {
     const prior = out.get(r.work_item_id);
-    // A live attribution always speaks; a REJECTED one only when nothing live does (the latest one, oldest first).
-    if (r.state !== 'REJECTED' || prior === undefined || prior.state === 'REJECTED') {
-      out.set(r.work_item_id, { workItemId: r.work_item_id, state: r.state as AttributionFact['state'], employeeAccountable: r.employee_accountable === 1, overall: r.overall });
-    }
+    const state = r.state as AttributionFact['state'] & keyof typeof rank;
+    const next = { workItemId: r.work_item_id, state, employeeAccountable: r.employee_accountable === 1, overall: r.overall };
+    if (prior === undefined || rank[state] > rank[prior.state as keyof typeof rank]) out.set(r.work_item_id, next);
+    else if (state === prior.state && state === 'VALIDATED') out.set(r.work_item_id, prior.employeeAccountable && !next.employeeAccountable ? prior : next);
+    else if (state === prior.state) out.set(r.work_item_id, next);
   }
   return [...out.values()];
 }
@@ -372,11 +376,11 @@ function explainEvent(e: AdverseSourceRow, fact: StoredEvaluationFact, rows: rea
   const none = { ...event, attributionRef: null, attributionState: 'NONE' as const, accountableCauses: [] };
   // Recorded after the Work Item's live evaluation: not yet evaluated — its attribution is still to come (pending).
   if (e.recordedAt > fact.at) return { ...none, attributionDue: true, attributionUnresolved: false };
-  // An attribution whose evidence references hit their bound may hold it unlisted; a validated attribution never saw
-  // it (one live attribution per Work Item): the record cannot tell who explains it.
+  // An attribution whose evidence references hit their bound may hold it unlisted: the record cannot tell who explains it.
   const capped = rows.some((a) => (JSON.parse(a.evidence_refs_json) as string[]).length >= EVIDENCE_REF_CAP && a.created_at >= e.recordedAt);
-  const validatedLive = rows.some((a) => a.state === 'VALIDATED');
-  if (capped || validatedLive) return { ...none, attributionDue: false, attributionUnresolved: true };
+  if (capped) return { ...none, attributionDue: false, attributionUnresolved: true };
+  // RB-1 / RB-2: an undecided generation exists — the new event waits for it to be decided (then the next evaluation
+  // gives the events no decided generation covers their own generation): pending, never clean, never unresolvable.
   if (rows.some((a) => a.state === 'PROPOSED')) return { ...none, attributionState: 'PROPOSED', attributionDue: true, attributionUnresolved: false };
   return { ...none, attributionDue: fact.attributionDue, attributionUnresolved: false };
 }
@@ -389,8 +393,9 @@ function explainEvent(e: AdverseSourceRow, fact: StoredEvaluationFact, rows: rea
  */
 export function followupFacts(ctx: StoreContext, employeeId: Id, comparableKey: string): FollowupFact[] {
   const accountable = new Map<string, DirectCause[]>();
-  for (const r of ctx.db.all<{ work_item_id: string; causes_json: string }>(`SELECT work_item_id, causes_json FROM causal_attributions WHERE state = 'VALIDATED' AND employee_accountable = 1 AND employee_id = ?`, employeeId)) {
-    accountable.set(r.work_item_id, primaryCauses(r.causes_json));
+  // RB-1: several VALIDATED generations of one Work Item collapse to that ONE Work Item (the union of its causes).
+  for (const r of ctx.db.all<{ work_item_id: string; causes_json: string }>(`SELECT work_item_id, causes_json FROM causal_attributions WHERE state = 'VALIDATED' AND employee_accountable = 1 AND employee_id = ? ORDER BY created_at, rowid`, employeeId)) {
+    accountable.set(r.work_item_id, [...new Set([...(accountable.get(r.work_item_id) ?? []), ...primaryCauses(r.causes_json)])]);
   }
   const attribution = new Map(attributionFacts(ctx, employeeId).map((a) => [a.workItemId, a.state]));
   return liveEvaluations(ctx, { employeeId })

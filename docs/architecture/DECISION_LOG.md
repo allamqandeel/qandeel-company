@@ -2844,3 +2844,18 @@ data ceilings, use limit). Neither implies the other; derive never implies link.
 `recordDenial` (containment) and consumes nothing; a DONE act consumes one use (audit `goal.act`); replay of the
 Employee's own recorded effect stays idempotent without exercising anything new. The Founder `GoalStore` path is
 unchanged. PG-08 Department-scoped grants are not implemented; no migration.
+
+## D-R2-20 — Freed admission levels; sequential attribution generations; one undecided proposal; Founder escalation is immutable (Technical Lead, R2 final simple closure fix; RA-1, RB-1, RB-2; refines D-R2-16 / D-R2-17)
+
+- **RA-1.** A cap trim re-admits on the UNION of every released admission's own levels (the lowered level and its
+  ancestors), in the same transaction — like every other release path — never on the lowered level alone.
+- **RB-1 / RB-2.** `causal_attributions` holds sequential generations per Work Item (0011 replaces the 0010
+  "one PROPOSED-or-VALIDATED" index with "at most one PROPOSED"): any number of decided (VALIDATED / REJECTED)
+  generations are history and never reopen. An undecided proposal is never superseded because new adverse evidence
+  arrived (only a changed cause re-proposes it, and never one a pool judge ESCALATED — that one is the Founder's until
+  decided, PO-R2-A); new events wait for it. With no undecided proposal, the adverse source events no decided
+  generation's evidence refs cover get ONE new generation holding only them (also on an unchanged-evidence
+  re-evaluation after a decision), through the ordinary Review Pool / Founder path (PO-R2-C). Each event is explained
+  by the generation whose refs hold it. Work-Item-level readers collapse generations to one unit: the undecided one
+  first, else the VALIDATED ones (accountable when any is; the union of their causes), else the latest REJECTED; single
+  VALIDATED lookups read the latest; a systemic candidate counts distinct Work Items.
