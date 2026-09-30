@@ -17,6 +17,7 @@
  */
 import { QandeelError, assertCode, assertId, boundedJson, canonicalJson, isTimestamp, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
 import { assertGoalTransition, isGoalState, isMutatingIntent, type GoalState, type MutatingIntent } from '@qandeel-company/governance';
+import { assertCauses, summarizeCauses, type AttributedCause } from '@qandeel-company/mind';
 
 import { getBudgetRow, budgetFor } from './governance-core.js';
 import { GovernanceStore, founderConfirmInternals, isGovernedJob, resolveGovernedReconciliation } from './governance.js';
@@ -65,6 +66,13 @@ const uncertainToolOn = (ctx: StoreContext, column: 'reservation_id' | 'work_ite
   ctx.db.get(`SELECT 1 AS x FROM tool_invocations WHERE ${column} = ? AND state = 'RECONCILIATION_REQUIRED' LIMIT 1`, id) !== undefined;
 
 const later = (at: Timestamp, ms: number): Timestamp => new Date(Date.parse(at) + ms).toISOString() as Timestamp;
+
+/** A corrected cause in a preview payload: one code string `CATEGORY|ROLE|CONFIDENCE|BASIS` (payloads hold codes only). */
+const encodeCause = (c: AttributedCause): string => `${c.category}|${c.role}|${c.confidence}|${c.basis}`;
+const decodeCause = (v: string): unknown => {
+  const [category, role, confidence, basis] = v.split('|');
+  return { category, role, confidence, basis };
+};
 
 /** Validates one intent's payload against durable state. Returns the canonical (re-shaped) payload. */
 function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<string, unknown>): Payload {
@@ -183,11 +191,18 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
       return { findingId, decision, reasonCode: assertCode(raw.reasonCode ?? 'founder.decided', 'reasonCode') };
     }
     case 'ATTRIBUTION_DECIDE': {
-      // The Founder validates or rejects the proposed causes as they stand (a cause correction stays on the API boundary).
+      // The Founder validates the proposed causes as they stand, validates CORRECTED causes (RR3: an optional structured
+      // `causes` list — codes only, API-only, no UI form, PG-04 — reaching the existing corrected-causes path), or rejects
+      // the proposal (a decided "no accountable cause was established", `adverseStanding`). Causes accompany VALIDATE only.
       const attributionId = assertId(raw.attributionId, 'attributionId');
       const decision = oneOf(raw, 'decision', ['VALIDATE', 'REJECT'] as const);
       const a = heldRow<{ state: string; work_item_id: string }>(ctx, 'SELECT state, work_item_id FROM causal_attributions WHERE id = ?', attributionId, 'attribution', ['PROPOSED']);
-      return { attributionId, decision, reasonCode: assertCode(raw.reasonCode ?? 'founder.decided', 'reasonCode'), workItemId: a.work_item_id };
+      const base = { attributionId, decision, reasonCode: assertCode(raw.reasonCode ?? 'founder.decided', 'reasonCode'), workItemId: a.work_item_id };
+      if (raw.causes === undefined) return base;
+      if (decision !== 'VALIDATE') throw new QandeelError('VALIDATION_FAILED', 'corrected causes accompany a VALIDATE decision only', { field: 'causes' });
+      const causes = assertCauses(raw.causes);
+      summarizeCauses(causes); // exactly one PRIMARY cause, each category once (the same rule the store applies)
+      return { ...base, causes: causes.map(encodeCause) };
     }
     case 'LESSON_DECIDE': {
       const lessonId = assertId(raw.lessonId, 'lessonId');
@@ -415,7 +430,9 @@ export class FounderActionStore {
         return `systemic_finding:${f.id}`;
       }
       case 'ATTRIBUTION_DECIDE': {
-        const out = ImprovementStore.for(this.#store).decideAttribution(founderRef, str('attributionId'), { decision: pl.decision as 'VALIDATE' | 'REJECT', reasonCode: str('reasonCode') });
+        // RR3: corrected causes (validated at preview) reach the existing `decideAttribution` corrected-causes path.
+        const causes = Array.isArray(pl.causes) ? strings('causes').map(decodeCause) : undefined;
+        const out = ImprovementStore.for(this.#store).decideAttribution(founderRef, str('attributionId'), { decision: pl.decision as 'VALIDATE' | 'REJECT', reasonCode: str('reasonCode'), ...(causes === undefined ? {} : { causes }) });
         return `causal_attribution:${out.attribution.id}`;
       }
       case 'LESSON_DECIDE': {

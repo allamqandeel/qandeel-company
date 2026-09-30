@@ -8,8 +8,10 @@ import { describe, test } from 'node:test';
 import { isQandeelError } from '@qandeel-company/domain';
 
 import {
+  adverseStanding,
   assertClaim,
   assessLearningEffect,
+  attributionDue,
   buildPerformanceProfile,
   calibrateDefinition,
   composeReport,
@@ -56,6 +58,7 @@ const fact = (patch: Partial<EvaluationFact> = {}): EvaluationFact => {
     verdicts: { OUTCOME: 'POSITIVE', QUALITY: 'POSITIVE', EFFICIENCY: 'POSITIVE', INDEPENDENCE: 'POSITIVE' },
     cost: { productiveMicros: 1_000, overheadMicros: 0 },
     activity: { messages: 1, toolCalls: 1, tokens: 10, runs: 1 },
+    attributionDue: false,
     ...patch,
   };
 };
@@ -212,8 +215,8 @@ describe('C6 performance profile: multi-dimensional, no score, minimum sample', 
     assert.equal(p.dimensions.length, 8);
   });
   test('a negative with a validated non-employee cause is excluded; unattributed is pending', () => {
-    const bad1 = fact({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE' } });
-    const bad2 = fact({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE' } });
+    const bad1 = fact({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE' }, attributionDue: true });
+    const bad2 = fact({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE' }, attributionDue: true });
     const p = profileOf([bad1, bad2, fact(), fact(), fact()], [{ workItemId: bad1.workItemId, state: 'VALIDATED', employeeAccountable: false, overall: 'TOOL' }]);
     const o = req(p.dimensions.find((d) => d.dimension === 'OUTCOME'));
     assert.equal(o.accountableNegative, 0);
@@ -235,10 +238,10 @@ describe('C6 performance profile: multi-dimensional, no score, minimum sample', 
     assert.equal(p.capabilities.length, 1);
     assert.equal(p.regressions.length, 1);
   });
-  test('R2-18: adverse evidence whose cause is pending (unattributed, PROPOSED or REJECTED) is never read as clean', () => {
+  test('R2-18: adverse evidence whose cause is pending (PROPOSED, or due and not yet recorded) is never read as clean', () => {
     const successes = Array.from({ length: 10 }, (_, i) => fact({ riskLevel: 'R2', verdicts: { OUTCOME: 'POSITIVE', QUALITY: 'POSITIVE', EFFICIENCY: 'POSITIVE', INITIATIVE: 'POSITIVE', INDEPENDENCE: 'POSITIVE' }, evaluationId: `ok${i}` }));
-    const failures = Array.from({ length: 20 }, () => fact({ riskLevel: 'R2', qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE', QUALITY: 'NEGATIVE', INDEPENDENCE: 'NEGATIVE' } }));
-    // Ten causes still PROPOSED; ten REJECTED or never attributed (absent).
+    const failures = Array.from({ length: 20 }, () => fact({ riskLevel: 'R2', qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE', QUALITY: 'NEGATIVE', INDEPENDENCE: 'NEGATIVE' }, attributionDue: true }));
+    // Ten causes still PROPOSED; ten due and never recorded (absent).
     const p = profileOf([...successes, ...failures], failures.slice(0, 10).map((f) => ({ workItemId: f.workItemId, state: 'PROPOSED' as const, employeeAccountable: true, overall: 'EMPLOYEE_JUDGMENT' })));
     const outcome = req(p.dimensions.find((d) => d.dimension === 'OUTCOME'));
     assert.deepEqual([outcome.sample, outcome.pendingAttribution], [10, 20]);
@@ -258,6 +261,48 @@ describe('C6 performance profile: multi-dimensional, no score, minimum sample', 
     const p = profileOf(facts);
     assert.equal(p.readiness.signal, 'READY_FOR_GREATER_RESPONSIBILITY_REVIEW', p.readiness.reasons.join(','));
     assert.equal(p.readiness.isDecision, false);
+  });
+  const readyBase = (): EvaluationFact[] => Array.from({ length: 6 }, (_, i) => fact({ riskLevel: i === 0 ? 'R2' : 'R1', verdicts: { OUTCOME: 'POSITIVE', QUALITY: 'POSITIVE', INDEPENDENCE: 'POSITIVE', INITIATIVE: 'POSITIVE' } }));
+  test('RR3-B: only adverse evidence an attribution is due for (or still undecided on) is pending; a non-adverse negative never holds readiness', () => {
+    // Qualified work whose provider fallbacks cost more than the productive call, or that needed a Founder intervention:
+    // negative EFFICIENCY / INDEPENDENCE verdicts, but nothing adverse happened, so no attribution is ever due.
+    for (const over of [{ EFFICIENCY: 'NEGATIVE' as const }, { INDEPENDENCE: 'NEGATIVE' as const }]) {
+      const odd = fact({ verdicts: { OUTCOME: 'POSITIVE', QUALITY: 'POSITIVE', INITIATIVE: 'POSITIVE', INDEPENDENCE: 'POSITIVE', ...over }, attributionDue: false });
+      const p = profileOf([...readyBase(), odd]);
+      const d = req(p.dimensions.find((x) => x.dimension === Object.keys(over)[0]));
+      assert.deepEqual([d.pendingAttribution, d.notAttributable, d.accountableNegative], [0, 1, 0], JSON.stringify(over));
+      assert.equal(p.readiness.signal, 'READY_FOR_GREATER_RESPONSIBILITY_REVIEW', p.readiness.reasons.join(','));
+      assert.ok(!composeReport({ ...reportBase('MONTHLY'), profiles: [p] }).claims.some((c) => c.code === 'ADVERSE_EVIDENCE_PENDING_ATTRIBUTION'));
+    }
+    // The same negative is pending where an attribution is due, or where one exists and is undecided.
+    const due = fact({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE' }, attributionDue: true });
+    assert.ok(profileOf([...readyBase(), due]).readiness.reasons.includes('ADVERSE_EVIDENCE_PENDING_ATTRIBUTION'));
+    const proposed = fact({ verdicts: { OUTCOME: 'POSITIVE', QUALITY: 'POSITIVE', EFFICIENCY: 'NEGATIVE' }, attributionDue: false });
+    assert.ok(profileOf([...readyBase(), proposed], [{ workItemId: proposed.workItemId, state: 'PROPOSED', employeeAccountable: true, overall: 'EMPLOYEE_JUDGMENT' }]).readiness.reasons.includes('ADVERSE_EVIDENCE_PENDING_ATTRIBUTION'));
+    // The evaluator's predicate: an adverse outcome with a cause to propose — never for such qualified work.
+    const fallbackHeavy: WorkEvidence = withEv({ interventions: { escalations: 0, correctEscalations: 0, founder: 1 }, cost: { ...good().cost, productiveMicros: 100, fallbackMicros: 500, billedMicros: 600 } });
+    const verdicts = Object.fromEntries(evaluateWork(def, fallbackHeavy).dimensions.map((d) => [d.dimension, d.verdict]));
+    assert.deepEqual([verdicts.EFFICIENCY, verdicts.INDEPENDENCE], ['NEGATIVE', 'NEGATIVE']);
+    assert.equal(attributionDue(fallbackHeavy), false, 'no cause can be proposed: nothing adverse happened');
+    const failed = withEv({ outcome: 'NOT_ACHIEVED', reviewed: false, review: { pass: 0, fail: 1, uncertain: 0, insufficient: 0, rework: 0, openConflict: false } });
+    assert.deepEqual([attributionDue(failed), proposeAttribution(failed).causes.length > 0], [true, true]);
+  });
+  test('RR3-A: every attribution state has ONE meaning; a REJECTED cause is decided — disclosed, never pending, never counted', () => {
+    const rejected = fact({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE', QUALITY: 'NEGATIVE' }, attributionDue: true });
+    const p = profileOf([...readyBase(), rejected], [{ workItemId: rejected.workItemId, state: 'REJECTED', employeeAccountable: true, overall: 'EMPLOYEE_JUDGMENT' }]);
+    const outcome = req(p.dimensions.find((d) => d.dimension === 'OUTCOME'));
+    assert.deepEqual([outcome.pendingAttribution, outcome.unattributedAdverse, outcome.accountableNegative], [0, 1, 0]);
+    assert.deepEqual(outcome.unattributedEvidenceRefs, [`evaluation:${rejected.evaluationId}`]);
+    assert.ok(!p.readiness.reasons.includes('ADVERSE_EVIDENCE_PENDING_ATTRIBUTION'), p.readiness.reasons.join(','));
+    const monthly = composeReport({ ...reportBase('MONTHLY'), profiles: [p] });
+    assert.ok(!monthly.claims.some((c) => c.code === 'ADVERSE_EVIDENCE_PENDING_ATTRIBUTION'));
+    assert.deepEqual(req(monthly.claims.find((c) => c.code === 'ADVERSE_EVIDENCE_WITHOUT_ACCOUNTABLE_CAUSE')).evidenceRefs, [`evaluation:${rejected.evaluationId}`], 'disclosed, never hidden');
+    // The one definition, every state.
+    const st = (state: 'PROPOSED' | 'VALIDATED' | 'REJECTED' | 'NONE', employeeAccountable: boolean, due: boolean) => adverseStanding({ attributionDue: due, state, employeeAccountable });
+    assert.deepEqual(
+      [st('VALIDATED', true, true), st('VALIDATED', false, true), st('PROPOSED', true, false), st('NONE', false, true), st('REJECTED', true, true), st('REJECTED', false, false), st('NONE', false, false)],
+      ['ACCOUNTABLE', 'NOT_EMPLOYEE', 'PENDING_ATTRIBUTION', 'PENDING_ATTRIBUTION', 'NO_ACCOUNTABLE_CAUSE', 'NO_ACCOUNTABLE_CAUSE', 'NOT_ATTRIBUTABLE'],
+    );
   });
 });
 
@@ -296,7 +341,7 @@ describe('C6 learning closure', () => {
     assert.deepEqual(nearMissCodes(ev), ['REVIEW_CAUGHT_BEFORE_RELEASE', 'GATE_STOPPED_A_RISK']);
     assert.equal(ev.outcome, 'ACHIEVED');
   });
-  const follow = (patch: Partial<FollowupFact>): FollowupFact => ({ ...fact({ at: '2026-09-20T00:00:00.000Z' }), workStartedAt: '2026-09-20T00:00:00.000Z', attributionState: 'NONE', accountableCauses: [], ...patch });
+  const follow = (patch: Partial<FollowupFact>): FollowupFact => ({ ...fact({ at: '2026-09-20T00:00:00.000Z' }), workStartedAt: '2026-09-20T00:00:00.000Z', lastWorkAt: '2026-09-20T00:00:00.000Z', attributionState: 'NONE', accountableCauses: [], ...patch });
   test('training completed is not improvement: later comparable evidence decides', () => {
     assert.equal(assessLearningEffect({ trainingCompletedAt: '2026-09-10T00:00:00.000Z', targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [] }).effect, 'NOT_YET_TESTED');
     assert.equal(assessLearningEffect({ trainingCompletedAt: null, targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [follow({}), follow({})] }).effect, 'NOT_YET_TESTED');
@@ -314,13 +359,34 @@ describe('C6 learning closure', () => {
     assert.equal(judged.effect, 'IMPROVEMENT_OBSERVED');
     assert.deepEqual(judged.evidenceRefs, later.map((f) => `work_item:${f.workItemId}`));
   });
-  test('R2-17: an adverse follow-up whose cause is not validated keeps the effect open', () => {
-    const adverse = (attributionState: FollowupFact['attributionState']): FollowupFact => follow({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE', QUALITY: 'NEGATIVE' }, attributionState });
+  test('R2-17: an adverse follow-up whose cause is pending keeps the effect open', () => {
+    const adverse = (attributionState: FollowupFact['attributionState']): FollowupFact => follow({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE', QUALITY: 'NEGATIVE' }, attributionState, attributionDue: true });
     const run = (f: FollowupFact) => assessLearningEffect({ trainingCompletedAt: '2026-09-10T00:00:00.000Z', targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [f, follow({}), follow({})] });
-    for (const state of ['NONE', 'PROPOSED', 'REJECTED'] as const) assert.deepEqual([run(adverse(state)).effect, run(adverse(state)).basis], ['NOT_YET_TESTED', 'ATTRIBUTION_PENDING'], state);
+    for (const state of ['NONE', 'PROPOSED'] as const) assert.deepEqual([run(adverse(state)).effect, run(adverse(state)).basis], ['NOT_YET_TESTED', 'ATTRIBUTION_PENDING'], state);
     // Validated as someone else's cause (not a recurrence): the effect is decided.
     assert.equal(run(adverse('VALIDATED')).effect, 'IMPROVEMENT_OBSERVED');
     assert.equal(run({ ...adverse('VALIDATED'), accountableCauses: ['EMPLOYEE_JUDGMENT'] }).effect, 'NO_IMPROVEMENT');
+  });
+  test('RR3-A: an adverse follow-up whose cause was REJECTED is decided — the effect is INCONCLUSIVE (recorded, non-final), never untested forever and never "no recurrence"', () => {
+    const run = (f: FollowupFact) => assessLearningEffect({ trainingCompletedAt: '2026-09-10T00:00:00.000Z', targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [f, follow({}), follow({})] });
+    for (const f of [follow({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE', QUALITY: 'NEGATIVE' }, attributionState: 'REJECTED', attributionDue: true }), follow({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE' }, attributionState: 'NONE', attributionDue: false })]) {
+      assert.deepEqual([run(f).effect, run(f).basis], ['INCONCLUSIVE', 'ADVERSE_WITHOUT_ACCOUNTABLE_CAUSE'], f.attributionState);
+    }
+    // INCONCLUSIVE does not block the next cycle.
+    assert.equal(nextInterventionDecision(['INCONCLUSIVE']).decision, 'ALLOW_INTERVENTION');
+  });
+  test('RR3-E: the same mistake made AFTER the training on work started before it is a recurrence (or holds the effect); positive evidence is only work started after it', () => {
+    const trained = '2026-09-10T00:00:00.000Z';
+    const reworked = (patch: Partial<FollowupFact>): FollowupFact => follow({ workStartedAt: '2026-09-05T00:00:00.000Z', lastWorkAt: '2026-09-12T00:00:00.000Z', qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE', QUALITY: 'NEGATIVE' }, attributionDue: true, ...patch });
+    const run = (f: FollowupFact) => assessLearningEffect({ trainingCompletedAt: trained, targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [follow({ accountableCauses: ['EMPLOYEE_JUDGMENT'] })], followups: [f, follow({}), follow({})] });
+    const recurred = run(reworked({ attributionState: 'VALIDATED', accountableCauses: ['EMPLOYEE_JUDGMENT'] }));
+    assert.deepEqual([recurred.effect, recurred.recurrences], ['NO_IMPROVEMENT', 1], 'a validated post-training recurrence is never excluded');
+    assert.ok(recurred.evidenceRefs.length === 3);
+    assert.deepEqual([run(reworked({ attributionState: 'PROPOSED' })).effect, run(reworked({ attributionState: 'PROPOSED' })).basis], ['NOT_YET_TESTED', 'ATTRIBUTION_PENDING']);
+    // Positive evidence stays asymmetric: older work that went well after the training proves nothing.
+    const olderSuccess = follow({ workStartedAt: '2026-09-05T00:00:00.000Z', lastWorkAt: '2026-09-12T00:00:00.000Z' });
+    const onlyOlder = assessLearningEffect({ trainingCompletedAt: trained, targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [olderSuccess, { ...olderSuccess, workItemId: 'other' }] });
+    assert.equal(onlyOlder.effect, 'NOT_YET_TESTED');
   });
   test('R2-16: verified reuses count only on pairwise-disjoint evidence', () => {
     assert.equal(disjointVerifiedReuses([['work_item:a', 'work_item:b'], ['work_item:a', 'work_item:b']]), 1, 'the same evidence twice is one reuse');

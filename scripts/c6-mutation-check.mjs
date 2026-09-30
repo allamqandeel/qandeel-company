@@ -80,7 +80,7 @@ const MUTATIONS = [
   {
     id: 'c6-non-employee-negative-counted',
     gate: 'a failure whose validated cause is not the Employee is never counted against their profile',
-    edits: [{ file: `${MIND}/performance.js`, search: 'if (!a.employeeAccountable) {', replace: 'if (false) {', expectedCount: 1 }],
+    edits: [{ file: `${MIND}/performance.js`, search: "if (standing === 'NOT_EMPLOYEE') {", replace: 'if (false) {', expectedCount: 1 }],
     runs: [KERNEL, STORE],
   },
   {
@@ -275,7 +275,7 @@ const MUTATIONS = [
   {
     id: 'c6-pending-recurrence-ignored',
     gate: 'an adverse follow-up whose cause is not validated keeps the learning effect open (never a final IMPROVEMENT_OBSERVED) (R2-17)',
-    edits: [{ file: `${MIND}/improvement.js`, search: "if (usable.some((f) => adverseFollowup(f) && f.attributionState !== 'VALIDATED'))\n", replace: 'if (false)\n', expectedCount: 1 }],
+    edits: [{ file: `${MIND}/improvement.js`, search: "if (adverse.some((f) => followupStanding(f) === 'PENDING_ATTRIBUTION'))\n", replace: 'if (false)\n', expectedCount: 1 }],
     runs: [KERNEL, STORE],
   },
   {
@@ -325,6 +325,43 @@ const MUTATIONS = [
     gate: 'work with no recorded cost earns no EFFICIENCY verdict (m-31)',
     edits: [{ file: `${MIND}/evaluation.js`, search: 'if (ev.cost.productiveMicros + overhead === 0)\n', replace: 'if (false)\n', expectedCount: 1 }],
     runs: [KERNEL],
+  },
+  // --- R2 second wave (cluster Q3): ONE meaning of adverse evidence in every attribution state (RR3) -----------
+  {
+    id: 'c6-rejected-cause-pending-forever',
+    gate: 'a Founder-REJECTED cause is decided ("no accountable cause"): never pending, so it never holds an effect or readiness forever (RR3-A)',
+    edits: [{ file: `${MIND}/performance.js`, search: "case 'REJECTED':\n            return 'NO_ACCOUNTABLE_CAUSE';", replace: "case 'REJECTED':\n            return 'PENDING_ATTRIBUTION';", expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  {
+    id: 'c6-rejected-cause-reads-clean',
+    gate: 'an adverse follow-up without an accountable cause makes the learning effect INCONCLUSIVE, never "no recurrence" (RR3-A)',
+    edits: [{ file: `${MIND}/improvement.js`, search: "return st === 'NO_ACCOUNTABLE_CAUSE' || st === 'NOT_ATTRIBUTABLE'; })) {", replace: 'return false; })) {', expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  {
+    id: 'c6-rejected-attribution-unread',
+    gate: 'every reader sees a Work Item\'s latest REJECTED attribution when none is live (RR3-A)',
+    edits: [{ file: `${STORAGE}/improvement-core.js`, search: "WHERE employee_id = ? AND state IN ('PROPOSED', 'VALIDATED', 'REJECTED') ORDER BY updated_at, rowid", replace: "WHERE employee_id = ? AND state IN ('PROPOSED', 'VALIDATED') ORDER BY updated_at, rowid", expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-corrected-causes-dropped',
+    gate: 'the Founder\'s corrected causes (ATTRIBUTION_DECIDE causes) reach the corrected-causes path of decideAttribution (RR3-A)',
+    edits: [{ file: `${STORAGE}/founder-actions.js`, search: '...(causes === undefined ? {} : { causes })', replace: '...({})', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-non-adverse-negative-pending',
+    gate: 'a negative on work where no attribution is due is never "pending attribution" and never holds readiness (RR3-B)',
+    edits: [{ file: `${MIND}/performance.js`, search: "return input.attributionDue ? 'PENDING_ATTRIBUTION' : 'NOT_ATTRIBUTABLE';", replace: "return 'PENDING_ATTRIBUTION';", expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  {
+    id: 'c6-post-training-recurrence-excluded',
+    gate: 'the same mistake made after the training on work started before it is adverse learning-effect evidence (RR3-E)',
+    edits: [{ file: `${MIND}/improvement.js`, search: 'f.workStartedAt <= completedAt && f.lastWorkAt > completedAt', replace: 'f.workStartedAt <= completedAt && false', expectedCount: 1 }],
+    runs: [KERNEL, STORE],
   },
   // --- C6-R1: the Founder is not the operational bottleneck, and judgment never becomes execution authority ---
   {

@@ -11,7 +11,7 @@ import { describe, test } from 'node:test';
 import { isQandeelError, newId, type Id } from '@qandeel-company/domain';
 import { standardWorkOutcomeDefinition } from '@qandeel-company/mind';
 
-import { AttentionStore, ImprovementStore, MemoryStore, ReviewStore, type Claim, type EmployeeRecord } from '../src/index.js';
+import { AttentionStore, FounderActionStore, FounderAuthStore, ImprovementStore, MemoryStore, ReviewStore, type Claim, type EmployeeRecord } from '../src/index.js';
 import { insertLesson } from '../src/mind-writes.js';
 import { reserveBudget, settle, settleReservation } from '../src/runtime-authority.js';
 import { storeContext } from '../src/store.js';
@@ -46,8 +46,8 @@ const PLAN = reviewPlan({ appliesTo: 'OUTPUT' });
  * One governed model call of the run, reserved and settled on the usage ledger (Employee work costs money). The
  * default card is the seed's METERED one; `priceCardId` names another (e.g. a SUBSCRIPTION card: billed 0).
  */
-function spend(h: Harness, s: Seed, claim: Claim, employeeId: Id, priceCardId: Id = s.priceCardId): void {
-  const r = reserveBudget(h.store, claim.fence, { purpose: 'MODEL_CALL', attemptKind: 'PRIMARY', deploymentId: s.deploymentId, priceCardId, routePolicyId: s.policyId, money: 1_000, tokens: 1_000, contextManifestId: testManifest(h, claim.fence, employeeId) });
+function spend(h: Harness, s: Seed, claim: Claim, employeeId: Id, priceCardId: Id = s.priceCardId, attemptKind: 'PRIMARY' | 'FALLBACK' = 'PRIMARY'): void {
+  const r = reserveBudget(h.store, claim.fence, { purpose: 'MODEL_CALL', attemptKind, deploymentId: s.deploymentId, priceCardId, routePolicyId: s.policyId, money: 1_000, tokens: 1_000, contextManifestId: testManifest(h, claim.fence, employeeId) });
   assert.ok(r.ok, 'the model call is reserved');
   if (r.ok) settleReservation(h.store, claim.fence, r.reservation.id, { inputTokens: 100, outputTokens: 50, withinBounds: true, sessionId: null, outcome: 'OK' });
 }
@@ -62,11 +62,12 @@ function decideOpenReview(h: Harness, workItemId: Id, outcome: 'PASS' | 'FAIL'):
 }
 
 /** Runs one output-reviewed Work Item to REVIEWED; optionally with one failed review first and a reflection. */
-function reviewedWork(h: Harness, s: Seed, owner: EmployeeRecord, opts: { failFirst?: boolean; reflection?: string; priceCardId?: Id } = {}): { workItemId: Id; observationId: Id | null } {
+function reviewedWork(h: Harness, s: Seed, owner: EmployeeRecord, opts: { failFirst?: boolean; reflection?: string; priceCardId?: Id; fallbacks?: number } = {}): { workItemId: Id; observationId: Id | null } {
   const { workItemId, claim } = runFor(h, s, owner, { reviewPlan: PLAN });
   let observationId: Id | null = null;
   if (opts.reflection) observationId = (propose(h, claim, 1, { kind: 'OBSERVATION', memoryClass: null, topic: 'drafting.figures', content: opts.reflection }).decided?.resultLessonId ?? null) as Id | null;
   spend(h, s, claim, owner.id, opts.priceCardId);
+  for (let i = 0; i < (opts.fallbacks ?? 0); i++) spend(h, s, claim, owner.id, opts.priceCardId, 'FALLBACK');
   settle(h.store, claim.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.ready' } }, { backoff });
   if (opts.failFirst) {
     decideOpenReview(h, workItemId, 'FAIL');
@@ -678,6 +679,111 @@ describe('R2: C6 evidence identity, work time, pending causes, recovered failure
       assert.equal(e.cost.billedMicros, 0, 'the bill is carried separately');
       const economics = m.economics({ employeeId: s.employee.id });
       assert.deepEqual([economics.totalCostMicros, economics.costPerQualifiedOutcomeMicros], [600, 600]);
+    });
+  });
+});
+
+// RR3 (second correction cycle): ONE meaning of adverse evidence in every attribution state (`adverseStanding`).
+describe('RR3: adverse evidence has one meaning in every attribution state', () => {
+  const founderActions = (h: Harness) => {
+    const auth = FounderAuthStore.for(h.store);
+    const { token } = auth.mintLaunchToken();
+    return { actions: FounderActionStore.for(h.store, auth), session: auth.redeemLaunchToken(token).session };
+  };
+
+  test('RR3-A: a Founder REJECT is a decided "no accountable cause" — the effect is INCONCLUSIVE, the next cycle may start, readiness is not held; corrected causes are validated through ATTRIBUTION_DECIDE', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const { actions, session } = founderActions(h);
+      const lessonId = validatedMistakeLesson(h, s, m);
+      const iid = m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' }).intervention?.id as Id;
+      h.clock.advance(HOUR);
+      m.completeTraining(s.founder, iid);
+      h.clock.advance(HOUR);
+      const recurrence = laterWork(h, s, m, s.employee, 'RECURRENCE', false);
+      const proposal = m.attributions({ workItemId: recurrence }).find((a) => a.state === 'PROPOSED');
+      assert.ok(proposal);
+      assert.throws(() => actions.preview(session, 'ATTRIBUTION_DECIDE', { attributionId: proposal.id, decision: 'REJECT', causes: [{ category: 'TOOL', role: 'PRIMARY', confidence: 'HIGH', basis: 'TOOL_MISCONFIGURED' }] }), code('VALIDATION_FAILED'), 'corrected causes are validated, never rejected');
+      const rejectPreview = actions.preview(session, 'ATTRIBUTION_DECIDE', { attributionId: proposal.id, decision: 'REJECT', reasonCode: 'founder.disputed' });
+      actions.confirm(session, rejectPreview.id, rejectPreview.fingerprint);
+      for (let i = 0; i < 2; i++) {
+        h.clock.advance(HOUR);
+        laterWork(h, s, m, s.employee, 'SUCCESS');
+      }
+      const assessed = m.assessIntervention(iid);
+      assert.deepEqual([assessed.intervention.effect, assessed.intervention.effectBasis, assessed.changed], ['INCONCLUSIVE', 'ADVERSE_WITHOUT_ACCOUNTABLE_CAUSE', true], 'recorded and non-final — never NOT_YET_TESTED forever, never "no recurrence"');
+      assert.ok(assessed.intervention.evidenceRefs.includes(`work_item:${recurrence}`));
+      assert.equal(m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' }).outcome, 'PLANNED', 'the next cycle is not blocked');
+      const p = m.profile(s.employee.id);
+      const outcome = p.dimensions.find((d) => d.dimension === 'OUTCOME');
+      assert.deepEqual([outcome?.pendingAttribution, outcome?.unattributedAdverse], [0, 1], 'decided, disclosed, not pending');
+      assert.equal(outcome?.accountableNegative, 1, 'only the lesson work, whose cause was validated, counts against the Employee');
+      assert.ok(!p.readiness.reasons.includes('ADVERSE_EVIDENCE_PENDING_ATTRIBUTION'), p.readiness.reasons.join(','));
+      const monthly = m.generateReport('MONTHLY').report.claims;
+      assert.ok(!monthly.some((c) => c.code === 'ADVERSE_EVIDENCE_PENDING_ATTRIBUTION'));
+      assert.equal(monthly.find((c) => c.code === 'ADVERSE_EVIDENCE_WITHOUT_ACCOUNTABLE_CAUSE')?.params.items, 1);
+      // The Founder may instead validate CORRECTED causes (structured, API-only), reaching the existing corrected-causes path.
+      h.clock.advance(HOUR);
+      const disputed = laterWork(h, s, m, s.employee, 'RECURRENCE', false);
+      const second = m.attributions({ workItemId: disputed }).find((a) => a.state === 'PROPOSED');
+      assert.ok(second);
+      assert.throws(() => actions.preview(session, 'ATTRIBUTION_DECIDE', { attributionId: second.id, decision: 'VALIDATE', causes: [{ category: 'TOOL', role: 'PRIMARY', confidence: 'HIGH', basis: 'X' }, { category: 'MODEL', role: 'PRIMARY', confidence: 'HIGH', basis: 'Y' }] }), code('ATTRIBUTION_INVALID'));
+      assert.throws(() => actions.preview(session, 'ATTRIBUTION_DECIDE', { attributionId: second.id, decision: 'VALIDATE', causes: [{ category: 'TOOL', role: 'PRIMARY', confidence: 'HIGH', basis: 'free text is refused' }] }), code('ATTRIBUTION_INVALID'));
+      const corrected = actions.preview(session, 'ATTRIBUTION_DECIDE', { attributionId: second.id, decision: 'VALIDATE', reasonCode: 'founder.corrected', causes: [{ category: 'TOOL', role: 'PRIMARY', confidence: 'HIGH', basis: 'TOOL_MISCONFIGURED' }] });
+      assert.deepEqual(corrected.payload.causes, ['TOOL|PRIMARY|HIGH|TOOL_MISCONFIGURED']);
+      const out = actions.confirm(session, corrected.id, corrected.fingerprint);
+      const validated = m.attributions({ workItemId: disputed }).find((a) => a.state === 'VALIDATED');
+      assert.equal(out.resultRef, `causal_attribution:${validated?.id}`);
+      assert.deepEqual([validated?.source, validated?.overall, validated?.employeeAccountable], ['FOUNDER', 'TOOL', false]);
+      assert.equal(m.attributions({ workItemId: disputed }).find((a) => a.id === second.id)?.state, 'SUPERSEDED');
+    });
+  });
+
+  test('RR3-B: a negative on work where no attribution is due (provider fallback cost) is never "pending" — it holds no readiness and is not disclosed as pending', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const { workItemId } = reviewedWork(h, s, s.employee, { fallbacks: 2 });
+      verify(s, m, workItemId, 'ACHIEVED');
+      const r = m.evaluate(workItemId);
+      assert.equal(r.evaluation.dimensions.find((d) => d.dimension === 'EFFICIENCY')?.verdict, 'NEGATIVE');
+      assert.deepEqual([r.attributionId, m.attributions({ workItemId }).length], [null, 0], 'nothing adverse happened: no attribution can ever exist');
+      const p = m.profile(s.employee.id);
+      const efficiency = p.dimensions.find((d) => d.dimension === 'EFFICIENCY');
+      assert.deepEqual([efficiency?.pendingAttribution, efficiency?.notAttributable, efficiency?.accountableNegative], [0, 1, 0]);
+      assert.ok(!p.readiness.reasons.includes('ADVERSE_EVIDENCE_PENDING_ATTRIBUTION'), p.readiness.reasons.join(','));
+      assert.ok(!m.generateReport('MONTHLY').report.claims.some((c) => c.code === 'ADVERSE_EVIDENCE_PENDING_ATTRIBUTION'));
+    });
+  });
+
+  test('RR3-E: the same mistake made after the training on work started before it is a recurrence — never silently excluded', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const lessonId = validatedMistakeLesson(h, s, m);
+      const iid = m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' }).intervention?.id as Id;
+      // Comparable work started BEFORE the training: its first output fails review.
+      const { workItemId: w, claim } = runFor(h, s, s.employee, { reviewPlan: PLAN });
+      settle(h.store, claim.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.ready' } }, { backoff });
+      decideOpenReview(h, w, 'FAIL');
+      h.clock.advance(HOUR);
+      m.completeTraining(s.founder, iid);
+      h.clock.advance(HOUR);
+      // AFTER the training the Employee reworks it and makes the same mistake; the cause is validated as theirs.
+      const again = claimItem(h, w, 'w-rework-after-training');
+      settle(h.store, again.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v2' } }, { backoff });
+      decideOpenReview(h, w, 'PASS');
+      verify(s, m, w, 'NOT_ACHIEVED');
+      m.evaluate(w);
+      m.decideAttribution(s.founder, m.attributions({ workItemId: w }).find((a) => a.state === 'PROPOSED')?.id as Id, { decision: 'VALIDATE', reasonCode: 'founder.confirmed' });
+      for (let i = 0; i < 2; i++) {
+        h.clock.advance(HOUR);
+        laterWork(h, s, m, s.employee, 'SUCCESS');
+      }
+      const judged = m.assessIntervention(iid).intervention;
+      assert.deepEqual([judged.effect, judged.effectBasis], ['NO_IMPROVEMENT', 'SAME_MISTAKE_RECURRED']);
+      assert.ok(judged.evidenceRefs.includes(`work_item:${w}`));
     });
   });
 });

@@ -6,7 +6,7 @@
  */
 import { type Id } from '@qandeel-company/domain';
 import { runFailureCodesOf } from '@qandeel-company/governance';
-import type { DirectCause, EvaluationFact, EvidenceClass, FollowupFact, ItemDimension, RiskLevel, ValidatedAttributionFact, Verdict, WorkEvidence } from '@qandeel-company/mind';
+import type { AttributionFact, DirectCause, EvaluationFact, EvidenceClass, FollowupFact, ItemDimension, RiskLevel, ValidatedAttributionFact, Verdict, WorkEvidence } from '@qandeel-company/mind';
 
 import type { StoreContext } from './internal.js';
 import { getWorkItemRow } from './internal.js';
@@ -184,16 +184,21 @@ interface EvalRow {
   dimensions_json: string;
   cost_json: string;
   observability_json: string;
+  evidence_json: string;
   work_started_at: string;
+  last_work_at: string;
 }
 
-/** A stored evaluation with the time its work started (R2-15). */
-export type StoredEvaluationFact = EvaluationFact & { readonly workStartedAt: string };
+/** A stored evaluation with the time its work started (R2-15) and was last worked on (RR3). */
+export type StoredEvaluationFact = EvaluationFact & { readonly workStartedAt: string; readonly lastWorkAt: string };
 
 export function toEvaluationFact(r: EvalRow): StoredEvaluationFact {
   const dims = JSON.parse(r.dimensions_json) as { dimension: ItemDimension; verdict: Verdict }[];
   const cost = JSON.parse(r.cost_json) as Record<string, number>;
   const obs = JSON.parse(r.observability_json) as Record<string, number>;
+  // RR3: the evaluator records `attributionDue` with the evaluation. A row written before it carries none: its due
+  // attribution was recorded in the same transaction (evaluate), so its attribution state alone decides.
+  const due = (JSON.parse(r.evidence_json) as { attributionDue?: unknown }).attributionDue === true;
   const overhead = n(cost.retryMicros) + n(cost.fallbackMicros) + n(cost.escalationMicros) + n(cost.failedChargedMicros) + n(cost.reworkMicros);
   return {
     evaluationId: r.id,
@@ -207,6 +212,8 @@ export function toEvaluationFact(r: EvalRow): StoredEvaluationFact {
     cost: { productiveMicros: n(cost.productiveMicros), overheadMicros: overhead, billedMicros: n(cost.billedMicros) },
     activity: { messages: n(obs.messages), toolCalls: n(obs.toolCalls), tokens: n(obs.tokens), runs: n(obs.runs) },
     workStartedAt: r.work_started_at,
+    lastWorkAt: r.last_work_at,
+    attributionDue: due,
   };
 }
 
@@ -217,9 +224,11 @@ export function toEvaluationFact(r: EvalRow): StoredEvaluationFact {
  */
 export const LATEST_LIVE_EVALUATION = `e.superseded_by IS NULL AND NOT EXISTS (SELECT 1 FROM evaluation_results n WHERE n.work_item_id = e.work_item_id AND n.superseded_by IS NULL AND (n.created_at > e.created_at OR (n.created_at = e.created_at AND n.rowid > e.rowid)))`;
 
-// R2-15: when the work itself started — its first run, else its creation — never the evaluation's time.
-const LIVE_EVALS = `SELECT e.id, e.work_item_id, e.comparable_key, e.risk_level, e.created_at, e.evidence_state, e.qualified_outcome, e.dimensions_json, e.cost_json, e.observability_json,
-  COALESCE((SELECT MIN(r.started_at) FROM runs r WHERE r.work_item_id = e.work_item_id), (SELECT w.created_at FROM work_items w WHERE w.id = e.work_item_id)) AS work_started_at
+// R2-15: when the work itself started — its first run, else its creation — never the evaluation's time. RR3: and when
+// it was last worked on (its latest run, else its creation): post-training behaviour on work started earlier.
+const LIVE_EVALS = `SELECT e.id, e.work_item_id, e.comparable_key, e.risk_level, e.created_at, e.evidence_state, e.qualified_outcome, e.dimensions_json, e.cost_json, e.observability_json, e.evidence_json,
+  COALESCE((SELECT MIN(r.started_at) FROM runs r WHERE r.work_item_id = e.work_item_id), (SELECT w.created_at FROM work_items w WHERE w.id = e.work_item_id)) AS work_started_at,
+  COALESCE((SELECT MAX(r.started_at) FROM runs r WHERE r.work_item_id = e.work_item_id), (SELECT w.created_at FROM work_items w WHERE w.id = e.work_item_id)) AS last_work_at
   FROM evaluation_results e WHERE ${LATEST_LIVE_EVALUATION}`;
 
 export function liveEvaluations(ctx: StoreContext, filter: { employeeId?: Id; departmentId?: Id; from?: string; to?: string; workItemIds?: readonly Id[] } = {}): StoredEvaluationFact[] {
@@ -240,11 +249,25 @@ export function liveEvaluations(ctx: StoreContext, filter: { employeeId?: Id; de
   return rows.filter((r) => set === null || set.has(r.work_item_id as Id)).map(toEvaluationFact);
 }
 
-export function attributionFacts(ctx: StoreContext, employeeId?: Id): { workItemId: string; state: 'PROPOSED' | 'VALIDATED' | 'REJECTED'; employeeAccountable: boolean; overall: string }[] {
-  const rows = employeeId === undefined
-    ? ctx.db.all<{ work_item_id: string; state: string; employee_accountable: number; overall: string }>(`SELECT work_item_id, state, employee_accountable, overall FROM causal_attributions WHERE state IN ('PROPOSED', 'VALIDATED')`)
-    : ctx.db.all<{ work_item_id: string; state: string; employee_accountable: number; overall: string }>(`SELECT work_item_id, state, employee_accountable, overall FROM causal_attributions WHERE state IN ('PROPOSED', 'VALIDATED') AND employee_id = ?`, employeeId);
-  return rows.map((r) => ({ workItemId: r.work_item_id, state: r.state as 'PROPOSED' | 'VALIDATED', employeeAccountable: r.employee_accountable === 1, overall: r.overall }));
+/**
+ * RR3: the attribution of each Work Item as EVERY reader sees it (profile, readiness, learning effect, reports): its
+ * live one (PROPOSED / VALIDATED — at most one per Work Item), else its latest REJECTED one (a decided "no accountable
+ * cause"), else none. `adverseStanding` gives each of these states its one meaning.
+ */
+export function attributionFacts(ctx: StoreContext, employeeId: Id): AttributionFact[] {
+  const out = new Map<string, AttributionFact>();
+  const rows = ctx.db.all<{ work_item_id: string; state: string; employee_accountable: number; overall: string }>(
+    `SELECT work_item_id, state, employee_accountable, overall FROM causal_attributions WHERE employee_id = ? AND state IN ('PROPOSED', 'VALIDATED', 'REJECTED') ORDER BY updated_at, rowid`,
+    employeeId,
+  );
+  for (const r of rows) {
+    const prior = out.get(r.work_item_id);
+    // A live attribution always speaks; a REJECTED one only when nothing live does (the latest one, oldest first).
+    if (r.state !== 'REJECTED' || prior === undefined || prior.state === 'REJECTED') {
+      out.set(r.work_item_id, { workItemId: r.work_item_id, state: r.state as AttributionFact['state'], employeeAccountable: r.employee_accountable === 1, overall: r.overall });
+    }
+  }
+  return [...out.values()];
 }
 
 /** A validated attribution with the time it was decided (a VALIDATED row is not updated again while it stays VALIDATED). */
@@ -258,7 +281,8 @@ export function validatedAttributionFacts(ctx: StoreContext): DecidedAttribution
 
 /**
  * Evaluations with the causes validated as the Employee's (for learning-effect assessment), each with the time its
- * work started (R2-15) and the state of its attribution (R2-17: live PROPOSED / VALIDATED, else REJECTED, else NONE).
+ * work started (R2-15) and was last worked on (RR3), and the state of its attribution as every reader sees it
+ * (`attributionFacts`: live PROPOSED / VALIDATED, else the latest REJECTED, else NONE).
  */
 export function followupFacts(ctx: StoreContext, employeeId: Id, comparableKey: string): FollowupFact[] {
   const accountable = new Map<string, DirectCause[]>();
@@ -266,11 +290,7 @@ export function followupFacts(ctx: StoreContext, employeeId: Id, comparableKey: 
     const causes = JSON.parse(r.causes_json) as { category: DirectCause; role: string }[];
     accountable.set(r.work_item_id, causes.filter((c) => c.role === 'PRIMARY').map((c) => c.category));
   }
-  const attribution = new Map<string, FollowupFact['attributionState']>();
-  for (const r of ctx.db.all<{ work_item_id: string; state: string }>(`SELECT work_item_id, state FROM causal_attributions WHERE employee_id = ? AND state IN ('PROPOSED', 'VALIDATED', 'REJECTED')`, employeeId)) {
-    const live = r.state === 'PROPOSED' || r.state === 'VALIDATED';
-    if (live || !attribution.has(r.work_item_id)) attribution.set(r.work_item_id, r.state as FollowupFact['attributionState']);
-  }
+  const attribution = new Map(attributionFacts(ctx, employeeId).map((a) => [a.workItemId, a.state]));
   return liveEvaluations(ctx, { employeeId })
     .filter((f) => f.comparableKey === comparableKey)
     .map((f) => ({ ...f, attributionState: attribution.get(f.workItemId) ?? 'NONE', accountableCauses: accountable.get(f.workItemId) ?? [] }));

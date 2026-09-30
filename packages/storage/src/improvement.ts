@@ -27,6 +27,7 @@ import {
   assertEvalDefinition,
   assertCaseStep,
   assessLearningEffect,
+  attributionDue,
   buildPerformanceProfile,
   calibrateDefinition,
   composeReport,
@@ -387,8 +388,10 @@ export interface JudgmentResult {
 /**
  * Applies a pool judge's review decision to its C6 subject (called from the judge's own fenced review run —
  * `txReviewDecision`). Re-checked at THIS boundary: the judge is the assigned one, still an eligible, independent,
- * qualified pool reviewer under the same plan, and the subject is still pending. PASS validates, FAIL rejects, any
- * uncertainty escalates to the Founder (never guessed). A judgment changes the subject's judgment state only:
+ * qualified pool reviewer under the same plan, and the subject is still pending. PASS validates; FAIL rejects a
+ * LESSON, but on an ATTRIBUTION it escalates the disputed cause to the Founder (R2-18: the attribution stays PROPOSED
+ * until the Founder validates it, with corrected causes if need be, or rejects it); any uncertainty escalates to the
+ * Founder (never guessed). A judgment changes the subject's judgment state only:
  * no grant, budget, approval, route, risk ceiling, role or certification — and nothing executes.
  */
 export function txApplyJudgment(ctx: StoreContext, ja: JudgmentAssignmentRecord, judge: { readonly employeeId: Id; readonly ref: string; readonly runId: Id }, d: { readonly outcome: ReviewOutcome; readonly reasonCode: string; readonly evidenceRefs: readonly string[] }): JudgmentResult {
@@ -425,10 +428,10 @@ export function txApplyJudgment(ctx: StoreContext, ja: JudgmentAssignmentRecord,
       reason = gate.reason.toLowerCase().slice(0, 64);
     }
   }
-  // R2-18: a judge who disputes a proposed cause cannot author the corrected one, and a terminal REJECTED would
-  // leave the adverse outcome unattributed forever (never re-proposed). The dispute escalates: the attribution stays
-  // PROPOSED and the Founder decides it — with corrected causes — through `decideAttribution` (Founder Attention
-  // surfaces the escalated judgment).
+  // R2-18: a judge who disputes a proposed cause cannot author the corrected one. The dispute escalates: the
+  // attribution stays PROPOSED and the Founder decides it — validating it, validating corrected causes
+  // (`ATTRIBUTION_DECIDE` with `causes`) or rejecting it (RR3: a decided "no accountable cause", `adverseStanding`) —
+  // through `decideAttribution` (Founder Attention surfaces the escalated judgment).
   if (decision === 'REJECT' && ja.subjectKind === 'ATTRIBUTION') {
     decision = 'ESCALATE';
     reason = 'attribution.cause_disputed';
@@ -867,6 +870,8 @@ export class ImprovementStore {
       const live = lives.find((r) => s(r.definition_id) === def.id);
       if (live && lives.length === 1 && s(live.evidence_sha256) === evidenceSha) return { evaluation: mapEvaluation(live), changed: false, attributionId: liveAttribution(ctx, wid)?.id ?? null, signals: [] };
       const outcome = evaluateWork(def.spec, evidence);
+      // RR3: the one "an attribution is due" predicate — recorded with the evaluation and deciding the proposal below.
+      const due = attributionDue(evidence);
       const id = newId();
       const at = ts(ctx);
       for (const prior of lives) ctx.db.run('UPDATE evaluation_results SET superseded_by = ? WHERE id = ?', id, s(prior.id));
@@ -874,7 +879,7 @@ export class ImprovementStore {
         `INSERT INTO evaluation_results (id, work_item_id, employee_id, department_id, definition_id, comparable_key, risk_level, evidence_state, qualified_outcome, dimensions_json, missing_json, conflicts_json, cost_json, observability_json, evidence_json, evidence_sha256, evaluator_ref, superseded_by, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
         id, wid, evidence.employeeId, evidence.departmentId, def.id, evidence.comparableKey, evidence.riskLevel, outcome.evidenceState, outcome.qualifiedOutcome ? 1 : 0, JSON.stringify(outcome.dimensions), JSON.stringify(outcome.missingEvidence), JSON.stringify(outcome.conflicts),
-        JSON.stringify(evidence.cost), JSON.stringify(evidence.activity), JSON.stringify({ refs, classes: evidence.evidenceClasses }), evidenceSha, SYSTEM_EVALUATOR_REF, at,
+        JSON.stringify(evidence.cost), JSON.stringify(evidence.activity), JSON.stringify({ refs, classes: evidence.evidenceClasses, attributionDue: due }), evidenceSha, SYSTEM_EVALUATOR_REF, at,
       );
       appendAudit(ctx, 'evaluation.recorded', 'evaluation', id, { actorRef: SYSTEM_EVALUATOR_REF }, 'OK', outcome.evidenceState, { workItemId: wid, qualified: outcome.qualifiedOutcome, definitionId: def.id });
       if (outcome.qualifiedOutcome) wakeLessonJudgments(ctx, wid);
@@ -882,7 +887,7 @@ export class ImprovementStore {
       let attributionId: Id | null;
       const proposal = proposeAttribution(evidence);
       const current = liveAttribution(ctx, wid);
-      if (proposal.needed && proposal.causes.length > 0) {
+      if (due) {
         if (current === null) attributionId = insertAttribution(ctx, { workItemId: wid, evaluationId: id, employeeId: evidence.employeeId as Id | null, comparableKey: evidence.comparableKey, causes: proposal.causes, source: 'EVALUATOR_PROPOSAL', state: 'PROPOSED', actorRef: SYSTEM_EVALUATOR_REF, reasonCode: 'evaluator.proposed', evidenceRefs: refs });
         else if (current.state === 'PROPOSED' && canonicalJson(current.causes) !== canonicalJson(proposal.causes)) {
           setAttributionState(ctx, current, 'SUPERSEDED', SYSTEM_EVALUATOR_REF, 'evidence.changed');
@@ -931,6 +936,8 @@ export class ImprovementStore {
       const p = founder(ctx, actorRef, a.employeeId ? `employee:${a.employeeId}` : null, 'causal attribution');
       if (a.state !== 'PROPOSED') throw new QandeelError('INVALID_TRANSITION', 'only a proposed attribution is decided', { attributionId: a.id, state: a.state });
       const reason = assertCode(input.reasonCode, 'reasonCode');
+      // RR3: a REJECT establishes that no accountable cause was found; corrected causes are validated, never rejected.
+      if (input.decision === 'REJECT' && input.causes !== undefined) throw new QandeelError('VALIDATION_FAILED', 'corrected causes accompany a VALIDATE decision only', { field: 'causes' });
       let decided: Id = a.id;
       if (input.decision === 'REJECT') setAttributionState(ctx, a, 'REJECTED', p.ref, reason);
       else if (input.causes !== undefined) {

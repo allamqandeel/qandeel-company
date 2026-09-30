@@ -316,6 +316,17 @@ export function proposeAttribution(ev: WorkEvidence): AttributionProposal {
   return summarizeCauses(causes);
 }
 
+/**
+ * RR3: an attribution is DUE — something adverse happened AND the evidence names a cause to propose. This is the
+ * one predicate behind both the evaluator's proposal (the store records a proposal exactly then) and "pending
+ * attribution" in every reader (`adverseStanding`): a negative on work where no attribution is due can never be
+ * pending, because no proposal can ever arrive for anyone to decide.
+ */
+export function attributionDue(ev: WorkEvidence): boolean {
+  // proposeAttribution names no cause when nothing adverse happened (needed: false), so this implies `needed`.
+  return proposeAttribution(ev).causes.length > 0;
+}
+
 /** Derives the overall category, accountability and confidence from a cause list (proposal or validated input). */
 export function summarizeCauses(causes: readonly AttributedCause[]): AttributionProposal {
   if (causes.length === 0) return { needed: true, overall: 'UNKNOWN', causes: [], employeeAccountable: false, confidence: 'LOW' };

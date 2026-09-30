@@ -17,7 +17,7 @@
 import { QandeelError } from '@qandeel-company/domain';
 
 import type { AttributedCause, CauseCategory, DirectCause, WorkEvidence } from './evaluation.js';
-import type { EvaluationFact, LearningEffect } from './performance.js';
+import { adverseStanding, type AdverseStanding, type AttributionState, type EvaluationFact, type LearningEffect } from './performance.js';
 
 export const LEARNING_KINDS = ['MISTAKE_LESSON', 'SUCCESSFUL_PATTERN', 'NEAR_MISS_WARNING', 'SYSTEMIC_PROBLEM'] as const;
 export type LearningKind = (typeof LEARNING_KINDS)[number];
@@ -117,14 +117,20 @@ export function patternExpansionAllowed(target: string, verifiedReuses: number):
 export interface FollowupFact extends EvaluationFact {
   /** When the follow-up WORK started (first run, else creation) — "later" is judged on this, never on evaluation time. */
   readonly workStartedAt: string;
+  /** RR3: when the work was last worked on (its latest run, else its creation) — post-training behaviour on older work. */
+  readonly lastWorkAt: string;
   /** The state of the follow-up's causal attribution (the latest decided or live one; NONE when never proposed). */
-  readonly attributionState: 'VALIDATED' | 'PROPOSED' | 'REJECTED' | 'NONE';
+  readonly attributionState: AttributionState;
   /** The validated cause categories of this follow-up (empty when nothing went wrong or not attributed). */
   readonly accountableCauses: readonly DirectCause[];
 }
 
 /** An adverse follow-up: its outcome or its quality was judged negative. */
 const adverseFollowup = (f: FollowupFact): boolean => f.verdicts.OUTCOME === 'NEGATIVE' || f.verdicts.QUALITY === 'NEGATIVE';
+
+/** The follow-up's adverse evidence read through the ONE definition (`adverseStanding`). */
+const followupStanding = (f: FollowupFact): AdverseStanding =>
+  adverseStanding({ attributionDue: f.attributionDue === true, state: f.attributionState, employeeAccountable: f.accountableCauses.length > 0 });
 
 export interface EffectAssessment {
   readonly effect: LearningEffect;
@@ -137,10 +143,16 @@ export interface EffectAssessment {
 export const MIN_EFFECT_FOLLOWUPS = 2;
 
 /**
- * Judges an intervention on comparable work STARTED after the training finished (work time, not evaluation time:
- * work done before the training and verified later is never "later" evidence — R2-15). Recurrence = a follow-up
- * where the same cause category was validated as the Employee's. An adverse follow-up whose cause is not yet
- * validated keeps the effect open (R2-17): it may be the same mistake, so "no recurrence" cannot be concluded.
+ * Judges an intervention on comparable work after the training finished. The evidence is ASYMMETRIC (RR3):
+ * - positive evidence of improvement is only work STARTED after the training (work time, not evaluation time: work
+ *   done before the training and verified later is never "later" evidence — R2-15);
+ * - adverse evidence is any comparable, non-baseline work the Employee worked on AFTER the training (a run after it),
+ *   even when it was started before: the same mistake made after the training is post-training behaviour, so it is
+ *   a recurrence (validated) or holds the effect open (pending) — never silently excluded.
+ * Every adverse follow-up is read through `adverseStanding` (the one definition): a PENDING one keeps the effect open
+ * (R2-17: it may be the same mistake); a validated Employee cause of the target category is a recurrence; one whose
+ * proposed cause was REJECTED (no accountable cause established) or that has no attributable cause makes the effect
+ * INCONCLUSIVE — a recorded, non-final assessment that does not block the next cycle — never "no recurrence".
  * Baseline recurrence share comes from the evidence that justified the lesson. Evidence references name the
  * follow-up Work Items (distinct work is distinct evidence).
  */
@@ -153,23 +165,31 @@ export function assessLearningEffect(input: {
 }): EffectAssessment {
   if (input.trainingCompletedAt === null) return { effect: 'NOT_YET_TESTED', basis: 'TRAINING_NOT_COMPLETED', followups: 0, recurrences: 0, evidenceRefs: [] };
   const completedAt = input.trainingCompletedAt;
-  const later = input.followups.filter((f) => f.workStartedAt > completedAt && f.comparableKey === input.comparableKey);
+  const comparable = input.followups.filter((f) => f.comparableKey === input.comparableKey);
+  const later = comparable.filter((f) => f.workStartedAt > completedAt);
   const usable = later.filter((f) => f.evidenceState === 'SUFFICIENT_EVIDENCE');
-  const refs = [...new Set(usable.map((f) => `work_item:${f.workItemId}`))];
-  if (later.length === 0) return { effect: 'NOT_YET_TESTED', basis: 'NO_COMPARABLE_WORK_YET', followups: 0, recurrences: 0, evidenceRefs: [] };
-  if (usable.length < MIN_EFFECT_FOLLOWUPS) return { effect: later.length > usable.length ? 'INCONCLUSIVE' : 'NOT_YET_TESTED', basis: 'TOO_FEW_SUFFICIENT_FOLLOWUPS', followups: usable.length, recurrences: 0, evidenceRefs: refs };
-  if (usable.some((f) => adverseFollowup(f) && f.attributionState !== 'VALIDATED')) return { effect: 'NOT_YET_TESTED', basis: 'ATTRIBUTION_PENDING', followups: usable.length, recurrences: 0, evidenceRefs: refs };
+  // RR3: older work the Employee worked on again after the training, with an adverse result — adverse evidence only.
+  const reworked = comparable.filter((f) => f.workStartedAt <= completedAt && f.lastWorkAt > completedAt &&f.evidenceState === 'SUFFICIENT_EVIDENCE' && adverseFollowup(f));
+  const considered = [...usable, ...reworked];
+  const refs = [...new Set(considered.map((f) => `work_item:${f.workItemId}`))];
+  if (later.length === 0 && reworked.length === 0) return { effect: 'NOT_YET_TESTED', basis: 'NO_COMPARABLE_WORK_YET', followups: 0, recurrences: 0, evidenceRefs: [] };
+  if (considered.length < MIN_EFFECT_FOLLOWUPS) return { effect: later.length > usable.length ? 'INCONCLUSIVE' : 'NOT_YET_TESTED', basis: 'TOO_FEW_SUFFICIENT_FOLLOWUPS', followups: considered.length, recurrences: 0, evidenceRefs: refs };
+  const adverse = considered.filter(adverseFollowup);
+  if (adverse.some((f) => followupStanding(f) === 'PENDING_ATTRIBUTION')) return { effect: 'NOT_YET_TESTED', basis: 'ATTRIBUTION_PENDING', followups: considered.length, recurrences: 0, evidenceRefs: refs };
   const recur = (f: FollowupFact): boolean => f.accountableCauses.includes(input.targetCause);
-  const recurrences = usable.filter(recur).length;
+  const recurrences = considered.filter(recur).length;
   if (recurrences === 0) {
+    if (adverse.some((f) => { const st = followupStanding(f); return st === 'NO_ACCOUNTABLE_CAUSE' || st === 'NOT_ATTRIBUTABLE'; })) {
+      return { effect: 'INCONCLUSIVE', basis: 'ADVERSE_WITHOUT_ACCOUNTABLE_CAUSE', followups: considered.length, recurrences, evidenceRefs: refs };
+    }
     const qualified = usable.filter((f) => f.qualifiedOutcome).length;
     return qualified >= MIN_EFFECT_FOLLOWUPS
-      ? { effect: 'IMPROVEMENT_OBSERVED', basis: 'NO_RECURRENCE_ON_QUALIFIED_WORK', followups: usable.length, recurrences, evidenceRefs: refs }
-      : { effect: 'INCONCLUSIVE', basis: 'NO_RECURRENCE_BUT_UNQUALIFIED', followups: usable.length, recurrences, evidenceRefs: refs };
+      ? { effect: 'IMPROVEMENT_OBSERVED', basis: 'NO_RECURRENCE_ON_QUALIFIED_WORK', followups: considered.length, recurrences, evidenceRefs: refs }
+      : { effect: 'INCONCLUSIVE', basis: 'NO_RECURRENCE_BUT_UNQUALIFIED', followups: considered.length, recurrences, evidenceRefs: refs };
   }
   const baseShare = input.baseline.length === 0 ? 1 : input.baseline.filter(recur).length / input.baseline.length;
-  const laterShare = recurrences / usable.length;
-  return { effect: laterShare > baseShare ? 'REGRESSION' : 'NO_IMPROVEMENT', basis: 'SAME_MISTAKE_RECURRED', followups: usable.length, recurrences, evidenceRefs: refs };
+  const laterShare = recurrences / considered.length;
+  return { effect: laterShare > baseShare ? 'REGRESSION' : 'NO_IMPROVEMENT', basis: 'SAME_MISTAKE_RECURRED', followups: considered.length, recurrences, evidenceRefs: refs };
 }
 
 /** Retraining cycles that ended without an effect before the lesson escalates to the system (no infinite loop). */
