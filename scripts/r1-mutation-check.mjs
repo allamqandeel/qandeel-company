@@ -33,7 +33,7 @@ const MUTATIONS = [
   {
     id: 'r1-01-tool-result-secret-stored',
     finding: 'R1-01',
-    edits: [{ file: `${S}/governed-writes.js`, search: 'hasSecretNamedKey(outcome.result) || containsSecretMaterial(json)', replace: 'false', expectedCount: 1 }],
+    edits: [{ file: `${S}/governed-writes.js`, search: 'keyedSecretJson(json) || containsSecretMaterial(json)', replace: 'false', expectedCount: 1 }],
     runs: [STORAGE],
   },
   {
@@ -328,6 +328,65 @@ const MUTATIONS = [
     finding: 'K4',
     edits: [{ file: `${G}/proposals.js`, search: 's.length <= 64 &&', replace: '', expectedCount: 1 }],
     runs: [GOV],
+  },
+  // --- R2-10: the R1-09 boundary applied to tool drivers (read once, frozen plain data, screened code) ---
+  {
+    id: 'r2-10-raw-tool-answer-passed-on',
+    finding: 'R2-10',
+    edits: [{ file: `${R}/c2/tool-executor.js`, search: 'return toolAnswerSnapshot(r);', replace: 'return r;', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'r2-10-tool-result-not-reparsed',
+    finding: 'R2-10',
+    edits: [{ file: `${R}/c2/tool-boundary.js`, search: 'parsed = JSON.parse(canonicalJson(result));', replace: 'parsed = result;', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'r2-10-secret-driver-code-recorded',
+    finding: 'R2-10 / m-17',
+    edits: [
+      { file: `${R}/c2/tool-boundary.js`, search: 'CODE.test(code) && !containsSecretMaterial(code) ?', replace: 'CODE.test(code) ?', expectedCount: 1 },
+      { file: `${S}/governed-writes.js`, search: '.test(code) && !containsSecretMaterial(code) ?', replace: '.test(code) ?', expectedCount: 1 },
+    ],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'r2-10-storage-code-unscreened',
+    finding: 'R2-10 / m-17',
+    edits: [{ file: `${S}/governed-writes.js`, search: '.test(code) && !containsSecretMaterial(code) ?', replace: '.test(code) ?', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r2-10-storage-rereads-outcome',
+    finding: 'R2-10',
+    edits: [{ file: `${S}/governed-writes.js`, search: 'const outcome = captureToolOutcome(input);', replace: 'const outcome = input;', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r2-10-storage-guard-reads-driver-object',
+    finding: 'R2-10',
+    edits: [{ file: `${S}/governed-writes.js`, search: 'if (keyedSecretJson(json) || containsSecretMaterial(json))', replace: 'if (hasSecretNamedKey(input.result) || containsSecretMaterial(json))', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  // --- R2-12: one run-failure vocabulary; local and configuration causes are never the provider ---
+  {
+    id: 'r2-12-local-settlement-blamed-on-provider',
+    finding: 'R2-12',
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: "{ kind: 'UNAVAILABLE', code: 'SETTLEMENT_FAILED' }", replace: "{ kind: 'UNCERTAIN', failure: 'UNKNOWN' }", expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'r2-12-vocabulary-incomplete',
+    finding: 'R2-12',
+    edits: [{ file: `${G}/run-failures.js`, search: 'REASONING_ABOVE_CEILING: null,', replace: '', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'r2-12-pg11-family-invented',
+    finding: 'R2-12 / PG-11',
+    edits: [{ file: `${G}/run-failures.js`, search: 'PROVIDER_INVALID_REQUEST: null,', replace: "PROVIDER_INVALID_REQUEST: 'PROVIDER',", expectedCount: 1 }],
+    runs: [RUNTIME],
   },
 ];
 

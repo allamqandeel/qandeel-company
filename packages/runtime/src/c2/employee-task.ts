@@ -8,7 +8,7 @@
  * review) is an event-driven WAIT that consumes no tokens.
  */
 import { assertIntInRange, boundedText, type JsonValue, type ProcessorContext, type ProcessorResult } from '@qandeel-company/domain';
-import { assertTaskClass, isDataClass, isReasoningClass, type ModelProposal, type ReasoningClass } from '@qandeel-company/governance';
+import { assertTaskClass, isDataClass, isReasoningClass, providerFailedRunCode, unavailableRunCode, type ModelProposal, type ReasoningClass } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
 import type { GovernedProcessor, GovernedRunServices, OrgActProposal, ReviewDecisionProposal, ToolRequest } from './types.js';
@@ -161,16 +161,20 @@ export const employeeTaskProcessor: GovernedProcessor = {
         case 'ESCALATION_REFUSED':
           return { type: 'PERMANENT_FAILURE', code: 'ESCALATION_REFUSED' };
         case 'UNAVAILABLE':
+          // No answer never crashes the Company: bounded C1 retry, then dead letter. The run records the real
+          // cause from the shared run-failure vocabulary (R2-12): a missing route policy, a local settlement
+          // failure or an abort is never blamed on the provider.
+          return { type: 'RETRYABLE_FAILURE', code: unavailableRunCode(out.code) };
         case 'UNCERTAIN':
-          // Provider trouble never crashes the Company: bounded C1 retry, then dead letter.
-          return { type: 'RETRYABLE_FAILURE', code: 'PROVIDER_UNAVAILABLE' };
+          // The provider broke the contract or its outcome is unknown after send (money held).
+          return { type: 'RETRYABLE_FAILURE', code: 'PROVIDER_FAILURE' };
         case 'FAILED':
           // One evidence-based escalation per run step; never re-escalate from the class that just failed.
           if (out.failure === 'CONTEXT_OVERFLOW' && !escalated && cfg.reasoningClass !== 'E4') {
             escalateFrom = { fromClass: cfg.reasoningClass ?? gov.context.cognitiveProfile.defaultClass, evidence: 'CONTEXT_OVERFLOW' };
             continue;
           }
-          return { type: 'PERMANENT_FAILURE', code: `PROVIDER_${out.failure}` };
+          return { type: 'PERMANENT_FAILURE', code: providerFailedRunCode(out.failure) };
         case 'CONTEXT':
           // Typed context outcomes: an IMPORTANT unresolved conflict or conflicting skills park the work
           // for review (zero tokens); a context that cannot fit or fails integrity never reaches a model.

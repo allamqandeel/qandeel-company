@@ -199,7 +199,7 @@ describe('C2 runtime: budgets are hard limits', () => {
       rt.governance.setHold(w.founder, { entity: 'deployment', id: w.deployments.cloudE1b }, true, 'maintenance');
       f.cloud.failNext('cloud-e1', 'CAPACITY');
       const id = submitTask(rt, w, { instructions: script(final()) });
-      await eventually(() => rt.view.runsForWorkItem(id).some((r) => r.failureCode === 'PROVIDER_UNAVAILABLE') || undefined, 15_000, 'refused run');
+      await eventually(() => rt.view.runsForWorkItem(id).some((r) => r.failureCode === 'FALLBACK_REFUSED') || undefined, 15_000, 'refused run (R2-12: the run names the refused fallback)');
       assert.equal(f.local.totalCalls, 0, 'the costlier local deployment was never called');
       assert.equal(rt.state, 'READY');
     }));
@@ -221,7 +221,7 @@ describe('C2 runtime: budgets are hard limits', () => {
     withWorld('c2-crashy', async ({ w, f, rt }) => {
       (f.cloud as unknown as { generate: () => Promise<never> }).generate = () => Promise.reject(new TypeError('adapter bug'));
       const id = submitTask(rt, w, { instructions: script(final()) });
-      await eventually(() => rt.view.runsForWorkItem(id).some((r) => r.failureCode === 'PROVIDER_UNAVAILABLE') || undefined, 15_000, 'uncertain call');
+      await eventually(() => rt.view.runsForWorkItem(id).some((r) => r.failureCode === 'PROVIDER_FAILURE') || undefined, 15_000, 'uncertain call (R2-12: a provider fault, outcome unknown)');
       assert.equal(rt.state, 'READY');
       const held = rt.governance.reservationsInState('RECONCILIATION_REQUIRED');
       assert.ok(held.length >= 1, 'an UNKNOWN outcome keeps its reservation for reconciliation');
