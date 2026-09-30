@@ -454,13 +454,38 @@ export function txDecideMemoryCandidate(ctx: StoreContext, candidateId: Id): Mem
     SYSTEM_MIND_REF,
     'memory.policy_accepted',
   );
-  for (const other of d.conflictsWith) {
-    const [x, y] = [memoryId, other as Id].sort() as [Id, Id];
-    const cid = newId();
-    const opened = ctx.db.run(`INSERT OR IGNORE INTO memory_conflicts (id, claim_key, memory_a_id, memory_b_id, state, created_at) VALUES (?, ?, ?, ?, 'OPEN', ?)`, cid, candidate.claimKey ?? null, x, y, at).changes;
-    if (opened === 1) appendAudit(ctx, 'memory.conflict_opened', 'memory_conflict', cid, { actorRef: SYSTEM_MIND_REF }, 'OK', 'CLAIM_DISAGREEMENT', { employeeId: cand.employeeId });
-  }
+  txOpenMemoryConflicts(ctx, memoryId, cand.employeeId, candidate.claimKey ?? null, d.conflictsWith as readonly Id[]);
   return decide('ACCEPTED', 'POLICY_ACCEPTED', { memoryId });
+}
+
+/**
+ * Opens one claim conflict (Stage 5 §5 / §7) between a newly stored memory and each record that disagrees with it:
+ * both are kept, neither is silently preferred. The single mechanism of every memory write that can disagree
+ * with an existing claim — the Memory Write Policy's accepted candidates and a PERSONAL lesson promotion (R2-27).
+ */
+export function txOpenMemoryConflicts(ctx: StoreContext, memoryId: Id, employeeId: Id, claimKey: string | null, conflictsWith: readonly Id[]): void {
+  const at = ts(ctx);
+  for (const other of conflictsWith) {
+    const [x, y] = [memoryId, other].sort() as [Id, Id];
+    const cid = newId();
+    const opened = ctx.db.run(`INSERT OR IGNORE INTO memory_conflicts (id, claim_key, memory_a_id, memory_b_id, state, created_at) VALUES (?, ?, ?, ?, 'OPEN', ?)`, cid, claimKey, x, y, at).changes;
+    if (opened === 1) appendAudit(ctx, 'memory.conflict_opened', 'memory_conflict', cid, { actorRef: SYSTEM_MIND_REF }, 'OK', 'CLAIM_DISAGREEMENT', { employeeId });
+  }
+}
+
+/**
+ * The Employee's live memories (the policy's live set: not SUPERSEDED / INCORRECT / ARCHIVED) asserting a different
+ * value for the claim — exactly the Memory Write Policy's `conflictsWith`, for a write that does not pass through
+ * the policy's STORE decision (a PERSONAL lesson promotion). Sorted, excluding the new record itself.
+ */
+export function liveClaimDisagreements(ctx: StoreContext, employeeId: Id, claimKey: string | null, claimValue: string | null, excludeId: Id): Id[] {
+  if (!claimKey) return [];
+  return ctx.db
+    .all<{ id: string }>(
+      `SELECT id FROM memory_records WHERE employee_id = ? AND claim_key = ? AND claim_value IS NOT ? AND id <> ? AND status NOT IN ('SUPERSEDED', 'INCORRECT', 'ARCHIVED') ORDER BY id`,
+      employeeId, claimKey, claimValue, excludeId,
+    )
+    .map((r) => r.id as Id);
 }
 
 /** Candidates submitted by runs that died before the policy decided them (recovery decides each in its own transaction). */

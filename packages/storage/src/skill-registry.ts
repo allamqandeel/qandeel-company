@@ -370,18 +370,15 @@ export class SkillStore {
       if (!(RECERTIFICATION_IMPACTS as readonly string[]).includes(input.recertificationImpact)) throw new QandeelError('VALIDATION_FAILED', 'unknown recertification impact', { field: 'recertificationImpact' });
       if (!input.material && input.recertificationImpact !== 'NONE') throw new QandeelError('VALIDATION_FAILED', 'a minor update has no recertification impact', { field: 'recertificationImpact' });
       if (!versionEligibility(ctx, to).eligible) throw new QandeelError('VALIDATION_FAILED', 'the target version is not production-eligible (approve it first)', { reason: 'TARGET_NOT_ELIGIBLE' });
-      const passports = ctx.db.all<{ id: string; employee_id: string }>('SELECT id, employee_id FROM passport_entries WHERE skill_version_id = ? AND status <> ? ORDER BY id', from.id, 'REVOKED');
+      const { passports, certificationIds } = pinnedToVersion(ctx, from.id);
       const blueprints = ctx.db.all<{ id: string; role_ref: string }>(`SELECT b.id, b.role_ref FROM role_blueprints b JOIN role_blueprint_entries e ON e.blueprint_id = b.id WHERE e.skill_id = ? AND b.status = 'ACTIVE' ORDER BY b.id`, from.skillId);
-      const certifications = ctx.db
-        .all(`SELECT * FROM certifications WHERE status IN ('VALID', 'REVIEW_DUE') ORDER BY id`)
-        .map(mapCertification)
-        .filter((c) => c.skillPins.some((pin) => pin.skillVersionId === from.id));
+      // The plan-time record of the impact (IDs only). The rollout acts on the live set, never on this snapshot.
       const impact = {
         blueprintIds: blueprints.map((b) => b.id),
         roleRefs: [...new Set(blueprints.map((b) => b.role_ref))],
         passportEntryIds: passports.map((x) => x.id),
-        employeeIds: [...new Set(passports.map((x) => x.employee_id))],
-        certificationIds: certifications.map((c) => c.id),
+        employeeIds: [...new Set(passports.map((x) => x.employeeId))],
+        certificationIds,
       };
       const id = newId();
       const at = ts(ctx);
@@ -409,18 +406,19 @@ export class SkillStore {
       const recert = u.material && u.recertificationImpact !== 'NONE';
       // TARGETED: the affected skill is re-tested (passport); PARTIAL / FULL: the role certification too.
       const certImpact = recert && u.recertificationImpact !== 'TARGETED';
-      for (const pid of u.impact.passportEntryIds) {
-        const pe = mapPassport(ctx.db.get('SELECT * FROM passport_entries WHERE id = ?', pid) ?? {});
-        if (pe.skillVersionId !== u.fromVersionId || pe.status === 'REVOKED') continue;
+      // The affected set is recomputed here, in the rollout transaction: a passport opened or a certification
+      // issued on the from-version after the plan is affected exactly like one the plan saw (R2-35).
+      const live = pinnedToVersion(ctx, u.fromVersionId);
+      for (const pe of live.passports) {
         const status = recert ? 'RECERTIFICATION_REQUIRED' : pe.status;
         ctx.db.run(`UPDATE passport_entries SET skill_version_id = ?, status = ?, training_state = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, u.toVersionId, status, recert ? 'RETRAINING_REQUIRED' : pe.trainingState, ts(ctx), pe.id, pe.version);
         passportHistory(ctx, pe.id, pe.version + 1, u.toVersionId, pe.proficiency, status, recert ? 'SKILL_MATERIAL_UPDATE' : 'SKILL_MINOR_UPDATE', p.ref);
       }
-      if (certImpact) for (const cid of u.impact.certificationIds) markReviewDue(ctx, cid as Id, 'SKILL_MATERIAL_UPDATE', p.ref);
+      if (certImpact) for (const cid of live.certificationIds) markReviewDue(ctx, cid as Id, 'SKILL_MATERIAL_UPDATE', p.ref);
       wakeSkillHolders(ctx, [u.fromVersionId, u.toVersionId], 'skill.rolled_out');
       if (to.pipelineState === 'APPROVED' || to.pipelineState === 'TARGETED_LEARNING') this.#advance(ctx, to, 'ROLLED_OUT', 'skill.rolled_out', p.ref);
       ctx.db.run(`UPDATE skill_updates SET state = 'ROLLED_OUT', version = version + 1, updated_at = ? WHERE id = ?`, ts(ctx), u.id);
-      appendAudit(ctx, 'skill.update_rolled_out', 'skill_update', u.id, { actorRef: p.ref }, 'OK', recert ? 'RECERTIFICATION_REQUIRED' : 'NO_RECERTIFICATION', {});
+      appendAudit(ctx, 'skill.update_rolled_out', 'skill_update', u.id, { actorRef: p.ref }, 'OK', recert ? 'RECERTIFICATION_REQUIRED' : 'NO_RECERTIFICATION', { passports: live.passports.length, certifications: certImpact ? live.certificationIds.length : 0 });
       return mapSkillUpdate(ctx.db.get('SELECT * FROM skill_updates WHERE id = ?', u.id) ?? {});
     });
   }
@@ -438,7 +436,14 @@ export class SkillStore {
       const target = getSkillVersionRow(ctx, u.rollbackTargetId);
       if (!versionEligibility(ctx, target).eligible) throw new QandeelError('VALIDATION_FAILED', 'the rollback target is no longer an approved, eligible version', { reason: 'ROLLBACK_TARGET_INELIGIBLE' });
       const reason = assertCode(reasonCode, 'reasonCode');
-      for (const pid of u.impact.passportEntryIds) {
+      // The rollout re-pinned its live set (R2-35), not only the plan's snapshot: every passport it moved from the
+      // from-version returns (its history records the re-pin), plus the snapshot as before.
+      const repinned = ctx.db.all<{ id: string }>(
+        `SELECT DISTINCT h.passport_entry_id AS id FROM passport_history h WHERE h.skill_version_id = ? AND h.reason_code IN ('SKILL_MATERIAL_UPDATE', 'SKILL_MINOR_UPDATE')
+           AND (SELECT prev.skill_version_id FROM passport_history prev WHERE prev.passport_entry_id = h.passport_entry_id AND prev.version < h.version ORDER BY prev.version DESC LIMIT 1) = ?`,
+        u.toVersionId, u.fromVersionId,
+      ).map((r) => r.id);
+      for (const pid of [...new Set([...u.impact.passportEntryIds, ...repinned])].sort()) {
         const pe = mapPassport(ctx.db.get('SELECT * FROM passport_entries WHERE id = ?', pid) ?? {});
         if (pe.skillVersionId !== u.toVersionId || pe.status === 'REVOKED') continue;
         ctx.db.run('UPDATE passport_entries SET skill_version_id = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?', target.id, ts(ctx), pe.id, pe.version);
@@ -521,6 +526,20 @@ function blueprintOf(ctx: StoreContext, id: Id): BlueprintRecord {
 }
 
 /** Marks one live certification REVIEW_DUE (material change); history and audit together. */
+/**
+ * The passports (not REVOKED) and live certifications (VALID / REVIEW_DUE) pinned to one skill version now. The
+ * single definition of an update's affected set: the plan records it, the rollout recomputes and acts on it.
+ */
+function pinnedToVersion(ctx: StoreContext, versionId: Id): { passports: PassportEntryRecord[]; certificationIds: Id[] } {
+  const passports = ctx.db.all('SELECT * FROM passport_entries WHERE skill_version_id = ? AND status <> ? ORDER BY id', versionId, 'REVOKED').map(mapPassport);
+  const certificationIds = ctx.db
+    .all(`SELECT * FROM certifications WHERE status IN ('VALID', 'REVIEW_DUE') ORDER BY id`)
+    .map(mapCertification)
+    .filter((c) => c.skillPins.some((pin) => pin.skillVersionId === versionId))
+    .map((c) => c.id);
+  return { passports, certificationIds };
+}
+
 export function markReviewDue(ctx: StoreContext, certificationId: Id, reason: string, actorRef: string): boolean {
   const c = mapCertification(ctx.db.get('SELECT * FROM certifications WHERE id = ?', certificationId) ?? {});
   if (c.status !== 'VALID') return false;
