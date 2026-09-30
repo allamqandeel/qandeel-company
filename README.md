@@ -354,7 +354,11 @@ npm run c6:acceptance -- --workspace "D:\QANDEEL-C6-ACCEPTANCE\run-1"
   laptop's own volume is reported `SAME_VOLUME` and never satisfies the off-device objective.
 - `restore-portable --workspace <new empty dir> --package <file>` restores on a clean environment; then start the
   runtime, re-key the reported credential references, reconcile any held uncertain effects, and sign in again
-  (every old Founder session is revoked).
+  (every old Founder session is revoked). The target is held (`RESTORE_IN_PROGRESS`) from its first byte until the
+  controlled restore commits: nothing starts, inspects or clears it meanwhile. If the restore is interrupted,
+  `restore-status` shows the attempt and phase, and running `restore-portable` again with the same package resumes it
+  (a committed attempt is only finalized, anything else is redone from the package); another package needs
+  `--discard-partial-restore`.
 - `safe-upgrade` performs a schema update with a pre-update snapshot; on failure the workspace enters
   `UPDATE_HOLD`, which every start refuses until `clear-update-hold --reason <code>`.
 ### C5 Founder Command Center (Tree of Light)
@@ -424,7 +428,8 @@ After `npm run build`: `node packages/runtime/dist/src/cli.js <command> --worksp
 | `improvement` | Read-only C6 health: evaluations, attributions, learning, systemic findings, recovery status |
 | `report --cadence <DAILY\|WEEKLY\|MONTHLY>` | Generates (idempotently) and prints a report's typed claims (codes, ids, counts) |
 | `portable-backup --destination <dir> [--attest-off-device]` | Encrypted portable package outside the workspace (`QANDEEL_RECOVERY_PASSPHRASE`) |
-| `restore-portable --package <file>` | Clean-environment restore into `--workspace` (a new, empty directory) |
+| `restore-portable --package <file> [--discard-partial-restore]` | Clean-environment restore into `--workspace` (a new, empty directory, or one holding an interrupted restore to resume) |
+| `restore-status` | The target's hold and live-restore marker (attempt, package, phase, history); never opens the database |
 | `restore-drill` | Isolated restore drill of the newest live generation (recorded) |
 | `prune-backups [--keep-last n --daily n --weekly n --monthly n]` | Generational retention (never the last generation) |
 | `safe-upgrade` / `clear-update-hold --reason <code>` / `rollback-update --update <id>` | Update safety and `UPDATE_HOLD` |

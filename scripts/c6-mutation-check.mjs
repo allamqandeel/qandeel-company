@@ -497,6 +497,50 @@ const MUTATIONS = [
     edits: [{ file: `${STORAGE}/store.js`, search: 'options.verificationCopy === true && isRestoreCheckCopy(workspace.root)', replace: 'isRestoreCheckCopy(workspace.root)', expectedCount: 1 }],
     runs: [BACKUP],
   },
+  // R2 architecture correction FB-2: a live portable restore is fail-closed from its first byte until the controlled
+  // restore commits (crash tests in c6-resilience kill a child process at every lifecycle point).
+  {
+    id: 'c6fb2-marker-after-db-copy',
+    gate: 'FB-2 C1: the RESTORE_IN_PROGRESS marker is durable BEFORE the first database byte (a death mid-copy leaves a held target)',
+    edits: [
+      { file: `${STORAGE}/resilience.js`, search: 'beginRestoreMarker(root, marker);', replace: 'void 0;', expectedCount: 1 },
+      { file: `${STORAGE}/resilience.js`, search: "fault('after-db-copy');", replace: "beginRestoreMarker(root, marker); fault('after-db-copy');", expectedCount: 1 },
+    ],
+    runs: [RES],
+  },
+  {
+    id: 'c6fb2-inspection-opens-partial-restore',
+    gate: 'FB-2 C2: every store open — read-only verify-mode inspection included — refuses a target under a RESTORE_IN_PROGRESS marker',
+    edits: [{ file: `${STORAGE}/store.js`, search: 'assertRestoreGate(workspaceRoot, options.restoreAttempt);', replace: 'void 0;', expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
+    id: 'c6fb2-marker-lifted-before-commit',
+    gate: 'FB-2 C5: the marker is lifted only after the controlled-restore transaction committed and the store closed',
+    edits: [
+      { file: `${STORAGE}/resilience.js`, search: 'const history = finish();', replace: "const history = 'lifted-early';", expectedCount: 1 },
+      { file: `${STORAGE}/resilience.js`, search: "fault('before-controlled-restore');", replace: "finish(); fault('before-controlled-restore');", expectedCount: 1 },
+    ],
+    runs: [RES],
+  },
+  {
+    id: 'c6fb2-restore-hold-clearable',
+    gate: 'FB-2: clear-update-hold never clears a live restore in progress',
+    edits: [{ file: `${STORAGE}/update-hold.js`, search: "if (readUpdateHold(root)?.code === RESTORE_IN_PROGRESS)\n        throw new QandeelError('MAINTENANCE_REFUSED'", replace: "if (false)\n        throw new QandeelError('MAINTENANCE_REFUSED'", expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
+    id: 'c6fb2-other-package-hijacks-partial-restore',
+    gate: 'FB-2 C6: a different package never takes over a partial restore without the explicit discard',
+    edits: [{ file: `${STORAGE}/resilience.js`, search: 'else if (options.discardPartialRestore !== true) {', replace: 'else if (false) {', expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
+    id: 'c6fb2-bypass-not-bound-to-attempt',
+    gate: 'FB-2 C3: the restore bypass is bound to the marker attempt id, not only to the package',
+    edits: [{ file: `${STORAGE}/update-hold.js`, search: 'if (marker === null || marker.attemptId !== binding.attemptId || marker.packageId !== binding.packageId) {', replace: 'if (marker === null || marker.packageId !== binding.packageId) {', expectedCount: 1 }],
+    runs: [RES],
+  },
   // R2 second wave, RR1-2: freed reviewer capacity is a wake; REQUIRED reviews before pool judgments.
   {
     id: 'c6rr1-decided-judgment-frees-nothing',

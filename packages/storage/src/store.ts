@@ -34,7 +34,7 @@ import {
   type SupervisorLease,
 } from './runtime-state.js';
 import { SqliteConnection } from './sqlite/connection.js';
-import { assertNoUpdateHold, isRestoreCheckCopy } from './update-hold.js';
+import { assertNoUpdateHold, assertRestoreGate, isRestoreCheckCopy, type RestoreBinding } from './update-hold.js';
 import { openWorkspace, type WorkspaceLayout } from './workspace.js';
 import {
   dependencies,
@@ -93,6 +93,12 @@ interface InternalOpenOptions extends OpenStoreOptions {
    * permanent RESTORE_CHECK_COPY hold, never any other hold. Never set by the public `open`.
    */
   readonly verificationCopy?: boolean;
+  /**
+   * FB-2: the live restore lifecycle's own open of the target it is restoring. Passes the RESTORE_IN_PROGRESS marker only
+   * when it names exactly this attempt AND this package (read from the marker the lifecycle wrote), never a generic
+   * flag; never combined with a live schema update or the verification-copy pass. Never set by the public `open`.
+   */
+  readonly restoreAttempt?: RestoreBinding;
 }
 
 const OPEN_INTERNAL: unique symbol = Symbol('CompanyStore.openInternal');
@@ -144,11 +150,18 @@ export class CompanyStore {
   }
 
   static [OPEN_INTERNAL](workspaceRoot: string, options: InternalOpenOptions): CompanyStore {
+    if (options.restoreAttempt !== undefined && (options.liveSchemaUpdate === true || options.verificationCopy === true || options.migrationMode === 'verify')) {
+      throw new QandeelError('STORAGE_INVARIANT', 'a live restore opens its target only at the snapshot version, never with another bypass');
+    }
+    // FB-2: a live portable restore in progress is fail-closed from its first byte — in EVERY mode, read-only inspection
+    // included (the database under the marker may be partial) — and checked BEFORE the workspace is touched (opening it
+    // would create directories). Only the restore lifecycle bound to the marker's attempt and package passes.
+    assertRestoreGate(workspaceRoot, options.restoreAttempt);
     const workspace = openWorkspace(workspaceRoot, { create: options.create ?? true });
     // D15-D.5: a workspace held after a failed update is never opened to migrate or run (so never re-migrated in a loop);
     // read-only inspection (migrationMode: 'verify', which never migrates) still sees it.
     // RR4-1: a restore-check verification copy is refused the same way (permanently); only the check itself opens it.
-    if (options.migrationMode !== 'verify' && !(options.verificationCopy === true && isRestoreCheckCopy(workspace.root))) assertNoUpdateHold(workspace.root);
+    if (options.restoreAttempt === undefined && options.migrationMode !== 'verify' && !(options.verificationCopy === true && isRestoreCheckCopy(workspace.root))) assertNoUpdateHold(workspace.root);
     const clock = options.clock ?? systemClock;
     const db = SqliteConnection.open({ path: workspace.databasePath, busyTimeoutMs: options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS });
     try {
@@ -548,13 +561,17 @@ export function openStoreForTests(workspaceRoot: string, options: InternalOpenOp
 /**
  * Storage-internal (not exported by the package): a restored copy opened either at its own schema version (a clean
  * restore never migrates an old snapshot forward through plain open) or, for a disposable isolated restore drill,
- * migrated as its compatibility check. Only released, pinned migrations; never caller SQL.
+ * migrated as its compatibility check. Only released, pinned migrations; never caller SQL. A live portable restore opens
+ * its target through `restoreAttempt` (bound to the marker it wrote, FB-2), always at the snapshot's own version and
+ * never creating a missing database.
  */
-export function openRestoredStore(workspaceRoot: string, options: { clock?: Clock; atVersion?: number; liveSchemaUpdate?: boolean; verificationCopy?: boolean }): CompanyStore {
+export function openRestoredStore(workspaceRoot: string, options: { clock?: Clock; atVersion?: number; liveSchemaUpdate?: boolean; verificationCopy?: boolean; restoreAttempt?: RestoreBinding }): CompanyStore {
+  if (options.restoreAttempt !== undefined && options.atVersion === undefined) throw new QandeelError('STORAGE_INVARIANT', 'a live restore opens its target at the snapshot version');
   return CompanyStore[OPEN_INTERNAL](workspaceRoot, {
     ...(options.clock ? { clock: options.clock } : {}),
     ...(options.atVersion !== undefined ? { migrations: loadReleasedMigrations(options.atVersion) } : {}),
     ...(options.liveSchemaUpdate === true ? { liveSchemaUpdate: true } : {}),
     ...(options.verificationCopy === true ? { verificationCopy: true } : {}),
+    ...(options.restoreAttempt !== undefined ? { restoreAttempt: options.restoreAttempt, create: false } : {}),
   });
 }
