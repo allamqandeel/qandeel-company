@@ -5,6 +5,7 @@
  * Not exported from the package.
  */
 import { type Id } from '@qandeel-company/domain';
+import { runFailureCodesOf } from '@qandeel-company/governance';
 import type { DirectCause, EvaluationFact, EvidenceClass, FollowupFact, ItemDimension, RiskLevel, ValidatedAttributionFact, Verdict, WorkEvidence } from '@qandeel-company/mind';
 
 import type { StoreContext } from './internal.js';
@@ -12,14 +13,15 @@ import { getWorkItemRow } from './internal.js';
 
 const n = (v: unknown): number => Number(v ?? 0);
 
-// Run failure codes by cause family (codes the governed runtime records on runs.failure_code).
-const PROVIDER_CODES = ['PROVIDER_UNAVAILABLE', 'PROVIDER_FAILURE', 'FALLBACK_REFUSED', 'NO_ELIGIBLE_ROUTE'];
-const MODEL_CODES = ['MODEL_OUTPUT_INVALID'];
-const TOOL_CODES = ['TOOL_FAILED', 'TOOL_NOT_EXECUTED', 'DRIVER_NOT_REGISTERED', 'DRIVER_OUTCOME_UNKNOWN', 'TOOL_OUTCOME_UNCERTAIN'];
-const CONTEXT_CODES = ['CONTEXT_BUDGET_EXHAUSTED', 'CONTEXT_NOT_ASSEMBLED', 'CONFLICT_HOLD', 'SKILL_CONFLICT'];
-const WORKFLOW_CODES = ['NO_ROUTE_POLICY', 'BUDGET_EXHAUSTED', 'GOVERNANCE_REQUIRED'];
-const REQUIREMENT_CODES = ['INVALID_TASK_INPUT'];
-const BOUNDARY_CODES = ['ESCALATION_REFUSED', 'HANDOFF_REFUSED', 'END_REFUSED', 'EMPLOYEE_CONTAINED'];
+// Run failure codes by cause family: read from the ONE run-failure vocabulary the governed runtime emits
+// (R2-12), never a hand-copied list. An unclassified code (e.g. a local SETTLEMENT_FAILED) evidences no cause.
+const PROVIDER_CODES = runFailureCodesOf('PROVIDER');
+const MODEL_CODES = runFailureCodesOf('MODEL');
+const TOOL_CODES = runFailureCodesOf('TOOL');
+const CONTEXT_CODES = runFailureCodesOf('CONTEXT');
+const WORKFLOW_CODES = runFailureCodesOf('WORKFLOW');
+const REQUIREMENT_CODES = runFailureCodesOf('REQUIREMENT');
+const BOUNDARY_CODES = runFailureCodesOf('BOUNDARY');
 
 /** Comparable-work key: the governed task class when the work names one, else its processor kind. */
 export function comparableKeyOf(processorKind: string | null, processorInput: unknown): string {

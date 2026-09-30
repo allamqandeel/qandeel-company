@@ -132,6 +132,23 @@ describe('C6 runtime: the Improvement capability under the Founder change-signal
       }
     }));
 
+  test('R2-12: work that failed for a missing route policy is a WORKFLOW cause in the C6 proposal, never the provider', () =>
+    withRuntime('c6-no-policy', async ({ rt, w }) => {
+      const f = rt.founder;
+      const d = f.improvement.registerDefinition(w.founder, standardWorkOutcomeDefinition());
+      f.improvement.activateDefinition(w.founder, d.id, f.improvement.calibrateDefinition(w.founder, d.id).id);
+      // `draft.report` has no route policy: a configuration gap, not a provider failure.
+      const id = submitTask(rt, w, { taskClass: 'draft.report', instructions: script(final('report.done')) });
+      await eventually(() => ['FAILED', 'BLOCKED'].includes(rt.view.getWorkItem(id).state) || undefined, 30_000, 'the unroutable work to fail');
+      const codes = rt.view.runsForWorkItem(id).map((r) => r.failureCode);
+      assert.ok(codes.length > 0 && codes.every((c) => c === 'NO_ROUTE_POLICY'), `the runs record the real cause (${codes.join(',')})`);
+      const { attributionId } = f.improvement.evaluate(id);
+      const a = f.improvement.attributions({ workItemId: id }).find((x) => x.id === attributionId);
+      assert.equal(a?.overall, 'WORKFLOW_PROCESS');
+      assert.ok(!a?.causes.some((c) => c.category === 'PROVIDER'), 'the provider is not blamed');
+      assert.equal(a?.employeeAccountable, false);
+    }));
+
   test('C6-PROOF: portable backup, restore drill and resilience status run against the live runtime', () =>
     withRuntime('c6-resilience', async ({ rt }) => {
       const ext = path.join(mkdtempSync(path.join(tmpdir(), 'qc-rt-offdevice-')), 'external');

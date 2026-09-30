@@ -61,6 +61,57 @@ describe('R1-01: secret material never enters durable state', () => {
     });
   });
 
+  test('R2-10 defence in depth: the tool-result write reads the outcome once, guards the serialized value and screens the failure code', () => {
+    withSeed((h, s) => {
+      const tool = s.gov.registerTool(s.founder, { code: 'mailer', driverCode: 'fake-mailer', egress: 'NONE' });
+      s.gov.registerToolAction(s.founder, { toolId: tool.id, code: 'send', risk: 'R1', sideEffects: 'UNSAFE', mutatesExternal: false, dataClassCeiling: 'D3', argsSchema: { fields: {} }, costPerCallMicros: 100 });
+      s.gov.grant(s.founder, { employeeId: s.employee.id, capability: 'tool:mailer.send', riskCeiling: 'R1', dataClassCeiling: 'D3', reasonCode: 'seed' });
+      const wi = governedItem(h, s);
+      const { claim } = claimGoverned(h);
+      const reads = new Map<string, number>();
+      /** An outcome whose planned fields yield their values in turn (the last repeats); every read is counted. */
+      const hostile = (plan: Record<string, readonly unknown[]>): never =>
+        new Proxy({}, {
+          get(_t, key) {
+            if (typeof key !== 'string' || !Object.hasOwn(plan, key)) return undefined;
+            const n = reads.get(key) ?? 0;
+            reads.set(key, n + 1);
+            const p = plan[key] ?? [];
+            return p[Math.min(n, p.length - 1)];
+          },
+        }) as never;
+      const intentAt = (step: number): Id => {
+        const intent = recordToolIntent(h.store, claim.fence, { toolCode: 'mailer', actionCode: 'send', args: {}, idempotencyKey: `wi:${wi}:s${step}` });
+        if (intent.kind !== 'EXECUTE') throw new Error(intent.kind);
+        return intent.invocationId;
+      };
+      const password = j('fake-', body(24));
+      // 1. `ok` that flips true → false between reads: one decision, one read; the UNSAFE effect's money is
+      //    settled with the success it reported, never released as "not executed".
+      const flip = intentAt(0);
+      assert.equal(recordToolResult(h.store, claim.fence, flip, hostile({ ok: [true, false], result: [{ delivered: true }], code: ['LATER'], sent: ['NO'] })), 'SUCCEEDED');
+      for (const [k, n] of reads) assert.ok(n <= 1, `ok-flip: ${k} read ${n} times`);
+      const flipped = s.gov.toolInvocations(wi).find((x) => x.id === flip);
+      assert.equal(flipped?.state, 'SUCCEEDED');
+      assert.notEqual(s.gov.reservations(claim.fence.runId).find((r) => r.id === flipped?.reservationId)?.state, 'RELEASED', 'the money of an executed UNSAFE effect is never released');
+      // 2. A result that names a credential on the first read and not on a later one: the stored value is guarded.
+      reads.clear();
+      const shifting = intentAt(1);
+      recordToolResult(h.store, claim.fence, shifting, hostile({ ok: [true], result: [{ password }, { note: 'ok' }, { note: 'ok' }] }));
+      for (const [k, n] of reads) assert.ok(n <= 1, `shifting result: ${k} read ${n} times`);
+      const stored = s.gov.toolInvocations(wi).find((x) => x.id === shifting)?.result as Record<string, unknown>;
+      assert.equal(stored['withheld'], 'SECRET_MATERIAL');
+      assert.ok(!JSON.stringify(stored).includes(password), 'no credential value is stored');
+      // 3. A secret-shaped failure code never reaches the invocation record or the audit trail (m-17).
+      const akia = j('AKIA', 'QX7'.padEnd(16, 'Q'));
+      const coded = intentAt(2);
+      assert.equal(recordToolResult(h.store, claim.fence, coded, { ok: false, code: akia, sent: 'NO' }), 'RETRYABLE');
+      assert.equal(s.gov.toolInvocations(wi).find((x) => x.id === coded)?.failureCode, 'DRIVER_FAILURE');
+      const audit = storeContext(h.store).db.all<{ r: string | null }>('SELECT reason_code AS r FROM audit_events WHERE entity_id = ?', coded);
+      assert.ok(audit.length > 0 && audit.every((a) => !String(a.r).includes('AKIA')), 'no secret-shaped code in the audit trail');
+    });
+  });
+
   test('a secret in a memory candidate\'s claim value is refused without keeping any content', () => {
     withSeed((h, s) => {
       const c = claimFor(h, workItem(h, s, s.employee)).claim;

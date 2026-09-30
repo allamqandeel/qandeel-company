@@ -617,8 +617,39 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
 
 export type ToolDriverOutcome = { readonly ok: true; readonly result: JsonObject } | { readonly ok: false; readonly code: string; readonly sent: 'NO' | 'UNKNOWN' };
 
+/** True when a serialized result names credential material in any key (the step-result guard's pattern). */
+function keyedSecretJson(json: string): boolean {
+  try {
+    return hasSecretNamedKey(JSON.parse(json));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reads the outcome's fields exactly once (R2-10, defence in depth behind the runtime's tool boundary): every
+ * decision below — the state, the money, the stored result and its secret guard, the audit code — uses these
+ * captured values, never the caller's object again. A failure code carrying secret material is never stored.
+ */
+function captureToolOutcome(outcome: ToolDriverOutcome): { ok: true; result: unknown } | { ok: false; code: string; sent: 'NO' | 'UNKNOWN' } {
+  const unknown = { ok: false as const, code: 'DRIVER_OUTCOME_UNKNOWN', sent: 'UNKNOWN' as const };
+  try {
+    const ok: unknown = outcome.ok;
+    if (ok === true) return { ok: true, result: (outcome as { result?: unknown }).result };
+    if (ok !== false) return unknown;
+    const o = outcome as { code?: unknown; sent?: unknown };
+    const code = o.code;
+    const sent = o.sent;
+    const safe = typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) && !containsSecretMaterial(code) ? code : 'DRIVER_FAILURE';
+    return { ok: false, code: safe, sent: sent === 'NO' ? 'NO' : 'UNKNOWN' };
+  } catch {
+    return unknown;
+  }
+}
+
 /** Records a driver's result (truthful: accepted from the same worker even after lease expiry). */
-export function txToolResult(ctx: StoreContext, fence: Fence, invocationId: Id, outcome: ToolDriverOutcome): ToolInvocationRecord['state'] {
+export function txToolResult(ctx: StoreContext, fence: Fence, invocationId: Id, input: ToolDriverOutcome): ToolInvocationRecord['state'] {
+  const outcome = captureToolOutcome(input);
   const inv = mapToolInvocation(ctx.db.get('SELECT * FROM tool_invocations WHERE id = ?', invocationId) ?? {});
   if (inv.runId !== fence.runId || Number(ctx.db.get<{ t: number }>('SELECT fencing_token AS t FROM tool_invocations WHERE id = ?', invocationId)?.t) !== fence.fencingToken) {
     throw new QandeelError('STALE_LEASE', 'this invocation belongs to another run or worker', { invocationId });
@@ -632,8 +663,9 @@ export function txToolResult(ctx: StoreContext, fence: Fence, invocationId: Id, 
     try {
       json = canonicalJson(outcome.result);
       // Secret material in a driver's result never enters ordinary SQLite state (Stage 12 §23, Stage 14;
-      // R1-01): the invocation keeps only a digest, exactly as the step result already did.
-      if (hasSecretNamedKey(outcome.result) || containsSecretMaterial(json)) json = canonicalJson({ withheld: 'SECRET_MATERIAL', sha256: sha256Hex(json) });
+      // R1-01): the invocation keeps only a digest, exactly as the step result already did. Both guards judge
+      // the SERIALIZED value — the one that is stored — never a second read of the driver's object (R2-10).
+      if (keyedSecretJson(json) || containsSecretMaterial(json)) json = canonicalJson({ withheld: 'SECRET_MATERIAL', sha256: sha256Hex(json) });
       else if (Buffer.byteLength(json, 'utf8') > 4096) json = canonicalJson({ truncated: true, sha256: sha256Hex(json) });
     } catch {
       json = canonicalJson({ invalid: true });

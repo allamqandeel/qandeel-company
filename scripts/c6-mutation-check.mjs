@@ -67,8 +67,15 @@ const MUTATIONS = [
   {
     id: 'c6-tool-failure-unmapped',
     gate: 'a run that failed because its tool did not execute is TOOL evidence (read from the run\'s recorded failure)',
-    edits: [{ file: `${STORAGE}/improvement-core.js`, search: "'TOOL_FAILED', 'TOOL_NOT_EXECUTED',", replace: "'TOOL_FAILED',", expectedCount: 1 }],
+    // The cause families live in the one run-failure vocabulary C6 classifies from (R2-12).
+    edits: [{ file: `${GOV}/run-failures.js`, search: "TOOL_NOT_EXECUTED: 'TOOL',", replace: 'TOOL_NOT_EXECUTED: null,', expectedCount: 1 }],
     runs: [STORE],
+  },
+  {
+    id: 'c6-config-cause-blamed-on-provider',
+    gate: 'a run that failed for a missing route policy records that cause and is WORKFLOW evidence, never the provider (R2-12)',
+    edits: [{ file: `${GOV}/run-failures.js`, search: "case 'NO_ROUTE_POLICY':\n            return 'NO_ROUTE_POLICY';\n", replace: '', expectedCount: 1 }],
+    runs: [SIGNAL],
   },
   {
     id: 'c6-non-employee-negative-counted',
