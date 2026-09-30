@@ -7,7 +7,8 @@
  *   minimum sample a dimension is INSUFFICIENT_EVIDENCE, and a trend needs enough comparable evidence in both
  *   halves of the window (otherwise TREND_NOT_ESTABLISHED).
  * - A negative verdict counts against the Employee only when a VALIDATED attribution makes them accountable;
- *   a validated non-employee cause is excluded; an unattributed negative is pending, not counted.
+ *   a validated non-employee cause is excluded; an unattributed negative is pending, not counted — and never
+ *   counted as clean: pending adverse evidence is disclosed, withholds a level it outweighs and holds readiness.
  * - Capability (a newly demonstrated class of work) and regression (a lost one) are separate lists.
  * - READY_FOR_GREATER_RESPONSIBILITY_REVIEW is evidence for a governed human decision, never a promotion.
  * - Activity counts are carried as labelled observability, never read by a dimension.
@@ -27,8 +28,11 @@ export interface EvaluationFact {
   readonly evidenceState: EvidenceState;
   readonly qualifiedOutcome: boolean;
   readonly verdicts: Readonly<Partial<Record<ItemDimension, Verdict>>>;
-  readonly cost: { readonly productiveMicros: number; readonly overheadMicros: number };
+  /** Economic micros (what the budget ledger charges); `billedMicros` is the provider bill, reporting only (R2-20). */
+  readonly cost: { readonly productiveMicros: number; readonly overheadMicros: number; readonly billedMicros?: number };
   readonly activity: { readonly messages: number; readonly toolCalls: number; readonly tokens: number; readonly runs: number };
+  /** When the work itself started (its first run, else its creation) — not when it was evaluated (R2-15). */
+  readonly workStartedAt?: string;
 }
 
 /** The validated attribution of a Work Item, when one exists. */
@@ -63,9 +67,13 @@ export interface DimensionProfile {
   readonly neutral: number;
   /** Negatives whose validated cause is not the Employee (never counted against them). */
   readonly excludedNonEmployee: number;
-  /** Negatives without a validated attribution yet (not counted; uncertainty). */
+  /**
+   * Negatives without a validated attribution (unattributed, PROPOSED or REJECTED): not counted against the
+   * Employee (D-C6-03), but never counted as clean either — disclosed, and they hold readiness (R2-18).
+   */
   readonly pendingAttribution: number;
-  /** Qualitative level, only with sufficient evidence. */
+  readonly pendingEvidenceRefs: readonly string[];
+  /** Qualitative level, only with sufficient evidence — and none while pending adverse evidence outweighs it. */
   readonly level: ProfileLevel | null;
   readonly confidence: Confidence;
   readonly trend: Trend;
@@ -108,6 +116,7 @@ const DAY_MS = 86_400_000;
 const confidenceOf = (n: number): Confidence => (n >= 10 ? 'HIGH' : n >= 5 ? 'MEDIUM' : 'LOW');
 const levelOf = (positive: number, sample: number): ProfileLevel => (positive * 5 >= sample * 4 ? 'STRONG' : positive * 2 >= sample ? 'ADEQUATE' : 'WEAK');
 const RISK_RANK: Record<RiskLevel, number> = { R0: 0, R1: 1, R2: 2, R3: 3, R4: 4 };
+const ITEM_DIMENSION_SET: ReadonlySet<PerformanceDimension> = new Set(['OUTCOME', 'QUALITY', 'JUDGMENT', 'EFFICIENCY', 'INITIATIVE', 'INDEPENDENCE']);
 
 type Counted = { fact: EvaluationFact; kind: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' };
 
@@ -131,6 +140,7 @@ function itemDimension(dimension: ItemDimension, facts: readonly EvaluationFact[
   let pending = 0;
   let conflicting = 0;
   const refs: string[] = [];
+  const pendingRefs: string[] = [];
   for (const f of facts) {
     if (f.evidenceState === 'CONFLICTING_EVIDENCE') conflicting++;
     if (f.evidenceState !== 'SUFFICIENT_EVIDENCE') continue;
@@ -140,6 +150,7 @@ function itemDimension(dimension: ItemDimension, facts: readonly EvaluationFact[
       const a = attribution.get(f.workItemId);
       if (a === undefined || a.state !== 'VALIDATED') {
         pending++;
+        pendingRefs.push(`evaluation:${f.evaluationId}`);
         continue;
       }
       if (!a.employeeAccountable) {
@@ -154,6 +165,8 @@ function itemDimension(dimension: ItemDimension, facts: readonly EvaluationFact[
   const negative = counted.filter((c) => c.kind === 'NEGATIVE').length;
   const sample = counted.length;
   const state: EvidenceState = conflicting > 0 && conflicting * 3 >= Math.max(1, sample + conflicting) ? 'CONFLICTING_EVIDENCE' : sample < min.minSample ? 'INSUFFICIENT_EVIDENCE' : 'SUFFICIENT_EVIDENCE';
+  // R2-18: at least as much pending adverse evidence as counted evidence — no level and no direction is claimed.
+  const outweighed = pending > 0 && pending >= sample;
   return {
     dimension,
     state,
@@ -163,9 +176,10 @@ function itemDimension(dimension: ItemDimension, facts: readonly EvaluationFact[
     neutral: sample - positive - negative,
     excludedNonEmployee: excluded,
     pendingAttribution: pending,
-    level: state === 'SUFFICIENT_EVIDENCE' ? levelOf(positive, sample) : null,
+    pendingEvidenceRefs: pendingRefs.slice(0, 50),
+    level: state === 'SUFFICIENT_EVIDENCE' && !outweighed ? levelOf(positive, sample) : null,
     confidence: confidenceOf(sample),
-    trend: state === 'SUFFICIENT_EVIDENCE' ? trendOf(counted, min.minTrendSample) : 'TREND_NOT_ESTABLISHED',
+    trend: state === 'SUFFICIENT_EVIDENCE' && !outweighed ? trendOf(counted, min.minTrendSample) : 'TREND_NOT_ESTABLISHED',
     evidenceRefs: refs.slice(0, 50),
   };
 }
@@ -184,6 +198,7 @@ function learningVelocity(effects: ProfileInput['learningEffects']): DimensionPr
     neutral: 0,
     excludedNonEmployee: 0,
     pendingAttribution: effects.length - tested.length,
+    pendingEvidenceRefs: [],
     level: state === 'SUFFICIENT_EVIDENCE' ? levelOf(positive, tested.length) : null,
     confidence: confidenceOf(tested.length),
     trend: 'TREND_NOT_ESTABLISHED',
@@ -191,6 +206,11 @@ function learningVelocity(effects: ProfileInput['learningEffects']): DimensionPr
   };
 }
 
+/**
+ * System contribution: validated patterns, verified reuses of the Employee's pattern by OTHER Employees (the store
+ * supplies only those — reusing one's own pattern is not a contribution to the system, R2-16) and validated
+ * systemic findings the Employee reported.
+ */
 function systemContribution(c: ContributionFact): DimensionProfile {
   const refs = [...c.validatedPatterns.map((id) => `lesson:${id}`), ...c.verifiedPatternReuses.map((id) => `learning_intervention:${id}`), ...c.validatedSystemicFindings.map((id) => `systemic_finding:${id}`)];
   const n = refs.length;
@@ -204,6 +224,7 @@ function systemContribution(c: ContributionFact): DimensionProfile {
     neutral: 0,
     excludedNonEmployee: 0,
     pendingAttribution: 0,
+    pendingEvidenceRefs: [],
     level: n === 0 ? null : n >= 3 ? 'STRONG' : 'ADEQUATE',
     confidence: confidenceOf(n),
     trend: 'TREND_NOT_ESTABLISHED',
@@ -246,6 +267,8 @@ export interface CostPerQualifiedOutcome {
   readonly productiveMicros: number;
   /** Retries, fallbacks, escalations, failed charged calls and rework. */
   readonly overheadMicros: number;
+  /** The provider bill of the same work (reporting only; the costs above are economic, R2-20). */
+  readonly billedMicros: number;
   /** Total cost (productive + overhead, including failed and unqualified work) per qualified outcome; null when none. */
   readonly costPerQualifiedOutcomeMicros: number | null;
   readonly state: 'DEFINED' | 'NO_QUALIFIED_OUTCOME';
@@ -267,6 +290,7 @@ export function costPerQualifiedOutcome(facts: readonly EvaluationFact[]): CostP
     totalCostMicros: total,
     productiveMicros: productive,
     overheadMicros: overhead,
+    billedMicros: facts.reduce((s, f) => s + (f.cost.billedMicros ?? 0), 0),
     costPerQualifiedOutcomeMicros: qualified > 0 ? Math.ceil(total / qualified) : null,
     state: qualified > 0 ? 'DEFINED' : 'NO_QUALIFIED_OUTCOME',
   };
@@ -283,8 +307,11 @@ function readinessOf(dims: readonly DimensionProfile[], regressions: readonly Ca
   const d = (k: PerformanceDimension): DimensionProfile => dimensionOf(dims, k);
   const outcome = d('OUTCOME');
   const quality = d('QUALITY');
-  if (outcome.state !== 'SUFFICIENT_EVIDENCE' || quality.state !== 'SUFFICIENT_EVIDENCE') return { signal: 'INSUFFICIENT_EVIDENCE', reasons: ['OUTCOME_OR_QUALITY_EVIDENCE_INSUFFICIENT'], isDecision: false };
-  const reasons: string[] = [];
+  // R2-18: adverse evidence whose cause is not validated is not counted against the Employee, but it is never
+  // counted as clean: while any is pending, no readiness is signalled.
+  const pending = dims.some((x) => ITEM_DIMENSION_SET.has(x.dimension) && x.pendingAttribution > 0) ? ['ADVERSE_EVIDENCE_PENDING_ATTRIBUTION'] : [];
+  if (outcome.state !== 'SUFFICIENT_EVIDENCE' || quality.state !== 'SUFFICIENT_EVIDENCE') return { signal: 'INSUFFICIENT_EVIDENCE', reasons: ['OUTCOME_OR_QUALITY_EVIDENCE_INSUFFICIENT', ...pending], isDecision: false };
+  const reasons: string[] = [...pending];
   if (outcome.level !== 'STRONG') reasons.push('OUTCOMES_NOT_CONSISTENTLY_QUALIFIED');
   if (quality.level !== 'STRONG') reasons.push('QUALITY_NOT_STABLE');
   if (d('JUDGMENT').accountableNegative > 0) reasons.push('ACCOUNTABLE_JUDGMENT_FAILURE');

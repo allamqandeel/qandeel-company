@@ -63,14 +63,24 @@ export function gatherWorkEvidence(ctx: StoreContext, workItemId: Id): { evidenc
   const openConflict = ctx.db.get(`SELECT 1 AS x FROM review_conflicts c JOIN review_requests r ON r.id = c.request_id WHERE r.work_item_id = ? AND c.state = 'OPEN'`, workItemId) !== undefined;
 
   const runs = ctx.db.all<{ id: string; state: string; attempt: number; failure_code: string | null }>('SELECT id, state, attempt, failure_code FROM runs WHERE work_item_id = ? ORDER BY started_at, run_seq', workItemId);
-  const codeCount = (codes: readonly string[]): number => runs.filter((r) => r.failure_code !== null && codes.includes(r.failure_code)).length;
-  const toolRows = ctx.db.all<{ state: string; code: string }>(
-    `SELECT i.state, a.code FROM tool_invocations i JOIN tool_actions a ON a.id = i.tool_action_id WHERE i.work_item_id = ? ORDER BY i.created_at, i.id`,
+  // R2-13: a failure is RECOVERED when a later run of the same Work Item succeeded (the retry got past it); a
+  // permanent failure, or a failed attempt no successful run followed, is UNRECOVERED — only those can cause the
+  // outcome. A failure inside a run that itself succeeded was handled by that run.
+  const lastSuccess = runs.map((r) => r.state).lastIndexOf('SUCCEEDED');
+  const unrecoveredRuns = new Set(runs.filter((r, i) => r.state !== 'SUCCEEDED' && (r.state === 'FAILED_PERMANENT' || i > lastSuccess)).map((r) => r.id));
+  const unrecoveredRun = (runId: string): boolean => unrecoveredRuns.has(runId) || !runs.some((r) => r.id === runId);
+  const codeCount = (codes: readonly string[], recovered = false): number => runs.filter((r) => r.failure_code !== null && codes.includes(r.failure_code) && unrecoveredRun(r.id) !== recovered).length;
+  const anyRunCode = (codes: readonly string[]): number => runs.filter((r) => r.failure_code !== null && codes.includes(r.failure_code)).length;
+  const toolRows = ctx.db.all<{ state: string; code: string; run_id: string }>(
+    `SELECT i.state, a.code, i.run_id FROM tool_invocations i JOIN tool_actions a ON a.id = i.tool_action_id WHERE i.work_item_id = ? ORDER BY i.created_at, i.id`,
     workItemId,
   );
-  const contextFailures = n(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM context_manifests WHERE work_item_id = ? AND outcome <> 'OK'`, workItemId)?.n);
-  const usage = ctx.db.all<{ attempt_kind: string; outcome: string; billed_micros: number; charged_tokens: number; created_at: string }>(
-    'SELECT attempt_kind, outcome, billed_micros, charged_tokens, created_at FROM usage_records WHERE work_item_id = ? ORDER BY created_at, id',
+  const failedTools = toolRows.filter((t) => t.state === 'FAILED');
+  const contextFailed = ctx.db.all<{ run_id: string }>(`SELECT run_id FROM context_manifests WHERE work_item_id = ? AND outcome <> 'OK'`, workItemId);
+  // R2-20: the cost buckets are ECONOMIC micros — what the budget ledger charges (D13-G.3 / G.8); a subscription or
+  // free route bills 0 but is not free work. The bill is carried separately (reporting only).
+  const usage = ctx.db.all<{ attempt_kind: string; outcome: string; billed_micros: number; economic_micros: number; charged_tokens: number; created_at: string }>(
+    'SELECT attempt_kind, outcome, billed_micros, economic_micros, charged_tokens, created_at FROM usage_records WHERE work_item_id = ? ORDER BY created_at, id',
     workItemId,
   );
   const firstRework = ctx.db.get<{ at: string | null }>(`SELECT MIN(h.occurred_at) AS at FROM review_request_history h JOIN review_requests r ON r.id = h.request_id WHERE r.work_item_id = ? AND h.to_state = 'REWORK'`, workItemId)?.at ?? null;
@@ -81,8 +91,10 @@ export function gatherWorkEvidence(ctx: StoreContext, workItemId: Id): { evidenc
   let failedCharged = 0;
   let reworkCost = 0;
   let tokens = 0;
+  let billed = 0;
   for (const u of usage) {
-    const m = n(u.billed_micros);
+    const m = n(u.economic_micros);
+    billed += n(u.billed_micros);
     tokens += n(u.charged_tokens);
     if (u.outcome === 'FAILED_CHARGED') failedCharged += m;
     else if (firstRework !== null && u.created_at > firstRework) reworkCost += m;
@@ -125,22 +137,30 @@ export function gatherWorkEvidence(ctx: StoreContext, workItemId: Id): { evidenc
     review: { pass: count('PASS'), fail: count('FAIL'), uncertain: count('UNCERTAIN'), insufficient: count('INSUFFICIENT_EVIDENCE'), rework, openConflict },
     runs: { total: runs.length, failed: runs.filter((r) => r.state === 'FAILED_PERMANENT' || r.state === 'FAILED_RETRYABLE').length, retried: runs.filter((r) => r.attempt > 1).length },
     failures: {
-      tool: codeCount(TOOL_CODES) + toolRows.filter((t) => t.state === 'FAILED').length,
+      tool: codeCount(TOOL_CODES) + failedTools.filter((t) => unrecoveredRun(t.run_id)).length,
       // A cause is read from the run's own recorded failure classification. A FAILED_CHARGED usage row says a
       // call was billed and failed — not why (it may be the call in flight when a tool failure failed the run):
       // it is cost overhead (failedChargedMicros), never by itself a provider cause.
       provider: codeCount(PROVIDER_CODES),
       model: codeCount(MODEL_CODES),
-      context: codeCount(CONTEXT_CODES) + contextFailures,
+      context: codeCount(CONTEXT_CODES) + contextFailed.filter((c) => unrecoveredRun(c.run_id)).length,
       external: 0, // No governed external-outcome source exists before C7.
       workflow: codeCount(WORKFLOW_CODES),
-      requirementChanged: codeCount(REQUIREMENT_CODES) > 0 || w.state === 'SUPERSEDED',
+      requirementChanged: anyRunCode(REQUIREMENT_CODES) > 0 || w.state === 'SUPERSEDED',
+    },
+    recoveredFailures: {
+      tool: codeCount(TOOL_CODES, true) + failedTools.filter((t) => !unrecoveredRun(t.run_id)).length,
+      provider: codeCount(PROVIDER_CODES, true),
+      model: codeCount(MODEL_CODES, true),
+      context: codeCount(CONTEXT_CODES, true) + contextFailed.filter((c) => !unrecoveredRun(c.run_id)).length,
+      workflow: codeCount(WORKFLOW_CODES, true),
     },
     interventions: { escalations, correctEscalations, founder: founderInterventions },
-    authorityRefusals: codeCount(BOUNDARY_CODES),
+    // A boundary refusal is the Employee's own act, recovered from or not.
+    authorityRefusals: anyRunCode(BOUNDARY_CODES),
     gateCatches,
     route: { planned, taken },
-    cost: { productiveMicros: productive, retryMicros: retry, fallbackMicros: fallback, escalationMicros: escalation, failedChargedMicros: failedCharged, reworkMicros: reworkCost },
+    cost: { productiveMicros: productive, retryMicros: retry, fallbackMicros: fallback, escalationMicros: escalation, failedChargedMicros: failedCharged, reworkMicros: reworkCost, billedMicros: billed },
     activity: { messages, toolCalls: toolRows.length, tokens, runs: runs.length },
     evidenceClasses: [...classes],
   };
@@ -162,9 +182,13 @@ interface EvalRow {
   dimensions_json: string;
   cost_json: string;
   observability_json: string;
+  work_started_at: string;
 }
 
-export function toEvaluationFact(r: EvalRow): EvaluationFact {
+/** A stored evaluation with the time its work started (R2-15). */
+export type StoredEvaluationFact = EvaluationFact & { readonly workStartedAt: string };
+
+export function toEvaluationFact(r: EvalRow): StoredEvaluationFact {
   const dims = JSON.parse(r.dimensions_json) as { dimension: ItemDimension; verdict: Verdict }[];
   const cost = JSON.parse(r.cost_json) as Record<string, number>;
   const obs = JSON.parse(r.observability_json) as Record<string, number>;
@@ -178,25 +202,36 @@ export function toEvaluationFact(r: EvalRow): EvaluationFact {
     evidenceState: r.evidence_state as EvaluationFact['evidenceState'],
     qualifiedOutcome: r.qualified_outcome === 1,
     verdicts: Object.fromEntries(dims.map((d) => [d.dimension, d.verdict])),
-    cost: { productiveMicros: n(cost.productiveMicros), overheadMicros: overhead },
+    cost: { productiveMicros: n(cost.productiveMicros), overheadMicros: overhead, billedMicros: n(cost.billedMicros) },
     activity: { messages: n(obs.messages), toolCalls: n(obs.toolCalls), tokens: n(obs.tokens), runs: n(obs.runs) },
+    workStartedAt: r.work_started_at,
   };
 }
 
-const LIVE_EVALS = 'SELECT id, work_item_id, comparable_key, risk_level, created_at, evidence_state, qualified_outcome, dimensions_json, cost_json, observability_json FROM evaluation_results WHERE superseded_by IS NULL';
+/**
+ * R2-14: the unit of evidence is the Work Item. Of its live evaluations (one per definition — several versions of
+ * a code in a database written before the fix, or several codes), only the LATEST speaks for it in every profile,
+ * report, economics and health read.
+ */
+export const LATEST_LIVE_EVALUATION = `e.superseded_by IS NULL AND NOT EXISTS (SELECT 1 FROM evaluation_results n WHERE n.work_item_id = e.work_item_id AND n.superseded_by IS NULL AND (n.created_at > e.created_at OR (n.created_at = e.created_at AND n.rowid > e.rowid)))`;
 
-export function liveEvaluations(ctx: StoreContext, filter: { employeeId?: Id; departmentId?: Id; from?: string; to?: string; workItemIds?: readonly Id[] } = {}): EvaluationFact[] {
+// R2-15: when the work itself started — its first run, else its creation — never the evaluation's time.
+const LIVE_EVALS = `SELECT e.id, e.work_item_id, e.comparable_key, e.risk_level, e.created_at, e.evidence_state, e.qualified_outcome, e.dimensions_json, e.cost_json, e.observability_json,
+  COALESCE((SELECT MIN(r.started_at) FROM runs r WHERE r.work_item_id = e.work_item_id), (SELECT w.created_at FROM work_items w WHERE w.id = e.work_item_id)) AS work_started_at
+  FROM evaluation_results e WHERE ${LATEST_LIVE_EVALUATION}`;
+
+export function liveEvaluations(ctx: StoreContext, filter: { employeeId?: Id; departmentId?: Id; from?: string; to?: string; workItemIds?: readonly Id[] } = {}): StoredEvaluationFact[] {
   const clauses: string[] = [];
   const params: string[] = [];
   const add = (clause: string, value: string): void => {
     clauses.push(clause);
     params.push(value);
   };
-  if (filter.employeeId !== undefined) add('employee_id = ?', filter.employeeId);
-  if (filter.departmentId !== undefined) add('department_id = ?', filter.departmentId);
-  if (filter.from !== undefined) add('created_at >= ?', filter.from);
-  if (filter.to !== undefined) add('created_at <= ?', filter.to);
-  const rows = ctx.db.all(`${LIVE_EVALS}${clauses.length ? ` AND ${clauses.join(' AND ')}` : ''} ORDER BY created_at DESC, rowid DESC LIMIT 5000`, ...params) as unknown as EvalRow[];
+  if (filter.employeeId !== undefined) add('e.employee_id = ?', filter.employeeId);
+  if (filter.departmentId !== undefined) add('e.department_id = ?', filter.departmentId);
+  if (filter.from !== undefined) add('e.created_at >= ?', filter.from);
+  if (filter.to !== undefined) add('e.created_at <= ?', filter.to);
+  const rows = ctx.db.all(`${LIVE_EVALS}${clauses.length ? ` AND ${clauses.join(' AND ')}` : ''} ORDER BY e.created_at DESC, e.rowid DESC LIMIT 5000`, ...params) as unknown as EvalRow[];
   // The newest 5000 live evaluations, returned oldest first (a bound that never drops recent evidence).
   rows.reverse();
   const set = filter.workItemIds ? new Set(filter.workItemIds) : null;
@@ -210,20 +245,31 @@ export function attributionFacts(ctx: StoreContext, employeeId?: Id): { workItem
   return rows.map((r) => ({ workItemId: r.work_item_id, state: r.state as 'PROPOSED' | 'VALIDATED', employeeAccountable: r.employee_accountable === 1, overall: r.overall }));
 }
 
-export function validatedAttributionFacts(ctx: StoreContext): ValidatedAttributionFact[] {
+/** A validated attribution with the time it was decided (a VALIDATED row is not updated again while it stays VALIDATED). */
+export type DecidedAttributionFact = ValidatedAttributionFact & { readonly decidedAt: string };
+
+export function validatedAttributionFacts(ctx: StoreContext): DecidedAttributionFact[] {
   return ctx.db
-    .all<{ id: string; work_item_id: string; employee_id: string | null; comparable_key: string; overall: string; causes_json: string }>(`SELECT id, work_item_id, employee_id, comparable_key, overall, causes_json FROM causal_attributions WHERE state = 'VALIDATED' ORDER BY created_at, id`)
-    .map((r) => ({ attributionId: r.id, workItemId: r.work_item_id, employeeId: r.employee_id, comparableKey: r.comparable_key, overall: r.overall as ValidatedAttributionFact['overall'], causes: JSON.parse(r.causes_json) as ValidatedAttributionFact['causes'] }));
+    .all<{ id: string; work_item_id: string; employee_id: string | null; comparable_key: string; overall: string; causes_json: string; updated_at: string }>(`SELECT id, work_item_id, employee_id, comparable_key, overall, causes_json, updated_at FROM causal_attributions WHERE state = 'VALIDATED' ORDER BY created_at, id`)
+    .map((r) => ({ attributionId: r.id, workItemId: r.work_item_id, employeeId: r.employee_id, comparableKey: r.comparable_key, overall: r.overall as ValidatedAttributionFact['overall'], causes: JSON.parse(r.causes_json) as ValidatedAttributionFact['causes'], decidedAt: r.updated_at }));
 }
 
-/** Evaluations with the causes validated as the Employee's (for learning-effect assessment). */
+/**
+ * Evaluations with the causes validated as the Employee's (for learning-effect assessment), each with the time its
+ * work started (R2-15) and the state of its attribution (R2-17: live PROPOSED / VALIDATED, else REJECTED, else NONE).
+ */
 export function followupFacts(ctx: StoreContext, employeeId: Id, comparableKey: string): FollowupFact[] {
   const accountable = new Map<string, DirectCause[]>();
   for (const r of ctx.db.all<{ work_item_id: string; causes_json: string }>(`SELECT work_item_id, causes_json FROM causal_attributions WHERE state = 'VALIDATED' AND employee_accountable = 1 AND employee_id = ?`, employeeId)) {
     const causes = JSON.parse(r.causes_json) as { category: DirectCause; role: string }[];
     accountable.set(r.work_item_id, causes.filter((c) => c.role === 'PRIMARY').map((c) => c.category));
   }
+  const attribution = new Map<string, FollowupFact['attributionState']>();
+  for (const r of ctx.db.all<{ work_item_id: string; state: string }>(`SELECT work_item_id, state FROM causal_attributions WHERE employee_id = ? AND state IN ('PROPOSED', 'VALIDATED', 'REJECTED')`, employeeId)) {
+    const live = r.state === 'PROPOSED' || r.state === 'VALIDATED';
+    if (live || !attribution.has(r.work_item_id)) attribution.set(r.work_item_id, r.state as FollowupFact['attributionState']);
+  }
   return liveEvaluations(ctx, { employeeId })
     .filter((f) => f.comparableKey === comparableKey)
-    .map((f) => ({ ...f, accountableCauses: accountable.get(f.workItemId) ?? [] }));
+    .map((f) => ({ ...f, attributionState: attribution.get(f.workItemId) ?? 'NONE', accountableCauses: accountable.get(f.workItemId) ?? [] }));
 }
