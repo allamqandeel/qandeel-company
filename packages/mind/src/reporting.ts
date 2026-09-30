@@ -176,6 +176,12 @@ function monthlyClaims(f: ReportFacts): Claim[] {
     if (pendingRefs.length > 0) {
       claims.push(fact('ADVERSE_EVIDENCE_PENDING_ATTRIBUTION', { kind: 'EMPLOYEE', id: p.employeeId }, { pendingOutcome: dimensionOf(p.dimensions, 'OUTCOME').pendingAttribution, pendingQuality: dimensionOf(p.dimensions, 'QUALITY').pendingAttribution, items: pendingRefs.length }, pendingRefs.slice(0, 100)));
     }
+    // RR3: adverse evidence whose proposed cause was rejected (no accountable cause established) is decided — never
+    // pending, never counted against the Employee — and still disclosed, never hidden behind a clean profile.
+    const unattributedRefs = [...new Set(p.dimensions.flatMap((d) => d.unattributedEvidenceRefs))];
+    if (unattributedRefs.length > 0) {
+      claims.push(fact('ADVERSE_EVIDENCE_WITHOUT_ACCOUNTABLE_CAUSE', { kind: 'EMPLOYEE', id: p.employeeId }, { outcome: dimensionOf(p.dimensions, 'OUTCOME').unattributedAdverse, quality: dimensionOf(p.dimensions, 'QUALITY').unattributedAdverse, items: unattributedRefs.length }, unattributedRefs.slice(0, 100)));
+    }
     const contribution = dimensionOf(p.dimensions, 'SYSTEM_CONTRIBUTION');
     if (contribution.positive > 0) claims.push(fact('SYSTEM_CONTRIBUTION', { kind: 'EMPLOYEE', id: p.employeeId }, { count: contribution.positive }, contribution.evidenceRefs));
   }

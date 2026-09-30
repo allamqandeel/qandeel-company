@@ -341,6 +341,8 @@ const MUTATION_PINS = {
       // R2 (cluster K4): evidence identity, work time, pending causes, recovered failures, economic cost.
       'c6-recovered-failure-is-the-cause', 'c6-work-item-counted-per-definition', 'c6-pre-training-work-counts-as-later', 'c6-pending-recurrence-ignored', 'c6-pattern-reuse-evidence-reused', 'c6-self-reuse-credited',
       'c6-pending-adverse-reads-clean', 'c6-disputed-cause-dead-end', 'c6-decided-finding-silences-recurrence', 'c6-retraining-exhaustion-swallowed', 'c6-billed-cost-as-economic', 'c6-zero-cost-efficient',
+      // R2 second wave (cluster Q3): one meaning of adverse evidence in every attribution state (RR3).
+      'c6-rejected-cause-pending-forever', 'c6-rejected-cause-reads-clean', 'c6-rejected-attribution-unread', 'c6-corrected-causes-dropped', 'c6-non-adverse-negative-pending', 'c6-post-training-recurrence-excluded',
       // C6-R1: operational judgment through the Review Pool; verification authority is never execution authority.
       'c6r1-ordinary-outcome-founder-only', 'c6r1-r4-judged-by-pool', 'c6r1-founder-key-pool-judgment', 'c6r1-outcome-conflict-averaged', 'c6r1-pass-verifies-without-judgment', 'c6r1-uncertainty-validates',
       'c6r1-self-judgment', 'c6r1-judge-eligibility-not-rechecked', 'c6r1-validated-lesson-shared-company-wide', 'c6r1-judgment-budget-inflated', 'c6r1-judgment-raises-budget',
