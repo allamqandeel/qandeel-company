@@ -771,6 +771,7 @@ describe('R2-12: one run-failure vocabulary — the runtime records the real cau
       orgAct: () => ({ outcome: 'DONE', code: 'OK', after: 'CONTINUE', paused: false }),
       submitReviewDecision: () => ({ outcome: 'RECORDED', code: 'OK' }),
       openHandoffs: () => 0,
+      clarificationsRequested: () => 0,
       sendMessage: () => ({ outcome: 'RECORDED', code: 'OK', messageId: null }),
       goalAct: () => ({ outcome: 'DONE', code: 'OK', resultRef: null }),
       ...over,
