@@ -484,3 +484,33 @@ rule this is the **second and last** correction cycle for each of them: one arch
 family (§14), then a focused re-verification. A third recurrence of any of these families stops R2 and returns it
 to the Technical Lead / Founder as an architecture problem. MINORs are fixed only where narrow and in the same root
 change (RR2-3, RR2-5, RR2-6 vocabulary, RR1-3, RR3-F, RR4-2, RR4-3); the rest are residuals.
+
+*Amended by Product Owner direction during the second wave: MINORs are fixed only when directly part of the same
+root cause as a MAJOR of the wave — so RR2-5 (same seam as RR2-2) and RR3-F (the RR3-A semantics) were fixed, and
+RR2-3, RR2-6, RR1-3, RR4-2 and RR4-3 stay residuals (§15).*
+
+## 14. Second (and last) correction wave
+
+Scope locked by the Product Owner after RR1: no new finders; every BLOCKER / MAJOR of the re-review in one coherent
+wave; MINORs only when part of the same root cause. Four clusters in isolated worktrees from `989e9fe`, each fixing
+the **mechanism** of its family (not the one symptom), each proof failing before its fix; merged into
+`review/r2-full-strong-v1` as `a56bc06`. Decisions: DECISION_LOG D-R2-09 … D-R2-14.
+
+| Family (cycle 2) | Re-review finding | Mechanism corrected | Proof (fails before → passes) | Mutations |
+|---|---|---|---|---|
+| Budget-wait resume (R2-03) | RR2-1 wake storm | The refusal records its need (`budget_wait_needs`, 0011); one resume predicate — the need fits a fresh Run budget and every level above — on every resume path; no historical scans (D-R2-09) | `r1-review` "RR2-1: a waiter wakes only when the need its refusal recorded fits again …" (`['QUEUED',1]` → `['WAITING',0]`); probe N=20 × 10 settles: +200 runs / +1 300 events → +0 / +100 (siblings only), 3.5 s → 0.75 s | `rr2-1-budget-wake-ignores-recorded-need`, `rr2-1-budget-need-not-recorded`, `rr2-1-budget-wake-ignores-fresh-run-cap` |
+| Handoff lifetime (R2-04 / R2-05) | RR2-2 unanswered clarification; RR2-5 cancelled parent | Refused FINAL is a step result the model sees; `work_delegations_follow_parent` (0011) closes a delegator's open handoffs when it ends; a FAILED delegator cancels delegated children canonically; no enqueue under an ended parent (D-R2-10) | `c4-organization` "RR2-2 / RR2-5: a handoff never outlives its delegator …"; `c4-runtime` end-to-end (parent FAILED → handoff CANCELLED / `PARENT_ENDED`, child CANCELLED) | `rr2-2-final-refusal-silent`, `rr2-2-failed-delegator-keeps-children`, `rr2-5-rework-under-ended-lineage` |
+| Review wake / eligibility (R2-02 / R2-08) | RR1-2 judgments starve reviews | Freed capacity is a wake in the same transaction; REQUIRED before oversight before judgments; judge draws yield; sweep refills waiting ACTION requests (D-R2-11) | `c6-founder-free` "RR1-2" (5 tests; e.g. "the freed slot went to the oldest waiting REQUIRED review at once (no restart)") | 7 × `c6rr1-*` |
+| C6 adverse evidence (R2-17 / R2-18) and evidence time (R2-15) | RR3-A Founder REJECT dead end; RR3-B non-adverse "pending"; RR3-E post-training recurrence dropped | One `adverseStanding` definition for every reader; `attributionDue` recorded per evaluation; REJECTED = decided "no accountable cause" (INCONCLUSIVE, disclosed); corrected causes through `ATTRIBUTION_DECIDE`; asymmetric learning evidence (D-R2-12) | kernel "RR3-A: every attribution state has ONE meaning …", "RR3-B …", "RR3-E …"; `c6-improvement` "RR3-A: a Founder REJECT is a decided …", "RR3-B …", "RR3-E: the same mistake made after the training …" | `c6-rejected-cause-pending-forever`, `c6-rejected-cause-reads-clean`, `c6-rejected-attribution-unread`, `c6-corrected-causes-dropped`, `c6-non-adverse-negative-pending`, `c6-post-training-recurrence-excluded` |
+| Founder intent resolution (R2-23 / R2-24) | RR1-1 title verb crossover | The command's own leading verb decides the family and decision; the object picks the act; argument words never select (D-R2-13) | `c5-kernel` adversarial titles (EN / AR); `surface` probe texts → GOAL_STATE CANCELLED, goal stays PROPOSED | `c5-argument-verb-selects-intent`, `c5-argument-noun-selects-act` |
+| Restore / maintenance lifecycle (R2-29 / R2-30) | RR4-1 startable restore-check | A restore-check target is a permanently held verification copy; only the controlled restore makes a Company live (D-R2-14) | `backup.test` new proof; `cli.test` (`start` → `UPDATE_HOLD`, `clear-update-hold` → `MAINTENANCE_REFUSED`) | `c6q4-restore-check-copy-unmarked`, `c6q4-restore-check-hold-clearable`, `c6q4-restore-check-copy-opens` |
+
+Migration 0011 gained two sections (the need table and the parent-follow trigger) and was re-pinned; it is still
+unreleased (it joins `FROZEN_MIGRATIONS` in the closure change). Merged tree `a56bc06`: build, typecheck, lint
+clean; verifier 69 / 69; suites bootstrap 5, domain 22, governance 68, mind 102, storage 362, runtime 118,
+command-center 10, command-center-ui 10 — all passing.
+
+Recorded while fixing (MINOR, residual): m-58 the `ATTRIBUTION_DECIDE` preview summary reads "Validate the
+proposed cause" even when corrected causes are supplied; m-59 a lesson whose work's cause was REJECTED fails the
+learning gate (`ATTRIBUTION_NOT_VALIDATED`), so no pool judge is drawn — the Founder rejects that lesson directly;
+m-60 a refill can be crowded only if more than 500 unfillable requests wait ahead in one domain.

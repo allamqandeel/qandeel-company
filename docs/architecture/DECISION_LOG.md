@@ -2695,3 +2695,66 @@ frozen id; the report records root cause, fix, proof and mutation per id.
   (`POST_UPDATE_WORK_EXISTS`) unless acknowledged; it writes hold and journal first, keeps a never-pruned
   pre-rollback snapshot and reports what it discarded. The "proven stable" bound stays PG-09. Local recovery status
   and retention count restorable generations only (record and files).
+
+## D-R2-09 — A budget wait resumes on the need its refusal recorded (Technical Lead, R2 second wave; RR2-1; supersedes the headroom test of D-R2-03)
+
+A BUDGET_EXHAUSTED refusal records, in the refusing transaction, its need in the append-only `budget_wait_needs`
+(0011): the refused level, scope and dimension, the wait level (the refusing level; for a Run-level refusal its Work
+Item level) and the refused money / tokens. Every resume path — settle below the worst case, release, Founder
+reconciliation, cap raise, WAIT-settle re-check, startup pass — applies one predicate to the job's latest need: the
+need fits a fresh Run budget and `checkReservation(need)` passes on the wait level and every ancestor; a waiter is
+considered only when a level it depends on changed. Headroom smaller than the need wakes nothing (no wake storm);
+no resume decision scans historical reservations. Waits parked before the table existed keep the D-R2-03 headroom
+test. Consequence: a refusal caused only by the per-run cap whose need fits a fresh run resumes at once in a new
+run, still bounded by the Work Item cap.
+
+## D-R2-10 — A handoff never outlives its delegator (Technical Lead, R2 second wave; RR2-2, RR2-5; extends D-R2-03)
+
+A FINAL refused for a pending delegate question is recorded as that step's result
+(`FINAL_REFUSED_CLARIFICATION_PENDING`, naming the delegations), so the model sees what to answer (the loop stays
+bounded by `maxTurns`). When a delegating Work Item ends FAILED / CANCELLED / SUPERSEDED, the 0011 trigger
+`work_delegations_follow_parent` closes every open handoff it holds in the same transaction (CANCELLED,
+`PARENT_ENDED`, history row); a FAILED delegator cancels its delegated children through the canonical termination
+path (children held for reconciliation and completed children are kept; their delegation closes); no executable
+work is enqueued under an ended propagating parent (a kept child sent back to rework is cancelled, not re-queued).
+
+## D-R2-11 — Freed reviewer capacity is a wake; blocking reviews before learning judgments (Technical Lead, R2 second wave; RR1-2; extends D-R2-02)
+
+A review slot (a review key or a pool judgment, both counted in capacity) that leaves ASSIGNED — decided, escalated,
+withdrawn or released — refills, in the same transaction, every domain its holder actively reviews in. Every refill
+serves waiting REQUIRED requests first, then Independent Oversight, then pending pool judgments of that domain
+(oldest first, insertion order as tie-break), each through the one eligibility predicate decided before any LIMIT;
+a judge draw yields to waiting REQUIRED reviews; a withdrawal's refill never re-draws the withdrawn subject; the
+startup sweep refills every waiting request (ACTION included) before judgments. No polling: the capacity change is
+the wake; new review jobs advance the durable wake generation through the queue triggers.
+
+## D-R2-12 — One meaning of adverse evidence in every attribution state (Technical Lead, R2 second wave; RR3-A/B/E; refines D-R2-06 — **Product Owner confirmation requested for the REJECT semantics**)
+
+`adverseStanding` is the single definition every C6 reader uses (profile, readiness, capability regression,
+learning-effect assessment, reports): VALIDATED and the Employee's own judgment → ACCOUNTABLE (the only standing
+counted against the Employee, D-C6-03); VALIDATED with another cause → excluded; PROPOSED, or none while one is due
+→ PENDING (not counted, never read as clean: disclosed, holds readiness, keeps an effect open); REJECTED → decided
+"no accountable cause established" (never pending, never counted; disclosed as `unattributedAdverse` and the monthly
+`ADVERSE_EVIDENCE_WITHOUT_ACCOUNTABLE_CAUSE`; an adverse follow-up in this state makes a learning effect
+INCONCLUSIVE — recorded, re-assessable, not final, and it does not block the next cycle); none and none due →
+not a cause question (disclosed count only). "Due" is the evaluator's own proposal predicate, recorded with each
+evaluation. `ATTRIBUTION_DECIDE` accepts optional corrected `causes` for VALIDATE only (API-only, PG-04); a REJECT
+carrying causes is refused. Learning-effect evidence is asymmetric: positive evidence is work started after
+training; adverse evidence is any comparable, non-baseline work with a run after training.
+
+## D-R2-13 — The command's own verb decides (Technical Lead, R2 second wave; RR1-1; refines D-C5-07 / D-R2-04)
+
+A Founder natural-language command is mutating only when its leading verb (after polite words and an addressee) is
+a mutating verb. The verb fixes the intent family and the approve / reject decision; the head noun after the verb,
+or the closing goal noun / budget clause, picks the act within the family; a goal-state verb yields only
+GOAL_STATE with its state from the verb; words inside the argument never select or change the intent or decision;
+a command with no leading verb is never an act. The grammar stays closed and deterministic. Fail-closed side
+effect: a mutating verb not in the leading position ("Ehab approve X" without a comma) is UNKNOWN.
+
+## D-R2-14 — A restore-check target is a verification copy, never a Company (Technical Lead, R2 second wave; RR4-1; refines D-R2-08)
+
+`restoreToIsolatedWorkspace` (CLI `restore-check`, restore drills) writes a permanent `RESTORE_CHECK_COPY` update
+hold before the database exists; every ordinary open, safe-upgrade and rollback refuses it; `clear-update-hold`
+refuses to clear it; only the check's own internal open and read-only verify-mode inspection open it. A restored
+Company becomes live only through the controlled restore (`restorePortableBackup`: effect-capable jobs held, opened
+at its own version, safe-upgrade). No second live-restore path exists.
