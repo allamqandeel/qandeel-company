@@ -7,7 +7,7 @@
  * C6-PROOF: storage-resilience
  */
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, test } from 'node:test';
@@ -17,6 +17,7 @@ import { standardWorkOutcomeDefinition } from '@qandeel-company/mind';
 
 import {
   ArtifactStore,
+  CURRENT_SCHEMA_VERSION,
   CompanyStore,
   DirectoryDestination,
   GovernanceStore,
@@ -32,16 +33,38 @@ import {
   readUpdateHold,
   resilienceStatus,
   restorePortableBackup,
+  rollbackSchemaUpdate,
   runRestoreDrill,
+  safeUpgrade,
   verifyPortableBackup,
+  type BackupDestination,
 } from '../src/index.js';
 import { safeUpgradeInternal } from '../src/maintenance.js';
 import { recordToolIntent, recordToolResult, settle } from '../src/runtime-authority.js';
+import { SqliteConnection } from '../src/sqlite/connection.js';
 import { openStoreForTests } from '../src/store.js';
-import { claimGoverned, governedItem, seed } from './c2-helpers.js';
-import { backoff, harness, removeRoot, tempRoot } from './helpers.js';
+import { armFounderTestSurface } from '../src/testing/founder-seam.js';
+import { claimGoverned, governedItem, hire, seed } from './c2-helpers.js';
+import { backoff, harness, owner, removeRoot, tempRoot } from './helpers.js';
 
 const code = (c: string) => (e: unknown): boolean => isQandeelError(e) && e.code === c;
+const refused = (c: string, reason: string) => (e: unknown): boolean => isQandeelError(e) && e.code === c && e.details.reason === reason;
+
+/** A destination whose volume differs from the workspace's — e.g. the second partition of the same NVMe disk (R2-28). */
+function separateVolume(dir: string): BackupDestination {
+  const d = new DirectoryDestination(dir);
+  return { kind: d.kind, ref: d.ref, failureDomain: () => 'SEPARATE_VOLUME', put: (n, b) => d.put(n, b), get: (n) => d.get(n), exists: (n) => d.exists(n), remove: (n) => d.remove(n), list: () => d.list() };
+}
+
+/** An EXISTING Company (it has history) at an older released schema version. */
+function oldCompany(root: string, version: number): void {
+  const old = openStoreForTests(root, { migrations: loadReleasedMigrations(version) });
+  try {
+    old.recordAudit('seed.row', 'test', 'seed', 'OK', null);
+  } finally {
+    old.close();
+  }
+}
 // Assembled at run time: no literal credential-shaped value is committed.
 const PASSPHRASE = ['correct', 'horse', 'battery', 'staple', String(Date.now())].join('-');
 
@@ -93,6 +116,51 @@ describe('C6 encrypted portable backup: sealed, verified, isolated', () => {
     } finally {
       h.close();
       rmSync(path.dirname(ext), { recursive: true, force: true });
+    }
+  });
+
+  test('C6-PROOF: a second partition of the same disk is not off-device — only an operator-attested destination meets the off-device objective (R2-28)', async () => {
+    const h = harness();
+    const dirs = [externalDir(), externalDir(), externalDir()];
+    try {
+      seed(h.store);
+      const [a, b, c] = dirs as [string, string, string];
+      const separate = await createPortableBackup(h.store, { destination: separateVolume(a), passphrase: PASSPHRASE });
+      assert.equal(separate.failureDomain, 'SEPARATE_VOLUME', 'the volume is recorded honestly');
+      assert.equal(separate.offDevice, false, 'a different volume id is not proof of a different device');
+      const status = resilienceStatus(h.store);
+      assert.equal(status.portableBackup?.offDevice, false, 'the copy dies with the laptop: the off-device objective is NOT met');
+      assert.equal(status.portableBackup?.withinOffDeviceRpo, false);
+      assert.ok(status.exceptions.some((x) => x.code === 'OFF_DEVICE_NOT_PROVEN' && x.material && x.ref === `portable_backup:${separate.packageId}`));
+      h.clock.advance(60_000);
+      const attested = await createPortableBackup(h.store, { destination: new DirectoryDestination(b, { attestOffDevice: true }), passphrase: PASSPHRASE });
+      assert.equal(attested.offDevice, true);
+      h.clock.advance(60_000);
+      await createPortableBackup(h.store, { destination: separateVolume(c), passphrase: PASSPHRASE });
+      const after = resilienceStatus(h.store);
+      assert.equal(after.portableBackup?.id, attested.packageId, 'the newest ATTESTED package is the off-device recovery point, not a newer separate-volume one');
+      assert.equal(after.portableBackup?.offDevice, true);
+      assert.ok(!after.exceptions.some((x) => x.code === 'OFF_DEVICE_NOT_PROVEN'));
+    } finally {
+      h.close();
+      for (const d of dirs) rmSync(path.dirname(d), { recursive: true, force: true });
+    }
+  });
+
+  test('C6-PROOF: a malformed portable header fails closed as BACKUP_INTEGRITY before any key derivation (m-24)', () => {
+    const target = tempRoot('bad-header');
+    try {
+      const headers = [
+        { format: 'qandeel-company-portable/1', cipher: 'aes-256-gcm', ivHex: '0'.repeat(24) },
+        { format: 'qandeel-company-portable/1', cipher: 'aes-256-gcm', ivHex: '0'.repeat(24), packageId: 'p', backupId: 'b', createdAt: '2026-01-01T00:00:00.000Z', schemaVersion: 10, kdf: null },
+        { format: 'qandeel-company-portable/1', cipher: 'aes-256-gcm', ivHex: '0'.repeat(24), packageId: 'p', backupId: 'b', createdAt: '2026-01-01T00:00:00.000Z', schemaVersion: 10, kdf: { name: 'scrypt', N: '32768', r: 8, p: 1, saltHex: 7 } },
+      ];
+      for (const header of headers) {
+        const bytes = Buffer.concat([Buffer.from('QCPKG1\n', 'ascii'), Buffer.from(`${JSON.stringify(header)}\n`, 'utf8'), Buffer.alloc(64)]);
+        assert.throws(() => restorePortableBackup(bytes, target, { passphrase: PASSPHRASE }), code('BACKUP_INTEGRITY'));
+      }
+    } finally {
+      removeRoot(target);
     }
   });
 
@@ -167,6 +235,59 @@ describe('C6 recovery never repeats an uncertain external effect; a substituted 
     }
   });
 
+  test('C6-PROOF: a clean restore is an ambiguity boundary — every live job that could reach an external effect is held for reconciliation, effect-free work is not, and the report lists the holds and the data age (R2-29, m-25)', async () => {
+    const h = harness();
+    const ext = externalDir();
+    const target = tempRoot('past-backup-point');
+    try {
+      const s = seed(h.store); // the seeded Employee holds grants on UNSAFE / external-mutating tool actions
+      // Claimed without any tool intent at the backup point (the lost device may have run it to completion afterwards).
+      const claimedItem = governedItem(h, s);
+      const { claim } = claimGoverned(h);
+      assert.equal(h.store.getJob(claim.fence.jobId).workItemId, claimedItem);
+      const queuedItem = governedItem(h, s);
+      // Effect-free: an Employee whose only tool grant is a side-effect-free read, and plain C1 deterministic work.
+      const reader = hire(s.gov, s.founder, s.departmentId);
+      s.gov.createBudget(s.founder, { scope: 'EMPLOYEE', scopeId: reader.id, capMoney: 1_000_000, capTokens: 1_000_000, reasonCode: 'seed' });
+      s.gov.grant(s.founder, { employeeId: reader.id, capability: 'tool:notes.read', riskCeiling: 'R0', dataClassCeiling: 'D3', reasonCode: 'seed' });
+      const readerItem = governedItem(h, s, reader);
+      const noop = h.store.createWorkItem({ objective: 'deterministic work', ownerRef: owner, processorKind: 'test.noop', initialState: 'READY' }).workItem.id;
+      const job = (id: string): string => String(h.store.jobsFor(id as never).at(-1)?.id);
+      const pkgAt = h.store.now();
+      const pkg = await createPortableBackup(h.store, { destination: new DirectoryDestination(ext), passphrase: PASSPHRASE });
+      h.clock.advance(5 * 3_600_000);
+      const report = restorePortableBackup(new DirectoryDestination(ext).get(pkg.name), target, { passphrase: PASSPHRASE, clock: h.clock });
+      assert.deepEqual([...report.reconciliationPending.heldJobIds].sort(), [claim.fence.jobId, job(queuedItem)].sort(), 'exactly the effect-capable live jobs are held (IDs only)');
+      assert.equal(report.reconciliationPending.heldByRestore, 2);
+      assert.equal(report.reconciliationPending.jobsHeld, 2, 'the count is of actual holds');
+      assert.deepEqual(report.backupPoint, { packageCreatedAt: pkgAt, dataAgeHours: 5 }, 'the authenticated backup point and data age are disclosed');
+      armFounderTestSurface(target);
+      const restored = CompanyStore.open(target, { clock: h.clock });
+      try {
+        for (const id of [claim.fence.jobId, job(queuedItem)]) {
+          const j = restored.getJob(id as never);
+          assert.equal(j.state, 'RECONCILIATION_HOLD', 'never dispatched blindly on the replacement device');
+          assert.equal(j.lastFailureCode, 'RESTORED_PAST_BACKUP_POINT');
+        }
+        assert.equal(restored.getWorkItem(queuedItem).state, 'BLOCKED');
+        assert.ok(restored.getJob(claim.fence.jobId).fencingToken > claim.fence.fencingToken, 'the lost worker is fenced out');
+        assert.equal(restored.runsFor(claim.fence.jobId).at(-1)?.state, 'INTERRUPTED', 'the orphaned run is closed, never resumed');
+        assert.equal(restored.getJob(job(readerItem) as never).state, 'QUEUED', 'effect-free governed work is not held');
+        assert.equal(restored.getJob(job(noop) as never).state, 'QUEUED', 'effect-free C1 work is not held');
+        assert.equal(restored.auditByAction('job.reconciliation_required').length, 2);
+        // Resolvable per job through the existing reconciliation path (governed work through Founder authority).
+        assert.equal(restored.resolveReconciliation(claim.fence.jobId as never, 'FAILED', 'LOST_DEVICE_REVIEWED', s.founder).jobState, 'FAILED');
+        assert.equal(restored.resolveReconciliation(job(queuedItem) as never, 'RETRY', 'LOST_DEVICE_REVIEWED', s.founder).jobState, 'QUEUED');
+      } finally {
+        restored.close();
+      }
+    } finally {
+      h.close();
+      removeRoot(target);
+      rmSync(path.dirname(ext), { recursive: true, force: true });
+    }
+  });
+
   test('C6-PROOF: a package substituted at the destination (authentic, but not the recorded one) fails re-verification', async () => {
     const h = harness();
     const ext = externalDir();
@@ -209,6 +330,28 @@ describe('C6 generational retention and restore drills', () => {
       const drill = runRestoreDrill(h.store);
       assert.equal(drill.result, 'PASS');
       assert.equal(resilienceStatus(h.store).lastDrills.find((x) => x.kind === 'ISOLATED_RESTORE')?.result, 'PASS');
+    } finally {
+      h.close();
+    }
+  });
+
+  test('C6-PROOF: status and retention count only restorable generations — a record whose files are gone is never the recovery point (m-23)', async () => {
+    const h = harness();
+    try {
+      seed(h.store);
+      const ids: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        h.clock.advance(3_600_000);
+        ids.push((await createBackup(h.store)).backupId);
+      }
+      const [, second, newest] = ids as [string, string, string];
+      rmSync(path.join(h.store.workspace.backupsDir, newest), { recursive: true, force: true });
+      const status = resilienceStatus(h.store);
+      assert.equal(status.localBackup?.id, second, 'the newest RESTORABLE generation is the local recovery point');
+      assert.equal(status.localBackup?.liveGenerations, 2);
+      assert.ok(status.exceptions.some((x) => x.code === 'BACKUP_FILES_MISSING' && x.ref === `backup:${newest}`));
+      const out = pruneLocalBackups(h.store, { keepLast: 1, daily: 0, weekly: 0, monthly: 0 });
+      assert.deepEqual(out.kept, [second], 'retention keeps a restorable generation, never a lost one in its place');
     } finally {
       h.close();
     }
@@ -279,6 +422,118 @@ describe('C6 update / migration safety', () => {
       } finally {
         back.close();
       }
+    } finally {
+      removeRoot(root);
+    }
+  });
+
+  test('C6-PROOF: an existing Company is never migrated live at open — ordinary open refuses it (SCHEMA_UPDATE_REQUIRED) and a clean restore keeps an older snapshot at its own version until safe-upgrade (R2-30, m-25)', async () => {
+    const root = tempRoot('no-live-migration');
+    const ext = externalDir();
+    const target = tempRoot('old-package');
+    try {
+      oldCompany(root, CURRENT_SCHEMA_VERSION - 1);
+      assert.throws(() => CompanyStore.open(root), code('SCHEMA_UPDATE_REQUIRED'), 'no snapshot, no rehearsal, no record: refused');
+      const still = openStoreForTests(root, { migrations: loadReleasedMigrations(CURRENT_SCHEMA_VERSION - 1) });
+      try {
+        assert.equal(still.schemaVersion, CURRENT_SCHEMA_VERSION - 1, 'the refused open changed nothing');
+        // A portable package taken at the older version (the lost laptop ran the previous release).
+        const pkg = await createPortableBackup(still, { destination: new DirectoryDestination(ext), passphrase: PASSPHRASE });
+        const report = restorePortableBackup(new DirectoryDestination(ext).get(pkg.name), target, { passphrase: PASSPHRASE });
+        assert.deepEqual([report.schemaVersionBefore, report.schemaVersionAfter, report.schemaUpdateRequired], [CURRENT_SCHEMA_VERSION - 1, CURRENT_SCHEMA_VERSION - 1, true], 'restored at its own version, never migrated through plain open');
+      } finally {
+        still.close();
+      }
+      assert.throws(() => CompanyStore.open(target), code('SCHEMA_UPDATE_REQUIRED'));
+      const upgraded = await safeUpgrade(target);
+      assert.equal(upgraded.outcome, 'ACTIVATED', 'the restored Company is brought current only through the lifecycle');
+      const s = CompanyStore.open(target);
+      try {
+        assert.equal(s.schemaVersion, CURRENT_SCHEMA_VERSION);
+        assert.equal(resilienceStatus(s).lastMaintenance?.outcome, 'ACTIVATED');
+      } finally {
+        s.close();
+      }
+    } finally {
+      removeRoot(root);
+      removeRoot(target);
+      rmSync(path.dirname(ext), { recursive: true, force: true });
+    }
+  });
+
+  test('C6-PROOF: an update is refused while another connection holds the database open, and a live failure writes the hold before the restore touches any file (m-22)', async () => {
+    const root = tempRoot('in-use');
+    try {
+      oldCompany(root, CURRENT_SCHEMA_VERSION - 1);
+      const databasePath = path.join(root, 'state', 'company.sqlite3');
+      const other = SqliteConnection.open({ path: databasePath, busyTimeoutMs: 1_000 });
+      try {
+        other.get('SELECT COUNT(*) AS n FROM work_items');
+        await assert.rejects(safeUpgradeInternal(root, {}, {}), refused('MAINTENANCE_REFUSED', 'DATABASE_IN_USE'));
+      } finally {
+        other.close();
+      }
+      assert.equal(readUpdateHold(root), null, 'a refused preflight writes nothing');
+      // A connection that races in after the preflight (it opens while the pre-update snapshot is taken): on Windows the
+      // restore cannot replace files another process holds open. Whatever the restore does, the hold is already in force.
+      const pending = safeUpgradeInternal(root, {}, { failAt: 'live-verify' });
+      const racer = SqliteConnection.open({ path: databasePath, busyTimeoutMs: 1_000 });
+      let outcome: unknown;
+      try {
+        racer.get('SELECT COUNT(*) AS n FROM work_items');
+        outcome = await pending.catch((e: unknown) => e);
+      } finally {
+        racer.close();
+      }
+      assert.ok(readUpdateHold(root), 'the workspace is held');
+      if (process.platform === 'win32') assert.ok(isQandeelError(outcome, 'MAINTENANCE_FAILED') && outcome.details.reason === 'RESTORE_FAILED' && outcome.details.hold === true, 'a coded failure, hold kept');
+      else assert.equal((outcome as { outcome?: string }).outcome, 'ROLLED_BACK_UPDATE_HOLD');
+      assert.throws(() => CompanyStore.open(root), code('UPDATE_HOLD'), 'no ordinary open runs on a database in transition');
+    } finally {
+      removeRoot(root);
+    }
+  });
+
+  test('C6-PROOF: a rollback never silently destroys post-activation work — refused unless acknowledged; the replaced database is retained and what was discarded is reported (R2-31)', async () => {
+    const root = tempRoot('rollback');
+    try {
+      oldCompany(root, CURRENT_SCHEMA_VERSION - 1);
+      const up = await safeUpgradeInternal(root, {}, {});
+      assert.equal(up.outcome, 'ACTIVATED');
+      const updateId = String(up.updateId);
+      const s = CompanyStore.open(root);
+      const postActivation = s.createWorkItem({ objective: 'work done after the update', ownerRef: owner }).workItem.id;
+      s.close();
+      await assert.rejects(rollbackSchemaUpdate(root, updateId), refused('MAINTENANCE_REFUSED', 'POST_UPDATE_WORK_EXISTS'));
+      assert.equal(readUpdateHold(root), null, 'a refused rollback changes nothing');
+      const intact = CompanyStore.open(root);
+      assert.equal(intact.getWorkItem(postActivation).objective, 'work done after the update');
+      intact.close();
+      const rb = await rollbackSchemaUpdate(root, updateId, { discardPostUpdateWork: true });
+      assert.equal(rb.discardAcknowledged, true);
+      assert.equal(rb.postUpdateWork.exists, true);
+      assert.equal(rb.postUpdateWork.rowsAddedAfterActivation.work_items, 1);
+      assert.ok(rb.postUpdateWork.auditRowsAfterActivation >= 1);
+      assert.ok(typeof rb.activatedAt === 'string');
+      assert.equal(readUpdateHold(root)?.code, 'OPERATOR_ROLLBACK');
+      const retained = path.join(root, 'maintenance', updateId, rb.preRollbackSnapshot.file);
+      assert.equal(sha256Hex(readFileSync(retained)), rb.preRollbackSnapshot.sha256);
+      const copy = SqliteConnection.open({ path: retained, busyTimeoutMs: 1_000, readOnly: true });
+      try {
+        assert.ok(copy.get('SELECT id FROM work_items WHERE id = ?', postActivation), 'the discarded work is retained in the pre-rollback snapshot');
+        assert.ok(copy.get(`SELECT id FROM maintenance_records WHERE id = ?`, updateId), 'so is the maintenance record');
+      } finally {
+        copy.close();
+      }
+      // Clearing the hold never re-migrates at open: the next upgrade is rehearsed again through safe-upgrade.
+      clearUpdateHold(root, 'operator.reviewed');
+      assert.throws(() => CompanyStore.open(root), code('SCHEMA_UPDATE_REQUIRED'));
+      const again = await safeUpgradeInternal(root, {}, {});
+      assert.equal(again.outcome, 'ACTIVATED');
+      assert.ok(existsSync(retained), 'a pre-rollback snapshot is never pruned');
+      // Nothing after activation: no acknowledgement is needed, and nothing is reported as discarded.
+      const quiet = await rollbackSchemaUpdate(root, String(again.updateId));
+      assert.deepEqual([quiet.postUpdateWork.exists, quiet.discardAcknowledged], [false, false]);
     } finally {
       removeRoot(root);
     }

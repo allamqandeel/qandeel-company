@@ -38,10 +38,12 @@ export function disarmFounderTestSurface(root: string): void {
  * C6 update-safety fixture: a workspace created at an OLDER released schema version (the released, pinned
  * migrations up to `version`), so an acceptance harness can prove a real Preflight → Backup → Rehearse →
  * Migrate → Verify → Activate cycle and its rollback. Test-only; production never opens a store below current.
+ * `history: true` records one audit row, so the workspace is an EXISTING Company (R2-30: never migrated live at open).
  */
-export function createWorkspaceAtVersionForTest(root: string, version: number): number {
+export function createWorkspaceAtVersionForTest(root: string, version: number, options: { history?: boolean } = {}): number {
   const store = openStoreForTests(root, { migrations: loadReleasedMigrations(version) });
   try {
+    if (options.history === true) store.recordAudit('fixture.company_history', 'test', 'fixture', 'OK', null);
     return store.schemaVersion;
   } finally {
     store.close();

@@ -10,9 +10,11 @@
  * - Generational retention keeps several generations (last N + daily + weekly + monthly) and never the
  *   latest alone; the database refuses to retire the last live generation.
  * - Clean-environment restore verifies the package, restores database and artifacts into a NEW workspace,
- *   runs the migration-compatibility and integrity checks, revokes every Founder session of the lost device
- *   and reports the credential references that must be re-keyed; the runtime's own startup recovery then
- *   resumes work and holds uncertain external side effects for reconciliation (never blindly repeated).
+ *   runs the migration-compatibility and integrity checks, revokes every Founder session of the lost device,
+ *   holds for reconciliation every live job that could reach an external effect the lost device may already have
+ *   performed after the backup point, and reports the backup point, data age and the credential references that
+ *   must be re-keyed; the runtime's own startup recovery then resumes effect-free work and keeps uncertain external
+ *   side effects held (never blindly repeated).
  * - Restore drills are recorded (result, duration): `Backup != Recovery Proof`.
  *
  * Nothing here contacts a network; a "destination" is a directory the operator chooses (an external drive,
@@ -27,7 +29,9 @@ import { QandeelError, isQandeelError, newId, sha256Hex, type Clock, type Id, ty
 
 import { createBackup, restoreToIsolatedWorkspace, verifyBackup, type BackupManifest } from './backup.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
-import { CompanyStore, storeContext } from './store.js';
+import { CURRENT_SCHEMA_VERSION } from './migrations.js';
+import { txHoldForReconciliation } from './queue.js';
+import { openRestoredStore, storeContext, type CompanyStore } from './store.js';
 import { assertLocalPathSyntax, containedPath, isWithin, layoutFor, openWorkspace } from './workspace.js';
 
 // ---------------------------------------------------------------------------------------------------------
@@ -72,6 +76,11 @@ const critical = (): RecoveryObjective => {
 
 export type FailureDomain = 'SAME_VOLUME' | 'SEPARATE_VOLUME' | 'ATTESTED_OFF_DEVICE';
 
+/** The off-device objective is met only by the operator's attestation (D-C6-06), never by a volume id (R2-28). */
+export function isOffDevice(domain: string): boolean {
+  return domain === 'ATTESTED_OFF_DEVICE';
+}
+
 export interface BackupDestination {
   readonly kind: 'DIRECTORY';
   /** SHA-256 of the canonical location (the path itself is never recorded). */
@@ -88,9 +97,10 @@ const PACKAGE_NAME = /^[a-z0-9][a-z0-9.-]{0,95}$/;
 
 /**
  * A directory outside the workspace — an external drive, a mounted encrypted folder. `attestOffDevice` is the
- * operator's statement that the directory is outside this laptop's failure domain (recorded as such); without
- * it, a path on another volume is SEPARATE_VOLUME and one on the workspace's volume is SAME_VOLUME, which never
- * satisfies the off-device objective.
+ * operator's statement that the directory is outside this laptop's failure domain (recorded as such), and ONLY that
+ * statement satisfies the off-device objective (D-C6-06, R2-28). Without it, a path on another volume is
+ * SEPARATE_VOLUME and one on the workspace's volume is SAME_VOLUME — and neither is off-device: a different volume
+ * id cannot tell a second partition of the same physical disk (which dies with the laptop) from a removable drive.
  */
 export class DirectoryDestination implements BackupDestination {
   readonly kind = 'DIRECTORY' as const;
@@ -250,6 +260,22 @@ export function sealPackage(header: Omit<PackageHeader, 'kdf' | 'ivHex' | 'ciphe
   return { bytes: Buffer.concat([MAGIC, headerBytes, body, cipher.getAuthTag()]), header: full };
 }
 
+/**
+ * The header is untrusted until authenticated, and it is read BEFORE authentication (it carries the KDF parameters):
+ * every field is shape-checked first, so a malformed header fails closed as BACKUP_INTEGRITY, never a raw TypeError (m-24).
+ */
+function assertHeaderShape(header: unknown): asserts header is PackageHeader {
+  const h = header as Record<string, unknown> | null;
+  const kdf = (typeof h === 'object' && h !== null ? h.kdf : undefined) as Record<string, unknown> | null | undefined;
+  const ok =
+    typeof h === 'object' && h !== null && !Array.isArray(h) &&
+    h.format === PORTABLE_FORMAT && h.cipher === 'aes-256-gcm' && typeof h.ivHex === 'string' && /^[0-9a-f]{24}$/.test(h.ivHex) &&
+    typeof h.packageId === 'string' && typeof h.backupId === 'string' && typeof h.createdAt === 'string' && !Number.isNaN(Date.parse(h.createdAt)) &&
+    Number.isInteger(h.schemaVersion) &&
+    typeof kdf === 'object' && kdf !== null && !Array.isArray(kdf) && typeof kdf.name === 'string' && Number.isInteger(kdf.N) && Number.isInteger(kdf.r) && Number.isInteger(kdf.p) && typeof kdf.saltHex === 'string';
+  if (!ok) throw new QandeelError('BACKUP_INTEGRITY', 'unknown portable package format');
+}
+
 /** Opens (authenticates, decrypts, checks every entry) a portable package. Any tampering fails closed. */
 export function openPackage(bytes: Buffer, passphrase: string): { header: PackageHeader; entries: Map<string, Buffer> } {
   assertPassphrase(passphrase);
@@ -263,7 +289,7 @@ export function openPackage(bytes: Buffer, passphrase: string): { header: Packag
   } catch (error) {
     throw new QandeelError('BACKUP_INTEGRITY', 'portable package header is unreadable', {}, { cause: error });
   }
-  if (header?.format !== PORTABLE_FORMAT || header.cipher !== 'aes-256-gcm' || !/^[0-9a-f]{24}$/.test(String(header.ivHex))) throw new QandeelError('BACKUP_INTEGRITY', 'unknown portable package format');
+  assertHeaderShape(header);
   const body = bytes.subarray(nl + 1, bytes.length - TAG_BYTES);
   const decipher = createDecipheriv('aes-256-gcm', deriveKey(passphrase, header.kdf), Buffer.from(header.ivHex, 'hex'));
   decipher.setAAD(headerBytes);
@@ -293,6 +319,8 @@ export interface PortableBackupResult {
   readonly packageSha256: string;
   readonly sizeBytes: number;
   readonly failureDomain: FailureDomain;
+  /** True only for an operator-attested destination (a separate volume may be a partition of the same disk). */
+  readonly offDevice: boolean;
   readonly artifacts: number;
   readonly verifiedAt: Timestamp;
 }
@@ -344,7 +372,7 @@ export async function createPortableBackup(store: CompanyStore, options: { desti
     appendAudit(ctx, 'backup.portable_created', 'portable_backup', packageId, { actorRef: 'system:resilience' }, 'OK', failureDomain, { backupId: local.backupId, sizeBytes: bytes.length, artifacts: unique.size });
   });
   recordDrill(store, 'BACKUP_VERIFY', `portable_backup:${packageId}`, 'PASS', 'PACKAGE_OPENED', Date.now() - started);
-  return { packageId, backupId: local.backupId, name, packageSha256: sha, sizeBytes: bytes.length, failureDomain, artifacts: unique.size, verifiedAt };
+  return { packageId, backupId: local.backupId, name, packageSha256: sha, sizeBytes: bytes.length, failureDomain, offDevice: isOffDevice(failureDomain), artifacts: unique.size, verifiedAt };
 }
 
 /** Re-verifies a recorded package at its destination (checksum + authenticated open); records the drill. */
@@ -387,16 +415,55 @@ export interface CleanRestoreReport {
   readonly artifactsRestored: number;
   readonly foundersSessionsRevoked: number;
   readonly rekeyRequired: readonly string[];
-  /** Work that the runtime's startup recovery must reconcile before anything repeats (uncertain effects). */
-  readonly reconciliationPending: { readonly jobsHeld: number; readonly toolInvocationsUncertain: number };
+  /**
+   * The authenticated package creation time (the backup point) and the age of the restored data at restore time: work
+   * the lost device did after this point is not in the restored Company (m-25).
+   */
+  readonly backupPoint: { readonly packageCreatedAt: Timestamp; readonly dataAgeHours: number };
+  /**
+   * Work that must be reconciled before anything repeats. `jobsHeld` counts the jobs actually in RECONCILIATION_HOLD
+   * after the restore; `heldJobIds` are the jobs THIS restore held because they could reach an external effect the lost
+   * device may already have performed after the backup point (R2-29; IDs only, bounded list, `heldByRestore` the count).
+   */
+  readonly reconciliationPending: { readonly jobsHeld: number; readonly heldByRestore: number; readonly heldJobIds: readonly Id[]; readonly toolInvocationsUncertain: number };
+  /** An older snapshot is restored at its own version and never migrated through plain open: run safe-upgrade (the runtime does it at start). */
+  readonly schemaUpdateRequired: boolean;
   readonly durationMs: number;
+}
+
+/** Reason code of the holds a clean restore places (resolved through the existing reconciliation path, per job). */
+export const RESTORE_HOLD_CODE = 'RESTORED_PAST_BACKUP_POINT';
+const HELD_ID_LIST_BOUND = 1_000;
+
+/**
+ * Non-terminal jobs whose Work Item could reach an external effect (R2-29). "Could reach" is decided conservatively
+ * from durable facts: an earlier run of the job declared UNSAFE side effects, or the Work Item's owner holds an ACTIVE
+ * grant on a tool action that is UNSAFE or mutates external state (expiry and use limits deliberately ignored: if in
+ * doubt, hold). Effect-free work (no such run, no such grant) is left to the ordinary startup recovery.
+ */
+function effectCapableLiveJobs(ctx: StoreContext): Id[] {
+  return ctx.db
+    .all<{ id: string }>(
+      `SELECT j.id FROM queue_jobs j JOIN work_items w ON w.id = j.work_item_id
+        WHERE j.state IN ('QUEUED', 'WAITING', 'CLAIMED')
+          AND (EXISTS (SELECT 1 FROM runs r WHERE r.job_id = j.id AND r.side_effects = 'UNSAFE')
+            OR (w.owner_ref GLOB 'employee:*' AND EXISTS (
+                  SELECT 1 FROM permission_grants g JOIN tool_actions a JOIN tools t ON t.id = a.tool_id
+                   WHERE g.employee_id = substr(w.owner_ref, 10) AND g.status = 'ACTIVE'
+                     AND g.capability = 'tool:' || t.code || '.' || a.code
+                     AND (a.side_effects = 'UNSAFE' OR a.mutates_external = 1))))
+        ORDER BY j.id`,
+    )
+    .map((r) => r.id as Id);
 }
 
 /**
  * Clean-environment (device-loss) recovery into a NEW, empty workspace: authenticate + decrypt, verify the
  * snapshot against this release (schema, pins, fingerprint, counts), restore the database and artifact objects,
- * open (migration compatibility: an older compatible snapshot is migrated forward; a newer one is refused),
- * integrity-check, revoke the lost device's Founder sessions and report the credential references to re-key.
+ * open it AT ITS OWN VERSION (an older compatible snapshot is never migrated forward through plain open — the report
+ * says `schemaUpdateRequired` and safe-upgrade does it; a newer one is refused), integrity-check, revoke the lost
+ * device's Founder sessions, hold for reconciliation every non-terminal job that could reach an external effect (the
+ * lost device may have performed it after the backup point, R2-29) and report the credential references to re-key.
  * It never starts the runtime: the operator starts it, and its startup recovery reconciles in-flight work.
  */
 export function restorePortableBackup(packageBytes: Buffer, targetRoot: string, options: { passphrase: string; clock?: Clock }): CleanRestoreReport {
@@ -424,7 +491,8 @@ export function restorePortableBackup(packageBytes: Buffer, targetRoot: string, 
       if (!existsSync(dest)) writeFileSync(dest, bytes, { flag: 'wx' });
       restoredArtifacts++;
     }
-    const restored = CompanyStore.open(layout.root, options.clock ? { clock: options.clock } : {});
+    // Opened at the snapshot's own version: plain open never migrates an older snapshot forward (R2-30 / m-25).
+    const restored = openRestoredStore(layout.root, { ...(options.clock ? { clock: options.clock } : {}), atVersion: verification.schemaVersion });
     try {
       const quick = restored.quickCheck();
       if (quick !== 'ok' || restored.foreignKeyViolations() !== 0) throw new QandeelError('BACKUP_INTEGRITY', 'restored workspace failed its integrity checks', { backupId: header.backupId });
@@ -435,12 +503,17 @@ export function restorePortableBackup(packageBytes: Buffer, targetRoot: string, 
         // The lost device's browser sessions and launch tokens never come back (D15-B.6: credentials not blindly reused).
         const revoked = ctx.db.run(`UPDATE founder_sessions SET revoked_at = ?, revoke_reason = 'RESTORED_ON_NEW_DEVICE' WHERE revoked_at IS NULL`, at).changes;
         ctx.db.run(`UPDATE founder_launch_tokens SET consumed_at = ? WHERE consumed_at IS NULL`, at);
-        const jobsHeld = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM queue_jobs WHERE state IN ('CLAIMED', 'RECONCILIATION_HOLD')`)?.n ?? 0);
+        // A restore is an ambiguity boundary (R2-29): the lost device may have executed, after the backup point, work this
+        // snapshot still shows as queued / waiting / claimed. Anything that could reach an external effect is held for
+        // reconciliation (never dispatched blindly), in this same transaction.
+        const held = effectCapableLiveJobs(ctx).filter((jobId) => txHoldForReconciliation(ctx, jobId, RESTORE_HOLD_CODE));
+        const jobsHeld = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM queue_jobs WHERE state = 'RECONCILIATION_HOLD'`)?.n ?? 0);
         const uncertain = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM tool_invocations WHERE state IN ('INTENT_RECORDED', 'RECONCILIATION_REQUIRED')`)?.n ?? 0);
+        const dataAgeHours = Math.max(0, Math.floor((Date.parse(at) - Date.parse(header.createdAt)) / 3_600_000));
         const durationMs = Date.now() - started;
         ctx.db.run(`INSERT INTO recovery_drills (id, kind, subject_ref, result, code, duration_ms, actor_ref, created_at) VALUES (?, 'PORTABLE_RESTORE', ?, 'PASS', 'CLEAN_RESTORE', ?, 'system:resilience', ?)`, newId(), `portable_backup:${header.packageId}`, durationMs, at);
-        appendAudit(ctx, 'recovery.clean_restore', 'backup', header.backupId, { actorRef: 'system:resilience' }, 'OK', 'CLEAN_RESTORE', { packageId: header.packageId, sessionsRevoked: revoked, artifacts: restoredArtifacts });
-        return { revoked, jobsHeld, uncertain, durationMs };
+        appendAudit(ctx, 'recovery.clean_restore', 'backup', header.backupId, { actorRef: 'system:resilience' }, 'OK', 'CLEAN_RESTORE', { packageId: header.packageId, sessionsRevoked: revoked, artifacts: restoredArtifacts, jobsHeldByRestore: held.length, dataAgeHours });
+        return { revoked, held, jobsHeld, uncertain, dataAgeHours, durationMs };
       });
       return {
         backupId: header.backupId,
@@ -452,7 +525,9 @@ export function restorePortableBackup(packageBytes: Buffer, targetRoot: string, 
         artifactsRestored: restoredArtifacts,
         foundersSessionsRevoked: out.revoked,
         rekeyRequired: notes.rekeyRequired ?? rekeyReferences(ctx),
-        reconciliationPending: { jobsHeld: out.jobsHeld, toolInvocationsUncertain: out.uncertain },
+        backupPoint: { packageCreatedAt: header.createdAt, dataAgeHours: out.dataAgeHours },
+        reconciliationPending: { jobsHeld: out.jobsHeld, heldByRestore: out.held.length, heldJobIds: out.held.slice(0, HELD_ID_LIST_BOUND), toolInvocationsUncertain: out.uncertain },
+        schemaUpdateRequired: restored.schemaVersion < CURRENT_SCHEMA_VERSION,
         durationMs: out.durationMs,
       };
     } finally {
@@ -557,10 +632,22 @@ export function planRetention(generations: readonly Generation[], policy: Retent
   return { keep: ordered.filter((g) => keep.has(g.id)).map((g) => g.id), prune: ordered.filter((g) => !keep.has(g.id)).map((g) => g.id) };
 }
 
+/**
+ * A restorable local generation (m-23): recorded (the record is canonical, D-C1-24), integrity ok, not retired — AND
+ * its manifest is present in this workspace. Discovery stays record-first; the file check only removes records whose
+ * material is gone (e.g. every earlier generation after a clean restore onto a new device).
+ */
+function liveLocalRecords(ctx: StoreContext): { id: string; created_at: string }[] {
+  return ctx.db.all<{ id: string; created_at: string }>(`SELECT id, created_at FROM backup_records WHERE integrity_result = 'ok' AND id NOT IN (SELECT backup_id FROM backup_retirements) ORDER BY created_at DESC, rowid DESC`);
+}
+
+const hasBackupFiles = (backupsDir: string, id: string): boolean => /^[0-9a-f-]{36}$/.test(id) && existsSync(path.join(backupsDir, id, 'manifest.json'));
+
 /** Retires local generations the policy no longer keeps: record first (the database keeps one live), then files. */
 export function pruneLocalBackups(store: CompanyStore, policy: RetentionPolicy = DEFAULT_RETENTION): { kept: string[]; retired: string[] } {
   const ctx = storeContext(store);
-  const live = ctx.db.snapshot(() => ctx.db.all<{ id: string; created_at: string }>(`SELECT id, created_at FROM backup_records WHERE integrity_result = 'ok' AND id NOT IN (SELECT backup_id FROM backup_retirements)`));
+  // Plan over RESTORABLE generations only: a record without files is never "kept" in place of a restorable one (m-23).
+  const live = ctx.db.snapshot(() => liveLocalRecords(ctx)).filter((g) => hasBackupFiles(store.workspace.backupsDir, g.id));
   const plan = planRetention(live.map((g) => ({ id: g.id, createdAt: g.created_at })), policy);
   ctx.db.immediate('retire backup generations', () => {
     for (const id of plan.prune) {
@@ -603,13 +690,22 @@ export interface ResilienceStatus {
   readonly exceptions: readonly { readonly code: string; readonly ref: string; readonly material: boolean; readonly at: string }[];
 }
 
-export function txResilienceStatus(ctx: StoreContext, now: string): ResilienceStatus {
+/**
+ * `files.backupsDir` (given by `resilienceStatus`): the local recovery point is the newest RESTORABLE generation (its
+ * files present), and a live record whose files are gone raises BACKUP_FILES_MISSING (m-23). Without it (callers that
+ * hold only a transaction context) the status is record-based.
+ */
+export function txResilienceStatus(ctx: StoreContext, now: string, files?: { readonly backupsDir: string }): ResilienceStatus {
   const hours = (at: string): number => Math.max(0, Math.floor((Date.parse(now) - Date.parse(at)) / 3_600_000));
   const obj = critical();
-  const local = ctx.db.get<{ id: string; created_at: string }>(`SELECT id, created_at FROM backup_records WHERE integrity_result = 'ok' AND id NOT IN (SELECT backup_id FROM backup_retirements) ORDER BY created_at DESC, rowid DESC LIMIT 1`);
-  const liveLocal = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM backup_records WHERE integrity_result = 'ok' AND id NOT IN (SELECT backup_id FROM backup_retirements)`)?.n ?? 0);
+  const records = liveLocalRecords(ctx);
+  const restorable = files === undefined ? records : records.filter((g) => hasBackupFiles(files.backupsDir, g.id));
+  const missingFiles = records.filter((g) => !restorable.includes(g));
+  const local = restorable[0];
+  const liveLocal = restorable.length;
   // The recovery point is the age of the data in the package (created_at); re-verifying an old package never makes it fresh.
-  const portable = ctx.db.get<{ id: string; verified_at: string; created_at: string; failure_domain: string }>(`SELECT id, verified_at, created_at, failure_domain FROM portable_backups WHERE state = 'VERIFIED' AND failure_domain <> 'SAME_VOLUME' ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+  // Only an operator-attested destination is off-device (R2-28): prefer the newest ATTESTED package, else the newest at all.
+  const portable = ctx.db.get<{ id: string; verified_at: string; created_at: string; failure_domain: string }>(`SELECT id, verified_at, created_at, failure_domain FROM portable_backups WHERE state = 'VERIFIED' AND failure_domain = 'ATTESTED_OFF_DEVICE' ORDER BY created_at DESC, rowid DESC LIMIT 1`)
     ?? ctx.db.get<{ id: string; verified_at: string; created_at: string; failure_domain: string }>(`SELECT id, verified_at, created_at, failure_domain FROM portable_backups WHERE state = 'VERIFIED' ORDER BY created_at DESC, rowid DESC LIMIT 1`);
   const livePortable = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM portable_backups WHERE state = 'VERIFIED'`)?.n ?? 0);
   const drills = ctx.db.all<{ id: string; kind: string; result: string; code: string; duration_ms: number; created_at: string }>(
@@ -622,7 +718,9 @@ export function txResilienceStatus(ctx: StoreContext, now: string): ResilienceSt
   const localStatus = local ? { id: local.id, at: local.created_at, ageHours: hours(local.created_at), withinRpo: hours(local.created_at) <= (obj.localRpoHours ?? Infinity), liveGenerations: liveLocal } : null;
   if (localStatus === null) exceptions.push({ code: 'NO_VERIFIED_BACKUP', ref: 'backups:none', material: false, at: now });
   else if (!localStatus.withinRpo) exceptions.push({ code: 'BACKUP_STALE', ref: `backup:${localStatus.id}`, material: false, at: localStatus.at });
-  const offDevice = portable !== undefined && portable.failure_domain !== 'SAME_VOLUME';
+  const newestMissing = missingFiles[0];
+  if (newestMissing !== undefined) exceptions.push({ code: 'BACKUP_FILES_MISSING', ref: `backup:${newestMissing.id}`, material: false, at: newestMissing.created_at });
+  const offDevice = portable !== undefined && isOffDevice(portable.failure_domain);
   const portableStatus = portable
     ? { id: portable.id, createdAt: portable.created_at, verifiedAt: portable.verified_at, ageHours: hours(portable.created_at), failureDomain: portable.failure_domain as FailureDomain, offDevice, withinOffDeviceRpo: offDevice && hours(portable.created_at) <= (obj.offDeviceRpoHours ?? Infinity), liveGenerations: livePortable }
     : null;
@@ -645,6 +743,6 @@ export function txResilienceStatus(ctx: StoreContext, now: string): ResilienceSt
 
 export function resilienceStatus(store: CompanyStore, options: { at?: string } = {}): ResilienceStatus {
   const ctx = storeContext(store);
-  return ctx.db.snapshot(() => txResilienceStatus(ctx, options.at ?? ts(ctx)));
+  return ctx.db.snapshot(() => txResilienceStatus(ctx, options.at ?? ts(ctx), { backupsDir: store.workspace.backupsDir }));
 }
 

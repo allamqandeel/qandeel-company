@@ -634,10 +634,13 @@ try {
     check(createWorkspaceAtVersionForTest(root, 9) === 9, 'a real v9 (C5) workspace');
     const report = await S.safeUpgrade(root);
     check(report.outcome === 'ACTIVATED' && report.fromVersion === 9 && report.toVersion === S.CURRENT_SCHEMA_VERSION && report.snapshotSha256, 'Preflight → Backup → Rehearse → Migrate → Verify → Activate');
-    const rollback = S.rollbackSchemaUpdate(root, report.updateId);
+    const rollback = await S.rollbackSchemaUpdate(root, report.updateId);
     check(rollback.restored && S.readUpdateHold(root)?.code === 'OPERATOR_ROLLBACK', 'the compatible pre-update snapshot is restored; the workspace is held');
+    check(rollback.postUpdateWork.exists === false && /^[0-9a-f]{64}$/.test(rollback.preRollbackSnapshot.sha256), 'nothing after activation was discarded; the replaced database is retained (R2-31)');
     check(refusedWith(() => CompanyStore.open(root), 'UPDATE_HOLD'), 'a held workspace is never reopened (so never re-migrated in a loop)');
     S.clearUpdateHold(root, 'operator.reviewed');
+    // After the hold is cleared the next upgrade is rehearsed again through the lifecycle (R2-30), never live at open.
+    check((await S.safeUpgrade(root)).outcome === 'ACTIVATED', 'the re-upgrade goes through safe-upgrade');
     const reopened = CompanyStore.open(root);
     try {
       check(reopened.schemaVersion === S.CURRENT_SCHEMA_VERSION, 'after the operator clears the hold, the store opens');

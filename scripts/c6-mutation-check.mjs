@@ -187,6 +187,42 @@ const MUTATIONS = [
     runs: [RES],
   },
   {
+    id: 'c6-separate-volume-counts-as-off-device',
+    gate: 'R2-28: only an operator-attested destination meets the off-device objective; a second partition of the same disk never does',
+    edits: [{ file: `${STORAGE}/resilience.js`, search: "return domain === 'ATTESTED_OFF_DEVICE';", replace: "return domain !== 'SAME_VOLUME';", expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
+    id: 'c6-restore-dispatches-past-backup-point',
+    gate: 'R2-29: a clean restore holds every live job that could reach an external effect the lost device may already have performed',
+    edits: [{ file: `${STORAGE}/resilience.js`, search: 'const held = effectCapableLiveJobs(ctx).filter((jobId) => txHoldForReconciliation(ctx, jobId, RESTORE_HOLD_CODE));', replace: 'const held = [];', expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
+    id: 'c6-existing-company-migrated-at-open',
+    gate: 'R2-30: an existing Company with pending migrations is never migrated live at open (safe-upgrade only)',
+    edits: [{ file: `${STORAGE}/store.js`, search: 'refuseExistingCompany: options.liveSchemaUpdate !== true,', replace: 'refuseExistingCompany: false,', expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
+    id: 'c6-start-skips-safe-upgrade',
+    gate: 'R2-30: the runtime upgrades an existing Company through the safe-upgrade lifecycle before opening it',
+    edits: [{ file: `${RT}/runtime.js`, search: "if (!isQandeelError(error, 'SCHEMA_UPDATE_REQUIRED'))", replace: 'if (true)', expectedCount: 1 }],
+    runs: [SIGNAL],
+  },
+  {
+    id: 'c6-maintenance-ignores-open-connection',
+    gate: 'm-22: maintenance refuses while another connection holds the database open (a Windows restore could not replace it)',
+    edits: [{ file: `${STORAGE}/maintenance.js`, search: 'assertDatabaseNotInUse(layout.databasePath);', replace: '/* mutation: in-use preflight removed */', expectedCount: 2 }],
+    runs: [RES],
+  },
+  {
+    id: 'c6-rollback-discards-post-update-work',
+    gate: 'R2-31: a rollback that would discard post-activation work is refused unless the operator explicitly acknowledges it',
+    edits: [{ file: `${STORAGE}/maintenance.js`, search: 'if (exists && !acknowledged) {', replace: 'if (false) {', expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
     id: 'c6-report-judgement-without-evidence',
     gate: 'an assessment, trend or recommendation cites evidence and carries its uncertainty',
     edits: [{ file: `${MIND}/reporting.js`, search: 'if (!free && c.evidenceRefs.length === 0)\n', replace: 'if (false)\n', expectedCount: 1 }],

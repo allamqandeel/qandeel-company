@@ -4,7 +4,9 @@
  * network listener, no service installation. Every command takes an explicit `--workspace`; no
  * Founder path is built in. Output is content-free JSON (IDs, states, counts, codes).
  *
- *   init            --workspace <dir>                      create/validate the workspace, migrate
+ *   init            --workspace <dir>                      create/validate the workspace, migrate a NEW one (an existing
+ *                                                          Company with pending migrations is refused: SCHEMA_UPDATE_REQUIRED
+ *                                                          → safe-upgrade; `start` runs safe-upgrade automatically)
  *   start           --workspace <dir> [--concurrency <n>]  run the Runtime Supervisor until SIGINT/SIGTERM
  *   health          --workspace <dir>                      read-only health/readiness inspection
  *   submit          --workspace <dir> --kind <c1.noop|c1.steps> [--owner <kind:id>] [--steps <n>] [--step-ms <n>] [--idempotency-key <k>]
@@ -34,12 +36,17 @@
  *   improvement     --workspace <dir>                      evaluation / learning health and recovery status
  *   report          --workspace <dir> --cadence <DAILY|WEEKLY|MONTHLY>   generate (idempotently) and print typed claims
  *   portable-backup --workspace <dir> --destination <dir> [--attest-off-device]   encrypted package outside the workspace
- *   restore-portable --workspace <new empty dir> --package <file>        clean-environment restore (runtime not started)
+ *                   (off-device ONLY when attested: a separate volume may be a partition of the same disk)
+ *   restore-portable --workspace <new empty dir> --package <file>        clean-environment restore (runtime not started):
+ *                   reports the backup point and data age, holds effect-capable work for reconciliation, and runs
+ *                   safe-upgrade when the package is from an older schema
  *   restore-drill   --workspace <dir>                      isolated restore drill of the newest generation
  *   prune-backups   --workspace <dir> [--keep-last <n>] [--daily <n>] [--weekly <n>] [--monthly <n>]
  *   safe-upgrade    --workspace <dir>                      Preflight → Backup → Rehearse → Migrate → Verify → Activate
  *   clear-update-hold --workspace <dir> --reason <code>    operator acknowledgement of an UPDATE_HOLD
- *   rollback-update --workspace <dir> --update <id>        restore a kept pre-update snapshot (bounded period)
+ *   rollback-update --workspace <dir> --update <id> [--discard-post-update-work]   restore a kept pre-update snapshot
+ *                   (bounded period); refused when work was recorded after activation unless acknowledged; the
+ *                   replaced live database is retained as a pre-rollback snapshot
  * * There is deliberately no Founder write command (no register-founder, approve or reject): a
  * Founder reference typed on a command line is not authentication. Founder authority arrives with
  * the authenticated Founder surface (C5); until then R3 work stays WAITING_APPROVAL (D-C2-13).
@@ -128,6 +135,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       weekly: { type: 'string' },
       monthly: { type: 'string' },
       update: { type: 'string' },
+      'discard-post-update-work': { type: 'boolean' },
     },
   });
   if (command === undefined || values.workspace === undefined) fail('USAGE', USAGE, 2);
@@ -348,7 +356,8 @@ export async function main(argv: readonly string[]): Promise<void> {
       const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
       try {
         const r = await createPortableBackup(store, { destination: new DirectoryDestination(path.resolve(values.destination), { attestOffDevice: values['attest-off-device'] === true }), passphrase, runtimeVersion: RUNTIME_VERSION });
-        out({ ok: true, command, ...r });
+        // R2-28: a different volume may be a second partition of the same disk; only the operator's attestation counts.
+        out({ ok: true, command, ...r, ...(r.offDevice ? {} : { offDeviceNote: 'NOT_OFF_DEVICE: this destination does not meet the off-device objective unless you attest it is outside this laptop (--attest-off-device); a separate volume may be a partition of the same disk' }) });
       } finally {
         store.close();
       }
@@ -359,7 +368,9 @@ export async function main(argv: readonly string[]): Promise<void> {
       const passphrase = process.env.QANDEEL_RECOVERY_PASSPHRASE;
       if (passphrase === undefined) fail('USAGE', 'set QANDEEL_RECOVERY_PASSPHRASE', 2);
       const r = restorePortableBackup(readFileSync(path.resolve(values.package)), workspace, { passphrase });
-      out({ ok: true, command, ...r });
+      // An older snapshot is restored at its own version (m-25): it is brought current only through safe-upgrade.
+      const upgrade = r.schemaUpdateRequired ? await safeUpgrade(workspace, { runtimeVersion: RUNTIME_VERSION }) : null;
+      out({ ok: true, command, ...r, ...(upgrade ? { safeUpgrade: upgrade } : {}) });
       return;
     }
     case 'restore-drill': {
@@ -390,7 +401,8 @@ export async function main(argv: readonly string[]): Promise<void> {
       return;
     }
     case 'rollback-update': {
-      out({ ok: true, command, ...rollbackSchemaUpdate(workspace, assertId(values.update, 'update')) });
+      // R2-31: refused when work was recorded after activation unless the operator explicitly acknowledges discarding it.
+      out({ ok: true, command, ...(await rollbackSchemaUpdate(workspace, assertId(values.update, 'update'), { discardPostUpdateWork: values['discard-post-update-work'] === true })) });
       return;
     }
     default:
