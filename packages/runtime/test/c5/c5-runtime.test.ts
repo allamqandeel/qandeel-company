@@ -121,7 +121,7 @@ describe('C5 runtime: Founder communication through governed runs', () => {
       assert.equal(rt.founder.attention.list()[0]?.lane, 'CEO_BRIEFS');
     }));
 
-  test('C5-PROOF: a Director derives a Department goal from inside its run (fenced, seat-checked); an ordinary employee cannot', () =>
+  test('C5-PROOF: a Director derives a Department goal from inside its run (fenced; seat AND explicit Founder-delegated grant, AC-01); an ordinary employee cannot', () =>
     withRuntime('c5-goal-act', async ({ rt, w, o }) => {
       const goals = rt.founder.goals;
       let parent = goals.propose(w.founder, { kind: 'COMPANY', title: 'إطلاق السعودية', summary: 'x', ownerRef: o.ceo.ref });
@@ -133,16 +133,27 @@ describe('C5 runtime: Founder communication through governed runs', () => {
         rt.transitionWorkItem(workItem.id, { to: 'READY', reasonCode: 'release' });
         return workItem.id;
       };
+      const expiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
+      const delegate = (e: EmployeeRecord): string => rt.org.organization.delegateAuthority(w.founder, { employeeId: e.id, capability: 'org.goal.derive', expiresAt, purposeCode: 'goal.direction', reasonCode: 'delegated' }).grantId;
+      // A grant without the seat derives nothing.
+      delegate(w.employee);
       const byEmployee = submit(w.employee);
       await until(rt, byEmployee, ['COMPLETED']);
-      assert.equal(goals.list({ kind: 'DEPARTMENT' }).length, 0, 'no seat, no derivation');
+      assert.equal(goals.list({ kind: 'DEPARTMENT' }).length, 0, 'no seat, no derivation (a grant never replaces the seat)');
+      // The seat without a grant derives nothing either (Title ≠ Authority, PO-R2-D).
+      const seatOnly = submit(o.director);
+      await until(rt, seatOnly, ['COMPLETED']);
+      assert.equal(goals.list({ kind: 'DEPARTMENT' }).length, 0, 'the Director seat alone derives nothing');
+      const grantId = delegate(o.director);
       const byDirector = submit(o.director);
       await until(rt, byDirector, ['COMPLETED']);
+      assert.equal(must(rt.governance.grants(o.director.id).find((g) => g.id === grantId)).uses, 1, 'the DONE act consumed one use');
       const derived = goals.list({ kind: 'DEPARTMENT' });
       assert.equal(derived.length, 1);
       assert.deepEqual([must(derived[0]).parentGoalId, must(derived[0]).state, must(derived[0]).departmentId, must(derived[0]).ownerRef], [parent.id, 'ACTIVE', w.departmentId, o.director.ref]);
       const again = submit(o.director);
       await until(rt, again, ['COMPLETED']);
       assert.equal(goals.list({ kind: 'DEPARTMENT' }).length, 1, 'idempotent per (employee, parent, title)');
+      assert.equal(must(rt.governance.grants(o.director.id).find((g) => g.id === grantId)).uses, 1, 'a replay consumes nothing');
     }));
 });

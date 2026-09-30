@@ -442,13 +442,16 @@ export function recordMessage(store: CompanyStore, fence: Fence, input: MessageP
   });
 }
 
-/** A Director derives a Department goal or links its own work to a goal from inside its governed run (C5, Stage 2 §3). */
+/**
+ * A Director derives a Department goal or links its own work to a goal from inside its governed run (C5, Stage 2
+ * §3) — only with BOTH the Director seat and an explicit Founder-delegated `org.goal.*` grant (PO-R2-D, AC-01).
+ */
 export function recordGoalAct(store: CompanyStore, fence: Fence, action: 'goal.derive' | 'goal.link', args: Record<string, unknown>): { outcome: 'DONE' | 'REFUSED'; code: string; resultRef: string | null } {
   return fenced(store, 'goal act', fence, (ctx) => {
     verifyFence(ctx, fence);
     const a = attributed(ctx, fence);
     const e = getEmployeeRow(ctx, a.employeeId);
-    return txGoalAct(ctx, a.employeeId, e.ref, a.departmentId, a.workItemId, fence.runId, action, args);
+    return txGoalAct(ctx, fence, a.employeeId, e.ref, a.departmentId, a.workItemId, action, args);
   });
 }
 

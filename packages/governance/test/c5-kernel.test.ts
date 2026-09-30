@@ -6,9 +6,29 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { isQandeelError } from '@qandeel-company/domain';
+import { isQandeelError, type Timestamp } from '@qandeel-company/domain';
 
-import { assertGoalTransition, briefAttentionLevel, classifyFounderIntent, goalTransitionNeedsFounder, isFounderBrief, parseProposal, warrantsFounderAttention, type FounderIntent } from '../src/index.js';
+import { GOAL_ACTIONS, assertCapability, assertGoalTransition, briefAttentionLevel, classifyFounderIntent, decideOrgAct, goalActCapability, goalTransitionNeedsFounder, isFounderBrief, isOrgCapability, parseProposal, warrantsFounderAttention, type FounderIntent, type GrantView } from '../src/index.js';
+
+describe('AC-01 kernel (PO-R2-D): goal acts need their own explicit, Founder-delegable capability', () => {
+  test('AC-01: org.goal.derive / org.goal.link are registered org capabilities, one per goal act, neither implying the other', () => {
+    const at = '2026-01-01T00:00:00.000Z' as Timestamp;
+    const grant = (capability: string): GrantView => ({ id: 'g', capability, resourceScope: '*', riskCeiling: 'R1', dataClassCeiling: 'D1', expiresAt: null, maxUses: null, uses: 0, status: 'ACTIVE' });
+    assert.deepEqual(GOAL_ACTIONS.map((a) => goalActCapability(a)), ['org.goal.derive', 'org.goal.link']);
+    for (const a of GOAL_ACTIONS) {
+      const cap = goalActCapability(a) ?? '';
+      assert.equal(assertCapability(cap), cap);
+      assert.equal(isOrgCapability(cap), true, `${cap} is delegated only through the Founder org-delegation path`);
+      assert.deepEqual(decideOrgAct('ACTIVE', [], { capability: cap, resource: '*', at }), { effect: 'DENY', code: 'NO_GRANT' });
+      assert.equal(decideOrgAct('ACTIVE', [grant(cap)], { capability: cap, resource: '*', at }).effect, 'ALLOW');
+    }
+    assert.equal(decideOrgAct('ACTIVE', [grant('org.goal.derive')], { capability: 'org.goal.link', resource: '*', at }).effect, 'DENY', 'derive does not imply link');
+    assert.equal(decideOrgAct('ACTIVE', [grant('org.goal.link')], { capability: 'org.goal.derive', resource: '*', at }).effect, 'DENY', 'link does not imply derive');
+    assert.equal(goalActCapability('toString'), null, 'own-key lookup only');
+    assert.equal(goalActCapability('goal.approve'), null);
+    assert.throws(() => assertCapability('org.goal.approve'), (e) => isQandeelError(e, 'VALIDATION_FAILED'));
+  });
+});
 
 /** The value a proof relies on, present by construction of the fixture. */
 function must<T>(v: T | null | undefined, what = 'value'): T {

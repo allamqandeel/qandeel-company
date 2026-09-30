@@ -28,6 +28,7 @@ const SECURITY = { cwd: 'packages/command-center', tests: ['dist/test/security.t
 const LAYOUT = { cwd: 'packages/command-center-ui', tests: ['dist/test/layout.test.js'] };
 const SIGNAL = { cwd: 'packages/runtime', tests: ['dist/test/c5/c5-founder-signal.test.js'] };
 const KERNEL = { cwd: 'packages/governance', tests: ['dist/test/c5-kernel.test.js'] };
+const RUNTIME_C5 = { cwd: 'packages/runtime', tests: ['dist/test/c5/c5-runtime.test.js'] };
 
 const STORE = 'packages/storage/dist/src';
 const RT = 'packages/runtime/dist/src';
@@ -200,6 +201,43 @@ const MUTATIONS = [
     gate: 'the object noun is the head after the verb or the closing goal noun, never a noun inside the title (RR1-1)',
     edits: [{ file: `${GOV}/founder.js`, search: "const noun = head === 'GOAL' || tail === 'GOAL' ? 'GOAL' : (head ?? tail);", replace: 'const noun = obj.map(nounOf).find((n) => n !== null) ?? null;', expectedCount: 1 }],
     runs: [KERNEL],
+  },
+  // --- R2 Architecture Closure Correction AC-01 (PO-R2-D): a goal act needs the Director seat AND its own grant ---
+  {
+    id: 'c5-goal-derive-grant-skipped',
+    gate: 'a Director seat alone never derives a Department goal: org.goal.derive must be an explicit Founder-delegated grant (AC-01)',
+    edits: [
+      { file: `${STORE}/goals.js`, search: "if (decision.effect === 'DENY') {", replace: "if (decision.effect === 'DENY' && action !== 'goal.derive') {", expectedCount: 1 },
+      { file: `${STORE}/goals.js`, search: 'consumeGrant(ctx, decision.grantId);', replace: "if (decision.effect === 'ALLOW') consumeGrant(ctx, decision.grantId);", expectedCount: 1 },
+    ],
+    runs: [STORAGE, RUNTIME_C5],
+  },
+  {
+    id: 'c5-goal-link-grant-skipped',
+    gate: 'a Director seat alone never links work to a goal: org.goal.link must be its own explicit grant, never implied by org.goal.derive (AC-01)',
+    edits: [
+      { file: `${STORE}/goals.js`, search: "if (decision.effect === 'DENY') {", replace: "if (decision.effect === 'DENY' && action !== 'goal.link') {", expectedCount: 1 },
+      { file: `${STORE}/goals.js`, search: 'consumeGrant(ctx, decision.grantId);', replace: "if (decision.effect === 'ALLOW') consumeGrant(ctx, decision.grantId);", expectedCount: 1 },
+    ],
+    runs: [STORAGE],
+  },
+  {
+    id: 'c5-goal-link-seat-skipped',
+    gate: 'a grant never replaces the Director seat for a goal link (AC-01)',
+    edits: [{ file: `${STORE}/goals.js`, search: "if (departmentId === null || holdsSeat(ctx, employeeId, 'DIRECTOR', departmentId, at, action) === null)", replace: "if (action !== 'goal.link' && (departmentId === null || holdsSeat(ctx, employeeId, 'DIRECTOR', departmentId, at, action) === null))", expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'c5-goal-derive-seat-skipped',
+    gate: 'a grant never replaces the Director seat (or valid acting coverage) for a goal derivation (AC-01)',
+    edits: [{ file: `${STORE}/goals.js`, search: "if (departmentId === null || holdsSeat(ctx, employeeId, 'DIRECTOR', departmentId, at, action) === null)", replace: "if (action !== 'goal.derive' && (departmentId === null || holdsSeat(ctx, employeeId, 'DIRECTOR', departmentId, at, action) === null))", expectedCount: 1 }],
+    runs: [STORAGE, RUNTIME_C5],
+  },
+  {
+    id: 'c5-goal-grant-use-not-consumed',
+    gate: 'a DONE goal act consumes one use of the grant that authorized it, so a use limit binds (AC-01)',
+    edits: [{ file: `${STORE}/goals.js`, search: 'consumeGrant(ctx, decision.grantId);', replace: '/* mutation: grant use not consumed */', expectedCount: 1 }],
+    runs: [STORAGE],
   },
 ];
 
