@@ -113,13 +113,28 @@ export function warrantsFounderAttention(purpose: MessagePurpose, level: Attenti
 
 /** Read intents change attention only; mutating intents become structured previews (explicit confirmation). */
 export const READ_INTENTS = ['OPEN_EMPLOYEE', 'SHOW_DEPARTMENT', 'SHOW_GOAL', 'WHO_WORKS_ON', 'WHAT_IS_BLOCKED', 'NEEDS_MY_APPROVAL', 'SHOW_BRIEFS', 'RETURN_TO_LIVE', 'SHOW_CEO', 'SHOW_TIMELINE', 'SHOW_REPORT', 'SHOW_PERFORMANCE'] as const;
-export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK'] as const;
+/**
+ * The Founder's exception decisions (R2-21) are STRUCTURED-ONLY intents: no natural-language pattern produces
+ * them (like GOAL_PROPOSE); the surface posts them with IDs / codes / bounded numbers, and they are confirmed
+ * through the same governed preview as every other act.
+ */
+export const EXCEPTION_INTENTS = ['TOOL_RECONCILE', 'RESERVATION_RECONCILE', 'JOB_RECONCILE', 'REVIEW_ESCALATION_RESOLVE', 'SYSTEMIC_DECIDE', 'ATTRIBUTION_DECIDE', 'LESSON_DECIDE', 'OUTCOME_VERIFY', 'PROMOTION_DECIDE'] as const;
+export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS] as const;
 export type ReadIntent = (typeof READ_INTENTS)[number];
 export type MutatingIntent = (typeof MUTATING_INTENTS)[number];
 
 export type FounderIntent =
   | { readonly kind: 'READ'; readonly intent: ReadIntent; readonly argument: string | null }
-  | { readonly kind: 'MUTATING'; readonly intent: MutatingIntent; readonly argument: string | null; readonly amount: { readonly currency: string; readonly value: number } | null; readonly decision: 'APPROVE' | 'REJECT' | null }
+  | {
+      readonly kind: 'MUTATING';
+      readonly intent: MutatingIntent;
+      readonly argument: string | null;
+      readonly amount: { readonly currency: string; readonly value: number } | null;
+      /** The decision the words state; null when none is stated (never a silent default). */
+      readonly decision: 'APPROVE' | 'REJECT' | null;
+      /** GOAL_STATE only: the target state of the command's own verb (never re-read from the argument). */
+      readonly goalState: GoalState | null;
+    }
   | { readonly kind: 'UNKNOWN' };
 
 export const isMutatingIntent = (v: unknown): v is MutatingIntent => typeof v === 'string' && (MUTATING_INTENTS as readonly string[]).includes(v);
@@ -162,19 +177,25 @@ interface Pattern {
 }
 
 // Order matters: the first match wins; mutating verbs are tested before generic "show" reads. A word ends
-// at whitespace or the end of input (`\b` is ASCII-only and never sits between an Arabic letter and a space).
+// at whitespace or the end of input (`\b` is ASCII-only and never sits between an Arabic letter and a space);
+// a decision verb also starts a word (S), so a verb inside another word ("deactivate") is not that verb.
+// A named act (a goal, a staffing request, a conflict) is matched before the generic approve / reject, so a
+// word in its argument (a goal titled "Deny …") never turns it into another act (R2-24).
 const W = String.raw`(?=\s|$)`;
+const S = String.raw`(?:^|\s)`;
+const APPROVE_VERBS = 'وافق|اعتمد|اقبل|approve|accept|grant';
+const REJECT_VERBS = 'ارفض|refuse|reject|deny';
 const PATTERNS: readonly Pattern[] = [
   { re: /^(?:رجوع|ارجع|عوده|عد)(?:\s+(?:الي|ل))?\s*(?:الحي|المباشر|live)?$|^(?:return|back|go back)(?:\s+to)?\s*live$|^live$/, intent: 'RETURN_TO_LIVE', kind: 'READ' },
   { re: new RegExp(String.raw`(?:وافق|اعتمد|approve|accept|شغل|نفذ|run|launch|start|حدد|set)${W}.*(?:ميزانيه|budget|سقف|ceiling)`), intent: 'BUDGET_CEILING', kind: 'MUTATING' },
-  { re: new RegExp(String.raw`(?:ارفض|refuse|reject|deny)${W}`), intent: 'APPROVAL_DECIDE', kind: 'MUTATING', decision: 'REJECT' },
-  { re: new RegExp(String.raw`(?:وافق|اعتمد|اقبل|approve|accept|grant)${W}.*(?:هدف|goal)`), intent: 'GOAL_APPROVE', kind: 'MUTATING' },
-  { re: new RegExp(String.raw`(?:وافق|اعتمد|اقبل|approve|accept|grant)${W}`), intent: 'APPROVAL_DECIDE', kind: 'MUTATING', decision: 'APPROVE' },
+  { re: new RegExp(String.raw`${S}(?:حل|resolve|${APPROVE_VERBS}|${REJECT_VERBS}|pass|rework)${W}.*(?:تعارض|خلاف|conflict)`), intent: 'CONFLICT_RESOLVE', kind: 'MUTATING' },
+  { re: new RegExp(String.raw`${S}(?:${APPROVE_VERBS}|${REJECT_VERBS})${W}.*(?:توظيف|staffing|hiring|hire)|(?:توظيف|staffing|hire)${W}`), intent: 'STAFFING_DECIDE', kind: 'MUTATING' },
+  { re: new RegExp(String.raw`${S}(?:${APPROVE_VERBS})${W}.*(?:هدف|goal)`), intent: 'GOAL_APPROVE', kind: 'MUTATING' },
+  { re: new RegExp(String.raw`${S}(?:${REJECT_VERBS})${W}`), intent: 'APPROVAL_DECIDE', kind: 'MUTATING', decision: 'REJECT' },
+  { re: new RegExp(String.raw`${S}(?:${APPROVE_VERBS})${W}`), intent: 'APPROVAL_DECIDE', kind: 'MUTATING', decision: 'APPROVE' },
   { re: new RegExp(String.raw`(?:اقترح|انشئ|انشيء|add|create|propose)${W}.*(?:هدف|goal)`), intent: 'GOAL_PROPOSE', kind: 'MUTATING' },
-  { re: new RegExp(String.raw`(?:اوقف|فعل|activate|pause|resume|achieve|cancel|الغ|الغي)${W}.*(?:هدف|goal)`), intent: 'GOAL_STATE', kind: 'MUTATING' },
+  { re: new RegExp(String.raw`${S}(?:اوقف|فعل|activate|pause|resume|achieve|cancel|الغ|الغي)${W}.*(?:هدف|goal)`), intent: 'GOAL_STATE', kind: 'MUTATING' },
   { re: new RegExp(String.raw`(?:فوض|delegate|assign)${W}`), intent: 'DELEGATE_WORK', kind: 'MUTATING' },
-  { re: new RegExp(String.raw`(?:حل|resolve)${W}.*(?:تعارض|خلاف|conflict)`), intent: 'CONFLICT_RESOLVE', kind: 'MUTATING' },
-  { re: new RegExp(String.raw`(?:توظيف|staffing|hire)${W}`), intent: 'STAFFING_DECIDE', kind: 'MUTATING' },
   { re: new RegExp(String.raw`(?:مين|من)\s+(?:بيشتغل|يشتغل|يعمل|شغال)\s+(?:علي|في)${W}|who(?:'s| is)?\s+working\s+on${W}`), intent: 'WHO_WORKS_ON', kind: 'READ' },
   { re: /(?:ايه|ما|ماذا)\s*(?:اللي|الذي)?\s*(?:ال)?(?:متوقف|معطل|محجوز|blocked)|what(?:'s| is)?\s+blocked/, intent: 'WHAT_IS_BLOCKED', kind: 'READ' },
   { re: /(?:محتاج|يحتاج|بحاجه|في انتظار|ينتظر)\s*(?:ل)?(?:موافقتي|قراري|مني)|needs?\s+my\s+(?:approval|decision)|pending\s+approvals?/, intent: 'NEEDS_MY_APPROVAL', kind: 'READ' },
@@ -189,7 +210,30 @@ const PATTERNS: readonly Pattern[] = [
   { re: /(?:افتح|اعرض|اظهر|open|show)\s+(.+)/, intent: 'OPEN_EMPLOYEE', kind: 'READ' },
 ];
 
-const ARGUMENT_STRIP = /^(?:افتح|اعرض|اظهر|عرض|show|open|approve|accept|reject|refuse|deny|وافق|اعتمد|اقبل|ارفض|delegate|فوض|فوّض|activate|pause|resume|cancel|فعل|اوقف|أوقف|الغ|الغي|propose|create|add|اقترح|انشئ|أنشئ)\s+/;
+const ARGUMENT_STRIP = /^(?:افتح|اعرض|اظهر|عرض|show|open|approve|accept|grant|reject|refuse|deny|وافق|اعتمد|اقبل|ارفض|delegate|فوض|فوّض|activate|pause|resume|achieve|cancel|فعل|اوقف|أوقف|الغ|الغي|propose|create|add|اقترح|انشئ|أنشئ|resolve|حل)\s+/;
+
+/** The target state a goal-state verb names (R2-23). Every verb of the GOAL_STATE pattern maps; anything else is null. */
+const GOAL_STATE_VERB = new RegExp(String.raw`${S}(اوقف|فعل|activate|pause|resume|achieve|cancel|الغ|الغي)${W}`);
+function goalStateOf(normalized: string): GoalState | null {
+  const verb = GOAL_STATE_VERB.exec(normalized)?.[1];
+  if (verb === 'pause' || verb === 'اوقف') return 'PAUSED';
+  if (verb === 'cancel' || verb === 'الغ' || verb === 'الغي') return 'CANCELLED';
+  if (verb === 'achieve') return 'ACHIEVED';
+  if (verb === 'activate' || verb === 'resume' || verb === 'فعل') return 'ACTIVE';
+  return null;
+}
+
+/**
+ * The decision a staffing / conflict command states in words (R2-24): a reject / rework word, or an approve /
+ * pass / hire word — never both, never assumed. Null when the words state no decision.
+ */
+const REJECT_WORD = new RegExp(String.raw`${S}(?:${REJECT_VERBS}|rework)${W}`);
+const APPROVE_WORD = new RegExp(String.raw`${S}(?:${APPROVE_VERBS}|pass|hire)${W}`);
+function statedDecision(normalized: string): 'APPROVE' | 'REJECT' | null {
+  const reject = REJECT_WORD.test(normalized);
+  const approve = APPROVE_WORD.test(normalized);
+  return reject === approve ? null : reject ? 'REJECT' : 'APPROVE';
+}
 const FILLERS = /^(?:علي|على|في|the|a|an|ال|لـ|ل|to|for|on)\s+/;
 
 function argumentOf(normalized: string, intent: ReadIntent | MutatingIntent): string | null {
@@ -221,7 +265,9 @@ export function classifyFounderIntent(input: string): FounderIntent {
       if (p.intent === 'OPEN_EMPLOYEE' && argument === null) return { kind: 'UNKNOWN' };
       return { kind: 'READ', intent: p.intent as ReadIntent, argument: p.intent === 'RETURN_TO_LIVE' || p.intent === 'WHAT_IS_BLOCKED' || p.intent === 'NEEDS_MY_APPROVAL' || p.intent === 'SHOW_BRIEFS' || p.intent === 'SHOW_CEO' || p.intent === 'SHOW_TIMELINE' ? null : argument };
     }
-    return { kind: 'MUTATING', intent: p.intent as MutatingIntent, argument, amount: amountOf(input), decision: p.decision ?? null };
+    const intent = p.intent as MutatingIntent;
+    const decision = p.decision ?? (intent === 'STAFFING_DECIDE' || intent === 'CONFLICT_RESOLVE' ? statedDecision(text) : null);
+    return { kind: 'MUTATING', intent, argument, amount: amountOf(input), decision, goalState: intent === 'GOAL_STATE' ? goalStateOf(text) : null };
   }
   return { kind: 'UNKNOWN' };
 }

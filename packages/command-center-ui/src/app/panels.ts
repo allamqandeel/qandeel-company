@@ -7,7 +7,7 @@
  * Founder as a code. The sheets share the company's language: the same avatars, Department accents, gold,
  * radii and status grammar as the cards in the columns.
  */
-import { ACTION_LABEL, CALENDAR_LABEL, CAPABILITY_LABEL, dirOf, FIELD_LABEL, fmtDate, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, fmtTime, hasArabic, humanize, INTENT_LABEL, KIND_LABEL, LANE_LABEL, plural, PURPOSE_LABEL, RELATION_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATE_LABEL, t } from '../model/format.js';
+import { ACTION_LABEL, CALENDAR_LABEL, CAPABILITY_LABEL, DECISION_LABEL, dirOf, FIELD_LABEL, fmtDate, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, fmtTime, hasArabic, humanize, INTENT_LABEL, KIND_LABEL, LANE_LABEL, plural, PURPOSE_LABEL, RELATION_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATE_LABEL, t } from '../model/format.js';
 import type { CompanyUniverse } from '../model/types.js';
 
 type Json = Record<string, unknown>;
@@ -41,6 +41,8 @@ export interface PanelHost {
   openThread(threadId: string, employeeId: string): void;
   startConversation(employeeId: string | null): void;
   runCommand(text: string): Promise<void>;
+  /** A structured act the surface already knows (IDs / codes): posted as a governed preview, never re-typed as text. */
+  previewAction(intent: string, payload: Json): Promise<void>;
   confirmPreview(previewId: string, fingerprint: string): Promise<void>;
   rejectPreview(previewId: string): Promise<void>;
   dismissAttention(itemId: string): Promise<void>;
@@ -136,6 +138,14 @@ function attentionItem(i: Json, host: PanelHost): HTMLElement {
   const staffing = i.staffing as Json | undefined;
   const goal = i.goal as Json | undefined;
   const escalation = i.escalation as Json | undefined;
+  const conflict = i.conflict as Json | undefined;
+  const effect = i.uncertainEffect as Json | undefined;
+  const reservation = i.heldReservation as Json | undefined;
+  const job = i.heldJob as Json | undefined;
+  const reviewEsc = i.reviewEscalation as Json | undefined;
+  const systemic = i.systemic as Json | undefined;
+  const judgment = i.judgment as Json | undefined;
+  const outcome = i.outcome as Json | undefined;
   const brief = message?.brief as Json | null | undefined;
   const isBrief = String(i.sourceKind) === 'BRIEF' || Boolean(brief);
   const head = h('div', { class: 'rail-item-head' }, h('span', { class: `level-mark level-${level.toLowerCase()}`, 'aria-hidden': 'true' }), h('span', { class: 'rail-kind', text: isBrief ? 'CEO brief' : t(SOURCE_LABEL, String(i.sourceKind)) }), owner ? h('span', { class: 'rail-owner', text: owner }) : null, h('time', { class: 'rail-time', text: fmtRelative(String(i.lastSignalAt)) }));
@@ -148,6 +158,20 @@ function attentionItem(i: Json, host: PanelHost): HTMLElement {
   else if (escalation) {
     const title = host.workTitleOf(String(escalation.childWorkItemId));
     ask.append(h('span', { text: 'Escalation on ' }), title ? content('span', title, 'rail-strong') : h('span', { text: 'a work item' }));
+  } else if (conflict) ask.append(h('span', { class: 'rail-strong', text: 'Reviewers disagree' }), h('span', { text: ' — pass the work or send it back' }));
+  else if (effect) ask.append(h('span', { class: 'rail-strong', text: 'An external effect is uncertain' }), h('span', { text: ' — did it happen? It is never repeated without your answer' }));
+  else if (reservation) ask.append(h('span', { class: 'rail-strong', text: 'Money is held for an uncertain call' }), h('span', { text: ' — release it if nothing was billed' }));
+  else if (job) {
+    const title = host.workTitleOf(String(job.workItemId));
+    ask.append(h('span', { text: 'Held after an uncertain effect: ' }), title ? content('span', title, 'rail-strong') : h('span', { class: 'rail-strong', text: 'a work item' }));
+  } else if (reviewEsc) {
+    const title = host.workTitleOf(String(reviewEsc.workItemId));
+    ask.append(h('span', { text: 'A reviewer could not decide on ' }), title ? content('span', title, 'rail-strong') : h('span', { class: 'rail-strong', text: 'a work item' }));
+  } else if (systemic) ask.append(h('span', { class: 'rail-strong', text: 'A repeated failure pattern' }), h('span', { text: ' — is it systemic?' }));
+  else if (judgment) ask.append(h('span', { class: 'rail-strong', text: judgment.subjectKind === 'LESSON' ? 'A lesson the Review Pool could not settle' : 'A cause the Review Pool could not settle' }));
+  else if (outcome) {
+    const title = host.workTitleOf(String(outcome.workItemId));
+    ask.append(h('span', { text: 'Reviewers could not verify the outcome of ' }), title ? content('span', title, 'rail-strong') : h('span', { class: 'rail-strong', text: 'a work item' }));
   } else if (message && !brief) ask.append(h('span', { text: `${t(PURPOSE_LABEL, String(message.purpose ?? 'REQUEST'))} from ` }), h('span', { class: 'rail-strong', text: owner ?? 'the company' }));
   else if (brief) ask.append(h('span', { class: 'rail-strong', text: brief.decisionNeeded ? 'A decision is needed' : 'For your information' }));
   li.append(ask);
@@ -158,18 +182,54 @@ function attentionItem(i: Json, host: PanelHost): HTMLElement {
   }
   if (body.childElementCount) li.append(body);
   const actions = h('div', { class: 'rail-actions' });
+  // Every decision button posts the structured act it shows (R2-24): a governed preview the Founder confirms.
+  const act = (text: string, intent: string, payload: Json, primary = false): void => {
+    const b = h('button', { type: 'button', class: `btn ${primary ? 'btn-primary' : 'btn-quiet'}`, text });
+    b.addEventListener('click', () => void host.previewAction(intent, payload));
+    actions.append(b);
+  };
+  const decided = approval || goal || staffing || conflict || effect || reservation || job || reviewEsc || (systemic && systemic.state === 'CANDIDATE') || judgment;
   if (approval) {
-    const decide = h('button', { type: 'button', class: 'btn btn-primary', text: 'Decide' });
-    decide.addEventListener('click', () => void host.runCommand(`approve ${String(approval.id)}`));
-    actions.append(decide);
+    act('Approve', 'APPROVAL_DECIDE', { approvalId: String(approval.id), decision: 'APPROVE' }, true);
+    act('Reject', 'APPROVAL_DECIDE', { approvalId: String(approval.id), decision: 'REJECT' });
   }
-  if (goal) {
-    const approve = h('button', { type: 'button', class: 'btn btn-primary', text: 'Approve goal' });
-    approve.addEventListener('click', () => void host.runCommand(`approve goal ${String(goal.title)}`));
-    actions.append(approve);
+  if (goal) act('Approve goal', 'GOAL_APPROVE', { goalId: String(goal.id), activate: true }, true);
+  if (staffing) {
+    act('Approve', 'STAFFING_DECIDE', { requestId: String(staffing.id), decision: 'APPROVE' }, true);
+    act('Reject', 'STAFFING_DECIDE', { requestId: String(staffing.id), decision: 'REJECT' });
   }
+  if (conflict) {
+    act('Pass', 'CONFLICT_RESOLVE', { conflictId: String(conflict.id), resolution: 'PASS' }, true);
+    act('Rework', 'CONFLICT_RESOLVE', { conflictId: String(conflict.id), resolution: 'REWORK' });
+  }
+  if (effect) {
+    act('Confirm executed', 'TOOL_RECONCILE', { invocationId: String(effect.id), outcome: 'CONFIRMED_SUCCEEDED' }, true);
+    act('Confirm not executed', 'TOOL_RECONCILE', { invocationId: String(effect.id), outcome: 'CONFIRMED_NOT_EXECUTED' });
+  }
+  // Charging a held reservation needs the provider-reported usage: that decision stays on the structured API (PG-04).
+  if (reservation) act('Release (nothing billed)', 'RESERVATION_RECONCILE', { reservationId: String(reservation.id), decision: 'RELEASE' }, true);
+  if (job) {
+    act('Confirm completed', 'JOB_RECONCILE', { jobId: String(job.id), decision: 'CONFIRMED_COMPLETED' }, true);
+    act('Retry', 'JOB_RECONCILE', { jobId: String(job.id), decision: 'RETRY' });
+    act('Mark failed', 'JOB_RECONCILE', { jobId: String(job.id), decision: 'FAILED' });
+  }
+  if (reviewEsc) {
+    // R4 work is never made executable by review: only rework is offered.
+    if (reviewEsc.risk !== 'R4') act('Pass', 'REVIEW_ESCALATION_RESOLVE', { requestId: String(reviewEsc.id), decision: 'PASS' }, true);
+    act('Rework', 'REVIEW_ESCALATION_RESOLVE', { requestId: String(reviewEsc.id), decision: 'REWORK' }, reviewEsc.risk === 'R4');
+  }
+  if (systemic && systemic.state === 'CANDIDATE') {
+    act('Validate', 'SYSTEMIC_DECIDE', { findingId: String(systemic.id), decision: 'VALIDATE' }, true);
+    act('Reject', 'SYSTEMIC_DECIDE', { findingId: String(systemic.id), decision: 'REJECT' });
+  }
+  if (judgment) {
+    const [intent, key] = judgment.subjectKind === 'LESSON' ? ['LESSON_DECIDE', 'lessonId'] : ['ATTRIBUTION_DECIDE', 'attributionId'];
+    act('Validate', intent, { [key]: String(judgment.subjectId), decision: 'VALIDATE' }, true);
+    act('Reject', intent, { [key]: String(judgment.subjectId), decision: 'REJECT' });
+  }
+  // Verifying an outcome needs the evidence classes and records the Founder cites: structured API only (PG-04).
   if (message) {
-    const reply = h('button', { type: 'button', class: `btn ${approval || goal ? 'btn-quiet' : 'btn-primary'}`, text: 'Reply' });
+    const reply = h('button', { type: 'button', class: `btn ${decided ? 'btn-quiet' : 'btn-primary'}`, text: 'Reply' });
     reply.addEventListener('click', () => host.openThread(String(message.threadId), String(i.ownerRef ?? '').replace('employee:', '')));
     actions.append(reply);
   }
@@ -308,7 +368,7 @@ export function renderGoalFocus(root: HTMLElement, d: Json, host: PanelHost): vo
   if (children.length) root.append(sectionEl('Derived goals', h('ul', { class: 'plain' }, ...children.map((c) => { const b = h('button', { type: 'button', class: 'link', text: String(c.title) }); b.dir = dirOf(String(c.title)); b.addEventListener('click', () => host.openGoal(String(c.id))); return h('li', {}, b, h('span', { class: 'muted', text: ` · ${t(STATE_LABEL, String(c.state))}` })); }))));
   if (company && g.state === 'PROPOSED') {
     const approve = h('button', { type: 'button', class: 'btn btn-primary btn-wide', text: 'Approve this goal' });
-    approve.addEventListener('click', () => void host.runCommand(`approve goal ${String(g.title)}`));
+    approve.addEventListener('click', () => void host.previewAction('GOAL_APPROVE', { goalId: String(g.id), activate: true }));
     root.append(h('div', { class: 'sheet-actions' }, approve));
   }
 }
@@ -453,7 +513,7 @@ export function renderPalette(root: HTMLElement, host: PanelHost, result: Json |
 }
 
 /** Payload fields the Founder reads: identifiers are resolved to names or dropped, never shown as codes. */
-const HIDDEN_FIELDS = new Set(['reasonCode', 'currency', 'approvalId', 'goalId', 'budgetId', 'requestId', 'conflictId', 'employeeId']);
+const HIDDEN_FIELDS = new Set(['reasonCode', 'currency', 'approvalId', 'goalId', 'budgetId', 'requestId', 'conflictId', 'employeeId', 'invocationId', 'reservationId', 'jobId', 'findingId', 'attributionId', 'lessonId', 'promotionId', 'workItemId']);
 
 export function renderPreview(root: HTMLElement, preview: Json, host: PanelHost): void {
   root.replaceChildren();
@@ -463,7 +523,8 @@ export function renderPreview(root: HTMLElement, preview: Json, host: PanelHost)
   const value = (k: string, v: unknown): HTMLElement => {
     if (k === 'capMoney' && typeof v === 'number') return h('span', { text: fmtMoneyMicros(v, currency) });
     if (k === 'capTokens' && typeof v === 'number') return h('span', { text: `${fmtNumber(v)} tokens` });
-    if (k === 'decision') return h('span', { text: v === 'REJECT' ? 'Reject' : 'Approve' });
+    if (k === 'decision' || k === 'outcome' || k === 'verdict') return h('span', { text: t(DECISION_LABEL, String(v)) });
+    if (Array.isArray(v)) return h('span', { text: v.map((x) => humanize(String(x))).join(', ') });
     if (k === 'activate') return h('span', { text: v ? 'Yes' : 'No' });
     if (k === 'to' || k === 'resolution') return h('span', { text: t(STATE_LABEL, String(v)) });
     if (k === 'scope') return h('span', { text: t(SCOPE_LABEL, String(v)) });
@@ -485,7 +546,8 @@ export function renderPreview(root: HTMLElement, preview: Json, host: PanelHost)
   confirm.addEventListener('click', () => void host.confirmPreview(String(preview.id), String(preview.fingerprint)));
   cancel.addEventListener('click', () => void host.rejectPreview(String(preview.id)));
   root.append(h('div', { class: 'preview-actions' }, cancel, confirm));
-  confirm.focus();
+  // The safe choice has the focus (m-43): an Enter pressed out of habit cancels, it never executes.
+  cancel.focus();
 }
 
 // --- time, upcoming, activity ----------------------------------------------------------------------

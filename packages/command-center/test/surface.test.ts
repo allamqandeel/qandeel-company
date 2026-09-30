@@ -169,7 +169,8 @@ describe('Founder surface over loopback HTTP', () => {
       const gov = surface.runtime.governance;
       const [pending] = gov.listApprovals('PENDING');
       assert.ok(pending);
-      const cmd = await c.post('/api/command', { text: 'approve the campaign' });
+      // The command names the approval's work (R2-24: an argument that names nothing never falls back to "the" pending approval).
+      const cmd = await c.post('/api/command', { text: 'approve حملة أداء' });
       assert.equal(cmd.status, 200);
       const preview = cmd.body.preview as { id: string; fingerprint: string; state: string };
       assert.equal(preview.state, 'PREVIEW');
@@ -200,6 +201,45 @@ describe('Founder surface over loopback HTTP', () => {
       c.cookies[SESSION_COOKIE] = c.cookies[SESSION_COOKIE] ?? '';
       const after = await fetch(`${origin}/api/session`, { headers: { Cookie: cookieHeader(c.cookies) } });
       assert.equal(after.status, 401);
+    }));
+
+  test('R2-23 / R2-24: a goal-state command previews its own verb; an unmatched argument previews nothing; a rail act posts a structured preview (Reject reachable)', () =>
+    withSurface(async ({ surface, origin, world }) => {
+      const c = client(origin);
+      await c.post('/api/session/launch', { token: surface.launchUrl().split('#')[1] }, {}, { noCsrf: true });
+      const goals = surface.runtime.founder.goals;
+      const gov = surface.runtime.governance;
+      const pending = must(gov.listApprovals('PENDING')[0]);
+      // Fixture goals (Founder acts through the test seam armed for this workspace).
+      const owner = `employee:${world.ceoId}`;
+      const growth = goals.propose(world.founder, { kind: 'COMPANY', title: 'Growth Engine', summary: 's', ownerRef: owner });
+      goals.transition(world.founder, growth.id, { to: 'APPROVED', reasonCode: 'ok' });
+      goals.transition(world.founder, growth.id, { to: 'ACTIVE', reasonCode: 'ok' });
+      const to = async (text: string): Promise<string | null> => ((await c.post('/api/command', { text })).body.preview as { payload: { to: string } } | undefined)?.payload.to ?? null;
+      assert.equal(await to('pause the growth engine goal'), 'PAUSED');
+      assert.equal(await to('cancel the growth engine goal'), 'CANCELLED');
+      assert.equal(await to('اوقف هدف growth engine'), 'PAUSED');
+      assert.equal(await to('achieve goal growth engine'), 'ACHIEVED');
+      assert.equal(await to('activate goal growth engine'), null, 'an ACTIVE goal is not "activated" again: the transition is checked at preview');
+      assert.equal(goals.get(growth.id).state, 'ACTIVE', 'previews changed nothing');
+      const deny = goals.propose(world.founder, { kind: 'COMPANY', title: 'Deny competitor entry', summary: 's', ownerRef: owner });
+      const named = (await c.post('/api/command', { text: 'approve goal Deny competitor entry' })).body.preview as { intentKind: string; payload: { goalId: string } } | undefined;
+      assert.deepEqual([named?.intentKind, named?.payload.goalId], ['GOAL_APPROVE', deny.id], 'the goal named by its title — never an unrelated approval');
+      for (const text of ['approve the campaign', 'reject goal Deny competitor entry', 'approve Launch KSA', 'resolve the conflict']) {
+        const out = await c.post('/api/command', { text });
+        assert.equal(out.body.preview, undefined, `${text}: an argument that names nothing (or no stated decision) previews nothing`);
+      }
+      assert.equal(gov.getApproval(pending.id).state, 'PENDING');
+      // The rail posts the structured act it shows: Reject is reachable, and the summary says what will happen.
+      const rail = await c.post('/api/previews', { intent: 'APPROVAL_DECIDE', payload: { approvalId: pending.id, decision: 'REJECT' } });
+      assert.equal(rail.status, 200, JSON.stringify(rail.body));
+      const rp = rail.body.preview as { id: string; fingerprint: string; summary: string; intentKind: string };
+      assert.match(rp.summary, /^Reject /);
+      const done = await c.post(`/api/previews/${rp.id}/confirm`, { fingerprint: rp.fingerprint });
+      assert.equal(done.status, 200, JSON.stringify(done.body));
+      assert.equal(gov.getApproval(pending.id).state, 'REJECTED');
+      const goal = await c.post('/api/previews', { intent: 'GOAL_APPROVE', payload: { goalId: deny.id, activate: true } });
+      assert.match((goal.body.preview as { summary: string }).summary, /Deny competitor entry/);
     }));
 
   test('C5-PROOF: a Founder ↔ CEO thread is opened through the session; a message needing an answer creates the reply Work Item', () =>

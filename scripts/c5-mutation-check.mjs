@@ -73,7 +73,8 @@ const MUTATIONS = [
   {
     id: 'c5-preview-fingerprint-unchecked',
     gate: 'a confirmation must present the exact preview fingerprint',
-    edits: [{ file: `${STORE}/founder-actions.js`, search: "if (typeof fingerprint !== 'string' || fingerprint !== preview.fingerprint)\n                refuse('FINGERPRINT_MISMATCH');", replace: '/* mutation: fingerprint unchecked */', expectedCount: 1 }],
+    // R2-26: the one preview check (`checkPreview`) guards both the pre-check and the confirm transaction.
+    edits: [{ file: `${STORE}/founder-actions.js`, search: "if (typeof fingerprint !== 'string' || fingerprint !== preview.fingerprint)\n        refuse('FINGERPRINT_MISMATCH');", replace: '/* mutation: fingerprint unchecked */', expectedCount: 1 }],
     runs: [STORAGE, SURFACE],
   },
   {
@@ -141,6 +142,49 @@ const MUTATIONS = [
     gate: 'attention reconciliation announces a change only when it opened, signalled or resolved an item (D-C5-17)',
     edits: [{ file: `${RT}/runtime.js`, search: 'if (conditional[name]?.(result))\n                changed();', replace: 'changed();', expectedCount: 1 }],
     runs: [SIGNAL],
+  },
+  // --- R2 (Full Strong-v1 review) remediation, cluster K5 ---
+  {
+    id: 'c5-confirm-effect-commits-alone',
+    gate: 'a Founder confirmation is one transaction: the effect never commits before CONFIRMED (an interrupted confirm must not leave an act a retry repeats, R2-26)',
+    edits: [{ file: `${STORE}/governance.js`, search: 'return ctx.db.savepoint(op, () => f(ctx));', replace: "{ const out = ctx.db.savepoint(op, () => f(ctx)); ctx.db.run('COMMIT'); ctx.db.run('BEGIN IMMEDIATE'); return out; }", expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'c5-exception-decision-overtakes-tool',
+    gate: 'a held governed job is decidable only after its uncertain tool effect is decided (R1-04, R2-21)',
+    edits: [{ file: `${STORE}/founder-actions.js`, search: "if (uncertainToolOn(ctx, 'work_item_id', j.work_item_id))", replace: 'if (false)', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'c5-attention-misses-uncertain-effects',
+    gate: 'an uncertain external effect reaches Founder Attention (R2-22)',
+    edits: [{ file: `${STORE}/attention.js`, search: "FROM tool_invocations WHERE state = 'RECONCILIATION_REQUIRED' ORDER BY created_at, id", replace: 'FROM tool_invocations WHERE 0', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'c5-dismissal-swallows-source-changes',
+    gate: 'a dismissal stands only until the source changes: a later change reopens the item (D-C5-06, R2-25)',
+    edits: [{ file: `${STORE}/attention.js`, search: 's.changedAt <= item.resolvedAt', replace: 'true', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'c5-resilience-keyed-per-class',
+    gate: 'a resilience exception is one attention item per instance, never one per failure class (R2-25)',
+    edits: [{ file: `${STORE}/attention.js`, search: 'dedupKey: `resilience:${x.code}:${x.ref}`', replace: 'dedupKey: `resilience:${x.code}`', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'c5-goal-state-verb-lost',
+    gate: 'a goal-state command previews the target state of its own verb (R2-23)',
+    edits: [{ file: `${CC}/api.js`, search: 'const to = command.goalState;', replace: "const to = 'ACTIVE';", expectedCount: 1 }],
+    runs: [SURFACE],
+  },
+  {
+    id: 'c5-unmatched-argument-falls-back',
+    gate: 'a command whose argument names nothing previews nothing — never "the single pending approval" (R2-24)',
+    edits: [{ file: `${CC}/api.js`, search: 'const a = single(argument !== null ? pending.filter(', replace: 'const a = single(argument !== null && false ? pending.filter(', expectedCount: 1 }],
+    runs: [SURFACE],
   },
 ];
 

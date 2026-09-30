@@ -243,7 +243,8 @@ export function txRecordMessage(ctx: StoreContext, fence: Fence, attributedEmplo
   if (t.state !== 'OPEN') return { outcome: 'REFUSED', code: 'THREAD_CLOSED', messageId: null, threadId: t.id };
   if (!isMessagePurpose(input.purpose) || !isAttentionLevel(input.attentionLevel)) return { outcome: 'REFUSED', code: 'INVALID_ARGS', messageId: null, threadId: t.id };
   if (typeof input.body !== 'string' || input.body.trim().length === 0 || input.body.length > 4000) return { outcome: 'REFUSED', code: 'INVALID_ARGS', messageId: null, threadId: t.id };
-  if (containsSecretMaterial(input.body)) return { outcome: 'REFUSED', code: 'SECRET_MATERIAL', messageId: null, threadId: t.id };
+  // m-20: the model-authored brief is scanned (serialized) like the body it accompanies.
+  if (containsSecretMaterial(input.body) || (typeof input.brief === 'object' && input.brief !== null && containsSecretMaterial(JSON.stringify(input.brief)))) return { outcome: 'REFUSED', code: 'SECRET_MATERIAL', messageId: null, threadId: t.id };
   if ((input.purpose === 'BRIEF') !== (input.brief !== null)) return { outcome: 'REFUSED', code: 'BRIEF_SHAPE', messageId: null, threadId: t.id };
   if (input.purpose === 'BRIEF' && t.kind !== 'CEO_BRIEF' && t.kind !== 'FOUNDER_CEO') return { outcome: 'REFUSED', code: 'BRIEF_NOT_CEO', messageId: null, threadId: t.id };
   // One message per (Work Item, purpose, body hash): a resumed run never posts twice.

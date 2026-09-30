@@ -438,7 +438,7 @@ export function recordGoalAct(store: CompanyStore, fence: Fence, action: 'goal.d
     verifyFence(ctx, fence);
     const a = attributed(ctx, fence);
     const e = getEmployeeRow(ctx, a.employeeId);
-    return txGoalAct(ctx, a.employeeId, e.ref, a.departmentId, a.workItemId, action, args);
+    return txGoalAct(ctx, a.employeeId, e.ref, a.departmentId, a.workItemId, fence.runId, action, args);
   });
 }
 
