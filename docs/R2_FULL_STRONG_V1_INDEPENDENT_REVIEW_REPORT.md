@@ -330,3 +330,98 @@ m-45); the rest stay residual.
 **Frozen totals:** 1 BLOCKER (R2-01), 32 MAJOR implementation defects (R2-02 … R2-31, R2-34, R2-35),
 2 MAJOR proof defects (R2-32, R2-33), 48 MINOR, 1 authority conflict (AC-01), 11 Product gaps. No
 infrastructure / environment defect beyond the known host quirks (Bash tool, `security-review` launch).
+
+---
+
+*Everything above this line is the register frozen at `dc408a3`. The sections below were added after it.*
+
+## 12. Remediation wave (after the freeze)
+
+One wave, by root-cause family. The base commit `8a8d494` carries migration `0011_r2_integrity.sql` (the datastore
+half of R2-01, R2-05, R2-11, R2-16, R2-21) and the two proof fixes. Seven clusters then worked in isolated git
+worktrees from that base and were merged one by one into `review/r2-full-strong-v1`; the integration seam that only
+the merged tree could show was closed in `ced8f30`. Every regression proof below was run against the unfixed code
+first and failed; it passes on the fix. Material decisions: DECISION_LOG D-R2-01 … D-R2-08. No new Product
+behaviour: every fix restores an existing contract (authority, recorded decision or stage invariant); where a fix
+needed a choice the authority leaves open, the conservative default is named and the question stays a Product gap.
+
+| Commit | Cluster | Findings |
+|---|---|---|
+| `8a8d494` | base | 0011 migration; R2-32, R2-33 |
+| `5c44322` → merge `224d605` | K6 resilience | R2-28, R2-29, R2-30, R2-31 (+ m-22, m-23, m-24, m-25) |
+| `a36b880` → merge `01f5d6f` | K5 Founder | R2-21 … R2-26 (+ m-20, m-21, m-43) |
+| `794facf` → merge `196edff` | K1 review | R2-01, R2-02, R2-07, R2-08, R2-09, R2-11 (+ m-11 … m-15) |
+| `c53a29e` → merge `63d2ab8` | K7 C3 | R2-27, R2-34, R2-35 |
+| `ced8f30` | integration | R2-29 × R2-21 / R2-22 seam |
+| `ce5d95b` → merge `e00c03e` | K4 C6 | R2-13 … R2-20 (+ m-31) |
+| `07c3c0b` → merge `2a46773` | K3 boundary | R2-10, R2-12 (+ m-17, m-19) |
+| `cbd26ca` → merge `4301dfc`, `9a8f537` | K2 waits | R2-03 … R2-06 (+ m-01, m-05) |
+
+### 12.1 Per finding
+
+| ID | Root cause (corrected at) | Fix | Regression proof (fails before, passes after) | Mutation(s) |
+|---|---|---|---|---|
+| R2-01 | Plan authority not separated from execution; rejection scoped by plan | Owner may declare v1 before its first run only (`SELF_REVIEW_REDESIGN`, 0011 trigger); REWORK by (Work Item, action fingerprint) | `c4-review` "R2-01: the executor never re-designs its own Review Plan …" (app refusal, the trigger's own message on a forged insert, rejection survives a Founder v2) | `c4r2-executor-redesigns-own-plan`, `c4r2-rework-scoped-by-plan` |
+| R2-02 | STALE without a targeted wake | `wakeStrandedActionWait` at plan declaration, plan-superseded decision, WAIT re-check, startup sweep | `c4-review` "R2-02: a plan change wakes the executor …" (4 cases) | `c4r2-stranded-action-wait-not-woken` |
+| R2-03 | Budget-wait resume predicate knew only cap raises; raise limited before filter | `wakeBudgetWaiters` (waiter-driven, headroom-gated) on settle / release / reconcile / raise / WAIT re-check / startup | `r1-review` "R2-03: …" (incl. m-05, 1 001 items); runtime "R2-03: work parked on a sibling's transient worst-case reservation resumes …" | `r2-03-freed-headroom-wakes-nothing`, `r2-03-budget-wake-ignores-headroom`, `r2-03-budget-recheck-ignores-freed-headroom` |
+| R2-04 | Two definitions of "open handoff" | One `OPEN_HANDOFF_STATES`; a delegator answers its own delegate's question; accept only OFFERED | `c4-organization` "R2-04: an escalated handoff parks its delegator …", "R2-04 / m-01 …"; `c4-runtime` escalation park + processor unit | `c4-open-handoff-set-narrowed`, `c4-delegator-waits-on-own-clarification`, `c4-restart-answers-clarification` |
+| R2-05 | Delegation trigger conflated Completed with Reviewed | 0011 trigger: review-required children close at REVIEWED or later | `c4-organization` "R2-05: a review-required child closes its handoff only once REVIEWED …" (fails on the 0010 trigger: probe `r2-ah/p8`) | — (datastore guard; proof asserts the trigger) |
+| R2-06 | Child floor counted dead children | `CHILD_CAN_SPEND_SQL` for the floor and `accountingInvariants` | `c2-governance` "R2-06: …"; `c4-organization` transfer below a CLOSED envelope | `budget-floor-counts-finished-children`, `budget-floor-ignores-running-run` |
+| R2-07 | Selection ≠ decision re-check; "prior" included WITHDRAWN; greedy key order | One predicate; MANAGER / SHADOW exemption at decision; MANAGER / FOUNDER first; transient withdrawal not permanent | `c4-review` "R2-07: the MANAGER key is satisfiable …" (3 cases) | `c4r2-manager-key-department-bound`, `c4r2-manager-key-filled-last`, `c4r2-withdrawn-reviewer-excluded-forever`, `c6r2-withdrawn-judge-excluded-forever` |
+| R2-08 | Decision re-checks ignored RUBRIC holds / envelope; capacity ignored judgments | Same predicate + RUBRIC hold + OPEN envelope; capacity counts judgments; suspension withdraws judgments | `c4-review` "R2-08: a RUBRIC Quality Hold stops reliance …"; `c6-founder-free` "R2-08 / m-15 …" | `c4r2-rubric-hold-not-rechecked`, `c6r2-judge-rubric-hold-not-rechecked`, `c6r2-judgment-survives-qualification` |
+| R2-09 | Lesson gate on one path, bypass on three | Every lesson draw through the gate (`assignJudge` refuses otherwise) | `c6-founder-free` "R2-09: no lesson judge is drawn … before … evidence" | `c6r2-lesson-judge-drawn-before-evidence` |
+| R2-10 | R1-09 boundary never applied to tools | `tool-boundary.ts` snapshot; `txToolResult` reads once and guards the serialized value | `r1-runtime` "R2-10 tool-driver boundary …" (6); `r1-review` "R2-10 defence in depth …" | 6 × `r2-10-*` |
+| R2-11 | Subject not durable / single-sourced | `review_action_subjects` written once; full arguments; `REVIEW_SUBJECT_TOO_LARGE`; `SECRET_MATERIAL` before any request | `c4-review` "R2-11: the action reviewer sees the whole action on every fill …" | `c4r2-action-subject-truncated`, `c4r2-oversized-subject-admitted`, `c4r2-secret-arguments-reach-reviewer` |
+| R2-12 | No shared run-failure vocabulary | `run-failures.ts` table; real causes emitted; local failure `SETTLEMENT_FAILED`; exhaustiveness proof | `r1-runtime` "R2-12: one run-failure vocabulary …" + busy-settlement code; `c6-runtime` "R2-12: … missing route policy is a WORKFLOW cause" | `r2-12-local-settlement-blamed-on-provider`, `r2-12-vocabulary-incomplete`, `r2-12-pg11-family-invented`, `c6-config-cause-blamed-on-provider` |
+| R2-13 | All-runs failure counting; any system signal suppressed the Employee cause | Unrecovered vs recovered failures; recovered at most CONTRIBUTING; new KNOWN_BAD calibration case | `c6-improvement` "R2-13 …"; kernel proof | `c6-recovered-failure-is-the-cause` |
+| R2-14 | Evaluation row treated as the unit | One latest live evaluation per Work Item; supersede across versions | `c6-improvement` "R2-14 …" (3 live → 1) | `c6-work-item-counted-per-definition` |
+| R2-15 | Evaluation time used as work time | `workStartedAt`; baseline / evidence by Work Item | `c6-improvement` "R2-15 …" | `c6-pre-training-work-counts-as-later` |
+| R2-16 | Same evidence credited twice | Disjoint-evidence gate (0011 + app), one open reuse, self-reuse not contribution | `c6-improvement` "R2-16 …" (×2) | `c6-pattern-reuse-evidence-reused`, `c6-self-reuse-credited` |
+| R2-17 | Unvalidated adverse evidence treated as absent | Adverse follow-up without a VALIDATED cause holds NOT_YET_TESTED | `c6-improvement` "R2-17 …" | `c6-pending-recurrence-ignored` |
+| R2-18 | Same family; REJECTED dead end | NOT_READY + disclosure; judge FAIL on an attribution escalates to the Founder (D-R2-06) | kernel "R2-18: adverse evidence …"; `c6-founder-free` "R2-18: a pool judge who disputes …" | `c6-pending-adverse-reads-clean`, `c6-disputed-cause-dead-end` |
+| R2-19 | Permanent dedup across terminal states | Linked generations `key#n`; exhaustion merges | `c6-improvement` "R2-19 …" (×2) | `c6-decided-finding-silences-recurrence`, `c6-retraining-exhaustion-swallowed` |
+| R2-20 | Billed cost used as cost | Economic micros; billed separate; zero cost NOT_ASSESSED | `c6-improvement` "R2-20 …"; kernel "m-31 …" | `c6-billed-cost-as-economic`, `c6-zero-cost-efficient` |
+| R2-21 | Founder decisions never wired to the surface | Nine structured-only governed intents; rail actions | `c5-founder-surface` "R2-21 / R2-22: … decided through governed previews in the session (no test seam)" | `c5-exception-decision-overtakes-tool` |
+| R2-22 | Attention sources incomplete | Per-entity DECISION_REQUEST sources at stable change times; governed-job predicate (`ced8f30`) | same; `c6-resilience` R2-29 test extended (restore holds reach attention; operator path refused) | `c5-attention-misses-uncertain-effects`, `c6-restore-hold-left-to-operator` |
+| R2-23 | Verb tested after it was stripped | Classifier returns the target state | kernel "R2-23 …"; surface "R2-23 / R2-24 …" | `c5-goal-state-verb-lost` |
+| R2-24 | Structured acts re-serialized; fallback / default decision | Structured rail previews; no fallback; no default | kernel "R2-24 …"; surface test | `c5-unmatched-argument-falls-back` |
+| R2-25 | Class-level keys; dismissal until "resolves" | Instance keys; reopen on source change | `c5-founder-surface` "R2-25 …" | `c5-dismissal-swallows-source-changes`, `c5-resilience-keyed-per-class` |
+| R2-26 | Effect and CONFIRMED in separate transactions | One `BEGIN IMMEDIATE`; boundaries join as savepoints | `c5-founder-surface` "R2-26: a confirm is one transaction …" | `c5-confirm-effect-commits-alone` |
+| R2-27 | Promotion bypassed the Write Policy | Shared `txOpenMemoryConflicts` | `c3-mind` "R2-27 …" | `r2-personal-promotion-skips-conflict` |
+| R2-28 | Volume id taken as device proof | Only ATTESTED is off-device | `c6-resilience` "… second partition … (R2-28)" | `c6-separate-volume-counts-as-off-device` |
+| R2-29 | Restore not an ambiguity boundary | Effect-capable live jobs held `RESTORED_PAST_BACKUP_POINT`; disclosure | `c6-resilience` "… ambiguity boundary … (R2-29, m-25)" | `c6-restore-dispatches-past-backup-point` |
+| R2-30 | Lifecycle optional at open | Existing Company refused at open (`SCHEMA_UPDATE_REQUIRED`); start runs safe-upgrade; hold first; `DATABASE_IN_USE` | `migrations` "R2-30 …"; `c6-resilience` "… (R2-30, m-25)", "(m-22)"; runtime "start runs safe-upgrade automatically …" | `c6-existing-company-migrated-at-open`, `c6-start-skips-safe-upgrade`, `c6-maintenance-ignores-open-connection` |
+| R2-31 | Rollback a file swap | Refused on post-activation work unless acknowledged; retained pre-rollback snapshot; report | `c6-resilience` "(R2-31)" | `c6-rollback-discards-post-update-work` |
+| R2-32 | Nested-transaction refusal satisfied the proof | Judge Work Item created before the forged insert; the trigger's own message asserted | `c6-founder-free` "nobody forges …" (now fails if the trigger is neutered) | — (proof fix) |
+| R2-33 | Frozen list not extended at C4–C6 | 0007–0010 frozen by content | verifier self-test (69/69) | — (verifier) |
+| R2-34 | SIMULATION exit ignored retest provenance | Retest-aware gates; same-kind remediation link | `c3-mind` "R2-34 …" (×2) | `r2-simulation-gate-counts-retrained-failure`, `r2-retry-strands-started-retest`, `r2-practice-consumes-assessment-retest` |
+| R2-35 | Plan-time snapshot used as authority set | Live set recomputed at rollout; rollback returns every moved passport | `c3-mind` "R2-35 …" | `r2-rollout-uses-plan-snapshot`, `r2-rollback-misses-rolled-out-passports` |
+
+Existing proofs changed (never weakened): `migrations` v1/v6/v2 upgrades use the explicit live-update test knob;
+`surface.test` input "approve the campaign" → "approve حملة أداء" (the old text only worked through the forbidden
+fallback); `c6-acceptance` step `a-real-tool-failure-is-not-blamed-on-the-employee` encoded R2-13 and now asserts
+the recovered failure is recorded but never primary; `c6-acceptance` attention key retargeted to the per-instance
+key; `governed-runtime` waits now name the real code (`FALLBACK_REFUSED`, `PROVIDER_FAILURE`). Mutation anchors
+retargeted with the same meaning: `c4-decision-not-rechecked`, `c6r1-self-judgment`,
+`c6r1-judge-eligibility-not-rechecked`, `c5-preview-fingerprint-unchecked`, `r1-01-tool-result-secret-stored`,
+`c6-tool-failure-unmapped`, c1 `recovery-without-supervisor-verification` (count 9 → 10: the R2 startup
+budget-wait pass is supervisor-fenced too).
+
+### 12.2 MINORs fixed with their root cause (not separately)
+
+m-01, m-05, m-11 … m-15, m-17, m-19, m-20, m-21, m-22, m-23, m-24, m-25 (and m-8 disclosure), m-31, m-43.
+Everything else in §8.5 stays residual.
+
+### 12.3 New residuals recorded during remediation (MINOR)
+
+| ID | Residual |
+|---|---|
+| m-49 | Delegations closed COMPLETED early by the 0010 trigger in a database that predates 0011 are not rewritten (the Pilot has not started; a repair would be a Product decision) |
+| m-50 | The Employee sheet's "Set budget ceiling" button still sends text and previews nothing (needs a value; PG-04 family) |
+| m-51 | The existing C6 mutation `c6-restore-releases-uncertain-effect` is caught only because its injected SQL names a column `queue_jobs` lacks (m-38 family) |
+| m-52 | A budget waiter with positive-but-insufficient headroom is woken by each freeing event on a shared level (every chain shares the Company level) and re-parks before any spend — churn, never spend |
+| m-53 | Node 24.19 on Windows: `rmSync` of a file another process holds open, under a non-ASCII path, kills the process (0xC0000409) instead of throwing — maintenance now uses `unlinkSync`; other `rmSync` call sites operate on paths the runtime alone holds (INFRASTRUCTURE / ENVIRONMENT note) |
+| m-54 | A start within the previous supervisor lease's TTL (≤ 30 s after a crash) with a pending migration refuses (`RUNTIME_RUNNING`) instead of waiting — fail-closed |
+| m-55 | A Founder-REJECTED attribution leaves its negative pending (disclosed, holds readiness) — the Founder's call; correcting causes is API-only (PG-04) |
+| m-56 | `REASONING_ABOVE_CEILING`, `INTEGRITY_FAILURE` and storage recovery / interrupt codes are outside the classified run-failure families (PG-11) |
+| m-57 | The PERSONAL promotion path performs no canonical-truth check at promotion time (existing C3 proof asserts it on the policy path) — to be confirmed by the re-review |
