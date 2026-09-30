@@ -4,14 +4,18 @@
  * network listener, no service installation. Every command takes an explicit `--workspace`; no
  * Founder path is built in. Output is content-free JSON (IDs, states, counts, codes).
  *
- *   init            --workspace <dir>                      create/validate the workspace, migrate
+ *   init            --workspace <dir>                      create/validate the workspace, migrate a NEW one (an existing
+ *                                                          Company with pending migrations is refused: SCHEMA_UPDATE_REQUIRED
+ *                                                          → safe-upgrade; `start` runs safe-upgrade automatically)
  *   start           --workspace <dir> [--concurrency <n>]  run the Runtime Supervisor until SIGINT/SIGTERM
  *   health          --workspace <dir>                      read-only health/readiness inspection
  *   submit          --workspace <dir> --kind <c1.noop|c1.steps> [--owner <kind:id>] [--steps <n>] [--step-ms <n>] [--idempotency-key <k>]
  *   cancel          --workspace <dir> --work-item <id> [--reason <CODE>]
  *   backup          --workspace <dir>                      online backup + isolated verification
  *   verify-backup   --workspace <dir> --backup <id>
- *   restore-check   --workspace <dir> --backup <id> --target <new empty dir>
+ *   restore-check   --workspace <dir> --backup <id> --target <new empty dir>   isolated verification copy: permanently
+ *                   held (RESTORE_CHECK_COPY) — never started, upgraded or cleared; a Company is restored live only
+ *                   through restore-portable
  *   verify-artifacts --workspace <dir>                     re-hash every artifact object
  *
  * C2 read-only commands (content-free counts / IDs / codes):
@@ -34,12 +38,23 @@
  *   improvement     --workspace <dir>                      evaluation / learning health and recovery status
  *   report          --workspace <dir> --cadence <DAILY|WEEKLY|MONTHLY>   generate (idempotently) and print typed claims
  *   portable-backup --workspace <dir> --destination <dir> [--attest-off-device]   encrypted package outside the workspace
- *   restore-portable --workspace <new empty dir> --package <file>        clean-environment restore (runtime not started)
+ *                   (off-device ONLY when attested: a separate volume may be a partition of the same disk)
+ *   restore-portable --workspace <new empty dir> --package <file> [--discard-partial-restore]   clean-environment restore
+ *                   (runtime not started): reports the backup point and data age, holds effect-capable work for
+ *                   reconciliation, and runs safe-upgrade when the package is from an older schema. The target is held
+ *                   (RESTORE_IN_PROGRESS) from its first byte until the controlled restore commits; rerunning with the
+ *                   same package resumes an interrupted restore (finalize or redo); another package needs
+ *                   --discard-partial-restore
+ *   restore-status  --workspace <dir>                      the target's hold and live-restore marker (phase, attempt,
+ *                   package; never opens the database)
  *   restore-drill   --workspace <dir>                      isolated restore drill of the newest generation
  *   prune-backups   --workspace <dir> [--keep-last <n>] [--daily <n>] [--weekly <n>] [--monthly <n>]
  *   safe-upgrade    --workspace <dir>                      Preflight → Backup → Rehearse → Migrate → Verify → Activate
- *   clear-update-hold --workspace <dir> --reason <code>    operator acknowledgement of an UPDATE_HOLD
- *   rollback-update --workspace <dir> --update <id>        restore a kept pre-update snapshot (bounded period)
+ *   clear-update-hold --workspace <dir> --reason <code>    operator acknowledgement of an UPDATE_HOLD (refused for a
+ *                   restore-check verification copy and for a live restore in progress)
+ *   rollback-update --workspace <dir> --update <id> [--discard-post-update-work]   restore a kept pre-update snapshot
+ *                   (bounded period); refused when work was recorded after activation unless acknowledged; the
+ *                   replaced live database is retained as a pre-rollback snapshot
  * * There is deliberately no Founder write command (no register-founder, approve or reject): a
  * Founder reference typed on a command line is not authentication. Founder authority arrives with
  * the authenticated Founder surface (C5); until then R3 work stays WAITING_APPROVAL (D-C2-13).
@@ -69,6 +84,7 @@ import {
   pruneLocalBackups,
   resilienceStatus,
   restorePortableBackup,
+  restoreStatus,
   restoreToIsolatedWorkspace,
   rollbackSchemaUpdate,
   runRestoreDrill,
@@ -83,7 +99,7 @@ import { Logger, jsonLinesSink } from './logger.js';
 import { CompanyRuntime, RUNTIME_VERSION } from './runtime.js';
 import { notifyRuntime } from './wake.js';
 
-const USAGE = 'usage: qandeel-company <init|start|health|submit|cancel|backup|verify-backup|restore-check|verify-artifacts|governance|approvals|mind|capability-gaps|context-manifest|organization|reviews|improvement|report|portable-backup|restore-portable|restore-drill|prune-backups|safe-upgrade|clear-update-hold|rollback-update> --workspace <dir> [options]';
+const USAGE = 'usage: qandeel-company <init|start|health|submit|cancel|backup|verify-backup|restore-check|verify-artifacts|governance|approvals|mind|capability-gaps|context-manifest|organization|reviews|improvement|report|portable-backup|restore-portable|restore-status|restore-drill|prune-backups|safe-upgrade|clear-update-hold|rollback-update> --workspace <dir> [options]';
 
 function out(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -128,6 +144,8 @@ export async function main(argv: readonly string[]): Promise<void> {
       weekly: { type: 'string' },
       monthly: { type: 'string' },
       update: { type: 'string' },
+      'discard-post-update-work': { type: 'boolean' },
+      'discard-partial-restore': { type: 'boolean' },
     },
   });
   if (command === undefined || values.workspace === undefined) fail('USAGE', USAGE, 2);
@@ -233,7 +251,8 @@ export async function main(argv: readonly string[]): Promise<void> {
       store.close();
       if (!expected) fail('BACKUP_INTEGRITY', 'this Company holds no record of that backup');
       const r = restoreToIsolatedWorkspace(path.join(backupsDir, id), path.resolve(values.target), { liveDatabasePath: databasePath, expected });
-      out({ ok: true, command, backupId: r.backupId, schemaVersionAfter: r.schemaVersionAfter, quickCheck: r.quickCheck, counts: r.counts });
+      // RR4-1: the target is a verification copy, never a Company; the output says so and names the only live path.
+      out({ ok: true, command, backupId: r.backupId, schemaVersionAfter: r.schemaVersionAfter, quickCheck: r.quickCheck, counts: r.counts, restoreKind: 'VERIFICATION_COPY', startable: false, hold: r.hold, note: 'VERIFICATION_COPY: this target is permanently held (RESTORE_CHECK_COPY) and can never be started, upgraded or cleared; to restore a Company live use restore-portable (controlled restore: effect-capable work held for reconciliation, safe-upgrade)' });
       return;
     }
     case 'verify-artifacts': {
@@ -348,7 +367,8 @@ export async function main(argv: readonly string[]): Promise<void> {
       const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
       try {
         const r = await createPortableBackup(store, { destination: new DirectoryDestination(path.resolve(values.destination), { attestOffDevice: values['attest-off-device'] === true }), passphrase, runtimeVersion: RUNTIME_VERSION });
-        out({ ok: true, command, ...r });
+        // R2-28: a different volume may be a second partition of the same disk; only the operator's attestation counts.
+        out({ ok: true, command, ...r, ...(r.offDevice ? {} : { offDeviceNote: 'NOT_OFF_DEVICE: this destination does not meet the off-device objective unless you attest it is outside this laptop (--attest-off-device); a separate volume may be a partition of the same disk' }) });
       } finally {
         store.close();
       }
@@ -358,8 +378,12 @@ export async function main(argv: readonly string[]): Promise<void> {
       if (values.package === undefined) fail('USAGE', '--package <file> is required (the target is --workspace, a new empty directory)', 2);
       const passphrase = process.env.QANDEEL_RECOVERY_PASSPHRASE;
       if (passphrase === undefined) fail('USAGE', 'set QANDEEL_RECOVERY_PASSPHRASE', 2);
-      const r = restorePortableBackup(readFileSync(path.resolve(values.package)), workspace, { passphrase });
-      out({ ok: true, command, ...r });
+      // FB-2: the same package resumes an interrupted restore (finalize a committed attempt, else redo it); another
+      // package replaces a partial restore only when the operator says so explicitly.
+      const r = restorePortableBackup(readFileSync(path.resolve(values.package)), workspace, { passphrase, discardPartialRestore: values['discard-partial-restore'] === true });
+      // An older snapshot is restored at its own version (m-25): it is brought current only through safe-upgrade.
+      const upgrade = r.schemaUpdateRequired ? await safeUpgrade(workspace, { runtimeVersion: RUNTIME_VERSION }) : null;
+      out({ ok: true, command, restoreKind: 'CONTROLLED_LIVE_RESTORE', ...r, ...(upgrade ? { safeUpgrade: upgrade } : {}) });
       return;
     }
     case 'restore-drill': {
@@ -381,6 +405,11 @@ export async function main(argv: readonly string[]): Promise<void> {
       }
       return;
     }
+    case 'restore-status': {
+      // Read-only and content-free; never opens the database (it may be partial while a live restore is in progress).
+      out({ ok: true, command, ...restoreStatus(workspace) });
+      return;
+    }
     case 'safe-upgrade': {
       out({ ok: true, command, ...(await safeUpgrade(workspace, { runtimeVersion: RUNTIME_VERSION })) });
       return;
@@ -390,7 +419,8 @@ export async function main(argv: readonly string[]): Promise<void> {
       return;
     }
     case 'rollback-update': {
-      out({ ok: true, command, ...rollbackSchemaUpdate(workspace, assertId(values.update, 'update')) });
+      // R2-31: refused when work was recorded after activation unless the operator explicitly acknowledges discarding it.
+      out({ ok: true, command, ...(await rollbackSchemaUpdate(workspace, assertId(values.update, 'update'), { discardPostUpdateWork: values['discard-post-update-work'] === true })) });
       return;
     }
     default:

@@ -6,9 +6,29 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { isQandeelError } from '@qandeel-company/domain';
+import { isQandeelError, type Timestamp } from '@qandeel-company/domain';
 
-import { assertGoalTransition, briefAttentionLevel, classifyFounderIntent, goalTransitionNeedsFounder, isFounderBrief, parseProposal, warrantsFounderAttention, type FounderIntent } from '../src/index.js';
+import { GOAL_ACTIONS, assertCapability, assertGoalTransition, briefAttentionLevel, classifyFounderIntent, decideOrgAct, goalActCapability, goalTransitionNeedsFounder, isFounderBrief, isOrgCapability, parseProposal, warrantsFounderAttention, type FounderIntent, type GrantView } from '../src/index.js';
+
+describe('AC-01 kernel (PO-R2-D): goal acts need their own explicit, Founder-delegable capability', () => {
+  test('AC-01: org.goal.derive / org.goal.link are registered org capabilities, one per goal act, neither implying the other', () => {
+    const at = '2026-01-01T00:00:00.000Z' as Timestamp;
+    const grant = (capability: string): GrantView => ({ id: 'g', capability, resourceScope: '*', riskCeiling: 'R1', dataClassCeiling: 'D1', expiresAt: null, maxUses: null, uses: 0, status: 'ACTIVE' });
+    assert.deepEqual(GOAL_ACTIONS.map((a) => goalActCapability(a)), ['org.goal.derive', 'org.goal.link']);
+    for (const a of GOAL_ACTIONS) {
+      const cap = goalActCapability(a) ?? '';
+      assert.equal(assertCapability(cap), cap);
+      assert.equal(isOrgCapability(cap), true, `${cap} is delegated only through the Founder org-delegation path`);
+      assert.deepEqual(decideOrgAct('ACTIVE', [], { capability: cap, resource: '*', at }), { effect: 'DENY', code: 'NO_GRANT' });
+      assert.equal(decideOrgAct('ACTIVE', [grant(cap)], { capability: cap, resource: '*', at }).effect, 'ALLOW');
+    }
+    assert.equal(decideOrgAct('ACTIVE', [grant('org.goal.derive')], { capability: 'org.goal.link', resource: '*', at }).effect, 'DENY', 'derive does not imply link');
+    assert.equal(decideOrgAct('ACTIVE', [grant('org.goal.link')], { capability: 'org.goal.derive', resource: '*', at }).effect, 'DENY', 'link does not imply derive');
+    assert.equal(goalActCapability('toString'), null, 'own-key lookup only');
+    assert.equal(goalActCapability('goal.approve'), null);
+    assert.throws(() => assertCapability('org.goal.approve'), (e) => isQandeelError(e, 'VALIDATION_FAILED'));
+  });
+});
 
 /** The value a proof relies on, present by construction of the fixture. */
 function must<T>(v: T | null | undefined, what = 'value'): T {
@@ -53,6 +73,80 @@ describe('C5 kernel — Founder command intents', () => {
     if (goal.kind === 'MUTATING') assert.equal(goal.intent, 'GOAL_APPROVE');
     // Nothing in the result is an execution instruction: the closed union has no "execute" member.
     for (const r of [budget, approve, reject, goal]) assert.ok(r.kind === 'READ' || r.kind === 'MUTATING' || r.kind === 'UNKNOWN');
+  });
+
+  test('R2-23: a goal-state command carries the target state of its own verb; the verb is never lost to argument stripping', () => {
+    const stateOf = (text: string): [string | null, string | null, string | null] => {
+      const r = classifyFounderIntent(text);
+      return r.kind === 'MUTATING' ? [r.intent, (r as { goalState?: string | null }).goalState ?? null, r.argument] : [intentOf(r), null, null];
+    };
+    assert.deepEqual(stateOf('pause the growth engine goal'), ['GOAL_STATE', 'PAUSED', 'growth engine']);
+    assert.deepEqual(stateOf('cancel the growth engine goal'), ['GOAL_STATE', 'CANCELLED', 'growth engine']);
+    assert.deepEqual(stateOf('achieve goal growth engine'), ['GOAL_STATE', 'ACHIEVED', 'growth engine']);
+    assert.deepEqual(stateOf('resume goal growth engine'), ['GOAL_STATE', 'ACTIVE', 'growth engine']);
+    assert.deepEqual(stateOf('activate goal growth engine'), ['GOAL_STATE', 'ACTIVE', 'growth engine']);
+    assert.deepEqual(stateOf('أوقف هدف growth engine'), ['GOAL_STATE', 'PAUSED', 'growth engine']);
+    assert.deepEqual(stateOf('الغ هدف growth engine'), ['GOAL_STATE', 'CANCELLED', 'growth engine']);
+    assert.deepEqual(stateOf('فعل هدف growth engine'), ['GOAL_STATE', 'ACTIVE', 'growth engine']);
+    assert.notDeepEqual(stateOf('deactivate goal growth engine').slice(0, 2), ['GOAL_STATE', 'ACTIVE'], 'a verb inside another word is not that verb');
+    const other = classifyFounderIntent('approve the campaign request');
+    assert.ok(other.kind === 'MUTATING' && (other as { goalState?: string | null }).goalState === null, 'only a goal-state command carries a goal state');
+  });
+
+  test('R2-24: a named act routes to its own intent with an explicit decision; a noun in the argument never flips it into another act', () => {
+    const r = (text: string): [string | null, string | null, string | null] => {
+      const x = classifyFounderIntent(text);
+      return x.kind === 'MUTATING' ? [x.intent, x.decision, x.argument] : [intentOf(x), null, null];
+    };
+    assert.deepEqual(r('approve goal Deny competitor entry'), ['GOAL_APPROVE', null, 'deny competitor entry'], 'a goal title is an argument, never a verb');
+    assert.deepEqual(r('reject the staffing request analyst'), ['STAFFING_DECIDE', 'REJECT', 'staffing request analyst']);
+    assert.deepEqual(r('approve staffing request analyst'), ['STAFFING_DECIDE', 'APPROVE', 'staffing request analyst']);
+    assert.equal(r('staffing analyst')[1], null, 'no decision stated: none is assumed');
+    assert.deepEqual(r('resolve the conflict with rework').slice(0, 2), ['CONFLICT_RESOLVE', 'REJECT']);
+    assert.deepEqual(r('resolve the conflict as pass').slice(0, 2), ['CONFLICT_RESOLVE', 'APPROVE']);
+    assert.equal(r('resolve the conflict')[1], null, 'no silent default decision');
+    assert.deepEqual(r('ارفض الطلب').slice(0, 2), ['APPROVAL_DECIDE', 'REJECT']);
+  });
+
+  test("RR1-1 (R2-23/R2-24): the command's own leading verb decides the intent; a verb or noun inside a title never selects or changes it", () => {
+    const r = (text: string): [string | null, string | null, string | null, string | null] => {
+      const x = classifyFounderIntent(text);
+      return x.kind === 'MUTATING' ? [x.intent, x.decision, x.goalState, x.argument] : [intentOf(x), null, null, x.kind === 'READ' ? x.argument : null];
+    };
+    // A goal-state verb leads: the title's approve / accept / reject / deny / budget / hiring / conflict words change nothing.
+    assert.deepEqual(r('cancel the accept vendor returns goal'), ['GOAL_STATE', null, 'CANCELLED', 'accept vendor returns']);
+    assert.deepEqual(r('الغ هدف accept vendor returns'), ['GOAL_STATE', null, 'CANCELLED', 'accept vendor returns']);
+    assert.deepEqual(r('pause goal Approve budget of EGP 5000'), ['GOAL_STATE', null, 'PAUSED', 'approve budget of egp 5000']);
+    assert.deepEqual(r('pause the reject staffing freeze goal'), ['GOAL_STATE', null, 'PAUSED', 'reject staffing freeze']);
+    assert.deepEqual(r('achieve goal Resolve every conflict'), ['GOAL_STATE', null, 'ACHIEVED', 'resolve every conflict']);
+    assert.deepEqual(r('please cancel the Deny competitor entry goal'), ['GOAL_STATE', null, 'CANCELLED', 'deny competitor entry']);
+    assert.deepEqual(r('اوقف هدف وافق على الموردين'), ['GOAL_STATE', null, 'PAUSED', 'وافق علي الموردين']);
+    assert.deepEqual(r('أوقف هدف ارفض العروض'), ['GOAL_STATE', null, 'PAUSED', 'ارفض العروض']);
+    assert.deepEqual(r('الغ هدف اعتمد ميزانية التوظيف'), ['GOAL_STATE', null, 'CANCELLED', 'اعتمد ميزانيه التوظيف']);
+    assert.deepEqual(r('من فضلك الغ هدف قبول المرتجعات'), ['GOAL_STATE', null, 'CANCELLED', 'قبول المرتجعات']);
+    // An approve verb leads: a goal-state / reject / budget / hiring word in the title never changes the act or the decision.
+    assert.deepEqual(r('approve the cancel legacy plan goal'), ['GOAL_APPROVE', null, null, 'cancel legacy plan']);
+    assert.deepEqual(r('approve goal Reject low bids'), ['GOAL_APPROVE', null, null, 'reject low bids']);
+    assert.deepEqual(r('approve the budget review goal'), ['GOAL_APPROVE', null, null, 'budget review']);
+    assert.deepEqual(r('approve the hiring freeze goal'), ['GOAL_APPROVE', null, null, 'hiring freeze']);
+    assert.deepEqual(r('اعتمد هدف الغ الرسوم'), ['GOAL_APPROVE', null, null, 'الغ الرسوم']);
+    assert.deepEqual(r('اعتمد هدف ارفض العروض الضعيفه'), ['GOAL_APPROVE', null, null, 'ارفض العروض الضعيفه']);
+    // A reject verb leads: the decision is REJECT whatever the argument says.
+    assert.deepEqual(r('reject the approve vendor request').slice(0, 2), ['APPROVAL_DECIDE', 'REJECT']);
+    assert.deepEqual(r('ارفض طلب وافق على المورد').slice(0, 2), ['APPROVAL_DECIDE', 'REJECT']);
+    // A read verb leads: a mutating word in its argument never makes it an act.
+    assert.equal(intentOf(classifyFounderIntent('open the pause hiring goal')), 'SHOW_GOAL');
+    assert.equal(intentOf(classifyFounderIntent('show goal Approve vendors')), 'SHOW_GOAL');
+    assert.equal(intentOf(classifyFounderIntent('who is working on reject low bids')), 'WHO_WORKS_ON');
+    assert.equal(intentOf(classifyFounderIntent('اعرض هدف الغ الرسوم')), 'SHOW_GOAL');
+    // No leading verb: never an act guessed from a verb further in.
+    assert.equal(classifyFounderIntent('the accept vendor returns goal').kind, 'UNKNOWN');
+    assert.equal(classifyFounderIntent('vendor returns: approve').kind, 'UNKNOWN');
+    // The governed forms keep working (vocative, polite lead, budget clause with an amount).
+    assert.deepEqual(r('Ehab, run the Saudi campaign with a maximum budget of EGP 50,000').slice(0, 1), ['BUDGET_CEILING']);
+    assert.deepEqual(r('approve Ehab Tarek campaign with a budget of EGP 50,000').slice(0, 1), ['BUDGET_CEILING']);
+    assert.deepEqual(r('please approve the campaign request').slice(0, 2), ['APPROVAL_DECIDE', 'APPROVE']);
+    assert.equal(classifyFounderIntent('run the pause hiring goal').kind, 'UNKNOWN', 'a run verb without a budget clause is no act');
   });
 
   test('C5-PROOF: unknown / empty / oversized input is UNKNOWN, never a guessed act', () => {

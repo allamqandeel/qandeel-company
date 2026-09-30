@@ -124,6 +124,21 @@ export function attention(ctx: ApiContext): Json {
         const j = store.improvement.judgments().find((x) => x.id === id);
         return j ? { judgment: { id: j.id, subjectKind: j.subjectKind, subjectId: j.subjectId, workItemId: j.workItemId, judgeEmployeeId: j.judgeEmployeeId, reviewOutcome: j.reviewOutcome, reasonCode: j.reasonCode, state: j.state } } : {};
       }
+      // R2-22: the exception subjects the Founder decides through structured previews (read-only IDs / codes).
+      if (kind === 'tool_invocation') return { uncertainEffect: { id } };
+      if (kind === 'budget_reservation') {
+        const r = gov.reservationsInState('RECONCILIATION_REQUIRED').find((x) => x.id === id);
+        return r ? { heldReservation: { id: r.id, workItemId: r.workItemId, purpose: r.purpose } } : {};
+      }
+      if (kind === 'queue_job') {
+        const j = ctx.runtime.view.getJob(id as Id);
+        return { heldJob: { id: j.id, workItemId: j.workItemId, state: j.state } };
+      }
+      if (kind === 'review_request') {
+        const r = ctx.runtime.org.review.request(id as Id);
+        return { reviewEscalation: { id: r.id, workItemId: r.workItemId, subjectKind: r.subjectKind, risk: r.riskLevel, state: r.state } };
+      }
+      if (kind === 'work_item') return { outcome: { workItemId: id } };
       if (kind === 'recovery_drill' || kind === 'portable_backup' || kind === 'maintenance') {
         return { resilience: { exceptions: ctx.runtime.resilience().exceptions.filter((x) => x.material && x.ref === i.sourceRef).map((x) => x.code) } };
       }
@@ -282,7 +297,7 @@ export function command(ctx: ApiContext, body: Json): CommandResolution {
     }
   }
   // Mutating: never executed here. A preview is created only when the intent resolves to one concrete target.
-  const target = resolveMutatingTarget(ctx, u, intent.intent, intent.argument, intent.amount, intent.decision);
+  const target = resolveMutatingTarget(ctx, u, intent);
   if (target === null) return { intent, matches: [] };
   const preview = ctx.runtime.founder.actions.preview(ctx.session, target.intent, target.payload);
   return { intent, preview: { ...preview, summary: target.summary } };
@@ -329,62 +344,146 @@ function matchEmployees(u: CompanyUniverse, q: string): CompanyUniverse['employe
   });
 }
 
-function resolveMutatingTarget(ctx: ApiContext, u: CompanyUniverse, intent: MutatingIntent, argument: string | null, amount: { currency: string; value: number } | null, decision: 'APPROVE' | 'REJECT' | null): { intent: MutatingIntent; payload: Json; summary: string } | null {
+/** Exactly one candidate, or none: a name that matches several (or nothing) never picks one. */
+const single = <T>(xs: readonly T[]): T | null => (xs.length === 1 ? (xs[0] as T) : null);
+
+/**
+ * What the argument names once the words of the command itself are removed ("staffing request", "conflict",
+ * "with rework" …). Empty means the command named no target; a non-empty rest must match (R2-24).
+ */
+const named = (argument: string | null, noise: RegExp): string => norm(argument ?? '').split(/\s+/).filter((w) => w.length > 0 && !noise.test(w)).join(' ');
+const STAFFING_NOISE = /^(?:staffing|request|requests|hire|hiring|for|the|a|an|of|توظيف|طلب|ل|علي|على)$/;
+const CONFLICT_NOISE = /^(?:conflict|review|the|a|an|on|about|for|with|as|by|pass|passed|rework|تعارض|خلاف|مراجعه|علي|على|في)$/;
+
+/**
+ * Resolves a mutating command to ONE concrete target and the decision the words state, or to nothing. A
+ * GIVEN argument that matches nothing never falls back to "the single pending item", and a decision the
+ * words do not state is never assumed (R2-24); a goal-state command uses its own verb's target (R2-23).
+ */
+function resolveMutatingTarget(ctx: ApiContext, u: CompanyUniverse, command: Extract<FounderIntent, { kind: 'MUTATING' }>): { intent: MutatingIntent; payload: Json; summary: string } | null {
+  const { intent, argument, amount, decision } = command;
   switch (intent) {
     case 'APPROVAL_DECIDE': {
+      if (decision === null) return null;
       const pending = ctx.runtime.governance.listApprovals('PENDING').filter((a) => a.risk !== 'R4' && a.risk !== 'R2');
-      const byArg = argument ? pending.filter((a) => a.id === argument || (a.workItemId !== null && u.work.find((w) => w.id === a.workItemId && norm(w.objective).includes(norm(argument))))) : pending;
-      const a = byArg.length === 1 ? byArg[0] : pending.length === 1 ? pending[0] : undefined;
+      const a = single(argument !== null ? pending.filter((x) => x.id === argument || (x.workItemId !== null && u.work.some((w) => w.id === x.workItemId && norm(w.objective).includes(norm(argument))))) : pending);
       if (!a) return null;
       const subject = a.workItemId !== null ? (u.work.find((w) => w.id === a.workItemId)?.objective ?? a.subjectRef) : a.subjectRef;
-      return { intent, payload: { approvalId: a.id, decision: decision ?? 'APPROVE', reasonCode: 'founder.decided' }, summary: `${decision === 'REJECT' ? 'Reject' : 'Approve'} the ${a.risk} approval request for: ${subject}` };
+      return { intent, payload: { approvalId: a.id, decision, reasonCode: 'founder.decided' }, summary: `${decision === 'REJECT' ? 'Reject' : 'Approve'} the ${a.risk} approval request for: ${subject}` };
     }
     case 'GOAL_APPROVE': {
-      const gs = matchGoals(u, argument ?? '').filter((g) => g.kind === 'COMPANY' && g.state === 'PROPOSED');
-      const g = gs.length === 1 ? gs[0] : undefined;
+      const g = single(matchGoals(u, argument ?? '').filter((x) => x.kind === 'COMPANY' && x.state === 'PROPOSED'));
       if (!g) return null;
       return { intent, payload: { goalId: g.id, activate: true, reasonCode: 'goal.approved' }, summary: `Approve and activate the company goal: ${g.title}` };
     }
     case 'GOAL_STATE': {
-      const gs = matchGoals(u, argument ?? '');
-      const g = gs.length === 1 ? gs[0] : undefined;
-      if (!g) return null;
-      const to = /pause|اوقف|أوقف/i.test(argument ?? '') ? 'PAUSED' : /cancel|الغ/i.test(argument ?? '') ? 'CANCELLED' : /achiev/i.test(argument ?? '') ? 'ACHIEVED' : 'ACTIVE';
-      const verb = to === 'PAUSED' ? 'Pause the goal' : to === 'CANCELLED' ? 'Cancel the goal' : to === 'ACHIEVED' ? 'Mark the goal achieved' : 'Activate the goal';
-      return { intent, payload: { goalId: g.id, to, reasonCode: 'goal.state' }, summary: `${verb}: ${g.title}` };
+      const to = command.goalState;
+      const g = single(matchGoals(u, argument ?? ''));
+      if (!g || to === null) return null;
+      return { intent, payload: { goalId: g.id, to, reasonCode: 'goal.state' }, summary: `${GOAL_STATE_VERB[to] ?? 'Change the goal'}: ${g.title}` };
     }
     case 'BUDGET_CEILING': {
-      const es = matchEmployees(u, argument ?? '');
-      const e = es.length === 1 ? es[0] : undefined;
+      const e = single(matchEmployees(u, argument ?? ''));
       if (!e || amount === null) return null;
       const budgetId = ctx.runtime.founder.actions.employeeBudgetId(e.id);
       if (budgetId === null) return null;
       const b = ctx.runtime.governance.budgetFor('EMPLOYEE', e.id);
       // Money is stored in micro-units of the envelope's currency; a stated ceiling maps 1:1 to that currency.
-      return { intent, payload: { budgetId, capMoney: amount.value * 1_000_000, capTokens: b?.capTokens ?? 0, currency: amount.currency, reasonCode: 'founder.ceiling' }, summary: `Raise the budget ceiling of ${nameOf(u, e.id)} to ${amount.currency} ${amount.value.toLocaleString('en-GB')}` };
+      const capMoney = amount.value * 1_000_000;
+      const verb = b === null || capMoney > b.capMoney ? 'Raise' : capMoney < b.capMoney ? 'Lower' : 'Keep';
+      return { intent, payload: { budgetId, capMoney, capTokens: b?.capTokens ?? 0, currency: amount.currency, reasonCode: 'founder.ceiling' }, summary: `${verb} the budget ceiling of ${nameOf(u, e.id)} to ${amount.currency} ${amount.value.toLocaleString('en-GB')}` };
     }
     case 'STAFFING_DECIDE': {
+      if (decision === null) return null;
       const rs = ctx.runtime.org.organization.staffingRequests('RECOMMENDED');
-      const r = rs.length === 1 ? rs[0] : undefined;
+      const want = named(argument, STAFFING_NOISE);
+      const r = single(want === '' ? rs : rs.filter((x) => x.id === want || norm(x.positionTitle).includes(want)));
       if (!r) return null;
-      return { intent, payload: { requestId: r.id, decision: decision ?? 'APPROVE', reasonCode: 'founder.decided' }, summary: `${decision === 'REJECT' ? 'Reject' : 'Approve'} the staffing request: ${r.positionTitle}` };
+      return { intent, payload: { requestId: r.id, decision, reasonCode: 'founder.decided' }, summary: `${decision === 'REJECT' ? 'Reject' : 'Approve'} the staffing request: ${r.positionTitle}` };
     }
     case 'CONFLICT_RESOLVE': {
+      if (decision === null) return null;
       const cs = ctx.runtime.org.review.conflicts('OPEN');
-      const c = cs.length === 1 ? cs[0] : undefined;
+      const want = named(argument, CONFLICT_NOISE);
+      const objectiveOf = (requestId: Id): string => {
+        const wid = ctx.runtime.org.review.request(requestId).workItemId;
+        return norm(u.work.find((w) => w.id === wid)?.objective ?? '');
+      };
+      const c = single(want === '' ? cs : cs.filter((x) => x.id === want || objectiveOf(x.requestId).includes(want)));
       if (!c) return null;
       return { intent, payload: { conflictId: c.id, resolution: decision === 'REJECT' ? 'REWORK' : 'PASS', reasonCode: 'founder.resolved' }, summary: `Resolve the review conflict ${decision === 'REJECT' ? 'with rework' : 'as passed'}` };
     }
     case 'GOAL_PROPOSE':
     case 'DELEGATE_WORK':
-      // These need structured input (a form), never free text: the palette returns the intent and the UI opens the form.
+    case 'TOOL_RECONCILE':
+    case 'RESERVATION_RECONCILE':
+    case 'JOB_RECONCILE':
+    case 'REVIEW_ESCALATION_RESOLVE':
+    case 'SYSTEMIC_DECIDE':
+    case 'ATTRIBUTION_DECIDE':
+    case 'LESSON_DECIDE':
+    case 'OUTCOME_VERIFY':
+    case 'PROMOTION_DECIDE':
+      // Structured only (a form or a rail action posts IDs / codes), never free text (D-C5-07, R2-21).
       return null;
   }
 }
 
+const GOAL_STATE_VERB: Readonly<Record<string, string>> = { PAUSED: 'Pause the goal', CANCELLED: 'Cancel the goal', ACHIEVED: 'Mark the goal achieved', ACTIVE: 'Activate the goal', APPROVED: 'Approve the goal', SUPERSEDED: 'Supersede the goal' };
+
+/** The sentence a structured preview shows: what will happen at the real boundary (from the validated payload only). */
+function structuredSummary(ctx: ApiContext, preview: { intentKind: string; payload: Record<string, unknown> }): string {
+  const p = preview.payload;
+  const s = (k: string): string => String(p[k] ?? '');
+  switch (preview.intentKind) {
+    case 'APPROVAL_DECIDE': {
+      const a = ctx.runtime.governance.getApproval(s('approvalId') as Id);
+      const subject = a.workItemId !== null ? (ctx.runtime.founder.universe().work.find((w) => w.id === a.workItemId)?.objective ?? a.subjectRef) : a.subjectRef;
+      return `${p.decision === 'REJECT' ? 'Reject' : 'Approve'} the ${a.risk} approval request for: ${subject}`;
+    }
+    case 'GOAL_APPROVE':
+      return `Approve${p.to === 'ACTIVE' ? ' and activate' : ''} the company goal: ${s('title')}`;
+    case 'GOAL_STATE':
+      return `${GOAL_STATE_VERB[s('to')] ?? 'Change the goal'}: ${s('title')}`;
+    case 'GOAL_PROPOSE':
+      return `Propose the ${p.kind === 'DEPARTMENT' ? 'department' : 'company'} goal: ${s('title')}`;
+    case 'STAFFING_DECIDE':
+      return `${p.decision === 'REJECT' ? 'Reject' : 'Approve'} the staffing request`;
+    case 'CONFLICT_RESOLVE':
+      return `Resolve the review conflict ${p.resolution === 'REWORK' ? 'with rework' : 'as passed'}`;
+    case 'BUDGET_CEILING':
+      return 'Change the budget ceiling';
+    case 'DELEGATE_WORK':
+      return 'Delegate authority for a bounded time';
+    case 'TOOL_RECONCILE':
+      return p.outcome === 'CONFIRMED_SUCCEEDED'
+        ? 'Record that the uncertain external effect DID happen: it is never repeated, and its held money is settled'
+        : 'Record that the uncertain external effect did NOT happen: the resumed work may retry it under the same key, and its held money is released';
+    case 'RESERVATION_RECONCILE':
+      return p.decision === 'CHARGE' ? `Charge the held reservation with the provider-reported usage (${s('inputTokens')} input, ${s('outputTokens')} output tokens)` : 'Release the held reservation: nothing was billed';
+    case 'JOB_RECONCILE':
+      return p.decision === 'CONFIRMED_COMPLETED' ? 'Record that the held work completed' : p.decision === 'RETRY' ? 'Retry the held work' : 'Record that the held work failed';
+    case 'REVIEW_ESCALATION_RESOLVE':
+      return p.decision === 'PASS' ? 'Pass the escalated review' : 'Send the escalated review back for rework';
+    case 'SYSTEMIC_DECIDE':
+      return p.decision === 'VALIDATE' ? 'Validate the systemic finding' : p.decision === 'REJECT' ? 'Reject the systemic finding' : 'Mark the systemic finding addressed';
+    case 'ATTRIBUTION_DECIDE':
+      return `${p.decision === 'VALIDATE' ? 'Validate' : 'Reject'} the proposed cause of the outcome`;
+    case 'LESSON_DECIDE':
+      return `${p.decision === 'VALIDATE' ? 'Validate' : 'Reject'} the lesson`;
+    case 'OUTCOME_VERIFY':
+      return `Record the verified outcome: ${s('verdict').toLowerCase().replace('_', ' ')}`;
+    case 'PROMOTION_DECIDE':
+      return `${p.decision === 'APPROVE' ? 'Approve' : 'Reject'} sharing the lesson`;
+    default:
+      return preview.intentKind;
+  }
+}
+
+/** A structured preview (a rail action or a form): IDs / codes only, validated at the store; never a mutation. */
 export function createPreview(ctx: ApiContext, body: Json): Json {
   const preview = ctx.runtime.founder.actions.preview(ctx.session, body.intent, body.payload);
-  return { preview };
+  return { preview: { ...preview, summary: structuredSummary(ctx, preview) } };
 }
 
 export function confirmPreview(ctx: ApiContext, previewId: string, body: Json): Json {
@@ -417,7 +516,7 @@ export function dismissAttention(ctx: ApiContext, itemId: string, body: Json): J
 
 export function proposeGoal(ctx: ApiContext, body: Json): Json {
   const preview = ctx.runtime.founder.actions.preview(ctx.session, 'GOAL_PROPOSE', body);
-  return { preview };
+  return { preview: { ...preview, summary: structuredSummary(ctx, preview) } };
 }
 
 /** Departments and employees for forms (a read; the universe already carries them, this is the compact form list). */

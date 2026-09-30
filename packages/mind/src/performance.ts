@@ -7,7 +7,10 @@
  *   minimum sample a dimension is INSUFFICIENT_EVIDENCE, and a trend needs enough comparable evidence in both
  *   halves of the window (otherwise TREND_NOT_ESTABLISHED).
  * - A negative verdict counts against the Employee only when a VALIDATED attribution makes them accountable;
- *   a validated non-employee cause is excluded; an unattributed negative is pending, not counted.
+ *   every other attribution state has ONE meaning, defined by `adverseStanding` (RR3): a pending one is not counted
+ *   and never counted as clean (disclosed, withholds a level it outweighs, holds readiness); a REJECTED cause is
+ *   decided (no accountable cause) and a negative no attribution is due for is not a cause question — both are
+ *   disclosed, never counted and never pending.
  * - Capability (a newly demonstrated class of work) and regression (a lost one) are separate lists.
  * - READY_FOR_GREATER_RESPONSIBILITY_REVIEW is evidence for a governed human decision, never a promotion.
  * - Activity counts are carried as labelled observability, never read by a dimension.
@@ -27,16 +30,59 @@ export interface EvaluationFact {
   readonly evidenceState: EvidenceState;
   readonly qualifiedOutcome: boolean;
   readonly verdicts: Readonly<Partial<Record<ItemDimension, Verdict>>>;
-  readonly cost: { readonly productiveMicros: number; readonly overheadMicros: number };
+  /** Economic micros (what the budget ledger charges); `billedMicros` is the provider bill, reporting only (R2-20). */
+  readonly cost: { readonly productiveMicros: number; readonly overheadMicros: number; readonly billedMicros?: number };
   readonly activity: { readonly messages: number; readonly toolCalls: number; readonly tokens: number; readonly runs: number };
+  /** When the work itself started (its first run, else its creation) — not when it was evaluated (R2-15). */
+  readonly workStartedAt?: string;
+  /** RR3: whether an attribution was due for this work when it was evaluated (`attributionDue`, the evaluator's own predicate). */
+  readonly attributionDue: boolean;
 }
 
-/** The validated attribution of a Work Item, when one exists. */
+/** The attribution of a Work Item as every reader sees it: its live one (PROPOSED / VALIDATED), else its latest decided one. */
 export interface AttributionFact {
   readonly workItemId: string;
   readonly state: 'PROPOSED' | 'VALIDATED' | 'REJECTED';
   readonly employeeAccountable: boolean;
   readonly overall: string;
+}
+
+export type AttributionState = AttributionFact['state'] | 'NONE';
+
+export const ADVERSE_STANDINGS = ['ACCOUNTABLE', 'NOT_EMPLOYEE', 'PENDING_ATTRIBUTION', 'NO_ACCOUNTABLE_CAUSE', 'NOT_ATTRIBUTABLE'] as const;
+export type AdverseStanding = (typeof ADVERSE_STANDINGS)[number];
+
+/**
+ * RR3 — THE one meaning of a piece of adverse evidence (a NEGATIVE item verdict, an adverse follow-up) in every
+ * attribution state. Every C6 reader (the profile and its readiness signal, capability regression, learning-effect
+ * assessment, and the reports built on them) reads adverse evidence through this function and nothing else.
+ *
+ * - VALIDATED, the Employee's own judgement → ACCOUNTABLE: the ONLY standing counted against the Employee (D-C6-03).
+ * - VALIDATED, another cause → NOT_EMPLOYEE: decided; excluded from the Employee's record.
+ * - PROPOSED, or no attribution while one is due → PENDING_ATTRIBUTION: undecided. Never counted against the Employee
+ *   and never read as clean: disclosed, it holds readiness and keeps a learning effect open (R2-17 / R2-18).
+ * - REJECTED → NO_ACCOUNTABLE_CAUSE: DECIDED — the Founder rejected the proposed cause, so no accountable cause was
+ *   established. Never pending (nothing is left to decide), never counted against the Employee, never read as
+ *   clean: disclosed, and it makes a learning effect INCONCLUSIVE (a recorded, non-final assessment).
+ * - No attribution and none due → NOT_ATTRIBUTABLE: nothing the evaluator can attribute (e.g. provider fallback cost
+ *   on qualified work, or a Founder intervention): not a cause question, never pending, never counted, disclosed.
+ */
+export function adverseStanding(input: { readonly attributionDue: boolean; readonly state: AttributionState; readonly employeeAccountable: boolean }): AdverseStanding {
+  switch (input.state) {
+    case 'VALIDATED':
+      return input.employeeAccountable ? 'ACCOUNTABLE' : 'NOT_EMPLOYEE';
+    case 'PROPOSED':
+      return 'PENDING_ATTRIBUTION';
+    case 'REJECTED':
+      return 'NO_ACCOUNTABLE_CAUSE';
+    case 'NONE':
+      return input.attributionDue ? 'PENDING_ATTRIBUTION' : 'NOT_ATTRIBUTABLE';
+  }
+}
+
+/** The standing of one evaluated Work Item's adverse evidence, from its attribution (if any). */
+export function standingOf(fact: Pick<EvaluationFact, 'attributionDue'>, attribution: AttributionFact | undefined): AdverseStanding {
+  return adverseStanding({ attributionDue: fact.attributionDue === true, state: attribution?.state ?? 'NONE', employeeAccountable: attribution?.employeeAccountable === true });
 }
 
 export const LEARNING_EFFECTS = ['NOT_YET_TESTED', 'IMPROVEMENT_OBSERVED', 'NO_IMPROVEMENT', 'REGRESSION', 'INCONCLUSIVE'] as const;
@@ -63,9 +109,18 @@ export interface DimensionProfile {
   readonly neutral: number;
   /** Negatives whose validated cause is not the Employee (never counted against them). */
   readonly excludedNonEmployee: number;
-  /** Negatives without a validated attribution yet (not counted; uncertainty). */
+  /**
+   * Negatives whose attribution is PENDING (PROPOSED, or due and not yet recorded): not counted against the
+   * Employee (D-C6-03), but never counted as clean either — disclosed, and they hold readiness (R2-18, RR3).
+   */
   readonly pendingAttribution: number;
-  /** Qualitative level, only with sufficient evidence. */
+  readonly pendingEvidenceRefs: readonly string[];
+  /** RR3: negatives whose proposed cause was REJECTED (no accountable cause established): decided, disclosed, never counted. */
+  readonly unattributedAdverse: number;
+  readonly unattributedEvidenceRefs: readonly string[];
+  /** RR3: negatives on work where no attribution is due (not a cause question): never pending, never counted; disclosed. */
+  readonly notAttributable: number;
+  /** Qualitative level, only with sufficient evidence — and none while pending adverse evidence outweighs it. */
   readonly level: ProfileLevel | null;
   readonly confidence: Confidence;
   readonly trend: Trend;
@@ -108,6 +163,7 @@ const DAY_MS = 86_400_000;
 const confidenceOf = (n: number): Confidence => (n >= 10 ? 'HIGH' : n >= 5 ? 'MEDIUM' : 'LOW');
 const levelOf = (positive: number, sample: number): ProfileLevel => (positive * 5 >= sample * 4 ? 'STRONG' : positive * 2 >= sample ? 'ADEQUATE' : 'WEAK');
 const RISK_RANK: Record<RiskLevel, number> = { R0: 0, R1: 1, R2: 2, R3: 3, R4: 4 };
+const ITEM_DIMENSION_SET: ReadonlySet<PerformanceDimension> = new Set(['OUTCOME', 'QUALITY', 'JUDGMENT', 'EFFICIENCY', 'INITIATIVE', 'INDEPENDENCE']);
 
 type Counted = { fact: EvaluationFact; kind: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' };
 
@@ -129,20 +185,35 @@ function itemDimension(dimension: ItemDimension, facts: readonly EvaluationFact[
   const counted: Counted[] = [];
   let excluded = 0;
   let pending = 0;
+  let unattributed = 0;
+  let notAttributable = 0;
   let conflicting = 0;
   const refs: string[] = [];
+  const pendingRefs: string[] = [];
+  const unattributedRefs: string[] = [];
   for (const f of facts) {
     if (f.evidenceState === 'CONFLICTING_EVIDENCE') conflicting++;
     if (f.evidenceState !== 'SUFFICIENT_EVIDENCE') continue;
     const v = f.verdicts[dimension];
     if (v === undefined || v === 'NOT_ASSESSED') continue;
     if (v === 'NEGATIVE') {
-      const a = attribution.get(f.workItemId);
-      if (a === undefined || a.state !== 'VALIDATED') {
+      // RR3: one meaning of adverse evidence in every attribution state (`adverseStanding`).
+      const standing = standingOf(f, attribution.get(f.workItemId));
+      if (standing === 'PENDING_ATTRIBUTION') {
         pending++;
+        pendingRefs.push(`evaluation:${f.evaluationId}`);
         continue;
       }
-      if (!a.employeeAccountable) {
+      if (standing === 'NO_ACCOUNTABLE_CAUSE') {
+        unattributed++;
+        unattributedRefs.push(`evaluation:${f.evaluationId}`);
+        continue;
+      }
+      if (standing === 'NOT_ATTRIBUTABLE') {
+        notAttributable++;
+        continue;
+      }
+      if (standing === 'NOT_EMPLOYEE') {
         excluded++;
         continue;
       }
@@ -154,6 +225,8 @@ function itemDimension(dimension: ItemDimension, facts: readonly EvaluationFact[
   const negative = counted.filter((c) => c.kind === 'NEGATIVE').length;
   const sample = counted.length;
   const state: EvidenceState = conflicting > 0 && conflicting * 3 >= Math.max(1, sample + conflicting) ? 'CONFLICTING_EVIDENCE' : sample < min.minSample ? 'INSUFFICIENT_EVIDENCE' : 'SUFFICIENT_EVIDENCE';
+  // R2-18: at least as much pending adverse evidence as counted evidence — no level and no direction is claimed.
+  const outweighed = pending > 0 && pending >= sample;
   return {
     dimension,
     state,
@@ -163,9 +236,13 @@ function itemDimension(dimension: ItemDimension, facts: readonly EvaluationFact[
     neutral: sample - positive - negative,
     excludedNonEmployee: excluded,
     pendingAttribution: pending,
-    level: state === 'SUFFICIENT_EVIDENCE' ? levelOf(positive, sample) : null,
+    pendingEvidenceRefs: pendingRefs.slice(0, 50),
+    unattributedAdverse: unattributed,
+    unattributedEvidenceRefs: unattributedRefs.slice(0, 50),
+    notAttributable,
+    level: state === 'SUFFICIENT_EVIDENCE' && !outweighed ? levelOf(positive, sample) : null,
     confidence: confidenceOf(sample),
-    trend: state === 'SUFFICIENT_EVIDENCE' ? trendOf(counted, min.minTrendSample) : 'TREND_NOT_ESTABLISHED',
+    trend: state === 'SUFFICIENT_EVIDENCE' && !outweighed ? trendOf(counted, min.minTrendSample) : 'TREND_NOT_ESTABLISHED',
     evidenceRefs: refs.slice(0, 50),
   };
 }
@@ -184,6 +261,10 @@ function learningVelocity(effects: ProfileInput['learningEffects']): DimensionPr
     neutral: 0,
     excludedNonEmployee: 0,
     pendingAttribution: effects.length - tested.length,
+    pendingEvidenceRefs: [],
+    unattributedAdverse: 0,
+    unattributedEvidenceRefs: [],
+    notAttributable: 0,
     level: state === 'SUFFICIENT_EVIDENCE' ? levelOf(positive, tested.length) : null,
     confidence: confidenceOf(tested.length),
     trend: 'TREND_NOT_ESTABLISHED',
@@ -191,6 +272,11 @@ function learningVelocity(effects: ProfileInput['learningEffects']): DimensionPr
   };
 }
 
+/**
+ * System contribution: validated patterns, verified reuses of the Employee's pattern by OTHER Employees (the store
+ * supplies only those — reusing one's own pattern is not a contribution to the system, R2-16) and validated
+ * systemic findings the Employee reported.
+ */
 function systemContribution(c: ContributionFact): DimensionProfile {
   const refs = [...c.validatedPatterns.map((id) => `lesson:${id}`), ...c.verifiedPatternReuses.map((id) => `learning_intervention:${id}`), ...c.validatedSystemicFindings.map((id) => `systemic_finding:${id}`)];
   const n = refs.length;
@@ -204,6 +290,10 @@ function systemContribution(c: ContributionFact): DimensionProfile {
     neutral: 0,
     excludedNonEmployee: 0,
     pendingAttribution: 0,
+    pendingEvidenceRefs: [],
+    unattributedAdverse: 0,
+    unattributedEvidenceRefs: [],
+    notAttributable: 0,
     level: n === 0 ? null : n >= 3 ? 'STRONG' : 'ADEQUATE',
     confidence: confidenceOf(n),
     trend: 'TREND_NOT_ESTABLISHED',
@@ -218,8 +308,7 @@ function capabilitySignals(facts: readonly EvaluationFact[], attribution: Readon
   const regressions: CapabilitySignal[] = [];
   const accountableFailure = (f: EvaluationFact): boolean => {
     if (f.verdicts.OUTCOME !== 'NEGATIVE' && f.verdicts.QUALITY !== 'NEGATIVE') return false;
-    const a = attribution.get(f.workItemId);
-    return a !== undefined && a.state === 'VALIDATED' && a.employeeAccountable;
+    return standingOf(f, attribution.get(f.workItemId)) === 'ACCOUNTABLE';
   };
   for (const [key, list] of [...byKey.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
     const ordered = [...list].sort((a, b) => (a.at < b.at ? -1 : 1));
@@ -246,6 +335,8 @@ export interface CostPerQualifiedOutcome {
   readonly productiveMicros: number;
   /** Retries, fallbacks, escalations, failed charged calls and rework. */
   readonly overheadMicros: number;
+  /** The provider bill of the same work (reporting only; the costs above are economic, R2-20). */
+  readonly billedMicros: number;
   /** Total cost (productive + overhead, including failed and unqualified work) per qualified outcome; null when none. */
   readonly costPerQualifiedOutcomeMicros: number | null;
   readonly state: 'DEFINED' | 'NO_QUALIFIED_OUTCOME';
@@ -267,6 +358,7 @@ export function costPerQualifiedOutcome(facts: readonly EvaluationFact[]): CostP
     totalCostMicros: total,
     productiveMicros: productive,
     overheadMicros: overhead,
+    billedMicros: facts.reduce((s, f) => s + (f.cost.billedMicros ?? 0), 0),
     costPerQualifiedOutcomeMicros: qualified > 0 ? Math.ceil(total / qualified) : null,
     state: qualified > 0 ? 'DEFINED' : 'NO_QUALIFIED_OUTCOME',
   };
@@ -283,8 +375,12 @@ function readinessOf(dims: readonly DimensionProfile[], regressions: readonly Ca
   const d = (k: PerformanceDimension): DimensionProfile => dimensionOf(dims, k);
   const outcome = d('OUTCOME');
   const quality = d('QUALITY');
-  if (outcome.state !== 'SUFFICIENT_EVIDENCE' || quality.state !== 'SUFFICIENT_EVIDENCE') return { signal: 'INSUFFICIENT_EVIDENCE', reasons: ['OUTCOME_OR_QUALITY_EVIDENCE_INSUFFICIENT'], isDecision: false };
-  const reasons: string[] = [];
+  // R2-18 / RR3: adverse evidence whose attribution is PENDING (`adverseStanding`) is not counted against the Employee,
+  // but it is never counted as clean: while any is pending, no readiness is signalled. A decided REJECTED cause and a
+  // negative no attribution is due for are not pending: they are disclosed, never counted, and hold nothing.
+  const pending = dims.some((x) => ITEM_DIMENSION_SET.has(x.dimension) && x.pendingAttribution > 0) ? ['ADVERSE_EVIDENCE_PENDING_ATTRIBUTION'] : [];
+  if (outcome.state !== 'SUFFICIENT_EVIDENCE' || quality.state !== 'SUFFICIENT_EVIDENCE') return { signal: 'INSUFFICIENT_EVIDENCE', reasons: ['OUTCOME_OR_QUALITY_EVIDENCE_INSUFFICIENT', ...pending], isDecision: false };
+  const reasons: string[] = [...pending];
   if (outcome.level !== 'STRONG') reasons.push('OUTCOMES_NOT_CONSISTENTLY_QUALIFIED');
   if (quality.level !== 'STRONG') reasons.push('QUALITY_NOT_STABLE');
   if (d('JUDGMENT').accountableNegative > 0) reasons.push('ACCOUNTABLE_JUDGMENT_FAILURE');

@@ -18,9 +18,10 @@ import {
   type WorkItemState,
 } from '@qandeel-company/domain';
 
+import { releaseBudgetAdmission } from './governance-core.js';
 import { appendAudit, appendEvent, getWorkItemRow, liveJobFor, ts, type StoreContext, type TraceContext } from './internal.js';
 import type { JobRecord, WorkItemRecord } from './records.js';
-import { releaseAbandonedAssignment } from './review-core.js';
+import { releaseAbandonedReviewWork } from './review-core.js';
 
 export interface TransitionOptions {
   readonly reasonCode: string;
@@ -76,10 +77,41 @@ export function applyTransition(ctx: StoreContext, item: WorkItemRecord, to: Wor
     at,
   );
   appendEvent(ctx, 'work_item.transitioned', 'work_item', item.id, opts.trace, { from: item.state, to, version: item.version + 1, reason: opts.reasonCode });
-  // C4: a review Work Item that ends (failed, cancelled, superseded, dead-lettered) without its decision frees its
-  // review key for another eligible reviewer in this same transaction, whatever path ended it.
-  if (terminal) releaseAbandonedAssignment(ctx, item.id);
+  // C4 / C6: a review or judge Work Item that ends (failed, cancelled, superseded) without its decision frees its
+  // review key / judgment for another eligible reviewer in this same transaction, whatever path ended it. A
+  // dead-lettered one (BLOCKED, not terminal) is released by the queue's dead-letter path (m-11).
+  if (terminal) releaseAbandonedReviewWork(ctx, item.id);
+  // RR2-2 / RR2-5: a handoff never outlives its delegator. The datastore closes the open handoffs of work that ends
+  // unfinished (0011 `work_delegations_follow_parent`, this same statement); a CANCELLED / SUPERSEDED parent then
+  // propagates to its children (`terminateNow`), and a FAILED one cancels the work it delegated here.
+  if (to === 'FAILED') cancelDelegatedChildren(ctx, item.id, opts.trace);
   return getWorkItemRow(ctx, item.id);
+}
+
+/**
+ * RR2-2: the Work Items a FAILED delegator handed off are cancelled through the canonical propagation path (same
+ * transaction): a running one records durable intent, completed work is retained (it is finished), and one held for
+ * reconciliation is retained and stays surfaced as a held job — its handoff is closed all the same.
+ */
+function cancelDelegatedChildren(ctx: StoreContext, parentId: Id, trace: TraceContext): void {
+  const out = newTerminationOutcome();
+  for (const { c } of ctx.db.all<{ c: string }>('SELECT child_work_item_id AS c FROM work_delegations WHERE parent_work_item_id = ? ORDER BY created_at, id', parentId)) {
+    requestTermination(ctx, c as Id, { mode: 'CANCELLED', reasonCode: 'PARENT_FAILED', trace: { ...trace, causationId: parentId }, policy: defaultPropagationPolicy }, out, true, 1);
+  }
+}
+
+/**
+ * RR2-5: executable work never re-enters the queue under a lineage that ended — e.g. a delegated child retained as
+ * completed (WAITING_REVIEW) when its delegator was cancelled, then sent back to rework by its review. It is
+ * cancelled by the same propagation its parent's end would have applied had it not been finished then. `null`:
+ * the parent (if any) is live, or the child is independent of it.
+ */
+function endedLineageReason(ctx: StoreContext, item: WorkItemRecord): string | null {
+  if (item.parentId === null) return null;
+  const parent = getWorkItemRow(ctx, item.parentId);
+  if ((parent.state === 'CANCELLED' || parent.state === 'SUPERSEDED') && defaultPropagationPolicy(item, parent.state) === 'TERMINATE') return parent.state === 'CANCELLED' ? 'PARENT_CANCELLED' : 'PARENT_SUPERSEDED';
+  if (parent.state === 'FAILED' && ctx.db.get('SELECT 1 AS x FROM work_delegations WHERE child_work_item_id = ? AND parent_work_item_id = ?', item.id, parent.id)) return 'PARENT_FAILED';
+  return null;
 }
 
 /** Non-state field update (blocker refresh, termination intent). Still bumps the version. */
@@ -118,6 +150,11 @@ export function enqueueJob(ctx: StoreContext, item: WorkItemRecord, trace: Trace
   if (item.processorKind === null) return undefined;
   const existing = liveJobFor(ctx, item.id);
   if (existing) return existing;
+  const ended = endedLineageReason(ctx, item);
+  if (ended !== null) {
+    requestTermination(ctx, item.id, { mode: 'CANCELLED', reasonCode: ended, trace: { ...trace, causationId: item.parentId as Id }, policy: defaultPropagationPolicy }, newTerminationOutcome(), true, 1);
+    return undefined;
+  }
   const id = newId();
   const at = ts(ctx);
   ctx.db.run(
@@ -145,6 +182,8 @@ export function withdrawJob(ctx: StoreContext, item: WorkItemRecord, trace: Trac
   if (job.state === 'CLAIMED' || job.state === 'RECONCILIATION_HOLD') {
     throw new QandeelError('STORAGE_INVARIANT', 'a claimed or held job cannot be withdrawn', { jobId: job.id, state: job.state });
   }
+  // FA-1 (A5): a withdrawn (admitted, not yet running) job's budget capacity goes to the next eligible waiter now.
+  releaseBudgetAdmission(ctx, job.id, 'JOB_LEFT_QUEUE');
   ctx.db.run(`UPDATE queue_jobs SET state = 'CANCELLED', updated_at = ?, wait_reason = NULL WHERE id = ? AND state = ?`, ts(ctx), job.id, job.state);
   appendAudit(ctx, 'job.withdrawn', 'job', job.id, trace, 'OK', reasonCode, { workItemId: item.id, from: job.state });
 }

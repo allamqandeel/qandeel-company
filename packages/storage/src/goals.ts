@@ -4,17 +4,24 @@
  *
  * Founder acts (propose, approve, activate, pause, achieve, cancel, supersede, link) pass the Founder
  * chokepoint: they fail closed outside an authenticated session (or the test seam). A Director derives a
- * Department goal only from inside its own governed run (`txGoalAct`, fenced, runtime-authority), never by
- * presenting a reference. Goals never carry authority, budget or a second Work Item engine.
+ * Department goal (or links its work to a goal) only from inside its own governed run (`txGoalAct`, fenced,
+ * runtime-authority), never by presenting a reference, and only with the Director seat AND an explicit
+ * Founder-delegated `org.goal.*` grant (PO-R2-D). Goals never carry authority, budget or a second Work Item engine.
  */
 import { QandeelError, assertCode, assertId, boundedJson, boundedText, isTimestamp, newId, type Id, type Timestamp } from '@qandeel-company/domain';
-import { assertGoalTransition, goalTransitionNeedsFounder, isGoalKind, isGoalState, type GoalKind, type GoalState } from '@qandeel-company/governance';
+import { assertGoalTransition, decideOrgAct, goalActCapability, goalTransitionNeedsFounder, isGoalKind, isGoalState, type GoalKind, type GoalState } from '@qandeel-company/governance';
+import { containsSecretMaterial } from '@qandeel-company/mind';
 
 import { getEmployeeRow } from './governance-core.js';
+import { mapGrant } from './governance-records.js';
 import { founder, founderAdminWrite } from './governance.js';
+import { actingState, consumeGrant, recordDenial } from './governed-writes.js';
 import { mapGoal, mapGoalHistory, mapGoalWorkLink, mustRow, type GoalHistoryRecord, type GoalRecord, type GoalWorkLinkRecord } from './founder-records.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
+import { enforceRoleCertification } from './mind-core.js';
+import { academyRun } from './mind-writes.js';
 import { holdsSeat } from './org-core.js';
+import type { Fence } from './records.js';
 import { storeContext, type CompanyStore } from './store.js';
 
 export interface ProposeGoalInput {
@@ -59,6 +66,10 @@ export function txInsertGoal(ctx: StoreContext, input: ProposeGoalInput, actorRe
   if (from !== null && to !== null && to < from) throw new QandeelError('VALIDATION_FAILED', 'horizonTo precedes horizonFrom', { field: 'horizonTo' });
   const criteria = (input.successCriteria ?? []).map((c, i) => boundedText(c, `successCriteria[${i}]`, 400));
   if (criteria.length > 12) throw new QandeelError('VALIDATION_FAILED', 'too many success criteria', { field: 'successCriteria' });
+  // m-20: goal text (Founder-typed or model-authored through `goal.derive`) is secret-scanned like every sibling text.
+  for (const [field, text] of [['title', input.title], ['summary', input.summary], ...criteria.map((c, i) => [`successCriteria[${i}]`, c] as const)] as const) {
+    if (typeof text === 'string' && containsSecretMaterial(text)) throw new QandeelError('VALIDATION_FAILED', 'goal text carries secret material', { field, reason: 'SECRET_MATERIAL' });
+  }
   const id = newId();
   const at = ts(ctx);
   ctx.db.run(
@@ -106,29 +117,63 @@ export function txLinkGoalWork(ctx: StoreContext, goalId: Id, workItemId: Id, li
   return mapGoalWorkLink(mustRow(ctx.db.get('SELECT * FROM goal_work_links WHERE id = ?', id), 'goal work link'));
 }
 
-/** Fenced Director act (reached through runtime-authority only): derive a Department goal or link own work to a goal. */
-export function txGoalAct(ctx: StoreContext, employeeId: Id, employeeRef: string, departmentId: Id | null, workItemId: Id, action: 'goal.derive' | 'goal.link', args: Record<string, unknown>): { outcome: 'DONE' | 'REFUSED'; code: string; resultRef: string | null } {
+/**
+ * Fenced Director act (reached through runtime-authority only): derive a Department goal or link own work to a
+ * goal. PO-R2-D (AC-01, Title ≠ Authority): the act needs BOTH (1) the run's Department Director seat, held now
+ * (ACTING coverage counts only inside its window and scope), AND (2) an explicit, ACTIVE Founder-delegated grant
+ * of the act's own capability (`org.goal.derive` / `org.goal.link`) under the ordinary grant decision (expiry,
+ * revocation, risk / data ceilings, use limit). Neither replaces the other. Order: eligibility → Academy → seat →
+ * the act's own validation → own-effect replay (nothing new is exercised, nothing consumed) → grant decision
+ * (a denial counts toward containment and consumes nothing) → effect (savepoint) → one grant use consumed.
+ */
+export function txGoalAct(ctx: StoreContext, fence: Fence, employeeId: Id, employeeRef: string, departmentId: Id | null, workItemId: Id, action: 'goal.derive' | 'goal.link', args: Record<string, unknown>): { outcome: 'DONE' | 'REFUSED'; code: string; resultRef: string | null } {
   const at = ts(ctx);
-  const e = getEmployeeRow(ctx, employeeId);
-  if (e.state !== 'ACTIVE') return { outcome: 'REFUSED', code: 'EMPLOYEE_NOT_ELIGIBLE', resultRef: null };
+  const refused = (code: string): { outcome: 'REFUSED'; code: string; resultRef: null } => ({ outcome: 'REFUSED', code, resultRef: null });
+  // m-21: the same eligibility boundary as an organizational act (`txOrgAct`): a lapsed role certification
+  // moves an ACTIVE Employee to RETRAINING here, and a constrained Academy / shadow run acts on nothing.
+  const e = enforceRoleCertification(ctx, getEmployeeRow(ctx, employeeId));
+  if (e.state !== 'ACTIVE') return refused('EMPLOYEE_NOT_ELIGIBLE');
+  if (academyRun(ctx, fence.runId)) return refused('ACADEMY_CONSTRAINED');
+  const capability = goalActCapability(action);
+  if (capability === null) return refused('UNKNOWN_GOAL_ACTION');
+  // (1) Organizational eligibility: the run's Department Director seat (never a grant's substitute).
+  if (departmentId === null || holdsSeat(ctx, employeeId, 'DIRECTOR', departmentId, at, action) === null) return refused('SEAT_NOT_HELD');
   try {
     if (action === 'goal.derive') {
-      if (departmentId === null || holdsSeat(ctx, employeeId, 'DIRECTOR', departmentId, at, 'goal.derive') === null) return { outcome: 'REFUSED', code: 'SEAT_NOT_HELD', resultRef: null };
       // Idempotent per (Employee, parent, title): a resumed run never derives the same goal twice.
       const prior = ctx.db.get<{ id: string }>(`SELECT id FROM goals WHERE kind = 'DEPARTMENT' AND department_id = ? AND parent_goal_id = ? AND title = ? AND created_by_ref = ? AND state NOT IN ('CANCELLED', 'SUPERSEDED')`, departmentId, String(args.parentGoalId ?? ''), String(args.title ?? ''), employeeRef);
       if (prior) return { outcome: 'DONE', code: 'REPLAYED', resultRef: `goal:${prior.id}` };
-      const g = txInsertGoal(ctx, { kind: 'DEPARTMENT', departmentId, parentGoalId: String(args.parentGoalId ?? ''), title: String(args.title ?? ''), summary: String(args.summary ?? ''), successCriteria: Array.isArray(args.successCriteria) ? args.successCriteria.map(String) : [], ownerRef: employeeRef, horizonFrom: (args.horizonFrom as string | null | undefined) ?? null, horizonTo: (args.horizonTo as string | null | undefined) ?? null }, employeeRef, 'PROPOSED', 'goal.derived');
-      // A derived Department goal inside authority activates without a second Founder act (Stage 2 §3).
-      txGoalTransition(ctx, g.id, 'APPROVED', employeeRef, 'goal.derived');
-      const active = txGoalTransition(ctx, g.id, 'ACTIVE', employeeRef, 'goal.derived');
-      return { outcome: 'DONE', code: 'GOAL_DERIVED', resultRef: `goal:${active.id}` };
+    } else {
+      const goal = getGoal(ctx, assertId(args.goalId, 'goalId'));
+      if (goal.kind === 'DEPARTMENT' && goal.departmentId !== departmentId) return refused('GOAL_OUTSIDE_DEPARTMENT');
+      // Replay of this Employee's own live link on this Work Item: the same reference, nothing new exercised.
+      const own = ctx.db.get<{ id: string }>('SELECT id FROM goal_work_links WHERE goal_id = ? AND work_item_id = ? AND ended_at IS NULL AND created_by_ref = ?', goal.id, workItemId, employeeRef);
+      if (own) return { outcome: 'DONE', code: 'GOAL_LINKED', resultRef: `goal_work_link:${own.id}` };
     }
-    const goal = getGoal(ctx, assertId(args.goalId, 'goalId'));
-    if (goal.kind === 'DEPARTMENT' && goal.departmentId !== departmentId) return { outcome: 'REFUSED', code: 'GOAL_OUTSIDE_DEPARTMENT', resultRef: null };
-    const link = txLinkGoalWork(ctx, goal.id, workItemId, 'SERVES', employeeRef);
-    return { outcome: 'DONE', code: 'GOAL_LINKED', resultRef: `goal_work_link:${link.id}` };
+    // (2) The explicit Founder-delegated grant of THIS act's capability (default deny; ceilings, expiry, uses).
+    const grants = ctx.db.all(`SELECT * FROM permission_grants WHERE employee_id = ? AND status = 'ACTIVE'`, e.id).map(mapGrant);
+    const decision = decideOrgAct(actingState(ctx, fence.runId, e), grants, { capability, resource: '*', at });
+    if (decision.effect === 'DENY') {
+      recordDenial(ctx, fence, e.id, decision.code, { capability });
+      return refused(decision.code);
+    }
+    const out = ctx.db.savepoint('goal act', (): { code: string; resultRef: string } => {
+      if (action === 'goal.derive') {
+        const g = txInsertGoal(ctx, { kind: 'DEPARTMENT', departmentId, parentGoalId: String(args.parentGoalId ?? ''), title: String(args.title ?? ''), summary: String(args.summary ?? ''), successCriteria: Array.isArray(args.successCriteria) ? args.successCriteria.map(String) : [], ownerRef: employeeRef, horizonFrom: (args.horizonFrom as string | null | undefined) ?? null, horizonTo: (args.horizonTo as string | null | undefined) ?? null }, employeeRef, 'PROPOSED', 'goal.derived');
+        // A derived Department goal inside authority activates without a second Founder act (Stage 2 §3).
+        txGoalTransition(ctx, g.id, 'APPROVED', employeeRef, 'goal.derived');
+        const active = txGoalTransition(ctx, g.id, 'ACTIVE', employeeRef, 'goal.derived');
+        return { code: 'GOAL_DERIVED', resultRef: `goal:${active.id}` };
+      }
+      const link = txLinkGoalWork(ctx, assertId(args.goalId, 'goalId'), workItemId, 'SERVES', employeeRef);
+      return { code: 'GOAL_LINKED', resultRef: `goal_work_link:${link.id}` };
+    });
+    // A DONE act consumes exactly one use of the grant that authorized it (a refusal consumed nothing).
+    consumeGrant(ctx, decision.grantId as Id);
+    appendAudit(ctx, 'goal.act', 'run', fence.runId, { actorRef: employeeRef }, 'OK', out.code, { action, employeeId: e.id, resultRef: out.resultRef, grantId: decision.grantId });
+    return { outcome: 'DONE', ...out };
   } catch (error) {
-    if (error instanceof QandeelError) return { outcome: 'REFUSED', code: error.code, resultRef: null };
+    if (error instanceof QandeelError) return { outcome: 'REFUSED', code: error.details['reason'] === 'SECRET_MATERIAL' ? 'SECRET_MATERIAL' : error.code, resultRef: null };
     throw error;
   }
 }

@@ -8,11 +8,12 @@ import { describe, test } from 'node:test';
 
 import { isQandeelError, type Id } from '@qandeel-company/domain';
 
-import { GovernanceStore, OrganizationStore } from '../src/index.js';
-import { beginGovernedRun, claimJob, reconcileOrganization, recordOrgAct, reserveBudget, settle } from '../src/runtime-authority.js';
+import { GovernanceStore, OrganizationStore, ReviewStore } from '../src/index.js';
+import { beginGovernedRun, claimJob, interruptClaim, reconcileOrganization, recordOrgAct, reserveBudget, settle } from '../src/runtime-authority.js';
+import { storeContext } from '../src/store.js';
 import { disarmFounderTestSurface } from '../src/testing/founder-seam.js';
 import { C2_KINDS, hire, seed, testManifest, type Seed } from './c2-helpers.js';
-import { budgetDepartment, departmentId, newSeat, placed, runFor, seat } from './c4-helpers.js';
+import { activeReviewer, budgetDepartment, decideAssignment, departmentId, newSeat, placed, reviewPlan, runFor, seat } from './c4-helpers.js';
 import { backoff, harness, type Harness } from './helpers.js';
 
 const code = (c: string) => (e: unknown): boolean => isQandeelError(e) && e.code === c;
@@ -114,6 +115,9 @@ describe('C4 assignments are canonical and time-correct', () => {
       assert.equal(s.gov.budget(beforeEnvelope?.id as Id).status, 'CLOSED', 'the old envelope keeps its history where it was spent');
       assert.equal(s.gov.budgetFor('EMPLOYEE', e.id)?.parentId, s.gov.budgetFor('DEPARTMENT', s.departmentId)?.id);
       assert.deepEqual(s.gov.accountingInvariants(), []);
+      // R2-06: the CLOSED envelope can spend nothing more, so it no longer holds the old Department's cap up.
+      const growthBudget = s.gov.budgetFor('DEPARTMENT', growth);
+      s.gov.changeBudgetCap(s.founder, growthBudget?.id as Id, { capMoney: 150_000, capTokens: growthBudget?.capTokens as number, reasonCode: 'founder.cut' });
       // A placement is organization data: the C2 path can no longer move an organization-managed Employee.
       assert.throws(() => s.gov.reassignEmployee(s.founder, e.id, { departmentId: growth, reasonCode: 'x' }), code('ORG_MANAGED_EMPLOYEE'));
     });
@@ -302,6 +306,133 @@ describe('C4 work delegation ≠ authority delegation: bounded, acyclic, account
       assert.equal(org.handoffMessages(delegationA?.id as Id).length, 3);
       const telemetry = JSON.stringify([...h.store.pendingEvents(5_000), ...h.store.audit(delegationA?.id as Id)]);
       for (const text of ['Cairo only', 'Cairo and Alexandria', 'Outside my certified role', 'Conflicting brand']) assert.ok(!telemetry.includes(text), `"${text}" stays out of telemetry`);
+    });
+  });
+
+  test('R2-04: an escalated handoff parks its delegator at every WAIT settle (one open-handoff set); only an answer wakes it', () => {
+    withSeed((h, s) => {
+      const org = OrganizationStore.for(h.store);
+      const director = placed(h, s, 'director.growth');
+      newSeat(h, s, 'growth.analyst-1', 'director.growth');
+      const report = placed(h, s, 'growth.analyst-1');
+      org.delegateAuthority(s.founder, { employeeId: director.id, capability: 'org.work.delegate', expiresAt: inAYear(h), purposeCode: 'work', reasonCode: 'delegated' });
+      const parent = runFor(h, s, director);
+      const task = { delegateEmployeeId: report.id, objective: 'Brief', instructions: 'Short.', taskClass: 'draft.memo', budgetMoney: 10_000, budgetTokens: 10_000 };
+      const child = String(recordOrgAct(h.store, parent.claim.fence, 1, 'work.delegate', task).resultRef).split(':')[1] as Id;
+      settle(h.store, parent.claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_DELEGATION' }, { backoff });
+      h.clock.advance(1_000);
+      const c = claimItem2(h, child);
+      assert.equal(recordOrgAct(h.store, c.fence, 1, 'handoff.escalate', { reason: 'Conflicting guidance.' }).after, 'WAIT_ESCALATION');
+      settle(h.store, c.fence, { type: 'WAIT', reasonCode: 'AWAITING_ESCALATION' }, { backoff });
+      assert.equal(h.store.jobsFor(parent.workItemId).at(-1)?.state, 'QUEUED', 'the escalation itself is news to the delegator: woken once');
+      // Its re-run can only wait for the Founder: the ESCALATED handoff is open, so the WAIT settle parks (no re-queue, no paid re-run).
+      for (let i = 0; i < 2; i++) {
+        h.clock.advance(1_000);
+        const p = claimItem2(h, parent.workItemId);
+        settle(h.store, p.fence, { type: 'WAIT', reasonCode: 'AWAITING_DELEGATION' }, { backoff });
+        assert.equal(h.store.jobsFor(parent.workItemId).at(-1)?.state, 'WAITING');
+        if (i === 0) org.resumeEscalatedHandoff(s.founder, org.workDelegations({ childWorkItemId: child })[0]?.id as string, 'guidance.given');
+      }
+      assert.equal(org.workDelegations({ childWorkItemId: child })[0]?.state, 'ACCEPTED');
+    });
+  });
+
+  test('R2-04 / m-01: a restart between a clarification request and its WAIT settle keeps the question open', () => {
+    withSeed((h, s) => {
+      const org = OrganizationStore.for(h.store);
+      const director = placed(h, s, 'director.growth');
+      newSeat(h, s, 'growth.analyst-1', 'director.growth');
+      const report = placed(h, s, 'growth.analyst-1');
+      org.delegateAuthority(s.founder, { employeeId: director.id, capability: 'org.work.delegate', expiresAt: inAYear(h), purposeCode: 'work', reasonCode: 'delegated' });
+      const parent = runFor(h, s, director);
+      const task = { delegateEmployeeId: report.id, objective: 'Brief', instructions: 'Short.', taskClass: 'draft.memo', budgetMoney: 10_000, budgetTokens: 10_000 };
+      const child = String(recordOrgAct(h.store, parent.claim.fence, 1, 'work.delegate', task).resultRef).split(':')[1] as Id;
+      settle(h.store, parent.claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_DELEGATION' }, { backoff });
+      const c = claimItem2(h, child);
+      assert.equal(recordOrgAct(h.store, c.fence, 1, 'handoff.clarification.request', { reason: 'Which segment?' }).after, 'WAIT_CLARIFICATION');
+      interruptClaim(h.store, h.supervisor, c.fence.jobId, 'LEASE_EXPIRED'); // the process died before its WAIT settle
+      h.clock.advance(120_000);
+      const c2 = claimItem2(h, child);
+      assert.equal(org.workDelegations({ childWorkItemId: child })[0]?.state, 'CLARIFICATION_REQUESTED', 'starting work again never answers the question');
+      assert.equal(recordOrgAct(h.store, c2.fence, 1, 'handoff.clarification.request', { reason: 'Which segment?' }).after, 'WAIT_CLARIFICATION');
+      settle(h.store, c2.fence, { type: 'WAIT', reasonCode: 'AWAITING_CLARIFICATION' }, { backoff });
+      assert.equal(h.store.jobsFor(child).at(-1)?.state, 'WAITING');
+    });
+  });
+
+  test('R2-05: a review-required child closes its handoff only once REVIEWED; rework keeps the delegator waiting', () => {
+    withSeed((h, s) => {
+      const org = OrganizationStore.for(h.store);
+      const review = ReviewStore.for(h.store);
+      activeReviewer(h, s);
+      activeReviewer(h, s);
+      const director = placed(h, s, 'director.growth');
+      newSeat(h, s, 'growth.analyst-1', 'director.growth');
+      const report = placed(h, s, 'growth.analyst-1');
+      org.delegateAuthority(s.founder, { employeeId: director.id, capability: 'org.work.delegate', expiresAt: inAYear(h), purposeCode: 'work', reasonCode: 'delegated' });
+      const parent = runFor(h, s, director);
+      const out = recordOrgAct(h.store, parent.claim.fence, 1, 'work.delegate', { delegateEmployeeId: report.id, objective: 'Brief', instructions: 'Short.', taskClass: 'draft.memo', budgetMoney: 10_000, budgetTokens: 10_000, reviewPlan: reviewPlan({ appliesTo: 'OUTPUT' }) });
+      const child = String(out.resultRef).split(':')[1] as Id;
+      settle(h.store, parent.claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_DELEGATION' }, { backoff });
+      const handoff = () => org.workDelegations({ childWorkItemId: child })[0]?.state;
+      const parentJob = () => h.store.jobsFor(parent.workItemId).at(-1)?.state;
+      const reviewKey = (): Id => {
+        const request = review.requests({ workItemId: child }).find((r) => r.state === 'OPEN');
+        return review.assignments(request?.id as Id).find((a) => a.state === 'ASSIGNED')?.reviewWorkItemId as Id;
+      };
+      settle(h.store, claimItem2(h, child).fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft' } }, { backoff });
+      assert.deepEqual([h.store.getWorkItem(child).state, handoff(), parentJob()], ['WAITING_REVIEW', 'ACCEPTED', 'WAITING'], 'finished execution is not reviewed work');
+      assert.equal(decideAssignment(h, reviewKey(), 'FAIL').code, 'RECORDED');
+      assert.deepEqual([h.store.getWorkItem(child).state, handoff(), parentJob()], ['READY', 'ACCEPTED', 'WAITING'], 'rework stays inside the open handoff');
+      settle(h.store, claimItem2(h, child).fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v2' } }, { backoff });
+      assert.equal(decideAssignment(h, reviewKey(), 'PASS').code, 'RECORDED');
+      assert.deepEqual([h.store.getWorkItem(child).state, handoff(), parentJob()], ['REVIEWED', 'COMPLETED', 'QUEUED'], 'reviewed: the handoff closes and the delegator is woken in the same transaction');
+    });
+  });
+
+  test('RR2-2 / RR2-5: a handoff never outlives its delegator — a delegator that fails or is cancelled closes its open handoffs and cancels the work it delegated', () => {
+    withSeed((h, s) => {
+      const org = OrganizationStore.for(h.store);
+      const review = ReviewStore.for(h.store);
+      activeReviewer(h, s);
+      activeReviewer(h, s);
+      const director = placed(h, s, 'director.growth');
+      newSeat(h, s, 'growth.analyst-1', 'director.growth');
+      const report = placed(h, s, 'growth.analyst-1');
+      org.delegateAuthority(s.founder, { employeeId: director.id, capability: 'org.work.delegate', expiresAt: inAYear(h), purposeCode: 'work', reasonCode: 'delegated' });
+      const task = { delegateEmployeeId: report.id, objective: 'Brief', instructions: 'Short.', taskClass: 'draft.memo', budgetMoney: 10_000, budgetTokens: 10_000 };
+      const delegation = (child: Id) => org.workDelegations({ childWorkItemId: child })[0];
+      const history = (id: string | undefined): string[] =>
+        id === undefined ? [] : storeContext(h.store).db.all<{ t: string; r: string }>('SELECT to_state AS t, reason_code AS r FROM work_delegation_history WHERE delegation_id = ? ORDER BY id', id).map((x) => `${x.t}:${x.r}`);
+      const job = (wi: Id) => h.store.jobsFor(wi).at(-1)?.state;
+      // (1) The delegator FAILS (e.g. MAX_TURNS) while its delegate's question is pending.
+      const p1 = runFor(h, s, director);
+      const asked = String(recordOrgAct(h.store, p1.claim.fence, 1, 'work.delegate', task).resultRef).split(':')[1] as Id;
+      settle(h.store, p1.claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_DELEGATION' }, { backoff });
+      const ca = claimItem2(h, asked);
+      assert.equal(recordOrgAct(h.store, ca.fence, 1, 'handoff.clarification.request', { reason: 'Which segment?' }).after, 'WAIT_CLARIFICATION');
+      settle(h.store, ca.fence, { type: 'WAIT', reasonCode: 'AWAITING_CLARIFICATION' }, { backoff });
+      settle(h.store, claimItem2(h, p1.workItemId).fence, { type: 'PERMANENT_FAILURE', code: 'MAX_TURNS' }, { backoff });
+      assert.deepEqual([delegation(asked)?.state, delegation(asked)?.responseReasonCode, h.store.getWorkItem(asked).state, job(asked)], ['CANCELLED', 'PARENT_ENDED', 'CANCELLED', 'CANCELLED'], 'no question left open, no child left waiting under a FAILED delegator');
+      assert.deepEqual(history(delegation(asked)?.id).slice(-1), ['CANCELLED:PARENT_ENDED']);
+      // (2) The delegator is CANCELLED while its review-required child waits for review (retained: it is finished).
+      const p2 = runFor(h, s, director);
+      const reviewed = String(recordOrgAct(h.store, p2.claim.fence, 1, 'work.delegate', { ...task, reviewPlan: reviewPlan({ appliesTo: 'OUTPUT' }) }).resultRef).split(':')[1] as Id;
+      settle(h.store, p2.claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_DELEGATION' }, { backoff });
+      settle(h.store, claimItem2(h, reviewed).fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft' } }, { backoff });
+      const t = h.store.requestCancellation(p2.workItemId, { reasonCode: 'founder.cancel', actorRef: s.founder });
+      assert.deepEqual([t.retained, h.store.getWorkItem(reviewed).state, delegation(reviewed)?.state, delegation(reviewed)?.responseReasonCode], [[reviewed], 'WAITING_REVIEW', 'CANCELLED', 'PARENT_ENDED']);
+      const request = review.requests({ workItemId: reviewed }).find((r) => r.state === 'OPEN');
+      const key = review.assignments(request?.id as Id).find((a) => a.state === 'ASSIGNED')?.reviewWorkItemId as Id;
+      assert.equal(decideAssignment(h, key, 'FAIL').code, 'RECORDED');
+      assert.deepEqual([h.store.getWorkItem(reviewed).state, job(reviewed)], ['CANCELLED', 'DONE'], 'sent back to rework under a dead delegator: cancelled by the propagation it would have had, never re-queued');
+      // (3) A child held for reconciliation is never cancelled (it stays surfaced as a held job); its handoff still closes.
+      const p3 = runFor(h, s, director);
+      const held = String(recordOrgAct(h.store, p3.claim.fence, 1, 'work.delegate', task).resultRef).split(':')[1] as Id;
+      settle(h.store, p3.claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_DELEGATION' }, { backoff });
+      settle(h.store, claimItem2(h, held).fence, { type: 'RECONCILIATION_REQUIRED', code: 'TOOL_OUTCOME_UNCERTAIN' }, { backoff });
+      h.store.requestCancellation(p3.workItemId, { reasonCode: 'founder.cancel', actorRef: s.founder });
+      assert.deepEqual([delegation(held)?.state, h.store.getWorkItem(held).state, job(held)], ['CANCELLED', 'BLOCKED', 'RECONCILIATION_HOLD']);
     });
   });
 

@@ -13,6 +13,7 @@ import {
   QandeelError,
   assertCode,
   boundedJson,
+  canTransition,
   classifyInterruptedRun,
   decideRetry,
   isId,
@@ -29,9 +30,10 @@ import {
   type WorkItemState,
 } from '@qandeel-company/domain';
 
+import { releaseBudgetAdmission } from './governance-core.js';
 import { appendAudit, appendEvent, getJobRow, getWorkItemRow, mapCheckpoint, mapJob, mapRun, ts, type StoreContext, type TraceContext } from './internal.js';
 import type { CheckpointRecord, Fence, JobRecord, RunRecord, SupervisorFence, WorkItemRecord } from './records.js';
-import { reviewAfterCompletion } from './review-core.js';
+import { releaseAbandonedReviewWork, reviewAfterCompletion } from './review-core.js';
 import { applyTransition, defaultPropagationPolicy, failDependents, futureTimestamp, newTerminationOutcome, resolveDependents, terminateNow, type TerminationOutcome } from './work-core.js';
 
 export const CHECKPOINT_MAX_BYTES = 65_536;
@@ -309,6 +311,10 @@ function setJob(
   state: JobRecord['state'],
   fields: { availableAt?: Timestamp; attemptCount?: number; deadLetterReason?: string | null; waitReason?: string | null; lastFailureCode?: string | null; bumpToken?: boolean },
 ): void {
+  // FA-1 (A5): a job leaving QUEUED / CLAIMED (a wait for anything, DONE, FAILED, DEAD_LETTER, a hold, CANCELLED) no
+  // longer owns admitted budget capacity: released here and re-admitted to the next eligible waiter in this
+  // transaction (the 0011 `budget_admissions_follow_job` trigger is the durable backstop of the release).
+  if (state !== 'QUEUED' && state !== 'CLAIMED') releaseBudgetAdmission(ctx, job.id, 'JOB_LEFT_QUEUE');
   ctx.db.run(
     `UPDATE queue_jobs SET state = ?, lease_owner = NULL, lease_expires_at = NULL, available_at = ?, attempt_count = ?, dead_letter_reason = ?,
             wait_reason = ?, last_failure_code = ?, fencing_token = fencing_token + ?, updated_at = ?
@@ -466,6 +472,8 @@ export function txSettle(ctx: StoreContext, fence: Fence, result: ProcessorResul
 function deadLetter(ctx: StoreContext, job: JobRecord, item: WorkItemRecord, trace: TraceContext, failed: number, code: string, reason: string): SettleOutcome {
   setJob(ctx, job, 'DEAD_LETTER', { attemptCount: Math.min(failed, job.maxAttempts), deadLetterReason: reason, lastFailureCode: code, bumpToken: true });
   const wi = applyTransition(ctx, item, 'BLOCKED', { reasonCode: 'job.dead_lettered', trace, blockedReason: reason, blockerRef: `job:${job.id}` });
+  // m-11: a dead-lettered review / judge Work Item never runs again on its own: its key / judgment is released now.
+  releaseAbandonedReviewWork(ctx, wi.id);
   appendEvent(ctx, 'job.dead_lettered', 'job', job.id, trace, { attempts: failed, code, reason });
   appendAudit(ctx, 'job.dead_lettered', 'job', job.id, trace, 'OK', reason, { attempts: failed, code });
   return { jobState: 'DEAD_LETTER', runState: 'FAILED_RETRYABLE', workItemState: wi.state };
@@ -477,6 +485,32 @@ function hold(ctx: StoreContext, job: JobRecord, item: WorkItemRecord, trace: Tr
   appendEvent(ctx, 'job.reconciliation_required', 'job', job.id, trace, { code });
   appendAudit(ctx, 'job.reconciliation_required', 'job', job.id, trace, 'OK', code, {});
   return { jobState: 'RECONCILIATION_HOLD', runState: 'RECONCILIATION_REQUIRED', workItemState: wi.state };
+}
+
+/**
+ * Holds a non-terminal job (QUEUED, WAITING or CLAIMED) for reconciliation outside any run — the same hold as an
+ * uncertain settle (fence token bumped, lease released, content-free event and audit), used when the Company cannot
+ * know whether the work already happened (a clean restore past its backup point, R2-29). A CLAIMED job's orphaned run
+ * is closed INTERRUPTED / RECONCILIATION_REQUIRED. The Work Item is BLOCKED where the state machine allows; otherwise
+ * it keeps its state (the job hold alone stops dispatch). Resolved only through `txResolveReconciliation`.
+ * Returns false when the job is not live (nothing to hold).
+ */
+export function txHoldForReconciliation(ctx: StoreContext, jobId: Id, code: string): boolean {
+  const job = getJobRow(ctx, jobId);
+  if (job.state !== 'QUEUED' && job.state !== 'WAITING' && job.state !== 'CLAIMED') return false;
+  const trace: TraceContext = { correlationId: job.correlationId, causationId: job.currentRunId };
+  if (job.state === 'CLAIMED' && job.currentRunId && ctx.db.get(`SELECT 1 AS x FROM runs WHERE id = ? AND state = 'RUNNING'`, job.currentRunId)) {
+    endRun(ctx, job.currentRunId, 'INTERRUPTED', { failureCategory: 'INTERRUPTED', failureCode: code, disposition: 'RECONCILIATION_REQUIRED' });
+  }
+  const item = getWorkItemRow(ctx, job.workItemId);
+  if (canTransition(item.state, 'BLOCKED')) {
+    hold(ctx, job, item, trace, code);
+    return true;
+  }
+  setJob(ctx, job, 'RECONCILIATION_HOLD', { lastFailureCode: code, bumpToken: true });
+  appendEvent(ctx, 'job.reconciliation_required', 'job', job.id, trace, { code });
+  appendAudit(ctx, 'job.reconciliation_required', 'job', job.id, trace, 'OK', code, {});
+  return true;
 }
 
 /**

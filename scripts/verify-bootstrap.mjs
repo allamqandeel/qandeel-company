@@ -174,9 +174,10 @@ const SECRET_LITERALS = [
   /\bAIza[0-9A-Za-z_-]{35}\b/,
 ];
 const SECRET_COLUMN = /(?:^|[(,])\s*"?(\w*(?:password|passwd|secret|api_?key|private_?key|access_?token|refresh_?token|bearer)\w*)"?\s+(?:TEXT|BLOB|ANY)\b/im;
-// Released canonical migrations (C1 0001–0003, C2 0004, C3 0005–0006) are frozen by content,
-// independently of the registry pins: editing one and re-pinning it is still refused (R1-14: C3's
-// were released with PR #4 and had not been added).
+// Released canonical migrations (C1 0001–0003, C2 0004, C3 0005–0006, C4 0007–0008, C5 0009, C6 0010) are
+// frozen by content, independently of the registry pins: editing one and re-pinning it is still refused
+// (R1-14: C3's were released with PR #4 and had not been added; R2-33: C4–C6's had not been added either —
+// a stage's migrations join this list in the change that releases them).
 const FROZEN_MIGRATIONS = [
   { file: '0001_work_foundation.sql', sha256: '3022ed5ed626f9394cfa9a7e897d2ed4e7bcb9b94c8de7a9a4bde7c0c658436e' },
   { file: '0002_queue_runs_artifacts.sql', sha256: 'b3060a1ea7a3e57e8bf0f76a4edba437c9f1b8d2886ef97ff5ca2b6920b0a7c2' },
@@ -184,6 +185,10 @@ const FROZEN_MIGRATIONS = [
   { file: '0004_c2_governance.sql', sha256: '51dd9a38df306751eace1dc6cf82e231b92e487b7e913b061f336e8c25a0066c' },
   { file: '0005_c3_memory_context.sql', sha256: '2c2f0d8092f108de2596c15e795ba6ba8d17b316761d0ac59e45d8845409e44a' },
   { file: '0006_c3_skills_academy.sql', sha256: 'a4b8709915fbad924212e3278b64d2f58d4d1e40c5ba1ff937cb7c50637d57d8' },
+  { file: '0007_c4_organization.sql', sha256: '9c46b838c21caf7b38d5db1244fc6fdd83c5e47f1a24fe2f973a9828f417fc3b' },
+  { file: '0008_c4_review_quality.sql', sha256: 'd937856f2a730ff33d3fb83f61c8e6b3ce0c932c4189492d6c50e8eeafb899f5' },
+  { file: '0009_c5_founder_surface.sql', sha256: '803f9eef58fad2afaabbca562c509648aaf59cc21ad647728957fa31d6ab00b1' },
+  { file: '0010_c6_improvement_engine.sql', sha256: 'a8696420f2c20abc8dfe1b62b729adedc57314cfecd7e644bc31687fa9c989ee' },
 ];
 // Later-scope / non-goal subsystems never appear: APP-OPS (C7) and dashboards / analytics tables or packages (C6
 // deliberately builds reports with typed claims, never a dashboard or analytics store — its non-goals).
@@ -287,7 +292,7 @@ const MUTATION_PINS = {
   [MUTATION_CHECK]: { script: 'c1:mutation', ids: ['claim-without-supervisor-verification', 'recovery-without-supervisor-verification', 'heartbeat-without-wake-reconciliation', 'backup-finalization-without-retry', 'backup-failure-leaves-attempt', 'backup-record-not-idempotent'] },
   [C2_MUTATION_CHECK]: {
     script: 'c2:mutation',
-    ids: ['authority-no-default-deny', 'authority-r4-not-founder-only', 'authority-r3-without-founder-approval', 'governance-admin-not-founder-only', 'approval-self-decision-allowed', 'reservation-without-headroom-check', 'ineligible-employee-can-run', 'denied-tool-reaches-driver', 'idempotent-replay-removed', 'call-despite-refused-reservation', 'd4-external-egress-allowed', 'silent-expensive-fallback', 'processor-can-widen-egress', 'tool-result-does-not-raise-class', 'escalation-on-self-reported-uncertainty', 'founder-ref-is-authentication', 'activation-without-certification', 'd3-external-egress-allowed', 'd3-external-reservation-allowed'],
+    ids: ['authority-no-default-deny', 'authority-r4-not-founder-only', 'authority-r3-without-founder-approval', 'governance-admin-not-founder-only', 'approval-self-decision-allowed', 'reservation-without-headroom-check', 'ineligible-employee-can-run', 'denied-tool-reaches-driver', 'idempotent-replay-removed', 'call-despite-refused-reservation', 'd4-external-egress-allowed', 'silent-expensive-fallback', 'processor-can-widen-egress', 'tool-result-does-not-raise-class', 'escalation-on-self-reported-uncertainty', 'founder-ref-is-authentication', 'activation-without-certification', 'd3-external-egress-allowed', 'd3-external-reservation-allowed', 'budget-floor-counts-finished-children', 'budget-floor-ignores-running-run'],
   },
   [C3_MUTATION_CHECK]: {
     script: 'c3:mutation',
@@ -297,6 +302,8 @@ const MUTATION_PINS = {
       'conflict-resolution-no-wake', 'capability-wait-not-rechecked', 'processor-supplied-recent-results', 'canonical-binds-only-if-relevant', 'probation-fail-no-new-epoch', 'rubric-ignores-refused-actions', 'licence-review-skipped', 'model-accepts-foreign-context',
       'pending-candidates-not-recovered', 'context-hold-not-rechecked', 'term-limit-before-filter', 'compaction-crosses-markets', 'failed-attempt-hides-breach', 'role-cert-loss-ignored', 'role-cert-loss-not-at-run-start', 'role-cert-loss-not-at-authorization',
       'role-cert-loss-not-at-reservation', 'role-cert-loss-not-at-tool-intent', 'role-reassignment-without-cert-keeps-active', 'calibration-not-required-at-activation', 'calibration-gates-certification', 'extension-evidence-not-required', 'unlicense-auto-clears',
+      // R2 (K7): memory promotion conflicts, Academy simulation retest, skill-update rollout set.
+      'r2-personal-promotion-skips-conflict', 'r2-simulation-gate-counts-retrained-failure', 'r2-retry-strands-started-retest', 'r2-practice-consumes-assessment-retest', 'r2-rollout-uses-plan-snapshot', 'r2-rollback-misses-rolled-out-passports',
     ],
   },
   [C4_MUTATION_CHECK]: {
@@ -306,6 +313,13 @@ const MUTATION_PINS = {
       'c4-quality-hold-ignored-in-selection', 'c4-decision-not-rechecked', 'c4-stale-subject-decision-counts', 'c4-action-review-gate-removed', 'c4-action-review-reusable', 'c4-rejected-action-rereviewed',
       'c4-review-wait-not-rechecked', 'c4-delegation-wait-free-wake', 'c4-open-handoff-completes', 'c4-p07-reservation-unchecked', 'c4-p07-router-unfiltered', 'c4-p07-release-covers-future',
       'c4-acting-never-expires', 'c4-acting-authority-outlives-cover', 'c4-ceo-needs-department', 'c4-calibration-counted-twice', 'c4-promotion-without-evidence', 'c4-org-managed-reassignable', 'c4-staffing-alternatives-optional',
+      // R2 K1: review integrity and Review Pool eligibility.
+      'c4r2-executor-redesigns-own-plan', 'c4r2-rework-scoped-by-plan', 'c4r2-stranded-action-wait-not-woken', 'c4r2-manager-key-department-bound', 'c4r2-manager-key-filled-last', 'c4r2-withdrawn-reviewer-excluded-forever',
+      'c4r2-rubric-hold-not-rechecked', 'c4r2-action-subject-truncated', 'c4r2-oversized-subject-admitted', 'c4r2-secret-arguments-reach-reviewer', 'c4r2-dead-letter-keeps-review-key',
+      // R2 K2: one open-handoff set; a delegator answers its own delegate's question.
+      'c4-open-handoff-set-narrowed', 'c4-delegator-waits-on-own-clarification', 'c4-restart-answers-clarification',
+      // RR2-2 / RR2-5 (second-wave cluster Q1): a refused FINAL is told; a handoff never outlives its delegator.
+      'rr2-2-final-refusal-silent', 'rr2-2-failed-delegator-keeps-children', 'rr2-5-rework-under-ended-lineage',
     ],
   },
   [C5_MUTATION_CHECK]: {
@@ -313,19 +327,42 @@ const MUTATION_PINS = {
     ids: [
       'c5-founder-ref-is-authentication', 'c5-session-expiry-ignored', 'c5-session-scope-stays-armed', 'c5-csrf-gate-removed', 'c5-host-gate-removed', 'c5-text-mutates-without-confirmation', 'c5-preview-fingerprint-unchecked',
       'c5-rank-order-flattened', 'c5-department-column-collapsed', 'c5-goal-work-link-dropped', 'c5-attention-widened-to-routine', 'c5-message-grants-authority', 'c5-message-body-in-audit', 'c5-history-uses-current-truth', 'c5-r4-offered-as-approvable', 'c5-company-goal-without-founder', 'c5-founder-reads-announce-change', 'c5-zero-delta-attention-sync-announces',
+      // R2 remediation (cluster K5): confirm atomicity, the exception loop, attention identity, intent resolution.
+      'c5-confirm-effect-commits-alone', 'c5-exception-decision-overtakes-tool', 'c5-attention-misses-uncertain-effects', 'c5-dismissal-swallows-source-changes', 'c5-resilience-keyed-per-class', 'c5-goal-state-verb-lost', 'c5-unmatched-argument-falls-back',
+      // R2 second wave (cluster Q4): the command's own verb decides the intent (RR1-1).
+      'c5-argument-verb-selects-intent', 'c5-argument-noun-selects-act',
+      // R2 Architecture Closure Correction AC-01 (PO-R2-D): a goal act needs the Director seat AND its own grant.
+      'c5-goal-derive-grant-skipped', 'c5-goal-link-grant-skipped', 'c5-goal-link-seat-skipped', 'c5-goal-derive-seat-skipped', 'c5-goal-grant-use-not-consumed',
     ],
   },
   [C6_MUTATION_CHECK]: {
     script: 'c6:mutation',
     ids: [
-      'c6-completion-counts-as-success', 'c6-activity-boosts-performance', 'c6-insufficient-evidence-judged', 'c6-system-cause-blamed-on-employee', 'c6-tool-failure-unmapped', 'c6-non-employee-negative-counted', 'c6-evaluator-cannot-return-unknown',
+      'c6-completion-counts-as-success', 'c6-activity-boosts-performance', 'c6-insufficient-evidence-judged', 'c6-system-cause-blamed-on-employee', 'c6-tool-failure-unmapped', 'c6-config-cause-blamed-on-provider', 'c6-non-employee-negative-counted', 'c6-evaluator-cannot-return-unknown',
       'c6-reflection-bypasses-validation', 'c6-lesson-validation-skips-gate', 'c6-pattern-auto-shared', 'c6-holdout-leaks-to-trainee', 'c6-training-equals-improvement', 'c6-retraining-loops-forever', 'c6-systemic-credit-misattributed', 'c6-systemic-credit-before-validation', 'c6-recommendation-mutates-authority',
       'c6-universal-score-reintroduced', 'c6-cost-rewards-cheap-failure', 'c6-backup-encryption-bypassed', 'c6-backup-checksum-ignored', 'c6-retention-keeps-only-latest', 'c6-update-activates-before-verification', 'c6-update-hold-ignored',
       'c6-restore-releases-uncertain-effect', 'c6-report-judgement-without-evidence', 'c6-outcome-verified-before-review', 'c6-external-outcome-invented',
+      // R2 (cluster K4): evidence identity, work time, pending causes, recovered failures, economic cost.
+      'c6-recovered-failure-is-the-cause', 'c6-work-item-counted-per-definition', 'c6-pre-training-work-counts-as-later', 'c6-pending-recurrence-ignored', 'c6-pattern-reuse-evidence-reused', 'c6-self-reuse-credited',
+      'c6-pending-adverse-reads-clean', 'c6-disputed-cause-dead-end', 'c6-decided-finding-silences-recurrence', 'c6-retraining-exhaustion-swallowed', 'c6-billed-cost-as-economic', 'c6-zero-cost-efficient',
+      // R2 second wave (cluster Q3): one meaning of adverse evidence in every attribution state (RR3).
+      'c6-rejected-cause-pending-forever', 'c6-rejected-cause-reads-clean', 'c6-rejected-attribution-unread', 'c6-corrected-causes-dropped', 'c6-non-adverse-negative-pending', 'c6-post-training-recurrence-excluded',
+      // R2 Architecture Closure Correction FB-1: learning is timed by the source evidence event.
+      'fb1-pre-training-event-counted', 'fb1-review-timed-by-decision', 'fb1-source-event-multiplied', 'fb1-unplaceable-event-final', 'rb2-pending-proposal-replaced-by-new-evidence',
       // C6-R1: operational judgment through the Review Pool; verification authority is never execution authority.
       'c6r1-ordinary-outcome-founder-only', 'c6r1-r4-judged-by-pool', 'c6r1-founder-key-pool-judgment', 'c6r1-outcome-conflict-averaged', 'c6r1-pass-verifies-without-judgment', 'c6r1-uncertainty-validates',
       'c6r1-self-judgment', 'c6r1-judge-eligibility-not-rechecked', 'c6r1-validated-lesson-shared-company-wide', 'c6r1-judgment-budget-inflated', 'c6r1-judgment-raises-budget',
       'c6-read-announces-change', 'c6-unchanged-derivation-announces',
+      // R2 K6 (resilience): R2-28 .. R2-31, m-22.
+      'c6-separate-volume-counts-as-off-device', 'c6-restore-dispatches-past-backup-point', 'c6-existing-company-migrated-at-open', 'c6-start-skips-safe-upgrade', 'c6-maintenance-ignores-open-connection', 'c6-rollback-discards-post-update-work', 'c6-restore-hold-left-to-operator',
+      // R2 K1: pool judges — one eligibility predicate, gated lesson draws, release on every end path.
+      'c6r2-lesson-judge-drawn-before-evidence', 'c6r2-judge-rubric-hold-not-rechecked', 'c6r2-withdrawn-judge-excluded-forever', 'c6r2-judgment-survives-qualification', 'c6r2-ended-judge-keeps-judgment',
+      // R2 second wave (cluster Q4): a restore-check target is a permanently held verification copy (RR4-1).
+      'c6q4-restore-check-copy-unmarked', 'c6q4-restore-check-hold-clearable', 'c6q4-restore-check-copy-opens',
+      // R2 architecture correction FB-2: a live portable restore is fail-closed from its first byte until the controlled restore commits.
+      'c6fb2-marker-after-db-copy', 'c6fb2-inspection-opens-partial-restore', 'c6fb2-marker-lifted-before-commit', 'c6fb2-restore-hold-clearable', 'c6fb2-other-package-hijacks-partial-restore', 'c6fb2-bypass-not-bound-to-attempt',
+      // R2 second wave (cluster Q2): freed reviewer capacity is a wake (RR1-2).
+      'c6rr1-decided-judgment-frees-nothing', 'c6rr1-withdrawn-judgment-frees-nothing', 'c6rr1-withdrawal-redraws-its-subject', 'c6rr1-decided-key-frees-nothing', 'c6rr1-released-key-frees-nothing', 'c6rr1-judgments-before-reviews', 'c6rr1-sweep-skips-waiting-actions',
     ],
   },
   // R1 Independent Core Review: one mutation per fixed finding (docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md).
@@ -336,6 +373,15 @@ const MUTATION_PINS = {
       'r1-04-governed-reconciliation-unauthenticated', 'r1-05-approval-releases-unresolved-dependencies', 'r1-06-c2-wait-not-rechecked', 'r1-07-grant-does-not-wake-gap', 'r1-08-active-runs-keyed-by-job', 'r1-09-accounting-failure-escapes',
       'r1-09-settle-backstop-removed', 'r1-10-new-attempt-voids-refusal', 'r1-10-withdrawal-voids-refusal', 'r1-10-cancelled-shadow-refusal-skipped', 'r1-11-paused-reassignment-keeps-duty', 'r1-11-on-leave-reassignment-unchecked',
       'r1-12-eligibility-after-limit', 'r1-12-rejection-evidence-dropped', 'r1-12-conflict-pool-dropped', 'r1-12-conflict-pool-unrestricted', 'r1-13-lower-layer-forges-marker', 'r1-final-decision-not-checkpointed', 'r1-unbounded-proposal-code',
+      // R2-10 / R2-12 (R2 cluster K3): the tool-driver boundary and the run-failure vocabulary.
+      'r2-10-raw-tool-answer-passed-on', 'r2-10-tool-result-not-reparsed', 'r2-10-secret-driver-code-recorded', 'r2-10-storage-code-unscreened', 'r2-10-storage-rereads-outcome', 'r2-10-storage-guard-reads-driver-object',
+      'r2-12-local-settlement-blamed-on-provider', 'r2-12-vocabulary-incomplete', 'r2-12-pg11-family-invented',
+      // R2-03 (R2 cluster K2): a budget wait resumes on real headroom.
+      'r2-03-freed-headroom-wakes-nothing', 'r2-03-budget-wake-ignores-headroom', 'r2-03-budget-recheck-ignores-freed-headroom',
+      // RR2-1 (second-wave cluster Q1): a budget wait resumes on the need its refusal recorded.
+      'rr2-1-budget-wake-ignores-recorded-need', 'rr2-1-budget-need-not-recorded', 'rr2-1-budget-wake-ignores-fresh-run-cap',
+      // FA-1 (R2 architecture correction): budget capacity is admitted, not broadcast.
+      'fa1-admission-not-subtracted', 'fa1-reservation-ignores-admissions', 'fa1-release-not-readmitted', 'fa1-admission-never-consumed', 'fa1-job-exit-keeps-admission',
     ],
   },
 };
@@ -1867,8 +1913,8 @@ const VIOLATIONS = {
     { contents: { 'packages/runtime/src/c3/memory-proposals.ts': "this.log.info('memory.proposed', { topic, content });" } },
   ],
   'activation-gate-present': [
-    // The synthetic repository carries the real (frozen) 0006, which holds the gate: drop it as well.
-    { contents: { [`${MIGRATIONS_DIR}0005_c3.sql`]: 'CREATE TABLE memory_records (id TEXT) STRICT;\n' }, remove: [`${MIGRATIONS_DIR}0006_c3_skills_academy.sql`] },
+    // The synthetic repository carries the real (frozen) 0006 and 0007, which hold the gate: drop them as well.
+    { contents: { [`${MIGRATIONS_DIR}0005_c3.sql`]: 'CREATE TABLE memory_records (id TEXT) STRICT;\n' }, remove: [`${MIGRATIONS_DIR}0006_c3_skills_academy.sql`, `${MIGRATIONS_DIR}0007_c4_organization.sql`] },
     { contents: { 'packages/storage/src/academy.ts': "setEmployeeState(ctx, e, 'ACTIVE', 'CERTIFIED', ref, [`test-seam:${id}`]);" } },
   ],
   'local-core-longpaths': { longpaths: undefined },

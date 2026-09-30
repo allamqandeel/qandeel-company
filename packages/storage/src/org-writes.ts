@@ -39,17 +39,17 @@ import { txApplyJudgment } from './improvement.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { enforceRoleCertification } from './mind-core.js';
 import { academyRun } from './mind-writes.js';
-import { delegationChain, delegationDepth, delegationHistory, getPosition, heldSeatsAt, holdsSeat, newOrgId, primaryAssignmentAt, seatHolder, staffingHistory, directorSeatOf } from './org-core.js';
+import { OPEN_HANDOFF_STATES, delegationChain, delegationDepth, delegationHistory, getPosition, heldSeatsAt, holdsSeat, newOrgId, primaryAssignmentAt, seatHolder, staffingHistory, directorSeatOf } from './org-core.js';
 import { mapJudgmentAssignment, mapReviewAssignment, mapWorkDelegation, type WorkDelegationRecord } from './org-records.js';
 import { getStaffingRequest, txDecideStaffing, txHireForRequest } from './organization.js';
 import { verifyFence } from './queue.js';
 import type { Fence } from './records.js';
-import { recordDecision, txDeclarePlan } from './review-core.js';
+import { recordDecision, reviewerCapacityFreed, txDeclarePlan } from './review-core.js';
 import { applyTransition, enqueueJob } from './work-core.js';
 import { txCreateWorkItem } from './work-items.js';
 
 const EMPLOYEE_TASK = 'c2.employee-task';
-const OPEN_DELEGATION: readonly string[] = ['OFFERED', 'ACCEPTED', 'CLARIFICATION_REQUESTED', 'ESCALATED'];
+const OPEN_DELEGATION: readonly string[] = OPEN_HANDOFF_STATES;
 
 /** What the processor does after the act: continue its loop, or end / park the run. */
 export type OrgActAfter = 'CONTINUE' | 'END_REFUSED' | 'WAIT_CLARIFICATION' | 'WAIT_ESCALATION';
@@ -145,7 +145,7 @@ function delegateWork(ctx: StoreContext, fence: Fence, step: number, actorId: Id
   const root = getWorkItemRow(ctx, item.rootId);
   const rootOwner = employeeIdFromRef(root.ownerRef);
   if (delegationCycle([...delegationChain(ctx, item.id), ...(rootOwner ? [rootOwner] : [])], delegateId)) refuse('DELEGATION_CYCLE');
-  const open = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM work_delegations WHERE parent_work_item_id = ? AND state IN ('OFFERED', 'ACCEPTED', 'CLARIFICATION_REQUESTED', 'ESCALATED')`, item.id)?.n ?? 0);
+  const open = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM work_delegations WHERE parent_work_item_id = ? AND state IN (SELECT value FROM json_each(?))`, item.id, JSON.stringify(OPEN_DELEGATION))?.n ?? 0);
   const depth = delegationDepth(ctx, item.id) + 1;
   try {
     assertDelegationBounds(depth, open);
@@ -392,6 +392,10 @@ function perform(ctx: StoreContext, fence: Fence, step: number, e: { id: Id; ref
       // The accountable party declares how its work is reviewed: the owner of the Work Item, or its delegator.
       const delegator = ctx.db.get(`SELECT 1 AS x FROM work_delegations WHERE child_work_item_id = ? AND delegator_employee_id = ?`, target.id, e.id);
       if (target.ownerRef !== e.ref && !delegator) refuse('NOT_ACCOUNTABLE');
+      // R2-01: the executor never re-designs its own review (Stage 11 §1 / §3; D-C4-05). Its owner may declare
+      // version 1 before the first run (the 0008 trigger refuses it after); once a plan exists, only the Founder or
+      // the delegator supersedes it (the 0011 trigger backs this up).
+      if (target.ownerRef === e.ref && ctx.db.get('SELECT 1 AS x FROM review_plans WHERE work_item_id = ? LIMIT 1', target.id)) refuse('SELF_REVIEW_REDESIGN');
       try {
         const plan = txDeclarePlan(ctx, target, own(a, 'plan'), e.ref, runId);
         return `review_plan:${plan.id}`;
@@ -493,6 +497,8 @@ export function txReviewDecision(ctx: StoreContext, fence: Fence, input: { outco
   if (rationale !== null && containsSecretMaterial(rationale)) return deny('SECRET_MATERIAL');
   if (!assignment) {
     const j = txApplyJudgment(ctx, mapJudgmentAssignment(judgment ?? {}), { employeeId: e.id, ref: e.ref, runId: fence.runId }, { outcome: input.outcome as ReviewOutcome, reasonCode: input.reasonCode, evidenceRefs: input.evidenceRefs });
+    // RR1-2: a decided (or escalated) judgment frees the judge's slot — a wake in this transaction, REQUIRED reviews first.
+    if (j.outcome === 'RECORDED') reviewerCapacityFreed(ctx, e.id);
     return j.outcome === 'RECORDED' ? { outcome: 'RECORDED', code: j.code, requestState: j.decision } : deny(j.code);
   }
   const r = recordDecision(ctx, assignment, e.ref, { outcome: input.outcome as ReviewOutcome, reasonCode: input.reasonCode, rationale, evidenceRefs: input.evidenceRefs, outcomeJudgment: input.outcomeJudgment ?? null }, fence.runId);

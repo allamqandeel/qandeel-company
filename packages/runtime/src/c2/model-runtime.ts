@@ -307,7 +307,9 @@ export class GovernedModelRuntime {
     } catch {
       // Already final or the store is unavailable: the backstop holds it.
     }
-    return { kind: 'UNCERTAIN', failure: providerFault ? 'CONTRACT_VIOLATION' : 'UNKNOWN' };
+    // A local accounting failure is marked as such (R2-12): the money is held, but the run never records it
+    // as the provider's failure.
+    return providerFault ? { kind: 'UNCERTAIN', failure: 'CONTRACT_VIOLATION' } : { kind: 'UNAVAILABLE', code: 'SETTLEMENT_FAILED' };
   }
 
   /**

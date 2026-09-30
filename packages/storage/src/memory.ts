@@ -58,7 +58,7 @@ import {
   type SummaryRecord,
 } from './mind-records.js';
 import { storeContext, type CompanyStore } from './store.js';
-import { insertLesson } from './mind-writes.js';
+import { insertLesson, liveClaimDisagreements, txOpenMemoryConflicts } from './mind-writes.js';
 
 const text = (v: unknown, field: string, max: number): string => {
   const t = boundedText(v, field, max);
@@ -450,6 +450,9 @@ export class MemoryStore {
           SYSTEM_MIND_REF,
           'learning.promoted_personal',
         );
+        // A promoted lesson may disagree with a live memory on its claim: a conflict is opened exactly as the Memory
+        // Write Policy opens one (both kept, important work held), never an automatic supersession (R2-27).
+        txOpenMemoryConflicts(ctx, memoryId, l.employeeId, l.claimKey, liveClaimDisagreements(ctx, l.employeeId, l.claimKey, l.claimValue, memoryId));
         ctx.db.run(`UPDATE lesson_promotions SET state = 'APPROVED', result_memory_id = ?, decided_by_ref = ?, reason_code = 'PERSONAL_SCOPE', decided_at = ? WHERE id = ?`, memoryId, l.decidedByRef ?? SYSTEM_MIND_REF, at, id);
       }
       appendAudit(ctx, 'learning.promotion_requested', 'lesson', l.id, { actorRef: SYSTEM_MIND_REF }, 'OK', target, { promotionId: id });

@@ -7,7 +7,7 @@
  * stored as integers; the budget CHECK constraints are a second, independent guard.
  */
 import { QandeelError, newId, type Id, type Timestamp } from '@qandeel-company/domain';
-import { PROVIDER_FAILURE_CLASSES, addMoney, addTokens, costOf, failureDisposition, subMoney, subTokens, type PriceCard, type PrincipalKind } from '@qandeel-company/governance';
+import { PROVIDER_FAILURE_CLASSES, addMoney, addTokens, checkReservation, costOf,failureDisposition, subMoney, subTokens, type PriceCard, type PrincipalKind } from '@qandeel-company/governance';
 
 import { mapBudget, mapEmployee, mapPriceCard, mapPrincipal, mapReservation, type BudgetRecord, type EmployeeRecord, type PrincipalRecord, type ReservationRecord } from './governance-records.js';
 
@@ -87,6 +87,19 @@ export function budgetFor(ctx: StoreContext, scope: BudgetRecord['scope'], scope
   const row = ctx.db.get(`SELECT * FROM budgets WHERE scope = ? AND scope_id = ? AND status = 'OPEN'`, scope, scopeId);
   return row ? mapBudget(row) : null;
 }
+
+/**
+ * R2-06: a child budget (SQL alias `c`) that can still spend — OPEN (a CLOSED envelope stays where it was spent)
+ * and, for a Work Item, work that can still execute: not terminal, not REVIEWED / OUTCOME_VERIFIED, and not
+ * COMPLETED unless its required review can still send it back to rework; for a Run, a run still RUNNING. Only
+ * such a child holds its parent's cap up (the C2 "a child cap never exceeds its parent" invariant); every
+ * reservation still checks every level of its chain, so a finished child's larger cap spends nothing.
+ */
+export const CHILD_CAN_SPEND_SQL = `c.status = 'OPEN' AND (c.scope NOT IN ('WORK_ITEM', 'RUN')
+  OR (c.scope = 'WORK_ITEM' AND EXISTS (SELECT 1 FROM work_items w WHERE w.id = c.scope_id
+        AND w.state NOT IN ('CLOSED', 'FAILED', 'CANCELLED', 'SUPERSEDED', 'REVIEWED', 'OUTCOME_VERIFIED')
+        AND NOT (w.state = 'COMPLETED' AND w.review_required = 0)))
+  OR (c.scope = 'RUN' AND EXISTS (SELECT 1 FROM runs r WHERE r.id = c.scope_id AND r.state = 'RUNNING')))`;
 
 /** The budget and all its ancestors, leaf first (parents are immutable, depth ≤ 5). */
 export function budgetChain(ctx: StoreContext, leafId: Id): BudgetRecord[] {
@@ -284,14 +297,18 @@ export function settleReservationTx(ctx: StoreContext, r: ReservationRecord, usa
   const trace = { correlationId: r.runId, actorRef };
   appendEvent(ctx, 'run.usage_settled', 'run', r.runId, trace, { reservationId: r.id, purpose: r.purpose, attemptKind: r.attemptKind, economicMicros: economic, tokens, overran });
   appendAudit(ctx, 'budget.settled', 'reservation', r.id, trace, 'OK', overran ? 'OVERRUN_RECORDED' : null, { runId: r.runId, reservedMoney: r.money, chargedMoney: economic, chargedTokens: tokens });
+  // R2-03: the unused worst case went back to every level of the chain.
+  if (economic < r.money || tokens < r.tokens) admitBudgetWaiters(ctx, chain.map((b) => b.id), 'budget.freed');
   return usageId;
 }
 
 export function releaseReservationTx(ctx: StoreContext, r: ReservationRecord, reasonCode: string, actorRef: string | null): void {
   if (r.state !== 'RESERVED' && r.state !== 'RECONCILIATION_REQUIRED') throw new QandeelError('ALREADY_SETTLED', 'the reservation is already final', { reservationId: r.id, state: r.state });
-  applyBudgetDelta(ctx, budgetChain(ctx, r.budgetId), { releaseMoney: r.money, releaseTokens: r.tokens });
+  const chain = budgetChain(ctx, r.budgetId);
+  applyBudgetDelta(ctx, chain, { releaseMoney: r.money, releaseTokens: r.tokens });
   ctx.db.run(`UPDATE budget_reservations SET state = 'RELEASED', reason_code = ?, updated_at = ? WHERE id = ?`, reasonCode, ts(ctx), r.id);
   appendAudit(ctx, 'budget.released', 'reservation', r.id, { actorRef }, 'OK', reasonCode, { runId: r.runId, money: r.money, tokens: r.tokens });
+  if (r.money > 0 || r.tokens > 0) admitBudgetWaiters(ctx, chain.map((b) => b.id), 'budget.freed');
 }
 
 export function holdReservationTx(ctx: StoreContext, r: ReservationRecord, reasonCode: string): void {
@@ -347,4 +364,225 @@ export function wakeWorkItemJob(ctx: StoreContext, workItemId: Id, waitReasons: 
   ctx.db.run(`UPDATE queue_jobs SET state = 'QUEUED', available_at = ?, wait_reason = NULL, updated_at = ? WHERE id = ? AND state = 'WAITING'`, at, at, job.id);
   appendEvent(ctx, 'job.woken', 'job', job.id as Id, { correlationId: job.correlation_id as Id }, { reason: reasonCode });
   return true;
+}
+
+// --- Budget waits (RR2-1: the refusal's need is the resume condition) --------------------------------------
+
+/**
+ * RR2-1: records, in the refusing reservation transaction, WHAT a BUDGET_EXHAUSTED refusal needs and WHERE it was
+ * refused (append-only, content-free: IDs, a scope, a dimension, amounts). The wait level is the refusing level —
+ * or, for a Run-level refusal, its Work Item level: the next run gets a fresh Run budget under it.
+ */
+export function recordBudgetWaitNeed(ctx: StoreContext, w: { jobId: Id; runId: Id; workItemId: Id }, refused: BudgetRecord, dimension: 'MONEY' | 'TOKENS', waitLevel: BudgetRecord, money: number, tokens: number): void {
+  // FA-1: a later refusal replaces the need its admission (if any) was granted for: the admitted capacity goes back
+  // to the next eligible waiter in this transaction (the 0011 trigger is the durable backstop of the same release).
+  releaseBudgetAdmission(ctx, w.jobId, 'NEED_REPLACED');
+  ctx.db.run(
+    `INSERT INTO budget_wait_needs (job_id, run_id, work_item_id, refused_budget_id, refused_scope, dimension, wait_budget_id, need_money, need_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    w.jobId, w.runId, w.workItemId, refused.id, refused.scope, dimension, waitLevel.id, money, tokens, ts(ctx),
+  );
+}
+
+// --- Budget admission (FA-1: budget capacity is admitted, not broadcast) ------------------------------------
+
+/**
+ * FA-1: the capacity a BUDGET_EXHAUSTED waiter needs is ADMITTED to it — one durable owner (`budget_admissions`,
+ * 0011) — before the waiter is resumed, so one freed need wakes one waiter, never every waiter it would fit.
+ * An admission holds its amount on every level of the waiter's Work Item chain (the Work Item level and its
+ * ancestors; never a Run level — the next run's Run budget is fresh; the chain is immutable, parents never change).
+ * It is not a reservation: budgets' reserved / spent truth and `accountingInvariants` are unchanged. Instead every
+ * capacity decision (`budgetCapacityCheck`: the reserving transaction, the admission pass, a cap lowering) counts
+ * the OTHER jobs' outstanding admissions on each level, so the same headroom is never allocated twice.
+ */
+interface BudgetWait {
+  /** The Work Item budget: a fresh Run budget of the next run is capped by it. */
+  readonly workItem: BudgetRecord;
+  /** The levels the wait depends on and an admission holds: the Work Item level and its ancestors (leaf first). */
+  readonly levels: readonly BudgetRecord[];
+  /** The job's latest `budget_wait_needs` row; `null` only for a wait parked before RR2-1 recorded needs. */
+  readonly needSeq: number | null;
+  readonly need: { readonly money: number; readonly tokens: number } | null;
+}
+
+/** The current budget wait of a parked job: its LATEST recorded need (a later refusal re-binds it), indexed by job. */
+function budgetWaitOf(ctx: StoreContext, jobId: Id, workItemId: Id): BudgetWait | null {
+  const leaf = budgetFor(ctx, 'WORK_ITEM', workItemId);
+  if (!leaf) return null;
+  const levels = budgetChain(ctx, leaf.id);
+  const n = ctx.db.get<{ seq: number; need_money: number; need_tokens: number }>('SELECT seq, need_money, need_tokens FROM budget_wait_needs WHERE job_id = ? ORDER BY seq DESC LIMIT 1', jobId);
+  if (!n) return { workItem: leaf, levels, needSeq: null, need: null };
+  return { workItem: leaf, levels, needSeq: Number(n.seq), need: { money: Number(n.need_money), tokens: Number(n.need_tokens) } };
+}
+
+/** Outstanding ADMITTED capacity held on one level by every job other than `exceptJobId` (null: every job). */
+function admittedOn(ctx: StoreContext, budgetId: string, exceptJobId: Id | null): { money: number; tokens: number } {
+  const r = ctx.db.get<{ m: number; t: number }>(
+    `SELECT COALESCE(SUM(a.money), 0) AS m, COALESCE(SUM(a.tokens), 0) AS t FROM budget_admissions a, json_each(a.levels_json) l
+      WHERE a.state = 'ADMITTED' AND l.value = ? AND a.job_id IS NOT ?`,
+    budgetId,
+    exceptJobId,
+  );
+  return { money: Number(r?.m ?? 0), tokens: Number(r?.t ?? 0) };
+}
+
+/**
+ * FA-1 (A8): THE capacity check of a reservation — the kernel's `checkReservation` on the chain as it is once the
+ * capacity admitted to OTHER jobs is counted as taken on each level. The reserving job's own admission is not
+ * subtracted from its own headroom (it consumes it). Used by the reserving transaction and every headroom decision.
+ */
+export function budgetCapacityCheck(ctx: StoreContext, chain: readonly BudgetRecord[], money: number, tokens: number, exceptJobId: Id | null): ReturnType<typeof checkReservation> {
+  const committed = chain.map((b) => {
+    if (b.scope === 'RUN') return b;
+    const held = admittedOn(ctx, b.id, exceptJobId);
+    return { ...b, reservedMoney: addMoney(b.reservedMoney, held.money), reservedTokens: addTokens(b.reservedTokens, held.tokens) };
+  });
+  return checkReservation(committed, money, tokens);
+}
+
+/**
+ * What a waiter would be admitted for against the remaining capacity of its levels, or null when it does not fit.
+ * RR2-1 need semantics kept: the need must fit a fresh Run budget of the Work Item and every level's remaining
+ * capacity in both dimensions. A wait parked before needs were recorded (need `null`) is admitted conservatively:
+ * only on positive remaining capacity on every level, holding ALL of it (capped by a fresh Run budget) — so at most
+ * one such waiter owns a given headroom, and its first reservation frees what it did not take.
+ */
+function admissibleAmount(w: BudgetWait, remaining: readonly { money: number; tokens: number }[]): { money: number; tokens: number } | null {
+  const runCapMoney = Math.min(w.workItem.runCapMoney ?? w.workItem.capMoney, w.workItem.capMoney);
+  const runCapTokens = Math.min(w.workItem.runCapTokens ?? w.workItem.capTokens, w.workItem.capTokens);
+  if (w.need === null) {
+    if (!remaining.every((r) => r.money > 0 && r.tokens > 0)) return null;
+    return { money: Math.min(runCapMoney, ...remaining.map((r) => r.money)), tokens: Math.min(runCapTokens, ...remaining.map((r) => r.tokens)) };
+  }
+  const need = w.need;
+  if (need.money > runCapMoney || need.tokens > runCapTokens) return null;
+  return remaining.every((r) => r.money >= need.money && r.tokens >= need.tokens) ? need : null;
+}
+
+/**
+ * FA-1: THE resume decision of a BUDGET_EXHAUSTED wait — an admission pass, inside the caller's write transaction
+ * (the one serialized SQLite write boundary; no second scheduler). Every path that changes capacity calls it with
+ * the levels it changed — a settle below the worst case and a release (their chain), a cap raise or a trimmed cap
+ * (that level), a released or partly consumed admission (its levels), `null` for the startup pass — and the WAIT
+ * settle re-check calls it for its own job. Waiters are taken in durable order (priority, then FIFO by created
+ * time, then id); a waiter is considered only when a changed level is one of its levels; each is admitted only
+ * when its need fits the REMAINING capacity of every level, and its amount is subtracted from that remaining view
+ * — and recorded durably — before the next waiter is considered. A non-fitting earlier waiter stays parked while a
+ * later fitting one is admitted (no head-of-line blocking). The queue_jobs trigger advances the wake generation.
+ */
+export function admitBudgetWaiters(ctx: StoreContext, changedBudgetIds: readonly string[] | null, reasonCode: string, onlyJobId?: Id): number {
+  const changed = changedBudgetIds === null ? null : new Set<string>(changedBudgetIds);
+  const view = new Map<string, { money: number; tokens: number }>();
+  const remainingOf = (b: BudgetRecord): { money: number; tokens: number } => {
+    let r = view.get(b.id);
+    if (r === undefined) {
+      const held = admittedOn(ctx, b.id, null);
+      r = { money: b.capMoney - b.reservedMoney - b.spentMoney - held.money, tokens: b.capTokens - b.reservedTokens - b.spentTokens - held.tokens };
+      view.set(b.id, r);
+    }
+    return r;
+  };
+  let admitted = 0;
+  const waiters = ctx.db.all<{ id: string; work_item_id: string }>(
+    `SELECT id, work_item_id FROM queue_jobs WHERE state = 'WAITING' AND wait_reason = 'BUDGET_EXHAUSTED' AND (? IS NULL OR id = ?) ORDER BY priority DESC, created_at, id`,
+    onlyJobId ?? null,
+    onlyJobId ?? null,
+  );
+  for (const { id, work_item_id: workItemId } of waiters) {
+    const w = budgetWaitOf(ctx, id as Id, workItemId as Id);
+    if (!w) continue;
+    if (changed !== null && !w.levels.some((b) => changed.has(b.id))) continue;
+    const remaining = w.levels.map(remainingOf);
+    const amount = admissibleAmount(w, remaining);
+    if (amount === null) continue;
+    const admissionId = newId();
+    ctx.db.run(
+      `INSERT INTO budget_admissions (id, job_id, work_item_id, need_seq, levels_json, money, tokens, state, reason_code, admitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'ADMITTED', ?, ?)`,
+      admissionId, id, workItemId, w.needSeq, JSON.stringify(w.levels.map((b) => b.id)), amount.money, amount.tokens, reasonCode, ts(ctx),
+    );
+    for (const r of remaining) {
+      r.money -= amount.money;
+      r.tokens -= amount.tokens;
+    }
+    wakeWorkItemJob(ctx, workItemId as Id, ['BUDGET_EXHAUSTED'], reasonCode);
+    appendAudit(ctx, 'budget.admitted', 'job', id as Id, {}, 'OK', reasonCode, { admissionId, money: amount.money, tokens: amount.tokens });
+    admitted++;
+  }
+  return admitted;
+}
+
+/**
+ * FA-1 (A5): the job no longer owns its admitted capacity (it left QUEUED / CLAIMED, its need was replaced, a cap
+ * under it was lowered, or startup found it stale). Released durably, then — unless the caller re-admits itself —
+ * the admission pass runs for the freed levels in the SAME transaction: a released admission is never a lost wake.
+ */
+export function releaseBudgetAdmission(ctx: StoreContext, jobId: Id, endReason: string, readmit = true): boolean {
+  const row = ctx.db.get<{ id: string; levels_json: string }>(`SELECT id, levels_json FROM budget_admissions WHERE job_id = ? AND state = 'ADMITTED'`, jobId);
+  if (!row) return false;
+  ctx.db.run(`UPDATE budget_admissions SET state = 'RELEASED', end_reason_code = ?, ended_at = ? WHERE id = ? AND state = 'ADMITTED'`, endReason, ts(ctx), row.id);
+  appendAudit(ctx, 'budget.admission_released', 'job', jobId, {}, 'OK', endReason, { admissionId: row.id });
+  if (readmit) admitBudgetWaiters(ctx, JSON.parse(row.levels_json) as string[], 'budget.readmitted');
+  return true;
+}
+
+/**
+ * FA-1 (A4): the admitted job's reservation consumes its own admission in the reserving transaction (the capacity
+ * is now held by the reservation — never counted twice). A reservation smaller than the admission frees the rest,
+ * which the admission pass offers to the next eligible waiter at once.
+ */
+export function consumeBudgetAdmission(ctx: StoreContext, jobId: Id, reservation: { id: Id; money: number; tokens: number }): void {
+  const row = ctx.db.get<{ id: string; levels_json: string; money: number; tokens: number }>(`SELECT id, levels_json, money, tokens FROM budget_admissions WHERE job_id = ? AND state = 'ADMITTED'`, jobId);
+  if (!row) return;
+  ctx.db.run(`UPDATE budget_admissions SET state = 'CONSUMED', end_reason_code = 'RESERVED', consumed_reservation_id = ?, ended_at = ? WHERE id = ? AND state = 'ADMITTED'`, reservation.id, ts(ctx), row.id);
+  if (reservation.money < Number(row.money) || reservation.tokens < Number(row.tokens)) admitBudgetWaiters(ctx, JSON.parse(row.levels_json) as string[], 'budget.freed');
+}
+
+/**
+ * FA-1 (A8) cap lowering: a lowered cap never strands or overcommits admitted capacity. Admissions holding the level
+ * are released newest first until reserved + spent + admitted fits the new cap (their jobs are QUEUED / CLAIMED and
+ * re-check every level at their reservation); then the pass re-admits waiters that fit what is left.
+ */
+export function trimBudgetAdmissions(ctx: StoreContext, budgetId: Id): number {
+  const b = getBudgetRow(ctx, budgetId);
+  const rows = ctx.db.all<{ job_id: string; money: number; tokens: number; levels_json: string }>(
+    `SELECT a.job_id, a.money, a.tokens, a.levels_json FROM budget_admissions a, json_each(a.levels_json) l WHERE a.state = 'ADMITTED' AND l.value = ? ORDER BY a.admitted_at DESC, a.id DESC`,
+    b.id,
+  );
+  let money = rows.reduce((s, r) => s + Number(r.money), b.reservedMoney + b.spentMoney);
+  let tokens = rows.reduce((s, r) => s + Number(r.tokens), b.reservedTokens + b.spentTokens);
+  // RA-1: a released admission freed capacity on EVERY level it held (the lowered one and its ancestors), so the
+  // re-admission covers the union of those levels — as every other release path does — never only the lowered one.
+  const freed = new Set<string>();
+  let released = 0;
+  for (const r of rows) {
+    if (money <= b.capMoney && tokens <= b.capTokens) break;
+    releaseBudgetAdmission(ctx, r.job_id as Id, 'CAP_LOWERED', false);
+    for (const level of JSON.parse(r.levels_json) as string[]) freed.add(level);
+    money -= Number(r.money);
+    tokens -= Number(r.tokens);
+    released++;
+  }
+  if (released > 0) admitBudgetWaiters(ctx, [...freed], 'budget.readmitted');
+  return released;
+}
+
+/**
+ * FA-1 (A6) startup pass: admissions survive a restart with their jobs (a CLAIMED job whose worker died is recovered
+ * to QUEUED and keeps its admission). Stale admissions — the job is no longer QUEUED / CLAIMED, its need was
+ * replaced, or its levels are not its Work Item chain — are reclaimed deterministically; then one admission pass
+ * over every waiter. A job with an outstanding admission is never a waiter, so no second owner is ever admitted.
+ */
+export function recoverBudgetAdmissions(ctx: StoreContext): number {
+  const rows = ctx.db.all<{ job_id: string; work_item_id: string; need_seq: number | null; levels_json: string; job_state: string; latest: number | null }>(
+    `SELECT a.job_id, a.work_item_id, a.need_seq, a.levels_json, j.state AS job_state, (SELECT MAX(n.seq) FROM budget_wait_needs n WHERE n.job_id = a.job_id) AS latest
+       FROM budget_admissions a JOIN queue_jobs j ON j.id = a.job_id WHERE a.state = 'ADMITTED' ORDER BY a.admitted_at, a.id`,
+  );
+  for (const r of rows) {
+    const leaf = budgetFor(ctx, 'WORK_ITEM', r.work_item_id);
+    const chain = leaf ? JSON.stringify(budgetChain(ctx, leaf.id).map((b) => b.id)) : null;
+    const live = r.job_state === 'QUEUED' || r.job_state === 'CLAIMED';
+    const needSeq = r.need_seq === null ? null : Number(r.need_seq);
+    const latest = r.latest === null ? null : Number(r.latest);
+    if (!live || needSeq !== latest || chain !== r.levels_json) releaseBudgetAdmission(ctx, r.job_id as Id, 'STALE_RECLAIMED', false);
+  }
+  return admitBudgetWaiters(ctx, null, 'budget.recovered');
 }

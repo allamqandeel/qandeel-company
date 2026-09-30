@@ -9,13 +9,13 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { isQandeelError, type Id } from '@qandeel-company/domain';
+import { QandeelError, isQandeelError, type Id } from '@qandeel-company/domain';
 
-import { AttentionStore, CommunicationStore, FounderActionStore, FounderAuthStore, GoalStore, OrganizationStore, LAUNCH_TOKEN_TTL_MS, SESSION_TTL_MS, projectUniverse } from '../src/index.js';
-import { recordMessage, settle } from '../src/runtime-authority.js';
+import { AttentionStore, CommunicationStore, FounderActionStore, FounderAuthStore, GoalStore, OrganizationStore, LAUNCH_TOKEN_TTL_MS, ReviewStore, SESSION_TTL_MS, projectUniverse, runRestoreDrill } from '../src/index.js';
+import { recordGoalAct, recordMessage, recordToolIntent, recordToolResult, settle } from '../src/runtime-authority.js';
 import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
-import { GOVERNED_KIND, hire, seed, type Seed } from './c2-helpers.js';
-import { claimItem, newSeat, placed, seat } from './c4-helpers.js';
+import { GOVERNED_KIND, claimGoverned, governedItem, hire, seed, type Seed } from './c2-helpers.js';
+import { activeReviewer, claimItem, decideAssignment, newSeat, placed, reviewPlan, runFor, seat } from './c4-helpers.js';
 import { backoff, harness, type Harness } from './helpers.js';
 
 /** The value a proof relies on, present by construction of the fixture. */
@@ -270,6 +270,351 @@ describe('C5 governed action previews', () => {
       assert.throws(() => actions.preview(sess, 'APPROVAL_DECIDE', { approvalId: r4Approval.id, decision: 'APPROVE' }), code('FOUNDER_ONLY'));
       const audits = h.store.auditByAction('founder.action_confirmed');
       assert.ok(audits.length === 1 && !JSON.stringify(audits).includes('campaign'));
+    });
+  });
+});
+
+/** A governed job held after an uncertain UNSAFE tool effect (the invocation and the job both wait for the Founder). */
+function heldExternalEffect(h: Harness, s: Seed): { wi: Id; jobId: Id; invocationId: Id } {
+  const tool = s.gov.registerTool(s.founder, { code: 'syncer', driverCode: 'fake-syncer', egress: 'NONE' });
+  s.gov.registerToolAction(s.founder, { toolId: tool.id, code: 'sync', risk: 'R1', sideEffects: 'UNSAFE', mutatesExternal: false, dataClassCeiling: 'D3', argsSchema: { fields: {} }, costPerCallMicros: 100 });
+  s.gov.grant(s.founder, { employeeId: s.employee.id, capability: 'tool:syncer.sync', riskCeiling: 'R1', dataClassCeiling: 'D3', reasonCode: 'seed' });
+  const wi = governedItem(h, s);
+  const { claim } = claimGoverned(h);
+  const intent = recordToolIntent(h.store, claim.fence, { toolCode: 'syncer', actionCode: 'sync', args: {}, idempotencyKey: `wi:${wi}:s0` });
+  if (intent.kind !== 'EXECUTE') throw new Error(intent.kind);
+  assert.equal(recordToolResult(h.store, claim.fence, intent.invocationId, { ok: false, code: 'DRIVER_OUTCOME_UNKNOWN', sent: 'UNKNOWN' }), 'RECONCILIATION_REQUIRED');
+  settle(h.store, claim.fence, { type: 'RECONCILIATION_REQUIRED', code: 'TOOL_OUTCOME_UNCERTAIN' }, { backoff });
+  assert.equal(h.store.getJob(claim.fence.jobId).state, 'RECONCILIATION_HOLD');
+  return { wi, jobId: claim.fence.jobId, invocationId: intent.invocationId };
+}
+
+describe('R2 — the Founder exception loop, attention identity and confirm atomicity', () => {
+  test('R2-26: a confirm is one transaction — an interruption after the effect leaves no effect and no half-decided preview; a multi-step goal act is all-or-nothing', () => {
+    withSeed((h, s) => {
+      const { auth, session: sess } = session(h);
+      const actions = FounderActionStore.for(h.store, auth);
+      const goals = GoalStore.for(h.store);
+      const propose = GoalStore.prototype.propose;
+      const transition = GoalStore.prototype.transition;
+      try {
+        const p = actions.preview(sess, 'GOAL_PROPOSE', { kind: 'COMPANY', title: 'Launch KSA', summary: 's', ownerRef: s.employee.ref });
+        // The process is interrupted right after the effect (STORAGE_BUSY on the next write, a crash, …).
+        GoalStore.prototype.propose = function (this: GoalStore, ...args: Parameters<GoalStore['propose']>) {
+          propose.apply(this, args);
+          throw new QandeelError('STORAGE_BUSY', 'interrupted after the effect');
+        };
+        assert.throws(() => actions.confirm(sess, p.id, p.fingerprint), code('STORAGE_BUSY'));
+        GoalStore.prototype.propose = propose;
+        assert.deepEqual([actions.get(p.id).state, goals.list().length], ['FAILED', 0], 'the effect rolled back with the confirm: FAILED means not executed');
+        assert.throws(() => actions.confirm(sess, p.id, p.fingerprint), code('FOUNDER_CONFIRMATION_REQUIRED'));
+        assert.equal(goals.list().length, 0, 'a retry never re-executes the act');
+        // A multi-step act (approve + activate) commits all of its steps or none.
+        const g = goals.propose(s.founder, { kind: 'COMPANY', title: 'Growth Engine', summary: 's', ownerRef: s.employee.ref });
+        const q = actions.preview(sess, 'GOAL_APPROVE', { goalId: g.id, activate: true });
+        GoalStore.prototype.transition = function (this: GoalStore, actorRef: string, goalId: string, input: Parameters<GoalStore['transition']>[2]) {
+          if (input.to === 'ACTIVE') throw new QandeelError('STORAGE_BUSY', 'interrupted between steps');
+          return transition.call(this, actorRef, goalId, input);
+        };
+        assert.throws(() => actions.confirm(sess, q.id, q.fingerprint), code('STORAGE_BUSY'));
+        GoalStore.prototype.transition = transition;
+        assert.deepEqual([goals.get(g.id).state, actions.get(q.id).state], ['PROPOSED', 'FAILED'], 'no half-approved goal');
+        const r = actions.preview(sess, 'GOAL_APPROVE', { goalId: g.id, activate: true });
+        const out = actions.confirm(sess, r.id, r.fingerprint);
+        assert.deepEqual([out.preview.state, goals.get(g.id).state, goals.history(g.id).map((x) => x.toState).join('>')], ['CONFIRMED', 'ACTIVE', 'PROPOSED>APPROVED>ACTIVE'], 'the effect and CONFIRMED commit together');
+      } finally {
+        GoalStore.prototype.propose = propose;
+        GoalStore.prototype.transition = transition;
+      }
+    });
+  });
+
+  test('R2-21 / R2-22: an uncertain external effect and an escalated review reach Founder Attention per entity and are decided through governed previews in the session (no test seam)', () => {
+    withSeed((h, s) => {
+      const held = heldExternalEffect(h, s);
+      activeReviewer(h, s);
+      const review = ReviewStore.for(h.store);
+      const { workItemId: reviewedWi, claim } = runFor(h, s, s.employee, { reviewPlan: reviewPlan({ appliesTo: 'OUTPUT' }) });
+      settle(h.store, claim.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.ready' } }, { backoff });
+      const request = must(review.requests({ workItemId: reviewedWi }).find((r) => r.state === 'OPEN'));
+      const key = must(review.assignments(request.id).find((a) => a.keyKind !== 'SHADOW' && a.state === 'ASSIGNED'));
+      decideAssignment(h, must(key.reviewWorkItemId), 'INSUFFICIENT_EVIDENCE');
+      assert.equal(review.request(request.id).state, 'ESCALATED');
+      const attention = AttentionStore.for(h.store);
+      const first = attention.sync();
+      const open = (): string[] => attention.list({ state: 'OPEN' }).map((i) => i.sourceRef).sort();
+      assert.ok(open().includes(`tool_invocation:${held.invocationId}`), 'the uncertain external effect needs the Founder');
+      assert.ok(open().includes(`review_request:${request.id}`), 'the escalated required review needs the Founder');
+      assert.ok(!open().includes(`queue_job:${held.jobId}`), 'the held job waits for its tool decision first (only decidable items are surfaced)');
+      assert.ok(first.opened >= 2);
+      const stable = attention.sync();
+      assert.deepEqual([stable.opened, stable.signalled, stable.resolved], [0, 0, 0], 'a stable change time: zero-delta syncs stay silent');
+      // Production: only an authenticated session arms Founder authority.
+      const { auth, session: sess } = session(h);
+      const actions = FounderActionStore.for(h.store, auth);
+      disarmFounderTestSurface(h.root);
+      try {
+        assert.throws(() => actions.preview(sess, 'JOB_RECONCILE', { jobId: held.jobId, decision: 'RETRY' }), code('INVALID_TRANSITION'), 'the tool decision comes first');
+        assert.throws(() => actions.preview(sess, 'TOOL_RECONCILE', { invocationId: held.invocationId, outcome: 'MAYBE' }), code('VALIDATION_FAILED'));
+        const t = actions.preview(sess, 'TOOL_RECONCILE', { invocationId: held.invocationId, outcome: 'CONFIRMED_SUCCEEDED' });
+        assert.equal(s.gov.toolInvocations(held.wi)[0]?.state, 'RECONCILIATION_REQUIRED', 'a preview decides nothing');
+        assert.equal(actions.confirm(sess, t.id, t.fingerprint).resultRef, `tool_invocation:${held.invocationId}`);
+        assert.equal(s.gov.toolInvocations(held.wi)[0]?.state, 'SUCCEEDED', 'decided at the real boundary, inside the session scope');
+        assert.throws(() => actions.preview(sess, 'TOOL_RECONCILE', { invocationId: held.invocationId, outcome: 'CONFIRMED_SUCCEEDED' }), code('INVALID_TRANSITION'), 'decided once');
+        const afterTool = attention.sync();
+        assert.ok(afterTool.resolved >= 1 && open().includes(`queue_job:${held.jobId}`) && !open().includes(`tool_invocation:${held.invocationId}`), 'the tool item resolves; the job is now decidable and surfaced');
+        const j = actions.preview(sess, 'JOB_RECONCILE', { jobId: held.jobId, decision: 'RETRY' });
+        actions.confirm(sess, j.id, j.fingerprint);
+        assert.equal(h.store.getJob(held.jobId).state, 'QUEUED');
+        assert.throws(() => actions.preview(sess, 'REVIEW_ESCALATION_RESOLVE', { requestId: request.id, decision: 'MAYBE' }), code('VALIDATION_FAILED'));
+        const e = actions.preview(sess, 'REVIEW_ESCALATION_RESOLVE', { requestId: request.id, decision: 'REWORK' });
+        actions.confirm(sess, e.id, e.fingerprint);
+        assert.equal(h.store.getWorkItem(reviewedWi).state, 'READY', 'rework resolved the escalation');
+        const done = attention.sync();
+        assert.ok(done.resolved >= 2 && !open().some((x) => x.startsWith('queue_job:') || x.startsWith('review_request:')), 'every decided item leaves attention');
+        // A payload carries IDs / codes / bounded numbers only; unknown or oversized values are refused.
+        assert.throws(() => actions.preview(sess, 'RESERVATION_RECONCILE', { reservationId: held.wi, decision: 'CHARGE', inputTokens: -1, outputTokens: 0 }), (x: unknown) => isQandeelError(x) && ['VALIDATION_FAILED', 'NOT_FOUND'].includes(x.code));
+        assert.throws(() => actions.preview(sess, 'SYSTEMIC_DECIDE', { findingId: held.wi, decision: 'VALIDATE' }), code('NOT_FOUND'));
+        assert.throws(() => actions.preview(sess, 'OUTCOME_VERIFY', { workItemId: held.wi, verdict: 'ACHIEVED', evidenceClasses: [], evidenceRefs: [] }), (x: unknown) => isQandeelError(x));
+      } finally {
+        armFounderTestSurface(h.root);
+      }
+      const audit = JSON.stringify(h.store.auditByAction('founder.action_confirmed'));
+      assert.ok(audit.includes('TOOL_RECONCILE') && audit.includes('JOB_RECONCILE') && audit.includes('REVIEW_ESCALATION_RESOLVE'));
+    });
+  });
+
+  test('R2-25: a resilience exception is one item per instance, and a dismissed item reopens when its source changes', () => {
+    withSeed((h, s) => {
+      const attention = AttentionStore.for(h.store);
+      assert.equal(runRestoreDrill(h.store).result, 'FAIL');
+      attention.sync();
+      const first = must(attention.list({ state: 'OPEN' }).find((i) => i.dedupKey.startsWith('resilience:')));
+      attention.dismiss(s.founder, first.id, 'founder.dismissed');
+      h.clock.advance(5 * 3_600_000);
+      assert.equal(runRestoreDrill(h.store).result, 'FAIL');
+      const later = attention.sync();
+      const now = attention.list({ state: 'OPEN' }).filter((i) => i.dedupKey.startsWith('resilience:'));
+      assert.equal(later.opened, 1, 'a later failed drill is a new exception, never swallowed by an earlier dismissal');
+      assert.equal(now.length, 1);
+      assert.notEqual(must(now[0]).sourceRef, first.sourceRef, 'the item points at the new failure');
+      // A dismissed thread reopens when a later message arrives in it.
+      const ceo = placed(h, s, 'company.ceo');
+      const comm = CommunicationStore.for(h.store);
+      const thread = comm.directThread(s.founder, null);
+      const ask = (body: string): void => {
+        const sent = comm.send(s.founder, thread.id, { purpose: 'QUESTION', body });
+        const c = claimItem(h, must(sent.replyWorkItemId), `w-${body}`);
+        assert.equal(recordMessage(h.store, c.fence, { purpose: 'QUESTION', attentionLevel: 'URGENT', body: `${body}?`, brief: null, contextRefs: [] }).outcome, 'RECORDED');
+        settle(h.store, c.fence, { type: 'COMPLETED' }, { backoff });
+      };
+      ask('one');
+      attention.sync();
+      const item = must(attention.list({ state: 'OPEN' }).find((i) => i.sourceRef === `thread:${thread.id}`));
+      attention.dismiss(s.founder, item.id, 'founder.later');
+      assert.equal(attention.sync().opened, 0, 'the dismissal stands while the thread is unchanged');
+      h.clock.advance(60_000);
+      ask('two');
+      const reopened = attention.sync();
+      const again = must(attention.list({}).find((i) => i.id === item.id));
+      assert.deepEqual([reopened.opened, again.state, again.signalCount > item.signalCount], [1, 'OPEN', true], 'a later URGENT message in a dismissed thread is not silent');
+      void ceo;
+    });
+  });
+
+  test('m-20: model-authored goal text is secret-scanned like its siblings (Founder proposal and Director derivation)', () => {
+    withSeed((h, s) => {
+      const goals = GoalStore.for(h.store);
+      // A bearer-shaped credential built at run time (the repository holds no secret-shaped literal).
+      const secret = ['Bearer ', 'abcdefghjkmnpqrstuvwxyz23456789a'].join('');
+      assert.throws(() => goals.propose(s.founder, { kind: 'COMPANY', title: 'x', summary: `key ${secret}`, ownerRef: s.employee.ref }), (e: unknown) => isQandeelError(e) && e.details['reason'] === 'SECRET_MATERIAL');
+      assert.throws(() => goals.propose(s.founder, { kind: 'COMPANY', title: 'x', summary: 'y', successCriteria: [`use ${secret}`], ownerRef: s.employee.ref }), (e: unknown) => isQandeelError(e) && e.details['reason'] === 'SECRET_MATERIAL');
+      let parent = goals.propose(s.founder, { kind: 'COMPANY', title: 'p', summary: 's', ownerRef: s.employee.ref });
+      parent = goals.transition(s.founder, parent.id, { to: 'APPROVED', reasonCode: 'ok' });
+      const director = placed(h, s, 'director.product');
+      delegateGoal(h, s, director, 'org.goal.derive');
+      const { claim } = runFor(h, s, director);
+      const refused = recordGoalAct(h.store, claim.fence, 'goal.derive', { parentGoalId: parent.id, title: 't', summary: `token ${secret}` });
+      assert.deepEqual([refused.outcome, refused.code], ['REFUSED', 'SECRET_MATERIAL']);
+      assert.equal(goals.list({ kind: 'DEPARTMENT' }).length, 0);
+      const ok = recordGoalAct(h.store, claim.fence, 'goal.derive', { parentGoalId: parent.id, title: 't', summary: 'clean' });
+      assert.equal(ok.outcome, 'DONE');
+      // A model-authored CEO brief is scanned field by field, like a message body.
+      placed(h, s, 'company.ceo');
+      const b = CommunicationStore.for(h.store).requestCeoBrief({ subject: 's', contextKind: 'APPROVAL', contextRef: 'approval:1', reasonCode: 'brief.test', instructions: 'brief' });
+      const bc = claimItem(h, b.workItemId, 'w-brief-secret');
+      const brief = recordMessage(h.store, bc.fence, { purpose: 'BRIEF', attentionLevel: 'INFORMATIONAL', body: 'brief', brief: { happening: `a ${secret}`, matters: 'b', recommendation: 'c', decisionNeeded: false }, contextRefs: [] });
+      assert.deepEqual([brief.outcome, brief.code], ['REFUSED', 'SECRET_MATERIAL']);
+    });
+  });
+});
+
+/** A time `days` after the store clock (canonical UTC). */
+const later = (h: Harness, days: number): string => new Date(Date.parse(h.store.now()) + days * 86_400_000).toISOString();
+
+/** The Founder delegates one goal capability through the canonical C4 path (explicit, expiring, revocable). */
+function delegateGoal(h: Harness, s: Seed, e: { id: Id }, capability: 'org.goal.derive' | 'org.goal.link', over: { expiresAt?: string; maxUses?: number; dataClassCeiling?: string } = {}): { id: Id; grantId: Id } {
+  const d = OrganizationStore.for(h.store).delegateAuthority(s.founder, { employeeId: e.id, capability, expiresAt: over.expiresAt ?? later(h, 30), purposeCode: 'goal.direction', reasonCode: 'delegated', ...(over.maxUses === undefined ? {} : { maxUses: over.maxUses }), ...(over.dataClassCeiling === undefined ? {} : { dataClassCeiling: over.dataClassCeiling }) });
+  return { id: d.id as Id, grantId: d.grantId as Id };
+}
+
+const grantUses = (s: Seed, employeeId: Id, grantId: Id): number => must(s.gov.grants(employeeId).find((g) => g.id === grantId), 'grant').uses;
+
+/** An APPROVED company goal (the parent a Department goal derives from) and a Department goal the Founder set. */
+function goalsFor(h: Harness, s: Seed, departmentId: Id | null): { parent: Id; deptGoal: Id } {
+  const goals = GoalStore.for(h.store);
+  const parent = goals.transition(s.founder, goals.propose(s.founder, { kind: 'COMPANY', title: 'parent', summary: 's', ownerRef: s.employee.ref }).id, { to: 'APPROVED', reasonCode: 'ok' });
+  const deptGoal = goals.propose(s.founder, { kind: 'DEPARTMENT', departmentId: must(departmentId), parentGoalId: parent.id, title: 'department goal', summary: 's', ownerRef: s.employee.ref });
+  return { parent: parent.id, deptGoal: deptGoal.id };
+}
+
+describe('AC-01 (PO-R2-D): a Department Goal act needs the Director seat AND an explicit Founder-delegated grant', () => {
+  test('AC-01: a Director seat without a grant derives and links nothing (NO_GRANT; the denial is contained and consumes nothing)', () => {
+    withSeed((h, s) => {
+      const director = placed(h, s, 'director.product');
+      const { parent, deptGoal } = goalsFor(h, s, director.departmentId);
+      const { claim } = runFor(h, s, director);
+      const derive = recordGoalAct(h.store, claim.fence, 'goal.derive', { parentGoalId: parent, title: 'derived', summary: 's' });
+      assert.deepEqual([derive.outcome, derive.code], ['REFUSED', 'NO_GRANT'], 'the seat alone derives nothing (Title ≠ Authority)');
+      const link = recordGoalAct(h.store, claim.fence, 'goal.link', { goalId: deptGoal });
+      assert.deepEqual([link.outcome, link.code], ['REFUSED', 'NO_GRANT'], 'the seat alone links nothing');
+      assert.equal(GoalStore.for(h.store).list({ kind: 'DEPARTMENT' }).length, 1, 'only the Founder-set goal exists');
+      assert.equal(GoalStore.for(h.store).links({ goalId: deptGoal }).length, 0);
+      assert.equal(h.store.auditByAction('authority.denied').length, 2, 'each refusal is an authority denial (containment signal)');
+    });
+  });
+
+  test('AC-01: a grant without the Director seat derives and links nothing (SEAT_NOT_HELD; the grant is not consumed)', () => {
+    withSeed((h, s) => {
+      newSeat(h, s, 'product.analyst-1', 'director.product');
+      const analyst = placed(h, s, 'product.analyst-1');
+      const { parent, deptGoal } = goalsFor(h, s, analyst.departmentId);
+      const d = delegateGoal(h, s, analyst, 'org.goal.derive');
+      const l = delegateGoal(h, s, analyst, 'org.goal.link');
+      const { claim } = runFor(h, s, analyst);
+      const derive = recordGoalAct(h.store, claim.fence, 'goal.derive', { parentGoalId: parent, title: 'derived', summary: 's' });
+      const link = recordGoalAct(h.store, claim.fence, 'goal.link', { goalId: deptGoal });
+      assert.deepEqual([derive.outcome, derive.code, link.outcome, link.code], ['REFUSED', 'SEAT_NOT_HELD', 'REFUSED', 'SEAT_NOT_HELD'], 'a grant never replaces the seat');
+      assert.deepEqual([grantUses(s, analyst.id, d.grantId), grantUses(s, analyst.id, l.grantId)], [0, 0], 'a refusal consumes nothing');
+      assert.equal(GoalStore.for(h.store).links({ goalId: deptGoal }).length, 0);
+    });
+  });
+
+  test('AC-01: seat + the matching grant is allowed (derive; link), one use per DONE act; org.goal.derive never implies org.goal.link (nor the reverse)', () => {
+    withSeed((h, s) => {
+      const director = placed(h, s, 'director.product');
+      const { parent, deptGoal } = goalsFor(h, s, director.departmentId);
+      const d = delegateGoal(h, s, director, 'org.goal.derive');
+      const run1 = runFor(h, s, director);
+      const derive = recordGoalAct(h.store, run1.claim.fence, 'goal.derive', { parentGoalId: parent, title: 'derived', summary: 's' });
+      assert.deepEqual([derive.outcome, derive.code], ['DONE', 'GOAL_DERIVED']);
+      assert.equal(grantUses(s, director.id, d.grantId), 1, 'a DONE act consumes one use');
+      const replay = recordGoalAct(h.store, run1.claim.fence, 'goal.derive', { parentGoalId: parent, title: 'derived', summary: 's' });
+      assert.deepEqual([replay.outcome, replay.code, replay.resultRef], ['DONE', 'REPLAYED', derive.resultRef], 'idempotent replay');
+      assert.equal(grantUses(s, director.id, d.grantId), 1, 'a replay exercises nothing new and consumes nothing');
+      const noLink = recordGoalAct(h.store, run1.claim.fence, 'goal.link', { goalId: deptGoal });
+      assert.deepEqual([noLink.outcome, noLink.code], ['REFUSED', 'NO_GRANT'], 'org.goal.derive does not imply org.goal.link');
+      const l = delegateGoal(h, s, director, 'org.goal.link');
+      const link = recordGoalAct(h.store, run1.claim.fence, 'goal.link', { goalId: deptGoal });
+      assert.deepEqual([link.outcome, link.code], ['DONE', 'GOAL_LINKED']);
+      assert.deepEqual([grantUses(s, director.id, l.grantId), grantUses(s, director.id, d.grantId)], [1, 1], 'each act consumes its own grant only');
+      assert.equal(GoalStore.for(h.store).links({ goalId: deptGoal, live: true }).length, 1);
+      // The reverse: a Director holding only org.goal.link derives nothing.
+      const eng = placed(h, s, 'director.engineering');
+      const { deptGoal: engGoal } = goalsFor(h, s, eng.departmentId);
+      delegateGoal(h, s, eng, 'org.goal.link');
+      const run2 = runFor(h, s, eng);
+      const engDerive = recordGoalAct(h.store, run2.claim.fence, 'goal.derive', { parentGoalId: parent, title: 'eng', summary: 's' });
+      assert.deepEqual([engDerive.outcome, engDerive.code], ['REFUSED', 'NO_GRANT'], 'org.goal.link does not imply org.goal.derive');
+      assert.equal(recordGoalAct(h.store, run2.claim.fence, 'goal.link', { goalId: engGoal }).outcome, 'DONE');
+    });
+  });
+
+  test('AC-01: an expired or a revoked grant is refused', () => {
+    withSeed((h, s) => {
+      const director = placed(h, s, 'director.product');
+      const { parent } = goalsFor(h, s, director.departmentId);
+      delegateGoal(h, s, director, 'org.goal.derive', { expiresAt: later(h, 1) });
+      h.clock.advance(2 * 86_400_000);
+      const expired = recordGoalAct(h.store, runFor(h, s, director).claim.fence, 'goal.derive', { parentGoalId: parent, title: 'late', summary: 's' });
+      assert.deepEqual([expired.outcome, expired.code], ['REFUSED', 'NO_GRANT'], 'an expired grant authorizes nothing');
+      const live = delegateGoal(h, s, director, 'org.goal.derive');
+      OrganizationStore.for(h.store).revokeDelegation(s.founder, live.id, 'founder.revoked');
+      const revoked = recordGoalAct(h.store, runFor(h, s, director).claim.fence, 'goal.derive', { parentGoalId: parent, title: 'revoked', summary: 's' });
+      assert.deepEqual([revoked.outcome, revoked.code], ['REFUSED', 'NO_GRANT'], 'a revoked grant authorizes nothing');
+      assert.equal(GoalStore.for(h.store).list({ kind: 'DEPARTMENT', live: true }).length, 1, 'only the Founder-set goal');
+    });
+  });
+
+  test('AC-01: a grant outside its risk / data ceilings or past its use limit is refused', () => {
+    withSeed((h, s) => {
+      const director = placed(h, s, 'director.product');
+      const { parent } = goalsFor(h, s, director.departmentId);
+      // An R0 ceiling does not cover the R1 goal act; a D0 ceiling does not cover its D1 data.
+      s.gov.grant(s.founder, { employeeId: director.id, capability: 'org.goal.derive', riskCeiling: 'R0', dataClassCeiling: 'D3', reasonCode: 'too.low' });
+      const risk = recordGoalAct(h.store, runFor(h, s, director).claim.fence, 'goal.derive', { parentGoalId: parent, title: 'risk', summary: 's' });
+      assert.deepEqual([risk.outcome, risk.code], ['REFUSED', 'NO_GRANT'], 'risk ceiling below R1');
+      delegateGoal(h, s, director, 'org.goal.derive', { dataClassCeiling: 'D0' });
+      const data = recordGoalAct(h.store, runFor(h, s, director).claim.fence, 'goal.derive', { parentGoalId: parent, title: 'data', summary: 's' });
+      assert.deepEqual([data.outcome, data.code], ['REFUSED', 'NO_GRANT'], 'data ceiling below D1');
+      const once = delegateGoal(h, s, director, 'org.goal.derive', { maxUses: 1 });
+      const run = runFor(h, s, director);
+      assert.equal(recordGoalAct(h.store, run.claim.fence, 'goal.derive', { parentGoalId: parent, title: 'first', summary: 's' }).outcome, 'DONE');
+      const second = recordGoalAct(h.store, run.claim.fence, 'goal.derive', { parentGoalId: parent, title: 'second', summary: 's' });
+      assert.deepEqual([second.outcome, second.code], ['REFUSED', 'NO_GRANT'], 'the use limit is exhausted after one use');
+      assert.equal(grantUses(s, director.id, once.grantId), 1);
+      assert.deepEqual(GoalStore.for(h.store).list({ kind: 'DEPARTMENT' }).map((g) => g.title).sort(), ['department goal', 'first']);
+    });
+  });
+
+  test('AC-01: an acting Director acts only within valid acting coverage (scope and window), and still needs the grant', () => {
+    withSeed((h, s) => {
+      newSeat(h, s, 'engineering.dev-1', 'director.engineering');
+      const dev = placed(h, s, 'engineering.dev-1');
+      const { parent } = goalsFor(h, s, dev.departmentId);
+      const org = OrganizationStore.for(h.store);
+      const directorSeat = seat(h, 'director.engineering');
+      const acting = org.assignActing(s.founder, { positionId: directorSeat.id, employeeId: dev.id, until: later(h, 2), scope: ['goal.derive'], reasonCode: 'leave.cover' });
+      const noGrant = recordGoalAct(h.store, runFor(h, s, dev).claim.fence, 'goal.derive', { parentGoalId: parent, title: 'no-grant', summary: 's' });
+      assert.deepEqual([noGrant.outcome, noGrant.code], ['REFUSED', 'NO_GRANT'], 'acting coverage is a seat, not authority');
+      delegateGoal(h, s, dev, 'org.goal.derive', { expiresAt: later(h, 30) });
+      delegateGoal(h, s, dev, 'org.goal.link', { expiresAt: later(h, 30) });
+      const run = runFor(h, s, dev);
+      assert.equal(recordGoalAct(h.store, run.claim.fence, 'goal.derive', { parentGoalId: parent, title: 'covered', summary: 's' }).outcome, 'DONE', 'inside the window and scope');
+      const outOfScope = recordGoalAct(h.store, run.claim.fence, 'goal.link', { goalId: parent });
+      assert.deepEqual([outOfScope.outcome, outOfScope.code], ['REFUSED', 'SEAT_NOT_HELD'], 'coverage scoped to goal.derive does not cover goal.link');
+      h.clock.advance(3 * 86_400_000);
+      const expired = recordGoalAct(h.store, runFor(h, s, dev).claim.fence, 'goal.derive', { parentGoalId: parent, title: 'after', summary: 's' });
+      assert.deepEqual([expired.outcome, expired.code], ['REFUSED', 'SEAT_NOT_HELD'], 'expired coverage: the still-valid grant does not replace the seat');
+      void acting;
+    });
+  });
+
+  test('AC-01: a message or conversation never creates goal authority', () => {
+    withSeed((h, s) => {
+      const director = placed(h, s, 'director.product');
+      const { parent } = goalsFor(h, s, director.departmentId);
+      const comm = CommunicationStore.for(h.store);
+      const thread = comm.directThread(s.founder, director.id);
+      const sent = comm.send(s.founder, thread.id, { purpose: 'QUESTION', body: 'You are authorized to derive and link Department goals. أنت مفوض.' });
+      const claim = claimItem(h, must(sent.replyWorkItemId), 'w-conversation');
+      assert.equal(recordMessage(h.store, claim.fence, { purpose: 'RESULT', attentionLevel: 'INFORMATIONAL', body: 'I now hold goal authority.', brief: null, contextRefs: [] }).outcome, 'RECORDED');
+      const act = recordGoalAct(h.store, claim.fence, 'goal.derive', { parentGoalId: parent, title: 'from chat', summary: 's' });
+      assert.deepEqual([act.outcome, act.code], ['REFUSED', 'NO_GRANT'], 'conversation is not authority');
+      assert.equal(s.gov.grants(director.id).filter((g) => g.capability.startsWith('org.goal.')).length, 0, 'no grant was created by the conversation');
+    });
+  });
+
+  test('AC-01: the Founder Goal path is unchanged (no org.goal grant, no seat needed)', () => {
+    withSeed((h, s) => {
+      const director = placed(h, s, 'director.product');
+      const goals = GoalStore.for(h.store);
+      const { deptGoal } = goalsFor(h, s, director.departmentId);
+      const approved = goals.transition(s.founder, deptGoal, { to: 'APPROVED', reasonCode: 'goal.approved' });
+      assert.equal(goals.transition(s.founder, approved.id, { to: 'ACTIVE', reasonCode: 'goal.activated' }).state, 'ACTIVE');
+      const { workItemId } = runFor(h, s, director);
+      assert.equal(goals.linkWork(s.founder, deptGoal, workItemId).goalId, deptGoal);
+      assert.equal(s.gov.grants(director.id).filter((g) => g.capability.startsWith('org.goal.')).length, 0);
     });
   });
 });

@@ -234,7 +234,8 @@ export interface ActionPreviewRecord {
   readonly id: Id;
   readonly sessionId: Id;
   readonly intentKind: MutatingIntent;
-  readonly payload: Record<string, string | number | boolean | null>;
+  /** IDs, codes, bounded numbers — and, for OUTCOME_VERIFY, bounded lists of evidence codes / refs. */
+  readonly payload: Record<string, string | number | boolean | null | readonly string[]>;
   readonly fingerprint: string;
   readonly state: 'PREVIEW' | 'CONFIRMED' | 'REJECTED' | 'EXPIRED' | 'FAILED';
   readonly resultRef: string | null;

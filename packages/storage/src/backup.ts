@@ -18,7 +18,8 @@ import { QandeelError, assertId, canonicalJson, isQandeelError, newId, sha256Hex
 import { appendAudit, ts } from './internal.js';
 import { CURRENT_SCHEMA_VERSION, RELEASED_MIGRATIONS, appliedMigrations, loadReleasedMigrations, migrate, userVersion } from './migrations.js';
 import { SqliteConnection } from './sqlite/connection.js';
-import { CompanyStore, DEFAULT_BUSY_TIMEOUT_MS, storeContext } from './store.js';
+import { CompanyStore, DEFAULT_BUSY_TIMEOUT_MS, openRestoredStore, storeContext } from './store.js';
+import { RESTORE_CHECK_COPY, markRestoreCheckCopy } from './update-hold.js';
 import { assertLocalPathSyntax, containedPath, isWithin, layoutFor, openWorkspace, DATABASE_FILE } from './workspace.js';
 
 export const BACKUP_FORMAT = 'qandeel-company-backup/1';
@@ -470,12 +471,16 @@ export interface IsolatedRestoreReport {
   readonly schemaVersionAfter: number;
   readonly quickCheck: string;
   readonly counts: BackupCounts;
+  /** RR4-1: the target is a verification copy, permanently held; it can never be started as a Company. */
+  readonly verificationCopy: true;
+  readonly hold: typeof RESTORE_CHECK_COPY;
 }
 
 /**
  * Restores a verified backup into a separate, empty workspace and dry-starts it there
  * (Validate → Integrity → Restore isolated → Migration check → Dry start → Compare). Promotion
- * over a live Company is deliberately not implemented in C1.
+ * over a live Company is deliberately not implemented in C1. The target is a permanently held
+ * verification copy (RESTORE_CHECK_COPY, RR4-1).
  */
 export function restoreToIsolatedWorkspace(
   directory: string,
@@ -493,8 +498,14 @@ export function restoreToIsolatedWorkspace(
     throw new QandeelError('UNSAFE_WORKSPACE', 'isolated restore target must be a new or empty directory', { reason: 'not-empty' });
   }
   const layout = openWorkspace(target.root, { create: true });
+  // RR4-1: the target is a VERIFICATION COPY, never a Company. It is held permanently (RESTORE_CHECK_COPY) BEFORE its
+  // database exists, so no ordinary open (the runtime, safe-upgrade, rollback, init) ever runs it — not even after a
+  // crash mid-check — and the operator cannot clear that hold. A Company is restored live only through the controlled
+  // restore (restorePortableBackup: effect-capable jobs held, opened at its own version, safe-upgrade).
+  markRestoreCheckCopy(layout.root, { backupId: verification.backupId, schemaVersion: verification.schemaVersion, at: new Date(clock.nowMs()).toISOString() });
   copyFileSync(path.join(directory, DATABASE_FILE), layout.databasePath, fsConstants.COPYFILE_EXCL);
-  const restored = CompanyStore.open(layout.root, { clock });
+  // A disposable, permanently held copy: migrating it forward IS the compatibility check (never the live Company, R2-30).
+  const restored = openRestoredStore(layout.root, { clock, liveSchemaUpdate: true, verificationCopy: true });
   try {
     const quick = restored.quickCheck();
     if (quick !== 'ok') throw new QandeelError('BACKUP_INTEGRITY', 'restored workspace failed quick_check', { backupId: verification.backupId });
@@ -502,7 +513,7 @@ export function restoreToIsolatedWorkspace(
     const ctx = storeContext(restored);
     const counts = countsOf(ctx.db);
     if (canonicalJson(counts) !== canonicalJson(verification.counts)) throw new QandeelError('BACKUP_INTEGRITY', 'restored workspace differs from the backup', { backupId: verification.backupId });
-    return { backupId: verification.backupId, workspace: layout.root, schemaVersionBefore: verification.schemaVersion, schemaVersionAfter: restored.schemaVersion, quickCheck: quick, counts };
+    return { backupId: verification.backupId, workspace: layout.root, schemaVersionBefore: verification.schemaVersion, schemaVersionAfter: restored.schemaVersion, quickCheck: quick, counts, verificationCopy: true, hold: RESTORE_CHECK_COPY };
   } finally {
     restored.close();
   }

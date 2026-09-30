@@ -8,7 +8,7 @@
  * review) is an event-driven WAIT that consumes no tokens.
  */
 import { assertIntInRange, boundedText, type JsonValue, type ProcessorContext, type ProcessorResult } from '@qandeel-company/domain';
-import { assertTaskClass, isDataClass, isReasoningClass, type ModelProposal, type ReasoningClass } from '@qandeel-company/governance';
+import { assertTaskClass, isDataClass, isReasoningClass, providerFailedRunCode, unavailableRunCode, type ModelProposal, type ReasoningClass } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
 import type { GovernedProcessor, GovernedRunServices, OrgActProposal, ReviewDecisionProposal, ToolRequest } from './types.js';
@@ -161,16 +161,20 @@ export const employeeTaskProcessor: GovernedProcessor = {
         case 'ESCALATION_REFUSED':
           return { type: 'PERMANENT_FAILURE', code: 'ESCALATION_REFUSED' };
         case 'UNAVAILABLE':
+          // No answer never crashes the Company: bounded C1 retry, then dead letter. The run records the real
+          // cause from the shared run-failure vocabulary (R2-12): a missing route policy, a local settlement
+          // failure or an abort is never blamed on the provider.
+          return { type: 'RETRYABLE_FAILURE', code: unavailableRunCode(out.code) };
         case 'UNCERTAIN':
-          // Provider trouble never crashes the Company: bounded C1 retry, then dead letter.
-          return { type: 'RETRYABLE_FAILURE', code: 'PROVIDER_UNAVAILABLE' };
+          // The provider broke the contract or its outcome is unknown after send (money held).
+          return { type: 'RETRYABLE_FAILURE', code: 'PROVIDER_FAILURE' };
         case 'FAILED':
           // One evidence-based escalation per run step; never re-escalate from the class that just failed.
           if (out.failure === 'CONTEXT_OVERFLOW' && !escalated && cfg.reasoningClass !== 'E4') {
             escalateFrom = { fromClass: cfg.reasoningClass ?? gov.context.cognitiveProfile.defaultClass, evidence: 'CONTEXT_OVERFLOW' };
             continue;
           }
-          return { type: 'PERMANENT_FAILURE', code: `PROVIDER_${out.failure}` };
+          return { type: 'PERMANENT_FAILURE', code: providerFailedRunCode(out.failure) };
         case 'CONTEXT':
           // Typed context outcomes: an IMPORTANT unresolved conflict or conflicting skills park the work
           // for review (zero tokens); a context that cannot fit or fails integrity never reaches a model.
@@ -186,7 +190,20 @@ export const employeeTaskProcessor: GovernedProcessor = {
         // Accountability stays with the delegator (Stage 8 §23): work with open handoffs does not finish; it
         // waits (zero tokens) and resumes when a delegate answers or its work ends.
         if (gov.openHandoffs() > 0) {
-          await save(ctx, { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null });
+          // R2-04: a delegate's pending question is this run's to answer (`handoff.clarify`): parking would wait on
+          // itself. RR2-2: the refused FINAL is recorded as this step's result (code FINAL_REFUSED_CLARIFICATION_PENDING,
+          // naming the delegations that asked), so the next turn's governed context tells the model why it cannot
+          // finish and what to answer. The loop continues (bounded by maxTurns; a delegator that ends unfinished
+          // closes its handoffs and cancels the work it delegated). Every other open handoff — offered, accepted,
+          // escalated to the Founder — parks the work at zero tokens.
+          if (gov.clarificationsRequested() > 0) {
+            gov.refuseFinal(s.turn, 'FINAL_REFUSED_CLARIFICATION_PENDING');
+            s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null };
+            await save(ctx, s);
+            continue;
+          }
+          s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null };
+          await save(ctx, s);
           return { type: 'WAIT', reasonCode: 'AWAITING_DELEGATION' };
         }
         await save(ctx, { ...s, phase: 'FINAL', pending: null, summaryCode: proposal.summaryCode });

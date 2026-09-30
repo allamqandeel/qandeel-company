@@ -291,6 +291,47 @@ const MUTATIONS = [
     edits: [{ file: `${MIND}/skills.js`, search: "'0BSD', 'CC0-1.0'];", replace: "'0BSD', 'CC0-1.0', 'Unlicense'];" }],
     runs: [KERNEL, FOUNDER],
   },
+  // --- R2 Full Strong-v1 review (docs/R2_FULL_STRONG_V1_INDEPENDENT_REVIEW_REPORT.md) ----------------
+  {
+    id: 'r2-personal-promotion-skips-conflict',
+    gate: 'R2-27: a PERSONAL lesson promotion opens a conflict with a live memory disagreeing on its claim',
+    edits: [{ file: `${STORE}/memory.js`, search: 'txOpenMemoryConflicts(ctx, memoryId, l.employeeId, l.claimKey, liveClaimDisagreements(ctx, l.employeeId, l.claimKey, l.claimValue, memoryId));', replace: 'void 0; /* mutation: promotion writes past the conflict mechanism */' }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r2-simulation-gate-counts-retrained-failure',
+    gate: 'R2-34: after retraining only the retest and later simulations decide the SIMULATION / FEEDBACK gates',
+    edits: [{ file: `${STORE}/academy.js`, search: 'const sinceRetraining = simulationsSinceRetraining(ctx, e, ev.attempts);', replace: "const sinceRetraining = ev.attempts.filter((a) => a.kind === 'SIMULATION');" }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r2-retry-strands-started-retest',
+    gate: 'R2-34: RETRY re-enters SIMULATION when the retest already started (remediation RETESTED)',
+    edits: [{ file: `${STORE}/academy.js`, search: "return rem.state === 'RETEST_READY' || rem.state === 'RETESTED' ? { to: 'SIMULATION'", replace: "return rem.state === 'RETEST_READY' ? { to: 'SIMULATION'" }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r2-practice-consumes-assessment-retest',
+    gate: 'R2-34: only an attempt of the failed kind re-tests a remediation (practice in RETRY never strands an assessment retest)',
+    edits: [{ file: `${STORE}/academy.js`, search: "WHERE r.enrollment_id = ? AND r.state = 'RETEST_READY' AND f.kind = ?`, e.id, input.kind);", replace: "WHERE r.enrollment_id = ? AND r.state = 'RETEST_READY'`, e.id);" }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r2-rollout-uses-plan-snapshot',
+    gate: 'R2-35: a rollout acts on the passports / certifications pinned to the from-version at rollout, not the plan-time snapshot',
+    edits: [{
+      file: `${STORE}/skill-registry.js`,
+      search: 'const live = pinnedToVersion(ctx, u.fromVersionId);',
+      replace: "const live = { passports: u.impact.passportEntryIds.map((id) => mapPassport(ctx.db.get('SELECT * FROM passport_entries WHERE id = ?', id) ?? {})).filter((pe) => pe.skillVersionId === u.fromVersionId && pe.status !== 'REVOKED'), certificationIds: u.impact.certificationIds };",
+    }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r2-rollback-misses-rolled-out-passports',
+    gate: 'R2-35: a rollback returns every passport its rollout re-pinned, not only the plan-time snapshot',
+    edits: [{ file: `${STORE}/skill-registry.js`, search: '[...new Set([...u.impact.passportEntryIds, ...repinned])]', replace: '[...new Set([...u.impact.passportEntryIds])]' }],
+    runs: [STORAGE],
+  },
 ];
 
 function failed(r) {

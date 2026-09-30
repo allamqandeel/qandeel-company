@@ -82,6 +82,7 @@ import {
   prunePortableBackups,
   resilienceStatus,
   runRestoreDrill,
+  safeUpgrade,
   type BackupDestination,
   type PortableBackupResult,
   type ResilienceStatus,
@@ -100,6 +101,7 @@ import { proposeMemory } from './c3/memory-proposals.js';
 import { c4HealthOf, type C4Health } from './c4/health.js';
 import {
   GOVERNED_STEP_SPAN,
+  OPEN_HANDOFF_STATES,
   acquireSupervisor,
   beginGovernedRun,
   checkpoint,
@@ -365,12 +367,26 @@ export class CompanyRuntime {
     this.#state = 'STARTING';
     this.#startedAt = this.#clock.nowMs();
     try {
-      const store = CompanyStore.open(this.#opts.workspace, {
-        clock: this.#clock,
-        runtimeVersion: RUNTIME_VERSION,
-        ...(this.#opts.busyTimeoutMs !== undefined ? { busyTimeoutMs: this.#opts.busyTimeoutMs } : {}),
-        ...(this.#opts.storageFault ? { fault: this.#opts.storageFault } : {}),
-      });
+      const open = (): CompanyStore =>
+        CompanyStore.open(this.#opts.workspace, {
+          clock: this.#clock,
+          runtimeVersion: RUNTIME_VERSION,
+          ...(this.#opts.busyTimeoutMs !== undefined ? { busyTimeoutMs: this.#opts.busyTimeoutMs } : {}),
+          ...(this.#opts.storageFault ? { fault: this.#opts.storageFault } : {}),
+        });
+      let store: CompanyStore;
+      try {
+        store = open();
+      } catch (error) {
+        // R2-30 / Stage 12 §38: an existing Company with pending migrations is upgraded only through the safe-upgrade
+        // lifecycle (pre-update snapshot, rehearsal, verification, activation) — run automatically, before any open
+        // that could run on the new schema. A rolled-back update leaves the workspace in UPDATE_HOLD: refuse to start.
+        if (!isQandeelError(error, 'SCHEMA_UPDATE_REQUIRED')) throw error;
+        const upgrade = await safeUpgrade(this.#opts.workspace, { clock: this.#clock, runtimeVersion: RUNTIME_VERSION });
+        this.#log.info('runtime.safe_upgrade', { instanceId: this.instanceId, outcome: upgrade.outcome, code: upgrade.code, fromVersion: upgrade.fromVersion, toVersion: upgrade.toVersion });
+        if (upgrade.outcome === 'ROLLED_BACK_UPDATE_HOLD') throw new QandeelError('UPDATE_HOLD', 'the automatic schema update failed and was rolled back; the workspace is held until the operator clears it', { updateId: upgrade.updateId, code: upgrade.code });
+        store = open();
+      }
       this.#store = store;
       this.#artifacts = new ArtifactStore(store);
       registerInstance(store, this.instanceId, process.pid, RUNTIME_VERSION);
@@ -1231,7 +1247,14 @@ export class CompanyRuntime {
         recordStepResult(store, claim.fence, g, out.outcome === 'RECORDED' ? 'TOOL_RESULT' : 'TOOL_REFUSED', JSON.stringify({ reviewDecision: out.outcome, code: out.code }));
         return { outcome: out.outcome, code: out.code };
       },
-      openHandoffs: () => OrganizationStore.for(store).workDelegations({ parentWorkItemId: run.workItemId }).filter((d) => d.state === 'OFFERED' || d.state === 'ACCEPTED' || d.state === 'CLARIFICATION_REQUESTED' || d.state === 'ESCALATED').length,
+      // R2-04: the one open-handoff set, shared with the WAIT settle re-check and the delegation trigger.
+      openHandoffs: () => OrganizationStore.for(store).workDelegations({ parentWorkItemId: run.workItemId }).filter((d) => (OPEN_HANDOFF_STATES as readonly string[]).includes(d.state)).length,
+      clarificationsRequested: () => OrganizationStore.for(store).workDelegations({ parentWorkItemId: run.workItemId }).filter((d) => d.state === 'CLARIFICATION_REQUESTED').length,
+      // RR2-2: a refused FINAL is this step's result — the model learns why it cannot finish and which handoff asked.
+      refuseFinal: (step: number, code: 'FINAL_REFUSED_CLARIFICATION_PENDING') => {
+        const asked = OrganizationStore.for(store).workDelegations({ parentWorkItemId: run.workItemId }).filter((d) => d.state === 'CLARIFICATION_REQUESTED').map((d) => d.id);
+        recordStepResult(store, claim.fence, globalStep(step), 'TOOL_REFUSED', JSON.stringify({ final: 'REFUSED', code, answerWith: 'handoff.clarify', delegationIds: asked }));
+      },
       // C5: Founder-facing messages and goal acts pass the fenced authority path; only codes and references
       // are recorded for later context (the message body is company content, never a step result).
       sendMessage: (proposal: MessageProposal, step: number) => {

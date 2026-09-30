@@ -17,8 +17,7 @@
 import { QandeelError } from '@qandeel-company/domain';
 
 import type { AttributedCause, CauseCategory, DirectCause, WorkEvidence } from './evaluation.js';
-import type { EvaluationFact, LearningEffect } from './performance.js';
-
+import { adverseStanding, type AdverseStanding, type AttributionState, type EvaluationFact, type LearningEffect } from './performance.js';
 export const LEARNING_KINDS = ['MISTAKE_LESSON', 'SUCCESSFUL_PATTERN', 'NEAR_MISS_WARNING', 'SYSTEMIC_PROBLEM'] as const;
 export type LearningKind = (typeof LEARNING_KINDS)[number];
 
@@ -84,6 +83,27 @@ export function nearMissCodes(ev: WorkEvidence): string[] {
 /** Verified reuses (each an intervention whose effect was IMPROVEMENT_OBSERVED) required to share a pattern. */
 export const MIN_VERIFIED_PATTERN_REUSES = 2;
 
+/**
+ * R2-16: how many verified reuses stand on pairwise-DISJOINT evidence (each reuse's evidence = the follow-up Work
+ * Items it was judged on). The same work never counts twice; a reuse with no evidence counts for nothing.
+ */
+export function disjointVerifiedReuses(reuses: readonly (readonly string[])[]): number {
+  const usable = reuses.filter((r) => r.length > 0);
+  let best = 0;
+  for (let i = 0; i < usable.length; i++) {
+    const taken = new Set(usable[i]);
+    let n = 1;
+    for (let k = 0; k < usable.length; k++) {
+      const other = usable[k] ?? [];
+      if (k === i || other.some((x) => taken.has(x))) continue;
+      for (const x of other) taken.add(x);
+      n++;
+    }
+    best = Math.max(best, n);
+  }
+  return best;
+}
+
 export function patternExpansionAllowed(target: string, verifiedReuses: number): { allowed: boolean; reason: string } {
   if (target === 'PERSONAL') return { allowed: true, reason: 'PERSONAL_SCOPE' };
   if (verifiedReuses < MIN_VERIFIED_PATTERN_REUSES) return { allowed: false, reason: 'PATTERN_REUSE_NOT_VERIFIED' };
@@ -93,9 +113,72 @@ export function patternExpansionAllowed(target: string, verifiedReuses: number):
 // ---------------------------------------------------------------------------------------------------------
 // Learning effect verification.
 
-export interface FollowupFact extends EvaluationFact {
-  /** The validated cause categories of this follow-up (empty when nothing went wrong or not attributed). */
+/**
+ * FB-1 — the canonical sources of adverse learning evidence. Each is one durable row with its own identity:
+ * - REVIEW_DECISION: a counting REQUIRED review decision that FAILED an output or an action;
+ * - RUN_FAILURE: a run that failed without the work getting past it (R2-13), or an authority-boundary refusal;
+ * - OUTCOME_VERIFICATION: the decisive NOT_ACHIEVED verification of the work's outcome.
+ */
+export const ADVERSE_SOURCE_KINDS = ['REVIEW_DECISION', 'RUN_FAILURE', 'OUTCOME_VERIFICATION'] as const;
+export type AdverseSourceKind = (typeof ADVERSE_SOURCE_KINDS)[number];
+
+/**
+ * FB-1: one adverse source event with its durable provenance (ids, kinds, times only — never content). Its time is the
+ * time of the Employee's ACT the event judges, never the time anyone judged, evaluated or attributed it:
+ * - a failed review: the run that produced the reviewed output (an action review: the moment the action was requested);
+ * - a failed run: that run;
+ * - a NOT_ACHIEVED outcome: the run that produced the verified output.
+ * `actStartedAt` / `actEndedAt` bound the act (null = unknown). The attribution fields describe the ONE attribution
+ * that explains this event (the one whose evidence held it; a Founder-corrected attribution keeps its proposal's
+ * evidence, so its events keep their original times) — never the Work Item's latest attribution.
+ */
+export interface AdverseSourceEvent {
+  /** Durable source identity (`review_decision:<id>`, `run:<id>`, `outcome_verification:<id>`): one event, counted once. */
+  readonly sourceRef: string;
+  readonly kind: AdverseSourceKind;
+  readonly actStartedAt: string | null;
+  readonly actEndedAt: string | null;
+  /** The explaining attribution (`causal_attribution:<id>`), or null when none explains this event. */
+  readonly attributionRef: string | null;
+  /** Its state (NONE when no attribution explains the event). */
+  readonly attributionState: AttributionState;
+  /** Whether an attribution is due for this event (read with `attributionState` through `adverseStanding`). */
+  readonly attributionDue: boolean;
+  /** The validated PRIMARY causes making the Employee accountable for this event (empty otherwise). */
   readonly accountableCauses: readonly DirectCause[];
+  /** The durable record cannot tell which attribution explains this event (never read as clean, never final). */
+  readonly attributionUnresolved: boolean;
+}
+
+export interface FollowupFact extends EvaluationFact {
+  /** When the follow-up WORK started (first run, else creation) — positive evidence needs work started after training. */
+  readonly workStartedAt: string;
+  /** The state of the Work Item's causal attribution (the latest decided or live one) — the baseline share reads it. */
+  readonly attributionState: AttributionState;
+  /** The Work Item's validated accountable cause categories — the baseline share reads it. */
+  readonly accountableCauses: readonly DirectCause[];
+  /** FB-1: every adverse source event of this Work Item with its own provenance — the effect is judged on these. */
+  readonly adverseEvents: readonly AdverseSourceEvent[];
+}
+
+/** An adverse follow-up: its outcome or its quality was judged negative. */
+const adverseFollowup = (f: FollowupFact): boolean => f.verdicts.OUTCOME === 'NEGATIVE' || f.verdicts.QUALITY === 'NEGATIVE';
+
+/** An adverse source event read through the ONE definition (`adverseStanding`). */
+const eventStanding = (e: AdverseSourceEvent): AdverseStanding =>
+  adverseStanding({ attributionDue: e.attributionDue, state: e.attributionState, employeeAccountable: e.accountableCauses.length > 0 });
+
+export type EventPhase = 'BEFORE_TRAINING' | 'AFTER_TRAINING' | 'UNPLACEABLE';
+
+/**
+ * FB-1: when an adverse act happened relative to the training. Before: the act ended at or before the training
+ * completed. After: the act started strictly after it. Anything else (an act spanning the boundary, an unknown
+ * time) cannot be placed — it is never read as either side.
+ */
+export function eventPhase(e: Pick<AdverseSourceEvent, 'actStartedAt' | 'actEndedAt'>, trainingCompletedAt: string): EventPhase {
+  if (e.actEndedAt !== null && e.actEndedAt <= trainingCompletedAt) return 'BEFORE_TRAINING';
+  if (e.actStartedAt !== null && e.actStartedAt > trainingCompletedAt) return 'AFTER_TRAINING';
+  return 'UNPLACEABLE';
 }
 
 export interface EffectAssessment {
@@ -109,9 +192,24 @@ export interface EffectAssessment {
 export const MIN_EFFECT_FOLLOWUPS = 2;
 
 /**
- * Judges an intervention on comparable work AFTER the training finished. Recurrence = a follow-up where the
- * same cause category was validated as the Employee's. Baseline recurrence share comes from the evidence that
- * justified the lesson.
+ * Judges an intervention on comparable work after the training finished. FB-1: learning is timed by the event that
+ * happened, not the date someone judged it — adverse evidence is the SOURCE EVENT (a failed review, an unrecovered or
+ * boundary run failure, a NOT_ACHIEVED outcome) placed by the time of the Employee's act (`eventPhase`), never by the
+ * Work Item's final state, its evaluation, or its attribution's decision.
+ * - Positive evidence is only work STARTED after the training that became a qualified outcome (R2-15): finishing
+ *   older work after it earns no credit.
+ * - A recurrence is an adverse source event whose act happened strictly AFTER the training, explained by a validated
+ *   attribution making the Employee accountable for the target cause. A pre-training event stays pre-training however
+ *   late it is reviewed, evaluated, attributed or corrected.
+ * - Work started before the training counts only through its post-training (or unplaceable) adverse events: earlier
+ *   mistakes finished correctly afterwards are neither positive nor negative.
+ * - One source event is counted once (dedupe by source identity); the unit of the recurrence share is the Work Item.
+ * - Every event is read through `adverseStanding` (the one definition): PENDING keeps the effect open (R2-17);
+ *   REJECTED (no accountable cause established) or NOT_ATTRIBUTABLE makes it INCONCLUSIVE — recorded, non-final.
+ * - An event that cannot be placed in time, or whose attribution cannot be resolved, and adverse work with no event
+ *   provenance never produce a final NO_IMPROVEMENT / REGRESSION they could change (INCONCLUSIVE instead).
+ * Baseline recurrence share comes from the evidence that justified the lesson. Evidence references name the
+ * considered Work Items, then the source events counted as recurrences.
  */
 export function assessLearningEffect(input: {
   trainingCompletedAt: string | null;
@@ -122,22 +220,60 @@ export function assessLearningEffect(input: {
 }): EffectAssessment {
   if (input.trainingCompletedAt === null) return { effect: 'NOT_YET_TESTED', basis: 'TRAINING_NOT_COMPLETED', followups: 0, recurrences: 0, evidenceRefs: [] };
   const completedAt = input.trainingCompletedAt;
-  const later = input.followups.filter((f) => f.at > completedAt && f.comparableKey === input.comparableKey);
+  const byWork = new Map<string, FollowupFact>();
+  for (const f of input.followups) if (f.comparableKey === input.comparableKey) byWork.set(f.workItemId, f);
+  const comparable = [...byWork.values()];
+  const later = comparable.filter((f) => f.workStartedAt > completedAt);
   const usable = later.filter((f) => f.evidenceState === 'SUFFICIENT_EVIDENCE');
-  const refs = usable.map((f) => `evaluation:${f.evaluationId}`);
-  if (later.length === 0) return { effect: 'NOT_YET_TESTED', basis: 'NO_COMPARABLE_WORK_YET', followups: 0, recurrences: 0, evidenceRefs: [] };
-  if (usable.length < MIN_EFFECT_FOLLOWUPS) return { effect: later.length > usable.length ? 'INCONCLUSIVE' : 'NOT_YET_TESTED', basis: 'TOO_FEW_SUFFICIENT_FOLLOWUPS', followups: usable.length, recurrences: 0, evidenceRefs: refs };
-  const recur = (f: FollowupFact): boolean => f.accountableCauses.includes(input.targetCause);
-  const recurrences = usable.filter(recur).length;
-  if (recurrences === 0) {
-    const qualified = usable.filter((f) => f.qualifiedOutcome).length;
-    return qualified >= MIN_EFFECT_FOLLOWUPS
-      ? { effect: 'IMPROVEMENT_OBSERVED', basis: 'NO_RECURRENCE_ON_QUALIFIED_WORK', followups: usable.length, recurrences, evidenceRefs: refs }
-      : { effect: 'INCONCLUSIVE', basis: 'NO_RECURRENCE_BUT_UNQUALIFIED', followups: usable.length, recurrences, evidenceRefs: refs };
+  const earlier = comparable.filter((f) => f.workStartedAt <= completedAt && f.evidenceState === 'SUFFICIENT_EVIDENCE');
+  // Every adverse source event once (by its durable identity), unless its act happened before the training.
+  const seen = new Set<string>();
+  const events: { workItemId: string; e: AdverseSourceEvent; phase: EventPhase }[] = [];
+  for (const f of [...usable, ...earlier]) {
+    for (const e of f.adverseEvents) {
+      if (seen.has(e.sourceRef)) continue;
+      seen.add(e.sourceRef);
+      const phase = eventPhase(e, completedAt);
+      if (phase !== 'BEFORE_TRAINING') events.push({ workItemId: f.workItemId, e, phase });
+    }
   }
-  const baseShare = input.baseline.length === 0 ? 1 : input.baseline.filter(recur).length / input.baseline.length;
-  const laterShare = recurrences / usable.length;
-  return { effect: laterShare > baseShare ? 'REGRESSION' : 'NO_IMPROVEMENT', basis: 'SAME_MISTAKE_RECURRED', followups: usable.length, recurrences, evidenceRefs: refs };
+  // Adverse work whose events carry no provenance at all cannot be placed.
+  const unplaced = new Set([...usable, ...earlier].filter((f) => adverseFollowup(f) && f.adverseEvents.length === 0).map((f) => f.workItemId));
+  const touched = new Set([...events.map((x) => x.workItemId), ...unplaced]);
+  const spanning = earlier.filter((f) => touched.has(f.workItemId));
+  const considered = [...usable, ...spanning];
+  const workRefs = considered.map((f) => `work_item:${f.workItemId}`);
+  if (later.length === 0 && spanning.length === 0) return { effect: 'NOT_YET_TESTED', basis: 'NO_COMPARABLE_WORK_YET', followups: 0, recurrences: 0, evidenceRefs: [] };
+  if (considered.length < MIN_EFFECT_FOLLOWUPS) return { effect: later.length > usable.length ? 'INCONCLUSIVE' : 'NOT_YET_TESTED', basis: 'TOO_FEW_SUFFICIENT_FOLLOWUPS', followups: considered.length, recurrences: 0, evidenceRefs: workRefs };
+  if (events.some((x) => eventStanding(x.e) === 'PENDING_ATTRIBUTION')) return { effect: 'NOT_YET_TESTED', basis: 'ATTRIBUTION_PENDING', followups: considered.length, recurrences: 0, evidenceRefs: workRefs };
+  const targetAccountable = (e: AdverseSourceEvent): boolean => !e.attributionUnresolved && eventStanding(e) === 'ACCOUNTABLE' && e.accountableCauses.includes(input.targetCause);
+  const recurring = events.filter((x) => x.phase === 'AFTER_TRAINING' && targetAccountable(x.e));
+  const recurItems = new Set(recurring.map((x) => x.workItemId));
+  // Work that MAY hold a recurrence the record cannot establish: an accountable target cause that cannot be placed in
+  // time, an event whose attribution cannot be resolved, adverse work without event provenance.
+  const uncertain = new Set(
+    [...events.filter((x) => (x.phase === 'UNPLACEABLE' && targetAccountable(x.e)) || x.e.attributionUnresolved).map((x) => x.workItemId), ...unplaced].filter((w) => !recurItems.has(w)),
+  );
+  const recurrences = recurItems.size;
+  const refs = [...workRefs, ...recurring.map((x) => x.e.sourceRef)];
+  const base = { followups: considered.length, recurrences, evidenceRefs: refs };
+  if (recurrences > 0) {
+    const recur = (f: FollowupFact): boolean => f.accountableCauses.includes(input.targetCause);
+    const baseShare = input.baseline.length === 0 ? 1 : input.baseline.filter(recur).length / input.baseline.length;
+    const least = recurrences / considered.length;
+    const most = (recurrences + uncertain.size) / considered.length;
+    if (least > baseShare) return { effect: 'REGRESSION', basis: 'SAME_MISTAKE_RECURRED', ...base };
+    if (most <= baseShare) return { effect: 'NO_IMPROVEMENT', basis: 'SAME_MISTAKE_RECURRED', ...base };
+    return { effect: 'INCONCLUSIVE', basis: 'RECURRENCE_SHARE_NOT_ESTABLISHED', ...base };
+  }
+  if (uncertain.size > 0) return { effect: 'INCONCLUSIVE', basis: 'ADVERSE_EVENT_NOT_PLACEABLE', ...base };
+  if (events.some((x) => { const st = eventStanding(x.e); return st === 'NO_ACCOUNTABLE_CAUSE' || st === 'NOT_ATTRIBUTABLE'; })) {
+    return { effect: 'INCONCLUSIVE', basis: 'ADVERSE_WITHOUT_ACCOUNTABLE_CAUSE', ...base };
+  }
+  const qualified = usable.filter((f) => f.qualifiedOutcome).length;
+  return qualified >= MIN_EFFECT_FOLLOWUPS
+    ? { effect: 'IMPROVEMENT_OBSERVED', basis: 'NO_RECURRENCE_ON_QUALIFIED_WORK', ...base }
+    : { effect: 'INCONCLUSIVE', basis: 'NO_RECURRENCE_BUT_UNQUALIFIED', ...base };
 }
 
 /** Retraining cycles that ended without an effect before the lesson escalates to the system (no infinite loop). */
@@ -202,7 +338,8 @@ export function detectSystemicCandidates(facts: readonly ValidatedAttributionFac
       if (c.role !== 'PRIMARY') continue;
       const k = `${c.category}|${f.comparableKey}`;
       const g = groups.get(k) ?? { cause: c.category, key: f.comparableKey, items: [] };
-      g.items.push(f);
+      // RB-1: one Work Item is one occurrence, whatever number of validated generations it holds.
+      if (!g.items.some((i) => i.workItemId === f.workItemId)) g.items.push(f);
       groups.set(k, g);
     }
   }

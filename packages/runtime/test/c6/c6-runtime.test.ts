@@ -12,10 +12,11 @@ import { describe, test } from 'node:test';
 
 import { isQandeelError } from '@qandeel-company/domain';
 import { standardWorkOutcomeDefinition } from '@qandeel-company/mind';
-import { DirectoryDestination } from '@qandeel-company/storage';
+import { CURRENT_SCHEMA_VERSION, CompanyStore, DirectoryDestination } from '@qandeel-company/storage';
+import { createWorkspaceAtVersionForTest } from '@qandeel-company/storage/testing';
 
 import type { CompanyRuntime } from '../../src/index.js';
-import { eventually, removeRoot, tempRoot } from '../helpers.js';
+import { eventually, removeRoot, runtimeFor, tempRoot } from '../helpers.js';
 import { fakes, final, governedRuntime, script, seedWorld, submitTask, type C2World } from '../c2/c2-seed.js';
 
 function meter(rt: CompanyRuntime): { readonly changes: number; readonly wakes: number; reset(): void; off(): void } {
@@ -51,6 +52,27 @@ async function withRuntime(label: string, fn: (ctx: { rt: CompanyRuntime; w: C2W
     removeRoot(root);
   }
 }
+
+describe('C6 runtime: an existing Company is upgraded only through the safe-upgrade lifecycle', () => {
+  test('C6-PROOF: start runs safe-upgrade automatically (pre-update snapshot, rehearsal, verification, record) before opening an existing Company with pending migrations — never a live migration at open (R2-30)', async () => {
+    const root = tempRoot('c6-start-upgrade');
+    try {
+      assert.equal(createWorkspaceAtVersionForTest(root, CURRENT_SCHEMA_VERSION - 1, { history: true }), CURRENT_SCHEMA_VERSION - 1);
+      assert.throws(() => CompanyStore.open(root), (e: unknown) => isQandeelError(e, 'SCHEMA_UPDATE_REQUIRED'));
+      const rt = runtimeFor(root, { watchWakeFile: false });
+      try {
+        await rt.start();
+        assert.equal(rt.state, 'READY');
+        const m = rt.resilience().lastMaintenance;
+        assert.deepEqual([m?.outcome, m?.fromVersion, m?.toVersion], ['ACTIVATED', CURRENT_SCHEMA_VERSION - 1, CURRENT_SCHEMA_VERSION], 'the upgrade went through the recorded lifecycle');
+      } finally {
+        await rt.stop();
+      }
+    } finally {
+      removeRoot(root);
+    }
+  });
+});
 
 describe('C6 runtime: the Improvement capability under the Founder change-signalling contract', () => {
   test('C6-PROOF: every Improvement method is classified; reads and failed writes are silent; a decision announces once; an unchanged derivation stays silent', () =>
@@ -108,6 +130,23 @@ describe('C6 runtime: the Improvement capability under the Founder change-signal
       } finally {
         m.off();
       }
+    }));
+
+  test('R2-12: work that failed for a missing route policy is a WORKFLOW cause in the C6 proposal, never the provider', () =>
+    withRuntime('c6-no-policy', async ({ rt, w }) => {
+      const f = rt.founder;
+      const d = f.improvement.registerDefinition(w.founder, standardWorkOutcomeDefinition());
+      f.improvement.activateDefinition(w.founder, d.id, f.improvement.calibrateDefinition(w.founder, d.id).id);
+      // `draft.report` has no route policy: a configuration gap, not a provider failure.
+      const id = submitTask(rt, w, { taskClass: 'draft.report', instructions: script(final('report.done')) });
+      await eventually(() => ['FAILED', 'BLOCKED'].includes(rt.view.getWorkItem(id).state) || undefined, 30_000, 'the unroutable work to fail');
+      const codes = rt.view.runsForWorkItem(id).map((r) => r.failureCode);
+      assert.ok(codes.length > 0 && codes.every((c) => c === 'NO_ROUTE_POLICY'), `the runs record the real cause (${codes.join(',')})`);
+      const { attributionId } = f.improvement.evaluate(id);
+      const a = f.improvement.attributions({ workItemId: id }).find((x) => x.id === attributionId);
+      assert.equal(a?.overall, 'WORKFLOW_PROCESS');
+      assert.ok(!a?.causes.some((c) => c.category === 'PROVIDER'), 'the provider is not blamed');
+      assert.equal(a?.employeeAccountable, false);
     }));
 
   test('C6-PROOF: portable backup, restore drill and resilience status run against the live runtime', () =>

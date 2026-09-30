@@ -105,6 +105,12 @@ function assertOutsideSourceCheckout(target: string): void {
   }
 }
 
+/** The location checks of `openWorkspace`, creating nothing (a live restore validates its target before its first byte). */
+export function assertWorkspaceLocation(root: string): void {
+  assertLocalPathSyntax(root);
+  assertOutsideSourceCheckout(canonicalPath(path.resolve(root)));
+}
+
 export interface OpenWorkspaceOptions {
   /** Create missing directories (default true). */
   readonly create?: boolean;

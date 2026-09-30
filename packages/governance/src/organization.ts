@@ -239,8 +239,23 @@ export function orgActionCapability(action: OrgAction): string | null {
   return Object.hasOwn(ORG_ACTION_CAPABILITY, action) ? ORG_ACTION_CAPABILITY[action] : null;
 }
 
+/**
+ * C5 goal acts from a governed run (PO-R2-D, AC-01: Title ≠ Authority). Each needs BOTH the Director seat
+ * (organizational eligibility, checked by the caller) AND this explicit Founder-delegated grant; neither
+ * replaces the other, and `org.goal.derive` never implies `org.goal.link` (or the reverse). Own-key lookup.
+ */
+const GOAL_ACT_CAPABILITY: Readonly<Record<'goal.derive' | 'goal.link', string>> = Object.freeze({
+  'goal.derive': 'org.goal.derive',
+  'goal.link': 'org.goal.link',
+});
+
+/** The grant a goal act needs (`null` for anything that is not a goal act: the caller refuses it). */
+export function goalActCapability(action: string): string | null {
+  return Object.hasOwn(GOAL_ACT_CAPABILITY, action) ? GOAL_ACT_CAPABILITY[action as 'goal.derive' | 'goal.link'] : null;
+}
+
 /** Organization capabilities the Founder may delegate as explicit grants (never R4, never approval). */
-export const ORG_CAPABILITIES = ['org.staffing.request', 'org.staffing.review', 'org.staffing.decide', 'org.staffing.hire', 'org.work.delegate', 'org.work.support', 'org.work.reprioritize', 'org.review.plan'] as const;
+export const ORG_CAPABILITIES = ['org.staffing.request', 'org.staffing.review', 'org.staffing.decide', 'org.staffing.hire', 'org.work.delegate', 'org.work.support', 'org.work.reprioritize', 'org.review.plan', 'org.goal.derive', 'org.goal.link'] as const;
 export const isOrgCapability = (v: unknown): boolean => isMember(ORG_CAPABILITIES, v);
 
 // --- Work delegation bounds (Stage 8 §24–§26, §29) --------------------------------------------------

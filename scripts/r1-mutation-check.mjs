@@ -33,7 +33,7 @@ const MUTATIONS = [
   {
     id: 'r1-01-tool-result-secret-stored',
     finding: 'R1-01',
-    edits: [{ file: `${S}/governed-writes.js`, search: 'hasSecretNamedKey(outcome.result) || containsSecretMaterial(json)', replace: 'false', expectedCount: 1 }],
+    edits: [{ file: `${S}/governed-writes.js`, search: 'keyedSecretJson(json) || containsSecretMaterial(json)', replace: 'false', expectedCount: 1 }],
     runs: [STORAGE],
   },
   {
@@ -67,6 +67,75 @@ const MUTATIONS = [
     runs: [STORAGE],
   },
   {
+    id: 'r2-03-freed-headroom-wakes-nothing',
+    finding: 'R2-03',
+    edits: [{ file: `${S}/governance-core.js`, search: "admitBudgetWaiters(ctx, chain.map((b) => b.id), 'budget.freed');", replace: 'void chain; /* mutation: settle / release wake no budget waiter */', expectedCount: 2 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r2-03-budget-wake-ignores-headroom',
+    finding: 'R2-03',
+    edits: [{ file: `${S}/governance-core.js`, search: 'const amount = admissibleAmount(w, remaining);', replace: 'const amount = (void remaining, { money: 0, tokens: 0 }); /* mutation: every waiter is admitted, fitting or not */', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r2-03-budget-recheck-ignores-freed-headroom',
+    finding: 'R2-03',
+    edits: [{ file: `${S}/governed-writes.js`, search: "        admitBudgetWaiters(ctx, null, 'budget.rechecked', jobId);", replace: '        void jobId; /* mutation: the WAIT settle never re-checks a budget wait */', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'rr2-1-budget-wake-ignores-recorded-need',
+    finding: 'RR2-1',
+    edits: [{ file: `${S}/governance-core.js`, search: '    if (w.need === null) {\n', replace: '    if (w.need !== undefined) { /* mutation: any headroom admits (the storm) */\n', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'rr2-1-budget-need-not-recorded',
+    finding: 'RR2-1',
+    edits: [{ file: `${S}/governed-writes.js`, search: "        recordBudgetWaitNeed(ctx, { jobId: job.id, runId: fence.runId, workItemId: a.workItemId }, refused, check.dimension, refused.scope === 'RUN' ? wiChain[0] : refused, input.money, input.tokens);\n", replace: '        void refused; /* mutation: the refusal forgets what it needed */\n', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'rr2-1-budget-wake-ignores-fresh-run-cap',
+    finding: 'RR2-1',
+    edits: [{ file: `${S}/governance-core.js`, search: '    if (need.money > runCapMoney || need.tokens > runCapTokens)\n        return null;\n', replace: '    /* mutation: a need above the per-run cap is woken anyway */\n', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  // --- FA-1 (R2-03 family, architecture correction): budget capacity is admitted, not broadcast ---
+  {
+    id: 'fa1-admission-not-subtracted',
+    finding: 'FA-1',
+    edits: [{ file: `${S}/governance-core.js`, search: '            r.money -= amount.money;\n            r.tokens -= amount.tokens;\n', replace: '            void r; /* mutation: the pass never subtracts what it admitted (every fitting waiter wakes) */\n', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'fa1-reservation-ignores-admissions',
+    finding: 'FA-1',
+    edits: [{ file: `${S}/governance-core.js`, search: '        const held = admittedOn(ctx, b.id, exceptJobId);\n', replace: '        const held = (void exceptJobId, { money: 0, tokens: 0 }); /* mutation: a reservation takes admitted headroom */\n', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'fa1-release-not-readmitted',
+    finding: 'FA-1',
+    edits: [{ file: `${S}/governance-core.js`, search: "    if (readmit)\n        admitBudgetWaiters(ctx, JSON.parse(row.levels_json), 'budget.readmitted');\n", replace: '    void readmit; /* mutation: a released admission is a lost wake */\n', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'fa1-admission-never-consumed',
+    finding: 'FA-1',
+    edits: [{ file: `${S}/governed-writes.js`, search: '    consumeBudgetAdmission(ctx, job.id, { id, money: input.money, tokens: input.tokens });\n', replace: '    /* mutation: the reservation never consumes its admission (capacity counted twice) */\n', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'fa1-job-exit-keeps-admission',
+    finding: 'FA-1',
+    edits: [
+      { file: `${S}/work-core.js`, search: "    releaseBudgetAdmission(ctx, job.id, 'JOB_LEFT_QUEUE');\n", replace: '    /* mutation: a withdrawn job keeps its admitted capacity */\n', expectedCount: 1 },
+      { file: `${S}/queue.js`, search: "        releaseBudgetAdmission(ctx, job.id, 'JOB_LEFT_QUEUE');\n", replace: '        /* mutation: a job leaving the queue keeps its admitted capacity */\n', expectedCount: 1 },
+    ],
+    runs: [STORAGE],
+  },  {
     id: 'r1-12-stale-knowledge-eligible',
     finding: 'R1-12',
     edits: [{ file: `${S}/mind-writes.js`, search: 'const kEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND (x.review_at IS NULL OR x.review_at > ?)`;', replace: 'const kEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND ? IS NOT NULL`;', expectedCount: 1 }],
@@ -328,6 +397,65 @@ const MUTATIONS = [
     finding: 'K4',
     edits: [{ file: `${G}/proposals.js`, search: 's.length <= 64 &&', replace: '', expectedCount: 1 }],
     runs: [GOV],
+  },
+  // --- R2-10: the R1-09 boundary applied to tool drivers (read once, frozen plain data, screened code) ---
+  {
+    id: 'r2-10-raw-tool-answer-passed-on',
+    finding: 'R2-10',
+    edits: [{ file: `${R}/c2/tool-executor.js`, search: 'return toolAnswerSnapshot(r);', replace: 'return r;', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'r2-10-tool-result-not-reparsed',
+    finding: 'R2-10',
+    edits: [{ file: `${R}/c2/tool-boundary.js`, search: 'parsed = JSON.parse(canonicalJson(result));', replace: 'parsed = result;', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'r2-10-secret-driver-code-recorded',
+    finding: 'R2-10 / m-17',
+    edits: [
+      { file: `${R}/c2/tool-boundary.js`, search: 'CODE.test(code) && !containsSecretMaterial(code) ?', replace: 'CODE.test(code) ?', expectedCount: 1 },
+      { file: `${S}/governed-writes.js`, search: '.test(code) && !containsSecretMaterial(code) ?', replace: '.test(code) ?', expectedCount: 1 },
+    ],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'r2-10-storage-code-unscreened',
+    finding: 'R2-10 / m-17',
+    edits: [{ file: `${S}/governed-writes.js`, search: '.test(code) && !containsSecretMaterial(code) ?', replace: '.test(code) ?', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r2-10-storage-rereads-outcome',
+    finding: 'R2-10',
+    edits: [{ file: `${S}/governed-writes.js`, search: 'const outcome = captureToolOutcome(input);', replace: 'const outcome = input;', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'r2-10-storage-guard-reads-driver-object',
+    finding: 'R2-10',
+    edits: [{ file: `${S}/governed-writes.js`, search: 'if (keyedSecretJson(json) || containsSecretMaterial(json))', replace: 'if (hasSecretNamedKey(input.result) || containsSecretMaterial(json))', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  // --- R2-12: one run-failure vocabulary; local and configuration causes are never the provider ---
+  {
+    id: 'r2-12-local-settlement-blamed-on-provider',
+    finding: 'R2-12',
+    edits: [{ file: `${R}/c2/model-runtime.js`, search: "{ kind: 'UNAVAILABLE', code: 'SETTLEMENT_FAILED' }", replace: "{ kind: 'UNCERTAIN', failure: 'UNKNOWN' }", expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'r2-12-vocabulary-incomplete',
+    finding: 'R2-12',
+    edits: [{ file: `${G}/run-failures.js`, search: 'REASONING_ABOVE_CEILING: null,', replace: '', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'r2-12-pg11-family-invented',
+    finding: 'R2-12 / PG-11',
+    edits: [{ file: `${G}/run-failures.js`, search: 'PROVIDER_INVALID_REQUEST: null,', replace: "PROVIDER_INVALID_REQUEST: 'PROVIDER',", expectedCount: 1 }],
+    runs: [RUNTIME],
   },
 ];
 

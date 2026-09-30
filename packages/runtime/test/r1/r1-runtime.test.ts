@@ -6,11 +6,14 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { ExponentialBackoff, QandeelError, type Id, type Processor, type ProcessorContext, type ProcessorResult } from '@qandeel-company/domain';
-import { FAILURE_DISPOSITIONS, PROVIDER_FAILURE_CLASSES, ProviderError, failureDisposition } from '@qandeel-company/governance';
+import { ExponentialBackoff, QandeelError, type Id, type JsonValue, type Processor, type ProcessorContext, type ProcessorResult } from '@qandeel-company/domain';
+import { FAILURE_DISPOSITIONS, PROVIDER_FAILURE_CLASSES, ProviderError, RUN_FAILURE_CODES, failureDisposition, isRunFailureCode, runFailureFamily, type ModelProposal, type ToolDriver } from '@qandeel-company/governance';
+import type { BeginResult, ReserveResult } from '@qandeel-company/storage/runtime-authority';
 
-import { CompanyRuntime, DETERMINISTIC_PROCESSORS, type CompanyRuntime as Runtime } from '../../src/index.js';
+import { CompanyRuntime, DETERMINISTIC_PROCESSORS, employeeTaskProcessor, type GovernedRunServices, type ModelCallOutcome, type CompanyRuntime as Runtime, type ToolOutcome } from '../../src/index.js';
+import { EMPLOYEE_TASK_KIND } from '../../src/c2/employee-task.js';
 import { answerSnapshot, errorSnapshot, type ProviderSnapshot } from '../../src/c2/provider-boundary.js';
+import { TOOL_OUTCOME_UNKNOWN, toolAnswerSnapshot, type ToolSnapshot } from '../../src/c2/tool-boundary.js';
 import { eventually, removeRoot, tempRoot } from '../helpers.js';
 import { fakes, final, governedRuntime, script, seedWorld, submitTask, toolReq, type C2World, type Fakes } from '../c2/c2-seed.js';
 
@@ -77,6 +80,9 @@ describe('R1-09 attribution: local store contention is never blamed on the provi
         assert.equal(rt.governance.reservations(first?.id as Id)[0]?.state, 'RECONCILIATION_REQUIRED', 'possibly billed: held');
         assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'ACTIVE', 'the provider is not held for a local failure');
         assert.equal(f.cloud.calls.get('cloud-e1'), 2, 'the retry used the same healthy route');
+        // R2-12: the run records the local cause, outside every provider family.
+        assert.equal(first?.failureCode, 'SETTLEMENT_FAILED', 'the run names the local settlement failure');
+        assert.equal(runFailureFamily(first?.failureCode), null, 'never a provider cause');
       },
       {
         storageFault: (p) => {
@@ -605,6 +611,248 @@ describe('R1-09 provider boundary (Technical Lead hardening): every provider-con
   test('disposition lookup is own-key only: trick values get the held-for-reconciliation disposition', () => {
     for (const t of TRICKS) assert.equal(failureDisposition(t), FAILURE_DISPOSITIONS.UNKNOWN, t);
     for (const c of PROVIDER_FAILURE_CLASSES) assert.equal(failureDisposition(c), FAILURE_DISPOSITIONS[c], c);
+  });
+});
+
+describe('R2-10 tool-driver boundary (the R1-09 hardening applied to tools): every driver-controlled field is read at most once into a frozen snapshot of plain data', () => {
+  type Plan = Record<string, readonly unknown[] | 'THROW'>;
+  /** A hostile object: each planned field yields its values in turn (the last repeats) or throws; reads are counted. */
+  const hostile = <T extends object>(target: T, plan: Plan, reads: Map<string, number>, name: string): T =>
+    new Proxy(target, {
+      get(t, key, receiver) {
+        if (typeof key !== 'string' || !Object.hasOwn(plan, key)) return Reflect.get(t, key, receiver) as unknown;
+        const n = reads.get(`${name}.${key}`) ?? 0;
+        reads.set(`${name}.${key}`, n + 1);
+        const p = plan[key];
+        if (p === 'THROW' || (p?.[Math.min(n, (p?.length ?? 1) - 1)] === 'THROW')) throw new Error('hostile read');
+        return p?.[Math.min(n, (p?.length ?? 1) - 1)];
+      },
+    });
+  const secret = ['fake', 'horse', 'battery', 'staple'].join('-');
+  const akia = ['AKIA', 'QX7'.padEnd(16, 'Q')].join('');
+
+  /** Runs one governed task whose single tool step is answered by `answer` (a fresh hostile answer per call). */
+  async function hostileTool(label: string, answer: (call: number, reads: Map<string, number>) => unknown, sideEffects: 'UNSAFE' | 'NONE'): Promise<{ effects: number; reads: Map<string, number>; state: string; invocations: { state: string; attempts: number; failureCode: string | null; result: unknown }[]; toolReservations: string[]; toolMessages: string[]; runCodes: (string | null)[]; audit: string }> {
+    const root = tempRoot(label);
+    const w = seedWorld(root);
+    const f = fakes();
+    const reads = new Map<string, number>();
+    let effects = 0;
+    const driver = { driverCode: 'fake-mailer', invoke: () => Promise.resolve(answer(++effects, reads)) } as unknown as ToolDriver;
+    // The model's copy: every tool message any later model call receives.
+    const toolMessages: string[] = [];
+    for (const p of [f.local, f.cloud]) {
+      const generate = p.generate.bind(p);
+      (p as unknown as { generate: typeof generate }).generate = (req, sig) => {
+        for (const m of req.messages) if (m.role === 'tool') toolMessages.push(m.content);
+        return generate(req, sig);
+      };
+    }
+    const rt = governedRuntime(root, f, { governance: { providers: [f.local, f.cloud], toolDrivers: [...Object.values(f.drivers), driver], modelCallTimeoutMs: 5_000, toolCallTimeoutMs: 2_000 } });
+    try {
+      await rt.start();
+      const gov = rt.governance;
+      const t = gov.registerTool(w.founder, { code: 'mailer', driverCode: 'fake-mailer', egress: 'NONE' });
+      gov.registerToolAction(w.founder, { toolId: t.id, code: 'send', risk: 'R1', sideEffects, mutatesExternal: false, dataClassCeiling: 'D3', argsSchema: { fields: { text: { type: 'string', required: true, maxLength: 500 } } }, costPerCallMicros: 100 });
+      gov.grant(w.founder, { employeeId: w.employee.id, capability: 'tool:mailer.send', riskCeiling: 'R1', dataClassCeiling: 'D3', reasonCode: 'seed' });
+      const id = submitTask(rt, w, { dataClass: 'D1', maxTurns: 3, instructions: script(toolReq('mailer', 'send', { text: 'hello' }), final('done')) });
+      const s = await eventually(() => (['COMPLETED', 'FAILED', 'BLOCKED'].includes(state(rt, id)) ? state(rt, id) : undefined), 30_000, `${label} to settle`);
+      const invocations = gov.toolInvocations(id);
+      const runs = rt.view.runsForWorkItem(id);
+      return {
+        effects,
+        reads,
+        state: s,
+        invocations: invocations.map((i) => ({ state: i.state, attempts: i.attempts, failureCode: i.failureCode, result: i.result })),
+        toolReservations: runs.flatMap((r) => gov.reservations(r.id)).filter((r) => r.purpose === 'TOOL_CALL').map((r) => r.state),
+        toolMessages,
+        runCodes: runs.map((r) => r.failureCode),
+        audit: JSON.stringify([...invocations.map((i) => i.id), ...runs.map((r) => r.id)].flatMap((x) => rt.view.audit(x as Id))),
+      };
+    } finally {
+      await rt.stop().catch(() => undefined);
+      removeRoot(root);
+    }
+  }
+  const readOnce = (reads: Map<string, number>, label: string): void => {
+    for (const [key, n] of reads) assert.ok(n <= 1, `${label}: ${key} read ${n} times`);
+  };
+
+  test('an `ok` that flips between reads: the UNSAFE effect runs once under its key and its money is never released', async () => {
+    const r = await hostileTool('r2-10-ok-flip', (_n, reads) => hostile({}, { ok: [true, false], result: [{ delivered: true }], code: ['LATER'], sent: ['NO'] }, reads, 'answer'), 'UNSAFE');
+    readOnce(r.reads, 'ok flip');
+    assert.equal(r.effects, 1, 'the UNSAFE effect executed exactly once');
+    assert.equal(r.state, 'COMPLETED');
+    assert.deepEqual(r.invocations.map((i) => [i.state, i.attempts]), [['SUCCEEDED', 1]]);
+    assert.ok(!r.toolReservations.includes('RELEASED'), `the executed effect's money is never released (${r.toolReservations.join(',')})`);
+  });
+
+  test('a throwing getter after the first read never becomes a processor error that repeats the effect', async () => {
+    const r = await hostileTool('r2-10-throw', (_n, reads) => hostile({}, { ok: [true, 'THROW'], result: [{ delivered: true }, 'THROW'] }, reads, 'answer'), 'UNSAFE');
+    readOnce(r.reads, 'throwing getter');
+    assert.equal(r.effects, 1);
+    assert.equal(r.state, 'COMPLETED');
+    assert.ok(!r.runCodes.includes('PROCESSOR_ERROR'), `no processor error (${r.runCodes.join(',')})`);
+  });
+
+  test('a result that changes between reads is judged, stored and shown to the model as ONE plain value; a credential never escapes the guard', async () => {
+    const r = await hostileTool('r2-10-secret-split', (_n, reads) => hostile({}, { ok: [true], result: [{ password: secret }, { note: 'ok' }] }, reads, 'answer'), 'NONE');
+    readOnce(r.reads, 'shifting result');
+    assert.equal((r.invocations[0]?.result as Record<string, unknown>)['withheld'], 'SECRET_MATERIAL', 'the stored result is the guarded snapshot');
+    assert.ok(!JSON.stringify(r.invocations).includes(secret) && !r.toolMessages.join('\n').includes(secret), 'no credential stored or sent to the model');
+  });
+
+  test('a Proxy result is serialized once: the invocation record, the step result and the model copy are the same value', async () => {
+    const r = await hostileTool('r2-10-proxy', (_n, reads) => ({ ok: true, result: hostile({ a: 0, b: 0 }, { a: ['first', 'later'], b: ['first', 'later'] }, reads, 'result') }), 'NONE');
+    readOnce(r.reads, 'proxy result');
+    assert.deepEqual(r.invocations[0]?.result, { a: 'first', b: 'first' });
+    assert.ok(r.toolMessages.some((m) => m.includes('"a":"first"')) && !r.toolMessages.some((m) => m.includes('later')), 'the model saw the recorded value');
+  });
+
+  test('a secret-shaped driver failure code never reaches state or audit (m-17)', async () => {
+    const r = await hostileTool('r2-10-code', (n) => (n === 1 ? { ok: false, code: akia, sent: 'NO' } : { ok: true, result: { delivered: true } }), 'NONE');
+    assert.equal(r.effects, 2, 'the not-executed first call was retried once');
+    assert.ok(!JSON.stringify(r.invocations).includes(akia) && !r.audit.includes(akia), 'the code was replaced before it was recorded');
+  });
+
+  test('the snapshot itself: fields read at most once, frozen plain data, trick values normalized', () => {
+    const cases: [string, unknown, (s: ToolSnapshot) => void][] = [
+      ['throwing ok', hostile({}, { ok: 'THROW' }, new Map(), 'a'), (s) => assert.deepEqual(s, TOOL_OUTCOME_UNKNOWN)],
+      ['throwing result', hostile({}, { ok: [true], result: 'THROW' }, new Map(), 'a'), (s) => assert.deepEqual(s, TOOL_OUTCOME_UNKNOWN)],
+      ['non-object answer', 'TIMEOUT', (s) => assert.deepEqual(s, TOOL_OUTCOME_UNKNOWN)],
+      ['non-plain result', { ok: true, result: new Map([['k', 1]]) }, (s) => assert.deepEqual(s, { ok: true, result: { invalid: true } })],
+      ['bigint in result', { ok: true, result: { n: 1n } }, (s) => assert.deepEqual(s, { ok: true, result: { invalid: true } })],
+      ['secret-shaped code', { ok: false, code: akia, sent: 'NO' }, (s) => assert.deepEqual(s, { ok: false, code: 'DRIVER_FAILURE', sent: 'NO' })],
+      ['malformed code', { ok: false, code: 'lower case', sent: 'NO' }, (s) => assert.deepEqual(s, { ok: false, code: 'DRIVER_FAILURE', sent: 'NO' })],
+      ['sent trick value', { ok: false, code: 'X', sent: 'constructor' }, (s) => assert.deepEqual(s, { ok: false, code: 'X', sent: 'UNKNOWN' })],
+      ['nested getters', { ok: true, result: { a: { get b() { return 1; } } } }, (s) => assert.deepEqual(s, { ok: true, result: { a: { b: 1 } } })],
+    ];
+    for (const [label, answer, check] of cases) {
+      const s = toolAnswerSnapshot(answer);
+      check(s);
+      assert.ok(Object.isFrozen(s), `${label}: frozen`);
+      if (s.ok) {
+        const walk = (v: unknown): void => {
+          if (v === null || typeof v !== 'object') return;
+          assert.ok(Object.isFrozen(v) && [Object.prototype, Array.prototype, null].includes(Object.getPrototypeOf(v)), `${label}: frozen plain data`);
+          for (const x of Object.values(v)) walk(x);
+        };
+        walk(s.result);
+      }
+    }
+  });
+});
+
+describe('R2-12: one run-failure vocabulary — the runtime records the real cause and C6 classifies from the same table', () => {
+  const ctxFor = (input: unknown): ProcessorContext => ({
+    workItemId: 'w' as Id,
+    rootWorkItemId: 'w' as Id,
+    jobId: 'j' as Id,
+    runId: 'r' as Id,
+    attempt: 1,
+    correlationId: 'c' as Id,
+    processorKind: EMPLOYEE_TASK_KIND,
+    input: input as JsonValue,
+    resumeFrom: null,
+    signal: new AbortController().signal,
+    checkpoint: () => Promise.resolve(),
+    putArtifact: () => Promise.reject(new Error('not used')),
+  });
+  const answer = (proposal: ModelProposal): ModelCallOutcome => ({ kind: 'OK', proposal, usage: { inputTokens: 1, outputTokens: 1 }, deploymentId: 'd', reasoningClass: 'E1', attempts: 1, manifestId: 'm' });
+  const tool: ModelProposal = { type: 'TOOL_REQUEST', tool: 'notes', action: 'append', args: {} };
+  const INPUT = { taskClass: 'draft.memo', instructions: 'Write the memo.' };
+  /** Drives the real employee loop with scripted governed services; returns the code the run would record. */
+  async function codeOf(models: ModelCallOutcome[], over: Partial<GovernedRunServices> = {}, input: unknown = INPUT): Promise<string | null> {
+    const services: GovernedRunServices = {
+      context: { cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2' } } as unknown as GovernedRunServices['context'],
+      invokeModel: () => Promise.resolve(models.shift() ?? answer({ type: 'FINAL', summaryCode: 'done' })),
+      proposeMemory: () => ({ kind: 'DECIDED', state: 'CANDIDATE', reasonCode: null }),
+      executeTool: () => Promise.resolve({ kind: 'SUCCEEDED', result: {}, replayed: false }),
+      orgAct: () => ({ outcome: 'DONE', code: 'OK', after: 'CONTINUE', paused: false }),
+      submitReviewDecision: () => ({ outcome: 'RECORDED', code: 'OK' }),
+      openHandoffs: () => 0,
+      clarificationsRequested: () => 0,
+      refuseFinal: () => undefined,
+      sendMessage: () => ({ outcome: 'RECORDED', code: 'OK', messageId: null }),
+      goalAct: () => ({ outcome: 'DONE', code: 'OK', resultRef: null }),
+      ...over,
+    };
+    const r = await employeeTaskProcessor.runGoverned(ctxFor(input), services);
+    return 'code' in r ? r.code : 'reasonCode' in r ? r.reasonCode : null;
+  }
+  const RESERVE_CODES: Extract<ReserveResult, { ok: false }>['code'][] = ['BUDGET_MISSING', 'BUDGET_EXHAUSTED', 'EMPLOYEE_NOT_ELIGIBLE', 'ROUTE_NO_LONGER_ELIGIBLE', 'RUN_LIMIT', 'CONTEXT_MANIFEST_REQUIRED'];
+  const CONTEXT_CODES: Extract<ModelCallOutcome, { kind: 'CONTEXT' }>['code'][] = ['CONTEXT_BUDGET_EXHAUSTED', 'CONFLICT_HOLD', 'SKILL_CONFLICT', 'INTEGRITY_FAILURE', 'CONTEXT_NOT_ASSEMBLED'];
+  const BEGIN_CODES: Extract<BeginResult, { ok: false }>['code'][] = ['EMPLOYEE_NOT_ELIGIBLE', 'NOT_EMPLOYEE_OWNED', 'CAPABILITY_GAP_CANCELLED', 'STEP_RANGE_EXHAUSTED', 'CAPABILITY_GAP'];
+  // The model runtime's UNAVAILABLE codes: configuration, route, local and provider causes.
+  const UNAVAILABLE = ['NO_ROUTE_POLICY', 'NO_ELIGIBLE_DEPLOYMENT', 'REASONING_ABOVE_CEILING', 'FALLBACK_REFUSED_COST', 'ABORTED', 'SETTLEMENT_FAILED', 'ATTEMPTS_EXHAUSTED', ...PROVIDER_FAILURE_CLASSES.map((c) => `PROVIDER_${c}`)];
+  // The runtime's own settle overrides (runtime.ts) and the governed-run refusal the plain entry point returns.
+  const RUNTIME_CODES = ['PROCESSOR_ERROR', 'PROCESSOR_STOPPED_UNPROMPTED', 'INVALID_WAIT', 'RUN_TIMEOUT'];
+
+  async function everyEmittedCode(): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    const add = (label: string, c: string | null): void => void (c !== null && out.set(c, label));
+    for (const c of UNAVAILABLE) add(`unavailable ${c}`, await codeOf([{ kind: 'UNAVAILABLE', code: c }]));
+    for (const c of PROVIDER_FAILURE_CLASSES) {
+      add(`uncertain ${c}`, await codeOf([{ kind: 'UNCERTAIN', failure: c }]));
+      add(`failed ${c}`, await codeOf([{ kind: 'FAILED', failure: c }, { kind: 'FAILED', failure: c }]));
+    }
+    for (const c of ['EMPLOYEE_NOT_ELIGIBLE', 'NO_GRANT']) add(`model denied ${c}`, await codeOf([{ kind: 'DENIED', code: c }]));
+    for (const c of RESERVE_CODES) {
+      add(`model budget ${c}`, await codeOf([{ kind: 'BUDGET', code: c, detail: 'x' }]));
+      add(`tool budget ${c}`, await codeOf([answer(tool)], { executeTool: () => Promise.resolve({ kind: 'BUDGET', code: c }) }));
+    }
+    add('escalation refused', await codeOf([{ kind: 'ESCALATION_REFUSED', code: 'X' }]));
+    for (const c of CONTEXT_CODES) add(`context ${c}`, await codeOf([{ kind: 'CONTEXT', code: c }]));
+    const toolOutcomes: ToolOutcome[] = [
+      { kind: 'DENIED', code: 'NO_GRANT', paused: true },
+      { kind: 'DENIED', code: 'EMPLOYEE_NOT_ELIGIBLE', paused: false },
+      { kind: 'APPROVAL_REQUIRED', approvalId: 'a' },
+      { kind: 'REVIEW_REQUIRED', code: 'X' },
+      { kind: 'RECONCILIATION_REQUIRED', invocationId: 'i' },
+      { kind: 'NOT_EXECUTED', code: 'X' },
+      { kind: 'FAILED', code: 'X' },
+    ];
+    for (const t of toolOutcomes) add(`tool ${t.kind}`, await codeOf([answer(tool)], { executeTool: () => Promise.resolve(t) }));
+    const org: ModelProposal = { type: 'ORG_ACTION', action: 'handoff.refuse', args: {} } as unknown as ModelProposal;
+    add('org paused', await codeOf([answer(org)], { orgAct: () => ({ outcome: 'DONE', code: 'OK', after: 'CONTINUE', paused: true }) }));
+    for (const after of ['END_REFUSED', 'WAIT_CLARIFICATION', 'WAIT_ESCALATION'] as const) add(`org ${after}`, await codeOf([answer(org)], { orgAct: () => ({ outcome: 'DONE', code: 'OK', after, paused: false }) }));
+    add('invalid output', await codeOf([answer({ type: 'INVALID', code: 'NOT_JSON' }), answer({ type: 'INVALID', code: 'NOT_JSON' })]));
+    add('max turns', await codeOf(Array.from({ length: 40 }, () => answer({ type: 'OBSERVATION', topic: 'x', content: 'y' }))));
+    add('open handoffs', await codeOf([], { openHandoffs: () => 1 }));
+    add('invalid input', await codeOf([], {}, { taskClass: 'draft.memo' }));
+    const plain = await employeeTaskProcessor.run(ctxFor(INPUT));
+    add('plain entry point', 'code' in plain ? plain.code : null);
+    for (const c of BEGIN_CODES) add(`begin ${c}`, c);
+    for (const c of RUNTIME_CODES) add(`runtime ${c}`, c);
+    return out;
+  }
+
+  test('exhaustiveness: every code the governed runtime can record is in the vocabulary (classified or explicitly unclassified), and every classified code can be recorded', async () => {
+    const emitted = await everyEmittedCode();
+    for (const [code, label] of emitted) assert.ok(isRunFailureCode(code), `${label}: ${code} is not in the run-failure vocabulary`);
+    for (const code of Object.keys(RUN_FAILURE_CODES)) if (runFailureFamily(code) !== null) assert.ok(emitted.has(code), `${code} is classified but never recorded`);
+  });
+
+  test('local and configuration causes are never the provider; PG-11 codes stay unclassified', async () => {
+    const cases: [string, ModelCallOutcome[], string, string | null][] = [
+      ['local settlement failure', [{ kind: 'UNAVAILABLE', code: 'SETTLEMENT_FAILED' }], 'SETTLEMENT_FAILED', null],
+      ['missing route policy', [{ kind: 'UNAVAILABLE', code: 'NO_ROUTE_POLICY' }], 'NO_ROUTE_POLICY', 'WORKFLOW'],
+      ['no eligible deployment', [{ kind: 'UNAVAILABLE', code: 'NO_ELIGIBLE_DEPLOYMENT' }], 'NO_ELIGIBLE_ROUTE', 'PROVIDER'],
+      ['costlier fallback refused', [{ kind: 'UNAVAILABLE', code: 'FALLBACK_REFUSED_COST' }], 'FALLBACK_REFUSED', 'PROVIDER'],
+      ['run aborted', [{ kind: 'UNAVAILABLE', code: 'ABORTED' }], 'RUN_ABORTED', null],
+      ['every attempt used', [{ kind: 'UNAVAILABLE', code: 'ATTEMPTS_EXHAUSTED' }], 'PROVIDER_UNAVAILABLE', 'PROVIDER'],
+      ['provider capacity, no fallback left', [{ kind: 'UNAVAILABLE', code: 'PROVIDER_CAPACITY' }], 'PROVIDER_UNAVAILABLE', 'PROVIDER'],
+      ['timeout after send, no fallback left', [{ kind: 'UNAVAILABLE', code: 'PROVIDER_TIMEOUT_AFTER_SEND' }], 'PROVIDER_FAILURE', 'PROVIDER'],
+      ['contract violation', [{ kind: 'UNCERTAIN', failure: 'CONTRACT_VIOLATION' }], 'PROVIDER_FAILURE', 'PROVIDER'],
+      ['context overflow after escalation', [{ kind: 'FAILED', failure: 'CONTEXT_OVERFLOW' }, { kind: 'FAILED', failure: 'CONTEXT_OVERFLOW' }], 'PROVIDER_CONTEXT_OVERFLOW', 'CONTEXT'],
+      ['invalid request (PG-11)', [{ kind: 'FAILED', failure: 'INVALID_REQUEST' }], 'PROVIDER_INVALID_REQUEST', null],
+      ['content policy (PG-11)', [{ kind: 'FAILED', failure: 'CONTENT_POLICY' }], 'PROVIDER_CONTENT_POLICY', null],
+    ];
+    for (const [label, models, code, family] of cases) {
+      assert.equal(await codeOf(models), code, label);
+      assert.equal(runFailureFamily(code), family, `${label}: family`);
+    }
+    assert.equal(runFailureFamily('constructor'), null, 'own-key lookup only');
   });
 });
 

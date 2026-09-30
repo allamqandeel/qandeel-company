@@ -9,11 +9,11 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { isQandeelError, newId, type Id } from '@qandeel-company/domain';
-import type { OutcomeJudgment } from '@qandeel-company/governance';
+import { MAX_OPEN_REVIEWS_PER_REVIEWER, type OutcomeJudgment } from '@qandeel-company/governance';
 import { standardWorkOutcomeDefinition } from '@qandeel-company/mind';
 
 import { AttentionStore, ImprovementStore, MemoryStore, ReviewStore, type EmployeeRecord } from '../src/index.js';
-import { recordReviewDecision, settle } from '../src/runtime-authority.js';
+import { reconcileOrganization, recordReviewDecision, recordToolIntent, settle } from '../src/runtime-authority.js';
 import { storeContext } from '../src/store.js';
 import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
 import { GOVERNED_KIND, seed, type Seed } from './c2-helpers.js';
@@ -249,18 +249,23 @@ describe('C6-R1: judgment is scoped by plan, risk, qualification and independenc
       const director = placed(h, s, 'director.growth');
       const ctx = storeContext(h.store);
       const plan = ReviewStore.for(h.store).plan(w);
-      const insertJudgment = (judgeId: Id, qualificationId: Id, workItemId: Id, subjectId: Id): unknown =>
-        ctx.db.immediate('forge judgment', () => {
-          const judgeWork = h.store.createWorkItem({ objective: 'forged judgment', ownerRef: `employee:${judgeId}`, processorKind: GOVERNED_KIND, processorInput: { taskClass: 'draft.memo', instructions: 'x' } }).workItem.id;
-          return ctx.db.run(
+      // R2-32: the judge's own Work Item is created BEFORE the forged insert's transaction (a nested transaction
+      // would be refused first and satisfy the assertion vacuously), and each refusal must be the trigger's own.
+      const refusedBy = (message: RegExp) => (e: unknown): boolean => isQandeelError(e, 'STORAGE_INVARIANT') && message.test(String((e as Error).cause));
+      const judgeRefused = refusedBy(/independent, qualified pool reviewer/);
+      const insertJudgment = (judgeId: Id, qualificationId: Id, workItemId: Id, subjectId: Id, planId: Id = plan?.id as Id): unknown => {
+        const judgeWork = h.store.createWorkItem({ objective: 'forged judgment', ownerRef: `employee:${judgeId}`, processorKind: GOVERNED_KIND, processorInput: { taskClass: 'draft.memo', instructions: 'x' } }).workItem.id;
+        return ctx.db.immediate('forge judgment', () =>
+          ctx.db.run(
             `INSERT INTO judgment_assignments (id, subject_kind, subject_id, work_item_id, plan_id, judge_employee_id, qualification_id, judge_work_item_id, state, evidence_refs_json, version, created_at, updated_at) VALUES (?, 'ATTRIBUTION', ?, ?, ?, ?, ?, ?, 'ASSIGNED', '[]', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
-            newId(), subjectId, workItemId, plan?.id as Id, judgeId, qualificationId, judgeWork,
-          );
-        });
-      assert.throws(() => insertJudgment(director.id, qualification.id, w, a?.id as Id), code('STORAGE_INVARIANT'), 'a title with no qualification never judges');
-      assert.throws(() => insertJudgment(reviewer.id, qualification.id, w, a?.id as Id), code('STORAGE_INVARIANT'), 'the executor / subject never judges');
+            newId(), subjectId, workItemId, planId, judgeId, qualificationId, judgeWork,
+          ),
+        );
+      };
+      assert.throws(() => insertJudgment(director.id, qualification.id, w, a?.id as Id), judgeRefused, 'a title with no qualification never judges');
+      assert.throws(() => insertJudgment(reviewer.id, qualification.id, w, a?.id as Id), judgeRefused, 'the executor / subject never judges');
       // An Employee's name on a decided cause or lesson is exactly an assigned judge's.
-      assert.throws(() => ctx.db.immediate('forge decision', () => ctx.db.run(`UPDATE causal_attributions SET state = 'VALIDATED', decided_by_ref = ?, reason_code = 'x', version = version + 1 WHERE id = ?`, `employee:${director.id}`, a?.id as Id)), code('STORAGE_INVARIANT'));
+      assert.throws(() => ctx.db.immediate('forge decision', () => ctx.db.run(`UPDATE causal_attributions SET state = 'VALIDATED', decided_by_ref = ?, reason_code = 'x', version = version + 1 WHERE id = ?`, `employee:${director.id}`, a?.id as Id)), refusedBy(/decided by the Founder or by its assigned pool judge/));
       // A pool verification without a satisfied, pool-delegated review is refused.
       const other = prepared(h, s, s.employee, reviewPlan({ appliesTo: 'OUTPUT' }));
       execute(h, other);
@@ -268,17 +273,14 @@ describe('C6-R1: judgment is scoped by plan, risk, qualification and independenc
       const req = ReviewStore.for(h.store).requests({ workItemId: other }).find((r) => r.state === 'SATISFIED');
       assert.throws(
         () => ctx.db.immediate('forge verification', () => ctx.db.run(`INSERT INTO outcome_verifications (id, work_item_id, verdict, evidence_classes_json, evidence_refs_json, verifier_kind, verifier_ref, review_request_id, reason_code, created_at) VALUES (?, ?, 'ACHIEVED', '["REVIEW_DECISION"]', '["work_item:x"]', 'REVIEW_POOL', ?, ?, 'forged', '2026-01-01T00:00:00.000Z')`, newId(), other, `review_request:${req?.id}`, req?.id as Id)),
-        code('STORAGE_INVARIANT'),
+        refusedBy(/pool verification rests on a satisfied review/),
       );
       // R4 is Founder-only: no pool judge on R4 work, whatever its plan says.
       const r4 = h.store.createWorkItem({ objective: 'r4 work', ownerRef: s.employee.ref, processorKind: GOVERNED_KIND, processorInput: { taskClass: 'draft.memo', instructions: 'x' }, riskLevel: 'R4' }).workItem.id;
       ReviewStore.for(h.store).declarePlan(s.founder, r4, POOL);
       const r4Attribution = newId();
       ctx.db.immediate('seed r4 attribution', () => ctx.db.run(`INSERT INTO causal_attributions (id, work_item_id, evaluation_id, employee_id, comparable_key, overall, causes_json, employee_accountable, confidence, source, state, proposed_by_ref, decided_by_ref, reason_code, evidence_refs_json, version, created_at, updated_at) VALUES (?, ?, NULL, ?, 'draft.memo', 'EMPLOYEE_JUDGMENT', '[]', 1, 'LOW', 'EVALUATOR_PROPOSAL', 'PROPOSED', 'system:evaluator', NULL, NULL, '[]', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, r4Attribution, r4, s.employee.id));
-      assert.throws(() => ctx.db.immediate('forge r4 judgment', () => {
-        const judgeWork = h.store.createWorkItem({ objective: 'forged', ownerRef: reviewer.ref, processorKind: GOVERNED_KIND, processorInput: { taskClass: 'draft.memo', instructions: 'x' } }).workItem.id;
-        ctx.db.run(`INSERT INTO judgment_assignments (id, subject_kind, subject_id, work_item_id, plan_id, judge_employee_id, qualification_id, judge_work_item_id, state, evidence_refs_json, version, created_at, updated_at) VALUES (?, 'ATTRIBUTION', ?, ?, ?, ?, ?, ?, 'ASSIGNED', '[]', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, newId(), r4Attribution, r4, ReviewStore.for(h.store).plan(r4)?.id as Id, reviewer.id, qualification.id, judgeWork);
-      }), code('STORAGE_INVARIANT'));
+      assert.throws(() => insertJudgment(reviewer.id, qualification.id, r4, r4Attribution, ReviewStore.for(h.store).plan(r4)?.id as Id), judgeRefused, 'R4 is never judged by the pool');
     });
   });
 });
@@ -349,6 +351,209 @@ describe('C6-R1: never averaged — insufficient evidence stays inconclusive, un
       assert.equal(judge(h, m, a2.id, 'PASS').code, 'REVIEWER_NOT_ELIGIBLE');
       assert.equal(m.attributions({ workItemId: w2 }).find((x) => x.id === a2.id)?.state, 'PROPOSED');
       ReviewStore.for(h.store).liftQualityHold(s.founder, hold.id, 'reviewer.recalibrated');
+    });
+  });
+
+  test('R2-18: a pool judge who disputes a proposed cause cannot author the corrected one — it reaches the Founder, never a dead end', () => {
+    withSeed((h, s, m) => {
+      activeReviewer(h, s);
+      const w = prepared(h, s, s.employee);
+      execute(h, w);
+      review(h, w, 'FAIL');
+      execute(h, w);
+      review(h, w, 'PASS', judged('NOT_ACHIEVED'));
+      m.evaluate(w);
+      const a = m.attributions({ workItemId: w })[0] as { id: Id };
+      assert.equal(judge(h, m, a.id, 'FAIL').code, 'ESCALATED');
+      assert.equal(m.attributions({ workItemId: w }).find((x) => x.id === a.id)?.state, 'PROPOSED', 'a disputed cause is not a terminal rejection that leaves the failure unattributed');
+      const [ja] = m.judgments({ subjectId: a.id });
+      assert.deepEqual([ja?.state, ja?.decision, ja?.reviewOutcome], ['ESCALATED', 'ESCALATE', 'FAIL']);
+      AttentionStore.for(h.store).sync();
+      assert.ok(AttentionStore.for(h.store).list().some((i) => i.state === 'OPEN' && i.sourceRef === `judgment_assignment:${ja?.id}`), 'the dispute reaches the Founder');
+      m.evaluate(w);
+      assert.equal(m.judgments({ subjectId: a.id }).length, 1, 'an escalated dispute is not re-drawn');
+      // The Founder decides with the corrected causes through the existing attribution decision.
+      const decided = m.decideAttribution(s.founder, a.id, { decision: 'VALIDATE', reasonCode: 'founder.corrected', causes: [{ category: 'CONTEXT_RETRIEVAL', role: 'PRIMARY', confidence: 'HIGH', basis: 'STALE_CONTEXT_SUPPLIED' }] });
+      assert.deepEqual([decided.attribution.state, decided.attribution.overall, decided.attribution.employeeAccountable], ['VALIDATED', 'CONTEXT_RETRIEVAL', false]);
+      AttentionStore.for(h.store).sync();
+      assert.ok(!AttentionStore.for(h.store).list().some((i) => i.state === 'OPEN' && i.sourceRef === `judgment_assignment:${ja?.id}`), 'decided: the item resolves');
+    });
+  });
+});
+
+describe('R2 K1: pool judges — one eligibility predicate, gated lesson draws, release on every end path', () => {
+  /** A PROPOSED attribution of a failed-then-passed Work Item, with its pool judge drawn. */
+  function proposedAttribution(h: Harness, s: Seed, m: ImprovementStore): Id {
+    const w = prepared(h, s, s.employee);
+    execute(h, w);
+    review(h, w, 'FAIL');
+    execute(h, w);
+    review(h, w, 'PASS', judged('NOT_ACHIEVED'));
+    m.evaluate(w);
+    return (m.attributions({ workItemId: w }).find((x) => x.state === 'PROPOSED') as { id: Id }).id;
+  }
+
+  test('R2-09: no lesson judge is drawn (or funded) before the lesson\'s independent evidence exists — not by the refill / recovery sweep either', () => {
+    withSeed((h, s, m) => {
+      activeReviewer(h, s);
+      const w = prepared(h, s, s.employee);
+      const obs = execute(h, w, 'I believe I misread the brief.') as Id;
+      m.classifyObservation(obs, 'MISTAKE_LESSON');
+      const lr = m.requestLearningReview(obs);
+      assert.equal(lr.judgmentId, null, 'evidence pending: no judge');
+      for (let i = 0; i < 3; i++) ReviewStore.for(h.store).sweep(100);
+      assert.equal(m.judgments({ subjectId: lr.lessonId }).length, 0, 'the sweep never draws around the evidence gate');
+    });
+  });
+
+  test('R2-08 / m-15: a RUBRIC hold refuses the judge at the decision boundary; a suspended qualification withdraws its open judgments', () => {
+    withSeed((h, s, m) => {
+      const { qualification } = activeReviewer(h, s);
+      const rv = ReviewStore.for(h.store);
+      const a1 = proposedAttribution(h, s, m);
+      const hold = rv.placeQualityHold(s.founder, { targetKind: 'RUBRIC', targetRef: 'quality.rubric@1', reasonCode: 'rubric.suspect' });
+      assert.equal(judge(h, m, a1, 'PASS').code, 'REVIEWER_NOT_ELIGIBLE');
+      assert.equal(m.attributions().find((x) => x.id === a1)?.state, 'PROPOSED', 'nothing is validated under a held rubric');
+      rv.liftQualityHold(s.founder, hold.id, 'rubric.fixed');
+      const open = m.judgments({ subjectId: a1, state: 'ASSIGNED' })[0];
+      assert.ok(open, 'the hold lifted, the (transiently withdrawn) judge is drawn again');
+      rv.suspendReviewer(s.founder, qualification.id, 'reviewer.drift');
+      assert.equal(m.judgments({ subjectId: a1 }).find((j) => j.id === open.id)?.state, 'WITHDRAWN', 'the qualification ends: so do its open judgments');
+    });
+  });
+
+  test('m-11: a judge Work Item that ends FAILED releases its judgment in the same transaction', () => {
+    withSeed((h, s, m) => {
+      activeReviewer(h, s);
+      const a1 = proposedAttribution(h, s, m);
+      const j = m.judgments({ subjectId: a1, state: 'ASSIGNED' })[0];
+      const claim = claimItem(h, j?.judgeWorkItemId as Id, `w-${newId().slice(0, 8)}`);
+      settle(h.store, claim.fence, { type: 'PERMANENT_FAILURE', code: 'PROVIDER_REFUSED' }, { backoff });
+      assert.equal(m.judgments({ subjectId: a1 }).find((x) => x.id === j?.id)?.state, 'WITHDRAWN', 'never left ASSIGNED until a restart');
+    });
+  });
+});
+
+describe('RR1-2: freed reviewer capacity is a wake — a blocking review is never starved by pool judgments', () => {
+  /**
+   * The only reviewer's capacity is full of pool judgments (plus `extra` attributions still waiting for a judge); then
+   * an OUTPUT review and an ACTION review (its executor parked on AWAITING_INDEPENDENT_REVIEW) wait for a reviewer.
+   */
+  function saturated(h: Harness, s: Seed, m: ImprovementStore, extra: number): { wOut: Id; wAct: Id; attributions: Id[] } {
+    const works = Array.from({ length: MAX_OPEN_REVIEWS_PER_REVIEWER + extra }, () => {
+      const w = prepared(h, s, s.employee);
+      execute(h, w);
+      review(h, w, 'PASS', judged('NOT_ACHIEVED'));
+      return w;
+    });
+    for (const w of works) m.evaluate(w);
+    const attributions = works.map((w) => (m.attributions({ workItemId: w }).find((x) => x.state === 'PROPOSED') as { id: Id }).id);
+    assert.equal(m.judgments({ state: 'ASSIGNED' }).length, MAX_OPEN_REVIEWS_PER_REVIEWER, 'the judgments fill the pool');
+    const wOut = prepared(h, s, s.employee, reviewPlan({ appliesTo: 'OUTPUT' }));
+    execute(h, wOut);
+    const wAct = prepared(h, s, s.employee, reviewPlan({ appliesTo: 'ACTIONS' }));
+    h.store.transitionWorkItem(wAct, { to: 'READY', reasonCode: 'release' });
+    const claim = claimItem(h, wAct, `w-${newId().slice(0, 8)}`);
+    assert.equal(recordToolIntent(h.store, claim.fence, { toolCode: 'review', actionCode: 'merge', args: { text: 'a' }, idempotencyKey: `wi:${wAct}:s1` }).kind, 'REVIEW_REQUIRED');
+    settle(h.store, claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_INDEPENDENT_REVIEW' }, { backoff });
+    return { wOut, wAct, attributions };
+  }
+  const waiting = (h: Harness, workItemId: Id): { reason: string | null; assigned: number } => {
+    const rv = ReviewStore.for(h.store);
+    const r = rv.requests({ workItemId }).find((x) => x.state === 'OPEN');
+    assert.ok(r, 'the review request is open');
+    return { reason: r.waitingReason, assigned: rv.assignments(r.id).filter((a) => a.state === 'ASSIGNED').length };
+  };
+
+  test('a decided judgment wakes the waiting REQUIRED reviews in the same transaction — before any waiting judgment', () => {
+    withSeed((h, s, m) => {
+      activeReviewer(h, s);
+      const { wOut, wAct, attributions } = saturated(h, s, m, 1);
+      const sixth = attributions.at(-1) as Id;
+      assert.deepEqual(waiting(h, wOut), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      assert.deepEqual(waiting(h, wAct), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      assert.equal(m.judgments({ subjectId: sixth }).length, 0, 'the sixth attribution waits for a judge');
+      const decideOne = (): void => {
+        const j = m.judgments({ state: 'ASSIGNED' }).find((x) => x.subjectId !== sixth);
+        assert.equal(judge(h, m, j?.subjectId as Id, 'PASS').code, 'RECORDED');
+      };
+      decideOne();
+      assert.deepEqual(waiting(h, wOut), { reason: null, assigned: 1 }, 'the freed slot went to the oldest waiting REQUIRED review at once (no restart)');
+      assert.deepEqual(waiting(h, wAct), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      assert.equal(m.judgments({ subjectId: sixth }).length, 0, 'a waiting judgment never takes a slot a REQUIRED review waits for');
+      decideOne();
+      assert.deepEqual(waiting(h, wAct), { reason: null, assigned: 1 }, 'the ACTION review its executor waits on is assigned');
+      assert.equal(m.judgments({ subjectId: sixth }).length, 0);
+      decideOne();
+      assert.equal(m.judgments({ subjectId: sixth, state: 'ASSIGNED' }).length, 1, 'with no REQUIRED review waiting, the judgment gets the next freed slot');
+    });
+  });
+
+  test('a Founder decision that withdraws a pool judgment is a wake too — and never re-draws the subject it decided', () => {
+    withSeed((h, s, m) => {
+      activeReviewer(h, s);
+      const { wOut, wAct, attributions } = saturated(h, s, m, 0);
+      const [a1, a2, a3] = attributions as [Id, Id, Id];
+      m.decideAttribution(s.founder, a1, { decision: 'VALIDATE', reasonCode: 'founder.decided' });
+      assert.deepEqual(waiting(h, wOut), { reason: null, assigned: 1 }, 'the withdrawn judge\'s slot went to the waiting review');
+      m.decideAttribution(s.founder, a2, { decision: 'VALIDATE', reasonCode: 'founder.decided' });
+      assert.deepEqual(waiting(h, wAct), { reason: null, assigned: 1 });
+      m.decideAttribution(s.founder, a3, { decision: 'VALIDATE', reasonCode: 'founder.decided' });
+      assert.equal(m.judgments({ subjectId: a3, state: 'ASSIGNED' }).length, 0, 'the subject the Founder decided is not re-drawn by its own withdrawal');
+    });
+  });
+
+  test('a released or decided review key is a wake too: the next waiting review is assigned, past one nobody can fill', () => {
+    withSeed((h, s) => {
+      activeReviewer(h, s);
+      const plan = reviewPlan({ appliesTo: 'OUTPUT' });
+      const works = Array.from({ length: MAX_OPEN_REVIEWS_PER_REVIEWER + 2 }, () => {
+        const w = prepared(h, s, s.employee, plan);
+        execute(h, w);
+        return w;
+      });
+      const [w1, w2] = works as [Id, Id];
+      const [w6, w7] = works.slice(-2) as [Id, Id];
+      assert.deepEqual(waiting(h, w6), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      assert.deepEqual(waiting(h, w7), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      // The review Work Item of w1 ends without its decision: its reviewer may not take w1 again, but its slot is free.
+      const rv = ReviewStore.for(h.store);
+      const key = rv.assignments((rv.requests({ workItemId: w1 }).find((r) => r.state === 'OPEN') as { id: Id }).id).find((a) => a.state === 'ASSIGNED');
+      const claim = claimItem(h, key?.reviewWorkItemId as Id, `w-${newId().slice(0, 8)}`);
+      settle(h.store, claim.fence, { type: 'PERMANENT_FAILURE', code: 'PROVIDER_REFUSED' }, { backoff });
+      assert.deepEqual(waiting(h, w1), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      assert.deepEqual(waiting(h, w6), { reason: null, assigned: 1 }, 'the released slot went to the next waiting review in the same transaction');
+      assert.deepEqual(waiting(h, w7), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      review(h, w2, 'PASS');
+      assert.deepEqual(waiting(h, w7), { reason: null, assigned: 1 }, 'a decided key wakes the next waiting review — an unfillable one ahead never blocks it');
+    });
+  });
+
+  test('the restart sweep assigns OPEN waiting ACTION (and OUTPUT) reviews before drawing pool judgments', () => {
+    withSeed((h, s, m) => {
+      activeReviewer(h, s);
+      const { wOut, wAct } = saturated(h, s, m, 0);
+      // Capacity freed by a database written before freed capacity was a wake: nothing refilled at the time.
+      storeContext(h.store).db.run(`UPDATE judgment_assignments SET state = 'WITHDRAWN', reason_code = 'DECIDED_ELSEWHERE', version = version + 1 WHERE state = 'ASSIGNED'`);
+      assert.deepEqual(waiting(h, wAct), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      reconcileOrganization(h.store, h.supervisor, 500);
+      assert.deepEqual(waiting(h, wOut), { reason: null, assigned: 1 });
+      assert.deepEqual(waiting(h, wAct), { reason: null, assigned: 1 }, 'an executor on AWAITING_INDEPENDENT_REVIEW is never stranded across a restart');
+      assert.equal(m.judgments({ state: 'ASSIGNED' }).length, MAX_OPEN_REVIEWS_PER_REVIEWER - 2, 'the pool judgments get only what the REQUIRED reviews left');
+    });
+  });
+
+  test('the restart sweep itself refills a waiting ACTION review (no judgment draw needed to reach it)', () => {
+    withSeed((h, s, m) => {
+      activeReviewer(h, s);
+      const { wAct } = saturated(h, s, m, 0);
+      // The judged subjects were settled and their slots freed by a database written before freed capacity was a wake.
+      const db = storeContext(h.store).db;
+      db.run(`UPDATE judgment_assignments SET state = 'WITHDRAWN', reason_code = 'SUBJECT_SUPERSEDED', version = version + 1 WHERE state = 'ASSIGNED'`);
+      db.run(`UPDATE causal_attributions SET state = 'SUPERSEDED', version = version + 1 WHERE state = 'PROPOSED'`);
+      assert.deepEqual(waiting(h, wAct), { reason: 'REVIEWER_UNAVAILABLE', assigned: 0 });
+      reconcileOrganization(h.store, h.supervisor, 500);
+      assert.deepEqual(waiting(h, wAct), { reason: null, assigned: 1 }, 'the sweep refills OPEN waiting ACTION requests');
     });
   });
 });

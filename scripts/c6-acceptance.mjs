@@ -328,10 +328,13 @@ try {
     check(evaluation.evaluation.evidenceState === 'CONFLICTING_EVIDENCE', 'a passed review contradicted by the outcome is conflicting evidence, never averaged');
     const a = im().attributions({ workItemId: id })[0];
     const seen = im().inspect({ kind: 'WORK_ITEM', id }).evidence;
-    check(a?.state === 'PROPOSED' && a.overall === 'TOOL' && !a.employeeAccountable, `the evaluator proposes TOOL, not employee judgement (saw ${a?.overall}; failures ${JSON.stringify(seen.failures)}; toolCalls ${seen.activity.toolCalls}; runs ${JSON.stringify(runtime.view.runsForWorkItem(id).map((r) => [r.state, r.failureCode, r.attempt]))}; tools ${JSON.stringify(runtime.governance.toolInvocations(id).map((i) => [i.state, i.failureCode]))}; usage ${JSON.stringify(runtime.governance.usage({ workItemId: id }).map((x) => [x.attemptKind, x.outcome]))})`);
-    im().decideAttribution(world.founder, a.id, { decision: 'VALIDATE', reasonCode: 'founder.tool.confirmed' });
+    // R2-13: the tool failure was RECOVERED (the retry run succeeded), so it did not cause the unachieved outcome: it is evidence (recovered), at most a low-confidence contributing cause — never the primary one.
+    check(a?.state === 'PROPOSED' && seen.failures.tool === 0 && seen.recoveredFailures.tool >= 1 && a.causes.find((c) => c.role === 'PRIMARY')?.category !== 'TOOL' && a.causes.filter((c) => c.category === 'TOOL').every((c) => c.role === 'CONTRIBUTING' && c.confidence === 'LOW'), `a recovered tool failure is recorded but never proposed as the primary cause (saw ${a?.overall}; causes ${JSON.stringify(a?.causes)}; failures ${JSON.stringify(seen.failures)}; recovered ${JSON.stringify(seen.recoveredFailures)}; runs ${JSON.stringify(runtime.view.runsForWorkItem(id).map((r) => [r.state, r.failureCode, r.attempt]))})`);
+    // The Founder's independent analysis finds the tool broke the output: the validated cause is the tool, never the Employee.
+    const decided = im().decideAttribution(world.founder, a.id, { decision: 'VALIDATE', reasonCode: 'founder.tool.confirmed', causes: [{ category: 'TOOL', role: 'PRIMARY', confidence: 'HIGH', basis: 'TOOL_BROKE_THE_OUTPUT' }] }).attribution;
+    check(decided.overall === 'TOOL' && !decided.employeeAccountable, 'a validated tool cause is never counted against the Employee');
     world.toolFailureWork = id;
-    return { overall: a.overall, employeeAccountable: false };
+    return { proposed: a.overall, recovered: seen.recoveredFailures.tool, validated: decided.overall, employeeAccountable: decided.employeeAccountable };
   });
 
   await step('reflection-is-a-hypothesis-then-validated-learning-intervention-and-verified-effect', async () => {
@@ -551,7 +554,9 @@ try {
     const status = runtime.resilience();
     check(status.exceptions.some((x) => x.code === 'OFF_DEVICE_NOT_PROVEN' && x.material), 'the status says the off-device objective is not met');
     runtime.founder.attention.sync(world.founder);
-    check(runtime.founder.attention.list().some((i) => i.dedupKey === 'resilience:OFF_DEVICE_NOT_PROVEN'), 'a material recovery exception reaches Founder Attention');
+    // One attention item per exception instance (R2-25): keyed by the failure class AND the package it names.
+    const notProven = status.exceptions.find((x) => x.code === 'OFF_DEVICE_NOT_PROVEN');
+    check(runtime.founder.attention.list().some((i) => i.dedupKey === `resilience:OFF_DEVICE_NOT_PROVEN:${notProven?.ref}` && i.sourceRef === notProven?.ref), 'a material recovery exception reaches Founder Attention');
     const off = await runtime.portableBackup({ destination: new DirectoryDestination(attested, { attestOffDevice: true }), passphrase: PASSPHRASE });
     check(off.failureDomain === 'ATTESTED_OFF_DEVICE' && runtime.resilience().portableBackup.withinOffDeviceRpo, 'an operator-attested off-device package meets the objective');
     world.package = { name: off.name, dir: attested, artifacts: off.artifacts };
@@ -632,10 +637,13 @@ try {
     check(createWorkspaceAtVersionForTest(root, 9) === 9, 'a real v9 (C5) workspace');
     const report = await S.safeUpgrade(root);
     check(report.outcome === 'ACTIVATED' && report.fromVersion === 9 && report.toVersion === S.CURRENT_SCHEMA_VERSION && report.snapshotSha256, 'Preflight → Backup → Rehearse → Migrate → Verify → Activate');
-    const rollback = S.rollbackSchemaUpdate(root, report.updateId);
+    const rollback = await S.rollbackSchemaUpdate(root, report.updateId);
     check(rollback.restored && S.readUpdateHold(root)?.code === 'OPERATOR_ROLLBACK', 'the compatible pre-update snapshot is restored; the workspace is held');
+    check(rollback.postUpdateWork.exists === false && /^[0-9a-f]{64}$/.test(rollback.preRollbackSnapshot.sha256), 'nothing after activation was discarded; the replaced database is retained (R2-31)');
     check(refusedWith(() => CompanyStore.open(root), 'UPDATE_HOLD'), 'a held workspace is never reopened (so never re-migrated in a loop)');
     S.clearUpdateHold(root, 'operator.reviewed');
+    // After the hold is cleared the next upgrade is rehearsed again through the lifecycle (R2-30), never live at open.
+    check((await S.safeUpgrade(root)).outcome === 'ACTIVATED', 'the re-upgrade goes through safe-upgrade');
     const reopened = CompanyStore.open(root);
     try {
       check(reopened.schemaVersion === S.CURRENT_SCHEMA_VERSION, 'after the operator clears the hold, the store opens');

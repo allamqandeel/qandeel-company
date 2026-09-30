@@ -27,11 +27,14 @@ const SURFACE = { cwd: 'packages/command-center', tests: ['dist/test/surface.tes
 const SECURITY = { cwd: 'packages/command-center', tests: ['dist/test/security.test.js'] };
 const LAYOUT = { cwd: 'packages/command-center-ui', tests: ['dist/test/layout.test.js'] };
 const SIGNAL = { cwd: 'packages/runtime', tests: ['dist/test/c5/c5-founder-signal.test.js'] };
+const KERNEL = { cwd: 'packages/governance', tests: ['dist/test/c5-kernel.test.js'] };
+const RUNTIME_C5 = { cwd: 'packages/runtime', tests: ['dist/test/c5/c5-runtime.test.js'] };
 
 const STORE = 'packages/storage/dist/src';
 const RT = 'packages/runtime/dist/src';
 const CC = 'packages/command-center/dist/src';
 const UI = 'packages/command-center-ui/dist/src';
+const GOV = 'packages/governance/dist/src';
 
 const MUTATIONS = [
   {
@@ -73,7 +76,8 @@ const MUTATIONS = [
   {
     id: 'c5-preview-fingerprint-unchecked',
     gate: 'a confirmation must present the exact preview fingerprint',
-    edits: [{ file: `${STORE}/founder-actions.js`, search: "if (typeof fingerprint !== 'string' || fingerprint !== preview.fingerprint)\n                refuse('FINGERPRINT_MISMATCH');", replace: '/* mutation: fingerprint unchecked */', expectedCount: 1 }],
+    // R2-26: the one preview check (`checkPreview`) guards both the pre-check and the confirm transaction.
+    edits: [{ file: `${STORE}/founder-actions.js`, search: "if (typeof fingerprint !== 'string' || fingerprint !== preview.fingerprint)\n        refuse('FINGERPRINT_MISMATCH');", replace: '/* mutation: fingerprint unchecked */', expectedCount: 1 }],
     runs: [STORAGE, SURFACE],
   },
   {
@@ -141,6 +145,99 @@ const MUTATIONS = [
     gate: 'attention reconciliation announces a change only when it opened, signalled or resolved an item (D-C5-17)',
     edits: [{ file: `${RT}/runtime.js`, search: 'if (conditional[name]?.(result))\n                changed();', replace: 'changed();', expectedCount: 1 }],
     runs: [SIGNAL],
+  },
+  // --- R2 (Full Strong-v1 review) remediation, cluster K5 ---
+  {
+    id: 'c5-confirm-effect-commits-alone',
+    gate: 'a Founder confirmation is one transaction: the effect never commits before CONFIRMED (an interrupted confirm must not leave an act a retry repeats, R2-26)',
+    edits: [{ file: `${STORE}/governance.js`, search: 'return ctx.db.savepoint(op, () => f(ctx));', replace: "{ const out = ctx.db.savepoint(op, () => f(ctx)); ctx.db.run('COMMIT'); ctx.db.run('BEGIN IMMEDIATE'); return out; }", expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'c5-exception-decision-overtakes-tool',
+    gate: 'a held governed job is decidable only after its uncertain tool effect is decided (R1-04, R2-21)',
+    edits: [{ file: `${STORE}/founder-actions.js`, search: "if (uncertainToolOn(ctx, 'work_item_id', j.work_item_id))", replace: 'if (false)', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'c5-attention-misses-uncertain-effects',
+    gate: 'an uncertain external effect reaches Founder Attention (R2-22)',
+    edits: [{ file: `${STORE}/attention.js`, search: "FROM tool_invocations WHERE state = 'RECONCILIATION_REQUIRED' ORDER BY created_at, id", replace: 'FROM tool_invocations WHERE 0', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'c5-dismissal-swallows-source-changes',
+    gate: 'a dismissal stands only until the source changes: a later change reopens the item (D-C5-06, R2-25)',
+    edits: [{ file: `${STORE}/attention.js`, search: 's.changedAt <= item.resolvedAt', replace: 'true', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'c5-resilience-keyed-per-class',
+    gate: 'a resilience exception is one attention item per instance, never one per failure class (R2-25)',
+    edits: [{ file: `${STORE}/attention.js`, search: 'dedupKey: `resilience:${x.code}:${x.ref}`', replace: 'dedupKey: `resilience:${x.code}`', expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'c5-goal-state-verb-lost',
+    gate: 'a goal-state command previews the target state of its own verb (R2-23)',
+    edits: [{ file: `${CC}/api.js`, search: 'const to = command.goalState;', replace: "const to = 'ACTIVE';", expectedCount: 1 }],
+    runs: [SURFACE],
+  },
+  {
+    id: 'c5-unmatched-argument-falls-back',
+    gate: 'a command whose argument names nothing previews nothing — never "the single pending approval" (R2-24)',
+    edits: [{ file: `${CC}/api.js`, search: 'const a = single(argument !== null ? pending.filter(', replace: 'const a = single(argument !== null && false ? pending.filter(', expectedCount: 1 }],
+    runs: [SURFACE],
+  },
+  // --- R2 second-wave remediation, cluster Q4 (RR1-1) ---
+  {
+    id: 'c5-argument-verb-selects-intent',
+    gate: "the command's own leading verb decides the intent: an approve word inside a goal title never turns a cancel into an activation (RR1-1)",
+    edits: [{ file: `${GOV}/founder.js`, search: "const verb = words[0] ?? '';", replace: "const verb = words.find((w) => LEAD_VERBS.get(w) === 'APPROVE') ?? words[0] ?? '';", expectedCount: 1 }],
+    runs: [KERNEL, SURFACE],
+  },
+  {
+    id: 'c5-argument-noun-selects-act',
+    gate: 'the object noun is the head after the verb or the closing goal noun, never a noun inside the title (RR1-1)',
+    edits: [{ file: `${GOV}/founder.js`, search: "const noun = head === 'GOAL' || tail === 'GOAL' ? 'GOAL' : (head ?? tail);", replace: 'const noun = obj.map(nounOf).find((n) => n !== null) ?? null;', expectedCount: 1 }],
+    runs: [KERNEL],
+  },
+  // --- R2 Architecture Closure Correction AC-01 (PO-R2-D): a goal act needs the Director seat AND its own grant ---
+  {
+    id: 'c5-goal-derive-grant-skipped',
+    gate: 'a Director seat alone never derives a Department goal: org.goal.derive must be an explicit Founder-delegated grant (AC-01)',
+    edits: [
+      { file: `${STORE}/goals.js`, search: "if (decision.effect === 'DENY') {", replace: "if (decision.effect === 'DENY' && action !== 'goal.derive') {", expectedCount: 1 },
+      { file: `${STORE}/goals.js`, search: 'consumeGrant(ctx, decision.grantId);', replace: "if (decision.effect === 'ALLOW') consumeGrant(ctx, decision.grantId);", expectedCount: 1 },
+    ],
+    runs: [STORAGE, RUNTIME_C5],
+  },
+  {
+    id: 'c5-goal-link-grant-skipped',
+    gate: 'a Director seat alone never links work to a goal: org.goal.link must be its own explicit grant, never implied by org.goal.derive (AC-01)',
+    edits: [
+      { file: `${STORE}/goals.js`, search: "if (decision.effect === 'DENY') {", replace: "if (decision.effect === 'DENY' && action !== 'goal.link') {", expectedCount: 1 },
+      { file: `${STORE}/goals.js`, search: 'consumeGrant(ctx, decision.grantId);', replace: "if (decision.effect === 'ALLOW') consumeGrant(ctx, decision.grantId);", expectedCount: 1 },
+    ],
+    runs: [STORAGE],
+  },
+  {
+    id: 'c5-goal-link-seat-skipped',
+    gate: 'a grant never replaces the Director seat for a goal link (AC-01)',
+    edits: [{ file: `${STORE}/goals.js`, search: "if (departmentId === null || holdsSeat(ctx, employeeId, 'DIRECTOR', departmentId, at, action) === null)", replace: "if (action !== 'goal.link' && (departmentId === null || holdsSeat(ctx, employeeId, 'DIRECTOR', departmentId, at, action) === null))", expectedCount: 1 }],
+    runs: [STORAGE],
+  },
+  {
+    id: 'c5-goal-derive-seat-skipped',
+    gate: 'a grant never replaces the Director seat (or valid acting coverage) for a goal derivation (AC-01)',
+    edits: [{ file: `${STORE}/goals.js`, search: "if (departmentId === null || holdsSeat(ctx, employeeId, 'DIRECTOR', departmentId, at, action) === null)", replace: "if (action !== 'goal.derive' && (departmentId === null || holdsSeat(ctx, employeeId, 'DIRECTOR', departmentId, at, action) === null))", expectedCount: 1 }],
+    runs: [STORAGE, RUNTIME_C5],
+  },
+  {
+    id: 'c5-goal-grant-use-not-consumed',
+    gate: 'a DONE goal act consumes one use of the grant that authorized it, so a use limit binds (AC-01)',
+    edits: [{ file: `${STORE}/goals.js`, search: 'consumeGrant(ctx, decision.grantId);', replace: '/* mutation: grant use not consumed */', expectedCount: 1 }],
+    runs: [STORAGE],
   },
 ];
 

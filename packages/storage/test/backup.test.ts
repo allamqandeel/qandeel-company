@@ -7,7 +7,7 @@ import { setImmediate as tick } from 'node:timers/promises';
 
 import { isQandeelError } from '@qandeel-company/domain';
 
-import { ArtifactStore, CURRENT_SCHEMA_VERSION, CompanyStore, createBackup, listBackups, restoreToIsolatedWorkspace, verifyBackup } from '../src/index.js';
+import { ArtifactStore, CURRENT_SCHEMA_VERSION, CompanyStore, clearUpdateHold, createBackup, listBackups, readUpdateHold, restoreToIsolatedWorkspace, rollbackSchemaUpdate, safeUpgrade, verifyBackup } from '../src/index.js';
 import { SqliteConnection } from '../src/sqlite/connection.js';
 import { backoff, executable, harness, owner, removeRoot, tempRoot } from './helpers.js';
 import { checkpoint, claimNext, settle } from '../src/runtime-authority.js';
@@ -46,12 +46,40 @@ describe('online backup and isolated verification', () => {
       assert.equal(restored.quickCheck, 'ok');
       assert.deepEqual(restored.counts, m.counts);
       assert.ok(readFileSync(h.store.workspace.databasePath).equals(liveBefore), 'the live database was never replaced');
-      const reopened = CompanyStore.open(restoreRoot);
+      // The verification copy is inspected read-only (RR4-1: it is never opened as a Company).
+      const reopened = CompanyStore.open(restoreRoot, { create: false, migrationMode: 'verify' });
       assert.equal(reopened.getWorkItem(id).state, 'COMPLETED');
       reopened.close();
     } finally {
       h.close();
       removeRoot(restoreRoot);
+    }
+  });
+
+  test('RR4-1: an isolated restore-check target is a permanently held verification copy — no ordinary open, upgrade, rollback or hold-clear makes it a Company', async () => {
+    const h = harness();
+    const target = tempRoot('restore-check-copy');
+    try {
+      executable(h.store);
+      const r = await createBackup(h.store);
+      const report = restoreToIsolatedWorkspace(r.directory, target, { liveDatabasePath: h.store.workspace.databasePath });
+      assert.deepEqual([report.quickCheck, report.verificationCopy, report.hold], ['ok', true, 'RESTORE_CHECK_COPY'], 'the report says it is a verification copy');
+      const held = (e: unknown): boolean => isQandeelError(e, 'UPDATE_HOLD') && (e as { details?: { code?: string } }).details?.code === 'RESTORE_CHECK_COPY';
+      assert.throws(() => CompanyStore.open(target), held, 'the ordinary open (the runtime\'s, init\'s) refuses the copy');
+      assert.throws(() => CompanyStore.open(target, { create: false }), held);
+      await assert.rejects(safeUpgrade(target), held, 'safe-upgrade (the runtime\'s automatic upgrade) refuses it');
+      assert.throws(() => clearUpdateHold(target, 'operator.reviewed'), (e) => isQandeelError(e, 'MAINTENANCE_REFUSED'), 'the operator cannot clear a verification copy\'s hold');
+      await assert.rejects(rollbackSchemaUpdate(target, '00000000-0000-4000-8000-000000000000'), (e) => isQandeelError(e, 'MAINTENANCE_REFUSED'), 'a rollback never replaces the permanent hold');
+      assert.equal(readUpdateHold(target)?.code, 'RESTORE_CHECK_COPY', 'the hold is still in force');
+      // Read-only verify-mode inspection still works.
+      const inspect = CompanyStore.open(target, { create: false, migrationMode: 'verify' });
+      assert.equal(inspect.quickCheck(), 'ok');
+      inspect.close();
+      // The live Company is untouched by the check.
+      assert.equal(readUpdateHold(h.store.workspace.root), null);
+    } finally {
+      h.close();
+      removeRoot(target);
     }
   });
 

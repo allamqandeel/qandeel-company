@@ -78,6 +78,8 @@ import {
 } from '@qandeel-company/governance';
 
 import {
+  CHILD_CAN_SPEND_SQL,
+  admitBudgetWaiters,
   budgetChain,
   budgetFor,
   chargedExclusions,
@@ -91,6 +93,7 @@ import {
   resolvePrincipal,
   setEmployeeState,
   settleReservationTx,
+  trimBudgetAdmissions,
   wakeWorkItemJob,
   writeEmployeeHistory,
   type Principal,
@@ -324,14 +327,44 @@ export const founderSessionInternals = Object.freeze({
   },
 });
 
+/** The store context of the Founder confirm now in progress (R2-26), or null. Set only by `founderConfirmInternals.join`. */
+let joinedConfirm: StoreContext | null = null;
+
+/**
+ * R2-26: a governed Founder confirmation is ONE `BEGIN IMMEDIATE` — preview check, the effect at its real
+ * boundary, CONFIRMED and the audit commit together or not at all (storage-internal; imported only by
+ * `founder-actions.ts`). While `join` runs inside the confirm's own write transaction, a Founder-authority
+ * write on the same store (`founderAdminWrite`) runs as a savepoint of that transaction instead of opening
+ * its own: the connection refuses nested transactions, and a separately committed effect would outlive an
+ * interrupted confirm (a retry would repeat it). Synchronous by construction: nothing awaits inside it.
+ */
+export const founderConfirmInternals = Object.freeze({
+  join<T>(ctx: StoreContext, fn: () => T): T {
+    if (!ctx.db.inTransaction) throw new QandeelError('STORAGE_INVARIANT', 'a Founder confirm joins its own write transaction');
+    if (joinedConfirm !== null) throw new QandeelError('STORAGE_INVARIANT', 'Founder confirmations do not nest');
+    joinedConfirm = ctx;
+    try {
+      const out = fn() as unknown;
+      if (out !== null && typeof out === 'object' && typeof (out as { then?: unknown }).then === 'function') {
+        throw new QandeelError('ASYNC_IN_TRANSACTION', 'a Founder confirm is synchronous: nothing awaits inside it');
+      }
+      return out as T;
+    } finally {
+      joinedConfirm = null;
+    }
+  },
+});
+
 /**
  * The one Founder-authority write path shared by the C2 and C3 stores (storage-internal; the package
  * index does not export it). An administrative refusal rolls its transaction back; the refusal itself
- * is audited in its own transaction (content-free) so misuse attempts stay visible (D14-E.1).
+ * is audited in its own transaction (content-free) so misuse attempts stay visible (D14-E.1). Inside a
+ * joined Founder confirm (R2-26) the write is a savepoint of the confirm's transaction.
  */
 export function founderAdminWrite<T>(store: CompanyStore, operation: string, actorRef: string, fn: (ctx: StoreContext) => T): T {
   const write = <R>(op: string, f: (ctx: StoreContext) => R): R => {
     const ctx = storeContext(store);
+    if (joinedConfirm === ctx && ctx.db.inTransaction) return ctx.db.savepoint(op, () => f(ctx));
     return ctx.db.immediate(op, () => f(ctx));
   };
   try {
@@ -429,9 +462,16 @@ export function txReassignEmployee(ctx: StoreContext, id: Id, input: { roleRef?:
   return next;
 }
 
-/** A job is governed when any of its runs was attributed to an Employee (C2 execution). */
+/**
+ * A job is governed when any of its runs was attributed to an Employee (C2 execution) OR its Work Item is an
+ * Employee's (R2: a job held by a clean restore before it ever ran has no attributed run, yet its work may reach
+ * an external effect — it is the Founder's decision, never the C1 operator's opaque entry point, R1-04). One SQL
+ * predicate over a `queue_jobs` alias `j`, shared with Founder Attention.
+ */
+export const GOVERNED_JOB_SQL = `(EXISTS (SELECT 1 FROM run_attributions ga JOIN runs gr ON gr.id = ga.run_id WHERE gr.job_id = j.id)
+  OR EXISTS (SELECT 1 FROM work_items gw WHERE gw.id = j.work_item_id AND gw.owner_ref GLOB 'employee:*'))`;
 export function isGovernedJob(ctx: StoreContext, jobId: Id): boolean {
-  return ctx.db.get('SELECT 1 AS x FROM run_attributions a JOIN runs r ON r.id = a.run_id WHERE r.job_id = ? LIMIT 1', jobId) !== undefined;
+  return ctx.db.get(`SELECT 1 AS x FROM queue_jobs j WHERE j.id = ? AND ${GOVERNED_JOB_SQL}`, jobId) !== undefined;
 }
 
 /**
@@ -1059,15 +1099,19 @@ export class GovernanceStore {
         const parent = getBudgetRow(ctx, b.parentId);
         if (capMoney > parent.capMoney || capTokens > parent.capTokens) throw new QandeelError('BUDGET_EXHAUSTED', 'a child budget cap cannot exceed its parent cap', { budgetId: b.id, parentId: parent.id });
       }
-      const children = ctx.db.get<{ m: number | null; t: number | null }>('SELECT MAX(cap_money) AS m, MAX(cap_tokens) AS t FROM budgets WHERE parent_id = ?', b.id);
-      if (capMoney < Number(children?.m ?? 0) || capTokens < Number(children?.t ?? 0)) throw new QandeelError('VALIDATION_FAILED', 'a cap cannot drop below a child budget\'s cap; lower the children first', { budgetId: b.id });
+      // R2-06: only children that can still spend hold the cap up — an OPEN budget whose Work Item can still execute
+      // (not terminal, not past completion unless its review can send it back) or whose run is still RUNNING.
+      // Finished children keep their history; every reservation still checks every level of its chain.
+      const children = ctx.db.get<{ m: number | null; t: number | null }>(`SELECT MAX(c.cap_money) AS m, MAX(c.cap_tokens) AS t FROM budgets c WHERE c.parent_id = ? AND ${CHILD_CAN_SPEND_SQL}`, b.id);
+      if (capMoney < Number(children?.m ?? 0) || capTokens < Number(children?.t ?? 0)) throw new QandeelError('VALIDATION_FAILED', 'a cap cannot drop below the cap of a child that can still spend; lower the children first', { budgetId: b.id });
       if (capMoney + b.overrunMoney < b.reservedMoney + b.spentMoney || capTokens + b.overrunTokens < b.reservedTokens + b.spentTokens) throw new QandeelError('VALIDATION_FAILED', 'a cap cannot drop below what is already reserved and spent', { budgetId: b.id });
       ctx.db.run('UPDATE budgets SET cap_money = ?, cap_tokens = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?', capMoney, capTokens, at(ctx), b.id, b.version);
       const actor = resolvePrincipal(ctx, actorRef);
       budgetHistory(ctx, b.id, 'CAP_CHANGED', capMoney, capTokens, assertCode(input.reasonCode, 'reasonCode'), actor.ref);
-      if (capMoney > b.capMoney || capTokens > b.capTokens) {
-        for (const w of workItemsUnderBudget(ctx, b)) wakeWorkItemJob(ctx, w, ['BUDGET_EXHAUSTED'], 'budget.raised');
-      }
+      // FA-1: a lowered cap releases admitted capacity it can no longer cover (newest first; never below reserved +
+      // spent, which the check above keeps); a raised cap admits waiters under it in order (no window of Work Items).
+      if (capMoney < b.capMoney || capTokens < b.capTokens) trimBudgetAdmissions(ctx, b.id);
+      if (capMoney > b.capMoney || capTokens > b.capTokens) admitBudgetWaiters(ctx, [b.id], 'budget.raised');
       return getBudgetRow(ctx, b.id);
     });
   }
@@ -1233,9 +1277,11 @@ export class GovernanceStore {
         if (e.sm !== b.spentMoney || e.st !== b.spentTokens) violations.push(`budget ${b.id} (${b.scope}) spent ${b.spentMoney}/${b.spentTokens} != usage ${e.sm}/${e.st}`);
         if (b.reservedMoney + b.spentMoney > b.capMoney + b.overrunMoney || b.reservedTokens + b.spentTokens > b.capTokens + b.overrunTokens) violations.push(`budget ${b.id} exceeds its cap`);
       }
+      // R2-06: the child-within-parent invariant binds the children that can still spend (a finished one keeps its cap).
+      const live = new Set(ctx.db.all<{ id: string }>(`SELECT c.id FROM budgets c WHERE ${CHILD_CAN_SPEND_SQL}`).map((r) => r.id));
       for (const b of budgets) {
         const parent = b.parentId ? byId.get(b.parentId) : undefined;
-        if (parent && (b.capMoney > parent.capMoney || b.capTokens > parent.capTokens)) violations.push(`budget ${b.id} (${b.scope}) cap exceeds its parent's cap`);
+        if (parent && live.has(b.id) && (b.capMoney > parent.capMoney || b.capTokens > parent.capTokens)) violations.push(`budget ${b.id} (${b.scope}) cap exceeds its parent's cap`);
       }
       const n = (sql: string): number => Number(ctx.db.get<{ n: number }>(sql)?.n ?? 0);
       const usageOnOpen = n(`SELECT COUNT(*) AS n FROM usage_records u JOIN budget_reservations r ON r.id = u.reservation_id WHERE r.state <> 'SETTLED'`);
@@ -1386,17 +1432,6 @@ function budgetSubjectRef(ctx: StoreContext, b: BudgetRecord): string | null {
     return a ? `employee:${a.employee_id}` : null;
   }
   return null;
-}
-
-/** Work Items whose chain includes budget `b` (targeted wake after a cap increase). */
-function workItemsUnderBudget(ctx: StoreContext, b: BudgetRecord): Id[] {
-  const leaves = ctx.db.all<{ scope_id: string }>(
-    `WITH RECURSIVE sub(id, scope, scope_id) AS (SELECT id, scope, scope_id FROM budgets WHERE id = ?
-       UNION ALL SELECT c.id, c.scope, c.scope_id FROM budgets c JOIN sub ON c.parent_id = sub.id)
-     SELECT scope_id FROM sub WHERE scope = 'WORK_ITEM' LIMIT 1000`,
-    b.id,
-  );
-  return leaves.map((r) => r.scope_id as Id);
 }
 
 /** Builds the routing inputs (policy + deployment views) for one task class. */

@@ -2558,3 +2558,308 @@ allocations within the plan's review budget. Eleven `c6r1-*` mutations guard the
 amended and re-pinned (never released). Residual R-C6-04 is closed. Systemic-finding diagnosis stays a Founder
 decision in this correction (the brief permits pool diagnosis; not needed for the ordinary loop), and no
 deterministic outcome verifier is added (no machine-verifiable outcome criteria source exists before C7).
+
+## D-R2-01 — R2 remediation shape: one frozen register, one wave, one migration (Technical Lead, R2)
+
+**Context.** R2 (the Full Strong-v1 Independent Review) froze its findings register before any fix
+(`docs/R2_FULL_STRONG_V1_INDEPENDENT_REVIEW_REPORT.md` §8: 1 BLOCKER, 34 MAJOR, 48 MINOR). **Decision.** One remediation
+wave, by root-cause family, in seven clusters whose regression proofs live in the owning stage's existing suites
+and whose mutations join the owning stage's mutation script (no new R2 acceptance or mutation suite). Datastore
+changes that 0001–0010 cannot take are one migration, `0011_r2_integrity.sql`: the executor-redesign guard on
+`review_plans`, the review-aware `work_delegations_follow_child`, the durable `review_action_subjects`, the
+distinct-evidence pattern-sharing gate with its one-open-reuse bound, and a row-preserving (D-C4-01) rebuild of
+`founder_action_previews` widening its intent CHECK. Released migrations 0007–0010 join the verifier's frozen list
+(R2-33, the R1-14 family); 0011 joins it in the change that releases it. **Consequence.** Every finding keeps its
+frozen id; the report records root cause, fix, proof and mutation per id.
+
+## D-R2-02 — Review integrity and one Review Pool eligibility predicate (Technical Lead, R2; R2-01, R2-02, R2-07..R2-09, R2-11)
+
+- The owner of a Work Item may declare its version-1 Review Plan before the first run; it never supersedes it
+  (`SELF_REVIEW_REDESIGN`, backed by the 0011 trigger). Founder and delegator supersession are unchanged —
+  whether a delegator may *weaken* a plan is Product gap PG-01. A REWORK verdict on an exact action holds across
+  plan versions: rejection is looked up by (Work Item, action fingerprint), as D-C4-05 says.
+- An executor waiting on an action review is woken, in the same transaction, whenever an ACTIVE plan for actions
+  exists and no live ACTION request does (plan declaration, plan-superseded decision, WAIT-settle re-check,
+  startup sweep).
+- Reviewer and judge selection and every decision re-check share one SQL predicate (lifecycle, VALID
+  certification, data class, level, exclusions, the MANAGER / SHADOW department exemption, REVIEWER /
+  QUALIFICATION / DOMAIN / **RUBRIC** holds, skill pins, the OPEN envelope). Capacity is a selection condition only
+  and counts review keys plus open judgments. Exclusion history counts holding, decided or escalated reviewers and
+  those whose own review work ended undecided; a transient withdrawal is not permanent. MANAGER / FOUNDER keys
+  fill first. Qualification suspension withdraws open judgments too.
+- Every LESSON judge draw goes through the lesson evidence gate (`assignJudge` refuses a lesson draw without it).
+- The ACTION review subject is durable: written once, with the full canonical arguments, in
+  `review_action_subjects`; every fill / refill / reassignment reads it; nothing is truncated — above the
+  12 000-character reviewer bound the action is refused (`REVIEW_SUBJECT_TOO_LARGE`); secret-shaped arguments are
+  refused (`SECRET_MATERIAL`) before any request exists. Review / judge work releases its key or judgment on every
+  end path, including dead letter.
+
+## D-R2-03 — Waits resume on the event that ends them (Technical Lead, R2; R2-02..R2-06; extends D-C1-23, R1-06, D-C2)
+
+- A `BUDGET_EXHAUSTED` wait resumes on real headroom, not only on a cap raise: one waiter-driven, headroom-gated
+  helper (`wakeBudgetWaiters`) runs on every settle below the worst case, every release (runtime, Founder
+  reconciliation, tool resolution, recovery), every cap raise, the WAIT-settle re-check (headroom freed by another
+  run during this run) and one startup pass. A wake whose headroom proves insufficient costs one run that re-parks
+  before any spend (residual m-52).
+- The C2 invariant "a child cap never exceeds its parent" reads "…for children that can still spend" (OPEN
+  budgets whose Work Item can still execute, or whose run is RUNNING); lowering a cap and `accountingInvariants`
+  use the same rule; a cap is still never lowered below reserved + spent, and every reservation still checks every
+  level of its chain.
+- One open-handoff set (OFFERED, ACCEPTED, CLARIFICATION_REQUESTED, ESCALATED) for the processor, the settle
+  re-check, org acts and the trigger. A delegator never parks on its own delegate's pending question (it continues,
+  bounded by `maxTurns`, to answer it); starting work accepts only an OFFERED handoff.
+- Completed ≠ Reviewed at the delegation seam (D-C1-21 extended to delegations — **Product Owner confirmation
+  requested**): a review-required child closes its delegation only once REVIEWED or later. Delegations already
+  closed early by the 0010 trigger in an existing database are not rewritten.
+
+## D-R2-04 — The Founder exception loop, intent resolution, attention identity, one-transaction confirm (Technical Lead, R2; R2-21..R2-26; extends D-C5-06 / D-C5-07)
+
+- The Founder's exception decisions — an uncertain tool effect, a held reservation or governed job, an escalated
+  review, a systemic finding, an escalated attribution or lesson, a pool-inconclusive outcome, a lesson promotion —
+  are nine structured-only `FounderActionStore` intents (no natural-language pattern), state-guarded at preview and
+  re-checked at confirm, executed at their existing boundary inside the session. Binary ones are rail actions
+  posting structured previews; value-bearing ones (charging a held reservation, verifying an outcome, correcting an
+  attribution's causes) stay API-only (Product gap PG-04).
+- `confirm` is one `BEGIN IMMEDIATE`: check, effect, CONFIRMED, audit. Founder-authority writes join it as
+  savepoints (`founderConfirmInternals.join`); FAILED means not executed.
+- Founder Attention surfaces uncertain effects, held reservations, held governed jobs (once their tool decision is
+  made) and escalated required reviews, per entity, at the held row's own change time. A job is governed when a run
+  was attributed to an Employee **or its Work Item is an Employee's** (so a job held by a clean restore before it
+  ever ran is the Founder's decision, never the C1 operator's — R1-04). Resilience exceptions are keyed per
+  instance; a dismissal stands until its source changes (D-C5-06 as written).
+- The grammar keeps a goal-state verb's own target, matches named acts before generic approve / reject, never
+  falls back from an unmatched argument and never assumes a decision; rail and sheet buttons post structured
+  previews.
+
+## D-R2-05 — Tool-driver boundary and one run-failure vocabulary (Technical Lead, R2; R2-10, R2-12; the R1-09 family)
+
+- A tool driver's answer is read only by `runtime/src/c2/tool-boundary.ts`: each field at most once, guarded; a
+  throw or malformed answer is `DRIVER_OUTCOME_UNKNOWN` (`sent: UNKNOWN`, held, never retried blindly); the result
+  is serialized once and re-parsed into frozen plain JSON; a failure code is a short code carrying no secret
+  material, else `DRIVER_FAILURE`. Everything downstream (record, money, idempotency, step result, model copy) uses
+  that one snapshot; `txToolResult` reads its input once, guards the serialized value and screens the code.
+- `governance/src/run-failures.ts` is the only list of codes a governed run records, each with its C6 cause family
+  or an explicit `null`; the runtime emits from it and C6 classifies from it. Local causes (`SETTLEMENT_FAILED`,
+  `RUN_ABORTED`) and configuration causes (`NO_ROUTE_POLICY` → WORKFLOW) are never provider codes;
+  `PROVIDER_CONTEXT_OVERFLOW` → CONTEXT; `PROVIDER_INVALID_REQUEST`, `PROVIDER_CONTENT_POLICY` and
+  `REASONING_ABOVE_CEILING` stay unclassified until Product decides (PG-11). A runtime proof drives the real loop
+  over every outcome and requires every emitted code to be in the table.
+
+## D-R2-06 — C6 evidence identity, work time, pending causes, recovered failures and economic cost (Technical Lead, R2; R2-13..R2-20)
+
+- The Work Item is the unit of evidence: one latest live evaluation per Work Item everywhere; a new definition
+  version supersedes the older versions' live rows.
+- A learning effect is judged on work *started* after training; the baseline and effect evidence name Work Items.
+- Adverse evidence whose cause is not VALIDATED is never read as clean: it holds an effect at NOT_YET_TESTED
+  (`ATTRIBUTION_PENDING`) and readiness at NOT_READY (`ADVERSE_EVIDENCE_PENDING_ATTRIBUTION`), a dimension it
+  outweighs gets no level, the monthly review discloses it — and it is still never counted against the Employee
+  (D-C6-03).
+- **Amends D-C6-10 for attributions only (Product Owner CONFIRMED 2026-09-30, PO-R2-A in D-R2-15):** a pool judge's FAIL on an
+  attribution escalates to the Founder (who decides with corrected causes through `decideAttribution`) instead of a
+  terminal REJECTED no one can correct. Lessons are unchanged (FAIL rejects).
+- Only an unrecovered system failure can be the primary cause; a recovered one is at most CONTRIBUTING / LOW. The
+  standard calibration carries a recovered-tool-failure KNOWN_BAD case.
+- A pattern is shared only after two verified reuses on pairwise-disjoint evidence, one open reuse per (lesson,
+  Employee); author self-reuse counts only on distinct evidence (PG-03); System Contribution credits only another
+  Employee's reuse.
+- A systemic problem recurring after REJECTED / ADDRESSED opens a new linked finding (`key#n`) counting only
+  evidence validated after the decision; retraining exhaustion merges into an open candidate.
+- C6 cost buckets are economic micros (D13-G.3 / G.8), with the bill carried separately; zero recorded cost earns
+  no EFFICIENCY verdict.
+
+## D-R2-07 — Memory policy on promotion, Academy retest gates, live recertification set (Technical Lead, R2; R2-27, R2-34, R2-35)
+
+- A PERSONAL lesson promotion opens claim conflicts with the Employee's live disagreeing memories through the
+  Memory Write Policy's own mechanism (`txOpenMemoryConflicts`), in the same transaction; both records are kept
+  and important work is held (Stage 5 §5 / §7). Automatic supersession stays a Product decision.
+- After a retrained failure only the retest and later attempts of that kind decide the Academy gates (the
+  SIMULATION gate mirrors the ASSESSMENT "retrained" guard); a remediation is re-tested only by an attempt of the
+  failed kind; stage history records real transitions only.
+- `skill_updates.impact_json` is the plan-time record, not an authority set: a rollout recomputes the pinned
+  passports and certifications inside its transaction; a rollback returns every passport the rollout moved.
+
+## D-R2-08 — Resilience honesty and a structural maintenance lifecycle (Technical Lead, R2; R2-28..R2-31; extends D-C6-06)
+
+- Only an operator-attested destination meets the off-device objective; a different volume is SEPARATE_VOLUME and
+  raises OFF_DEVICE_NOT_PROVEN (a volume id cannot tell a second partition from a removable drive).
+- A clean restore is an ambiguity boundary: every QUEUED / WAITING / CLAIMED job that could reach an external
+  effect (a prior UNSAFE run, or the owner holds an ACTIVE grant on an UNSAFE / external-mutating action) is held
+  `RESTORED_PAST_BACKUP_POINT` and decided per job by the Founder; the report discloses held job ids, the
+  authenticated backup point and the data age. Bulk reconciliation stays PG-10.
+- `CompanyStore.open` migrates only a fresh database; an existing Company with pending migrations is refused
+  (`SCHEMA_UPDATE_REQUIRED`) and upgraded only through safe-upgrade, which `CompanyRuntime.start` runs
+  automatically (Stage 12 §38); it refuses to start on ROLLED_BACK_UPDATE_HOLD. Maintenance refuses
+  `DATABASE_IN_USE`, writes the hold before any restore touches files, and reports MAINTENANCE_FAILED with the hold
+  kept. File removal uses `unlinkSync` (Node 24 `rmSync` fast-fails on Windows for a locked non-ASCII path).
+- A rollback measures post-activation work against the activation baseline and is refused
+  (`POST_UPDATE_WORK_EXISTS`) unless acknowledged; it writes hold and journal first, keeps a never-pruned
+  pre-rollback snapshot and reports what it discarded. The "proven stable" bound stays PG-09. Local recovery status
+  and retention count restorable generations only (record and files).
+
+## D-R2-09 — A budget wait resumes on the need its refusal recorded (Technical Lead, R2 second wave; RR2-1; supersedes the headroom test of D-R2-03)
+
+A BUDGET_EXHAUSTED refusal records, in the refusing transaction, its need in the append-only `budget_wait_needs`
+(0011): the refused level, scope and dimension, the wait level (the refusing level; for a Run-level refusal its Work
+Item level) and the refused money / tokens. Every resume path — settle below the worst case, release, Founder
+reconciliation, cap raise, WAIT-settle re-check, startup pass — applies one predicate to the job's latest need: the
+need fits a fresh Run budget and `checkReservation(need)` passes on the wait level and every ancestor; a waiter is
+considered only when a level it depends on changed. Headroom smaller than the need wakes nothing (no wake storm);
+no resume decision scans historical reservations. Waits parked before the table existed keep the D-R2-03 headroom
+test. Consequence: a refusal caused only by the per-run cap whose need fits a fresh run resumes at once in a new
+run, still bounded by the Work Item cap.
+
+## D-R2-10 — A handoff never outlives its delegator (Technical Lead, R2 second wave; RR2-2, RR2-5; extends D-R2-03)
+
+A FINAL refused for a pending delegate question is recorded as that step's result
+(`FINAL_REFUSED_CLARIFICATION_PENDING`, naming the delegations), so the model sees what to answer (the loop stays
+bounded by `maxTurns`). When a delegating Work Item ends FAILED / CANCELLED / SUPERSEDED, the 0011 trigger
+`work_delegations_follow_parent` closes every open handoff it holds in the same transaction (CANCELLED,
+`PARENT_ENDED`, history row); a FAILED delegator cancels its delegated children through the canonical termination
+path (children held for reconciliation and completed children are kept; their delegation closes); no executable
+work is enqueued under an ended propagating parent (a kept child sent back to rework is cancelled, not re-queued).
+
+## D-R2-11 — Freed reviewer capacity is a wake; blocking reviews before learning judgments (Technical Lead, R2 second wave; RR1-2; extends D-R2-02)
+
+A review slot (a review key or a pool judgment, both counted in capacity) that leaves ASSIGNED — decided, escalated,
+withdrawn or released — refills, in the same transaction, every domain its holder actively reviews in. Every refill
+serves waiting REQUIRED requests first, then Independent Oversight, then pending pool judgments of that domain
+(oldest first, insertion order as tie-break), each through the one eligibility predicate decided before any LIMIT;
+a judge draw yields to waiting REQUIRED reviews; a withdrawal's refill never re-draws the withdrawn subject; the
+startup sweep refills every waiting request (ACTION included) before judgments. No polling: the capacity change is
+the wake; new review jobs advance the durable wake generation through the queue triggers.
+
+## D-R2-12 — One meaning of adverse evidence in every attribution state (Technical Lead, R2 second wave; RR3-A/B/E; refines D-R2-06 — **REJECT semantics Product Owner CONFIRMED 2026-09-30, PO-R2-B in D-R2-15**)
+
+`adverseStanding` is the single definition every C6 reader uses (profile, readiness, capability regression,
+learning-effect assessment, reports): VALIDATED and the Employee's own judgment → ACCOUNTABLE (the only standing
+counted against the Employee, D-C6-03); VALIDATED with another cause → excluded; PROPOSED, or none while one is due
+→ PENDING (not counted, never read as clean: disclosed, holds readiness, keeps an effect open); REJECTED → decided
+"no accountable cause established" (never pending, never counted; disclosed as `unattributedAdverse` and the monthly
+`ADVERSE_EVIDENCE_WITHOUT_ACCOUNTABLE_CAUSE`; an adverse follow-up in this state makes a learning effect
+INCONCLUSIVE — recorded, re-assessable, not final, and it does not block the next cycle); none and none due →
+not a cause question (disclosed count only). "Due" is the evaluator's own proposal predicate, recorded with each
+evaluation. `ATTRIBUTION_DECIDE` accepts optional corrected `causes` for VALIDATE only (API-only, PG-04); a REJECT
+carrying causes is refused. Learning-effect evidence is asymmetric: positive evidence is work started after
+training; adverse evidence is any comparable, non-baseline work with a run after training.
+
+## D-R2-13 — The command's own verb decides (Technical Lead, R2 second wave; RR1-1; refines D-C5-07 / D-R2-04)
+
+A Founder natural-language command is mutating only when its leading verb (after polite words and an addressee) is
+a mutating verb. The verb fixes the intent family and the approve / reject decision; the head noun after the verb,
+or the closing goal noun / budget clause, picks the act within the family; a goal-state verb yields only
+GOAL_STATE with its state from the verb; words inside the argument never select or change the intent or decision;
+a command with no leading verb is never an act. The grammar stays closed and deterministic. Fail-closed side
+effect: a mutating verb not in the leading position ("Ehab approve X" without a comma) is UNKNOWN.
+
+## D-R2-14 — A restore-check target is a verification copy, never a Company (Technical Lead, R2 second wave; RR4-1; refines D-R2-08)
+
+`restoreToIsolatedWorkspace` (CLI `restore-check`, restore drills) writes a permanent `RESTORE_CHECK_COPY` update
+hold before the database exists; every ordinary open, safe-upgrade and rollback refuses it; `clear-update-hold`
+refuses to clear it; only the check's own internal open and read-only verify-mode inspection open it. A restored
+Company becomes live only through the controlled restore (`restorePortableBackup`: effect-capable jobs held, opened
+at its own version, safe-upgrade). No second live-restore path exists.
+
+## D-R2-15 — Product Owner confirmations for the R2 architecture closure (Product Owner, 2026-09-30)
+
+Recorded from the R2 Architecture Closure Correction brief (`R2-ARCH-CLOSE`), which the Product Owner approved.
+
+- **PO-R2-A — D-R2-06 attribution dispute semantics: CONFIRMED.** A Review Pool judge who FAILS / disputes a proposed
+  causal attribution neither silently authors a corrected cause nor terminally rejects it: the attribution escalates
+  to the Founder, who may VALIDATE it as-is, VALIDATE corrected causes, or REJECT it. Lessons keep their independent
+  review semantics (FAIL rejects). This confirms the D-R2-06 amendment of D-C6-10 for attributions.
+- **PO-R2-B — D-R2-12 Founder REJECT semantics: CONFIRMED.** A Founder REJECT means *no accountable cause has been
+  established from the available evidence* — not "the Employee did nothing wrong" and not "the event did not occur".
+  The adverse evidence stays disclosed, is not counted against the Employee, is not pending forever, makes a learning
+  effect INCONCLUSIVE / reassessable (never a final NO_IMPROVEMENT), and a later independent, properly evidenced event
+  may still establish a new cause.
+- **PO-R2-C — Work spanning the training boundary: CONFIRMED.** Learning-effect time is event-based, not
+  Work-Item-based. Positive evidence: the follow-up Work Item itself started after training completed and reaches the
+  qualified-outcome standard. Adverse / recurrence evidence: the specific adverse source event supporting the
+  recurrence occurred after training completed and the ordinary attribution rules establish the target accountable
+  cause. Work started before training: its pre-training mistakes never become post-training recurrences because
+  review / evaluation / attribution / completion happened later; a real post-training occurrence may count; correct
+  completion after training with no new adverse event is neither positive nor negative evidence. When event time or
+  provenance cannot place the adverse behaviour on one side of the boundary, the result fails closed to INCONCLUSIVE /
+  NOT_YET_TESTED — never a final NO_IMPROVEMENT or REGRESSION.
+- **PO-R2-D — AC-01, Title ≠ Authority for Department Goals: CONFIRMED.** For an Employee to derive or link a
+  Department Goal from a governed run BOTH are required: the applicable Director seat / organizational eligibility
+  and an explicit Founder-delegated capability grant, through the existing permission / grant / governed-run system.
+  Neither replaces the other; no authority is implied by a title. PG-08 (Department-scoped grant semantics) is not
+  implemented: department scope stays constrained by the Director's actual seat / placement. This resolves AC-01 in
+  favour of the Founding Constitution / Stage 3 / C4 rule.
+
+## D-R2-16 — Budget capacity is admitted, not broadcast (Technical Lead, R2 architecture correction; FA-1; supersedes the resume rule of D-R2-03 / D-R2-09, keeps D-R2-09's need semantics)
+
+Freed budget capacity has one durable owner before a `BUDGET_EXHAUSTED` waiter resumes. One admission pass
+(`admitBudgetWaiters`, `governance-core.ts`) runs inside every capacity-changing write transaction — a settle below
+the worst case, a release, a cap raise or trim, a released or partly consumed admission, the WAIT-settle re-check and
+the startup pass — and replaces `wakeBudgetWaiters`. It takes waiters by job priority, then FIFO by created time, then
+id; admits a waiter only when its latest recorded need fits a fresh Run budget and the remaining capacity of every
+level of its Work Item chain; records the admission in `budget_admissions` (0011: ADMITTED → CONSUMED | RELEASED, at
+most one outstanding per job, never deleted, SQL-guarded) and subtracts it before the next waiter. A waiter that does
+not fit never blocks a later one that does. Admissions are not reservations: reserved / spent and
+`accountingInvariants` are unchanged, but every reservation check (`budgetCapacityCheck`) counts OTHER jobs'
+outstanding admissions, and the admitted job's reservation consumes its own. A job leaving QUEUED / CLAIMED, a
+replaced need or a lowered cap (trimmed newest first; the "never below reserved + spent" floor is unchanged) releases
+the admission and re-admits in the same transaction; 0011 triggers back the release up. Startup reclaims stale
+admissions; a recovered claim keeps its admission. Waits parked before needs existed hold all positive headroom,
+capped by a fresh Run budget. Admission never raises a cap, grants budget, spends, routes or approves.
+
+## D-R2-17 — Learning-effect time is the source evidence event's time (Technical Lead, R2 architecture correction; FB-1; implements PO-R2-C; refines D-R2-06 / D-R2-12)
+
+Replaces "adverse evidence is any comparable, non-baseline work with a run after training". Adverse learning evidence
+is the SOURCE EVENT — a counting REQUIRED review FAIL, an unrecovered or boundary run failure, a decisive NOT_ACHIEVED
+outcome verification — timed by the Employee's act (the reviewed or verified output's run, the failed run, an action
+review's request), never by review, evaluation, attribution or correction time (`adverseSourceEvents`,
+`improvement-core.ts`; `eventPhase`, `assessLearningEffect`, `mind/src/improvement.ts`; ids, kinds and times only). An
+attribution explains exactly the events its immutable evidence refs hold (the first decided one stands; corrected
+causes keep the proposal's refs and so the original time); an undecided proposal is re-proposed when new adverse
+events arrive. A recurrence is a post-training event (act started after `trainingCompletedAt`) explained by a
+VALIDATED accountable attribution of the target cause. Positive evidence stays work started after training. Work
+started before training counts only through its post-training events; finishing it correctly is neither positive nor
+negative. Events are deduped by source identity; the share unit stays the Work Item; the baseline is unchanged.
+Unplaceable events, unresolved attributions or adverse work without provenance never yield a final NO_IMPROVEMENT /
+REGRESSION they could change (INCONCLUSIVE). `adverseStanding` is unchanged. No schema change.
+
+## D-R2-18 — A live restore is blocked until it is fully safe to become a Company (Technical Lead, R2 architecture correction; FB-2; refines D-R2-08 / D-R2-14)
+
+`restorePortableBackup` authenticates and verifies the package off-target, then creates exclusively and fsyncs a
+`RESTORE_IN_PROGRESS` hold (the update-hold file: attempt, package, backup, source schema, phase; directory fsync, only
+Windows EPERM / EISDIR tolerated) BEFORE any database or artifact byte, and writes every byte exclusive-create +
+fsync. Every store open refuses it before touching the workspace — read-only verify-mode inspection included — as do
+safe-upgrade, rollback, runtime start, Command Center startup and `clear-update-hold`; only the lifecycle's own open,
+bound to the marker's attempt id AND package id, passes (`assertRestoreGate`). The controlled-restore transaction
+(integrity / FK checked, sessions and launch tokens revoked, effect-capable jobs held, drill + audit) records the
+attempt id; the hold is lifted only after commit and store close (phase COMMITTED, atomic rename to history). Re-running
+with the same package finalizes a committed attempt or redoes any other from the package; another package needs an
+explicit `--discard-partial-restore`. A thrown failure is handled as a crash (the target stays held). `restore-status`
+inspects it without opening the database. `RESTORE_CHECK_COPY` is unchanged and separate.
+
+## D-R2-19 — A Department Goal act needs the Director seat AND an explicit Founder-delegated grant (Technical Lead, R2 architecture correction; AC-01; implements PO-R2-D; supersedes the "seat-checked" clause of D-C5-04)
+
+`goal.derive` / `goal.link` from a governed run (`txGoalAct`) need BOTH the run's Department Director seat (current;
+ACTING only within its window and scope) AND an ACTIVE grant of `org.goal.derive` / `org.goal.link` (registered `org.*`
+capabilities, Founder-delegated through `delegateAuthority`), decided by `decideOrgAct` (expiry, revocation, risk /
+data ceilings, use limit). Neither implies the other; derive never implies link. A `NO_GRANT` denial goes through
+`recordDenial` (containment) and consumes nothing; a DONE act consumes one use (audit `goal.act`); replay of the
+Employee's own recorded effect stays idempotent without exercising anything new. The Founder `GoalStore` path is
+unchanged. PG-08 Department-scoped grants are not implemented; no migration.
+
+## D-R2-20 — Freed admission levels; sequential attribution generations; one undecided proposal; Founder escalation is immutable (Technical Lead, R2 final simple closure fix; RA-1, RB-1, RB-2; refines D-R2-16 / D-R2-17)
+
+- **RA-1.** A cap trim re-admits on the UNION of every released admission's own levels (the lowered level and its
+  ancestors), in the same transaction — like every other release path — never on the lowered level alone.
+- **RB-1 / RB-2.** `causal_attributions` holds sequential generations per Work Item (0011 replaces the 0010
+  "one PROPOSED-or-VALIDATED" index with "at most one PROPOSED"): any number of decided (VALIDATED / REJECTED)
+  generations are history and never reopen. An undecided proposal is never superseded because new adverse evidence
+  arrived (only a changed cause re-proposes it, and never one a pool judge ESCALATED — that one is the Founder's until
+  decided, PO-R2-A); new events wait for it. With no undecided proposal, the adverse source events no decided
+  generation's evidence refs cover get ONE new generation holding only them (also on an unchanged-evidence
+  re-evaluation after a decision), through the ordinary Review Pool / Founder path (PO-R2-C). Each event is explained
+  by the generation whose refs hold it. Work-Item-level readers collapse generations to one unit: the undecided one
+  first, else the VALIDATED ones (accountable when any is; the union of their causes), else the latest REJECTED; single
+  VALIDATED lookups read the latest; a systemic candidate counts distinct Work Items.
+- **Learning provenance.** A learning signal keeps the generation it was classified on: the lesson validation gate,
+  intervention planning and a reported systemic problem read the signal's own `attribution_id` (when a decision
+  SUPERSEDED it — Founder corrected causes or a re-proposal — its earliest VALIDATED successor whose evidence holds all
+  of its references); only a signal recorded without an attribution falls back to its Work Item's latest VALIDATED one.

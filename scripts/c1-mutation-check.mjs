@@ -38,8 +38,9 @@ const MUTATIONS = [
     search: 'verifySupervisor(ctx, supervisor);',
     replace: '/* mutation: supervisor verification removed */',
     // 4 C1 recovery writes + the C2 governed-orphan recovery + the C3 pending-candidate recovery
-    // (list, decide, refuse: each transaction supervisor-fenced) + the C4 organization reconciliation.
-    expectedCount: 9,
+    // (list, decide, refuse: each transaction supervisor-fenced) + the C4 organization reconciliation
+    // + the R2 startup budget-wait pass (R2-03).
+    expectedCount: 10,
     cwd: 'packages/storage',
     tests: ['dist/test/supervisor-authority.test.js'],
   },

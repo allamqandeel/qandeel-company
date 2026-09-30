@@ -461,6 +461,17 @@ class App implements PanelHost {
     return input;
   }
 
+  /** A rail / sheet decision: the structured act it shows becomes a governed preview (R2-24); nothing changes until Confirm. */
+  async previewAction(intent: string, payload: Json): Promise<void> {
+    try {
+      const r = await api.post<{ preview: Json }>('/api/previews', { intent, payload });
+      this.showPreview(r.preview);
+    } catch (e) {
+      this.note(`No preview (${e instanceof ApiError ? e.code : 'error'}). Nothing changed.`, 'system');
+      await this.refresh(false);
+    }
+  }
+
   showPreview(preview: Json): void {
     const d = $('preview');
     d.hidden = false;

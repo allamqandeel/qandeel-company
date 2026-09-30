@@ -73,13 +73,26 @@ export interface WorkEvidence {
   readonly outcome: 'ACHIEVED' | 'NOT_ACHIEVED' | 'INCONCLUSIVE' | null;
   readonly review: { readonly pass: number; readonly fail: number; readonly uncertain: number; readonly insufficient: number; readonly rework: number; readonly openConflict: boolean };
   readonly runs: { readonly total: number; readonly failed: number; readonly retried: number };
+  /**
+   * UNRECOVERED system failures: those the work did not get past (a permanent failure, or a failed attempt no later
+   * successful run followed) — the only failures that can be the cause of the work's outcome.
+   */
   readonly failures: { readonly tool: number; readonly provider: number; readonly model: number; readonly context: number; readonly external: number; readonly workflow: number; readonly requirementChanged: boolean };
+  /**
+   * R2-13: failures the work RECOVERED from (a later run of the same Work Item succeeded). Observability and
+   * overhead (their cost is already retry / failed-charged cost) — never the primary cause of a merits failure.
+   */
+  readonly recoveredFailures: { readonly tool: number; readonly provider: number; readonly model: number; readonly context: number; readonly workflow: number };
   readonly interventions: { readonly escalations: number; readonly correctEscalations: number; readonly founder: number };
   readonly authorityRefusals: number;
   /** Gates (review, approval, budget, reconciliation) that stopped a harmful path before it happened. */
   readonly gateCatches: number;
   readonly route: { readonly planned: readonly string[]; readonly taken: readonly string[] };
-  readonly cost: { readonly productiveMicros: number; readonly retryMicros: number; readonly fallbackMicros: number; readonly escalationMicros: number; readonly failedChargedMicros: number; readonly reworkMicros: number };
+  /**
+   * Cost buckets in ECONOMIC micros — what the budget ledger charges (D13-G.3 / G.8), so a subscription or free
+   * route is not free work (R2-20). `billedMicros` is the provider bill, carried separately for reporting only.
+   */
+  readonly cost: { readonly productiveMicros: number; readonly retryMicros: number; readonly fallbackMicros: number; readonly escalationMicros: number; readonly failedChargedMicros: number; readonly reworkMicros: number; readonly billedMicros: number };
   /** Observability only — never read by a verdict. */
   readonly activity: { readonly messages: number; readonly toolCalls: number; readonly tokens: number; readonly runs: number };
   readonly evidenceClasses: readonly EvidenceClass[];
@@ -192,6 +205,8 @@ function dimensionVerdict(dimension: ItemDimension, ev: WorkEvidence, qualified:
       // Efficiency is judged only on a qualified outcome: a cheap failure is not efficient.
       if (!qualified) return r('NOT_ASSESSED', 'NO_QUALIFIED_OUTCOME');
       const overhead = overheadOf(ev.cost);
+      // m-31: no recorded cost is no evidence of efficiency (never "free, therefore efficient").
+      if (ev.cost.productiveMicros + overhead === 0) return r('NOT_ASSESSED', 'NO_COST_EVIDENCE');
       if (ev.review.rework >= 2 || overhead > ev.cost.productiveMicros) return r('NEGATIVE', 'WASTE_EXCEEDS_PRODUCTIVE_COST');
       if (ev.review.rework === 0 && overhead * 4 <= ev.cost.productiveMicros) return r('POSITIVE', 'LOW_WASTE_QUALIFIED');
       return r('NEUTRAL', 'SOME_WASTE_QUALIFIED');
@@ -266,23 +281,50 @@ const NON_EMPLOYEE_SIGNALS: readonly { category: DirectCause; present: (ev: Work
   { category: 'EXTERNAL_DEPENDENCY', present: (ev) => ev.failures.external > 0, basis: 'EXTERNAL_DEPENDENCY_FAILED' },
 ];
 
+/** R2-13: failures the work got past (a later run succeeded) — their recorded causes, by family. */
+const RECOVERED_SIGNALS: readonly { category: DirectCause; count: (r: WorkEvidence['recoveredFailures']) => number; basis: string }[] = [
+  { category: 'TOOL', count: (r) => r.tool, basis: 'TOOL_FAILURE_RECOVERED' },
+  { category: 'PROVIDER', count: (r) => r.provider, basis: 'PROVIDER_FAILURE_RECOVERED' },
+  { category: 'MODEL', count: (r) => r.model, basis: 'MODEL_FAILURE_RECOVERED' },
+  { category: 'CONTEXT_RETRIEVAL', count: (r) => r.context, basis: 'CONTEXT_FAILURE_RECOVERED' },
+  { category: 'WORKFLOW_PROCESS', count: (r) => r.workflow, basis: 'WORKFLOW_BLOCK_RECOVERED' },
+];
+
 /**
  * Proposes a causal attribution from the evidence. A proposal is never truth: it must be validated
  * (independently of the subject Employee) before anything learns from it or a profile counts it.
+ * Only an UNRECOVERED system failure can be the primary cause of the outcome; a failure the work recovered from
+ * (a retry succeeded) did not cause a later merits failure — it is at most a low-confidence contributing cause.
  */
 export function proposeAttribution(ev: WorkEvidence): AttributionProposal {
   if (!adverseOutcome(ev)) return { needed: false, overall: 'UNKNOWN', causes: [], employeeAccountable: false, confidence: 'LOW' };
   const system = NON_EMPLOYEE_SIGNALS.filter((s) => s.present(ev));
+  const recovered = RECOVERED_SIGNALS.filter((s) => s.count(ev.recoveredFailures) > 0 && !system.some((x) => x.category === s.category));
   const causes: AttributedCause[] = system.map((s, i) => ({ category: s.category, role: i === 0 ? 'PRIMARY' : 'CONTRIBUTING', confidence: system.length === 1 ? 'HIGH' : 'MEDIUM', basis: s.basis }));
   const employeeSignal = ev.authorityRefusals > 0 || ev.review.fail > 0 || ev.outcome === 'NOT_ACHIEVED';
   if (system.length === 0 && employeeSignal) {
     const strong = ev.review.fail > 0 && (ev.outcome === 'NOT_ACHIEVED' || ev.authorityRefusals > 0);
     causes.push({ category: 'EMPLOYEE_JUDGMENT', role: 'PRIMARY', confidence: strong ? 'HIGH' : 'MEDIUM', basis: ev.authorityRefusals > 0 ? 'AUTHORITY_BOUNDARY_REFUSED' : 'REVIEW_REJECTED_OUTPUT' });
+    for (const s of recovered) causes.push({ category: s.category, role: 'CONTRIBUTING', confidence: 'LOW', basis: s.basis });
+  } else if (system.length === 0 && recovered.length > 0) {
+    // Nothing went wrong but attempts the work recovered from: the failed attempts' own recorded cause.
+    recovered.forEach((s, i) => causes.push({ category: s.category, role: i === 0 ? 'PRIMARY' : 'CONTRIBUTING', confidence: recovered.length === 1 ? 'HIGH' : 'MEDIUM', basis: s.basis }));
   } else if (system.length > 0 && ev.authorityRefusals > 0) {
     // A boundary refusal is the Employee's own act even when a tool also failed.
     causes.push({ category: 'EMPLOYEE_JUDGMENT', role: 'CONTRIBUTING', confidence: 'MEDIUM', basis: 'AUTHORITY_BOUNDARY_REFUSED' });
   }
   return summarizeCauses(causes);
+}
+
+/**
+ * RR3: an attribution is DUE — something adverse happened AND the evidence names a cause to propose. This is the
+ * one predicate behind both the evaluator's proposal (the store records a proposal exactly then) and "pending
+ * attribution" in every reader (`adverseStanding`): a negative on work where no attribution is due can never be
+ * pending, because no proposal can ever arrive for anyone to decide.
+ */
+export function attributionDue(ev: WorkEvidence): boolean {
+  // proposeAttribution names no cause when nothing adverse happened (needed: false), so this implies `needed`.
+  return proposeAttribution(ev).causes.length > 0;
 }
 
 /** Derives the overall category, accountability and confidence from a cause list (proposal or validated input). */
@@ -340,7 +382,9 @@ function judgeCase(spec: EvalDefinitionSpec, c: ReferenceCase): ReferenceCaseRes
       pass = e.evidenceState === 'SUFFICIENT_EVIDENCE' && e.qualifiedOutcome && !verdicts.includes('NEGATIVE');
       break;
     case 'KNOWN_BAD':
-      pass = e.evidenceState === 'SUFFICIENT_EVIDENCE' && !e.qualifiedOutcome && verdicts.includes('NEGATIVE');
+      // Bad work of the Employee: judged negative, and — where no unrecovered system failure explains it — attributed
+      // to the Employee's own judgement (a failure the work recovered from never exonerates it; R2-13).
+      pass = e.evidenceState === 'SUFFICIENT_EVIDENCE' && !e.qualifiedOutcome && verdicts.includes('NEGATIVE') && (NON_EMPLOYEE_SIGNALS.some((s) => s.present(c.evidence)) || (a.employeeAccountable && a.causes.some((x) => x.role === 'PRIMARY' && x.category === 'EMPLOYEE_JUDGMENT')));
       break;
     case 'AMBIGUOUS':
       // The only correct answer to ambiguous evidence is "not known": no confident verdict either way.
@@ -383,11 +427,12 @@ const baseEvidence = (id: string): WorkEvidence => ({
   review: { pass: 1, fail: 0, uncertain: 0, insufficient: 0, rework: 0, openConflict: false },
   runs: { total: 1, failed: 0, retried: 0 },
   failures: { tool: 0, provider: 0, model: 0, context: 0, external: 0, workflow: 0, requirementChanged: false },
+  recoveredFailures: { tool: 0, provider: 0, model: 0, context: 0, workflow: 0 },
   interventions: { escalations: 0, correctEscalations: 0, founder: 0 },
   authorityRefusals: 0,
   gateCatches: 0,
   route: { planned: [], taken: [] },
-  cost: { productiveMicros: 1_000, retryMicros: 0, fallbackMicros: 0, escalationMicros: 0, failedChargedMicros: 0, reworkMicros: 0 },
+  cost: { productiveMicros: 1_000, retryMicros: 0, fallbackMicros: 0, escalationMicros: 0, failedChargedMicros: 0, reworkMicros: 0, billedMicros: 1_000 },
   activity: { messages: 1, toolCalls: 1, tokens: 100, runs: 1 },
   evidenceClasses: ['WORK_LINEAGE', 'REVIEW_DECISION', 'OUTCOME_VERIFICATION', 'RUN_TRACE', 'COST_USAGE'],
 });
@@ -398,9 +443,13 @@ export function standardReferenceCases(): ReferenceCase[] {
   const ambiguous: WorkEvidence = { ...baseEvidence('ambiguous'), reviewed: false, outcome: null, review: { pass: 0, fail: 0, uncertain: 1, insufficient: 0, rework: 0, openConflict: false }, evidenceClasses: ['WORK_LINEAGE', 'RUN_TRACE', 'COST_USAGE'] };
   const nonEmployee: WorkEvidence = { ...baseEvidence('tool-failure'), outcome: 'NOT_ACHIEVED', reviewed: false, runs: { total: 2, failed: 2, retried: 1 }, failures: { ...baseEvidence('x').failures, tool: 2 }, review: { pass: 0, fail: 1, uncertain: 0, insufficient: 0, rework: 0, openConflict: false } };
   const creative: WorkEvidence = { ...baseEvidence('creative'), route: { planned: ['research', 'draft', 'review'], taken: ['prototype', 'measure', 'review'] } };
+  // R2-13: a transient tool failure the work recovered from (the retry succeeded), then the output failed its review
+  // on the merits and the outcome was not achieved — the Employee's judgement, not the tool.
+  const recovered: WorkEvidence = { ...bad, workItemId: 'reference-recovered-tool-failure', runs: { total: 3, failed: 1, retried: 1 }, recoveredFailures: { ...baseEvidence('x').recoveredFailures, tool: 1 }, cost: { ...bad.cost, retryMicros: 200, billedMicros: 1_200 } };
   return [
     { id: 'known-good', kind: 'KNOWN_GOOD', evidence: good },
     { id: 'known-bad', kind: 'KNOWN_BAD', evidence: bad },
+    { id: 'recovered-tool-failure', kind: 'KNOWN_BAD', evidence: recovered },
     { id: 'ambiguous', kind: 'AMBIGUOUS', evidence: ambiguous },
     { id: 'tool-failure', kind: 'NON_EMPLOYEE_CAUSE', evidence: nonEmployee },
     { id: 'creative-path', kind: 'CREATIVE_PATH', evidence: creative },

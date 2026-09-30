@@ -25,7 +25,6 @@ import {
   assertArgsSchema,
   assertCognitiveProfile,
   canExecute,
-  checkReservation,
   dataRank,
   isDataClass,
   isReasoningClass,
@@ -43,14 +42,18 @@ import {
 } from '@qandeel-company/governance';
 
 import {
+  admitBudgetWaiters,
   applyBudgetDelta,
+  budgetCapacityCheck,
   budgetChain,
   budgetFor,
   chargedExclusions,
+  consumeBudgetAdmission,
   employeeIdFromRef,
   getEmployeeRow,
   getReservationRow,
   holdReservationTx,
+  recordBudgetWaitNeed,
   releaseReservationTx,
   setEmployeeState,
   settleReservationTx,
@@ -62,7 +65,7 @@ import { routingSnapshotTx, upsertApprovalRequest, workItemDataClass } from './g
 import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { enforceRoleCertification } from './mind-core.js';
 import { academyExecutionMode, academyRun, constrainedRun, contextClassOf, manifestForReservation, txCapabilityGate } from './mind-writes.js';
-import { acceptDelegationOnStart, materializeExpiredActing, snapshotRunOrganization } from './org-core.js';
+import { OPEN_HANDOFF_STATES, acceptDelegationOnStart, materializeExpiredActing, snapshotRunOrganization } from './org-core.js';
 import { verifyFence } from './queue.js';
 import type { Fence } from './records.js';
 import { actionReviewGate, consumeActionReview, recheckReviewWait } from './review-core.js';
@@ -346,8 +349,14 @@ export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput):
   const wiChain = workItemChain(ctx, a);
   if (!wiChain) return refuse('BUDGET_MISSING', 'WORK_ITEM_CHAIN');
   const chain = runBudget(ctx, fence, wiChain);
-  const check = checkReservation(chain, input.money, input.tokens);
-  if (!check.ok) return refuse('BUDGET_EXHAUSTED', `${check.scope}:${check.dimension}`);
+  // FA-1: capacity admitted to OTHER waiters is taken; this job's own admission is what it now consumes.
+  const check = budgetCapacityCheck(ctx, chain, input.money, input.tokens, job.id);
+  if (!check.ok) {
+    // RR2-1: the refusal's need, durably, in this transaction — the only thing its wait resumes on.
+    const refused = chain.find((b) => b.id === check.budgetId) as BudgetRecord;
+    recordBudgetWaitNeed(ctx, { jobId: job.id, runId: fence.runId, workItemId: a.workItemId }, refused, check.dimension, refused.scope === 'RUN' ? (wiChain[0] as BudgetRecord) : refused, input.money, input.tokens);
+    return refuse('BUDGET_EXHAUSTED', `${check.scope}:${check.dimension}`);
+  }
   applyBudgetDelta(ctx, chain, { reservedMoney: input.money, reservedTokens: input.tokens });
   const id = newId();
   ctx.db.run(
@@ -374,6 +383,7 @@ export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput):
     input.purpose === 'MODEL_CALL' ? input.contextManifestId : null,
   );
   appendAudit(ctx, 'budget.reserved', 'reservation', id, { actorRef: SYSTEM_RUNTIME_REF }, 'OK', null, { runId: fence.runId, purpose: input.purpose, attemptKind: input.attemptKind, money: input.money, tokens: input.tokens });
+  consumeBudgetAdmission(ctx, job.id, { id, money: input.money, tokens: input.tokens });
   return { ok: true, reservation: getReservationRow(ctx, id) };
 }
 
@@ -543,8 +553,12 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
   // Approve: a satisfied review never approves anything, and a missing plan or reviewer fails closed.
   let reviewRequestId: Id | null = null;
   if (decision.review === 'INDEPENDENT') {
-    const actionText = `Subject: the proposed action ${input.toolCode}.${input.actionCode} (risk ${action.risk}, data class ${dataClass}) in Work Item ${item.id}, with arguments ${canonicalJson(args).slice(0, 3000)}`;
-    const reviewGate = actionReviewGate(ctx, { item, fingerprint: approvalFingerprint(scope), subjectRef: `tool_action:${action.id}`, dataClass, risk: action.risk, actionText });
+    // R2-11: the reviewer is shown the whole action — every canonical argument the fingerprint binds, never cut —
+    // and nothing secret-shaped ever reaches a reviewer's Work Item: refused before any request exists.
+    const actionSubject = `Subject: the proposed action ${input.toolCode}.${input.actionCode} (risk ${action.risk}, data class ${dataClass}) in Work Item ${item.id}, with arguments ${canonicalJson(args)}`;
+    if (containsSecretMaterial(actionSubject)) return deny('SECRET_MATERIAL', { toolActionId: action.id });
+    const reviewGate = actionReviewGate(ctx, { item, fingerprint: approvalFingerprint(scope), subjectRef: `tool_action:${action.id}`, dataClass, risk: action.risk, actionSubject });
+    if (reviewGate.kind === 'REFUSED') return deny(reviewGate.code, { toolActionId: action.id });
     if (reviewGate.kind === 'REWORK') {
       // A reviewer rejected exactly this action: refused (not an authority violation); a changed action is a new subject.
       appendAudit(ctx, 'tool.review_rejected', 'run', fence.runId, { actorRef: SYSTEM_RUNTIME_REF }, 'REJECTED', 'REVIEW_REJECTED', { toolActionId: action.id, reviewRequestId: reviewGate.requestId });
@@ -613,8 +627,39 @@ export function txToolIntent(ctx: StoreContext, fence: Fence, input: ToolIntentI
 
 export type ToolDriverOutcome = { readonly ok: true; readonly result: JsonObject } | { readonly ok: false; readonly code: string; readonly sent: 'NO' | 'UNKNOWN' };
 
+/** True when a serialized result names credential material in any key (the step-result guard's pattern). */
+function keyedSecretJson(json: string): boolean {
+  try {
+    return hasSecretNamedKey(JSON.parse(json));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reads the outcome's fields exactly once (R2-10, defence in depth behind the runtime's tool boundary): every
+ * decision below — the state, the money, the stored result and its secret guard, the audit code — uses these
+ * captured values, never the caller's object again. A failure code carrying secret material is never stored.
+ */
+function captureToolOutcome(outcome: ToolDriverOutcome): { ok: true; result: unknown } | { ok: false; code: string; sent: 'NO' | 'UNKNOWN' } {
+  const unknown = { ok: false as const, code: 'DRIVER_OUTCOME_UNKNOWN', sent: 'UNKNOWN' as const };
+  try {
+    const ok: unknown = outcome.ok;
+    if (ok === true) return { ok: true, result: (outcome as { result?: unknown }).result };
+    if (ok !== false) return unknown;
+    const o = outcome as { code?: unknown; sent?: unknown };
+    const code = o.code;
+    const sent = o.sent;
+    const safe = typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) && !containsSecretMaterial(code) ? code : 'DRIVER_FAILURE';
+    return { ok: false, code: safe, sent: sent === 'NO' ? 'NO' : 'UNKNOWN' };
+  } catch {
+    return unknown;
+  }
+}
+
 /** Records a driver's result (truthful: accepted from the same worker even after lease expiry). */
-export function txToolResult(ctx: StoreContext, fence: Fence, invocationId: Id, outcome: ToolDriverOutcome): ToolInvocationRecord['state'] {
+export function txToolResult(ctx: StoreContext, fence: Fence, invocationId: Id, input: ToolDriverOutcome): ToolInvocationRecord['state'] {
+  const outcome = captureToolOutcome(input);
   const inv = mapToolInvocation(ctx.db.get('SELECT * FROM tool_invocations WHERE id = ?', invocationId) ?? {});
   if (inv.runId !== fence.runId || Number(ctx.db.get<{ t: number }>('SELECT fencing_token AS t FROM tool_invocations WHERE id = ?', invocationId)?.t) !== fence.fencingToken) {
     throw new QandeelError('STALE_LEASE', 'this invocation belongs to another run or worker', { invocationId });
@@ -628,8 +673,9 @@ export function txToolResult(ctx: StoreContext, fence: Fence, invocationId: Id, 
     try {
       json = canonicalJson(outcome.result);
       // Secret material in a driver's result never enters ordinary SQLite state (Stage 12 §23, Stage 14;
-      // R1-01): the invocation keeps only a digest, exactly as the step result already did.
-      if (hasSecretNamedKey(outcome.result) || containsSecretMaterial(json)) json = canonicalJson({ withheld: 'SECRET_MATERIAL', sha256: sha256Hex(json) });
+      // R1-01): the invocation keeps only a digest, exactly as the step result already did. Both guards judge
+      // the SERIALIZED value — the one that is stored — never a second read of the driver's object (R2-10).
+      if (keyedSecretJson(json) || containsSecretMaterial(json)) json = canonicalJson({ withheld: 'SECRET_MATERIAL', sha256: sha256Hex(json) });
       else if (Buffer.byteLength(json, 'utf8') > 4096) json = canonicalJson({ truncated: true, sha256: sha256Hex(json) });
     } catch {
       json = canonicalJson({ invalid: true });
@@ -678,8 +724,8 @@ export function txHoldUnsettledModelCalls(ctx: StoreContext, runId: Id): number 
  * did nothing. The WAIT settle therefore re-checks, in its own transaction, whether the wait still
  * holds, and wakes the job at once if it does not:
  * - AWAITING_APPROVAL holds while this Work Item still has a PENDING tool approval;
- * - BUDGET_EXHAUSTED holds unless a cap on this Work Item's budget chain changed since the run began
- *   (exactly the event whose targeted wake could have been missed).
+ * - BUDGET_EXHAUSTED holds while the need its refusal recorded does not fit again (RR2-1: the one resume
+ *   admission of `admitBudgetWaiters`, evaluated here for this job alone — FA-1).
  * A spurious wake is harmless: the next run re-checks every gate before any spend.
  */
 export const GOVERNED_WAITS = ['AWAITING_APPROVAL', 'BUDGET_EXHAUSTED', 'AWAITING_INDEPENDENT_REVIEW', 'AWAITING_DELEGATION', 'AWAITING_CLARIFICATION', 'AWAITING_ESCALATION'] as const;
@@ -688,7 +734,8 @@ export type GovernedWait = (typeof GOVERNED_WAITS)[number];
 /**
  * C4 waits (the same lost-wake window, the same remedy). A wake is due only for an event that needs the
  * waiter — never merely for the handoff this run itself offered — so a re-check cannot loop the model:
- * - AWAITING_DELEGATION: a delegation of this Work Item was answered or closed during the run, or none is open;
+ * - AWAITING_DELEGATION: a delegation of this Work Item was answered or closed during the run, or none is open
+ *   (open = `OPEN_HANDOFF_STATES`, the same set the processor parks on — R2-04);
  * - AWAITING_CLARIFICATION / AWAITING_ESCALATION: this Work Item's handoff left that state.
  */
 function recheckHandoffWait(ctx: StoreContext, workItemId: Id, runId: Id, reason: 'AWAITING_DELEGATION' | 'AWAITING_CLARIFICATION' | 'AWAITING_ESCALATION'): void {
@@ -696,7 +743,9 @@ function recheckHandoffWait(ctx: StoreContext, workItemId: Id, runId: Id, reason
   if (started === undefined) return;
   if (reason === 'AWAITING_DELEGATION') {
     const answered = ctx.db.get(`SELECT 1 AS x FROM work_delegations WHERE parent_work_item_id = ? AND state IN ('REFUSED', 'CLARIFICATION_REQUESTED', 'ESCALATED', 'COMPLETED', 'FAILED', 'CANCELLED', 'SUPERSEDED') AND updated_at >= ? LIMIT 1`, workItemId, started);
-    const open = ctx.db.get(`SELECT 1 AS x FROM work_delegations WHERE parent_work_item_id = ? AND state IN ('OFFERED', 'ACCEPTED') LIMIT 1`, workItemId);
+    // R2-04: "open" is the one open-handoff set the processor parks on — an ESCALATED handoff (awaiting the
+    // Founder) or a pending question keeps the wait; only a state change during this run (`answered`) wakes it.
+    const open = ctx.db.get(`SELECT 1 AS x FROM work_delegations WHERE parent_work_item_id = ? AND state IN (SELECT value FROM json_each(?)) LIMIT 1`, workItemId, JSON.stringify(OPEN_HANDOFF_STATES));
     if (answered || !open) wakeWorkItemJob(ctx, workItemId, ['AWAITING_DELEGATION'], 'handoff.rechecked');
     return;
   }
@@ -723,11 +772,11 @@ export function txRecheckGovernedWait(ctx: StoreContext, workItemId: Id, runId: 
     if (!pending || decidedDuringRun) wakeWorkItemJob(ctx, workItemId, ['AWAITING_APPROVAL'], 'approval.rechecked');
     return;
   }
-  const wi = budgetFor(ctx, 'WORK_ITEM', workItemId);
-  if (started === undefined || !wi) return;
-  const chain = budgetChain(ctx, wi.id).map((b) => b.id);
-  const raised = ctx.db.get(`SELECT 1 AS x FROM budget_history WHERE change_kind = 'CAP_CHANGED' AND occurred_at >= ? AND budget_id IN (SELECT value FROM json_each(?)) LIMIT 1`, started, JSON.stringify(chain));
-  if (raised) wakeWorkItemJob(ctx, workItemId, ['BUDGET_EXHAUSTED'], 'budget.rechecked');
+  // RR2-1: BUDGET_EXHAUSTED — the same resume predicate as every freeing path, on this job's recorded need: a cap
+  // raise, settle or release committed while the job was still CLAIMED (its wake found nothing parked) is seen
+  // here from the budgets themselves. No scan of historical reservations or cap history.
+  const jobId = ctx.db.get<{ j: string }>('SELECT job_id AS j FROM runs WHERE id = ?', runId)?.j;
+  if (jobId !== undefined) admitBudgetWaiters(ctx, null, 'budget.rechecked', jobId as Id);
 }
 
 // --- Recovery ---------------------------------------------------------------------------------------

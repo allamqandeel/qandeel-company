@@ -98,13 +98,38 @@ describe('versioned migrations', () => {
       assert.equal(old.schemaVersion, 1);
       const { workItem } = old.createWorkItem({ objective: 'created on schema v1', ownerRef: owner, initialState: 'READY' });
       old.close();
-      const current = CompanyStore.open(root, { clock });
+      // The migration files themselves are under test here: the explicit live-migration knob (R2-30: the public open
+      // refuses an existing Company with pending migrations; it is upgraded through safe-upgrade).
+      const current = openStoreForTests(root, { clock, liveSchemaUpdate: true });
       assert.deepEqual(current.migration.applied, Array.from({ length: CURRENT_SCHEMA_VERSION - 1 }, (_, i) => i + 2));
       assert.equal(current.getWorkItem(workItem.id).objective, 'created on schema v1');
       assert.equal(current.history(workItem.id).length, 1);
       current.close();
     } finally {
       removeRoot(root);
+    }
+  });
+
+  test('R2-30: an existing Company with pending migrations is refused at ordinary open (SCHEMA_UPDATE_REQUIRED → safe-upgrade); a fresh database still migrates at open', () => {
+    const root = tempRoot('mig-refuse');
+    const fresh = tempRoot('mig-fresh');
+    try {
+      const old = openStoreForTests(root, { clock, migrations: loadReleasedMigrations(2) });
+      old.createWorkItem({ objective: 'history on schema v2', ownerRef: owner, initialState: 'READY' });
+      old.close();
+      assert.throws(() => CompanyStore.open(root, { clock }), (e) => isQandeelError(e, 'SCHEMA_UPDATE_REQUIRED') && e.details.databaseVersion === 2 && e.details.next === 'safe-upgrade');
+      assert.throws(() => openStoreForTests(root, { clock, migrations: loadReleasedMigrations(3) }), (e) => isQandeelError(e, 'SCHEMA_UPDATE_REQUIRED'), 'the internal open refuses too unless the test knob is explicit');
+      const unchanged = openStoreForTests(root, { clock, migrations: loadReleasedMigrations(2) });
+      assert.equal(unchanged.schemaVersion, 2, 'the refusal changed nothing');
+      unchanged.close();
+      // A database with schema but no history (a first open interrupted, or one a concurrent first opener is migrating) is fresh.
+      openStoreForTests(fresh, { clock, migrations: loadReleasedMigrations(2) }).close();
+      const created = CompanyStore.open(fresh, { clock });
+      assert.equal(created.schemaVersion, CURRENT_SCHEMA_VERSION);
+      created.close();
+    } finally {
+      removeRoot(root);
+      removeRoot(fresh);
     }
   });
 
@@ -128,11 +153,11 @@ describe('versioned migrations', () => {
         db.run(`INSERT INTO budgets (id, scope, scope_id, parent_id, currency, cap_money, cap_tokens, version, created_by_ref, created_at, updated_at) VALUES (?, 'EMPLOYEE', ?, ?, 'USD', 100, 100, 1, 'founder:x', ?, ?)`, id(6), id(3), id(5), at, at);
       });
       v6.close();
-      const v8 = CompanyStore.open(root, { clock });
+      const v8 = openStoreForTests(root, { clock, liveSchemaUpdate: true }); // the migration files under test (R2-30 knob)
       try {
       // C5 appended 0009 (Founder surface tables only) and C6 0010 (improvement engine tables and gate triggers):
       // the C4 rows are still preserved across the full upgrade.
-      assert.deepEqual(v8.migration.applied, [7, 8, 9, 10]);
+      assert.deepEqual(v8.migration.applied, [7, 8, 9, 10, 11]);
       const d8 = storeContext(v8).db;
       const growth = d8.get<{ id: string; name: string }>(`SELECT id, name FROM departments WHERE code = 'growth'`);
       assert.deepEqual({ ...growth }, { id: id(1), name: 'Growth (pre-C4)' }, 'an existing Department is adopted by code, never duplicated or renamed');
@@ -158,7 +183,7 @@ describe('versioned migrations', () => {
       assert.ok(!tables(v2).includes('runtime_wake'));
       const { workItem } = v2.createWorkItem({ objective: 'queued on schema v2', ownerRef: owner, processorKind: 'test.noop', initialState: 'READY' });
       v2.close();
-      const v3 = openStoreForTests(root, { clock, migrations: loadReleasedMigrations(3) });
+      const v3 = openStoreForTests(root, { clock, migrations: loadReleasedMigrations(3), liveSchemaUpdate: true });
       assert.deepEqual(v3.migration, { fromVersion: 2, toVersion: 3, applied: [3] });
       assert.equal(v3.getWorkItem(workItem.id).state, 'READY');
       assert.equal(v3.jobsFor(workItem.id)[0]?.state, 'QUEUED', 'the v2 job survives the upgrade');

@@ -255,6 +255,28 @@ describe('C3 learning: observations become validated lessons only through review
       assert.deepEqual([lessonMemory.employeeId, lessonMemory.memoryClass, lessonMemory.provenanceKind], [s.employee.id, 'PERSONAL_LESSON', 'VALIDATED_LESSON']);
     });
   });
+
+  test('R2-27: a PERSONAL promotion disagreeing with a live memory on its claim opens a conflict (as the policy does): both kept, important work held', () => {
+    withSeed((h, s) => {
+      const c = run(h, s);
+      const m = MemoryStore.for(h.store);
+      const claim = { claimKey: 'egypt.payments.provider', evidenceRefs: [`work_item:${c.workItem.id}`], provenance: { kind: 'WORK_ITEM', ref: `work_item:${c.workItem.id}` } };
+      const a = propose(h, c, 1, { ...claim, memoryClass: 'PROFESSIONAL', claimValue: 'fawry', content: 'Egypt payments go through Fawry for the memo.' });
+      const l = propose(h, c, 2, { ...claim, memoryClass: 'PERSONAL_LESSON', claimValue: 'paymob', content: 'Lesson: Egypt payments should go through Paymob instead.' });
+      complete(h, c);
+      const lessonId = l.decided?.resultLessonId as Id;
+      m.requestLessonReview(lessonId);
+      m.validateLesson(s.founder, lessonId, { decision: 'VALIDATE', reasonCode: 'founder.validated' });
+      const personal = m.requestPromotion('system:learning', lessonId, 'PERSONAL');
+      assert.equal(personal.state, 'APPROVED');
+      const open = m.conflicts('OPEN');
+      assert.equal(open.length, 1, 'the disagreement is a conflict, not a silent override');
+      assert.deepEqual([open[0]?.memoryAId, open[0]?.memoryBId].sort(), [a.decided?.resultMemoryId, personal.resultMemoryId].sort());
+      assert.deepEqual([m.memory(a.decided?.resultMemoryId as Id).status, m.memory(personal.resultMemoryId as Id).status], ['ACTIVE', 'ACTIVE'], 'both kept (no automatic supersession)');
+      const important = run(h, s, {}, { requirements: [], importance: 'IMPORTANT', topics: ['egypt.payments'] });
+      assert.equal(assemble(h, important).outcome, 'CONFLICT_HOLD');
+    });
+  });
 });
 
 describe('C3 knowledge: scoped, attributable, never leaking', () => {
@@ -622,6 +644,58 @@ describe('C3 academy: gated, evidence-bound, never self-certifying', () => {
     });
   });
 
+  test('R2-34: a failed simulation is re-tested after retraining, never re-decided by the old failure; the path never cycles or strands in RETRY', () => {
+    withSeed((h, s) => {
+      const w = academyWorld(h, s);
+      const a = AcademyStore.for(h.store);
+      const e = a.enroll(s.founder, s.employee.id, w.programVersionId);
+      for (let i = 0; i < 6; i++) a.recordModuleCompletion(s.founder, e.id, `module-${i}`, `evidence:m${i}`);
+      assert.equal(a.advance(e.id).stage, 'SIMULATION');
+      const rows = (): number => a.stageHistory(e.id).length;
+      // Advancing moves exactly `n` stages (no false stage-history rows) and ends at `stage`.
+      const step = (stage: string, n: number): void => {
+        const before = rows();
+        assert.equal(a.advance(e.id).stage, stage);
+        assert.equal(rows() - before, n, `advance to ${stage} writes ${n} stage rows`);
+      };
+      assert.equal(attempt(h, s, e.id, w.scenarios.practice, 'SIMULATION', 20).outcome, 'FAIL');
+      step('RETRY', 2);
+      a.completeRetraining(s.founder, a.remediations(e.id)[0]?.id as string, 'evidence:retrained');
+      // Retrained: back to SIMULATION, which waits for the retest (the old failure decides nothing).
+      step('SIMULATION', 1);
+      step('SIMULATION', 0);
+      // The retest fails too: a NEW remediation, and RETRY waits for its retraining (no loop).
+      assert.equal(attempt(h, s, e.id, w.scenarios.practice, 'SIMULATION', 20).outcome, 'FAIL');
+      step('RETRY', 2);
+      step('RETRY', 0);
+      const rems = a.remediations(e.id);
+      assert.deepEqual(rems.map((r) => r.state).sort(), ['DIAGNOSED', 'RETESTED']);
+      a.completeRetraining(s.founder, rems.find((r) => r.state === 'DIAGNOSED')?.id as string, 'evidence:retrained-2');
+      // The retest may start while still in RETRY (remediation RETESTED): once it passes, the path goes on.
+      assert.equal(attempt(h, s, e.id, w.scenarios.practice, 'SIMULATION', 95).outcome, 'PASS');
+      assert.ok(a.remediations(e.id).every((r) => r.state === 'RETESTED'));
+      step('ASSESSMENT', 3);
+    });
+  });
+
+  test('R2-34: practice in RETRY never consumes a retrained assessment failure\'s retest (RETRY keeps its exit)', () => {
+    withSeed((h, s) => {
+      const w = academyWorld(h, s);
+      const a = AcademyStore.for(h.store);
+      const e = a.enroll(s.founder, s.employee.id, w.programVersionId);
+      for (let i = 0; i < 6; i++) a.recordModuleCompletion(s.founder, e.id, `module-${i}`, `evidence:m${i}`);
+      a.advance(e.id);
+      attempt(h, s, e.id, w.scenarios.practice, 'SIMULATION');
+      assert.equal(a.advance(e.id).stage, 'ASSESSMENT');
+      assert.equal(attempt(h, s, e.id, w.scenarios.assessment, 'ASSESSMENT', 30).outcome, 'FAIL');
+      assert.equal(a.advance(e.id).stage, 'RETRY');
+      a.completeRetraining(s.founder, a.remediations(e.id)[0]?.id as string, 'evidence:retrained');
+      attempt(h, s, e.id, w.scenarios.practice, 'SIMULATION', 95);
+      assert.equal(a.remediations(e.id)[0]?.state, 'RETEST_READY', 'practice is not the assessment retest');
+      assert.equal(a.advance(e.id).stage, 'ASSESSMENT');
+    });
+  });
+
   test('an Academy attempt interrupted mid-run resumes to exactly one canonical attempt and one outcome', () => {
     withSeed((h, s) => {
       const w = academyWorld(h, s);
@@ -777,6 +851,31 @@ describe('C3 academy: gated, evidence-bound, never self-certifying', () => {
       assert.equal(AcademyStore.for(h.store).certifications(s.employee.id)[0]?.status, 'REVIEW_DUE', 'rollback never bypasses recertification');
       const r2 = AcademyStore.for(h.store).requireRecertification(s.founder, 'role:analyst', 'policy.changed');
       assert.equal(r2, 0, 'already review-due');
+    });
+  });
+
+  test('R2-35: a material rollout recertifies what is pinned to the from-version at rollout, not only what the plan saw', () => {
+    withSeed((h, s) => {
+      const w = academyWorld(h, s);
+      const reg = SkillStore.for(h.store);
+      const v2 = reg.registerSkillVersion(s.founder, { skillId: w.skill.id, versionLabel: '2.0.0', sourceRef: 'github:example.market.research', sourceRevision: 'r2', authorRef: 'org:example', licenseSpdx: 'MIT', dependencies: [], instructions: 'Guidance v2 for market research.', previousVersionId: w.version.id });
+      let v = reg.checkLicenseAndDependencies(reg.inspectSkillVersion(v2.id).id);
+      for (const [to, extra] of [['SECURITY_QUARANTINE', {}], ['SANDBOXED', { evidenceRef: 'review:s2', securityPassed: true }], ['BENCHMARKED', { evidenceRef: 'benchmark:b2' }], ['COMPARED', {}], ['APPROVED', {}]] as const) v = reg.advanceSkillVersion(s.founder, v.id, to, { reasonCode: 'step', ...extra });
+      const plan = reg.planUpdate(s.founder, { fromVersionId: w.version.id, toVersionId: v.id, material: true, recertificationImpact: 'FULL' });
+      assert.deepEqual([plan.impact.certificationIds, plan.impact.passportEntryIds], [[], []]);
+      // Between plan and rollout an Employee is certified on (and holds a passport pinned to) the from-version.
+      const t = hire(s.gov, s.founder, s.departmentId, false, 'role:analyst');
+      s.gov.transitionEmployee(s.founder, t.id, { to: 'TRAINING', reasonCode: 'onboarding' });
+      s.gov.transitionEmployee(s.founder, t.id, { to: 'PROBATION', reasonCode: 'trained' });
+      const { certificationId } = certify(h, s, t, w);
+      assert.equal(reg.passport(t.id)[0]?.skillVersionId, w.version.id);
+      reg.rolloutUpdate(s.founder, plan.id);
+      assert.equal(AcademyStore.for(h.store).certifications(t.id).find((c) => c.id === certificationId)?.status, 'REVIEW_DUE');
+      assert.deepEqual([reg.passport(t.id)[0]?.skillVersionId, reg.passport(t.id)[0]?.status], [v.id, 'RECERTIFICATION_REQUIRED']);
+      assert.deepEqual(reg.update(plan.id).impact.certificationIds, [], 'the plan-time record is kept');
+      // Rollback returns every passport the rollout moved, the window's too.
+      reg.rollbackUpdate(s.founder, plan.id, 'quality.regression');
+      assert.equal(reg.passport(t.id)[0]?.skillVersionId, w.version.id);
     });
   });
 

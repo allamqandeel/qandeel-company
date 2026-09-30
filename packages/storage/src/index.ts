@@ -156,7 +156,9 @@ export {
   MIN_PASSPHRASE_LENGTH,
   PORTABLE_FORMAT,
   RECOVERY_OBJECTIVES,
+  RESTORE_HOLD_CODE,
   createPortableBackup,
+  isOffDevice,
   planRetention,
   prunePortableBackups,
   pruneLocalBackups,
@@ -170,7 +172,8 @@ export {
   type PortableBackupResult,
   type RecoveryObjective,
   type ResilienceStatus,
+  type RestorePortableOptions,
   type RetentionPolicy,
 } from './resilience.js';
-export { rollbackSchemaUpdate, safeUpgrade, type SafeUpgradeReport } from './maintenance.js';
-export { clearUpdateHold, readUpdateHold, type UpdateHold } from './update-hold.js';
+export { rollbackSchemaUpdate, safeUpgrade, type RollbackReport, type SafeUpgradeReport } from './maintenance.js';
+export { RESTORE_IN_PROGRESS, clearUpdateHold, readUpdateHold, restoreStatus, type RestoreMarker, type RestorePhase, type RestoreStatus, type UpdateHold } from './update-hold.js';

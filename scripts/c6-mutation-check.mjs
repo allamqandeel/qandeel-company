@@ -29,6 +29,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const KERNEL = { cwd: 'packages/mind', tests: ['dist/test/c6-kernel.test.js'] };
 const STORE = { cwd: 'packages/storage', tests: ['dist/test/c6-improvement.test.js'] };
 const RES = { cwd: 'packages/storage', tests: ['dist/test/c6-resilience.test.js'] };
+const BACKUP = { cwd: 'packages/storage', tests: ['dist/test/backup.test.js'] };
 const SIGNAL = { cwd: 'packages/runtime', tests: ['dist/test/c6/c6-runtime.test.js'] };
 // C6-R1: operational judgment through the Review Pool (verification authority is never execution authority).
 const JUDGE_KERNEL = { cwd: 'packages/governance', tests: ['dist/test/c6r1-judgment.test.js'] };
@@ -67,13 +68,20 @@ const MUTATIONS = [
   {
     id: 'c6-tool-failure-unmapped',
     gate: 'a run that failed because its tool did not execute is TOOL evidence (read from the run\'s recorded failure)',
-    edits: [{ file: `${STORAGE}/improvement-core.js`, search: "'TOOL_FAILED', 'TOOL_NOT_EXECUTED',", replace: "'TOOL_FAILED',", expectedCount: 1 }],
+    // The cause families live in the one run-failure vocabulary C6 classifies from (R2-12).
+    edits: [{ file: `${GOV}/run-failures.js`, search: "TOOL_NOT_EXECUTED: 'TOOL',", replace: 'TOOL_NOT_EXECUTED: null,', expectedCount: 1 }],
     runs: [STORE],
+  },
+  {
+    id: 'c6-config-cause-blamed-on-provider',
+    gate: 'a run that failed for a missing route policy records that cause and is WORKFLOW evidence, never the provider (R2-12)',
+    edits: [{ file: `${GOV}/run-failures.js`, search: "case 'NO_ROUTE_POLICY':\n            return 'NO_ROUTE_POLICY';\n", replace: '', expectedCount: 1 }],
+    runs: [SIGNAL],
   },
   {
     id: 'c6-non-employee-negative-counted',
     gate: 'a failure whose validated cause is not the Employee is never counted against their profile',
-    edits: [{ file: `${MIND}/performance.js`, search: 'if (!a.employeeAccountable) {', replace: 'if (false) {', expectedCount: 1 }],
+    edits: [{ file: `${MIND}/performance.js`, search: "if (standing === 'NOT_EMPLOYEE') {", replace: 'if (false) {', expectedCount: 1 }],
     runs: [KERNEL, STORE],
   },
   {
@@ -187,6 +195,48 @@ const MUTATIONS = [
     runs: [RES],
   },
   {
+    id: 'c6-separate-volume-counts-as-off-device',
+    gate: 'R2-28: only an operator-attested destination meets the off-device objective; a second partition of the same disk never does',
+    edits: [{ file: `${STORAGE}/resilience.js`, search: "return domain === 'ATTESTED_OFF_DEVICE';", replace: "return domain !== 'SAME_VOLUME';", expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
+    id: 'c6-restore-dispatches-past-backup-point',
+    gate: 'R2-29: a clean restore holds every live job that could reach an external effect the lost device may already have performed',
+    edits: [{ file: `${STORAGE}/resilience.js`, search: 'const held = effectCapableLiveJobs(ctx).filter((jobId) => txHoldForReconciliation(ctx, jobId, RESTORE_HOLD_CODE));', replace: 'const held = [];', expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
+    id: 'c6-restore-hold-left-to-operator',
+    gate: 'R2 integration: a job held by a restore before it ever ran is an Employee\'s governed work — surfaced to and decided by the Founder, never the C1 operator',
+    edits: [{ file: `${STORAGE}/governance.js`, search: "OR EXISTS (SELECT 1 FROM work_items gw WHERE gw.id = j.work_item_id AND gw.owner_ref GLOB 'employee:*'))", replace: ')', expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
+    id: 'c6-existing-company-migrated-at-open',
+    gate: 'R2-30: an existing Company with pending migrations is never migrated live at open (safe-upgrade only)',
+    edits: [{ file: `${STORAGE}/store.js`, search: 'refuseExistingCompany: options.liveSchemaUpdate !== true,', replace: 'refuseExistingCompany: false,', expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
+    id: 'c6-start-skips-safe-upgrade',
+    gate: 'R2-30: the runtime upgrades an existing Company through the safe-upgrade lifecycle before opening it',
+    edits: [{ file: `${RT}/runtime.js`, search: "if (!isQandeelError(error, 'SCHEMA_UPDATE_REQUIRED'))", replace: 'if (true)', expectedCount: 1 }],
+    runs: [SIGNAL],
+  },
+  {
+    id: 'c6-maintenance-ignores-open-connection',
+    gate: 'm-22: maintenance refuses while another connection holds the database open (a Windows restore could not replace it)',
+    edits: [{ file: `${STORAGE}/maintenance.js`, search: 'assertDatabaseNotInUse(layout.databasePath);', replace: '/* mutation: in-use preflight removed */', expectedCount: 2 }],
+    runs: [RES],
+  },
+  {
+    id: 'c6-rollback-discards-post-update-work',
+    gate: 'R2-31: a rollback that would discard post-activation work is refused unless the operator explicitly acknowledges it',
+    edits: [{ file: `${STORAGE}/maintenance.js`, search: 'if (exists && !acknowledged) {', replace: 'if (false) {', expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
     id: 'c6-report-judgement-without-evidence',
     gate: 'an assessment, trend or recommendation cites evidence and carries its uncertainty',
     edits: [{ file: `${MIND}/reporting.js`, search: 'if (!free && c.evidenceRefs.length === 0)\n', replace: 'if (false)\n', expectedCount: 1 }],
@@ -203,6 +253,147 @@ const MUTATIONS = [
     gate: 'external outcomes are unavailable until a governed source exists (C7); none is accepted as evidence',
     edits: [{ file: `${STORAGE}/outcome-core.js`, search: "if (classes.includes('EXTERNAL_OUTCOME') && !EXTERNAL_OUTCOMES_AVAILABLE)\n", replace: 'if (false)\n', expectedCount: 1 }],
     runs: [STORE, FREE],
+  },
+  // --- R2 (cluster K4): C6 distinguishes productive learning from repeated activity -----------------------------
+  {
+    id: 'c6-recovered-failure-is-the-cause',
+    gate: 'a failure the work recovered from (a retry succeeded) is never the primary cause of the Employee\'s merits failure (R2-13)',
+    edits: [{ file: `${STORAGE}/improvement-core.js`, search: 'unrecoveredRuns.has(runId) || !runs.some', replace: 'true || !runs.some', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-work-item-counted-per-definition',
+    gate: 'one Work Item is one unit of evidence: only its latest live evaluation speaks for it in profiles, reports, economics and health (R2-14)',
+    edits: [{ file: `${STORAGE}/improvement-core.js`, search: 'AND NOT EXISTS (SELECT 1 FROM evaluation_results n WHERE n.work_item_id = e.work_item_id', replace: 'AND NOT EXISTS (SELECT 1 FROM evaluation_results n WHERE 0 AND n.work_item_id = e.work_item_id', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-pre-training-work-counts-as-later',
+    gate: 'a learning effect is judged only on work STARTED after the training, never on work evaluated after it (R2-15)',
+    edits: [{ file: `${MIND}/improvement.js`, search: 'f.workStartedAt > completedAt', replace: 'f.at > completedAt', expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  {
+    id: 'c6-pending-recurrence-ignored',
+    gate: 'an adverse follow-up whose cause is not validated keeps the learning effect open (never a final IMPROVEMENT_OBSERVED) (R2-17)',
+    edits: [{ file: `${MIND}/improvement.js`, search: "if (events.some((x) => eventStanding(x.e) === 'PENDING_ATTRIBUTION'))\n", replace: 'if (false)\n', expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  {
+    id: 'c6-pattern-reuse-evidence-reused',
+    gate: 'a pattern is shared only after two verified reuses on pairwise-disjoint evidence (R2-16)',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: 'patternExpansionAllowed(target, disjointVerifiedReuses(evidence))', replace: 'patternExpansionAllowed(target, evidence.length)', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-self-reuse-credited',
+    gate: 'reusing one\'s own pattern is not a System Contribution; only another Employee\'s verified reuse is (R2-16)',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: 'AND i.employee_id <> l.employee_id', replace: '', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-pending-adverse-reads-clean',
+    gate: 'adverse evidence whose cause is pending holds readiness and is disclosed, never read as a clean profile (R2-18)',
+    edits: [{ file: `${MIND}/performance.js`, search: "? ['ADVERSE_EVIDENCE_PENDING_ATTRIBUTION'] : []", replace: '? [] : []', expectedCount: 1 }],
+    runs: [KERNEL],
+  },
+  {
+    id: 'c6-disputed-cause-dead-end',
+    gate: 'a pool judge\'s dispute of a proposed cause reaches the Founder (escalation), never a terminal rejection that leaves the failure unattributed (R2-18)',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: "if (decision === 'REJECT' && ja.subjectKind === 'ATTRIBUTION') {", replace: 'if (false) {', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6-decided-finding-silences-recurrence',
+    gate: 'a problem recurring after its systemic finding was ADDRESSED / REJECTED opens a new linked finding (R2-19)',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: 'if (c.evidenceRefs.every((r) => seen.has(r)))\n', replace: 'if (true)\n', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-retraining-exhaustion-swallowed',
+    gate: 'another Employee\'s exhausted retraining merges into the open systemic candidate, never swallowed (R2-19)',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: "if (origin === 'RETRAINING_EXHAUSTED') {", replace: 'if (false) {', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-billed-cost-as-economic',
+    gate: 'C6 cost is the economic cost the budget ledger charges; a subscription / free route is not free work (R2-20)',
+    edits: [{ file: `${STORAGE}/improvement-core.js`, search: 'const m = n(u.economic_micros);', replace: 'const m = n(u.billed_micros);', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-zero-cost-efficient',
+    gate: 'work with no recorded cost earns no EFFICIENCY verdict (m-31)',
+    edits: [{ file: `${MIND}/evaluation.js`, search: 'if (ev.cost.productiveMicros + overhead === 0)\n', replace: 'if (false)\n', expectedCount: 1 }],
+    runs: [KERNEL],
+  },
+  // --- R2 second wave (cluster Q3): ONE meaning of adverse evidence in every attribution state (RR3) -----------
+  {
+    id: 'c6-rejected-cause-pending-forever',
+    gate: 'a Founder-REJECTED cause is decided ("no accountable cause"): never pending, so it never holds an effect or readiness forever (RR3-A)',
+    edits: [{ file: `${MIND}/performance.js`, search: "case 'REJECTED':\n            return 'NO_ACCOUNTABLE_CAUSE';", replace: "case 'REJECTED':\n            return 'PENDING_ATTRIBUTION';", expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  {
+    id: 'c6-rejected-cause-reads-clean',
+    gate: 'an adverse follow-up without an accountable cause makes the learning effect INCONCLUSIVE, never "no recurrence" (RR3-A)',
+    edits: [{ file: `${MIND}/improvement.js`, search: "return st === 'NO_ACCOUNTABLE_CAUSE' || st === 'NOT_ATTRIBUTABLE'; })) {", replace: 'return false; })) {', expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  {
+    id: 'c6-rejected-attribution-unread',
+    gate: 'every reader sees a Work Item\'s latest REJECTED attribution when none is live (RR3-A)',
+    edits: [{ file: `${STORAGE}/improvement-core.js`, search: "WHERE employee_id = ? AND state IN ('PROPOSED', 'VALIDATED', 'REJECTED') ORDER BY updated_at, rowid", replace: "WHERE employee_id = ? AND state IN ('PROPOSED', 'VALIDATED') ORDER BY updated_at, rowid", expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-corrected-causes-dropped',
+    gate: 'the Founder\'s corrected causes (ATTRIBUTION_DECIDE causes) reach the corrected-causes path of decideAttribution (RR3-A)',
+    edits: [{ file: `${STORAGE}/founder-actions.js`, search: '...(causes === undefined ? {} : { causes })', replace: '...({})', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-non-adverse-negative-pending',
+    gate: 'a negative on work where no attribution is due is never "pending attribution" and never holds readiness (RR3-B)',
+    edits: [{ file: `${MIND}/performance.js`, search: "return input.attributionDue ? 'PENDING_ATTRIBUTION' : 'NOT_ATTRIBUTABLE';", replace: "return 'PENDING_ATTRIBUTION';", expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  {
+    id: 'c6-post-training-recurrence-excluded',
+    gate: 'the same mistake made after the training on work started before it is adverse learning-effect evidence (RR3-E; FB-1: its post-training source events)',
+    edits: [{ file: `${MIND}/improvement.js`, search: 'for (const f of [...usable, ...earlier]) {', replace: 'for (const f of [...usable]) {', expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  // --- R2 Architecture Closure Correction FB-1: learning is timed by the event that happened, not the date someone judged it ---
+  {
+    id: 'fb1-pre-training-event-counted',
+    gate: 'an adverse source event whose act ended before the training is never post-training evidence, however late it was reviewed, evaluated or attributed (FB-1 B3)',
+    edits: [{ file: `${MIND}/improvement.js`, search: "if (e.actEndedAt !== null && e.actEndedAt <= trainingCompletedAt)\n        return 'BEFORE_TRAINING';", replace: "if (e.actEndedAt !== null && e.actEndedAt <= trainingCompletedAt)\n        return 'AFTER_TRAINING';", expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  {
+    id: 'fb1-review-timed-by-decision',
+    gate: 'a failed review is timed by the run that produced the reviewed output, never by the decision (the judging) time (FB-1 B1 / B2)',
+    edits: [{ file: `${STORAGE}/improvement-core.js`, search: "kind: 'REVIEW_DECISION', ...act, recordedAt: d.created_at", replace: "kind: 'REVIEW_DECISION', actStartedAt: d.created_at, actEndedAt: d.created_at, recordedAt: d.created_at", expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'fb1-source-event-multiplied',
+    gate: 'one adverse source event is counted once, by its durable identity — never once per read, evaluation or attribution (FB-1 B6)',
+    edits: [{ file: `${MIND}/improvement.js`, search: 'if (seen.has(e.sourceRef))\n', replace: 'if (false)\n', expectedCount: 1 }],
+    runs: [KERNEL],
+  },
+  {
+    id: 'fb1-unplaceable-event-final',
+    gate: 'an adverse event that cannot be placed in time (or whose attribution cannot be resolved) never yields a final effect it could change (FB-1 B5)',
+    edits: [{ file: `${MIND}/improvement.js`, search: 'if (uncertain.size > 0)\n', replace: 'if (false)\n', expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  {
+    id: 'rb2-pending-proposal-replaced-by-new-evidence',
+    gate: 'new adverse evidence never supersedes an undecided (or Founder-escalated) proposal: new events wait for its decision, then get their own generation (D-R2-20, RB-2)',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: "const pending = current !== null && current.state === 'PROPOSED' ? current : null;", replace: "const pending = (current !== null && current.state === 'PROPOSED' && due && setAttributionState(ctx, current, 'SUPERSEDED', SYSTEM_EVALUATOR_REF, 'evidence.changed'), null);", expectedCount: 1 }],
+    runs: [STORE],
   },
   // --- C6-R1: the Founder is not the operational bottleneck, and judgment never becomes execution authority ---
   {
@@ -244,13 +435,13 @@ const MUTATIONS = [
   {
     id: 'c6r1-self-judgment',
     gate: 'the executor, its delegation chain and the subject Employee are never drawn as the judge',
-    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return [...new Set([...parties, ...prior])];', replace: 'return [...new Set([...prior])];', expectedCount: 1 }],
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return [...new Set([...judgmentParties(ctx, workItemId, subjectEmployeeId), ...prior])];', replace: 'return [...new Set([...prior])];', expectedCount: 1 }],
     runs: [FREE],
   },
   {
     id: 'c6r1-judge-eligibility-not-rechecked',
     gate: 'a judge\'s qualification and independence are re-checked when it decides, not inherited from assignment',
-    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return { eligible: q !== undefined && independent,', replace: 'return { eligible: true,', expectedCount: 1 }],
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return { eligible: v !== null,', replace: 'return { eligible: true,', expectedCount: 1 }],
     runs: [FREE],
   },
   {
@@ -286,6 +477,143 @@ const MUTATIONS = [
     gate: 'an idempotent derivation (evaluate, assess, report) announces only when it recorded something new',
     edits: [{ file: `${RT}/runtime.js`, search: 'evaluate: (r) => r.changed,', replace: 'evaluate: (r) => true,', expectedCount: 1 }],
     runs: [SIGNAL],
+  },
+  // R2 K1 (docs/R2_FULL_STRONG_V1_INDEPENDENT_REVIEW_REPORT.md §8): pool judges.
+  {
+    id: 'c6r2-lesson-judge-drawn-before-evidence',
+    gate: 'R2-09: every LESSON judge draw (refill, recovery sweep, release, reassignment) passes the lesson evidence gate',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return lessonJudgeDraw !== null && lessonJudgeDraw(ctx, s.subjectId) !== null;', replace: 'return assignJudge(ctx, { ...s, lessonEvidenceReady: true }) !== null;', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6r2-judge-rubric-hold-not-rechecked',
+    gate: 'R2-08: a RUBRIC Quality Hold refuses a pool judge at the decision boundary (the shared eligibility predicate)',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: "OR (h.target_kind = 'RUBRIC' AND ? IS NOT NULL AND h.target_ref = ?)", replace: 'OR (0 AND ? IS NOT NULL AND h.target_ref = ?)', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6r2-withdrawn-judge-excluded-forever',
+    gate: 'R2-07 / m-12: a judge withdrawn for a transient reason (a lifted hold) may judge the subject again',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: "(state IN ('ASSIGNED', 'DECIDED', 'ESCALATED') OR reason_code = 'JUDGMENT_WORK_ENDED')", replace: '(1)', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6r2-judgment-survives-qualification',
+    gate: 'm-15: a suspended / revoked qualification withdraws its open judgments, not only its review keys',
+    edits: [{ file: `${STORAGE}/review.js`, search: 'withdrawJudgment(ctx, ja, `REVIEWER_${to}`);', replace: 'void 0;', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6r2-ended-judge-keeps-judgment',
+    gate: 'm-11: a judge Work Item that ends without its decision releases the judgment in the same transaction',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: '    releaseAbandonedJudgment(ctx, workItemId);\n}', replace: '}', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  // --- R2 second-wave remediation, cluster Q4 (RR4-1): a restore-check target is never a Company ---
+  {
+    id: 'c6q4-restore-check-copy-unmarked',
+    gate: 'RR4-1: an isolated restore-check target is held (RESTORE_CHECK_COPY) before its database exists, so no ordinary open starts it',
+    edits: [{ file: `${STORAGE}/backup.js`, search: 'markRestoreCheckCopy(layout.root, {', replace: 'void (layout.root, {', expectedCount: 1 }],
+    runs: [BACKUP],
+  },
+  {
+    id: 'c6q4-restore-check-hold-clearable',
+    gate: "RR4-1: clear-update-hold never clears a verification copy's permanent hold",
+    edits: [{ file: `${STORAGE}/update-hold.js`, search: 'if (isRestoreCheckCopy(root))', replace: 'if (false)', expectedCount: 1 }],
+    runs: [BACKUP],
+  },
+  {
+    id: 'c6q4-restore-check-copy-opens',
+    gate: 'RR4-1: only the isolated check itself passes the verification-copy hold; every ordinary open refuses it',
+    edits: [{ file: `${STORAGE}/store.js`, search: 'options.verificationCopy === true && isRestoreCheckCopy(workspace.root)', replace: 'isRestoreCheckCopy(workspace.root)', expectedCount: 1 }],
+    runs: [BACKUP],
+  },
+  // R2 architecture correction FB-2: a live portable restore is fail-closed from its first byte until the controlled
+  // restore commits (crash tests in c6-resilience kill a child process at every lifecycle point).
+  {
+    id: 'c6fb2-marker-after-db-copy',
+    gate: 'FB-2 C1: the RESTORE_IN_PROGRESS marker is durable BEFORE the first database byte (a death mid-copy leaves a held target)',
+    edits: [
+      { file: `${STORAGE}/resilience.js`, search: 'beginRestoreMarker(root, marker);', replace: 'void 0;', expectedCount: 1 },
+      { file: `${STORAGE}/resilience.js`, search: "fault('after-db-copy');", replace: "beginRestoreMarker(root, marker); fault('after-db-copy');", expectedCount: 1 },
+    ],
+    runs: [RES],
+  },
+  {
+    id: 'c6fb2-inspection-opens-partial-restore',
+    gate: 'FB-2 C2: every store open — read-only verify-mode inspection included — refuses a target under a RESTORE_IN_PROGRESS marker',
+    edits: [{ file: `${STORAGE}/store.js`, search: 'assertRestoreGate(workspaceRoot, options.restoreAttempt);', replace: 'void 0;', expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
+    id: 'c6fb2-marker-lifted-before-commit',
+    gate: 'FB-2 C5: the marker is lifted only after the controlled-restore transaction committed and the store closed',
+    edits: [
+      { file: `${STORAGE}/resilience.js`, search: 'const history = finish();', replace: "const history = 'lifted-early';", expectedCount: 1 },
+      { file: `${STORAGE}/resilience.js`, search: "fault('before-controlled-restore');", replace: "finish(); fault('before-controlled-restore');", expectedCount: 1 },
+    ],
+    runs: [RES],
+  },
+  {
+    id: 'c6fb2-restore-hold-clearable',
+    gate: 'FB-2: clear-update-hold never clears a live restore in progress',
+    edits: [{ file: `${STORAGE}/update-hold.js`, search: "if (readUpdateHold(root)?.code === RESTORE_IN_PROGRESS)\n        throw new QandeelError('MAINTENANCE_REFUSED'", replace: "if (false)\n        throw new QandeelError('MAINTENANCE_REFUSED'", expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
+    id: 'c6fb2-other-package-hijacks-partial-restore',
+    gate: 'FB-2 C6: a different package never takes over a partial restore without the explicit discard',
+    edits: [{ file: `${STORAGE}/resilience.js`, search: 'else if (options.discardPartialRestore !== true) {', replace: 'else if (false) {', expectedCount: 1 }],
+    runs: [RES],
+  },
+  {
+    id: 'c6fb2-bypass-not-bound-to-attempt',
+    gate: 'FB-2 C3: the restore bypass is bound to the marker attempt id, not only to the package',
+    edits: [{ file: `${STORAGE}/update-hold.js`, search: 'if (marker === null || marker.attemptId !== binding.attemptId || marker.packageId !== binding.packageId) {', replace: 'if (marker === null || marker.packageId !== binding.packageId) {', expectedCount: 1 }],
+    runs: [RES],
+  },
+  // R2 second wave, RR1-2: freed reviewer capacity is a wake; REQUIRED reviews before pool judgments.
+  {
+    id: 'c6rr1-decided-judgment-frees-nothing',
+    gate: 'RR1-2: a decided judgment frees its judge\'s slot for the waiting reviews in the same transaction',
+    edits: [{ file: `${STORAGE}/org-writes.js`, search: 'reviewerCapacityFreed(ctx, e.id);', replace: 'void 0;', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6rr1-withdrawn-judgment-frees-nothing',
+    gate: 'RR1-2: a withdrawn judgment (the Founder decided its subject) frees its judge\'s slot in the same transaction',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'reviewerCapacityFreed(ctx, ja.judgeEmployeeId, { kind: ja.subjectKind, id: ja.subjectId });', replace: 'void 0;', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6rr1-withdrawal-redraws-its-subject',
+    gate: 'RR1-2: the refill a judgment withdrawal runs never re-draws the very subject being withdrawn',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'reviewerCapacityFreed(ctx, ja.judgeEmployeeId, { kind: ja.subjectKind, id: ja.subjectId });', replace: 'reviewerCapacityFreed(ctx, ja.judgeEmployeeId, null);', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6rr1-decided-key-frees-nothing',
+    gate: 'RR1-2: a decided review key frees its reviewer\'s slot for the next waiting review in the same transaction',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: '        reviewerCapacityFreed(ctx, a.reviewerEmployeeId);\n        return { ...out,', replace: '        return { ...out,', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6rr1-released-key-frees-nothing',
+    gate: 'RR1-2: a released review key (its review work ended undecided) frees its reviewer\'s slot in the same transaction',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: '    reviewerCapacityFreed(ctx, a.reviewerEmployeeId);\n}', replace: '}', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6rr1-judgments-before-reviews',
+    gate: 'RR1-2: every refill fills the waiting REQUIRED reviews before any pool judgment (a blocking gate is never starved)',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return refillWaitingRequests(ctx, domain, limit) + refillJudgments(ctx, Math.min(200, limit), domain, except);', replace: 'return refillJudgments(ctx, Math.min(200, limit), domain, except) + refillWaitingRequests(ctx, domain, limit);', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6rr1-sweep-skips-waiting-actions',
+    gate: 'RR1-2: the restart sweep refills every OPEN request waiting for a reviewer (ACTION too) before drawing judgments',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return n + refillDomain(ctx, null, limit);', replace: 'return n + refillJudgments(ctx, limit);', expectedCount: 1 }],
+    runs: [FREE],
   },
 ];
 

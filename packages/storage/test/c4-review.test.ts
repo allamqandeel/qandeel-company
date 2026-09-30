@@ -7,12 +7,13 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { isQandeelError, type Id } from '@qandeel-company/domain';
+import { isQandeelError, newId, type Id } from '@qandeel-company/domain';
 
-import { ReviewStore } from '../src/index.js';
-import { beginGovernedRun, claimJob, holdReservation, recordReviewDecision, recordToolIntent, recordToolResult, reserveBudget, settle, settleReservation } from '../src/runtime-authority.js';
+import { OrganizationStore, ReviewStore, type ReviewAssignmentRecord } from '../src/index.js';
+import { beginGovernedRun, claimJob, holdReservation, reconcileOrganization, recordOrgAct, recordReviewDecision, recordToolIntent, recordToolResult, reserveBudget, settle, settleReservation } from '../src/runtime-authority.js';
+import { storeContext } from '../src/store.js';
 import { C2_KINDS, hire, seed, testManifest, type Seed } from './c2-helpers.js';
-import { activeReviewer, certifiedCandidate, decideActionReview, decideAssignment, reviewPlan, runFor } from './c4-helpers.js';
+import { activeReviewer, budgetDepartment, certifiedCandidate, decideActionReview, decideAssignment, departmentId, newSeat, placed, reviewPlan, reviewedOutput, runFor } from './c4-helpers.js';
 import { backoff, harness, type Harness } from './helpers.js';
 
 const code = (c: string) => (e: unknown): boolean => isQandeelError(e) && e.code === c;
@@ -348,6 +349,181 @@ describe('C4 P-07: a charged-failure deployment is excluded for the same Work It
       // A later possibly-billed attempt excludes it again (the release covered only the past).
       if (after.ok) holdReservation(h.store, again.fence, after.reservation.id, 'USAGE_UNREPORTED');
       assert.deepEqual(s.gov.chargedExclusions(workItemId), [s.deploymentId]);
+    });
+  });
+});
+
+// A secret-shaped value assembled at runtime: no secret-looking literal sits in the repository.
+const FAKE_KEY = ['sk', 'live', 'abcdefghijklmnopqrstuvwxyz99'].join('-');
+const refusedBy = (message: RegExp) => (e: unknown): boolean => isQandeelError(e, 'STORAGE_INVARIANT') && message.test(String((e as Error).cause));
+const lastJob = (h: Harness, workItemId: Id) => h.store.jobsFor(workItemId).at(-1);
+const shownTo = (h: Harness, a: ReviewAssignmentRecord | undefined): string => String((h.store.getWorkItem(a?.reviewWorkItemId as Id).processorInput as { instructions?: unknown }).instructions);
+
+describe('R2 K1: review integrity and Review Pool eligibility', () => {
+  test('R2-01: the executor never re-designs its own Review Plan (application and datastore); a rejected exact action stays rejected across plan versions', () => {
+    withSeed((h, s) => {
+      const rv = ReviewStore.for(h.store);
+      activeReviewer(h, s);
+      activeReviewer(h, s);
+      const { workItemId, claim } = runFor(h, s, s.employee, { reviewPlan: ACTION_PLAN });
+      // The ordinary delegable capability (e.g. to plan the review of work it delegates) — never over its own work.
+      s.gov.grant(s.founder, { employeeId: s.employee.id, capability: 'org.review.plan', riskCeiling: 'R1', dataClassCeiling: 'D3', reasonCode: 'plans.for.delegation' });
+      const merge = (key: string) => recordToolIntent(h.store, claim.fence, { toolCode: 'review', actionCode: 'merge', args: { text: 'risky change' }, idempotencyKey: `wi:${workItemId}:${key}` });
+      assert.equal(merge('s1').kind, 'REVIEW_REQUIRED');
+      decideActionReview(h, workItemId, 'FAIL');
+      const act = recordOrgAct(h.store, claim.fence, 1000, 'review.plan.declare', { workItemId, plan: ACTION_PLAN });
+      assert.deepEqual([act.outcome, act.code], ['REFUSED', 'SELF_REVIEW_REDESIGN'], 'the executor never supersedes the plan of its own work');
+      assert.deepEqual(rv.plans(workItemId).map((p) => [p.version, p.status]), [[1, 'ACTIVE']]);
+      // Defence in depth: the datastore refuses an executor-declared later version, whatever the path.
+      const ctx = storeContext(h.store);
+      const forged = (): unknown => ctx.db.immediate('forge plan', () => ctx.db.run(
+        `INSERT INTO review_plans (id, work_item_id, version, status, domain, applies_to, keys_json, independence_json, required_evidence_json, rubric_code, rubric_version, reviewer_instructions, reviewer_instructions_sha256, review_task_class, review_budget_money, review_budget_tokens, deadline_at, declared_by_ref, declared_run_id, created_at, operational_judgment)
+         SELECT ?, work_item_id, 2, 'SUPERSEDED', domain, applies_to, keys_json, independence_json, required_evidence_json, rubric_code, rubric_version, reviewer_instructions, reviewer_instructions_sha256, review_task_class, review_budget_money, review_budget_tokens, deadline_at, ?, NULL, created_at, operational_judgment
+           FROM review_plans WHERE work_item_id = ? AND version = 1`,
+        newId(), s.employee.ref, workItemId,
+      ));
+      assert.throws(forged, refusedBy(/the executor never re-designs its own review/));
+      // A Founder supersession is designed — and it never re-opens the exact action a reviewer rejected (D-C4-05).
+      rv.declarePlan(s.founder, workItemId, ACTION_PLAN);
+      assert.deepEqual(merge('s2'), { kind: 'DENIED', code: 'REVIEW_REJECTED', paused: false }, 'rejected under v1, still rejected under v2');
+      assert.equal(rv.requests({ workItemId }).filter((r) => r.subjectKind === 'ACTION').length, 1, 'no fresh review is drawn for the rejected action');
+    });
+  });
+
+  test('R2-02: a plan change wakes the executor parked on its action review — at supersession, when an applying plan arrives, during the run and at restart', () => {
+    withSeed((h, s) => {
+      const rv = ReviewStore.for(h.store);
+      activeReviewer(h, s);
+      const intent = (workItemId: Id, fence: Parameters<typeof recordToolIntent>[1]) => recordToolIntent(h.store, fence, { toolCode: 'review', actionCode: 'merge', args: { text: 'a' }, idempotencyKey: `wi:${workItemId}:s1` });
+      const V2 = reviewPlan({ appliesTo: 'ACTIONS', rubric: { code: 'quality.rubric', version: 2 } });
+      // (a) The plan is superseded while the executor waits on its request.
+      const a = runFor(h, s, s.employee, { reviewPlan: ACTION_PLAN });
+      assert.equal(intent(a.workItemId, a.claim.fence).kind, 'REVIEW_REQUIRED');
+      settle(h.store, a.claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_INDEPENDENT_REVIEW' }, { backoff });
+      assert.equal(lastJob(h, a.workItemId)?.state, 'WAITING');
+      rv.declarePlan(s.founder, a.workItemId, V2);
+      assert.equal(rv.requests({ workItemId: a.workItemId })[0]?.state, 'STALE');
+      assert.equal(lastJob(h, a.workItemId)?.state, 'QUEUED', 'the supersession wakes exactly the stranded waiter');
+      // (b) The executor waits for a plan that reviews actions; declaring one wakes it.
+      const b = runFor(h, s, s.employee, { reviewPlan: OUTPUT_PLAN });
+      assert.deepEqual(intent(b.workItemId, b.claim.fence), { kind: 'REVIEW_REQUIRED', code: 'REVIEW_PLAN_MISSING', reviewRequestId: null });
+      settle(h.store, b.claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_INDEPENDENT_REVIEW' }, { backoff });
+      assert.equal(lastJob(h, b.workItemId)?.state, 'WAITING', 'no plan for actions: the wait holds (never a model loop)');
+      rv.declarePlan(s.founder, b.workItemId, ACTION_PLAN);
+      assert.equal(lastJob(h, b.workItemId)?.state, 'QUEUED');
+      // (c) Superseded while the executor is still claimed: the WAIT settle re-check closes the lost-wake window.
+      const c = runFor(h, s, s.employee, { reviewPlan: ACTION_PLAN });
+      intent(c.workItemId, c.claim.fence);
+      rv.declarePlan(s.founder, c.workItemId, V2);
+      settle(h.store, c.claim.fence, { type: 'WAIT', reasonCode: 'AWAITING_INDEPENDENT_REVIEW' }, { backoff });
+      assert.equal(lastJob(h, c.workItemId)?.state, 'QUEUED');
+      // (d) A waiter stranded before this correction (a database from an earlier release) is woken by the bounded recovery sweep.
+      const job = lastJob(h, a.workItemId);
+      storeContext(h.store).db.immediate('strand', () => storeContext(h.store).db.run(`UPDATE queue_jobs SET state = 'WAITING', wait_reason = 'AWAITING_INDEPENDENT_REVIEW' WHERE id = ?`, job?.id as Id));
+      assert.equal(lastJob(h, a.workItemId)?.state, 'WAITING');
+      reconcileOrganization(h.store, h.supervisor, 500);
+      assert.equal(lastJob(h, a.workItemId)?.state, 'QUEUED', 'restart recovery wakes a waiter whose request went stale');
+    });
+  });
+
+  test('R2-07: the MANAGER key is satisfiable — one eligibility predicate at selection and decision; manager keys are filled first; a transient withdrawal is not permanent', () => {
+    withSeed((h, s) => {
+      const rv = ReviewStore.for(h.store);
+      const growth = departmentId(s, 'growth');
+      budgetDepartment(s, growth);
+      const { reviewer: spec } = activeReviewer(h, s);
+      const mgrSeat = newSeat(h, s, 'growth.qmgr-1', 'director.growth', 'role:reviewer.quality.general', 'MANAGER');
+      const { reviewer: mgr } = activeReviewer(h, s, 'quality.general', growth);
+      OrganizationStore.for(h.store).assignPrimary(s.founder, { positionId: mgrSeat.id, employeeId: mgr.id, reasonCode: 'placed' });
+      newSeat(h, s, 'growth.analyst-1', 'growth.qmgr-1');
+      const exec = placed(h, s, 'growth.analyst-1');
+      const openKeys = (w: Id) => {
+        const r = rv.requests({ workItemId: w }).find((x) => x.state === 'OPEN');
+        return { request: r, keys: r ? rv.assignments(r.id).filter((a) => a.state === 'ASSIGNED' && a.keyKind !== 'SHADOW') : [] };
+      };
+      // (a) Department independence exempts the manager at selection — and at the decision boundary.
+      const w1 = reviewedOutput(h, s, exec, reviewPlan({ appliesTo: 'OUTPUT', keys: [{ kind: 'SPECIALIST' }, { kind: 'MANAGER' }], independence: { excludeSameDepartment: true } }));
+      const m1 = openKeys(w1).keys.find((a) => a.keyKind === 'MANAGER');
+      assert.equal(m1?.reviewerEmployeeId, mgr.id);
+      assert.equal(decideAssignment(h, m1?.reviewWorkItemId as Id, 'PASS').code, 'RECORDED', 'the manager is not refused by the exclusion selection exempted it from');
+      // (b) The manager's own key is filled before a SPECIALIST key it could otherwise take.
+      const w2 = reviewedOutput(h, s, exec, reviewPlan({ appliesTo: 'OUTPUT', keys: [{ kind: 'SPECIALIST' }, { kind: 'MANAGER' }] }));
+      const k2 = openKeys(w2);
+      assert.deepEqual(k2.keys.map((a) => [a.keyKind, a.reviewerEmployeeId]).sort(), [['MANAGER', mgr.id], ['SPECIALIST', spec.id]].sort());
+      // (c) Withdrawn for a transient reason (a Quality Hold), the manager returns once the hold is lifted.
+      const m2 = k2.keys.find((a) => a.keyKind === 'MANAGER');
+      const hold = rv.placeQualityHold(s.founder, { targetKind: 'REVIEWER', targetRef: `employee:${mgr.id}`, reasonCode: 'reviewer.drift' });
+      assert.equal(decideAssignment(h, m2?.reviewWorkItemId as Id, 'PASS').code, 'REVIEWER_NOT_ELIGIBLE');
+      rv.liftQualityHold(s.founder, hold.id, 'reviewer.recalibrated');
+      const back = openKeys(w2).keys.find((a) => a.keyKind === 'MANAGER');
+      assert.equal(back?.reviewerEmployeeId, mgr.id, 'a withdrawn reviewer is not excluded from the subject for ever');
+      for (const k of openKeys(w2).keys) decideAssignment(h, k.reviewWorkItemId as Id, 'PASS');
+      assert.equal(h.store.getWorkItem(w2).state, 'REVIEWED');
+    });
+  });
+
+  test('R2-08: a RUBRIC Quality Hold stops reliance at the decision boundary (the same predicate as selection)', () => {
+    withSeed((h, s) => {
+      const rv = ReviewStore.for(h.store);
+      activeReviewer(h, s);
+      const c = completeForReview(h, s);
+      rv.placeQualityHold(s.founder, { targetKind: 'RUBRIC', targetRef: 'quality.rubric@1', reasonCode: 'rubric.suspect' });
+      const out = decideAssignment(h, c.keys[0]?.reviewWorkItemId as Id, 'PASS');
+      assert.deepEqual([out.outcome, out.code], ['REFUSED', 'REVIEWER_NOT_ELIGIBLE']);
+      assert.deepEqual([rv.request(c.request.id).state, rv.request(c.request.id).waitingReason], ['OPEN', 'QUALITY_HOLD']);
+      assert.equal(h.store.getWorkItem(c.workItemId).state, 'WAITING_REVIEW', 'nothing is reviewed under a held rubric');
+    });
+  });
+
+  test('R2-11: the action reviewer sees the whole action on every fill; an oversized subject fails closed; secret-shaped arguments are refused before any request', () => {
+    withSeed((h, s) => {
+      const rv = ReviewStore.for(h.store);
+      activeReviewer(h, s);
+      activeReviewer(h, s);
+      const mailer = s.gov.registerTool(s.founder, { code: 'mailer', driverCode: 'fake-mailer', egress: 'NONE' });
+      s.gov.registerToolAction(s.founder, { toolId: mailer.id, code: 'send', risk: 'R2', sideEffects: 'IDEMPOTENT', mutatesExternal: false, dataClassCeiling: 'D3', argsSchema: { fields: { body: { type: 'string', required: true, maxLength: 8000 }, recipient: { type: 'string', required: true, maxLength: 200 } } }, costPerCallMicros: 0 });
+      s.gov.grant(s.founder, { employeeId: s.employee.id, capability: 'tool:mailer.send', riskCeiling: 'R3', dataClassCeiling: 'D3', reasonCode: 'seed' });
+      const body = 'Quarterly summary line. '.repeat(200);
+      const send = (fence: Parameters<typeof recordToolIntent>[1], workItemId: Id, args: { body: string; recipient: string }, key: string) => recordToolIntent(h.store, fence, { toolCode: 'mailer', actionCode: 'send', args, idempotencyKey: `wi:${workItemId}:${key}` });
+      const w = runFor(h, s, s.employee, { reviewPlan: ACTION_PLAN });
+      assert.equal(send(w.claim.fence, w.workItemId, { body, recipient: 'finance-team' }, 's1').kind, 'REVIEW_REQUIRED');
+      const request = rv.requests({ workItemId: w.workItemId }).find((r) => r.subjectKind === 'ACTION' && r.state === 'OPEN');
+      const first = rv.assignments(request?.id as Id).find((a) => a.keyKind === 'SPECIALIST' && a.state === 'ASSIGNED');
+      assert.ok(shownTo(h, first).includes(body) && shownTo(h, first).includes('"recipient":"finance-team"'), 'the reviewer sees every argument the review binds (sorted last included)');
+      // Every refill shows the same durable subject.
+      h.store.requestCancellation(first?.reviewWorkItemId as Id, { reasonCode: 'reviewer.unavailable' });
+      const refilled = rv.assignments(request?.id as Id).find((a) => a.keyKind === 'SPECIALIST' && a.state === 'ASSIGNED');
+      assert.ok(refilled && refilled.id !== first?.id);
+      assert.equal(shownTo(h, refilled), shownTo(h, first), 'a refill never rebuilds the subject without its arguments');
+      // Plan instructions + the whole subject beyond the reviewer's input bound: refused, never truncated.
+      const big = runFor(h, s, s.employee, { reviewPlan: reviewPlan({ appliesTo: 'ACTIONS', reviewerInstructions: 'Judge the subject against the rubric. '.repeat(210) }) });
+      assert.deepEqual(send(big.claim.fence, big.workItemId, { body, recipient: 'finance-team' }, 's1'), { kind: 'DENIED', code: 'REVIEW_SUBJECT_TOO_LARGE', paused: false });
+      assert.equal(rv.requests({ workItemId: big.workItemId }).length, 0);
+      // Secret-shaped arguments never reach a reviewer's Work Item: refused before any request exists.
+      const sec = runFor(h, s, s.employee, { reviewPlan: ACTION_PLAN });
+      assert.deepEqual(send(sec.claim.fence, sec.workItemId, { body: `use api_key=${FAKE_KEY}`, recipient: 'finance-team' }, 's1'), { kind: 'DENIED', code: 'SECRET_MATERIAL', paused: false });
+      assert.equal(rv.requests({ workItemId: sec.workItemId }).length, 0);
+      assert.equal(storeContext(h.store).db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM work_items WHERE instr(processor_input_json, ?) > 0`, FAKE_KEY)?.n, 0);
+    });
+  });
+
+  test('m-11: a dead-lettered review Work Item releases its key in the same transaction', () => {
+    withSeed((h, s) => {
+      const rv = ReviewStore.for(h.store);
+      activeReviewer(h, s);
+      activeReviewer(h, s);
+      const c = completeForReview(h, s);
+      const first = c.keys[0];
+      for (let i = 0; i < 20 && lastJob(h, first?.reviewWorkItemId as Id)?.state !== 'DEAD_LETTER'; i++) {
+        h.clock.advance(120_000);
+        const claim = claimRun(h, first?.reviewWorkItemId as Id);
+        settle(h.store, claim.fence, { type: 'RETRYABLE_FAILURE', code: 'PROVIDER_UNAVAILABLE' }, { backoff });
+      }
+      assert.equal(lastJob(h, first?.reviewWorkItemId as Id)?.state, 'DEAD_LETTER');
+      assert.equal(h.store.getWorkItem(first?.reviewWorkItemId as Id).state, 'BLOCKED');
+      assert.equal(rv.assignments(c.request.id).find((a) => a.id === first?.id)?.state, 'WITHDRAWN');
+      const refilled = rv.assignments(c.request.id).find((a) => a.state === 'ASSIGNED' && a.keyKind === 'SPECIALIST');
+      assert.ok(refilled && refilled.reviewerEmployeeId !== first?.reviewerEmployeeId, 'the key goes to another reviewer at once');
     });
   });
 });

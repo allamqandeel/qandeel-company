@@ -78,7 +78,7 @@ const MUTATIONS = [
   {
     id: 'c4-decision-not-rechecked',
     gate: 'a reviewer\'s eligibility is re-checked at the decision boundary',
-    edits: [{ file: `${STORE}/review-core.js`, search: 'if (!reviewerEligibleIgnoringOwnSlot(ctx, a, q.domain,', replace: 'if (false && !reviewerEligibleIgnoringOwnSlot(ctx, a, q.domain,', expectedCount: 1 }],
+    edits: [{ file: `${STORE}/review-core.js`, search: '        if (qualificationVersion === null) {', replace: '        if (false) {', expectedCount: 1 }],
     runs: [REVIEW],
   },
   {
@@ -122,6 +122,42 @@ const MUTATIONS = [
     gate: 'work with an open handoff does not finish; it waits for its delegates',
     edits: [{ file: `${RT}/c2/employee-task.js`, search: 'if (gov.openHandoffs() > 0) {', replace: 'if (false) {', expectedCount: 1 }],
     runs: [RUNTIME],
+  },
+  {
+    id: 'c4-open-handoff-set-narrowed',
+    gate: 'R2-04: one open-handoff set — an escalated handoff parks the delegator (no re-run per WAIT settle)',
+    edits: [{ file: `${STORE}/org-core.js`, search: "export const OPEN_HANDOFF_STATES = ['OFFERED', 'ACCEPTED', 'CLARIFICATION_REQUESTED', 'ESCALATED'];", replace: "export const OPEN_HANDOFF_STATES = ['OFFERED', 'ACCEPTED'];", expectedCount: 1 }],
+    runs: [ORG, RUNTIME],
+  },
+  {
+    id: 'c4-delegator-waits-on-own-clarification',
+    gate: 'R2-04: a delegate\'s pending question is answered by the delegator\'s next turn, never waited on',
+    edits: [{ file: `${RT}/c2/employee-task.js`, search: '                    if (gov.clarificationsRequested() > 0) {\n', replace: '                    if (false) { /* mutation: the delegator parks on its own pending question */\n', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'rr2-2-final-refusal-silent',
+    gate: 'RR2-2: a FINAL refused for a pending question is told to the model (a step result), never a silent continue',
+    edits: [{ file: `${RT}/c2/employee-task.js`, search: "                        gov.refuseFinal(s.turn, 'FINAL_REFUSED_CLARIFICATION_PENDING');\n", replace: '                        /* mutation: the refusal is silent */\n', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
+  {
+    id: 'rr2-2-failed-delegator-keeps-children',
+    gate: 'RR2-2: a delegator that FAILS cancels the work it delegated (no child left waiting under a dead parent)',
+    edits: [{ file: `${STORE}/work-core.js`, search: '    if (to === \'FAILED\')\n        cancelDelegatedChildren(ctx, item.id, opts.trace);\n', replace: '    /* mutation: a FAILED delegator leaves its delegated work running */\n', expectedCount: 1 }],
+    runs: [ORG],
+  },
+  {
+    id: 'rr2-5-rework-under-ended-lineage',
+    gate: 'RR2-5: work never re-enters the queue under an ended delegator (retained completed child sent back to rework)',
+    edits: [{ file: `${STORE}/work-core.js`, search: '    if (ended !== null) {', replace: '    if (false) { /* mutation: re-queued under a dead parent */', expectedCount: 1 }],
+    runs: [ORG],
+  },
+  {
+    id: 'c4-restart-answers-clarification',
+    gate: 'm-01: starting work again accepts only an OFFERED handoff (a pending question stays open)',
+    edits: [{ file: `${STORE}/org-core.js`, search: "AND delegate_employee_id = ? AND state = 'OFFERED'`", replace: "AND delegate_employee_id = ? AND state IN ('OFFERED', 'CLARIFICATION_REQUESTED')`", expectedCount: 1 }],
+    runs: [ORG],
   },
   {
     id: 'c4-p07-reservation-unchecked',
@@ -182,6 +218,73 @@ const MUTATIONS = [
     gate: 'a staffing request must address every Stage 10 alternative before a persistent Employee',
     edits: [{ file: `${GOV}/organization.js`, search: "            throw new QandeelError('VALIDATION_FAILED', 'every Stage 10 staffing alternative must be addressed before a persistent employee', { field: `alternatives.${k}`, reason: 'STAFFING_EVIDENCE_INCOMPLETE' });", replace: "            return [k, String(v ?? '')];", expectedCount: 1 }],
     runs: [KERNEL, ORG],
+  },
+  // R2 K1 (docs/R2_FULL_STRONG_V1_INDEPENDENT_REVIEW_REPORT.md §8): review integrity and Review Pool eligibility.
+  {
+    id: 'c4r2-executor-redesigns-own-plan',
+    gate: 'R2-01: the executor never supersedes the Review Plan of its own work (the application refusal, ahead of the 0011 trigger)',
+    edits: [{ file: `${STORE}/org-writes.js`, search: "refuse('SELF_REVIEW_REDESIGN');", replace: 'void 0;', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4r2-rework-scoped-by-plan',
+    gate: 'R2-01: a rejected exact action stays rejected under every later plan version (D-C4-05)',
+    edits: [{ file: `${STORE}/review-core.js`, search: "AND state = 'REWORK' LIMIT 1`, s.item.id, s.fingerprint);", replace: "AND state = 'REWORK' AND plan_id = ? LIMIT 1`, s.item.id, s.fingerprint, plan.id);", expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4r2-stranded-action-wait-not-woken',
+    gate: 'R2-02: a plan change wakes the executor parked on its action review (supersession, a newly applying plan, the WAIT settle, restart)',
+    edits: [{ file: `${STORE}/review-core.js`, search: "wakeWorkItemJob(ctx, workItemId, ['AWAITING_INDEPENDENT_REVIEW'], 'review.plan_changed');", replace: 'void 0;', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4r2-manager-key-department-bound',
+    gate: 'R2-07: the decision re-check exempts the MANAGER key from department independence, exactly as selection does',
+    edits: [{ file: `${STORE}/review-core.js`, search: "a.keyKind !== 'MANAGER' && a.keyKind !== 'SHADOW'", replace: "a.keyKind !== 'SHADOW'", expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4r2-manager-key-filled-last',
+    gate: 'R2-07: MANAGER / FOUNDER keys are filled before a SPECIALIST key the manager could otherwise take',
+    edits: [{ file: `${STORE}/review-core.js`, search: "(kind === 'MANAGER' || kind === 'FOUNDER' ? 0 : 1)", replace: '(0)', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4r2-withdrawn-reviewer-excluded-forever',
+    gate: 'R2-07 / m-12: only reviewers holding or having decided a key (or who abandoned it) are excluded from the subject',
+    edits: [{ file: `${STORE}/review-core.js`, search: "(a.state === 'ASSIGNED' || a.state === 'DECIDED' || a.withdrawReason === 'REVIEW_WORK_ENDED')", replace: '(true)', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4r2-rubric-hold-not-rechecked',
+    gate: 'R2-08: a RUBRIC Quality Hold stops reliance at the decision boundary (the shared eligibility predicate)',
+    edits: [{ file: `${STORE}/review-core.js`, search: "OR (h.target_kind = 'RUBRIC' AND ? IS NOT NULL AND h.target_ref = ?)", replace: 'OR (0 AND ? IS NOT NULL AND h.target_ref = ?)', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4r2-action-subject-truncated',
+    gate: 'R2-11: the action reviewer is shown every canonical argument the review fingerprint binds',
+    edits: [{ file: `${STORE}/governed-writes.js`, search: 'with arguments ${canonicalJson(args)}`;', replace: 'with arguments ${canonicalJson(args).slice(0, 3000)}`;', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4r2-oversized-subject-admitted',
+    gate: 'R2-11: an action that cannot be shown whole to its reviewer is refused before its request exists, never cut to fit',
+    edits: [{ file: `${STORE}/review-core.js`, search: 'planInstructions(ctx, plan.id).length + 1 + s.actionSubject.length > REVIEWER_INPUT_MAX', replace: 'false', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4r2-secret-arguments-reach-reviewer',
+    gate: 'R2-11: secret-shaped action arguments are refused before any review request or reviewer Work Item exists',
+    edits: [{ file: `${STORE}/governed-writes.js`, search: 'if (containsSecretMaterial(actionSubject))', replace: 'if (false)', expectedCount: 1 }],
+    runs: [REVIEW],
+  },
+  {
+    id: 'c4r2-dead-letter-keeps-review-key',
+    gate: 'm-11: a dead-lettered review Work Item releases its key in the dead-letter transaction',
+    edits: [{ file: `${STORE}/queue.js`, search: 'releaseAbandonedReviewWork(ctx, wi.id);', replace: 'void 0;', expectedCount: 1 }],
+    runs: [REVIEW],
   },
 ];
 

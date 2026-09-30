@@ -108,6 +108,13 @@ export interface GovernedRunServices {
   submitReviewDecision(proposal: ReviewDecisionProposal, step: number): ReviewDecisionOutcome;
   /** C4: open handoffs this run's Work Item delegated (its work cannot finish while any is open). */
   openHandoffs(): number;
+  /** C4 (R2-04): of those, handoffs whose delegate asked this run's Employee a question (`handoff.clarify` answers it). */
+  clarificationsRequested(): number;
+  /**
+   * RR2-2: records that this step's FINAL was refused and why (codes and delegation references only), as the step's
+   * result: the next turn's governed context shows the model the question it must answer before it can finish.
+   */
+  refuseFinal(step: number, code: 'FINAL_REFUSED_CLARIFICATION_PENDING'): void;
   /** C5: the Employee's message into the Founder thread its Work Item answers (fenced; never authority). */
   sendMessage(proposal: MessageProposal, step: number): MessageOutcome;
   /** C5: a Director's goal derivation / link from inside its run (fenced). */
