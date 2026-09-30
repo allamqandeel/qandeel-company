@@ -25,7 +25,7 @@ below are not the Product / Architecture Stages 0–18 in `docs/authority/compan
 | `C4` | Organization + CEO + Directors + Delegation + Review Pool | Cloud Mega-Task | CLOSED / MERGED / CANONICAL (PR #8, `main` @ `595083a`) |
 | `C5` | Founder Command Center | Cloud Mega-Task | CLOSED / MERGED / CANONICAL (PR #10, `main` @ `7c45f2a`) |
 | `C6` | Reporting + Learning + Evaluation + Resilience | Cloud Mega-Task | CLOSED / MERGED / CANONICAL (PR #11, `main` @ `b4f91ca`) |
-| `R2` | Full Strong-v1 Independent Review | Review | IN REVIEW — STOPPED, NOT CLOSED: third recurrence in three root-cause families; architecture review required (branch `review/r2-full-strong-v1`; report §15) |
+| `R2` | Full Strong-v1 Independent Review | Review | IN REVIEW — architecture correction (R2-ARCH-CLOSE: FA-1, FB-1, FB-2, AC-01 after the §15 STOP; branch `review/r2-full-strong-v1`; report §16) |
 | `C7` | APP-OPS Company Side + Pilot Instrumentation | Cloud Mega-Task | Not started |
 | `L1` | Local Integration & Acceptance | Local | Not started |
 | `P1` / `P2` / `P3` | Controlled Pilots | Local operation | Not started |

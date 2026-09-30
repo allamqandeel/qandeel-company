@@ -1,8 +1,9 @@
 # R2 — Full Strong-v1 Independent Review Report
 
-**Status:** **STOPPED — NOT CLOSED.** The final fresh re-review (§15) reproduced a third recurrence in three
-root-cause families (budget-wait resume, C6 evidence time, restore lifecycle); by rule no third patch was made and
-the families are returned to the Technical Lead / Founder as architecture problems. **Not ready for C7.**
+**Status:** **IN REVIEW — ARCHITECTURE CORRECTION (§16).** The final fresh re-review (§15) reproduced a third
+recurrence in three root-cause families (budget-wait resume, C6 evidence time, restore lifecycle); by rule no third
+patch was made and the families were returned to the Technical Lead / Founder. The Product Owner then approved one
+bounded architecture correction (R2-ARCH-CLOSE, §16) for those families and AC-01. **Not ready for C7.**
 §1–§11 are the register frozen at `dc408a3` before any code change; §12–§15 record the remediation waves and
 re-reviews; the identity and root cause of every frozen finding stay traceable.
 
@@ -577,3 +578,38 @@ reports `RUNTIME_NOT_READY` instead of the hold reason, and `rollback-update` re
   the restore / budget-wait decisions are made (its `budget_wait_needs` table belongs to the open family).
 - **READY FOR C7: NO** — three MAJOR root-cause families (money-scheduling, learning-evidence integrity,
   crash-safety of the live restore) are unresolved at the architecture level.
+
+## 16. Architecture closure correction (R2-ARCH-CLOSE)
+
+After the §15 STOP the Product Owner approved one bounded architecture correction for the three stopped families
+and AC-01 — not a new review and not a third patch cycle: one implementation wave, focused proofs, ONE targeted
+re-review (at most two reviewers, scope locked to the four families and their seams), a stop on any BLOCKER / MAJOR
+in the same families, then one final full local preflight and one PR.
+
+### 16.1 Start gate (2026-09-30)
+
+| Check | Result |
+|---|---|
+| Branch / head | `review/r2-full-strong-v1` @ `65319ec271e7d42b1e330d757962fd76a08bec8f` locally and on `origin` (fetched with GitHub Desktop's Git) |
+| `origin/main` | `b4f91ca3af883907b3c42567a0c757587bec0391` — not advanced |
+| Working tree / PR | clean; no PR for the branch |
+| Read before design | §15 and D-R2-01…D-R2-14 |
+
+### 16.2 Product Owner confirmations
+
+Recorded as D-R2-15: PO-R2-A (D-R2-06 attribution dispute → Founder escalation), PO-R2-B (D-R2-12 REJECT = no
+accountable cause established), PO-R2-C (event-level learning time, spanning work), PO-R2-D (AC-01: Director seat AND
+explicit Founder-delegated grant). The "confirmation requested" notes on D-R2-06 / D-R2-12 are replaced by these.
+
+### 16.3 Fail-first on the start head
+
+| Family | Reproduction | Start-head result |
+|---|---|---|
+| FA-1 | `fa2-herd-storage.mjs` (10 waiters of 5 000 on one 8 000 envelope) | "N=10 waiters served 10; runs 66 (minimum 11); budget.refused 55; events 429" |
+| FB-1 | `f1-effect-time.mjs` (all mistakes before training, clean rework after) | "NO_IMPROVEMENT SAME_MISTAKE_RECURRED \| counts the pre-training mistakes as recurrence: true" |
+| FB-2 | `f3-portable-crash.mjs crash / inspect` (process exit right after the DB copy) | "update hold: null", "ordinary (runtime) open: OK, schema 11", jobs CLAIMED / QUEUED, 0 `recovery.clean_restore` rows |
+| AC-01 | `txGoalAct` (`goals.ts` ~117) by inspection, proved by the fail-first tests of §16.4 | `goal.derive` checks the Director seat only; `goal.link` checks neither seat nor grant |
+
+`security-review` (G1) was attempted again and failed at launch: its first step is a shell command
+(`git diff origin/HEAD...`) and the Bash tool does not run on this host. The environment was not changed; the manual
+security / boundary review the brief defines is recorded in §16.6.

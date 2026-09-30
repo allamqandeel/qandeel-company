@@ -2654,7 +2654,7 @@ frozen id; the report records root cause, fix, proof and mutation per id.
   (`ATTRIBUTION_PENDING`) and readiness at NOT_READY (`ADVERSE_EVIDENCE_PENDING_ATTRIBUTION`), a dimension it
   outweighs gets no level, the monthly review discloses it — and it is still never counted against the Employee
   (D-C6-03).
-- **Amends D-C6-10 for attributions only (Product Owner confirmation requested):** a pool judge's FAIL on an
+- **Amends D-C6-10 for attributions only (Product Owner CONFIRMED 2026-09-30, PO-R2-A in D-R2-15):** a pool judge's FAIL on an
   attribution escalates to the Founder (who decides with corrected causes through `decideAttribution`) instead of a
   terminal REJECTED no one can correct. Lessons are unchanged (FAIL rejects).
 - Only an unrecovered system failure can be the primary cause; a recovered one is at most CONTRIBUTING / LOW. The
@@ -2728,7 +2728,7 @@ a judge draw yields to waiting REQUIRED reviews; a withdrawal's refill never re-
 startup sweep refills every waiting request (ACTION included) before judgments. No polling: the capacity change is
 the wake; new review jobs advance the durable wake generation through the queue triggers.
 
-## D-R2-12 — One meaning of adverse evidence in every attribution state (Technical Lead, R2 second wave; RR3-A/B/E; refines D-R2-06 — **Product Owner confirmation requested for the REJECT semantics**)
+## D-R2-12 — One meaning of adverse evidence in every attribution state (Technical Lead, R2 second wave; RR3-A/B/E; refines D-R2-06 — **REJECT semantics Product Owner CONFIRMED 2026-09-30, PO-R2-B in D-R2-15**)
 
 `adverseStanding` is the single definition every C6 reader uses (profile, readiness, capability regression,
 learning-effect assessment, reports): VALIDATED and the Employee's own judgment → ACCOUNTABLE (the only standing
@@ -2758,3 +2758,32 @@ hold before the database exists; every ordinary open, safe-upgrade and rollback 
 refuses to clear it; only the check's own internal open and read-only verify-mode inspection open it. A restored
 Company becomes live only through the controlled restore (`restorePortableBackup`: effect-capable jobs held, opened
 at its own version, safe-upgrade). No second live-restore path exists.
+
+## D-R2-15 — Product Owner confirmations for the R2 architecture closure (Product Owner, 2026-09-30)
+
+Recorded from the R2 Architecture Closure Correction brief (`R2-ARCH-CLOSE`), which the Product Owner approved.
+
+- **PO-R2-A — D-R2-06 attribution dispute semantics: CONFIRMED.** A Review Pool judge who FAILS / disputes a proposed
+  causal attribution neither silently authors a corrected cause nor terminally rejects it: the attribution escalates
+  to the Founder, who may VALIDATE it as-is, VALIDATE corrected causes, or REJECT it. Lessons keep their independent
+  review semantics (FAIL rejects). This confirms the D-R2-06 amendment of D-C6-10 for attributions.
+- **PO-R2-B — D-R2-12 Founder REJECT semantics: CONFIRMED.** A Founder REJECT means *no accountable cause has been
+  established from the available evidence* — not "the Employee did nothing wrong" and not "the event did not occur".
+  The adverse evidence stays disclosed, is not counted against the Employee, is not pending forever, makes a learning
+  effect INCONCLUSIVE / reassessable (never a final NO_IMPROVEMENT), and a later independent, properly evidenced event
+  may still establish a new cause.
+- **PO-R2-C — Work spanning the training boundary: CONFIRMED.** Learning-effect time is event-based, not
+  Work-Item-based. Positive evidence: the follow-up Work Item itself started after training completed and reaches the
+  qualified-outcome standard. Adverse / recurrence evidence: the specific adverse source event supporting the
+  recurrence occurred after training completed and the ordinary attribution rules establish the target accountable
+  cause. Work started before training: its pre-training mistakes never become post-training recurrences because
+  review / evaluation / attribution / completion happened later; a real post-training occurrence may count; correct
+  completion after training with no new adverse event is neither positive nor negative evidence. When event time or
+  provenance cannot place the adverse behaviour on one side of the boundary, the result fails closed to INCONCLUSIVE /
+  NOT_YET_TESTED — never a final NO_IMPROVEMENT or REGRESSION.
+- **PO-R2-D — AC-01, Title ≠ Authority for Department Goals: CONFIRMED.** For an Employee to derive or link a
+  Department Goal from a governed run BOTH are required: the applicable Director seat / organizational eligibility
+  and an explicit Founder-delegated capability grant, through the existing permission / grant / governed-run system.
+  Neither replaces the other; no authority is implied by a title. PG-08 (Department-scoped grant semantics) is not
+  implemented: department scope stays constrained by the Director's actual seat / placement. This resolves AC-01 in
+  favour of the Founding Constitution / Stage 3 / C4 rule.
