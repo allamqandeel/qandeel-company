@@ -757,7 +757,7 @@ describe('RR3: adverse evidence has one meaning in every attribution state', () 
     });
   });
 
-  test('RR3-E: the same mistake made after the training on work started before it is a recurrence — never silently excluded', () => {
+  test('RR3-E / FB-1 matrix 2 + 8: the same mistake truly made after the training on work started before it is a recurrence — and only the post-training event counts', () => {
     withSeed((h, s, m) => {
       activate(s, m);
       activeReviewer(h, s);
@@ -784,6 +784,269 @@ describe('RR3: adverse evidence has one meaning in every attribution state', () 
       const judged = m.assessIntervention(iid).intervention;
       assert.deepEqual([judged.effect, judged.effectBasis], ['NO_IMPROVEMENT', 'SAME_MISTAKE_RECURRED']);
       assert.ok(judged.evidenceRefs.includes(`work_item:${w}`));
+      // FB-1: the recurrence is the post-training NOT_ACHIEVED outcome (of the output made after the training); the
+      // failed review of the pre-training output is not.
+      const verification = m.evaluation(w)?.evidenceRefs.find((r) => r.startsWith('outcome_verification:'));
+      assert.ok(verification && judged.evidenceRefs.includes(verification), JSON.stringify(judged.evidenceRefs));
+      const failed = failedReviewRefs(h, w);
+      assert.equal(failed.length, 1);
+      assert.ok(failed.every((r) => !judged.evidenceRefs.includes(r)), 'the pre-training mistake is never a recurrence');
+    });
+  });
+});
+
+/** The counting FAILED review decisions of a Work Item, as source references. */
+function failedReviewRefs(h: Harness, workItemId: Id): string[] {
+  const rv = ReviewStore.for(h.store);
+  return rv.requests({ workItemId }).flatMap((r) => rv.decisions(r.id)).filter((d) => d.outcome === 'FAIL').map((d) => `review_decision:${d.id}`);
+}
+
+/** The effect assessment the store recorded last for an intervention (its audit: counts only — Rule A). */
+function assessedCounts(h: Harness, interventionId: Id): { followups: number; recurrences: number } | undefined {
+  const rows = h.store.audit(interventionId).filter((x) => x.action === 'learning.effect_assessed');
+  const d = rows.at(-1)?.details as { followups?: number; recurrences?: number } | undefined;
+  return d ? { followups: Number(d.followups), recurrences: Number(d.recurrences) } : undefined;
+}
+
+// FB-1 (R2 Architecture Closure Correction): learning-effect chronology belongs to the SOURCE EVIDENCE EVENT — never the
+// Work Item's final state, its evaluation, or its attribution's decision.
+describe('FB-1: learning is timed by the event that happened, not the date someone judged it', () => {
+  /** Comparable work started BEFORE the training (a lesson's intervention): its output fails review `preFails` times, all before it. */
+  const startBeforeTraining = (h: Harness, s: Seed, preFails: number): { w: Id; claim: Claim } => {
+    const { workItemId: w, claim } = runFor(h, s, s.employee, { reviewPlan: PLAN });
+    settle(h.store, claim.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.ready' } }, { backoff });
+    for (let i = 0; i < preFails; i++) {
+      decideOpenReview(h, w, 'FAIL');
+      h.clock.advance(60_000);
+      const again = claimItem(h, w, `w-pre-${i}`);
+      settle(h.store, again.fence, { type: 'COMPLETED', evidence: { summaryCode: `draft.v${i + 2}` } }, { backoff });
+    }
+    return { w, claim };
+  };
+  const train = (h: Harness, s: Seed, m: ImprovementStore, iid: Id): void => {
+    h.clock.advance(HOUR);
+    m.completeTraining(s.founder, iid);
+    h.clock.advance(HOUR);
+  };
+  const twoLaterSuccesses = (h: Harness, s: Seed, m: ImprovementStore): Id[] =>
+    [0, 1].map(() => {
+      h.clock.advance(HOUR);
+      return laterWork(h, s, m, s.employee, 'SUCCESS');
+    });
+
+  test('matrix 1 (the FB-1 probe): mistakes all made before the training, finished correctly after it, truly attributed after it — never a recurrence', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const lessonId = validatedMistakeLesson(h, s, m);
+      const iid = m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' }).intervention?.id as Id;
+      // Two failed reviews, both of pre-training output.
+      const { w } = startBeforeTraining(h, s, 1);
+      decideOpenReview(h, w, 'FAIL');
+      train(h, s, m, iid);
+      // AFTER the training: reworked correctly — review PASS, outcome ACHIEVED.
+      const after = claimItem(h, w, 'w-rework-after-training');
+      settle(h.store, after.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v3' } }, { backoff });
+      decideOpenReview(h, w, 'PASS');
+      verify(s, m, w, 'ACHIEVED');
+      const e = m.evaluate(w).evaluation;
+      assert.equal(e.dimensions.find((d) => d.dimension === 'QUALITY')?.verdict, 'NEGATIVE', 'the Work-Item-level verdict is adverse — it cannot tell WHEN');
+      // The proposal is TRUE (the output was rejected twice — before the training): validated after the training.
+      m.decideAttribution(s.founder, m.attributions({ workItemId: w }).find((a) => a.state === 'PROPOSED')?.id as Id, { decision: 'VALIDATE', reasonCode: 'founder.confirmed' });
+      const later = twoLaterSuccesses(h, s, m);
+      const judged = m.assessIntervention(iid).intervention;
+      assert.deepEqual([judged.effect, judged.effectBasis], ['IMPROVEMENT_OBSERVED', 'NO_RECURRENCE_ON_QUALIFIED_WORK'], 'never NO_IMPROVEMENT SAME_MISTAKE_RECURRED');
+      assert.ok(!judged.evidenceRefs.includes(`work_item:${w}`), 'the pre-training mistakes are not evidence about the training');
+      assert.deepEqual([...judged.evidenceRefs].sort(), later.map((x) => `work_item:${x}`).sort());
+      assert.deepEqual(assessedCounts(h, iid), { followups: 2, recurrences: 0 });
+    });
+  });
+
+  test('matrix 1: a failed review DECIDED after the training of output PRODUCED before it stays a pre-training event', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const lessonId = validatedMistakeLesson(h, s, m);
+      const iid = m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' }).intervention?.id as Id;
+      const { w } = startBeforeTraining(h, s, 0);
+      train(h, s, m, iid);
+      decideOpenReview(h, w, 'FAIL'); // reviewed after the training; the output was made before it
+      const after = claimItem(h, w, 'w-rework-after-training');
+      settle(h.store, after.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v2' } }, { backoff });
+      decideOpenReview(h, w, 'PASS');
+      verify(s, m, w, 'ACHIEVED');
+      m.evaluate(w);
+      m.decideAttribution(s.founder, m.attributions({ workItemId: w }).find((a) => a.state === 'PROPOSED')?.id as Id, { decision: 'VALIDATE', reasonCode: 'founder.confirmed' });
+      twoLaterSuccesses(h, s, m);
+      const judged = m.assessIntervention(iid).intervention;
+      assert.equal(judged.effect, 'IMPROVEMENT_OBSERVED');
+      assert.ok(!judged.evidenceRefs.includes(`work_item:${w}`));
+    });
+  });
+
+  test('matrix 3: work started before the training and completed cleanly after it is neither positive nor negative evidence', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const lessonId = validatedMistakeLesson(h, s, m);
+      const iid = m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' }).intervention?.id as Id;
+      const { w } = startBeforeTraining(h, s, 0);
+      train(h, s, m, iid);
+      decideOpenReview(h, w, 'PASS');
+      verify(s, m, w, 'ACHIEVED');
+      m.evaluate(w);
+      h.clock.advance(HOUR);
+      laterWork(h, s, m, s.employee, 'SUCCESS');
+      const one = m.assessIntervention(iid);
+      assert.deepEqual([one.intervention.effect, one.changed], ['NOT_YET_TESTED', false], 'the older work is not a second follow-up');
+      h.clock.advance(HOUR);
+      const second = laterWork(h, s, m, s.employee, 'SUCCESS');
+      const judged = m.assessIntervention(iid).intervention;
+      assert.equal(judged.effect, 'IMPROVEMENT_OBSERVED');
+      assert.ok(!judged.evidenceRefs.includes(`work_item:${w}`) && judged.evidenceRefs.includes(`work_item:${second}`), 'no credit for finishing older work');
+    });
+  });
+
+  test('matrix 7: the Founder validates CORRECTED causes after the training — the events keep their original (pre-training) time', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const lessonId = validatedMistakeLesson(h, s, m);
+      const iid = m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' }).intervention?.id as Id;
+      const { w } = startBeforeTraining(h, s, 1);
+      decideOpenReview(h, w, 'FAIL');
+      train(h, s, m, iid);
+      const after = claimItem(h, w, 'w-rework-after-training');
+      settle(h.store, after.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v3' } }, { backoff });
+      decideOpenReview(h, w, 'PASS');
+      verify(s, m, w, 'ACHIEVED');
+      m.evaluate(w);
+      const proposal = m.attributions({ workItemId: w }).find((a) => a.state === 'PROPOSED');
+      assert.ok(proposal);
+      const corrected = m.decideAttribution(s.founder, proposal.id, { decision: 'VALIDATE', reasonCode: 'founder.corrected', causes: [{ category: 'EMPLOYEE_JUDGMENT', role: 'PRIMARY', confidence: 'HIGH', basis: 'SKIPPED_SOURCING' }] }).attribution;
+      assert.deepEqual([corrected.source, corrected.state, corrected.employeeAccountable], ['FOUNDER', 'VALIDATED', true]);
+      assert.deepEqual(corrected.evidenceRefs, proposal.evidenceRefs, 'the corrected attribution explains the same source events');
+      twoLaterSuccesses(h, s, m);
+      const judged = m.assessIntervention(iid).intervention;
+      assert.equal(judged.effect, 'IMPROVEMENT_OBSERVED', 'a correction decided after the training never moves a pre-training event after it');
+      assert.ok(!judged.evidenceRefs.includes(`work_item:${w}`));
+    });
+  });
+
+  test('matrix 9: re-evaluations and another definition code over the same source events make ONE recurrence', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const lessonId = validatedMistakeLesson(h, s, m);
+      const iid = m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' }).intervention?.id as Id;
+      train(h, s, m, iid);
+      const recurrence = laterWork(h, s, m, s.employee, 'RECURRENCE');
+      for (let v = 0; v < 2; v++) {
+        h.clock.advance(60_000);
+        activate(s, m);
+        assert.equal(m.evaluate(recurrence).changed, true, 'a new definition version re-evaluates (supersedes) the work');
+      }
+      activate(s, m, standardWorkOutcomeDefinition('work-outcome.alternate'));
+      m.evaluate(recurrence, { definitionCode: 'work-outcome.alternate' });
+      h.clock.advance(HOUR);
+      laterWork(h, s, m, s.employee, 'SUCCESS');
+      const judged = m.assessIntervention(iid).intervention;
+      assert.equal(judged.effect, 'NO_IMPROVEMENT');
+      assert.deepEqual(assessedCounts(h, iid), { followups: 2, recurrences: 1 });
+      assert.equal(new Set(judged.evidenceRefs).size, judged.evidenceRefs.length, 'every source is named once');
+      assert.equal(judged.evidenceRefs.filter((r) => r === `work_item:${recurrence}`).length, 1);
+    });
+  });
+
+  test('matrix 10: a mistake whose act spans the training boundary cannot be placed — INCONCLUSIVE, never a final NO_IMPROVEMENT / REGRESSION', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const lessonId = validatedMistakeLesson(h, s, m);
+      const iid = m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' }).intervention?.id as Id;
+      // The run starts before the training and delivers its (failing) output after it.
+      const { workItemId: w, claim } = runFor(h, s, s.employee, { reviewPlan: PLAN });
+      h.clock.advance(60_000);
+      m.completeTraining(s.founder, iid);
+      h.clock.advance(60_000);
+      settle(h.store, claim.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.ready' } }, { backoff });
+      decideOpenReview(h, w, 'FAIL');
+      h.clock.advance(HOUR);
+      const after = claimItem(h, w, 'w-rework-after-training');
+      settle(h.store, after.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v2' } }, { backoff });
+      decideOpenReview(h, w, 'PASS');
+      verify(s, m, w, 'ACHIEVED');
+      m.evaluate(w);
+      m.decideAttribution(s.founder, m.attributions({ workItemId: w }).find((a) => a.state === 'PROPOSED')?.id as Id, { decision: 'VALIDATE', reasonCode: 'founder.confirmed' });
+      twoLaterSuccesses(h, s, m);
+      const judged = m.assessIntervention(iid).intervention;
+      assert.deepEqual([judged.effect, judged.effectBasis], ['INCONCLUSIVE', 'ADVERSE_EVENT_NOT_PLACEABLE']);
+      assert.equal(m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' }).outcome, 'PLANNED', 'non-final: the next cycle is not blocked');
+    });
+  });
+
+  test('matrix 12: the corrected effect is what LEARNING_VELOCITY, retraining exhaustion and systemic escalation consume', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const lessonId = validatedMistakeLesson(h, s, m);
+      const findings: (Id | null)[] = [];
+      // Two retraining cycles, each judged beside work whose every mistake was made before that cycle's training.
+      for (let cycle = 0; cycle < 2; cycle++) {
+        h.clock.advance(HOUR);
+        const planned = m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' });
+        assert.equal(planned.outcome, 'PLANNED', `cycle ${cycle + 1} is planned`);
+        const iid = planned.intervention?.id as Id;
+        const { w } = startBeforeTraining(h, s, 1);
+        decideOpenReview(h, w, 'FAIL');
+        train(h, s, m, iid);
+        const after = claimItem(h, w, `w-after-${cycle}`);
+        settle(h.store, after.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v3' } }, { backoff });
+        decideOpenReview(h, w, 'PASS');
+        verify(s, m, w, 'ACHIEVED');
+        m.evaluate(w);
+        m.decideAttribution(s.founder, m.attributions({ workItemId: w }).find((a) => a.state === 'PROPOSED')?.id as Id, { decision: 'VALIDATE', reasonCode: 'founder.confirmed' });
+        twoLaterSuccesses(h, s, m);
+        const assessed = m.assessIntervention(iid);
+        assert.equal(assessed.intervention.effect, 'IMPROVEMENT_OBSERVED', `cycle ${cycle + 1}`);
+        findings.push(assessed.findingId);
+      }
+      assert.deepEqual(findings, [null, null], 'retraining is never "exhausted" by mistakes made before it');
+      assert.equal(m.systemicFindings().filter((f) => f.origin === 'RETRAINING_EXHAUSTED').length, 0, 'no systemic escalation');
+      assert.equal(m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' }).outcome, 'PLANNED', 'the retraining bound is not consumed');
+      const velocity = m.profile(s.employee.id).dimensions.find((d) => d.dimension === 'LEARNING_VELOCITY');
+      assert.deepEqual([velocity?.positive, velocity?.accountableNegative], [2, 0]);
+    });
+  });
+
+  test('B2: an undecided proposal is re-proposed when new adverse source events arrive — whoever decides it decides every event it explains', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const { workItemId: w, claim } = runFor(h, s, s.employee, { reviewPlan: PLAN });
+      settle(h.store, claim.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.ready' } }, { backoff });
+      decideOpenReview(h, w, 'FAIL');
+      m.evaluate(w);
+      const first = m.attributions({ workItemId: w }).find((a) => a.state === 'PROPOSED');
+      assert.ok(first);
+      const again = claimItem(h, w, 'w-rework-1');
+      settle(h.store, again.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v2' } }, { backoff });
+      decideOpenReview(h, w, 'FAIL');
+      const third = claimItem(h, w, 'w-rework-2');
+      settle(h.store, third.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v3' } }, { backoff });
+      decideOpenReview(h, w, 'PASS');
+      verify(s, m, w, 'ACHIEVED');
+      m.evaluate(w);
+      const live = m.attributions({ workItemId: w }).find((a) => a.state === 'PROPOSED');
+      assert.ok(live);
+      assert.deepEqual(live.causes, first.causes, 'the same proposed causes');
+      assert.notEqual(live.id, first.id, 'yet a new proposal: the second failure is new evidence to decide');
+      assert.equal(m.attributions({ workItemId: w }).find((a) => a.id === first.id)?.state, 'SUPERSEDED');
+      const failed = failedReviewRefs(h, w);
+      assert.equal(failed.length, 2);
+      assert.ok(failed.every((r) => live.evidenceRefs.includes(r)), 'the live proposal holds every failed review it will decide');
+      // Unchanged evidence re-evaluates to nothing new (no churn).
+      assert.equal(m.evaluate(w).changed, false);
     });
   });
 });

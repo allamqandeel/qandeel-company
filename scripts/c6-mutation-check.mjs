@@ -276,7 +276,7 @@ const MUTATIONS = [
   {
     id: 'c6-pending-recurrence-ignored',
     gate: 'an adverse follow-up whose cause is not validated keeps the learning effect open (never a final IMPROVEMENT_OBSERVED) (R2-17)',
-    edits: [{ file: `${MIND}/improvement.js`, search: "if (adverse.some((f) => followupStanding(f) === 'PENDING_ATTRIBUTION'))\n", replace: 'if (false)\n', expectedCount: 1 }],
+    edits: [{ file: `${MIND}/improvement.js`, search: "if (events.some((x) => eventStanding(x.e) === 'PENDING_ATTRIBUTION'))\n", replace: 'if (false)\n', expectedCount: 1 }],
     runs: [KERNEL, STORE],
   },
   {
@@ -360,9 +360,40 @@ const MUTATIONS = [
   },
   {
     id: 'c6-post-training-recurrence-excluded',
-    gate: 'the same mistake made after the training on work started before it is adverse learning-effect evidence (RR3-E)',
-    edits: [{ file: `${MIND}/improvement.js`, search: 'f.workStartedAt <= completedAt && f.lastWorkAt > completedAt', replace: 'f.workStartedAt <= completedAt && false', expectedCount: 1 }],
+    gate: 'the same mistake made after the training on work started before it is adverse learning-effect evidence (RR3-E; FB-1: its post-training source events)',
+    edits: [{ file: `${MIND}/improvement.js`, search: 'for (const f of [...usable, ...earlier]) {', replace: 'for (const f of [...usable]) {', expectedCount: 1 }],
     runs: [KERNEL, STORE],
+  },
+  // --- R2 Architecture Closure Correction FB-1: learning is timed by the event that happened, not the date someone judged it ---
+  {
+    id: 'fb1-pre-training-event-counted',
+    gate: 'an adverse source event whose act ended before the training is never post-training evidence, however late it was reviewed, evaluated or attributed (FB-1 B3)',
+    edits: [{ file: `${MIND}/improvement.js`, search: "if (e.actEndedAt !== null && e.actEndedAt <= trainingCompletedAt)\n        return 'BEFORE_TRAINING';", replace: "if (e.actEndedAt !== null && e.actEndedAt <= trainingCompletedAt)\n        return 'AFTER_TRAINING';", expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  {
+    id: 'fb1-review-timed-by-decision',
+    gate: 'a failed review is timed by the run that produced the reviewed output, never by the decision (the judging) time (FB-1 B1 / B2)',
+    edits: [{ file: `${STORAGE}/improvement-core.js`, search: "kind: 'REVIEW_DECISION', ...act, recordedAt: d.created_at", replace: "kind: 'REVIEW_DECISION', actStartedAt: d.created_at, actEndedAt: d.created_at, recordedAt: d.created_at", expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'fb1-source-event-multiplied',
+    gate: 'one adverse source event is counted once, by its durable identity — never once per read, evaluation or attribution (FB-1 B6)',
+    edits: [{ file: `${MIND}/improvement.js`, search: 'if (seen.has(e.sourceRef))\n', replace: 'if (false)\n', expectedCount: 1 }],
+    runs: [KERNEL],
+  },
+  {
+    id: 'fb1-unplaceable-event-final',
+    gate: 'an adverse event that cannot be placed in time (or whose attribution cannot be resolved) never yields a final effect it could change (FB-1 B5)',
+    edits: [{ file: `${MIND}/improvement.js`, search: 'if (uncertain.size > 0)\n', replace: 'if (false)\n', expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  {
+    id: 'fb1-proposal-misses-new-events',
+    gate: 'an undecided proposal is re-proposed when new adverse source events arrive, so its decision covers every event it explains (FB-1 B2)',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: ' || adverseSourceEvents(ctx, wid).some((e) => refs.includes(e.sourceRef) && !current.evidenceRefs.includes(e.sourceRef))', replace: '', expectedCount: 1 }],
+    runs: [STORE],
   },
   // --- C6-R1: the Founder is not the operational bottleneck, and judgment never becomes execution authority ---
   {

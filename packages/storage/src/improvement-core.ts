@@ -6,7 +6,7 @@
  */
 import { type Id } from '@qandeel-company/domain';
 import { runFailureCodesOf } from '@qandeel-company/governance';
-import type { AttributionFact, DirectCause, EvaluationFact, EvidenceClass, FollowupFact, ItemDimension, RiskLevel, ValidatedAttributionFact, Verdict, WorkEvidence } from '@qandeel-company/mind';
+import type { AdverseSourceEvent, AdverseSourceKind, AttributionFact, AttributionState, DirectCause, EvaluationFact, EvidenceClass, FollowupFact, ItemDimension, RiskLevel, ValidatedAttributionFact, Verdict, WorkEvidence } from '@qandeel-company/mind';
 
 import type { StoreContext } from './internal.js';
 import { getWorkItemRow } from './internal.js';
@@ -166,8 +166,71 @@ export function gatherWorkEvidence(ctx: StoreContext, workItemId: Id): { evidenc
     activity: { messages, toolCalls: toolRows.length, tokens, runs: runs.length },
     evidenceClasses: [...classes],
   };
-  const refs = [`work_item:${workItemId}`, ...decisions.map((d) => `review_decision:${d.id}`), ...(verdict ? [`outcome_verification:${verdict.id}`] : []), ...runs.map((r) => `run:${r.id}`)].slice(0, 60);
+  const refs = [`work_item:${workItemId}`, ...decisions.map((d) => `review_decision:${d.id}`), ...(verdict ? [`outcome_verification:${verdict.id}`] : []), ...runs.map((r) => `run:${r.id}`)].slice(0, EVIDENCE_REF_CAP);
   return { evidence, refs };
+}
+
+/** The bound on an evaluation's (and so its attribution's) evidence references. */
+export const EVIDENCE_REF_CAP = 60;
+
+// ---------------------------------------------------------------------------------------------------------
+// FB-1: adverse source events — learning is timed by the event that happened, not the date someone judged it.
+
+/** One adverse source event of a Work Item with its durable provenance (ids, kinds and times only; Rule A). */
+export interface AdverseSourceRow {
+  readonly sourceRef: string;
+  readonly kind: AdverseSourceKind;
+  /** The Employee's act the event judges: its start and end (null = unknown). */
+  readonly actStartedAt: string | null;
+  readonly actEndedAt: string | null;
+  /** When the event itself was recorded (the decision / the run's end / the verification). */
+  readonly recordedAt: string;
+}
+
+/**
+ * Every adverse source event of a Work Item, read from the canonical rows that ARE the events (the same sources the
+ * evaluator's `adverseOutcome` reads), each with the time of the act it judges:
+ * - a counting REQUIRED review decision that FAILED — an OUTPUT review judges the run its subject names (`run:<id>`,
+ *   bound when the request was created); an ACTION review judges the action requested at the request's creation;
+ * - a run that failed without the work getting past it (FAILED_PERMANENT, or failed after the last success — R2-13),
+ *   or an authority-boundary refusal — that run;
+ * - the decisive NOT_ACHIEVED outcome verification — the run that produced the verified output (a pool verification's
+ *   reviewed subject; a Founder verification's latest successful run before it).
+ */
+export function adverseSourceEvents(ctx: StoreContext, workItemId: Id): AdverseSourceRow[] {
+  const runs = ctx.db.all<{ id: string; state: string; failure_code: string | null; started_at: string; ended_at: string | null }>('SELECT id, state, failure_code, started_at, ended_at FROM runs WHERE work_item_id = ? ORDER BY started_at, run_seq', workItemId);
+  const runById = new Map(runs.map((r) => [r.id, r]));
+  const runAct = (ref: string | null | undefined): { actStartedAt: string | null; actEndedAt: string | null } => {
+    const m = ref ? /^run:([0-9a-f-]{36})$/.exec(ref) : null;
+    const r = m ? runById.get(m[1] ?? '') : undefined;
+    return r ? { actStartedAt: r.started_at, actEndedAt: r.ended_at } : { actStartedAt: null, actEndedAt: null };
+  };
+  const out: AdverseSourceRow[] = [];
+  for (const d of ctx.db.all<{ id: string; created_at: string; subject_kind: string; subject_ref: string; requested_at: string }>(
+    `SELECT d.id, d.created_at, r.subject_kind, r.subject_ref, r.created_at AS requested_at FROM review_decisions d JOIN review_requests r ON r.id = d.request_id
+      WHERE r.work_item_id = ? AND r.kind = 'REQUIRED' AND d.counts = 1 AND d.outcome = 'FAIL' ORDER BY d.created_at, d.id`,
+    workItemId,
+  )) {
+    const act = d.subject_kind === 'ACTION' ? { actStartedAt: d.requested_at, actEndedAt: d.requested_at } : runAct(d.subject_ref);
+    out.push({ sourceRef: `review_decision:${d.id}`, kind: 'REVIEW_DECISION', ...act, recordedAt: d.created_at });
+  }
+  const lastSuccess = runs.map((r) => r.state).lastIndexOf('SUCCEEDED');
+  runs.forEach((r, i) => {
+    const failed = (r.state === 'FAILED_PERMANENT' || r.state === 'FAILED_RETRYABLE') && (r.state === 'FAILED_PERMANENT' || i > lastSuccess);
+    const boundary = r.failure_code !== null && (BOUNDARY_CODES as readonly string[]).includes(r.failure_code);
+    if (failed || boundary) out.push({ sourceRef: `run:${r.id}`, kind: 'RUN_FAILURE', actStartedAt: r.started_at, actEndedAt: r.ended_at, recordedAt: r.ended_at ?? r.started_at });
+  });
+  const verdict = latestVerdict(ctx, workItemId);
+  if (verdict?.verdict === 'NOT_ACHIEVED') {
+    const v = ctx.db.get<{ created_at: string; review_request_id: string | null }>('SELECT created_at, review_request_id FROM outcome_verifications WHERE id = ?', verdict.id);
+    if (v) {
+      const subject = v.review_request_id === null
+        ? ctx.db.get<{ ref: string }>(`SELECT 'run:' || id AS ref FROM runs WHERE work_item_id = ? AND state = 'SUCCEEDED' AND ended_at <= ? ORDER BY ended_at DESC, rowid DESC LIMIT 1`, workItemId, v.created_at)?.ref
+        : ctx.db.get<{ ref: string }>('SELECT subject_ref AS ref FROM review_requests WHERE id = ?', v.review_request_id)?.ref;
+      out.push({ sourceRef: `outcome_verification:${verdict.id}`, kind: 'OUTCOME_VERIFICATION', ...runAct(subject), recordedAt: v.created_at });
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -186,11 +249,10 @@ interface EvalRow {
   observability_json: string;
   evidence_json: string;
   work_started_at: string;
-  last_work_at: string;
 }
 
-/** A stored evaluation with the time its work started (R2-15) and was last worked on (RR3). */
-export type StoredEvaluationFact = EvaluationFact & { readonly workStartedAt: string; readonly lastWorkAt: string };
+/** A stored evaluation with the time its work started (R2-15). */
+export type StoredEvaluationFact = EvaluationFact & { readonly workStartedAt: string };
 
 export function toEvaluationFact(r: EvalRow): StoredEvaluationFact {
   const dims = JSON.parse(r.dimensions_json) as { dimension: ItemDimension; verdict: Verdict }[];
@@ -212,7 +274,6 @@ export function toEvaluationFact(r: EvalRow): StoredEvaluationFact {
     cost: { productiveMicros: n(cost.productiveMicros), overheadMicros: overhead, billedMicros: n(cost.billedMicros) },
     activity: { messages: n(obs.messages), toolCalls: n(obs.toolCalls), tokens: n(obs.tokens), runs: n(obs.runs) },
     workStartedAt: r.work_started_at,
-    lastWorkAt: r.last_work_at,
     attributionDue: due,
   };
 }
@@ -224,11 +285,10 @@ export function toEvaluationFact(r: EvalRow): StoredEvaluationFact {
  */
 export const LATEST_LIVE_EVALUATION = `e.superseded_by IS NULL AND NOT EXISTS (SELECT 1 FROM evaluation_results n WHERE n.work_item_id = e.work_item_id AND n.superseded_by IS NULL AND (n.created_at > e.created_at OR (n.created_at = e.created_at AND n.rowid > e.rowid)))`;
 
-// R2-15: when the work itself started — its first run, else its creation — never the evaluation's time. RR3: and when
-// it was last worked on (its latest run, else its creation): post-training behaviour on work started earlier.
+// R2-15: when the work itself started — its first run, else its creation — never the evaluation's time. (FB-1: adverse
+// learning evidence is timed per source event — `adverseSourceEvents` — never by a Work-Item-level "last worked" time.)
 const LIVE_EVALS = `SELECT e.id, e.work_item_id, e.comparable_key, e.risk_level, e.created_at, e.evidence_state, e.qualified_outcome, e.dimensions_json, e.cost_json, e.observability_json, e.evidence_json,
-  COALESCE((SELECT MIN(r.started_at) FROM runs r WHERE r.work_item_id = e.work_item_id), (SELECT w.created_at FROM work_items w WHERE w.id = e.work_item_id)) AS work_started_at,
-  COALESCE((SELECT MAX(r.started_at) FROM runs r WHERE r.work_item_id = e.work_item_id), (SELECT w.created_at FROM work_items w WHERE w.id = e.work_item_id)) AS last_work_at
+  COALESCE((SELECT MIN(r.started_at) FROM runs r WHERE r.work_item_id = e.work_item_id), (SELECT w.created_at FROM work_items w WHERE w.id = e.work_item_id)) AS work_started_at
   FROM evaluation_results e WHERE ${LATEST_LIVE_EVALUATION}`;
 
 export function liveEvaluations(ctx: StoreContext, filter: { employeeId?: Id; departmentId?: Id; from?: string; to?: string; workItemIds?: readonly Id[] } = {}): StoredEvaluationFact[] {
@@ -279,19 +339,68 @@ export function validatedAttributionFacts(ctx: StoreContext): DecidedAttribution
     .map((r) => ({ attributionId: r.id, workItemId: r.work_item_id, employeeId: r.employee_id, comparableKey: r.comparable_key, overall: r.overall as ValidatedAttributionFact['overall'], causes: JSON.parse(r.causes_json) as ValidatedAttributionFact['causes'], decidedAt: r.updated_at }));
 }
 
+type AttributionRow = {
+  id: string;
+  work_item_id: string;
+  employee_id: string | null;
+  state: string;
+  employee_accountable: number;
+  causes_json: string;
+  evidence_refs_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
+const primaryCauses = (causesJson: string): DirectCause[] => (JSON.parse(causesJson) as { category: DirectCause; role: string }[]).filter((c) => c.role === 'PRIMARY').map((c) => c.category);
+
 /**
- * Evaluations with the causes validated as the Employee's (for learning-effect assessment), each with the time its
- * work started (R2-15) and was last worked on (RR3), and the state of its attribution as every reader sees it
- * (`attributionFacts`: live PROPOSED / VALIDATED, else the latest REJECTED, else NONE).
+ * FB-1 (B2 / B6 / B7): the ONE attribution that explains an adverse source event — an attribution explains exactly the
+ * events its evidence held (its proposing evaluation's references; a Founder-corrected attribution carries its
+ * proposal's references, so the event keeps its original time). The first DECIDED attribution of an event stands
+ * for it (a later proposal after a REJECT establishes causes for the new events only); an undecided proposal makes
+ * it pending. Superseded proposals explain nothing.
+ */
+function explainEvent(e: AdverseSourceRow, fact: StoredEvaluationFact, rows: readonly AttributionRow[], employeeId: Id): AdverseSourceEvent {
+  const holds = rows.filter((a) => (JSON.parse(a.evidence_refs_json) as string[]).includes(e.sourceRef));
+  const decided = holds.filter((a) => a.state === 'VALIDATED' || a.state === 'REJECTED').sort((a, b) => (a.updated_at < b.updated_at ? -1 : a.updated_at > b.updated_at ? 1 : a.created_at < b.created_at ? -1 : 1))[0];
+  const explaining = decided ?? holds.find((a) => a.state === 'PROPOSED');
+  const event = { sourceRef: e.sourceRef, kind: e.kind, actStartedAt: e.actStartedAt, actEndedAt: e.actEndedAt };
+  if (explaining) {
+    const accountable = explaining.state === 'VALIDATED' && explaining.employee_accountable === 1 && explaining.employee_id === employeeId;
+    return { ...event, attributionRef: `causal_attribution:${explaining.id}`, attributionState: explaining.state as AttributionState, attributionDue: true, accountableCauses: accountable ? primaryCauses(explaining.causes_json) : [], attributionUnresolved: false };
+  }
+  const none = { ...event, attributionRef: null, attributionState: 'NONE' as const, accountableCauses: [] };
+  // Recorded after the Work Item's live evaluation: not yet evaluated — its attribution is still to come (pending).
+  if (e.recordedAt > fact.at) return { ...none, attributionDue: true, attributionUnresolved: false };
+  // An attribution whose evidence references hit their bound may hold it unlisted; a validated attribution never saw
+  // it (one live attribution per Work Item): the record cannot tell who explains it.
+  const capped = rows.some((a) => (JSON.parse(a.evidence_refs_json) as string[]).length >= EVIDENCE_REF_CAP && a.created_at >= e.recordedAt);
+  const validatedLive = rows.some((a) => a.state === 'VALIDATED');
+  if (capped || validatedLive) return { ...none, attributionDue: false, attributionUnresolved: true };
+  if (rows.some((a) => a.state === 'PROPOSED')) return { ...none, attributionState: 'PROPOSED', attributionDue: true, attributionUnresolved: false };
+  return { ...none, attributionDue: fact.attributionDue, attributionUnresolved: false };
+}
+
+/**
+ * Evaluations of one Employee's comparable work for learning-effect assessment: each with the time its work started
+ * (R2-15), its Work Item attribution as every reader sees it (`attributionFacts`) and validated accountable causes
+ * (the baseline share), and — FB-1 — every adverse source event of the work with its own act time and the ONE
+ * attribution that explains it (`explainEvent`). No Work-Item-level time or verdict decides when a mistake happened.
  */
 export function followupFacts(ctx: StoreContext, employeeId: Id, comparableKey: string): FollowupFact[] {
   const accountable = new Map<string, DirectCause[]>();
   for (const r of ctx.db.all<{ work_item_id: string; causes_json: string }>(`SELECT work_item_id, causes_json FROM causal_attributions WHERE state = 'VALIDATED' AND employee_accountable = 1 AND employee_id = ?`, employeeId)) {
-    const causes = JSON.parse(r.causes_json) as { category: DirectCause; role: string }[];
-    accountable.set(r.work_item_id, causes.filter((c) => c.role === 'PRIMARY').map((c) => c.category));
+    accountable.set(r.work_item_id, primaryCauses(r.causes_json));
   }
   const attribution = new Map(attributionFacts(ctx, employeeId).map((a) => [a.workItemId, a.state]));
   return liveEvaluations(ctx, { employeeId })
     .filter((f) => f.comparableKey === comparableKey)
-    .map((f) => ({ ...f, attributionState: attribution.get(f.workItemId) ?? 'NONE', accountableCauses: accountable.get(f.workItemId) ?? [] }));
+    .map((f) => {
+      const rows = ctx.db.all<AttributionRow>(
+        `SELECT id, work_item_id, employee_id, state, employee_accountable, causes_json, evidence_refs_json, created_at, updated_at FROM causal_attributions WHERE work_item_id = ? AND state IN ('PROPOSED', 'VALIDATED', 'REJECTED') ORDER BY created_at, rowid`,
+        f.workItemId,
+      );
+      const adverseEvents = adverseSourceEvents(ctx, f.workItemId as Id).map((e) => explainEvent(e, f, rows, employeeId));
+      return { ...f, attributionState: attribution.get(f.workItemId) ?? 'NONE', accountableCauses: accountable.get(f.workItemId) ?? [], adverseEvents };
+    });
 }
