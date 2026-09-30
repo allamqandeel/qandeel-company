@@ -16,6 +16,7 @@ import { QandeelError } from '@qandeel-company/domain';
 import { founderSurfaceInternals, type GovernanceStore } from '../governance.js';
 import type { EmployeeRecord } from '../governance-records.js';
 import { loadReleasedMigrations } from '../migrations.js';
+import { restorePortableBackupInternal, type CleanRestoreReport, type RestoreFaultPoint, type RestorePortableOptions } from '../resilience.js';
 import { openStoreForTests } from '../store.js';
 
 export const TEST_CONDITION = 'qandeel-test';
@@ -48,6 +49,14 @@ export function createWorkspaceAtVersionForTest(root: string, version: number, o
   } finally {
     store.close();
   }
+}
+
+/**
+ * FB-2 crash fixture: a live portable restore that fails at a named point of its lifecycle (the hook throws, or a
+ * child process exits there). Test-only; production restores pass no fault.
+ */
+export function restorePortableBackupWithFaultForTest(packageBytes: Buffer, targetRoot: string, options: RestorePortableOptions, fault: (point: RestoreFaultPoint) => void): CleanRestoreReport {
+  return restorePortableBackupInternal(packageBytes, targetRoot, options, { fault });
 }
 
 /** SHADOW / PROBATION → ACTIVE without Academy certification: a test fixture, never a product path. */

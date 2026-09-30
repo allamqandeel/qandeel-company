@@ -7,12 +7,12 @@
  * C6-PROOF: storage-resilience
  */
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, test } from 'node:test';
+import { after, before, describe, test } from 'node:test';
 
-import { isQandeelError, sha256Hex } from '@qandeel-company/domain';
+import { isQandeelError, newId, sha256Hex, type Id } from '@qandeel-company/domain';
 import { standardWorkOutcomeDefinition } from '@qandeel-company/mind';
 
 import {
@@ -21,6 +21,7 @@ import {
   CURRENT_SCHEMA_VERSION,
   CompanyStore,
   DirectoryDestination,
+  FounderAuthStore,
   GovernanceStore,
   ImprovementStore,
   clearUpdateHold,
@@ -34,16 +35,20 @@ import {
   readUpdateHold,
   resilienceStatus,
   restorePortableBackup,
+  restoreStatus,
   rollbackSchemaUpdate,
   runRestoreDrill,
   safeUpgrade,
   verifyPortableBackup,
   type BackupDestination,
+  type CleanRestoreReport,
 } from '../src/index.js';
 import { safeUpgradeInternal } from '../src/maintenance.js';
+import { restorePortableBackupInternal, type RestoreFaultPoint } from '../src/resilience.js';
 import { recordToolIntent, recordToolResult, settle } from '../src/runtime-authority.js';
 import { SqliteConnection } from '../src/sqlite/connection.js';
-import { openStoreForTests } from '../src/store.js';
+import { openRestoredStore, openStoreForTests } from '../src/store.js';
+import { fixture, spawnScript } from './process-harness.js';
 import { armFounderTestSurface } from '../src/testing/founder-seam.js';
 import { claimGoverned, governedItem, hire, seed } from './c2-helpers.js';
 import { backoff, harness, owner, removeRoot, tempRoot } from './helpers.js';
@@ -543,6 +548,210 @@ describe('C6 update / migration safety', () => {
       assert.deepEqual([quiet.postUpdateWork.exists, quiet.discardAcknowledged], [false, false]);
     } finally {
       removeRoot(root);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// FB-2: a live portable restore is fail-closed from its first byte until the controlled restore commits.
+
+const HELD_FOR_RESTORE = (e: unknown): boolean => isQandeelError(e, 'UPDATE_HOLD') && (e as { details: { code?: unknown } }).details.code === 'RESTORE_IN_PROGRESS';
+const BINDING_REFUSED = (e: unknown): boolean => isQandeelError(e, 'UPDATE_HOLD') && (e as { details: { reason?: unknown } }).details.reason === 'RESTORE_BINDING_MISMATCH';
+
+interface CrashWorld {
+  readonly h: ReturnType<typeof harness>;
+  readonly ext: string;
+  readonly packageFile: string;
+  readonly bytesA: Buffer;
+  readonly bytesB: Buffer;
+  readonly packageA: Id;
+  readonly packageB: Id;
+  readonly schemaVersion: number;
+  readonly claimedJob: Id;
+  readonly queuedJob: Id;
+  readonly artifacts: readonly { readonly id: Id; readonly text: string }[];
+}
+
+describe('FB-2 a live portable restore is fail-closed from its first byte until the controlled restore commits', () => {
+  let world: CrashWorld;
+  const targets: string[] = [];
+  const target = (label: string): string => {
+    const t = tempRoot(label); // an Arabic workspace segment: every crash target is a non-ASCII Windows path
+    targets.push(t);
+    return t;
+  };
+
+  before(async () => {
+    const h = harness();
+    const s = seed(h.store); // the seeded Employee holds grants on UNSAFE / external-mutating tool actions
+    governedItem(h, s);
+    const { claim } = claimGoverned(h); // claimed at the backup point: the lost device may have run it afterwards
+    const queuedItem = governedItem(h, s);
+    const auth = FounderAuthStore.for(h.store);
+    auth.redeemLaunchToken(auth.mintLaunchToken().token); // a live Founder session of the lost device
+    auth.mintLaunchToken(); // and an unconsumed launch token
+    const texts = ['مسودة الاستعادة الأولى', 'مسودة الاستعادة الثانية'];
+    const artifacts = texts.map((text) => ({ id: new ArtifactStore(h.store).put({ content: text, mediaType: 'text/plain', workItemId: queuedItem }).id, text }));
+    const ext = externalDir();
+    const dest = new DirectoryDestination(ext);
+    const a = await createPortableBackup(h.store, { destination: dest, passphrase: PASSPHRASE });
+    h.clock.advance(60_000);
+    const b = await createPortableBackup(h.store, { destination: dest, passphrase: PASSPHRASE });
+    const bytesA = dest.get(a.name);
+    const packageFile = path.join(path.dirname(ext), 'package-a.qcpkg');
+    writeFileSync(packageFile, bytesA);
+    process.env.QC_TEST_RECOVERY_PASSPHRASE = PASSPHRASE; // inherited by the crashing child, never on its command line
+    world = { h, ext, packageFile, bytesA, bytesB: dest.get(b.name), packageA: a.packageId, packageB: b.packageId, schemaVersion: h.store.schemaVersion, claimedJob: claim.fence.jobId, queuedJob: h.store.jobsFor(queuedItem).at(-1)?.id as Id, artifacts };
+  });
+
+  after(() => {
+    delete process.env.QC_TEST_RECOVERY_PASSPHRASE;
+    world.h.close();
+    rmSync(path.dirname(world.ext), { recursive: true, force: true });
+    for (const t of targets) removeRoot(t);
+  });
+
+  /** Runs the restore in a child process that dies (a real exit, no catch / finally) at `point`. */
+  async function crashAt(point: RestoreFaultPoint, root: string): Promise<void> {
+    const child = spawnScript(fixture('restore-crasher'), [world.packageFile, root, point]);
+    assert.equal(await child.exited(120_000), 77, `the child died at ${point} (stderr: ${child.stderr()})`);
+  }
+
+  /** Everything an operator (or a runtime) could do with the target is refused, and nothing changes it. */
+  async function assertHeld(root: string, phase: string, completeDatabase: boolean): Promise<void> {
+    assert.equal(readUpdateHold(root)?.code, 'RESTORE_IN_PROGRESS', 'the marker is in force');
+    const status = restoreStatus(root);
+    assert.deepEqual([status.blocked, status.markerReadable, status.restoreInProgress?.packageId, status.restoreInProgress?.phase], [true, true, world.packageA, phase], 'the marker tells the truth');
+    const db = path.join(root, 'state', 'company.sqlite3');
+    const bytesBefore = existsSync(db) ? sha256Hex(readFileSync(db)) : null;
+    assert.throws(() => CompanyStore.open(root), HELD_FOR_RESTORE, 'ordinary (runtime / init) open refuses it');
+    assert.throws(() => CompanyStore.open(root, { create: false, migrationMode: 'verify' }), HELD_FOR_RESTORE, 'read-only inspection refuses it too (the database may be partial)');
+    await assert.rejects(safeUpgrade(root), HELD_FOR_RESTORE, 'never upgraded (the runtime start path)');
+    await assert.rejects(rollbackSchemaUpdate(root, newId()), HELD_FOR_RESTORE, 'never rolled back');
+    assert.throws(() => clearUpdateHold(root, 'operator.reviewed'), refused('MAINTENANCE_REFUSED', 'RESTORE_IN_PROGRESS'), 'the generic hold clearance refuses it');
+    assert.equal(readUpdateHold(root)?.code, 'RESTORE_IN_PROGRESS', 'still held after every attempt');
+    assert.equal(existsSync(db) ? sha256Hex(readFileSync(db)) : null, bytesBefore, 'no refused path touched the database');
+    if (completeDatabase) assert.equal(readFileSync(db).readUInt32BE(60), world.schemaVersion, 'never silently migrated');
+  }
+
+  /** The finished restore: marker lifted to history, the controlled restore applied exactly once, startable. */
+  function assertRestoredOnce(root: string, report: CleanRestoreReport, packageId: Id): void {
+    assert.deepEqual([report.packageId, report.quickCheck, report.foundersSessionsRevoked], [packageId, 'ok', 1]);
+    assert.deepEqual([...report.reconciliationPending.heldJobIds].sort(), [world.claimedJob, world.queuedJob].sort(), 'exactly the effect-capable live jobs are held');
+    assert.equal(readUpdateHold(root), null, 'the marker is lifted');
+    const status = restoreStatus(root);
+    assert.equal(status.blocked, false);
+    assert.ok(status.history.some((x) => x.outcome === 'COMPLETED' && x.attemptId === report.restoreAttemptId), 'the completed attempt is kept as history');
+    assert.equal(report.restoreRecord, `RESTORE_IN_PROGRESS.completed-${report.restoreAttemptId}.json`);
+    const store = CompanyStore.open(root);
+    try {
+      for (const id of [world.claimedJob, world.queuedJob]) {
+        const j = store.getJob(id);
+        assert.deepEqual([j.state, j.lastFailureCode], ['RECONCILIATION_HOLD', 'RESTORED_PAST_BACKUP_POINT'], 'no effect-capable job can be claimed');
+      }
+      const audit = store.auditByAction('recovery.clean_restore');
+      assert.equal(audit.length, 1, 'the controlled restore is recorded exactly once');
+      assert.deepEqual([audit[0]?.correlationId, audit[0]?.details.packageId, audit[0]?.details.restoreAttemptId], [report.restoreAttemptId, packageId, report.restoreAttemptId], 'the committed restore names its attempt and package');
+      assert.deepEqual([store.quickCheck(), store.foreignKeyViolations()], ['ok', 0]);
+      for (const a of world.artifacts) assert.equal(new ArtifactStore(store).read(a.id).toString('utf8'), a.text, 'artifact objects restored byte-exact');
+    } finally {
+      store.close();
+    }
+    const db = SqliteConnection.open({ path: path.join(root, 'state', 'company.sqlite3'), busyTimeoutMs: 5_000, readOnly: true });
+    try {
+      assert.equal(Number(db.get<{ n: number }>('SELECT COUNT(*) AS n FROM founder_sessions WHERE revoked_at IS NULL')?.n), 0, 'the lost device sessions are revoked');
+      assert.equal(Number(db.get<{ n: number }>('SELECT COUNT(*) AS n FROM founder_launch_tokens WHERE consumed_at IS NULL')?.n), 0, 'and its launch tokens');
+    } finally {
+      db.close();
+    }
+    assert.throws(() => restorePortableBackup(world.bytesA, root, { passphrase: PASSPHRASE }), code('UNSAFE_WORKSPACE'), 'a finished restore is never re-applied');
+  }
+
+  const POINTS: readonly { point: RestoreFaultPoint; phase: string; completeDatabase: boolean; resume: 'REDONE' | 'FINALIZED' }[] = [
+    { point: 'before-db-copy', phase: 'PREPARING', completeDatabase: false, resume: 'REDONE' },
+    { point: 'mid-db-copy', phase: 'PREPARING', completeDatabase: false, resume: 'REDONE' },
+    { point: 'after-db-copy', phase: 'PREPARING', completeDatabase: true, resume: 'REDONE' },
+    { point: 'mid-artifacts', phase: 'PREPARING', completeDatabase: true, resume: 'REDONE' },
+    { point: 'before-controlled-restore', phase: 'DATA_WRITTEN', completeDatabase: true, resume: 'REDONE' },
+    { point: 'in-controlled-restore', phase: 'DATA_WRITTEN', completeDatabase: true, resume: 'REDONE' },
+    { point: 'after-commit', phase: 'DATA_WRITTEN', completeDatabase: true, resume: 'FINALIZED' },
+    { point: 'after-phase-committed', phase: 'COMMITTED', completeDatabase: true, resume: 'FINALIZED' },
+  ];
+
+  for (const c of POINTS) {
+    test(`FB-2 C6-PROOF: a process death at ${c.point} leaves the target held (never an ordinary, startable Company); the same package then ${c.resume === 'FINALIZED' ? 'only finalizes the committed attempt' : 'redoes the interrupted attempt from the package'} — one controlled restore`, async () => {
+      const root = target(`fb2-${c.point}`);
+      await crashAt(c.point, root);
+      if (c.point === 'before-db-copy') {
+        assert.deepEqual(readdirSync(root), ['maintenance'], 'the marker exists before the first database byte');
+      }
+      if (c.point === 'mid-db-copy') {
+        assert.ok(readFileSync(path.join(root, 'state', 'company.sqlite3')).length < world.bytesA.length, 'the database copy is partial');
+      }
+      await assertHeld(root, c.phase, c.completeDatabase);
+      const crashed = restoreStatus(root).restoreInProgress?.attemptId as Id;
+      const report = restorePortableBackup(world.bytesA, root, { passphrase: PASSPHRASE });
+      assert.equal(report.restoreLifecycle, c.resume);
+      if (c.resume === 'FINALIZED') assert.equal(report.restoreAttemptId, crashed, 'the committed attempt is recognised, not repeated');
+      else {
+        assert.notEqual(report.restoreAttemptId, crashed, 'an interrupted attempt is redone under a new attempt id');
+        assert.ok(restoreStatus(root).history.some((x) => x.outcome === 'ABANDONED' && x.attemptId === crashed), 'the interrupted attempt is kept as history');
+      }
+      assertRestoredOnce(root, report, world.packageA);
+      // A second finalize call can never re-apply it either: the target is now a Company.
+    });
+  }
+
+  test('FB-2 C6-PROOF: a failure thrown inside the controlled-restore transaction rolls it back and leaves the target held; the retry redoes it (a committed row would have been finalized) — exactly one restore', async () => {
+    const root = target('fb2-throw');
+    assert.throws(
+      () => restorePortableBackupInternal(world.bytesA, root, { passphrase: PASSPHRASE }, { fault: (p) => { if (p === 'in-controlled-restore') throw new Error('injected'); } }),
+      /injected/,
+    );
+    await assertHeld(root, 'DATA_WRITTEN', true);
+    const report = restorePortableBackup(world.bytesA, root, { passphrase: PASSPHRASE });
+    assert.equal(report.restoreLifecycle, 'REDONE', 'nothing of the rolled-back transaction survived');
+    assertRestoredOnce(root, report, world.packageA);
+  });
+
+  test('FB-2 C6-PROOF: the restore bypass is bound to the marker attempt AND package — no other open (internal, test-only or generic) passes the marker', async () => {
+    const root = target('fb2-binding');
+    await crashAt('after-db-copy', root);
+    const m = restoreStatus(root).restoreInProgress;
+    assert.ok(m);
+    const v = world.schemaVersion;
+    assert.throws(() => openRestoredStore(root, { atVersion: v, restoreAttempt: { attemptId: m.attemptId, packageId: newId() } }), BINDING_REFUSED, 'another package cannot use this attempt');
+    assert.throws(() => openRestoredStore(root, { atVersion: v, restoreAttempt: { attemptId: newId(), packageId: m.packageId } }), BINDING_REFUSED, 'another attempt of the package cannot either');
+    assert.throws(() => openRestoredStore(root, { atVersion: v }), HELD_FOR_RESTORE, 'an unbound internal open is refused');
+    assert.throws(() => openStoreForTests(root, { liveSchemaUpdate: true }), HELD_FOR_RESTORE, 'a live-migrating open is refused');
+    assert.throws(() => openRestoredStore(root, { atVersion: v, liveSchemaUpdate: true, restoreAttempt: { attemptId: m.attemptId, packageId: m.packageId } }), code('STORAGE_INVARIANT'), 'the binding never combines with a live migration');
+    const own = openRestoredStore(root, { atVersion: v, restoreAttempt: { attemptId: m.attemptId, packageId: m.packageId } });
+    own.close();
+    await assertHeld(root, 'PREPARING', true);
+    assertRestoredOnce(root, restorePortableBackup(world.bytesA, root, { passphrase: PASSPHRASE }), world.packageA);
+  });
+
+  test('FB-2 C6-PROOF: another package cannot hijack a partial restore; an explicit discard restarts it (history kept) and a torn / unreadable marker is only ever discarded explicitly', async () => {
+    const root = target('fb2-hijack');
+    await crashAt('mid-artifacts', root);
+    const m = restoreStatus(root).restoreInProgress;
+    assert.throws(() => restorePortableBackup(world.bytesB, root, { passphrase: PASSPHRASE }), refused('UNSAFE_WORKSPACE', 'restore-in-progress-other-package'), 'a different package is refused');
+    assert.deepEqual(restoreStatus(root).restoreInProgress, m, 'the partial restore is untouched');
+    await assertHeld(root, 'PREPARING', true);
+    const report = restorePortableBackup(world.bytesB, root, { passphrase: PASSPHRASE, discardPartialRestore: true });
+    assert.equal(report.restoreLifecycle, 'DISCARDED_AND_RESTARTED');
+    assert.ok(restoreStatus(root).history.some((x) => x.outcome === 'DISCARDED' && x.attemptId === m?.attemptId), 'the discarded attempt is kept as history');
+    assertRestoredOnce(root, report, world.packageB);
+
+    // A RESTORE_IN_PROGRESS marker whose metadata cannot be read, and a torn first marker write: held, never guessed.
+    for (const text of ['{"updateId":"x","code":"RESTORE_IN_PROGRESS","restore":{}}\n', '{"updateId":']) {
+      const torn = target('fb2-torn');
+      mkdirSync(path.join(torn, 'maintenance'), { recursive: true });
+      writeFileSync(path.join(torn, 'maintenance', 'UPDATE_HOLD.json'), text);
+      assert.throws(() => CompanyStore.open(torn), (e: unknown) => isQandeelError(e, 'UPDATE_HOLD'), 'held');
+      if (text.includes('RESTORE_IN_PROGRESS')) assert.throws(() => clearUpdateHold(torn, 'operator.reviewed'), refused('MAINTENANCE_REFUSED', 'RESTORE_IN_PROGRESS'), 'never cleared generically');
+      assert.throws(() => restorePortableBackup(world.bytesA, torn, { passphrase: PASSPHRASE }), (e: unknown) => isQandeelError(e, 'UPDATE_HOLD') || isQandeelError(e, 'UNSAFE_WORKSPACE'), 'no implicit restart');
+      assertRestoredOnce(torn, restorePortableBackup(world.bytesA, torn, { passphrase: PASSPHRASE, discardPartialRestore: true }), world.packageA);
     }
   });
 });

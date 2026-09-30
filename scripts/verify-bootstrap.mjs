@@ -359,6 +359,8 @@ const MUTATION_PINS = {
       'c6r2-lesson-judge-drawn-before-evidence', 'c6r2-judge-rubric-hold-not-rechecked', 'c6r2-withdrawn-judge-excluded-forever', 'c6r2-judgment-survives-qualification', 'c6r2-ended-judge-keeps-judgment',
       // R2 second wave (cluster Q4): a restore-check target is a permanently held verification copy (RR4-1).
       'c6q4-restore-check-copy-unmarked', 'c6q4-restore-check-hold-clearable', 'c6q4-restore-check-copy-opens',
+      // R2 architecture correction FB-2: a live portable restore is fail-closed from its first byte until the controlled restore commits.
+      'c6fb2-marker-after-db-copy', 'c6fb2-inspection-opens-partial-restore', 'c6fb2-marker-lifted-before-commit', 'c6fb2-restore-hold-clearable', 'c6fb2-other-package-hijacks-partial-restore', 'c6fb2-bypass-not-bound-to-attempt',
       // R2 second wave (cluster Q2): freed reviewer capacity is a wake (RR1-2).
       'c6rr1-decided-judgment-frees-nothing', 'c6rr1-withdrawn-judgment-frees-nothing', 'c6rr1-withdrawal-redraws-its-subject', 'c6rr1-decided-key-frees-nothing', 'c6rr1-released-key-frees-nothing', 'c6rr1-judgments-before-reviews', 'c6rr1-sweep-skips-waiting-actions',
     ],

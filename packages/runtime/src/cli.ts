@@ -39,14 +39,19 @@
  *   report          --workspace <dir> --cadence <DAILY|WEEKLY|MONTHLY>   generate (idempotently) and print typed claims
  *   portable-backup --workspace <dir> --destination <dir> [--attest-off-device]   encrypted package outside the workspace
  *                   (off-device ONLY when attested: a separate volume may be a partition of the same disk)
- *   restore-portable --workspace <new empty dir> --package <file>        clean-environment restore (runtime not started):
- *                   reports the backup point and data age, holds effect-capable work for reconciliation, and runs
- *                   safe-upgrade when the package is from an older schema
+ *   restore-portable --workspace <new empty dir> --package <file> [--discard-partial-restore]   clean-environment restore
+ *                   (runtime not started): reports the backup point and data age, holds effect-capable work for
+ *                   reconciliation, and runs safe-upgrade when the package is from an older schema. The target is held
+ *                   (RESTORE_IN_PROGRESS) from its first byte until the controlled restore commits; rerunning with the
+ *                   same package resumes an interrupted restore (finalize or redo); another package needs
+ *                   --discard-partial-restore
+ *   restore-status  --workspace <dir>                      the target's hold and live-restore marker (phase, attempt,
+ *                   package; never opens the database)
  *   restore-drill   --workspace <dir>                      isolated restore drill of the newest generation
  *   prune-backups   --workspace <dir> [--keep-last <n>] [--daily <n>] [--weekly <n>] [--monthly <n>]
  *   safe-upgrade    --workspace <dir>                      Preflight → Backup → Rehearse → Migrate → Verify → Activate
  *   clear-update-hold --workspace <dir> --reason <code>    operator acknowledgement of an UPDATE_HOLD (refused for a
- *                   restore-check verification copy)
+ *                   restore-check verification copy and for a live restore in progress)
  *   rollback-update --workspace <dir> --update <id> [--discard-post-update-work]   restore a kept pre-update snapshot
  *                   (bounded period); refused when work was recorded after activation unless acknowledged; the
  *                   replaced live database is retained as a pre-rollback snapshot
@@ -79,6 +84,7 @@ import {
   pruneLocalBackups,
   resilienceStatus,
   restorePortableBackup,
+  restoreStatus,
   restoreToIsolatedWorkspace,
   rollbackSchemaUpdate,
   runRestoreDrill,
@@ -93,7 +99,7 @@ import { Logger, jsonLinesSink } from './logger.js';
 import { CompanyRuntime, RUNTIME_VERSION } from './runtime.js';
 import { notifyRuntime } from './wake.js';
 
-const USAGE = 'usage: qandeel-company <init|start|health|submit|cancel|backup|verify-backup|restore-check|verify-artifacts|governance|approvals|mind|capability-gaps|context-manifest|organization|reviews|improvement|report|portable-backup|restore-portable|restore-drill|prune-backups|safe-upgrade|clear-update-hold|rollback-update> --workspace <dir> [options]';
+const USAGE = 'usage: qandeel-company <init|start|health|submit|cancel|backup|verify-backup|restore-check|verify-artifacts|governance|approvals|mind|capability-gaps|context-manifest|organization|reviews|improvement|report|portable-backup|restore-portable|restore-status|restore-drill|prune-backups|safe-upgrade|clear-update-hold|rollback-update> --workspace <dir> [options]';
 
 function out(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -139,6 +145,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       monthly: { type: 'string' },
       update: { type: 'string' },
       'discard-post-update-work': { type: 'boolean' },
+      'discard-partial-restore': { type: 'boolean' },
     },
   });
   if (command === undefined || values.workspace === undefined) fail('USAGE', USAGE, 2);
@@ -371,7 +378,9 @@ export async function main(argv: readonly string[]): Promise<void> {
       if (values.package === undefined) fail('USAGE', '--package <file> is required (the target is --workspace, a new empty directory)', 2);
       const passphrase = process.env.QANDEEL_RECOVERY_PASSPHRASE;
       if (passphrase === undefined) fail('USAGE', 'set QANDEEL_RECOVERY_PASSPHRASE', 2);
-      const r = restorePortableBackup(readFileSync(path.resolve(values.package)), workspace, { passphrase });
+      // FB-2: the same package resumes an interrupted restore (finalize a committed attempt, else redo it); another
+      // package replaces a partial restore only when the operator says so explicitly.
+      const r = restorePortableBackup(readFileSync(path.resolve(values.package)), workspace, { passphrase, discardPartialRestore: values['discard-partial-restore'] === true });
       // An older snapshot is restored at its own version (m-25): it is brought current only through safe-upgrade.
       const upgrade = r.schemaUpdateRequired ? await safeUpgrade(workspace, { runtimeVersion: RUNTIME_VERSION }) : null;
       out({ ok: true, command, restoreKind: 'CONTROLLED_LIVE_RESTORE', ...r, ...(upgrade ? { safeUpgrade: upgrade } : {}) });
@@ -394,6 +403,11 @@ export async function main(argv: readonly string[]): Promise<void> {
       } finally {
         store.close();
       }
+      return;
+    }
+    case 'restore-status': {
+      // Read-only and content-free; never opens the database (it may be partial while a live restore is in progress).
+      out({ ok: true, command, ...restoreStatus(workspace) });
       return;
     }
     case 'safe-upgrade': {
