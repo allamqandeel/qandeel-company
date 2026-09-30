@@ -88,6 +88,47 @@ describe('C5 kernel — Founder command intents', () => {
     assert.deepEqual(r('ارفض الطلب').slice(0, 2), ['APPROVAL_DECIDE', 'REJECT']);
   });
 
+  test("RR1-1 (R2-23/R2-24): the command's own leading verb decides the intent; a verb or noun inside a title never selects or changes it", () => {
+    const r = (text: string): [string | null, string | null, string | null, string | null] => {
+      const x = classifyFounderIntent(text);
+      return x.kind === 'MUTATING' ? [x.intent, x.decision, x.goalState, x.argument] : [intentOf(x), null, null, x.kind === 'READ' ? x.argument : null];
+    };
+    // A goal-state verb leads: the title's approve / accept / reject / deny / budget / hiring / conflict words change nothing.
+    assert.deepEqual(r('cancel the accept vendor returns goal'), ['GOAL_STATE', null, 'CANCELLED', 'accept vendor returns']);
+    assert.deepEqual(r('الغ هدف accept vendor returns'), ['GOAL_STATE', null, 'CANCELLED', 'accept vendor returns']);
+    assert.deepEqual(r('pause goal Approve budget of EGP 5000'), ['GOAL_STATE', null, 'PAUSED', 'approve budget of egp 5000']);
+    assert.deepEqual(r('pause the reject staffing freeze goal'), ['GOAL_STATE', null, 'PAUSED', 'reject staffing freeze']);
+    assert.deepEqual(r('achieve goal Resolve every conflict'), ['GOAL_STATE', null, 'ACHIEVED', 'resolve every conflict']);
+    assert.deepEqual(r('please cancel the Deny competitor entry goal'), ['GOAL_STATE', null, 'CANCELLED', 'deny competitor entry']);
+    assert.deepEqual(r('اوقف هدف وافق على الموردين'), ['GOAL_STATE', null, 'PAUSED', 'وافق علي الموردين']);
+    assert.deepEqual(r('أوقف هدف ارفض العروض'), ['GOAL_STATE', null, 'PAUSED', 'ارفض العروض']);
+    assert.deepEqual(r('الغ هدف اعتمد ميزانية التوظيف'), ['GOAL_STATE', null, 'CANCELLED', 'اعتمد ميزانيه التوظيف']);
+    assert.deepEqual(r('من فضلك الغ هدف قبول المرتجعات'), ['GOAL_STATE', null, 'CANCELLED', 'قبول المرتجعات']);
+    // An approve verb leads: a goal-state / reject / budget / hiring word in the title never changes the act or the decision.
+    assert.deepEqual(r('approve the cancel legacy plan goal'), ['GOAL_APPROVE', null, null, 'cancel legacy plan']);
+    assert.deepEqual(r('approve goal Reject low bids'), ['GOAL_APPROVE', null, null, 'reject low bids']);
+    assert.deepEqual(r('approve the budget review goal'), ['GOAL_APPROVE', null, null, 'budget review']);
+    assert.deepEqual(r('approve the hiring freeze goal'), ['GOAL_APPROVE', null, null, 'hiring freeze']);
+    assert.deepEqual(r('اعتمد هدف الغ الرسوم'), ['GOAL_APPROVE', null, null, 'الغ الرسوم']);
+    assert.deepEqual(r('اعتمد هدف ارفض العروض الضعيفه'), ['GOAL_APPROVE', null, null, 'ارفض العروض الضعيفه']);
+    // A reject verb leads: the decision is REJECT whatever the argument says.
+    assert.deepEqual(r('reject the approve vendor request').slice(0, 2), ['APPROVAL_DECIDE', 'REJECT']);
+    assert.deepEqual(r('ارفض طلب وافق على المورد').slice(0, 2), ['APPROVAL_DECIDE', 'REJECT']);
+    // A read verb leads: a mutating word in its argument never makes it an act.
+    assert.equal(intentOf(classifyFounderIntent('open the pause hiring goal')), 'SHOW_GOAL');
+    assert.equal(intentOf(classifyFounderIntent('show goal Approve vendors')), 'SHOW_GOAL');
+    assert.equal(intentOf(classifyFounderIntent('who is working on reject low bids')), 'WHO_WORKS_ON');
+    assert.equal(intentOf(classifyFounderIntent('اعرض هدف الغ الرسوم')), 'SHOW_GOAL');
+    // No leading verb: never an act guessed from a verb further in.
+    assert.equal(classifyFounderIntent('the accept vendor returns goal').kind, 'UNKNOWN');
+    assert.equal(classifyFounderIntent('vendor returns: approve').kind, 'UNKNOWN');
+    // The governed forms keep working (vocative, polite lead, budget clause with an amount).
+    assert.deepEqual(r('Ehab, run the Saudi campaign with a maximum budget of EGP 50,000').slice(0, 1), ['BUDGET_CEILING']);
+    assert.deepEqual(r('approve Ehab Tarek campaign with a budget of EGP 50,000').slice(0, 1), ['BUDGET_CEILING']);
+    assert.deepEqual(r('please approve the campaign request').slice(0, 2), ['APPROVAL_DECIDE', 'APPROVE']);
+    assert.equal(classifyFounderIntent('run the pause hiring goal').kind, 'UNKNOWN', 'a run verb without a budget clause is no act');
+  });
+
   test('C5-PROOF: unknown / empty / oversized input is UNKNOWN, never a guessed act', () => {
     assert.deepEqual(classifyFounderIntent(''), { kind: 'UNKNOWN' });
     assert.deepEqual(classifyFounderIntent('   '), { kind: 'UNKNOWN' });

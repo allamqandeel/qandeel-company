@@ -327,6 +327,8 @@ const MUTATION_PINS = {
       'c5-rank-order-flattened', 'c5-department-column-collapsed', 'c5-goal-work-link-dropped', 'c5-attention-widened-to-routine', 'c5-message-grants-authority', 'c5-message-body-in-audit', 'c5-history-uses-current-truth', 'c5-r4-offered-as-approvable', 'c5-company-goal-without-founder', 'c5-founder-reads-announce-change', 'c5-zero-delta-attention-sync-announces',
       // R2 remediation (cluster K5): confirm atomicity, the exception loop, attention identity, intent resolution.
       'c5-confirm-effect-commits-alone', 'c5-exception-decision-overtakes-tool', 'c5-attention-misses-uncertain-effects', 'c5-dismissal-swallows-source-changes', 'c5-resilience-keyed-per-class', 'c5-goal-state-verb-lost', 'c5-unmatched-argument-falls-back',
+      // R2 second wave (cluster Q4): the command's own verb decides the intent (RR1-1).
+      'c5-argument-verb-selects-intent', 'c5-argument-noun-selects-act',
     ],
   },
   [C6_MUTATION_CHECK]: {
@@ -347,6 +349,8 @@ const MUTATION_PINS = {
       'c6-separate-volume-counts-as-off-device', 'c6-restore-dispatches-past-backup-point', 'c6-existing-company-migrated-at-open', 'c6-start-skips-safe-upgrade', 'c6-maintenance-ignores-open-connection', 'c6-rollback-discards-post-update-work', 'c6-restore-hold-left-to-operator',
       // R2 K1: pool judges — one eligibility predicate, gated lesson draws, release on every end path.
       'c6r2-lesson-judge-drawn-before-evidence', 'c6r2-judge-rubric-hold-not-rechecked', 'c6r2-withdrawn-judge-excluded-forever', 'c6r2-judgment-survives-qualification', 'c6r2-ended-judge-keeps-judgment',
+      // R2 second wave (cluster Q4): a restore-check target is a permanently held verification copy (RR4-1).
+      'c6q4-restore-check-copy-unmarked', 'c6q4-restore-check-hold-clearable', 'c6q4-restore-check-copy-opens',
     ],
   },
   // R1 Independent Core Review: one mutation per fixed finding (docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md).

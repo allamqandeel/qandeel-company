@@ -29,7 +29,7 @@ import { CURRENT_SCHEMA_VERSION, appliedMigrations, loadReleasedMigrations, migr
 import { SqliteConnection } from './sqlite/connection.js';
 import { appendAudit } from './internal.js';
 import { DEFAULT_BUSY_TIMEOUT_MS } from './store.js';
-import { HOLD_FILE, assertNoUpdateHold, maintenanceDir } from './update-hold.js';
+import { HOLD_FILE, RESTORE_CHECK_COPY, assertNoUpdateHold, isRestoreCheckCopy, maintenanceDir } from './update-hold.js';
 import { layoutFor, openWorkspace } from './workspace.js';
 
 const KEEP_UPDATES = 2;
@@ -355,6 +355,8 @@ export async function rollbackSchemaUpdate(root: string, updateId: string, optio
   const clock = options.clock ?? systemClock;
   const layout = layoutFor(path.resolve(root));
   if (!/^[0-9a-f-]{36}$/.test(updateId)) throw new QandeelError('VALIDATION_FAILED', 'updateId is an id', { field: 'updateId' });
+  // RR4-1: a verification copy's permanent hold is never replaced by a rollback hold (which the operator could clear).
+  if (isRestoreCheckCopy(layout.root)) throw new QandeelError('MAINTENANCE_REFUSED', 'this workspace is a restore-check verification copy; it is never rolled back or started', { reason: RESTORE_CHECK_COPY });
   const dir = path.join(maintenanceDir(layout.root), updateId);
   const snapshotPath = path.join(dir, 'pre-update.sqlite3');
   const journalPath = path.join(dir, 'journal.json');

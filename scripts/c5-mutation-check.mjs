@@ -27,11 +27,13 @@ const SURFACE = { cwd: 'packages/command-center', tests: ['dist/test/surface.tes
 const SECURITY = { cwd: 'packages/command-center', tests: ['dist/test/security.test.js'] };
 const LAYOUT = { cwd: 'packages/command-center-ui', tests: ['dist/test/layout.test.js'] };
 const SIGNAL = { cwd: 'packages/runtime', tests: ['dist/test/c5/c5-founder-signal.test.js'] };
+const KERNEL = { cwd: 'packages/governance', tests: ['dist/test/c5-kernel.test.js'] };
 
 const STORE = 'packages/storage/dist/src';
 const RT = 'packages/runtime/dist/src';
 const CC = 'packages/command-center/dist/src';
 const UI = 'packages/command-center-ui/dist/src';
+const GOV = 'packages/governance/dist/src';
 
 const MUTATIONS = [
   {
@@ -185,6 +187,19 @@ const MUTATIONS = [
     gate: 'a command whose argument names nothing previews nothing — never "the single pending approval" (R2-24)',
     edits: [{ file: `${CC}/api.js`, search: 'const a = single(argument !== null ? pending.filter(', replace: 'const a = single(argument !== null && false ? pending.filter(', expectedCount: 1 }],
     runs: [SURFACE],
+  },
+  // --- R2 second-wave remediation, cluster Q4 (RR1-1) ---
+  {
+    id: 'c5-argument-verb-selects-intent',
+    gate: "the command's own leading verb decides the intent: an approve word inside a goal title never turns a cancel into an activation (RR1-1)",
+    edits: [{ file: `${GOV}/founder.js`, search: "const verb = words[0] ?? '';", replace: "const verb = words.find((w) => LEAD_VERBS.get(w) === 'APPROVE') ?? words[0] ?? '';", expectedCount: 1 }],
+    runs: [KERNEL, SURFACE],
+  },
+  {
+    id: 'c5-argument-noun-selects-act',
+    gate: 'the object noun is the head after the verb or the closing goal noun, never a noun inside the title (RR1-1)',
+    edits: [{ file: `${GOV}/founder.js`, search: "const noun = head === 'GOAL' || tail === 'GOAL' ? 'GOAL' : (head ?? tail);", replace: 'const noun = obj.map(nounOf).find((n) => n !== null) ?? null;', expectedCount: 1 }],
+    runs: [KERNEL],
   },
 ];
 

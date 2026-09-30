@@ -225,6 +225,13 @@ describe('Founder surface over loopback HTTP', () => {
       const deny = goals.propose(world.founder, { kind: 'COMPANY', title: 'Deny competitor entry', summary: 's', ownerRef: owner });
       const named = (await c.post('/api/command', { text: 'approve goal Deny competitor entry' })).body.preview as { intentKind: string; payload: { goalId: string } } | undefined;
       assert.deepEqual([named?.intentKind, named?.payload.goalId], ['GOAL_APPROVE', deny.id], 'the goal named by its title — never an unrelated approval');
+      // RR1-1: the command's own verb decides; an approve word inside the title never activates the goal.
+      const accept = goals.propose(world.founder, { kind: 'COMPANY', title: 'Accept vendor returns', summary: 's', ownerRef: owner });
+      for (const text of ['cancel the accept vendor returns goal', 'الغ هدف accept vendor returns']) {
+        const p = (await c.post('/api/command', { text })).body.preview as { intentKind: string; payload: { goalId: string; to?: string } } | undefined;
+        assert.deepEqual([p?.intentKind, p?.payload.goalId, p?.payload.to], ['GOAL_STATE', accept.id, 'CANCELLED'], `${text}: previews the cancellation it says`);
+      }
+      assert.equal(goals.get(accept.id).state, 'PROPOSED', 'previews changed nothing');
       for (const text of ['approve the campaign', 'reject goal Deny competitor entry', 'approve Launch KSA', 'resolve the conflict']) {
         const out = await c.post('/api/command', { text });
         assert.equal(out.body.preview, undefined, `${text}: an argument that names nothing (or no stated decision) previews nothing`);

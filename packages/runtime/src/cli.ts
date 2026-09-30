@@ -13,7 +13,9 @@
  *   cancel          --workspace <dir> --work-item <id> [--reason <CODE>]
  *   backup          --workspace <dir>                      online backup + isolated verification
  *   verify-backup   --workspace <dir> --backup <id>
- *   restore-check   --workspace <dir> --backup <id> --target <new empty dir>
+ *   restore-check   --workspace <dir> --backup <id> --target <new empty dir>   isolated verification copy: permanently
+ *                   held (RESTORE_CHECK_COPY) — never started, upgraded or cleared; a Company is restored live only
+ *                   through restore-portable
  *   verify-artifacts --workspace <dir>                     re-hash every artifact object
  *
  * C2 read-only commands (content-free counts / IDs / codes):
@@ -43,7 +45,8 @@
  *   restore-drill   --workspace <dir>                      isolated restore drill of the newest generation
  *   prune-backups   --workspace <dir> [--keep-last <n>] [--daily <n>] [--weekly <n>] [--monthly <n>]
  *   safe-upgrade    --workspace <dir>                      Preflight → Backup → Rehearse → Migrate → Verify → Activate
- *   clear-update-hold --workspace <dir> --reason <code>    operator acknowledgement of an UPDATE_HOLD
+ *   clear-update-hold --workspace <dir> --reason <code>    operator acknowledgement of an UPDATE_HOLD (refused for a
+ *                   restore-check verification copy)
  *   rollback-update --workspace <dir> --update <id> [--discard-post-update-work]   restore a kept pre-update snapshot
  *                   (bounded period); refused when work was recorded after activation unless acknowledged; the
  *                   replaced live database is retained as a pre-rollback snapshot
@@ -241,7 +244,8 @@ export async function main(argv: readonly string[]): Promise<void> {
       store.close();
       if (!expected) fail('BACKUP_INTEGRITY', 'this Company holds no record of that backup');
       const r = restoreToIsolatedWorkspace(path.join(backupsDir, id), path.resolve(values.target), { liveDatabasePath: databasePath, expected });
-      out({ ok: true, command, backupId: r.backupId, schemaVersionAfter: r.schemaVersionAfter, quickCheck: r.quickCheck, counts: r.counts });
+      // RR4-1: the target is a verification copy, never a Company; the output says so and names the only live path.
+      out({ ok: true, command, backupId: r.backupId, schemaVersionAfter: r.schemaVersionAfter, quickCheck: r.quickCheck, counts: r.counts, restoreKind: 'VERIFICATION_COPY', startable: false, hold: r.hold, note: 'VERIFICATION_COPY: this target is permanently held (RESTORE_CHECK_COPY) and can never be started, upgraded or cleared; to restore a Company live use restore-portable (controlled restore: effect-capable work held for reconciliation, safe-upgrade)' });
       return;
     }
     case 'verify-artifacts': {
@@ -370,7 +374,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       const r = restorePortableBackup(readFileSync(path.resolve(values.package)), workspace, { passphrase });
       // An older snapshot is restored at its own version (m-25): it is brought current only through safe-upgrade.
       const upgrade = r.schemaUpdateRequired ? await safeUpgrade(workspace, { runtimeVersion: RUNTIME_VERSION }) : null;
-      out({ ok: true, command, ...r, ...(upgrade ? { safeUpgrade: upgrade } : {}) });
+      out({ ok: true, command, restoreKind: 'CONTROLLED_LIVE_RESTORE', ...r, ...(upgrade ? { safeUpgrade: upgrade } : {}) });
       return;
     }
     case 'restore-drill': {
