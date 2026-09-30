@@ -1250,6 +1250,11 @@ export class CompanyRuntime {
       // R2-04: the one open-handoff set, shared with the WAIT settle re-check and the delegation trigger.
       openHandoffs: () => OrganizationStore.for(store).workDelegations({ parentWorkItemId: run.workItemId }).filter((d) => (OPEN_HANDOFF_STATES as readonly string[]).includes(d.state)).length,
       clarificationsRequested: () => OrganizationStore.for(store).workDelegations({ parentWorkItemId: run.workItemId }).filter((d) => d.state === 'CLARIFICATION_REQUESTED').length,
+      // RR2-2: a refused FINAL is this step's result — the model learns why it cannot finish and which handoff asked.
+      refuseFinal: (step: number, code: 'FINAL_REFUSED_CLARIFICATION_PENDING') => {
+        const asked = OrganizationStore.for(store).workDelegations({ parentWorkItemId: run.workItemId }).filter((d) => d.state === 'CLARIFICATION_REQUESTED').map((d) => d.id);
+        recordStepResult(store, claim.fence, globalStep(step), 'TOOL_REFUSED', JSON.stringify({ final: 'REFUSED', code, answerWith: 'handoff.clarify', delegationIds: asked }));
+      },
       // C5: Founder-facing messages and goal acts pass the fenced authority path; only codes and references
       // are recorded for later context (the message body is company content, never a step result).
       sendMessage: (proposal: MessageProposal, step: number) => {

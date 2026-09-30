@@ -115,3 +115,49 @@ CREATE TRIGGER founder_action_previews_decide_once BEFORE UPDATE ON founder_acti
 WHEN NEW.id IS NOT OLD.id OR NEW.session_id IS NOT OLD.session_id OR NEW.intent_kind IS NOT OLD.intent_kind OR NEW.payload_json IS NOT OLD.payload_json
   OR NEW.fingerprint IS NOT OLD.fingerprint OR NEW.created_at IS NOT OLD.created_at OR NEW.expires_at IS NOT OLD.expires_at OR OLD.state <> 'PREVIEW'
 BEGIN SELECT RAISE(ABORT, 'a preview is decided exactly once and never rewritten'); END;
+
+-- -----------------------------------------------------------------------------------------------------
+-- RR2-1 (R2-03 family): a budget wait resumes on what its refusal NEEDED, never on any headroom anywhere
+-- (Stage 3 §6). The refusing reservation transaction records the need — the refused level and dimension, the
+-- level whose headroom the wait depends on (the refusing level; for a Run-level refusal its Work Item level, the
+-- next run's Run budget is fresh) and the refused amounts. Append-only and content-free (IDs, codes, amounts).
+-- A job's latest row is its current need (a later refusal at another level re-binds it); it is read by job.
+-- -----------------------------------------------------------------------------------------------------
+CREATE TABLE budget_wait_needs (
+  seq                INTEGER NOT NULL PRIMARY KEY,
+  job_id             TEXT    NOT NULL REFERENCES queue_jobs (id) ON DELETE RESTRICT,
+  run_id             TEXT    NOT NULL REFERENCES runs (id) ON DELETE RESTRICT,
+  work_item_id       TEXT    NOT NULL REFERENCES work_items (id) ON DELETE RESTRICT,
+  refused_budget_id  TEXT    NOT NULL REFERENCES budgets (id) ON DELETE RESTRICT,
+  refused_scope      TEXT    NOT NULL CHECK (refused_scope IN ('COMPANY', 'DEPARTMENT', 'EMPLOYEE', 'WORK_ITEM', 'RUN')),
+  dimension          TEXT    NOT NULL CHECK (dimension IN ('MONEY', 'TOKENS')),
+  wait_budget_id     TEXT    NOT NULL REFERENCES budgets (id) ON DELETE RESTRICT,
+  need_money         INTEGER NOT NULL CHECK (need_money BETWEEN 0 AND 1000000000000000),
+  need_tokens        INTEGER NOT NULL CHECK (need_tokens BETWEEN 0 AND 1000000000000),
+  created_at         TEXT    NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
+  CHECK ((refused_scope = 'RUN') = (wait_budget_id <> refused_budget_id))
+) STRICT;
+CREATE INDEX budget_wait_needs_job ON budget_wait_needs (job_id, seq);
+CREATE TRIGGER budget_wait_needs_append_only_u BEFORE UPDATE ON budget_wait_needs BEGIN SELECT RAISE(ABORT, 'a budget wait need is append-only'); END;
+CREATE TRIGGER budget_wait_needs_append_only_d BEFORE DELETE ON budget_wait_needs BEGIN SELECT RAISE(ABORT, 'a budget wait need is append-only'); END;
+CREATE TRIGGER budget_wait_needs_levels BEFORE INSERT ON budget_wait_needs
+WHEN NOT EXISTS (SELECT 1 FROM budgets b WHERE b.id = NEW.refused_budget_id AND b.scope = NEW.refused_scope
+                   AND (NEW.refused_scope <> 'RUN' OR b.parent_id = NEW.wait_budget_id))
+BEGIN SELECT RAISE(ABORT, 'a budget wait binds the refusing level, or the Work Item level of a refused Run budget'); END;
+
+-- -----------------------------------------------------------------------------------------------------
+-- RR2-2 / RR2-5 (R2-04 / R2-05 family): a handoff never outlives its delegator (Stage 8 §23: accountability stays
+-- with the delegator). When the delegating Work Item ends without finishing (FAILED, CANCELLED, SUPERSEDED), every
+-- handoff it still holds open closes CANCELLED (PARENT_ENDED, history row) in the same transaction, whatever path
+-- ended it. Its non-terminal children are cancelled by the application's canonical propagation path.
+-- -----------------------------------------------------------------------------------------------------
+CREATE TRIGGER work_delegations_follow_parent AFTER UPDATE OF state ON work_items
+WHEN NEW.state IS NOT OLD.state AND NEW.state IN ('FAILED', 'CANCELLED', 'SUPERSEDED')
+  AND EXISTS (SELECT 1 FROM work_delegations d WHERE d.parent_work_item_id = NEW.id AND d.state IN ('OFFERED', 'ACCEPTED', 'CLARIFICATION_REQUESTED', 'ESCALATED'))
+BEGIN
+  INSERT INTO work_delegation_history (delegation_id, version, from_state, to_state, reason_code, actor_ref, occurred_at)
+    SELECT d.id, d.version + 1, d.state, 'CANCELLED', 'PARENT_ENDED', 'system:runtime', NEW.updated_at
+      FROM work_delegations d WHERE d.parent_work_item_id = NEW.id AND d.state IN ('OFFERED', 'ACCEPTED', 'CLARIFICATION_REQUESTED', 'ESCALATED');
+  UPDATE work_delegations SET state = 'CANCELLED', response_reason_code = 'PARENT_ENDED', version = version + 1, updated_at = NEW.updated_at
+   WHERE parent_work_item_id = NEW.id AND state IN ('OFFERED', 'ACCEPTED', 'CLARIFICATION_REQUESTED', 'ESCALATED');
+END;

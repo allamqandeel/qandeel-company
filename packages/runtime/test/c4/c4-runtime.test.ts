@@ -111,6 +111,19 @@ describe('C4 runtime: organizational acts go through the runtime-owned loop', ()
       assert.equal(handoff()?.state, 'COMPLETED');
     }));
 
+  test('RR2-2: a delegator that never answers its delegate\'s question is told why each FINAL is refused; when it ends unfinished the handoff closes and the delegated work is cancelled', () =>
+    withRuntime('c4-clarify-unanswered', async ({ w, rt, o }) => {
+      const child = script({ type: 'ORG_ACTION', action: 'handoff.clarification.request', args: { reason: 'Which market?' } }, final('child.done'));
+      const parent = submitTask(rt, w, { instructions: script({ type: 'ORG_ACTION', action: 'work.delegate', args: { delegateEmployeeId: o.report.id, objective: 'Draft the SEO brief', instructions: child, taskClass: 'draft.memo', budgetMoney: 200_000, budgetTokens: 200_000 } }, final('parent.done')) }, { employee: o.director });
+      assert.equal(await until(rt, parent, ['COMPLETED', 'FAILED'], 60_000), 'FAILED');
+      const handoff = rt.org.organization.workDelegations({ parentWorkItemId: parent })[0];
+      assert.deepEqual([handoff?.state, handoff?.responseReasonCode], ['CANCELLED', 'PARENT_ENDED'], 'the question never outlives its delegator');
+      assert.equal(await until(rt, handoff?.childWorkItemId as Id, ['CANCELLED']), 'CANCELLED', 'the delegate no longer waits under a FAILED delegator');
+      // Every refused FINAL became a step result that the following turn's governed context selected (required, newest).
+      const selected = rt.view.runsForWorkItem(parent).flatMap((r) => rt.mind.memory.manifestsFor(r.id)).flatMap((m) => rt.mind.memory.manifestEntries(m.id)).filter((e) => e.decision === 'SELECTED').map((e) => e.itemId);
+      assert.ok(new Set(selected.filter((x) => x.startsWith('step-'))).size >= 2, 'beyond the delegation act itself, the model is told why it cannot finish');
+    }));
+
   test('C4-PROOF: an organizational act the model is not authorized for is refused and recorded; the model cannot talk its way to authority', () =>
     withRuntime('c4-org-deny', async ({ w, rt }) => {
       const id = submitTask(rt, w, { instructions: script({ type: 'ORG_ACTION', action: 'staffing.request.decide', args: { requestId: '00000000-0000-4000-8000-000000000000', decision: 'APPROVE' } }, final('tried')) });
@@ -123,8 +136,9 @@ describe('C4 runtime: organizational acts go through the runtime-owned loop', ()
 
 describe('R2-04: the delegator loop answers a pending clarification instead of waiting on itself', () => {
   // The runtime-owned loop against minimal services: every model turn proposes FINAL.
-  const loop = async (open: number, asked: number): Promise<{ result: ProcessorResult; calls: number }> => {
+  const loop = async (open: number, asked: number): Promise<{ result: ProcessorResult; calls: number; refused: string[] }> => {
     let calls = 0;
+    const refused: string[] = [];
     const ctx = { input: { taskClass: 'draft.memo', instructions: 'x', maxTurns: 3 }, resumeFrom: null, signal: new AbortController().signal, checkpoint: () => Promise.resolve() } as unknown as ProcessorContext;
     const gov = {
       context: {},
@@ -134,13 +148,19 @@ describe('R2-04: the delegator loop answers a pending clarification instead of w
       },
       openHandoffs: () => open,
       clarificationsRequested: () => asked,
+      refuseFinal: (step: number, c: string) => void refused.push(`${step}:${c}`),
     } as unknown as GovernedRunServices;
-    return { result: await employeeTaskProcessor.runGoverned(ctx, gov), calls };
+    return { result: await employeeTaskProcessor.runGoverned(ctx, gov), calls, refused };
   };
 
   test('an offered / accepted / escalated handoff parks at zero tokens; a delegate\'s question keeps the loop turning (bounded by maxTurns); none open completes', async () => {
-    assert.deepEqual(await loop(1, 0), { result: { type: 'WAIT', reasonCode: 'AWAITING_DELEGATION' }, calls: 1 });
-    assert.deepEqual(await loop(1, 1), { result: { type: 'PERMANENT_FAILURE', code: 'MAX_TURNS' }, calls: 3 }, 'the question is this run\'s to answer (handoff.clarify): parking would wait on itself');
+    assert.deepEqual(await loop(1, 0), { result: { type: 'WAIT', reasonCode: 'AWAITING_DELEGATION' }, calls: 1, refused: [] });
+    // RR2-2: the loop still ends MAX_TURNS if the model never answers (the delegator's end then closes its handoffs and
+    // cancels the delegated work — storage `work_delegations_follow_parent` / `cancelDelegatedChildren`), but every
+    // refused FINAL is now recorded as its step's result, so each next turn's context says why and what to answer.
+    const r = await loop(1, 1);
+    assert.deepEqual([r.result, r.calls], [{ type: 'PERMANENT_FAILURE', code: 'MAX_TURNS' }, 3], 'the question is this run\'s to answer (handoff.clarify): parking would wait on itself');
+    assert.deepEqual(r.refused, ['0:FINAL_REFUSED_CLARIFICATION_PENDING', '1:FINAL_REFUSED_CLARIFICATION_PENDING', '2:FINAL_REFUSED_CLARIFICATION_PENDING'], 'each refused FINAL is told to the model, never a silent continue');
     assert.equal((await loop(0, 0)).result.type, 'COMPLETED');
   });
 });

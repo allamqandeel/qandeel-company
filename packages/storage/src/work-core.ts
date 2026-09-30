@@ -80,7 +80,37 @@ export function applyTransition(ctx: StoreContext, item: WorkItemRecord, to: Wor
   // review key / judgment for another eligible reviewer in this same transaction, whatever path ended it. A
   // dead-lettered one (BLOCKED, not terminal) is released by the queue's dead-letter path (m-11).
   if (terminal) releaseAbandonedReviewWork(ctx, item.id);
+  // RR2-2 / RR2-5: a handoff never outlives its delegator. The datastore closes the open handoffs of work that ends
+  // unfinished (0011 `work_delegations_follow_parent`, this same statement); a CANCELLED / SUPERSEDED parent then
+  // propagates to its children (`terminateNow`), and a FAILED one cancels the work it delegated here.
+  if (to === 'FAILED') cancelDelegatedChildren(ctx, item.id, opts.trace);
   return getWorkItemRow(ctx, item.id);
+}
+
+/**
+ * RR2-2: the Work Items a FAILED delegator handed off are cancelled through the canonical propagation path (same
+ * transaction): a running one records durable intent, completed work is retained (it is finished), and one held for
+ * reconciliation is retained and stays surfaced as a held job — its handoff is closed all the same.
+ */
+function cancelDelegatedChildren(ctx: StoreContext, parentId: Id, trace: TraceContext): void {
+  const out = newTerminationOutcome();
+  for (const { c } of ctx.db.all<{ c: string }>('SELECT child_work_item_id AS c FROM work_delegations WHERE parent_work_item_id = ? ORDER BY created_at, id', parentId)) {
+    requestTermination(ctx, c as Id, { mode: 'CANCELLED', reasonCode: 'PARENT_FAILED', trace: { ...trace, causationId: parentId }, policy: defaultPropagationPolicy }, out, true, 1);
+  }
+}
+
+/**
+ * RR2-5: executable work never re-enters the queue under a lineage that ended — e.g. a delegated child retained as
+ * completed (WAITING_REVIEW) when its delegator was cancelled, then sent back to rework by its review. It is
+ * cancelled by the same propagation its parent's end would have applied had it not been finished then. `null`:
+ * the parent (if any) is live, or the child is independent of it.
+ */
+function endedLineageReason(ctx: StoreContext, item: WorkItemRecord): string | null {
+  if (item.parentId === null) return null;
+  const parent = getWorkItemRow(ctx, item.parentId);
+  if ((parent.state === 'CANCELLED' || parent.state === 'SUPERSEDED') && defaultPropagationPolicy(item, parent.state) === 'TERMINATE') return parent.state === 'CANCELLED' ? 'PARENT_CANCELLED' : 'PARENT_SUPERSEDED';
+  if (parent.state === 'FAILED' && ctx.db.get('SELECT 1 AS x FROM work_delegations WHERE child_work_item_id = ? AND parent_work_item_id = ?', item.id, parent.id)) return 'PARENT_FAILED';
+  return null;
 }
 
 /** Non-state field update (blocker refresh, termination intent). Still bumps the version. */
@@ -119,6 +149,11 @@ export function enqueueJob(ctx: StoreContext, item: WorkItemRecord, trace: Trace
   if (item.processorKind === null) return undefined;
   const existing = liveJobFor(ctx, item.id);
   if (existing) return existing;
+  const ended = endedLineageReason(ctx, item);
+  if (ended !== null) {
+    requestTermination(ctx, item.id, { mode: 'CANCELLED', reasonCode: ended, trace: { ...trace, causationId: item.parentId as Id }, policy: defaultPropagationPolicy }, newTerminationOutcome(), true, 1);
+    return undefined;
+  }
   const id = newId();
   const at = ts(ctx);
   ctx.db.run(

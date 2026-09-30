@@ -502,6 +502,56 @@ describe('R2-03: a Work Item parked BUDGET_EXHAUSTED resumes when real headroom 
       h.close();
     }
   });
+
+  test('RR2-1: a waiter wakes only when the need its refusal recorded fits again — headroom smaller than the need wakes nothing, however many siblings settle', () => {
+    const h = harness();
+    try {
+      const s = seed(h.store, { employeeCap: 8_000 });
+      const ctx = storeContext(h.store);
+      const woken = (wi: Id): number => Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM events WHERE type = 'job.woken' AND aggregate_id IN (SELECT id FROM queue_jobs WHERE work_item_id = ?)`, wi)?.n);
+      // H's worst case stays held on the shared envelope (outcome uncertain): 3 000 of 8 000 remain.
+      const hi = governedItem(h, s, s.employee, { cap: 8_000 });
+      const ch = claimFor(h, hi, 'wh').claim;
+      const held = reserveBudget(h.store, ch.fence, call(h, s, ch, 5_000));
+      if (held.ok) holdReservation(h.store, ch.fence, held.reservation.id, 'PROVIDER_TIMEOUT');
+      // A sibling's transient worst case takes 2 500 more; then a small waiter (need 1 000) is refused at the envelope.
+      const si = governedItem(h, s, s.employee, { cap: 8_000 });
+      const cs = claimFor(h, si, 'ws').claim;
+      const rs = reserveBudget(h.store, cs.fence, call(h, s, cs, 2_500));
+      const small = governedItem(h, s, s.employee, { cap: 8_000 });
+      const cm = claimFor(h, small, 'wm').claim;
+      assert.deepEqual(reserveBudget(h.store, cm.fence, call(h, s, cm, 1_000)), { ok: false, code: 'BUDGET_EXHAUSTED', detail: 'EMPLOYEE:MONEY' });
+      settle(h.store, cm.fence, { type: 'WAIT', reasonCode: 'BUDGET_EXHAUSTED' }, { backoff });
+      // Waiters whose need the envelope cannot cover (5 000 > 3 000), and waiters whose own cap is below one worst case
+      // (need 5 000 > a fresh Run budget of 1 000: the wake-storm shape), and one whose per-run cap (1 000) is below its
+      // need (2 000) although every level will have room for it — each with positive headroom somewhere.
+      const big: Id[] = [];
+      for (const [i, cap, runCap, need] of [[0, 8_000, undefined, 5_000], [1, 8_000, undefined, 5_000], [2, 1_000, undefined, 5_000], [3, 1_000, undefined, 5_000], [4, 8_000, 1_000, 2_000]] as const) {
+        const wi = governedItem(h, s, s.employee, runCap === undefined ? { cap } : { cap, runCap });
+        const c = claimFor(h, wi, `wb${i}`).claim;
+        assert.equal(reserveBudget(h.store, c.fence, call(h, s, c, need)).ok, false);
+        settle(h.store, c.fence, { type: 'WAIT', reasonCode: 'BUDGET_EXHAUSTED' }, { backoff });
+        big.push(wi);
+      }
+      // The sibling's call comes back cheap: 2 500 minus its cost returns — enough for the small waiter only.
+      if (rs.ok) settleReservation(h.store, cs.fence, rs.reservation.id, usage);
+      assert.equal(jobState(h, small), 'QUEUED', 'a covered need is woken in the settle transaction');
+      // M more siblings settle below their worst case: headroom returns every time, never as much as the big needs.
+      for (let m = 0; m < 5; m++) {
+        const wi = governedItem(h, s, s.employee, { cap: 8_000 });
+        const c = claimFor(h, wi, `wx${m}`).claim;
+        const r = reserveBudget(h.store, c.fence, call(h, s, c, 1_000));
+        assert.ok(r.ok);
+        if (r.ok) settleReservation(h.store, c.fence, r.reservation.id, usage);
+        settle(h.store, c.fence, { type: 'COMPLETED', evidence: { summaryCode: 'done' } }, { backoff });
+      }
+      for (const wi of big) assert.deepEqual([jobState(h, wi), woken(wi)], ['WAITING', 0], 'no wake, no run, no event for headroom the waiter cannot use');
+      assert.deepEqual(ctx.db.all<{ s: string; w: string }>(`SELECT refused_scope AS s, (SELECT scope FROM budgets WHERE id = wait_budget_id) AS w FROM budget_wait_needs WHERE work_item_id IN (SELECT value FROM json_each(?)) ORDER BY seq`, JSON.stringify(big)).map((r) => `${r.s}>${r.w}`), ['EMPLOYEE>EMPLOYEE', 'EMPLOYEE>EMPLOYEE', 'RUN>WORK_ITEM', 'RUN>WORK_ITEM', 'RUN>WORK_ITEM'], 'each refusal recorded where it was refused and the level its wait depends on');
+      assert.throws(() => ctx.db.immediate('test: tamper', () => ctx.db.run('DELETE FROM budget_wait_needs')), (e: unknown) => /append-only/.test(String((e as Error).cause)));
+    } finally {
+      h.close();
+    }
+  });
 });
 
 describe('R1-07: issuing the missing tool grant wakes a parked capability gap', () => {
