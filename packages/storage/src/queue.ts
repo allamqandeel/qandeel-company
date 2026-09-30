@@ -30,6 +30,7 @@ import {
   type WorkItemState,
 } from '@qandeel-company/domain';
 
+import { releaseBudgetAdmission } from './governance-core.js';
 import { appendAudit, appendEvent, getJobRow, getWorkItemRow, mapCheckpoint, mapJob, mapRun, ts, type StoreContext, type TraceContext } from './internal.js';
 import type { CheckpointRecord, Fence, JobRecord, RunRecord, SupervisorFence, WorkItemRecord } from './records.js';
 import { releaseAbandonedReviewWork, reviewAfterCompletion } from './review-core.js';
@@ -310,6 +311,10 @@ function setJob(
   state: JobRecord['state'],
   fields: { availableAt?: Timestamp; attemptCount?: number; deadLetterReason?: string | null; waitReason?: string | null; lastFailureCode?: string | null; bumpToken?: boolean },
 ): void {
+  // FA-1 (A5): a job leaving QUEUED / CLAIMED (a wait for anything, DONE, FAILED, DEAD_LETTER, a hold, CANCELLED) no
+  // longer owns admitted budget capacity: released here and re-admitted to the next eligible waiter in this
+  // transaction (the 0011 `budget_admissions_follow_job` trigger is the durable backstop of the release).
+  if (state !== 'QUEUED' && state !== 'CLAIMED') releaseBudgetAdmission(ctx, job.id, 'JOB_LEFT_QUEUE');
   ctx.db.run(
     `UPDATE queue_jobs SET state = ?, lease_owner = NULL, lease_expires_at = NULL, available_at = ?, attempt_count = ?, dead_letter_reason = ?,
             wait_reason = ?, last_failure_code = ?, fencing_token = fencing_token + ?, updated_at = ?

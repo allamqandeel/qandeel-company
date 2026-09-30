@@ -79,6 +79,7 @@ import {
 
 import {
   CHILD_CAN_SPEND_SQL,
+  admitBudgetWaiters,
   budgetChain,
   budgetFor,
   chargedExclusions,
@@ -92,7 +93,7 @@ import {
   resolvePrincipal,
   setEmployeeState,
   settleReservationTx,
-  wakeBudgetWaiters,
+  trimBudgetAdmissions,
   wakeWorkItemJob,
   writeEmployeeHistory,
   type Principal,
@@ -1107,8 +1108,10 @@ export class GovernanceStore {
       ctx.db.run('UPDATE budgets SET cap_money = ?, cap_tokens = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?', capMoney, capTokens, at(ctx), b.id, b.version);
       const actor = resolvePrincipal(ctx, actorRef);
       budgetHistory(ctx, b.id, 'CAP_CHANGED', capMoney, capTokens, assertCode(input.reasonCode, 'reasonCode'), actor.ref);
-      // R2-03 / m-05: every waiter under the raised level that now has real headroom (no window of Work Items).
-      if (capMoney > b.capMoney || capTokens > b.capTokens) wakeBudgetWaiters(ctx, [b.id], 'budget.raised');
+      // FA-1: a lowered cap releases admitted capacity it can no longer cover (newest first; never below reserved +
+      // spent, which the check above keeps); a raised cap admits waiters under it in order (no window of Work Items).
+      if (capMoney < b.capMoney || capTokens < b.capTokens) trimBudgetAdmissions(ctx, b.id);
+      if (capMoney > b.capMoney || capTokens > b.capTokens) admitBudgetWaiters(ctx, [b.id], 'budget.raised');
       return getBudgetRow(ctx, b.id);
     });
   }
