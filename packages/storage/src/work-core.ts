@@ -20,7 +20,7 @@ import {
 
 import { appendAudit, appendEvent, getWorkItemRow, liveJobFor, ts, type StoreContext, type TraceContext } from './internal.js';
 import type { JobRecord, WorkItemRecord } from './records.js';
-import { releaseAbandonedAssignment } from './review-core.js';
+import { releaseAbandonedReviewWork } from './review-core.js';
 
 export interface TransitionOptions {
   readonly reasonCode: string;
@@ -76,9 +76,10 @@ export function applyTransition(ctx: StoreContext, item: WorkItemRecord, to: Wor
     at,
   );
   appendEvent(ctx, 'work_item.transitioned', 'work_item', item.id, opts.trace, { from: item.state, to, version: item.version + 1, reason: opts.reasonCode });
-  // C4: a review Work Item that ends (failed, cancelled, superseded, dead-lettered) without its decision frees its
-  // review key for another eligible reviewer in this same transaction, whatever path ended it.
-  if (terminal) releaseAbandonedAssignment(ctx, item.id);
+  // C4 / C6: a review or judge Work Item that ends (failed, cancelled, superseded) without its decision frees its
+  // review key / judgment for another eligible reviewer in this same transaction, whatever path ended it. A
+  // dead-lettered one (BLOCKED, not terminal) is released by the queue's dead-letter path (m-11).
+  if (terminal) releaseAbandonedReviewWork(ctx, item.id);
   return getWorkItemRow(ctx, item.id);
 }
 

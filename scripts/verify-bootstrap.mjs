@@ -311,6 +311,9 @@ const MUTATION_PINS = {
       'c4-quality-hold-ignored-in-selection', 'c4-decision-not-rechecked', 'c4-stale-subject-decision-counts', 'c4-action-review-gate-removed', 'c4-action-review-reusable', 'c4-rejected-action-rereviewed',
       'c4-review-wait-not-rechecked', 'c4-delegation-wait-free-wake', 'c4-open-handoff-completes', 'c4-p07-reservation-unchecked', 'c4-p07-router-unfiltered', 'c4-p07-release-covers-future',
       'c4-acting-never-expires', 'c4-acting-authority-outlives-cover', 'c4-ceo-needs-department', 'c4-calibration-counted-twice', 'c4-promotion-without-evidence', 'c4-org-managed-reassignable', 'c4-staffing-alternatives-optional',
+      // R2 K1: review integrity and Review Pool eligibility.
+      'c4r2-executor-redesigns-own-plan', 'c4r2-rework-scoped-by-plan', 'c4r2-stranded-action-wait-not-woken', 'c4r2-manager-key-department-bound', 'c4r2-manager-key-filled-last', 'c4r2-withdrawn-reviewer-excluded-forever',
+      'c4r2-rubric-hold-not-rechecked', 'c4r2-action-subject-truncated', 'c4r2-oversized-subject-admitted', 'c4r2-secret-arguments-reach-reviewer', 'c4r2-dead-letter-keeps-review-key',
     ],
   },
   [C5_MUTATION_CHECK]: {
@@ -331,6 +334,8 @@ const MUTATION_PINS = {
       'c6r1-ordinary-outcome-founder-only', 'c6r1-r4-judged-by-pool', 'c6r1-founder-key-pool-judgment', 'c6r1-outcome-conflict-averaged', 'c6r1-pass-verifies-without-judgment', 'c6r1-uncertainty-validates',
       'c6r1-self-judgment', 'c6r1-judge-eligibility-not-rechecked', 'c6r1-validated-lesson-shared-company-wide', 'c6r1-judgment-budget-inflated', 'c6r1-judgment-raises-budget',
       'c6-read-announces-change', 'c6-unchanged-derivation-announces',
+      // R2 K1: pool judges — one eligibility predicate, gated lesson draws, release on every end path.
+      'c6r2-lesson-judge-drawn-before-evidence', 'c6r2-judge-rubric-hold-not-rechecked', 'c6r2-withdrawn-judge-excluded-forever', 'c6r2-judgment-survives-qualification', 'c6r2-ended-judge-keeps-judgment',
     ],
   },
   // R1 Independent Core Review: one mutation per fixed finding (docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md).

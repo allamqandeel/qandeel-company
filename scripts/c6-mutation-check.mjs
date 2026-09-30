@@ -244,13 +244,13 @@ const MUTATIONS = [
   {
     id: 'c6r1-self-judgment',
     gate: 'the executor, its delegation chain and the subject Employee are never drawn as the judge',
-    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return [...new Set([...parties, ...prior])];', replace: 'return [...new Set([...prior])];', expectedCount: 1 }],
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return [...new Set([...judgmentParties(ctx, workItemId, subjectEmployeeId), ...prior])];', replace: 'return [...new Set([...prior])];', expectedCount: 1 }],
     runs: [FREE],
   },
   {
     id: 'c6r1-judge-eligibility-not-rechecked',
     gate: 'a judge\'s qualification and independence are re-checked when it decides, not inherited from assignment',
-    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return { eligible: q !== undefined && independent,', replace: 'return { eligible: true,', expectedCount: 1 }],
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return { eligible: v !== null,', replace: 'return { eligible: true,', expectedCount: 1 }],
     runs: [FREE],
   },
   {
@@ -286,6 +286,37 @@ const MUTATIONS = [
     gate: 'an idempotent derivation (evaluate, assess, report) announces only when it recorded something new',
     edits: [{ file: `${RT}/runtime.js`, search: 'evaluate: (r) => r.changed,', replace: 'evaluate: (r) => true,', expectedCount: 1 }],
     runs: [SIGNAL],
+  },
+  // R2 K1 (docs/R2_FULL_STRONG_V1_INDEPENDENT_REVIEW_REPORT.md §8): pool judges.
+  {
+    id: 'c6r2-lesson-judge-drawn-before-evidence',
+    gate: 'R2-09: every LESSON judge draw (refill, recovery sweep, release, reassignment) passes the lesson evidence gate',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'return lessonJudgeDraw !== null && lessonJudgeDraw(ctx, s.subjectId) !== null;', replace: 'return assignJudge(ctx, { ...s, lessonEvidenceReady: true }) !== null;', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6r2-judge-rubric-hold-not-rechecked',
+    gate: 'R2-08: a RUBRIC Quality Hold refuses a pool judge at the decision boundary (the shared eligibility predicate)',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: "OR (h.target_kind = 'RUBRIC' AND ? IS NOT NULL AND h.target_ref = ?)", replace: 'OR (0 AND ? IS NOT NULL AND h.target_ref = ?)', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6r2-withdrawn-judge-excluded-forever',
+    gate: 'R2-07 / m-12: a judge withdrawn for a transient reason (a lifted hold) may judge the subject again',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: "(state IN ('ASSIGNED', 'DECIDED', 'ESCALATED') OR reason_code = 'JUDGMENT_WORK_ENDED')", replace: '(1)', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6r2-judgment-survives-qualification',
+    gate: 'm-15: a suspended / revoked qualification withdraws its open judgments, not only its review keys',
+    edits: [{ file: `${STORAGE}/review.js`, search: 'withdrawJudgment(ctx, ja, `REVIEWER_${to}`);', replace: 'void 0;', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6r2-ended-judge-keeps-judgment',
+    gate: 'm-11: a judge Work Item that ends without its decision releases the judgment in the same transaction',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: '    releaseAbandonedJudgment(ctx, workItemId);\n}', replace: '}', expectedCount: 1 }],
+    runs: [FREE],
   },
 ];
 

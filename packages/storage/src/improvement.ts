@@ -72,7 +72,7 @@ import { insertLesson, txLessonUnderReview, txRecordLessonDecision } from './min
 import { mapJudgmentAssignment, type JudgmentAssignmentRecord } from './org-records.js';
 import { assertOutcomeClasses, txRecordOutcome } from './outcome-core.js';
 import { txResilienceStatus } from './resilience.js';
-import { activePlan, assignJudge, judgeStillEligible, judgmentSubjectEmployee, withdrawJudgment, type JudgmentSubjectKind } from './review-core.js';
+import { activePlan, assignJudge, drawJudge, judgeStillEligible, judgmentSubjectEmployee, registerLessonJudgeDraw, withdrawJudgment, type JudgmentSubjectKind } from './review-core.js';
 import { storeContext, type CompanyStore } from './store.js';
 
 export const SYSTEM_EVALUATOR_REF = 'system:evaluator';
@@ -360,8 +360,10 @@ export function txRequestLessonJudgment(ctx: StoreContext, lessonId: Id): Id | n
   if (!l || l.stage !== 'UNDER_REVIEW' || !m) return null;
   const gate = txLearningValidationGate(ctx, l.id as Id);
   if (!gate.allowed && EVIDENCE_PENDING.has(gate.reason)) return null;
-  return assignJudge(ctx, { subjectKind: 'LESSON', subjectId: l.id as Id, workItemId: m[1] as Id, subjectEmployeeId: l.employee_id as Id })?.id ?? null;
+  return assignJudge(ctx, { subjectKind: 'LESSON', subjectId: l.id as Id, workItemId: m[1] as Id, subjectEmployeeId: l.employee_id as Id, lessonEvidenceReady: true })?.id ?? null;
 }
+// R2-09: every LESSON judge draw — refill, recovery sweep, abandoned-judgment release, reassignment — goes through this gate.
+registerLessonJudgeDraw(txRequestLessonJudgment);
 
 /** New independent evidence on a Work Item (a validated cause, a qualified evaluation): its waiting lessons get their judge. */
 function wakeLessonJudgments(ctx: StoreContext, workItemId: Id): void {
@@ -397,7 +399,7 @@ export function txApplyJudgment(ctx: StoreContext, ja: JudgmentAssignmentRecord,
   const now = judgeStillEligible(ctx, ja, subjectEmployee);
   if (!now.eligible) {
     withdrawJudgment(ctx, ja, 'REVIEWER_NOT_ELIGIBLE');
-    assignJudge(ctx, { subjectKind: ja.subjectKind, subjectId: ja.subjectId, workItemId: ja.workItemId, subjectEmployeeId: subjectEmployee });
+    drawJudge(ctx, { subjectKind: ja.subjectKind, subjectId: ja.subjectId, workItemId: ja.workItemId, subjectEmployeeId: subjectEmployee });
     return refuse('REVIEWER_NOT_ELIGIBLE');
   }
   let decision = judgmentFromReview(d.outcome);

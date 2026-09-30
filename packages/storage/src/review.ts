@@ -34,6 +34,7 @@ import { effectiveDataClass } from './governed-writes.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import {
   mapFinding,
+  mapJudgmentAssignment,
   mapQualification,
   mapQualityHold,
   mapReviewAssignment,
@@ -63,6 +64,8 @@ import {
   setRequestState,
   sweepReviews,
   txDeclarePlan,
+  withdrawJudgment,
+  withdrawnJudgmentRedraw,
 } from './review-core.js';
 import { storeContext, type CompanyStore } from './store.js';
 
@@ -104,12 +107,17 @@ function setMode(ctx: StoreContext, q: ReviewerQualificationRecord, to: Reviewer
   );
   ctx.db.run('INSERT INTO reviewer_qualification_history (qualification_id, version, from_mode, to_mode, reason_code, actor_ref, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?)', q.id, q.version + 1, q.mode, to, reasonCode, actorRef, at);
   appendAudit(ctx, 'review.qualification_mode', 'reviewer_qualification', q.id, { actorRef }, 'OK', reasonCode, { from: q.mode, to, employeeId: q.employeeId });
-  // Open assignments of a reviewer who can no longer review are withdrawn and their keys refilled.
+  // Open assignments AND open judgments (m-15) of a reviewer who can no longer review are withdrawn, and their keys /
+  // subjects refilled (a judgment through its gated path).
   if (to === 'SUSPENDED' || to === 'REVOKED') {
     for (const a of ctx.db.all(`SELECT * FROM review_assignments WHERE qualification_id = ? AND state = 'ASSIGNED'`, q.id).map(mapReviewAssignment)) {
       ctx.db.run(`UPDATE review_assignments SET state = 'WITHDRAWN', withdraw_reason = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, `REVIEWER_${to}`, at, a.id, a.version);
       const r = getRequest(ctx, a.requestId);
       if (r.state === 'OPEN') fillAssignments(ctx, r);
+    }
+    for (const ja of ctx.db.all(`SELECT * FROM judgment_assignments WHERE qualification_id = ? AND state = 'ASSIGNED'`, q.id).map(mapJudgmentAssignment)) {
+      withdrawJudgment(ctx, ja, `REVIEWER_${to}`);
+      withdrawnJudgmentRedraw(ctx, ja);
     }
   }
   return qualification(ctx, q.id);
@@ -375,7 +383,10 @@ export class ReviewStore {
     });
   }
 
-  /** Bounded reconciliation of review state (runtime recovery and the supervisor sweep call this). */
+  /**
+   * Bounded reconciliation of review state, on demand. The runtime runs the same sweep once at startup recovery
+   * (through `reconcileOrganization`); nothing calls it periodically (no polling loop) (m-14).
+   */
   sweep(limit = 100): number {
     const ctx = storeContext(this.#store);
     return ctx.db.immediate('review sweep', () => sweepReviews(ctx, Math.max(1, Math.min(500, limit))));
@@ -402,7 +413,7 @@ export class ReviewStore {
 
   /** Who could independently review in a domain right now (the pool's live view; eligibility decided in SQL). */
   pool(domain: string, dataClass: DataClass = 'D1', limit = 20): { employeeId: Id; qualificationId: Id; level: string }[] {
-    return this.#read((ctx) => eligibleReviewers(ctx, { domain: assertReviewDomain(domain), mode: 'ACTIVE', dataClass, excluded: [], excludeDepartmentId: null, minLevelRank: 0, onlyEmployeeId: null, limit }));
+    return this.#read((ctx) => eligibleReviewers(ctx, { domain: assertReviewDomain(domain), mode: 'ACTIVE', dataClass, excluded: [], excludeDepartmentId: null, minLevelRank: 0, rubricRef: null, onlyEmployeeId: null, limit }));
   }
 
   requests(filter: { workItemId?: Id; state?: ReviewRequestRecord['state'] } = {}): ReviewRequestRecord[] {

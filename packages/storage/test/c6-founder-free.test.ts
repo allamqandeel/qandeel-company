@@ -354,3 +354,56 @@ describe('C6-R1: never averaged — insufficient evidence stays inconclusive, un
     });
   });
 });
+
+describe('R2 K1: pool judges — one eligibility predicate, gated lesson draws, release on every end path', () => {
+  /** A PROPOSED attribution of a failed-then-passed Work Item, with its pool judge drawn. */
+  function proposedAttribution(h: Harness, s: Seed, m: ImprovementStore): Id {
+    const w = prepared(h, s, s.employee);
+    execute(h, w);
+    review(h, w, 'FAIL');
+    execute(h, w);
+    review(h, w, 'PASS', judged('NOT_ACHIEVED'));
+    m.evaluate(w);
+    return (m.attributions({ workItemId: w }).find((x) => x.state === 'PROPOSED') as { id: Id }).id;
+  }
+
+  test('R2-09: no lesson judge is drawn (or funded) before the lesson\'s independent evidence exists — not by the refill / recovery sweep either', () => {
+    withSeed((h, s, m) => {
+      activeReviewer(h, s);
+      const w = prepared(h, s, s.employee);
+      const obs = execute(h, w, 'I believe I misread the brief.') as Id;
+      m.classifyObservation(obs, 'MISTAKE_LESSON');
+      const lr = m.requestLearningReview(obs);
+      assert.equal(lr.judgmentId, null, 'evidence pending: no judge');
+      for (let i = 0; i < 3; i++) ReviewStore.for(h.store).sweep(100);
+      assert.equal(m.judgments({ subjectId: lr.lessonId }).length, 0, 'the sweep never draws around the evidence gate');
+    });
+  });
+
+  test('R2-08 / m-15: a RUBRIC hold refuses the judge at the decision boundary; a suspended qualification withdraws its open judgments', () => {
+    withSeed((h, s, m) => {
+      const { qualification } = activeReviewer(h, s);
+      const rv = ReviewStore.for(h.store);
+      const a1 = proposedAttribution(h, s, m);
+      const hold = rv.placeQualityHold(s.founder, { targetKind: 'RUBRIC', targetRef: 'quality.rubric@1', reasonCode: 'rubric.suspect' });
+      assert.equal(judge(h, m, a1, 'PASS').code, 'REVIEWER_NOT_ELIGIBLE');
+      assert.equal(m.attributions().find((x) => x.id === a1)?.state, 'PROPOSED', 'nothing is validated under a held rubric');
+      rv.liftQualityHold(s.founder, hold.id, 'rubric.fixed');
+      const open = m.judgments({ subjectId: a1, state: 'ASSIGNED' })[0];
+      assert.ok(open, 'the hold lifted, the (transiently withdrawn) judge is drawn again');
+      rv.suspendReviewer(s.founder, qualification.id, 'reviewer.drift');
+      assert.equal(m.judgments({ subjectId: a1 }).find((j) => j.id === open.id)?.state, 'WITHDRAWN', 'the qualification ends: so do its open judgments');
+    });
+  });
+
+  test('m-11: a judge Work Item that ends FAILED releases its judgment in the same transaction', () => {
+    withSeed((h, s, m) => {
+      activeReviewer(h, s);
+      const a1 = proposedAttribution(h, s, m);
+      const j = m.judgments({ subjectId: a1, state: 'ASSIGNED' })[0];
+      const claim = claimItem(h, j?.judgeWorkItemId as Id, `w-${newId().slice(0, 8)}`);
+      settle(h.store, claim.fence, { type: 'PERMANENT_FAILURE', code: 'PROVIDER_REFUSED' }, { backoff });
+      assert.equal(m.judgments({ subjectId: a1 }).find((x) => x.id === j?.id)?.state, 'WITHDRAWN', 'never left ASSIGNED until a restart');
+    });
+  });
+});
