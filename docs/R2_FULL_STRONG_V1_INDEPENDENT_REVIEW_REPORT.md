@@ -618,6 +618,40 @@ orchestrator is the sole integration owner of migration 0011 and of every shared
 reservation / headroom check, job-state transitions, the store-open refusal chain, the grant decision): conflicting
 schema or design choices are resolved by design review at integration, never by a mechanical merge.
 
+### 16.4 One implementation wave, integrated
+
+| Family | Architecture (decision) | Merge | Key proofs (owning suites) | New mutations (all caught) |
+|---|---|---|---|---|
+| FA-1 | Durable budget admission (D-R2-16): `budget_admissions` (0011 section, re-pinned), `admitBudgetWaiters` with an in-transaction remaining-capacity view, `budgetCapacityCheck` counting other jobs' admissions, consume on reservation, release + re-admit on every job exit / replaced need / cap trim, startup reclaim | `6bad5e9` (of `8e73839`) | `r1-review` "FA-1: budget capacity is admitted, not broadcast" (11 tests: 10-waiter reproduction, linear drain, mixed needs, both dimensions, multi-level, no double allocation, crash after admission, cancel releases to next, not spend, cap trim, fresh-run cap kept) | `fa1-admission-not-subtracted`, `fa1-reservation-ignores-admissions`, `fa1-release-not-readmitted`, `fa1-admission-never-consumed`, `fa1-job-exit-keeps-admission` (r1 65/65) |
+| FB-1 | Event-level learning time (D-R2-17): `adverseSourceEvents` (review FAIL / unrecovered run failure / NOT_ACHIEVED verification timed by the Employee's act), `eventPhase`, event-bound attributions, dedupe by source identity, fail-closed INCONCLUSIVE; no schema change | `5c1724e` (of `969acee`) | `c6-kernel` "FB-1: matrix 1–12" and `c6-improvement` matrix 1, 2+8, 3, 7, 9, 10, 12 and B2 | `fb1-pre-training-event-counted`, `fb1-review-timed-by-decision`, `fb1-source-event-multiplied`, `fb1-unplaceable-event-final`, `fb1-proposal-misses-new-events` |
+| FB-2 | Crash-atomic live restore (D-R2-18): fsynced `RESTORE_IN_PROGRESS` hold before the first byte, `assertRestoreGate` on every open (verify mode included), bypass bound to attempt + package, lift only after commit + close, finalize / redo / explicit discard, `restore-status` | `93fccd5` (of `2514e5e`) | `c6-resilience` eight real child-process crash points on an Arabic path (before / mid / after DB copy, mid artifacts, before / in controlled restore, after commit, after phase COMMITTED), rollback-in-transaction, bound bypass, hijack refusal; runtime `cli.test` "FB-2: an interrupted live restore is never started" | `c6fb2-marker-after-db-copy`, `c6fb2-inspection-opens-partial-restore`, `c6fb2-marker-lifted-before-commit`, `c6fb2-restore-hold-clearable`, `c6fb2-other-package-hijacks-partial-restore`, `c6fb2-bypass-not-bound-to-attempt` |
+| AC-01 | Seat AND explicit grant (D-R2-19): `org.goal.derive` / `org.goal.link` registered `org.*` capabilities; `txGoalAct` seat check for both acts, then `decideOrgAct`, `recordDenial` on deny, `consumeGrant` per DONE act | `512dce4` (of `0723d6f`) | `c5-founder-surface` "AC-01: …" (seat without grant, grant without seat, both, derive ≠ link, expired, revoked, ceilings / use limit, acting coverage, message is not authority, Founder path unchanged); runtime c5 governed-run proof | `c5-goal-derive-grant-skipped`, `c5-goal-link-grant-skipped`, `c5-goal-link-seat-skipped`, `c5-goal-derive-seat-skipped`, `c5-goal-grant-use-not-consumed` (c5 32/32) |
+
+Integration (orchestrator, design review): only FA-1 touched 0011 (one self-contained section; the integrated pin is
+FA-1's). The one cross-family seam — FB-2's controlled restore holds jobs through `txHoldForReconciliation`, which after
+FA-1 releases the held job's admission and re-admits in the same transaction — is consistent: a job admitted there
+becomes QUEUED and, if effect-capable, is held by the same restore pass (its list covers WAITING jobs); non-effect-capable
+jobs keep ordinary semantics. No other shared seam was changed by two families.
+
+**Focused proofs on the integrated head** (no full CI): build, typecheck, lint (`packages`, `scripts`) clean;
+governance 69/69, mind 113/113, storage, runtime and command-center suites pass; r1 mutations 65/65, c5 32/32, c6
+92/92; `c6-acceptance` 21/21 three times (the single unrelated-step failure one implementation run saw did not recur);
+verifier 69/69. Regression probes on the integrated build:
+
+| Probe | Start head | Integrated head |
+|---|---|---|
+| FA-1 `fa2-herd-storage` N=10 | runs 66, budget.refused 55, events 429 | runs 21 (1 holder + 10 initial parks + 10 served), budget.refused 10, events 159; 0 re-parks |
+| FB-1 `f1-effect-time` | NO_IMPROVEMENT SAME_MISTAKE_RECURRED, pre-training mistakes counted | IMPROVEMENT_OBSERVED NO_RECURRENCE_ON_QUALIFIED_WORK, pre-training mistakes not counted |
+| FB-2 `f3b-portable-crash` (real exit at after-db-copy and before-controlled-restore, Arabic target path) | ordinary open OK, schema 11, jobs CLAIMED / QUEUED, 0 audit rows | hold RESTORE_IN_PROGRESS (PREPARING / DATA_WRITTEN); ordinary AND verify-mode open refused; same-package resume REDONE → both jobs RECONCILIATION_HOLD, 1 audit row, ordinary open OK |
+| AC-01 `ac01-failfirst` | DONE GOAL_DERIVED / DONE GOAL_LINKED | REFUSED NO_GRANT |
+
+Residuals recorded by the implementers (not BLOCKER / MAJOR; for the targeted re-review to challenge): FA-1 a large
+older need can wait behind a stream of smaller fitting needs (the brief's no-head-of-line-blocking trade-off);
+FB-1 a new adverse event on a Work Item whose attribution is already VALIDATED is never attributed on its own (one live
+attribution per Work Item, 0010) and reads fail-closed INCONCLUSIVE; FB-2 two concurrent restores into the same target
+are not locked (the losing run fails binding checks rather than activating); AC-01 a CEO / Department-less run cannot
+link through `GOAL_ACTION` (D-C5-04 "a Director … links").
+
 `security-review` (G1) was attempted again and failed at launch: its first step is a shell command
 (`git diff origin/HEAD...`) and the Bash tool does not run on this host. The environment was not changed; the manual
 security / boundary review the brief defines is recorded in §16.6.

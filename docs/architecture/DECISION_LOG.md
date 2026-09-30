@@ -2787,3 +2787,60 @@ Recorded from the R2 Architecture Closure Correction brief (`R2-ARCH-CLOSE`), wh
   Neither replaces the other; no authority is implied by a title. PG-08 (Department-scoped grant semantics) is not
   implemented: department scope stays constrained by the Director's actual seat / placement. This resolves AC-01 in
   favour of the Founding Constitution / Stage 3 / C4 rule.
+
+## D-R2-16 — Budget capacity is admitted, not broadcast (Technical Lead, R2 architecture correction; FA-1; supersedes the resume rule of D-R2-03 / D-R2-09, keeps D-R2-09's need semantics)
+
+Freed budget capacity has one durable owner before a `BUDGET_EXHAUSTED` waiter resumes. One admission pass
+(`admitBudgetWaiters`, `governance-core.ts`) runs inside every capacity-changing write transaction — a settle below
+the worst case, a release, a cap raise or trim, a released or partly consumed admission, the WAIT-settle re-check and
+the startup pass — and replaces `wakeBudgetWaiters`. It takes waiters by job priority, then FIFO by created time, then
+id; admits a waiter only when its latest recorded need fits a fresh Run budget and the remaining capacity of every
+level of its Work Item chain; records the admission in `budget_admissions` (0011: ADMITTED → CONSUMED | RELEASED, at
+most one outstanding per job, never deleted, SQL-guarded) and subtracts it before the next waiter. A waiter that does
+not fit never blocks a later one that does. Admissions are not reservations: reserved / spent and
+`accountingInvariants` are unchanged, but every reservation check (`budgetCapacityCheck`) counts OTHER jobs'
+outstanding admissions, and the admitted job's reservation consumes its own. A job leaving QUEUED / CLAIMED, a
+replaced need or a lowered cap (trimmed newest first; the "never below reserved + spent" floor is unchanged) releases
+the admission and re-admits in the same transaction; 0011 triggers back the release up. Startup reclaims stale
+admissions; a recovered claim keeps its admission. Waits parked before needs existed hold all positive headroom,
+capped by a fresh Run budget. Admission never raises a cap, grants budget, spends, routes or approves.
+
+## D-R2-17 — Learning-effect time is the source evidence event's time (Technical Lead, R2 architecture correction; FB-1; implements PO-R2-C; refines D-R2-06 / D-R2-12)
+
+Replaces "adverse evidence is any comparable, non-baseline work with a run after training". Adverse learning evidence
+is the SOURCE EVENT — a counting REQUIRED review FAIL, an unrecovered or boundary run failure, a decisive NOT_ACHIEVED
+outcome verification — timed by the Employee's act (the reviewed or verified output's run, the failed run, an action
+review's request), never by review, evaluation, attribution or correction time (`adverseSourceEvents`,
+`improvement-core.ts`; `eventPhase`, `assessLearningEffect`, `mind/src/improvement.ts`; ids, kinds and times only). An
+attribution explains exactly the events its immutable evidence refs hold (the first decided one stands; corrected
+causes keep the proposal's refs and so the original time); an undecided proposal is re-proposed when new adverse
+events arrive. A recurrence is a post-training event (act started after `trainingCompletedAt`) explained by a
+VALIDATED accountable attribution of the target cause. Positive evidence stays work started after training. Work
+started before training counts only through its post-training events; finishing it correctly is neither positive nor
+negative. Events are deduped by source identity; the share unit stays the Work Item; the baseline is unchanged.
+Unplaceable events, unresolved attributions or adverse work without provenance never yield a final NO_IMPROVEMENT /
+REGRESSION they could change (INCONCLUSIVE). `adverseStanding` is unchanged. No schema change.
+
+## D-R2-18 — A live restore is blocked until it is fully safe to become a Company (Technical Lead, R2 architecture correction; FB-2; refines D-R2-08 / D-R2-14)
+
+`restorePortableBackup` authenticates and verifies the package off-target, then creates exclusively and fsyncs a
+`RESTORE_IN_PROGRESS` hold (the update-hold file: attempt, package, backup, source schema, phase; directory fsync, only
+Windows EPERM / EISDIR tolerated) BEFORE any database or artifact byte, and writes every byte exclusive-create +
+fsync. Every store open refuses it before touching the workspace — read-only verify-mode inspection included — as do
+safe-upgrade, rollback, runtime start, Command Center startup and `clear-update-hold`; only the lifecycle's own open,
+bound to the marker's attempt id AND package id, passes (`assertRestoreGate`). The controlled-restore transaction
+(integrity / FK checked, sessions and launch tokens revoked, effect-capable jobs held, drill + audit) records the
+attempt id; the hold is lifted only after commit and store close (phase COMMITTED, atomic rename to history). Re-running
+with the same package finalizes a committed attempt or redoes any other from the package; another package needs an
+explicit `--discard-partial-restore`. A thrown failure is handled as a crash (the target stays held). `restore-status`
+inspects it without opening the database. `RESTORE_CHECK_COPY` is unchanged and separate.
+
+## D-R2-19 — A Department Goal act needs the Director seat AND an explicit Founder-delegated grant (Technical Lead, R2 architecture correction; AC-01; implements PO-R2-D; supersedes the "seat-checked" clause of D-C5-04)
+
+`goal.derive` / `goal.link` from a governed run (`txGoalAct`) need BOTH the run's Department Director seat (current;
+ACTING only within its window and scope) AND an ACTIVE grant of `org.goal.derive` / `org.goal.link` (registered `org.*`
+capabilities, Founder-delegated through `delegateAuthority`), decided by `decideOrgAct` (expiry, revocation, risk /
+data ceilings, use limit). Neither implies the other; derive never implies link. A `NO_GRANT` denial goes through
+`recordDenial` (containment) and consumes nothing; a DONE act consumes one use (audit `goal.act`); replay of the
+Employee's own recorded effect stays idempotent without exercising anything new. The Founder `GoalStore` path is
+unchanged. PG-08 Department-scoped grants are not implemented; no migration.
