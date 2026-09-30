@@ -225,10 +225,10 @@ describe('C6 update / migration safety', () => {
       old.close();
       const report = await safeUpgradeInternal(root, {}, {});
       assert.equal(report.outcome, 'ACTIVATED');
-      assert.deepEqual([report.fromVersion, report.toVersion], [9, 10]);
+      assert.deepEqual([report.fromVersion, report.toVersion], [9, loadReleasedMigrations().length]);
       const s = CompanyStore.open(root);
       try {
-        assert.equal(s.schemaVersion, 10);
+        assert.equal(s.schemaVersion, loadReleasedMigrations().length);
         assert.equal(s.auditByAction('maintenance.schema_update').length, 1);
         assert.equal(s.auditByAction('seed.row').length, 1, 'no row lost');
       } finally {
@@ -241,7 +241,7 @@ describe('C6 update / migration safety', () => {
     const h = harness();
     try {
       const extra = 'CREATE TABLE c6_upgrade_probe (id INTEGER PRIMARY KEY) STRICT;\n';
-      const migrations = [...loadReleasedMigrations(), { version: 11, name: 'probe', sql: extra, sha256: migrationChecksum(extra) }];
+      const migrations = [...loadReleasedMigrations(), { version: loadReleasedMigrations().length + 1, name: 'probe', sql: extra, sha256: migrationChecksum(extra) }];
       await assert.rejects(safeUpgradeInternal(h.root, {}, { migrations }), (e: unknown) => isQandeelError(e) && e.code === 'MAINTENANCE_REFUSED');
     } finally {
       h.close();
@@ -255,7 +255,7 @@ describe('C6 update / migration safety', () => {
       s.recordAudit('seed.row', 'test', 'seed', 'OK', null);
       s.close();
       const extra = 'CREATE TABLE c6_upgrade_probe (id INTEGER PRIMARY KEY) STRICT;\n';
-      const migrations = [...loadReleasedMigrations(), { version: 11, name: 'probe', sql: extra, sha256: migrationChecksum(extra) }];
+      const migrations = [...loadReleasedMigrations(), { version: loadReleasedMigrations().length + 1, name: 'probe', sql: extra, sha256: migrationChecksum(extra) }];
       // Rehearsal failure: the live database is never touched.
       const rehearsal = await safeUpgradeInternal(root, {}, { migrations, failAt: 'rehearsal' });
       assert.equal(rehearsal.outcome, 'ROLLED_BACK_UPDATE_HOLD');
@@ -271,7 +271,7 @@ describe('C6 update / migration safety', () => {
       clearUpdateHold(root, 'operator.reviewed');
       const back = CompanyStore.open(root);
       try {
-        assert.equal(back.schemaVersion, 10, 'no unsafe downgrade and no half-applied update: the compatible snapshot');
+        assert.equal(back.schemaVersion, loadReleasedMigrations().length, 'no unsafe downgrade and no half-applied update: the compatible snapshot');
         assert.equal(back.auditByAction('seed.row').length, 1);
         const status = resilienceStatus(back);
         assert.equal(status.lastMaintenance?.outcome, 'ROLLED_BACK_UPDATE_HOLD');

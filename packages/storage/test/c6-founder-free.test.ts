@@ -249,18 +249,23 @@ describe('C6-R1: judgment is scoped by plan, risk, qualification and independenc
       const director = placed(h, s, 'director.growth');
       const ctx = storeContext(h.store);
       const plan = ReviewStore.for(h.store).plan(w);
-      const insertJudgment = (judgeId: Id, qualificationId: Id, workItemId: Id, subjectId: Id): unknown =>
-        ctx.db.immediate('forge judgment', () => {
-          const judgeWork = h.store.createWorkItem({ objective: 'forged judgment', ownerRef: `employee:${judgeId}`, processorKind: GOVERNED_KIND, processorInput: { taskClass: 'draft.memo', instructions: 'x' } }).workItem.id;
-          return ctx.db.run(
+      // R2-32: the judge's own Work Item is created BEFORE the forged insert's transaction (a nested transaction
+      // would be refused first and satisfy the assertion vacuously), and each refusal must be the trigger's own.
+      const refusedBy = (message: RegExp) => (e: unknown): boolean => isQandeelError(e, 'STORAGE_INVARIANT') && message.test(String((e as Error).cause));
+      const judgeRefused = refusedBy(/independent, qualified pool reviewer/);
+      const insertJudgment = (judgeId: Id, qualificationId: Id, workItemId: Id, subjectId: Id, planId: Id = plan?.id as Id): unknown => {
+        const judgeWork = h.store.createWorkItem({ objective: 'forged judgment', ownerRef: `employee:${judgeId}`, processorKind: GOVERNED_KIND, processorInput: { taskClass: 'draft.memo', instructions: 'x' } }).workItem.id;
+        return ctx.db.immediate('forge judgment', () =>
+          ctx.db.run(
             `INSERT INTO judgment_assignments (id, subject_kind, subject_id, work_item_id, plan_id, judge_employee_id, qualification_id, judge_work_item_id, state, evidence_refs_json, version, created_at, updated_at) VALUES (?, 'ATTRIBUTION', ?, ?, ?, ?, ?, ?, 'ASSIGNED', '[]', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
-            newId(), subjectId, workItemId, plan?.id as Id, judgeId, qualificationId, judgeWork,
-          );
-        });
-      assert.throws(() => insertJudgment(director.id, qualification.id, w, a?.id as Id), code('STORAGE_INVARIANT'), 'a title with no qualification never judges');
-      assert.throws(() => insertJudgment(reviewer.id, qualification.id, w, a?.id as Id), code('STORAGE_INVARIANT'), 'the executor / subject never judges');
+            newId(), subjectId, workItemId, planId, judgeId, qualificationId, judgeWork,
+          ),
+        );
+      };
+      assert.throws(() => insertJudgment(director.id, qualification.id, w, a?.id as Id), judgeRefused, 'a title with no qualification never judges');
+      assert.throws(() => insertJudgment(reviewer.id, qualification.id, w, a?.id as Id), judgeRefused, 'the executor / subject never judges');
       // An Employee's name on a decided cause or lesson is exactly an assigned judge's.
-      assert.throws(() => ctx.db.immediate('forge decision', () => ctx.db.run(`UPDATE causal_attributions SET state = 'VALIDATED', decided_by_ref = ?, reason_code = 'x', version = version + 1 WHERE id = ?`, `employee:${director.id}`, a?.id as Id)), code('STORAGE_INVARIANT'));
+      assert.throws(() => ctx.db.immediate('forge decision', () => ctx.db.run(`UPDATE causal_attributions SET state = 'VALIDATED', decided_by_ref = ?, reason_code = 'x', version = version + 1 WHERE id = ?`, `employee:${director.id}`, a?.id as Id)), refusedBy(/decided by the Founder or by its assigned pool judge/));
       // A pool verification without a satisfied, pool-delegated review is refused.
       const other = prepared(h, s, s.employee, reviewPlan({ appliesTo: 'OUTPUT' }));
       execute(h, other);
@@ -268,17 +273,14 @@ describe('C6-R1: judgment is scoped by plan, risk, qualification and independenc
       const req = ReviewStore.for(h.store).requests({ workItemId: other }).find((r) => r.state === 'SATISFIED');
       assert.throws(
         () => ctx.db.immediate('forge verification', () => ctx.db.run(`INSERT INTO outcome_verifications (id, work_item_id, verdict, evidence_classes_json, evidence_refs_json, verifier_kind, verifier_ref, review_request_id, reason_code, created_at) VALUES (?, ?, 'ACHIEVED', '["REVIEW_DECISION"]', '["work_item:x"]', 'REVIEW_POOL', ?, ?, 'forged', '2026-01-01T00:00:00.000Z')`, newId(), other, `review_request:${req?.id}`, req?.id as Id)),
-        code('STORAGE_INVARIANT'),
+        refusedBy(/pool verification rests on a satisfied review/),
       );
       // R4 is Founder-only: no pool judge on R4 work, whatever its plan says.
       const r4 = h.store.createWorkItem({ objective: 'r4 work', ownerRef: s.employee.ref, processorKind: GOVERNED_KIND, processorInput: { taskClass: 'draft.memo', instructions: 'x' }, riskLevel: 'R4' }).workItem.id;
       ReviewStore.for(h.store).declarePlan(s.founder, r4, POOL);
       const r4Attribution = newId();
       ctx.db.immediate('seed r4 attribution', () => ctx.db.run(`INSERT INTO causal_attributions (id, work_item_id, evaluation_id, employee_id, comparable_key, overall, causes_json, employee_accountable, confidence, source, state, proposed_by_ref, decided_by_ref, reason_code, evidence_refs_json, version, created_at, updated_at) VALUES (?, ?, NULL, ?, 'draft.memo', 'EMPLOYEE_JUDGMENT', '[]', 1, 'LOW', 'EVALUATOR_PROPOSAL', 'PROPOSED', 'system:evaluator', NULL, NULL, '[]', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, r4Attribution, r4, s.employee.id));
-      assert.throws(() => ctx.db.immediate('forge r4 judgment', () => {
-        const judgeWork = h.store.createWorkItem({ objective: 'forged', ownerRef: reviewer.ref, processorKind: GOVERNED_KIND, processorInput: { taskClass: 'draft.memo', instructions: 'x' } }).workItem.id;
-        ctx.db.run(`INSERT INTO judgment_assignments (id, subject_kind, subject_id, work_item_id, plan_id, judge_employee_id, qualification_id, judge_work_item_id, state, evidence_refs_json, version, created_at, updated_at) VALUES (?, 'ATTRIBUTION', ?, ?, ?, ?, ?, ?, 'ASSIGNED', '[]', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, newId(), r4Attribution, r4, ReviewStore.for(h.store).plan(r4)?.id as Id, reviewer.id, qualification.id, judgeWork);
-      }), code('STORAGE_INVARIANT'));
+      assert.throws(() => insertJudgment(reviewer.id, qualification.id, r4, r4Attribution, ReviewStore.for(h.store).plan(r4)?.id as Id), judgeRefused, 'R4 is never judged by the pool');
     });
   });
 });

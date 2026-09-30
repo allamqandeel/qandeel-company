@@ -174,9 +174,10 @@ const SECRET_LITERALS = [
   /\bAIza[0-9A-Za-z_-]{35}\b/,
 ];
 const SECRET_COLUMN = /(?:^|[(,])\s*"?(\w*(?:password|passwd|secret|api_?key|private_?key|access_?token|refresh_?token|bearer)\w*)"?\s+(?:TEXT|BLOB|ANY)\b/im;
-// Released canonical migrations (C1 0001–0003, C2 0004, C3 0005–0006) are frozen by content,
-// independently of the registry pins: editing one and re-pinning it is still refused (R1-14: C3's
-// were released with PR #4 and had not been added).
+// Released canonical migrations (C1 0001–0003, C2 0004, C3 0005–0006, C4 0007–0008, C5 0009, C6 0010) are
+// frozen by content, independently of the registry pins: editing one and re-pinning it is still refused
+// (R1-14: C3's were released with PR #4 and had not been added; R2-33: C4–C6's had not been added either —
+// a stage's migrations join this list in the change that releases them).
 const FROZEN_MIGRATIONS = [
   { file: '0001_work_foundation.sql', sha256: '3022ed5ed626f9394cfa9a7e897d2ed4e7bcb9b94c8de7a9a4bde7c0c658436e' },
   { file: '0002_queue_runs_artifacts.sql', sha256: 'b3060a1ea7a3e57e8bf0f76a4edba437c9f1b8d2886ef97ff5ca2b6920b0a7c2' },
@@ -184,6 +185,10 @@ const FROZEN_MIGRATIONS = [
   { file: '0004_c2_governance.sql', sha256: '51dd9a38df306751eace1dc6cf82e231b92e487b7e913b061f336e8c25a0066c' },
   { file: '0005_c3_memory_context.sql', sha256: '2c2f0d8092f108de2596c15e795ba6ba8d17b316761d0ac59e45d8845409e44a' },
   { file: '0006_c3_skills_academy.sql', sha256: 'a4b8709915fbad924212e3278b64d2f58d4d1e40c5ba1ff937cb7c50637d57d8' },
+  { file: '0007_c4_organization.sql', sha256: '9c46b838c21caf7b38d5db1244fc6fdd83c5e47f1a24fe2f973a9828f417fc3b' },
+  { file: '0008_c4_review_quality.sql', sha256: 'd937856f2a730ff33d3fb83f61c8e6b3ce0c932c4189492d6c50e8eeafb899f5' },
+  { file: '0009_c5_founder_surface.sql', sha256: '803f9eef58fad2afaabbca562c509648aaf59cc21ad647728957fa31d6ab00b1' },
+  { file: '0010_c6_improvement_engine.sql', sha256: 'a8696420f2c20abc8dfe1b62b729adedc57314cfecd7e644bc31687fa9c989ee' },
 ];
 // Later-scope / non-goal subsystems never appear: APP-OPS (C7) and dashboards / analytics tables or packages (C6
 // deliberately builds reports with typed claims, never a dashboard or analytics store — its non-goals).
@@ -1867,8 +1872,8 @@ const VIOLATIONS = {
     { contents: { 'packages/runtime/src/c3/memory-proposals.ts': "this.log.info('memory.proposed', { topic, content });" } },
   ],
   'activation-gate-present': [
-    // The synthetic repository carries the real (frozen) 0006, which holds the gate: drop it as well.
-    { contents: { [`${MIGRATIONS_DIR}0005_c3.sql`]: 'CREATE TABLE memory_records (id TEXT) STRICT;\n' }, remove: [`${MIGRATIONS_DIR}0006_c3_skills_academy.sql`] },
+    // The synthetic repository carries the real (frozen) 0006 and 0007, which hold the gate: drop them as well.
+    { contents: { [`${MIGRATIONS_DIR}0005_c3.sql`]: 'CREATE TABLE memory_records (id TEXT) STRICT;\n' }, remove: [`${MIGRATIONS_DIR}0006_c3_skills_academy.sql`, `${MIGRATIONS_DIR}0007_c4_organization.sql`] },
     { contents: { 'packages/storage/src/academy.ts': "setEmployeeState(ctx, e, 'ACTIVE', 'CERTIFIED', ref, [`test-seam:${id}`]);" } },
   ],
   'local-core-longpaths': { longpaths: undefined },

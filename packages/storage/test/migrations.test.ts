@@ -132,7 +132,7 @@ describe('versioned migrations', () => {
       try {
       // C5 appended 0009 (Founder surface tables only) and C6 0010 (improvement engine tables and gate triggers):
       // the C4 rows are still preserved across the full upgrade.
-      assert.deepEqual(v8.migration.applied, [7, 8, 9, 10]);
+      assert.deepEqual(v8.migration.applied, [7, 8, 9, 10, 11]);
       const d8 = storeContext(v8).db;
       const growth = d8.get<{ id: string; name: string }>(`SELECT id, name FROM departments WHERE code = 'growth'`);
       assert.deepEqual({ ...growth }, { id: id(1), name: 'Growth (pre-C4)' }, 'an existing Department is adopted by code, never duplicated or renamed');
