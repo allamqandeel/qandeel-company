@@ -84,6 +84,27 @@ export function nearMissCodes(ev: WorkEvidence): string[] {
 /** Verified reuses (each an intervention whose effect was IMPROVEMENT_OBSERVED) required to share a pattern. */
 export const MIN_VERIFIED_PATTERN_REUSES = 2;
 
+/**
+ * R2-16: how many verified reuses stand on pairwise-DISJOINT evidence (each reuse's evidence = the follow-up Work
+ * Items it was judged on). The same work never counts twice; a reuse with no evidence counts for nothing.
+ */
+export function disjointVerifiedReuses(reuses: readonly (readonly string[])[]): number {
+  const usable = reuses.filter((r) => r.length > 0);
+  let best = 0;
+  for (let i = 0; i < usable.length; i++) {
+    const taken = new Set(usable[i]);
+    let n = 1;
+    for (let k = 0; k < usable.length; k++) {
+      const other = usable[k] ?? [];
+      if (k === i || other.some((x) => taken.has(x))) continue;
+      for (const x of other) taken.add(x);
+      n++;
+    }
+    best = Math.max(best, n);
+  }
+  return best;
+}
+
 export function patternExpansionAllowed(target: string, verifiedReuses: number): { allowed: boolean; reason: string } {
   if (target === 'PERSONAL') return { allowed: true, reason: 'PERSONAL_SCOPE' };
   if (verifiedReuses < MIN_VERIFIED_PATTERN_REUSES) return { allowed: false, reason: 'PATTERN_REUSE_NOT_VERIFIED' };
@@ -94,9 +115,16 @@ export function patternExpansionAllowed(target: string, verifiedReuses: number):
 // Learning effect verification.
 
 export interface FollowupFact extends EvaluationFact {
+  /** When the follow-up WORK started (first run, else creation) — "later" is judged on this, never on evaluation time. */
+  readonly workStartedAt: string;
+  /** The state of the follow-up's causal attribution (the latest decided or live one; NONE when never proposed). */
+  readonly attributionState: 'VALIDATED' | 'PROPOSED' | 'REJECTED' | 'NONE';
   /** The validated cause categories of this follow-up (empty when nothing went wrong or not attributed). */
   readonly accountableCauses: readonly DirectCause[];
 }
+
+/** An adverse follow-up: its outcome or its quality was judged negative. */
+const adverseFollowup = (f: FollowupFact): boolean => f.verdicts.OUTCOME === 'NEGATIVE' || f.verdicts.QUALITY === 'NEGATIVE';
 
 export interface EffectAssessment {
   readonly effect: LearningEffect;
@@ -109,9 +137,12 @@ export interface EffectAssessment {
 export const MIN_EFFECT_FOLLOWUPS = 2;
 
 /**
- * Judges an intervention on comparable work AFTER the training finished. Recurrence = a follow-up where the
- * same cause category was validated as the Employee's. Baseline recurrence share comes from the evidence that
- * justified the lesson.
+ * Judges an intervention on comparable work STARTED after the training finished (work time, not evaluation time:
+ * work done before the training and verified later is never "later" evidence — R2-15). Recurrence = a follow-up
+ * where the same cause category was validated as the Employee's. An adverse follow-up whose cause is not yet
+ * validated keeps the effect open (R2-17): it may be the same mistake, so "no recurrence" cannot be concluded.
+ * Baseline recurrence share comes from the evidence that justified the lesson. Evidence references name the
+ * follow-up Work Items (distinct work is distinct evidence).
  */
 export function assessLearningEffect(input: {
   trainingCompletedAt: string | null;
@@ -122,11 +153,12 @@ export function assessLearningEffect(input: {
 }): EffectAssessment {
   if (input.trainingCompletedAt === null) return { effect: 'NOT_YET_TESTED', basis: 'TRAINING_NOT_COMPLETED', followups: 0, recurrences: 0, evidenceRefs: [] };
   const completedAt = input.trainingCompletedAt;
-  const later = input.followups.filter((f) => f.at > completedAt && f.comparableKey === input.comparableKey);
+  const later = input.followups.filter((f) => f.workStartedAt > completedAt && f.comparableKey === input.comparableKey);
   const usable = later.filter((f) => f.evidenceState === 'SUFFICIENT_EVIDENCE');
-  const refs = usable.map((f) => `evaluation:${f.evaluationId}`);
+  const refs = [...new Set(usable.map((f) => `work_item:${f.workItemId}`))];
   if (later.length === 0) return { effect: 'NOT_YET_TESTED', basis: 'NO_COMPARABLE_WORK_YET', followups: 0, recurrences: 0, evidenceRefs: [] };
   if (usable.length < MIN_EFFECT_FOLLOWUPS) return { effect: later.length > usable.length ? 'INCONCLUSIVE' : 'NOT_YET_TESTED', basis: 'TOO_FEW_SUFFICIENT_FOLLOWUPS', followups: usable.length, recurrences: 0, evidenceRefs: refs };
+  if (usable.some((f) => adverseFollowup(f) && f.attributionState !== 'VALIDATED')) return { effect: 'NOT_YET_TESTED', basis: 'ATTRIBUTION_PENDING', followups: usable.length, recurrences: 0, evidenceRefs: refs };
   const recur = (f: FollowupFact): boolean => f.accountableCauses.includes(input.targetCause);
   const recurrences = usable.filter(recur).length;
   if (recurrences === 0) {

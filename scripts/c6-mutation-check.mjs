@@ -246,6 +246,79 @@ const MUTATIONS = [
     edits: [{ file: `${STORAGE}/outcome-core.js`, search: "if (classes.includes('EXTERNAL_OUTCOME') && !EXTERNAL_OUTCOMES_AVAILABLE)\n", replace: 'if (false)\n', expectedCount: 1 }],
     runs: [STORE, FREE],
   },
+  // --- R2 (cluster K4): C6 distinguishes productive learning from repeated activity -----------------------------
+  {
+    id: 'c6-recovered-failure-is-the-cause',
+    gate: 'a failure the work recovered from (a retry succeeded) is never the primary cause of the Employee\'s merits failure (R2-13)',
+    edits: [{ file: `${STORAGE}/improvement-core.js`, search: 'unrecoveredRuns.has(runId) || !runs.some', replace: 'true || !runs.some', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-work-item-counted-per-definition',
+    gate: 'one Work Item is one unit of evidence: only its latest live evaluation speaks for it in profiles, reports, economics and health (R2-14)',
+    edits: [{ file: `${STORAGE}/improvement-core.js`, search: 'AND NOT EXISTS (SELECT 1 FROM evaluation_results n WHERE n.work_item_id = e.work_item_id', replace: 'AND NOT EXISTS (SELECT 1 FROM evaluation_results n WHERE 0 AND n.work_item_id = e.work_item_id', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-pre-training-work-counts-as-later',
+    gate: 'a learning effect is judged only on work STARTED after the training, never on work evaluated after it (R2-15)',
+    edits: [{ file: `${MIND}/improvement.js`, search: 'f.workStartedAt > completedAt', replace: 'f.at > completedAt', expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  {
+    id: 'c6-pending-recurrence-ignored',
+    gate: 'an adverse follow-up whose cause is not validated keeps the learning effect open (never a final IMPROVEMENT_OBSERVED) (R2-17)',
+    edits: [{ file: `${MIND}/improvement.js`, search: "if (usable.some((f) => adverseFollowup(f) && f.attributionState !== 'VALIDATED'))\n", replace: 'if (false)\n', expectedCount: 1 }],
+    runs: [KERNEL, STORE],
+  },
+  {
+    id: 'c6-pattern-reuse-evidence-reused',
+    gate: 'a pattern is shared only after two verified reuses on pairwise-disjoint evidence (R2-16)',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: 'patternExpansionAllowed(target, disjointVerifiedReuses(evidence))', replace: 'patternExpansionAllowed(target, evidence.length)', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-self-reuse-credited',
+    gate: 'reusing one\'s own pattern is not a System Contribution; only another Employee\'s verified reuse is (R2-16)',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: 'AND i.employee_id <> l.employee_id', replace: '', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-pending-adverse-reads-clean',
+    gate: 'adverse evidence whose cause is pending holds readiness and is disclosed, never read as a clean profile (R2-18)',
+    edits: [{ file: `${MIND}/performance.js`, search: "? ['ADVERSE_EVIDENCE_PENDING_ATTRIBUTION'] : []", replace: '? [] : []', expectedCount: 1 }],
+    runs: [KERNEL],
+  },
+  {
+    id: 'c6-disputed-cause-dead-end',
+    gate: 'a pool judge\'s dispute of a proposed cause reaches the Founder (escalation), never a terminal rejection that leaves the failure unattributed (R2-18)',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: "if (decision === 'REJECT' && ja.subjectKind === 'ATTRIBUTION') {", replace: 'if (false) {', expectedCount: 1 }],
+    runs: [FREE],
+  },
+  {
+    id: 'c6-decided-finding-silences-recurrence',
+    gate: 'a problem recurring after its systemic finding was ADDRESSED / REJECTED opens a new linked finding (R2-19)',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: 'if (c.evidenceRefs.every((r) => seen.has(r)))\n', replace: 'if (true)\n', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-retraining-exhaustion-swallowed',
+    gate: 'another Employee\'s exhausted retraining merges into the open systemic candidate, never swallowed (R2-19)',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: "if (origin === 'RETRAINING_EXHAUSTED') {", replace: 'if (false) {', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-billed-cost-as-economic',
+    gate: 'C6 cost is the economic cost the budget ledger charges; a subscription / free route is not free work (R2-20)',
+    edits: [{ file: `${STORAGE}/improvement-core.js`, search: 'const m = n(u.economic_micros);', replace: 'const m = n(u.billed_micros);', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c6-zero-cost-efficient',
+    gate: 'work with no recorded cost earns no EFFICIENCY verdict (m-31)',
+    edits: [{ file: `${MIND}/evaluation.js`, search: 'if (ev.cost.productiveMicros + overhead === 0)\n', replace: 'if (false)\n', expectedCount: 1 }],
+    runs: [KERNEL],
+  },
   // --- C6-R1: the Founder is not the operational bottleneck, and judgment never becomes execution authority ---
   {
     id: 'c6r1-ordinary-outcome-founder-only',

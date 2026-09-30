@@ -328,10 +328,13 @@ try {
     check(evaluation.evaluation.evidenceState === 'CONFLICTING_EVIDENCE', 'a passed review contradicted by the outcome is conflicting evidence, never averaged');
     const a = im().attributions({ workItemId: id })[0];
     const seen = im().inspect({ kind: 'WORK_ITEM', id }).evidence;
-    check(a?.state === 'PROPOSED' && a.overall === 'TOOL' && !a.employeeAccountable, `the evaluator proposes TOOL, not employee judgement (saw ${a?.overall}; failures ${JSON.stringify(seen.failures)}; toolCalls ${seen.activity.toolCalls}; runs ${JSON.stringify(runtime.view.runsForWorkItem(id).map((r) => [r.state, r.failureCode, r.attempt]))}; tools ${JSON.stringify(runtime.governance.toolInvocations(id).map((i) => [i.state, i.failureCode]))}; usage ${JSON.stringify(runtime.governance.usage({ workItemId: id }).map((x) => [x.attemptKind, x.outcome]))})`);
-    im().decideAttribution(world.founder, a.id, { decision: 'VALIDATE', reasonCode: 'founder.tool.confirmed' });
+    // R2-13: the tool failure was RECOVERED (the retry run succeeded), so it did not cause the unachieved outcome: it is evidence (recovered), at most a low-confidence contributing cause — never the primary one.
+    check(a?.state === 'PROPOSED' && seen.failures.tool === 0 && seen.recoveredFailures.tool >= 1 && a.causes.find((c) => c.role === 'PRIMARY')?.category !== 'TOOL' && a.causes.filter((c) => c.category === 'TOOL').every((c) => c.role === 'CONTRIBUTING' && c.confidence === 'LOW'), `a recovered tool failure is recorded but never proposed as the primary cause (saw ${a?.overall}; causes ${JSON.stringify(a?.causes)}; failures ${JSON.stringify(seen.failures)}; recovered ${JSON.stringify(seen.recoveredFailures)}; runs ${JSON.stringify(runtime.view.runsForWorkItem(id).map((r) => [r.state, r.failureCode, r.attempt]))})`);
+    // The Founder's independent analysis finds the tool broke the output: the validated cause is the tool, never the Employee.
+    const decided = im().decideAttribution(world.founder, a.id, { decision: 'VALIDATE', reasonCode: 'founder.tool.confirmed', causes: [{ category: 'TOOL', role: 'PRIMARY', confidence: 'HIGH', basis: 'TOOL_BROKE_THE_OUTPUT' }] }).attribution;
+    check(decided.overall === 'TOOL' && !decided.employeeAccountable, 'a validated tool cause is never counted against the Employee');
     world.toolFailureWork = id;
-    return { overall: a.overall, employeeAccountable: false };
+    return { proposed: a.overall, recovered: seen.recoveredFailures.tool, validated: decided.overall, employeeAccountable: decided.employeeAccountable };
   });
 
   await step('reflection-is-a-hypothesis-then-validated-learning-intervention-and-verified-effect', async () => {

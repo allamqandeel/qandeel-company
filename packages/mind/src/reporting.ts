@@ -138,7 +138,7 @@ function weeklyClaims(f: ReportFacts): Claim[] {
   for (const g of f.goals) if (g.linked > 0) claims.push(fact('GOAL_PROGRESS', { kind: 'GOAL', id: g.goalId }, { state: g.state, linkedWork: g.linked, qualifiedOutcomes: g.qualified }, [`goal:${g.goalId}`, ...g.refs]));
   const economics = costPerQualifiedOutcome(f.evaluations);
   if (economics.state === 'DEFINED') {
-    claims.push(fact('COST_PER_QUALIFIED_OUTCOME', COMPANY, { qualifiedOutcomes: economics.qualifiedOutcomes, evaluatedItems: economics.evaluatedItems, totalCostMicros: economics.totalCostMicros, overheadMicros: economics.overheadMicros, costPerQualifiedOutcomeMicros: economics.costPerQualifiedOutcomeMicros }, f.evaluations.map((e) => `evaluation:${e.evaluationId}`).slice(0, 100)));
+    claims.push(fact('COST_PER_QUALIFIED_OUTCOME', COMPANY, { qualifiedOutcomes: economics.qualifiedOutcomes, evaluatedItems: economics.evaluatedItems, totalCostMicros: economics.totalCostMicros, overheadMicros: economics.overheadMicros, billedMicros: economics.billedMicros, costPerQualifiedOutcomeMicros: economics.costPerQualifiedOutcomeMicros }, f.evaluations.map((e) => `evaluation:${e.evaluationId}`).slice(0, 100)));
   } else if (f.evaluations.length > 0) {
     claims.push(fact('NO_QUALIFIED_OUTCOME_YET', COMPANY, { evaluatedItems: economics.evaluatedItems, totalCostMicros: economics.totalCostMicros }, []));
   }
@@ -171,6 +171,11 @@ function monthlyClaims(f: ReportFacts): Claim[] {
     }
     for (const c of p.capabilities) claims.push(assertClaim({ code: 'CAPABILITY_DEMONSTRATED', kind: 'TREND', subject: { kind: 'EMPLOYEE', id: p.employeeId }, params: { comparableKey: c.comparableKey, sample: c.sample }, evidenceRefs: c.evidenceRefs, uncertainty: { state: 'SUFFICIENT_EVIDENCE', confidence: confidenceOf(c.sample), sample: c.sample } }));
     for (const r of p.regressions) claims.push(assertClaim({ code: 'CAPABILITY_REGRESSION_SUSPECTED', kind: 'TREND', subject: { kind: 'EMPLOYEE', id: p.employeeId }, params: { comparableKey: r.comparableKey, sample: r.sample }, evidenceRefs: r.evidenceRefs, uncertainty: { state: 'SUFFICIENT_EVIDENCE', confidence: confidenceOf(r.sample), sample: r.sample } }));
+    // R2-18: adverse evidence whose cause is still pending is disclosed, never hidden behind a clean profile.
+    const pendingRefs = [...new Set(p.dimensions.flatMap((d) => d.pendingEvidenceRefs))];
+    if (pendingRefs.length > 0) {
+      claims.push(fact('ADVERSE_EVIDENCE_PENDING_ATTRIBUTION', { kind: 'EMPLOYEE', id: p.employeeId }, { pendingOutcome: dimensionOf(p.dimensions, 'OUTCOME').pendingAttribution, pendingQuality: dimensionOf(p.dimensions, 'QUALITY').pendingAttribution, items: pendingRefs.length }, pendingRefs.slice(0, 100)));
+    }
     const contribution = dimensionOf(p.dimensions, 'SYSTEM_CONTRIBUTION');
     if (contribution.positive > 0) claims.push(fact('SYSTEM_CONTRIBUTION', { kind: 'EMPLOYEE', id: p.employeeId }, { count: contribution.positive }, contribution.evidenceRefs));
   }

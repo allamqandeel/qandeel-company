@@ -353,6 +353,32 @@ describe('C6-R1: never averaged — insufficient evidence stays inconclusive, un
       ReviewStore.for(h.store).liftQualityHold(s.founder, hold.id, 'reviewer.recalibrated');
     });
   });
+
+  test('R2-18: a pool judge who disputes a proposed cause cannot author the corrected one — it reaches the Founder, never a dead end', () => {
+    withSeed((h, s, m) => {
+      activeReviewer(h, s);
+      const w = prepared(h, s, s.employee);
+      execute(h, w);
+      review(h, w, 'FAIL');
+      execute(h, w);
+      review(h, w, 'PASS', judged('NOT_ACHIEVED'));
+      m.evaluate(w);
+      const a = m.attributions({ workItemId: w })[0] as { id: Id };
+      assert.equal(judge(h, m, a.id, 'FAIL').code, 'ESCALATED');
+      assert.equal(m.attributions({ workItemId: w }).find((x) => x.id === a.id)?.state, 'PROPOSED', 'a disputed cause is not a terminal rejection that leaves the failure unattributed');
+      const [ja] = m.judgments({ subjectId: a.id });
+      assert.deepEqual([ja?.state, ja?.decision, ja?.reviewOutcome], ['ESCALATED', 'ESCALATE', 'FAIL']);
+      AttentionStore.for(h.store).sync();
+      assert.ok(AttentionStore.for(h.store).list().some((i) => i.state === 'OPEN' && i.sourceRef === `judgment_assignment:${ja?.id}`), 'the dispute reaches the Founder');
+      m.evaluate(w);
+      assert.equal(m.judgments({ subjectId: a.id }).length, 1, 'an escalated dispute is not re-drawn');
+      // The Founder decides with the corrected causes through the existing attribution decision.
+      const decided = m.decideAttribution(s.founder, a.id, { decision: 'VALIDATE', reasonCode: 'founder.corrected', causes: [{ category: 'CONTEXT_RETRIEVAL', role: 'PRIMARY', confidence: 'HIGH', basis: 'STALE_CONTEXT_SUPPLIED' }] });
+      assert.deepEqual([decided.attribution.state, decided.attribution.overall, decided.attribution.employeeAccountable], ['VALIDATED', 'CONTEXT_RETRIEVAL', false]);
+      AttentionStore.for(h.store).sync();
+      assert.ok(!AttentionStore.for(h.store).list().some((i) => i.state === 'OPEN' && i.sourceRef === `judgment_assignment:${ja?.id}`), 'decided: the item resolves');
+    });
+  });
 });
 
 describe('R2 K1: pool judges — one eligibility predicate, gated lesson draws, release on every end path', () => {

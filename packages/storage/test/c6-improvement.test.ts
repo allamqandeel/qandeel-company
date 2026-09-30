@@ -11,11 +11,11 @@ import { describe, test } from 'node:test';
 import { isQandeelError, newId, type Id } from '@qandeel-company/domain';
 import { standardWorkOutcomeDefinition } from '@qandeel-company/mind';
 
-import { AttentionStore, ImprovementStore, MemoryStore, ReviewStore, type EmployeeRecord } from '../src/index.js';
+import { AttentionStore, ImprovementStore, MemoryStore, ReviewStore, type Claim, type EmployeeRecord } from '../src/index.js';
 import { insertLesson } from '../src/mind-writes.js';
-import { settle } from '../src/runtime-authority.js';
+import { reserveBudget, settle, settleReservation } from '../src/runtime-authority.js';
 import { storeContext } from '../src/store.js';
-import { grantAll, hire, seed, type Seed } from './c2-helpers.js';
+import { grantAll, hire, seed, testManifest, type Seed } from './c2-helpers.js';
 import { propose } from './c3-helpers.js';
 import { activeReviewer, claimItem, decideAssignment, reviewPlan, runFor } from './c4-helpers.js';
 import { backoff, harness, type Harness } from './helpers.js';
@@ -33,8 +33,8 @@ function withSeed(fn: (h: Harness, s: Seed, m: ImprovementStore) => void): void 
   }
 }
 
-function activate(s: Seed, m: ImprovementStore): Id {
-  const d = m.registerDefinition(s.founder, standardWorkOutcomeDefinition());
+function activate(s: Seed, m: ImprovementStore, spec = standardWorkOutcomeDefinition()): Id {
+  const d = m.registerDefinition(s.founder, spec);
   const run = m.calibrateDefinition(s.founder, d.id);
   assert.equal(run.passed, true);
   return m.activateDefinition(s.founder, d.id, run.id).id;
@@ -42,25 +42,38 @@ function activate(s: Seed, m: ImprovementStore): Id {
 
 const PLAN = reviewPlan({ appliesTo: 'OUTPUT' });
 
-/** Runs one output-reviewed Work Item to REVIEWED; optionally with one failed review first and a reflection. */
-function reviewedWork(h: Harness, s: Seed, owner: EmployeeRecord, opts: { failFirst?: boolean; reflection?: string } = {}): { workItemId: Id; observationId: Id | null } {
+/**
+ * One governed model call of the run, reserved and settled on the usage ledger (Employee work costs money). The
+ * default card is the seed's METERED one; `priceCardId` names another (e.g. a SUBSCRIPTION card: billed 0).
+ */
+function spend(h: Harness, s: Seed, claim: Claim, employeeId: Id, priceCardId: Id = s.priceCardId): void {
+  const r = reserveBudget(h.store, claim.fence, { purpose: 'MODEL_CALL', attemptKind: 'PRIMARY', deploymentId: s.deploymentId, priceCardId, routePolicyId: s.policyId, money: 1_000, tokens: 1_000, contextManifestId: testManifest(h, claim.fence, employeeId) });
+  assert.ok(r.ok, 'the model call is reserved');
+  if (r.ok) settleReservation(h.store, claim.fence, r.reservation.id, { inputTokens: 100, outputTokens: 50, withinBounds: true, sessionId: null, outcome: 'OK' });
+}
+
+/** The open output review's counting key decides (from its reviewer's own fenced run). */
+function decideOpenReview(h: Harness, workItemId: Id, outcome: 'PASS' | 'FAIL'): void {
   const rv = ReviewStore.for(h.store);
+  const request = rv.requests({ workItemId }).find((r) => r.state === 'OPEN');
+  const key = request ? rv.assignments(request.id).find((a) => a.keyKind === 'SPECIALIST' && a.state === 'ASSIGNED') : undefined;
+  assert.ok(key?.reviewWorkItemId, 'a counting reviewer is assigned');
+  decideAssignment(h, key.reviewWorkItemId, outcome);
+}
+
+/** Runs one output-reviewed Work Item to REVIEWED; optionally with one failed review first and a reflection. */
+function reviewedWork(h: Harness, s: Seed, owner: EmployeeRecord, opts: { failFirst?: boolean; reflection?: string; priceCardId?: Id } = {}): { workItemId: Id; observationId: Id | null } {
   const { workItemId, claim } = runFor(h, s, owner, { reviewPlan: PLAN });
   let observationId: Id | null = null;
   if (opts.reflection) observationId = (propose(h, claim, 1, { kind: 'OBSERVATION', memoryClass: null, topic: 'drafting.figures', content: opts.reflection }).decided?.resultLessonId ?? null) as Id | null;
+  spend(h, s, claim, owner.id, opts.priceCardId);
   settle(h.store, claim.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.ready' } }, { backoff });
-  const decide = (outcome: 'PASS' | 'FAIL'): void => {
-    const request = rv.requests({ workItemId }).find((r) => r.state === 'OPEN');
-    const key = request ? rv.assignments(request.id).find((a) => a.keyKind === 'SPECIALIST' && a.state === 'ASSIGNED') : undefined;
-    assert.ok(key?.reviewWorkItemId, 'a counting reviewer is assigned');
-    decideAssignment(h, key.reviewWorkItemId, outcome);
-  };
   if (opts.failFirst) {
-    decide('FAIL');
+    decideOpenReview(h, workItemId, 'FAIL');
     const again = claimItem(h, workItemId, `w-rework-${workItemId.slice(0, 6)}`);
     settle(h.store, again.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v2' } }, { backoff });
   }
-  decide('PASS');
+  decideOpenReview(h, workItemId, 'PASS');
   assert.equal(h.store.getWorkItem(workItemId).state, 'REVIEWED');
   return { workItemId, observationId };
 }
@@ -377,6 +390,294 @@ describe('C6 boundaries: a report, a readiness signal or a recommendation is nev
       m.profile(s.employee.id);
       m.inspect({ kind: 'COMPANY' });
       assert.equal(fingerprint(), before);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// R2 (Full Strong-v1 Independent Review, cluster K4): C6 must distinguish productive learning from repeated
+// activity — the unit of evidence is the Work Item, "later" is the work's own time, an unvalidated adverse fact
+// is never read as clean, a recovered failure is not the cause, and cost is the economic cost.
+
+/** A validated mistake lesson of `owner` (its work failed on the merits; the cause validated as theirs). */
+function validatedMistakeLesson(h: Harness, s: Seed, m: ImprovementStore, owner: EmployeeRecord = s.employee): Id {
+  const mem = MemoryStore.for(h.store);
+  const { workItemId, observationId } = reviewedWork(h, s, owner, { failFirst: true, reflection: 'I skipped sourcing the figures.' });
+  verify(s, m, workItemId, 'NOT_ACHIEVED');
+  m.evaluate(workItemId);
+  m.decideAttribution(s.founder, m.attributions({ workItemId })[0]?.id as Id, { decision: 'VALIDATE', reasonCode: 'founder.confirmed' });
+  m.classifyObservation(observationId as Id, 'MISTAKE_LESSON');
+  const lesson = mem.nominateLesson(s.founder, observationId as Id, 'founder.nominated');
+  mem.validateLesson(s.founder, lesson.id, { decision: 'VALIDATE', reasonCode: 'founder.validated' });
+  return lesson.id;
+}
+
+/** Comparable work of `owner`: a qualified success, or the same mistake again (its cause validated unless `validate` is false). */
+function laterWork(h: Harness, s: Seed, m: ImprovementStore, owner: EmployeeRecord, kind: 'SUCCESS' | 'RECURRENCE', validate = true): Id {
+  const { workItemId } = reviewedWork(h, s, owner, { failFirst: kind === 'RECURRENCE' });
+  verify(s, m, workItemId, kind === 'SUCCESS' ? 'ACHIEVED' : 'NOT_ACHIEVED');
+  m.evaluate(workItemId);
+  const proposal = m.attributions({ workItemId }).find((a) => a.state === 'PROPOSED');
+  if (kind === 'RECURRENCE' && validate) m.decideAttribution(s.founder, proposal?.id as Id, { decision: 'VALIDATE', reasonCode: 'founder.confirmed' });
+  return workItemId;
+}
+
+describe('R2: C6 evidence identity, work time, pending causes, recovered failures and economic cost', () => {
+  test('R2-13: a recovered transient tool failure is never the primary cause of the Employee’s merits failure', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const { workItemId, claim } = runFor(h, s, s.employee, { reviewPlan: PLAN });
+      settle(h.store, claim.fence, { type: 'RETRYABLE_FAILURE', code: 'TOOL_NOT_EXECUTED' }, { backoff });
+      h.clock.advance(120_000);
+      const retry = claimItem(h, workItemId, 'w-retry');
+      spend(h, s, retry, s.employee.id);
+      settle(h.store, retry.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.ready' } }, { backoff });
+      decideOpenReview(h, workItemId, 'FAIL');
+      const rework = claimItem(h, workItemId, 'w-rework');
+      settle(h.store, rework.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.v2' } }, { backoff });
+      decideOpenReview(h, workItemId, 'PASS');
+      verify(s, m, workItemId, 'NOT_ACHIEVED');
+      m.evaluate(workItemId);
+      const a = m.attributions({ workItemId })[0];
+      assert.equal(a?.causes.find((c) => c.role === 'PRIMARY')?.category, 'EMPLOYEE_JUDGMENT', JSON.stringify(a?.causes));
+      assert.equal(a?.employeeAccountable, true);
+      assert.ok((a?.causes ?? []).filter((c) => c.category !== 'EMPLOYEE_JUDGMENT').every((c) => c.role === 'CONTRIBUTING' && c.confidence === 'LOW'), 'a recovered failure is at most a low-confidence contributing cause');
+      // The recovered failure stays visible as evidence (observability / overhead), never as the cause.
+      const ev = m.inspect({ kind: 'WORK_ITEM', id: workItemId }).evidence as { failures: { tool: number }; recoveredFailures?: { tool: number } };
+      assert.deepEqual([ev.failures.tool, ev.recoveredFailures?.tool], [0, 1]);
+    });
+  });
+
+  test('R2-14: one Work Item is one unit of evidence — re-evaluated under new definition versions or other codes, it counts once', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const { workItemId } = reviewedWork(h, s, s.employee);
+      verify(s, m, workItemId, 'ACHIEVED');
+      m.evaluate(workItemId);
+      for (let v = 2; v <= 3; v++) {
+        h.clock.advance(60_000);
+        activate(s, m);
+        assert.equal(m.evaluate(workItemId).changed, true, 'a new definition version re-evaluates the work');
+      }
+      const live = (): number => m.evaluations().filter((e) => e.workItemId === workItemId && e.supersededBy === null).length;
+      assert.equal(live(), 1, 'the new version supersedes the older versions’ live evaluation');
+      // Another definition code may evaluate the same work: every read still counts the Work Item once.
+      activate(s, m, standardWorkOutcomeDefinition('work-outcome.alternate'));
+      m.evaluate(workItemId, { definitionCode: 'work-outcome.alternate' });
+      assert.equal(live(), 2);
+      const p = m.profile(s.employee.id);
+      const outcome = p.dimensions.find((d) => d.dimension === 'OUTCOME');
+      assert.deepEqual([outcome?.sample, outcome?.positive], [1, 1]);
+      assert.equal(p.capabilities.length, 0, 'one success is not a demonstrated capability');
+      assert.deepEqual([p.economics.qualifiedOutcomes, p.economics.evaluatedItems], [1, 1]);
+      assert.deepEqual([m.economics({ employeeId: s.employee.id }).qualifiedOutcomes, m.health().qualifiedOutcomes, m.health().evaluations], [1, 1, 1]);
+      assert.equal(m.generateReport('WEEKLY').report.claims.find((c) => c.code === 'COST_PER_QUALIFIED_OUTCOME')?.params.qualifiedOutcomes, 1);
+    });
+  });
+
+  test('R2-15: work done before the retraining is never "later" evidence, however late it is verified', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const lessonId = validatedMistakeLesson(h, s, m);
+      // Two more pieces of comparable work, executed and reviewed BEFORE the retraining, verified only afterwards.
+      const early = [reviewedWork(h, s, s.employee).workItemId, reviewedWork(h, s, s.employee).workItemId];
+      const iid = m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' }).intervention?.id as Id;
+      h.clock.advance(HOUR);
+      m.completeTraining(s.founder, iid);
+      h.clock.advance(HOUR);
+      for (const w of early) {
+        verify(s, m, w, 'ACHIEVED');
+        m.evaluate(w);
+      }
+      assert.equal(m.assessIntervention(iid).intervention.effect, 'NOT_YET_TESTED', 'no work was started after the training');
+      const later: Id[] = [];
+      for (let i = 0; i < 2; i++) {
+        h.clock.advance(HOUR);
+        later.push(laterWork(h, s, m, s.employee, 'SUCCESS'));
+      }
+      const judged = m.assessIntervention(iid).intervention;
+      assert.equal(judged.effect, 'IMPROVEMENT_OBSERVED');
+      assert.deepEqual([...judged.evidenceRefs].sort(), later.map((w) => `work_item:${w}`).sort(), 'the effect rests on the later Work Items only');
+    });
+  });
+
+  test('R2-17: a recurrence whose cause is not yet validated keeps the effect open; once validated it decides', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const lessonId = validatedMistakeLesson(h, s, m);
+      const iid = m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' }).intervention?.id as Id;
+      h.clock.advance(HOUR);
+      m.completeTraining(s.founder, iid);
+      h.clock.advance(HOUR);
+      const recurrence = laterWork(h, s, m, s.employee, 'RECURRENCE', false);
+      for (let i = 0; i < 2; i++) {
+        h.clock.advance(HOUR);
+        laterWork(h, s, m, s.employee, 'SUCCESS');
+      }
+      const pending = m.assessIntervention(iid);
+      assert.equal(pending.intervention.effect, 'NOT_YET_TESTED', 'an adverse follow-up with a pending cause is not "no recurrence"');
+      assert.equal(pending.changed, false);
+      const proposal = m.attributions({ workItemId: recurrence }).find((a) => a.state === 'PROPOSED');
+      m.decideAttribution(s.founder, proposal?.id as Id, { decision: 'VALIDATE', reasonCode: 'founder.confirmed' });
+      assert.equal(m.assessIntervention(iid).intervention.effect, 'NO_IMPROVEMENT', 'the validated recurrence decides');
+    });
+  });
+
+  test('R2-16: a pattern is shared only after two verified reuses on distinct work; one open reuse per Employee; only another Employee’s reuse is the author’s contribution', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const mem = MemoryStore.for(h.store);
+      const { workItemId } = reviewedWork(h, s, s.employee);
+      verify(s, m, workItemId, 'ACHIEVED');
+      m.evaluate(workItemId);
+      const [signal] = m.signals({ workItemId, kind: 'SUCCESSFUL_PATTERN' });
+      const lesson = mem.nominateLesson(s.founder, signal?.observationId as Id, 'pattern.candidate');
+      mem.validateLesson(s.founder, lesson.id, { decision: 'VALIDATE', reasonCode: 'pattern.validated' });
+      const promotion = mem.requestPromotion('employee:requester', lesson.id, 'COMPANY');
+      const reuse = (by: EmployeeRecord): { id: Id; refs: readonly string[] } => {
+        const planned = m.planIntervention(s.founder, lesson.id, { kind: 'PATTERN_REUSE', employeeId: by.id });
+        assert.equal(planned.outcome, 'PLANNED');
+        const id = planned.intervention?.id as Id;
+        assert.equal(m.planIntervention(s.founder, lesson.id, { kind: 'PATTERN_REUSE', employeeId: by.id }).outcome, 'AWAIT_EVIDENCE', 'one open reuse per lesson and Employee');
+        h.clock.advance(HOUR);
+        m.completeTraining(s.founder, id);
+        assert.equal(m.assessIntervention(id).intervention.effect, 'NOT_YET_TESTED');
+        for (let i = 0; i < 2; i++) {
+          h.clock.advance(HOUR);
+          laterWork(h, s, m, by, 'SUCCESS');
+        }
+        const assessed = m.assessIntervention(id).intervention;
+        assert.equal(assessed.effect, 'IMPROVEMENT_OBSERVED');
+        assert.ok(assessed.evidenceRefs.length > 0 && assessed.evidenceRefs.every((r) => r.startsWith('work_item:')), 'a reuse’s evidence names Work Items');
+        return { id, refs: assessed.evidenceRefs };
+      };
+      const first = reuse(s.employee);
+      assert.throws(() => mem.decidePromotion(s.founder, promotion.id, { decision: 'APPROVE', reasonCode: 'share' }), reason('PATTERN_REUSE_NOT_VERIFIED'));
+      const second = reuse(s.employee);
+      assert.ok(!second.refs.some((r) => first.refs.includes(r)), 'each reuse is judged on its own later work');
+      // PG-03: the author's own reuse counts as a verified reuse only with distinct evidence per reuse.
+      assert.equal(mem.decidePromotion(s.founder, promotion.id, { decision: 'APPROVE', reasonCode: 'share' }).state, 'APPROVED');
+      assert.ok(!contributionRefs(m, s.employee.id).some((r) => r.startsWith('learning_intervention:')), 'reusing one’s own pattern is not a system contribution');
+      const byOther = reuse(s.gov.getEmployee(activateSecond(s)));
+      assert.ok(contributionRefs(m, s.employee.id).includes(`learning_intervention:${byOther.id}`), 'another Employee’s verified reuse is the author’s contribution');
+    });
+  });
+
+  test('R2-16: the application gate refuses two "verified" reuses resting on the same evidence (before the datastore has to)', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const mem = MemoryStore.for(h.store);
+      const { workItemId } = reviewedWork(h, s, s.employee);
+      verify(s, m, workItemId, 'ACHIEVED');
+      m.evaluate(workItemId);
+      const [signal] = m.signals({ workItemId, kind: 'SUCCESSFUL_PATTERN' });
+      const lesson = mem.nominateLesson(s.founder, signal?.observationId as Id, 'pattern.candidate');
+      mem.validateLesson(s.founder, lesson.id, { decision: 'VALIDATE', reasonCode: 'pattern.validated' });
+      const promotion = mem.requestPromotion('employee:requester', lesson.id, 'COMPANY');
+      const ctx = storeContext(h.store);
+      const at = h.store.now();
+      for (const cycle of [1, 2]) {
+        ctx.db.immediate('legacy reuse rows', () =>
+          ctx.db.run(
+            `INSERT INTO learning_interventions (id, lesson_id, employee_id, kind, cycle_no, target_cause, comparable_key, remediation_id, baseline_json, state, effect, effect_basis, evidence_refs_json, training_completed_at, assessed_at, created_by_ref, version, created_at, updated_at)
+             VALUES (?, ?, ?, 'PATTERN_REUSE', ?, 'EMPLOYEE_JUDGMENT', 'draft.memo', NULL, '[]', 'EFFECT_ASSESSED', 'IMPROVEMENT_OBSERVED', 'NO_RECURRENCE_ON_QUALIFIED_WORK', ?, ?, ?, 'system:legacy', 1, ?, ?)`,
+            newId(), lesson.id, s.employee.id, cycle, JSON.stringify([`work_item:${workItemId}`]), at, at, at, at,
+          ),
+        );
+      }
+      assert.throws(() => mem.decidePromotion(s.founder, promotion.id, { decision: 'APPROVE', reasonCode: 'share' }), reason('PATTERN_REUSE_NOT_VERIFIED'));
+    });
+  });
+
+  test('R2-19: a problem that recurs after its finding was ADDRESSED opens a new linked finding counting only the later evidence', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      const toolFailure = (): void => {
+        const { workItemId, claim } = runFor(h, s, s.employee);
+        settle(h.store, claim.fence, { type: 'RETRYABLE_FAILURE', code: 'TOOL_NOT_EXECUTED' }, { backoff });
+        const r = m.evaluate(workItemId);
+        m.decideAttribution(s.founder, r.attributionId as Id, { decision: 'VALIDATE', reasonCode: 'founder.confirmed' });
+      };
+      for (let i = 0; i < 3; i++) toolFailure();
+      const [first] = m.systemicFindings();
+      assert.equal(first?.occurrences, 3);
+      m.decideSystemicFinding(s.founder, first?.id as Id, { decision: 'VALIDATE', reasonCode: 'founder.agreed' });
+      h.clock.advance(HOUR);
+      m.decideSystemicFinding(s.founder, first?.id as Id, { decision: 'ADDRESSED', reasonCode: 'tool.repaired' });
+      AttentionStore.for(h.store).sync();
+      for (let i = 0; i < 2; i++) {
+        h.clock.advance(HOUR);
+        toolFailure();
+      }
+      assert.equal(m.systemicFindings({ state: 'CANDIDATE' }).length, 0, 'only evidence after the decision counts: two recurrences are below the threshold');
+      h.clock.advance(HOUR);
+      toolFailure();
+      const [again] = m.systemicFindings({ state: 'CANDIDATE' });
+      assert.ok(again && again.id !== first?.id, 'a new finding, not a reopened one');
+      assert.equal(again.occurrences, 3);
+      assert.ok(again.evidenceRefs.includes(`systemic_finding:${first?.id}`), 'linked to the prior finding');
+      assert.deepEqual([again.targetKind, again.targetRef, again.cause], [first?.targetKind, first?.targetRef, first?.cause]);
+      assert.equal(m.systemicFindings().find((f) => f.id === first?.id)?.state, 'ADDRESSED', 'the decided finding is never rewritten');
+      assert.ok(AttentionStore.for(h.store).sync().opened >= 1, 'the recurrence reaches the Founder');
+      assert.ok(m.generateReport('WEEKLY').report.claims.some((c) => c.code === 'REPEATED_FAILURE_PATTERN' && c.subject.id === again.id));
+    });
+  });
+
+  test('R2-19: a second Employee’s exhausted retraining on the same work merges into the open candidate', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const other = s.gov.getEmployee(activateSecond(s));
+      const exhaust = (owner: EmployeeRecord): Id | null => {
+        const lessonId = validatedMistakeLesson(h, s, m, owner);
+        let finding: Id | null = null;
+        for (let cycle = 0; cycle < 2; cycle++) {
+          const planned = m.planIntervention(s.founder, lessonId, { kind: 'TARGETED_RETRAINING' });
+          assert.equal(planned.outcome, 'PLANNED');
+          h.clock.advance(HOUR);
+          m.completeTraining(s.founder, planned.intervention?.id as Id);
+          for (let i = 0; i < 2; i++) {
+            h.clock.advance(HOUR);
+            laterWork(h, s, m, owner, 'RECURRENCE');
+          }
+          const assessed = m.assessIntervention(planned.intervention?.id as Id);
+          assert.equal(assessed.intervention.effect, 'NO_IMPROVEMENT');
+          finding = assessed.findingId;
+        }
+        return finding;
+      };
+      const exhausted = (): ReturnType<ImprovementStore['systemicFindings']> => m.systemicFindings().filter((f) => f.origin === 'RETRAINING_EXHAUSTED');
+      const firstId = exhaust(s.employee);
+      const before = exhausted();
+      assert.deepEqual(before.map((f) => [f.id, f.state, f.distinctEmployees]), [[firstId, 'CANDIDATE', 1]]);
+      assert.equal(exhaust(other), firstId, 'the same open candidate');
+      const merged = exhausted();
+      assert.equal(merged.length, 1);
+      assert.equal(merged[0]?.distinctEmployees, 2);
+      assert.ok((merged[0]?.occurrences ?? 0) > (before[0]?.occurrences ?? 0), 'occurrences grow');
+      assert.ok(before[0]?.evidenceRefs.every((r) => merged[0]?.evidenceRefs.includes(r)), 'evidence is appended, never replaced');
+    });
+  });
+
+  test('R2-20: C6 cost is the economic cost the budget ledger charges — a subscription route is not free work', () => {
+    withSeed((h, s, m) => {
+      activate(s, m);
+      activeReviewer(h, s);
+      const card = s.gov.addPriceCard(s.founder, s.deploymentId, { currency: 'USD', billingMode: 'SUBSCRIPTION', billedInputPerMTok: 0, billedOutputPerMTok: 0, billedPerCall: 0, economicInputPerMTok: 2_000_000, economicOutputPerMTok: 8_000_000, economicPerCall: 0 });
+      const { workItemId } = reviewedWork(h, s, s.employee, { priceCardId: card.id });
+      assert.deepEqual(s.gov.usage({ workItemId }).map((u) => [u.billedMicros, u.economicMicros]), [[0, 600]]);
+      verify(s, m, workItemId, 'ACHIEVED');
+      const e = m.evaluate(workItemId).evaluation;
+      assert.equal(e.cost.productiveMicros, 600, 'the economic cost, not the (zero) bill');
+      assert.equal(e.cost.billedMicros, 0, 'the bill is carried separately');
+      const economics = m.economics({ employeeId: s.employee.id });
+      assert.deepEqual([economics.totalCostMicros, economics.costPerQualifiedOutcomeMicros], [600, 600]);
     });
   });
 });

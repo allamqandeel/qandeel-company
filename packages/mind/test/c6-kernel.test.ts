@@ -15,6 +15,7 @@ import {
   composeReport,
   costPerQualifiedOutcome,
   detectSystemicCandidates,
+  disjointVerifiedReuses,
   evaluateWork,
   learningValidationGate,
   nearMissCodes,
@@ -61,6 +62,30 @@ const fact = (patch: Partial<EvaluationFact> = {}): EvaluationFact => {
 const AT = '2026-09-30T00:00:00.000Z';
 const profileOf = (evaluations: EvaluationFact[], attributions: Parameters<typeof buildPerformanceProfile>[0]['attributions'] = []) =>
   buildPerformanceProfile({ employeeId: 'emp', at: AT, evaluations, attributions, learningEffects: [], contributions: { validatedPatterns: [], verifiedPatternReuses: [], validatedSystemicFindings: [] } });
+function reportBase(cadence: ReportFacts['cadence']): ReportFacts {
+  return {
+    cadence,
+    period: { from: '2026-09-23T00:00:00.000Z', to: AT },
+    verifications: [{ id: 'v1', workItemId: 'w1', verdict: 'ACHIEVED' }],
+    failedWork: [],
+    deadLetters: [],
+    reconciliationHeld: [],
+    decisionsRequired: [],
+    resilienceExceptions: [],
+    goals: [],
+    evaluations: [fact()],
+    previousEvaluations: [],
+    lessons: { validated: [], patterns: [], nearMisses: [] },
+    systemic: [],
+    effects: [],
+    profiles: [],
+    reviewers: [],
+    capabilityGaps: [],
+    recertificationDue: [],
+    departmentGaps: [],
+    minSample: 3,
+  };
+}
 
 describe('C6 evaluation: evidence before judgement', () => {
   test('COMPLETED alone is not a qualified success', () => {
@@ -103,6 +128,11 @@ describe('C6 evaluation: evidence before judgement', () => {
     const e = evaluateWork(def, withEv({ outcome: 'NOT_ACHIEVED', reviewed: false, review: { pass: 0, fail: 1, uncertain: 0, insufficient: 0, rework: 0, openConflict: false }, cost: { ...good().cost, productiveMicros: 1 } }));
     assert.equal(req(e.dimensions.find((d) => d.dimension === 'EFFICIENCY')).verdict, 'NOT_ASSESSED');
   });
+  test('m-31: work with no recorded cost is not "efficient" — efficiency is not assessed without cost evidence', () => {
+    const e = evaluateWork(def, withEv({ cost: { ...good().cost, productiveMicros: 0 } }));
+    assert.equal(e.qualifiedOutcome, true);
+    assert.deepEqual([req(e.dimensions.find((d) => d.dimension === 'EFFICIENCY')).verdict, req(e.dimensions.find((d) => d.dimension === 'EFFICIENCY')).basis], ['NOT_ASSESSED', 'NO_COST_EVIDENCE']);
+  });
   test('a MODEL_GRADER definition has no executable evaluator and fails closed', () => {
     assert.throws(() => evaluateWork({ ...def, evaluatorKind: 'MODEL_GRADER' }, good()), /EVAL_INVALID/);
     assert.equal(calibrateDefinition({ ...def, evaluatorKind: 'MODEL_GRADER' }).passed, false);
@@ -126,6 +156,18 @@ describe('C6 attribution: a bad outcome is not automatically the Employee', () =
     assert.equal(a.employeeAccountable, true);
   });
   test('nothing adverse needs no attribution', () => assert.equal(proposeAttribution(good()).needed, false));
+  test('R2-13: a recovered tool failure never exonerates a merits failure; an unrecovered one still does', () => {
+    const merits = { outcome: 'NOT_ACHIEVED' as const, reviewed: false, review: { pass: 0, fail: 1, uncertain: 0, insufficient: 0, rework: 1, openConflict: false }, runs: { total: 3, failed: 1, retried: 1 } };
+    const recovered = proposeAttribution(withEv({ ...merits, recoveredFailures: { ...good().recoveredFailures, tool: 1 } }));
+    assert.equal(req(recovered.causes.find((c) => c.role === 'PRIMARY')).category, 'EMPLOYEE_JUDGMENT');
+    assert.equal(recovered.employeeAccountable, true);
+    assert.deepEqual(recovered.causes.filter((c) => c.category === 'TOOL').map((c) => [c.role, c.confidence]), [['CONTRIBUTING', 'LOW']]);
+    const unrecovered = proposeAttribution(withEv({ ...merits, failures: { ...good().failures, tool: 1 } }));
+    assert.deepEqual([unrecovered.overall, unrecovered.employeeAccountable], ['TOOL', false]);
+    // Nothing but a recovered attempt went wrong: the failed attempt's own cause, never the Employee.
+    const transient = proposeAttribution(withEv({ runs: { total: 2, failed: 1, retried: 1 }, recoveredFailures: { ...good().recoveredFailures, tool: 1 } }));
+    assert.deepEqual([transient.overall, transient.employeeAccountable], ['TOOL', false]);
+  });
 });
 
 describe('C6 meta-evaluation: the grader is evaluated too', () => {
@@ -133,6 +175,12 @@ describe('C6 meta-evaluation: the grader is evaluated too', () => {
     const r = calibrateDefinition(def);
     assert.equal(r.passed, true, JSON.stringify(r.cases));
     assert.deepEqual(r.missingKinds, []);
+  });
+  test('R2-13: the standard calibration carries a recovered-tool-failure merits case the evaluator must attribute to the Employee', () => {
+    const c = req(calibrateDefinition(def).cases.find((x) => x.id === 'recovered-tool-failure'));
+    assert.deepEqual([c.kind, c.pass], ['KNOWN_BAD', true], c.observed);
+    const ev = req(def.referenceCases.find((x) => x.id === 'recovered-tool-failure')).evidence;
+    assert.deepEqual([ev.failures.tool, ev.recoveredFailures.tool], [0, 1]);
   });
   test('a grader that answers ambiguous evidence confidently fails its own calibration', () => {
     const guessing = def.referenceCases.map((c) => (c.kind === 'AMBIGUOUS' ? { ...c, evidence: good() } : c));
@@ -187,6 +235,24 @@ describe('C6 performance profile: multi-dimensional, no score, minimum sample', 
     assert.equal(p.capabilities.length, 1);
     assert.equal(p.regressions.length, 1);
   });
+  test('R2-18: adverse evidence whose cause is pending (unattributed, PROPOSED or REJECTED) is never read as clean', () => {
+    const successes = Array.from({ length: 10 }, (_, i) => fact({ riskLevel: 'R2', verdicts: { OUTCOME: 'POSITIVE', QUALITY: 'POSITIVE', EFFICIENCY: 'POSITIVE', INITIATIVE: 'POSITIVE', INDEPENDENCE: 'POSITIVE' }, evaluationId: `ok${i}` }));
+    const failures = Array.from({ length: 20 }, () => fact({ riskLevel: 'R2', qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE', QUALITY: 'NEGATIVE', INDEPENDENCE: 'NEGATIVE' } }));
+    // Ten causes still PROPOSED; ten REJECTED or never attributed (absent).
+    const p = profileOf([...successes, ...failures], failures.slice(0, 10).map((f) => ({ workItemId: f.workItemId, state: 'PROPOSED' as const, employeeAccountable: true, overall: 'EMPLOYEE_JUDGMENT' })));
+    const outcome = req(p.dimensions.find((d) => d.dimension === 'OUTCOME'));
+    assert.deepEqual([outcome.sample, outcome.pendingAttribution], [10, 20]);
+    assert.equal(outcome.level, null, 'more pending adverse evidence than counted evidence: no level');
+    assert.equal(outcome.trend, 'TREND_NOT_ESTABLISHED');
+    assert.equal(p.readiness.signal, 'NOT_READY');
+    assert.ok(p.readiness.reasons.includes('ADVERSE_EVIDENCE_PENDING_ATTRIBUTION'), p.readiness.reasons.join(','));
+    // The monthly review discloses the pending evidence and recommends nothing.
+    const monthly = composeReport({ ...reportBase('MONTHLY'), profiles: [p] });
+    assert.ok(!monthly.claims.some((c) => c.code === 'CONSIDER_GREATER_RESPONSIBILITY_REVIEW'));
+    const disclosed = req(monthly.claims.find((c) => c.code === 'ADVERSE_EVIDENCE_PENDING_ATTRIBUTION'));
+    assert.equal(disclosed.subject.id, 'emp');
+    assert.equal(disclosed.evidenceRefs.length, 20);
+  });
   test('readiness is a signal for review, never a decision', () => {
     const facts = Array.from({ length: 6 }, (_, i) => fact({ riskLevel: i === 0 ? 'R2' : 'R1', verdicts: { OUTCOME: 'POSITIVE', QUALITY: 'POSITIVE', INDEPENDENCE: 'POSITIVE', INITIATIVE: 'POSITIVE' } }));
     const p = profileOf(facts);
@@ -200,6 +266,10 @@ describe('C6 cost per qualified outcome', () => {
     const cheap = costPerQualifiedOutcome([fact({ qualifiedOutcome: false, cost: { productiveMicros: 10, overheadMicros: 0 } })]);
     assert.equal(cheap.costPerQualifiedOutcomeMicros, null);
     assert.equal(cheap.state, 'NO_QUALIFIED_OUTCOME');
+  });
+  test('R2-20: economics are economic cost; the provider bill is carried beside it, never instead of it', () => {
+    const c = costPerQualifiedOutcome([fact({ cost: { productiveMicros: 600, overheadMicros: 0, billedMicros: 0 } })]);
+    assert.deepEqual([c.totalCostMicros, c.billedMicros, c.costPerQualifiedOutcomeMicros], [600, 0, 600]);
   });
   test('failed and rework cost is charged to the qualified outcomes', () => {
     const c = costPerQualifiedOutcome([fact({ cost: { productiveMicros: 1_000, overheadMicros: 500 } }), fact({ qualifiedOutcome: false, cost: { productiveMicros: 500, overheadMicros: 0 } })]);
@@ -226,13 +296,38 @@ describe('C6 learning closure', () => {
     assert.deepEqual(nearMissCodes(ev), ['REVIEW_CAUGHT_BEFORE_RELEASE', 'GATE_STOPPED_A_RISK']);
     assert.equal(ev.outcome, 'ACHIEVED');
   });
-  const follow = (patch: Partial<FollowupFact>): FollowupFact => ({ ...fact({ at: '2026-09-20T00:00:00.000Z' }), accountableCauses: [], ...patch });
+  const follow = (patch: Partial<FollowupFact>): FollowupFact => ({ ...fact({ at: '2026-09-20T00:00:00.000Z' }), workStartedAt: '2026-09-20T00:00:00.000Z', attributionState: 'NONE', accountableCauses: [], ...patch });
   test('training completed is not improvement: later comparable evidence decides', () => {
     assert.equal(assessLearningEffect({ trainingCompletedAt: '2026-09-10T00:00:00.000Z', targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [] }).effect, 'NOT_YET_TESTED');
     assert.equal(assessLearningEffect({ trainingCompletedAt: null, targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [follow({}), follow({})] }).effect, 'NOT_YET_TESTED');
     assert.equal(assessLearningEffect({ trainingCompletedAt: '2026-09-10T00:00:00.000Z', targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [follow({}), follow({})] }).effect, 'IMPROVEMENT_OBSERVED');
     const recurred = assessLearningEffect({ trainingCompletedAt: '2026-09-10T00:00:00.000Z', targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [follow({ accountableCauses: ['EMPLOYEE_JUDGMENT'] })], followups: [follow({ accountableCauses: ['EMPLOYEE_JUDGMENT'], qualifiedOutcome: false }), follow({})] });
     assert.equal(recurred.effect, 'NO_IMPROVEMENT');
+  });
+  test('R2-15: "later" is when the work started, not when it was evaluated; evidence names the Work Items', () => {
+    const trained = '2026-09-10T00:00:00.000Z';
+    // Work started before the training, evaluated after it: never later evidence.
+    const early = [follow({ workStartedAt: '2026-09-05T00:00:00.000Z' }), follow({ workStartedAt: '2026-09-06T00:00:00.000Z' })];
+    assert.equal(assessLearningEffect({ trainingCompletedAt: trained, targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: early }).effect, 'NOT_YET_TESTED');
+    const later = [follow({}), follow({})];
+    const judged = assessLearningEffect({ trainingCompletedAt: trained, targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [...early, ...later] });
+    assert.equal(judged.effect, 'IMPROVEMENT_OBSERVED');
+    assert.deepEqual(judged.evidenceRefs, later.map((f) => `work_item:${f.workItemId}`));
+  });
+  test('R2-17: an adverse follow-up whose cause is not validated keeps the effect open', () => {
+    const adverse = (attributionState: FollowupFact['attributionState']): FollowupFact => follow({ qualifiedOutcome: false, verdicts: { OUTCOME: 'NEGATIVE', QUALITY: 'NEGATIVE' }, attributionState });
+    const run = (f: FollowupFact) => assessLearningEffect({ trainingCompletedAt: '2026-09-10T00:00:00.000Z', targetCause: 'EMPLOYEE_JUDGMENT', comparableKey: 'growth.brief', baseline: [], followups: [f, follow({}), follow({})] });
+    for (const state of ['NONE', 'PROPOSED', 'REJECTED'] as const) assert.deepEqual([run(adverse(state)).effect, run(adverse(state)).basis], ['NOT_YET_TESTED', 'ATTRIBUTION_PENDING'], state);
+    // Validated as someone else's cause (not a recurrence): the effect is decided.
+    assert.equal(run(adverse('VALIDATED')).effect, 'IMPROVEMENT_OBSERVED');
+    assert.equal(run({ ...adverse('VALIDATED'), accountableCauses: ['EMPLOYEE_JUDGMENT'] }).effect, 'NO_IMPROVEMENT');
+  });
+  test('R2-16: verified reuses count only on pairwise-disjoint evidence', () => {
+    assert.equal(disjointVerifiedReuses([['work_item:a', 'work_item:b'], ['work_item:a', 'work_item:b']]), 1, 'the same evidence twice is one reuse');
+    assert.equal(disjointVerifiedReuses([['work_item:a', 'work_item:b'], ['work_item:b', 'work_item:c']]), 1);
+    assert.equal(disjointVerifiedReuses([['work_item:a', 'work_item:b'], ['work_item:b'], ['work_item:c', 'work_item:d']]), 2);
+    assert.equal(disjointVerifiedReuses([[], []]), 0, 'a reuse with no evidence counts for nothing');
+    assert.equal(patternExpansionAllowed('COMPANY', disjointVerifiedReuses([['work_item:a'], ['work_item:a']])).allowed, false);
   });
   test('repeated ineffective retraining escalates instead of looping', () => {
     assert.equal(nextInterventionDecision([]).decision, 'ALLOW_INTERVENTION');
@@ -273,28 +368,7 @@ describe('C6 reviewer meta-evaluation', () => {
 });
 
 describe('C6 reporting semantics', () => {
-  const base = (cadence: ReportFacts['cadence']): ReportFacts => ({
-    cadence,
-    period: { from: '2026-09-23T00:00:00.000Z', to: AT },
-    verifications: [{ id: 'v1', workItemId: 'w1', verdict: 'ACHIEVED' }],
-    failedWork: [],
-    deadLetters: [],
-    reconciliationHeld: [],
-    decisionsRequired: [],
-    resilienceExceptions: [],
-    goals: [],
-    evaluations: [fact()],
-    previousEvaluations: [],
-    lessons: { validated: [], patterns: [], nearMisses: [] },
-    systemic: [],
-    effects: [],
-    profiles: [],
-    reviewers: [],
-    capabilityGaps: [],
-    recertificationDue: [],
-    departmentGaps: [],
-    minSample: 3,
-  });
+  const base = reportBase;
   test('an assessment without evidence or uncertainty is refused', () => {
     assert.throws(() => assertClaim({ code: 'X', kind: 'ASSESSMENT', subject: { kind: 'COMPANY', id: null }, params: {}, evidenceRefs: [], uncertainty: { state: 'SUFFICIENT_EVIDENCE', confidence: 'LOW', sample: 3 } }), /EVIDENCE_REQUIRED/);
     assert.throws(() => assertClaim({ code: 'X', kind: 'TREND', subject: { kind: 'COMPANY', id: null }, params: {}, evidenceRefs: ['e:1'], uncertainty: null }), /EVIDENCE_REQUIRED/);
