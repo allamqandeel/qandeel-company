@@ -1,9 +1,10 @@
 # R2 — Full Strong-v1 Independent Review Report
 
-**Status:** IN REVIEW — **initial findings FROZEN** (this section set §1–§11 is the frozen register; it is
-committed before any Product / runtime code changes). Remediation, the fresh re-review and closure are
-recorded in later sections as they happen; the identity and root cause of every frozen finding stay
-traceable.
+**Status:** **STOPPED — NOT CLOSED.** The final fresh re-review (§15) reproduced a third recurrence in three
+root-cause families (budget-wait resume, C6 evidence time, restore lifecycle); by rule no third patch was made and
+the families are returned to the Technical Lead / Founder as architecture problems. **Not ready for C7.**
+§1–§11 are the register frozen at `dc408a3` before any code change; §12–§15 record the remediation waves and
+re-reviews; the identity and root cause of every frozen finding stay traceable.
 
 R2 reviews C1–C6 as **one Company system**: the seams between stages, not only the parts. It is a review
 and defect-remediation stage, not a feature stage. No C7 functionality, App telemetry, Pilot dashboard or
@@ -514,3 +515,65 @@ Recorded while fixing (MINOR, residual): m-58 the `ATTRIBUTION_DECIDE` preview s
 proposed cause" even when corrected causes are supplied; m-59 a lesson whose work's cause was REJECTED fails the
 learning gate (`ATTRIBUTION_NOT_VALIDATED`), so no pool judge is drawn — the Founder rejects that lesson directly;
 m-60 a refill can be crowded only if more than 500 unfillable requests wait ahead in one domain.
+
+## 15. Final fresh re-review (head `a56bc06`) — STOP: third recurrence in three root-cause families
+
+One final re-review, scope locked to the families corrected in §14 and their neighbouring seams (two reviewers who
+wrote none of the fixes, isolated worktrees at `a56bc06`; in-scope suites and the C5 / C6 acceptances pass there).
+Every BLOCKER / MAJOR it reports was **re-run independently by the orchestrator** before this record.
+
+| Family | Verdict | Evidence |
+|---|---|---|
+| Handoff lifetime (R2-04 / R2-05) | **CLOSED** | Refused FINAL visible to the model; FAILED / CANCELLED delegators end their handoffs; nested delegation, completed parents, held children, non-delegated C1 children and review Work Items all behave (probes `rr3`, `rr5`, `fa3`) |
+| Review capacity wake (R2-02 / R2-08) | **CLOSED** | `n3-judgments-starve-reviews` fixed without a restart; independence kept in refills; withdrawn subjects never re-drawn; judgment starvation bounded |
+| Founder intent resolution (R2-23 / R2-24) | **CLOSED** | 70+ adversarial EN / AR commands keep the leading verb's act and decision; R4 / R2 approvals never previewable; the only losses are fail-closed (MINOR) |
+| **Budget-wait resume (R2-03)** | **NOT CLOSED — 3rd recurrence** | **FA-1** (MAJOR, borderline): `wakeBudgetWaiters` (`governance-core.ts` ~436–450) tests every waiter against the same unchanged headroom and never subtracts the needs it already woke in the pass, so one settle that frees room for ONE need wakes EVERY waiter whose need fits it; one is served, the rest spend a run and re-park — ≈ Q² / 2 wasted runs to drain Q waiters (durable runs / events / audit / Run budgets / manifests; no spend, no starvation). Re-run: `fa2-herd-storage.mjs` → "N=10 waiters served 10; runs 66 (minimum 11); budget.refused 55; events 429"; runtime `fa1-herd.mjs` N=20 → 173 wasted runs, 1 238 events |
+| **C6 evidence time (R2-15)** | **NOT CLOSED — 3rd recurrence** | **FB-1** (MAJOR, borderline; introduced by the RR3-E fix): the adverse "reworked after training" filter (`mind/src/improvement.ts` ~172) uses item-level verdicts, which cannot tell WHEN a mistake happened — work whose every mistake was before training and which the Employee then finished correctly after it counts as a post-training recurrence → a FINAL `NO_IMPROVEMENT` (feeds retraining exhaustion and LEARNING_VELOCITY). Re-run: `f1-effect-time.mjs` → "effect of the training: NO_IMPROVEMENT SAME_MISTAKE_RECURRED \| counts the pre-training mistakes as recurrence: true" |
+| **Restore lifecycle (R2-29 / R2-30)** | **NOT CLOSED — 3rd recurrence** | **FB-2** (MAJOR, crash-conditional; present since the first-wave R2-29 fix): `restorePortableBackup` copies the database into the target (`resilience.ts` ~484) BEFORE the controlled-restore transaction that places the restore holds, revokes the lost device's sessions and records the restore (~501); no marker is written first. A process death in that window leaves an ordinary, startable Company with un-held effect-capable jobs. Re-run: `f3-portable-crash.mjs crash / inspect` → "update hold: null", "ordinary (runtime) open: OK, schema 11", "claimed job state: CLAIMED \| queued effect-capable job state: QUEUED", "recovery.clean_restore audit rows: 0" (the reviewer's `f3-start.mjs` then started the runtime on it: READY, two `run.started`) |
+
+### 15.1 Stop decision
+
+Under the brief (§1, §23) and the Product Owner's direction, a third recurrence of a root-cause family is a stop
+condition: **no third patch was made.** R2 is **NOT CLOSED**, no `docs/R2_CLOSURE_RECORD.md` is written and no PR is
+opened. The three families are returned to the Technical Lead / Founder as architecture problems:
+
+1. **Budget-wait resume.** Resuming parked budget waiters is a *scheduling / admission* problem (who gets freed
+   headroom, in what order), not a predicate problem: three designs (cap-only wake → any-headroom wake → per-waiter
+   need test) each left a different storm or lost wake. The architecture question is an explicit admission model for
+   budget waiters (e.g. a durable FIFO / priority queue per binding level that admits waiters while the freed amount
+   covers their recorded need, decrementing as it admits), and whether contention on a shared envelope should be a
+   WAIT at all (the question R2-D first raised).
+2. **C6 evidence time.** Learning-effect evidence needs event-level time (when each mistake / review verdict / outcome
+   happened), not item-level verdicts with item-level timestamps: every item-level rule (evaluation time, first-run
+   time, last-run time) misclassifies one class of reworked work. The architecture question is attributing each
+   adverse / positive signal to the run or review decision that produced it, and the Product decision of how work
+   spanning a training boundary counts (RR3-E and FB-1 are the two sides of it).
+3. **Restore lifecycle.** A controlled restore must be crash-atomic: the target must be unstartable from its first
+   byte until the controlled-restore transaction commits (e.g. the `RESTORE_CHECK_COPY`-style hold written before
+   the database, lifted only by that transaction), and a half-restored target must be recognisable and resumable /
+   discardable. The same principle (§14 D-R2-14) was applied to the verification copy but not to the live path.
+
+### 15.2 Other final re-review findings (MINOR, residual)
+
+FA-2 a delegated child held for reconciliation is retained when its delegator ends and a Founder RETRY re-queues it
+(reconciliation RETRY bypasses the `enqueueJob` guard) — bounded by the child's budget; FA-3 with ~400 unfillable
+waiting requests in a domain each review decision scans them inside its write transaction (~200–350 ms); FA-4 a
+need larger than the Work Item's per-run cap never resolves (run caps are immutable; the Founder can cancel); FB-3
+docs (closed by `9718e99`); FB-4 a one-word "addressee" before a comma may itself be a read verb ("show, approve goal
+X" → a preview needing confirmation); FB-5 some natural-language phrasings now fail closed (UNKNOWN), ":" not
+normalised, a closing GOAL noun can override a STAFFING / CONFLICT head noun (the preview names the real act); FB-6
+Founder-REJECTED adverse items are disclosed in the profile and monthly claim but not in the readiness reasons, and
+INCONCLUSIVE cycles never count toward the retraining bound; FB-7 `command-center serve` on a verification copy
+reports `RUNTIME_NOT_READY` instead of the hold reason, and `rollback-update` reports NOT_FOUND.
+
+### 15.3 State of the branch at the stop
+
+- The three families above are **open**; everything else in the frozen register (§8) and in the first re-review
+  (§13) is fixed at the root and re-verified, or recorded as a MINOR / Product gap.
+- The corrections of the two waves that closed (R2-01 BLOCKER and the other MAJOR families) are sound on their own and
+  are recorded in §12 / §14; whether to keep them on this branch, split them, or hold everything until the three
+  architecture decisions are made is the Technical Lead / Founder's call.
+- Migration 0011 is **unreleased** and still mutable; it is not in `FROZEN_MIGRATIONS`. It must not be released until
+  the restore / budget-wait decisions are made (its `budget_wait_needs` table belongs to the open family).
+- **READY FOR C7: NO** — three MAJOR root-cause families (money-scheduling, learning-evidence integrity,
+  crash-safety of the live restore) are unresolved at the architecture level.
