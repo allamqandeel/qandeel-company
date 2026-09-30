@@ -225,12 +225,21 @@ export function delegationHistory(ctx: StoreContext, delegationId: Id, version: 
 }
 
 /**
+ * R2-04: the one definition of an OPEN handoff — the delegator's work cannot finish while any is open. The
+ * delegator's processor parks on it (`openHandoffs`), its WAIT settle re-check keeps the wait on it, and the
+ * datastore trigger `work_delegations_follow_child` (0011) closes exactly these states when the child ends.
+ */
+export const OPEN_HANDOFF_STATES = ['OFFERED', 'ACCEPTED', 'CLARIFICATION_REQUESTED', 'ESCALATED'] as const;
+
+/**
  * Starting work on an offered handoff accepts it (Stage 8 §22): the delegate's first governed run of the
  * child Work Item records the acceptance, the accepting run and history, in the run's binding transaction.
+ * Only an OFFERED handoff is accepted (m-01): a run that starts again after a crash never turns a pending
+ * clarification request back into ACCEPTED — the question stays open until the delegator answers it.
  */
 export function acceptDelegationOnStart(ctx: StoreContext, runId: Id, workItemId: Id, employeeId: Id): void {
   const d = ctx.db.get<{ id: string; version: number; state: string }>(
-    `SELECT id, version, state FROM work_delegations WHERE child_work_item_id = ? AND delegate_employee_id = ? AND state IN ('OFFERED', 'CLARIFICATION_REQUESTED')`,
+    `SELECT id, version, state FROM work_delegations WHERE child_work_item_id = ? AND delegate_employee_id = ? AND state = 'OFFERED'`,
     workItemId, employeeId,
   );
   if (!d) return;

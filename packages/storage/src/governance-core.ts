@@ -88,6 +88,19 @@ export function budgetFor(ctx: StoreContext, scope: BudgetRecord['scope'], scope
   return row ? mapBudget(row) : null;
 }
 
+/**
+ * R2-06: a child budget (SQL alias `c`) that can still spend — OPEN (a CLOSED envelope stays where it was spent)
+ * and, for a Work Item, work that can still execute: not terminal, not REVIEWED / OUTCOME_VERIFIED, and not
+ * COMPLETED unless its required review can still send it back to rework; for a Run, a run still RUNNING. Only
+ * such a child holds its parent's cap up (the C2 "a child cap never exceeds its parent" invariant); every
+ * reservation still checks every level of its chain, so a finished child's larger cap spends nothing.
+ */
+export const CHILD_CAN_SPEND_SQL = `c.status = 'OPEN' AND (c.scope NOT IN ('WORK_ITEM', 'RUN')
+  OR (c.scope = 'WORK_ITEM' AND EXISTS (SELECT 1 FROM work_items w WHERE w.id = c.scope_id
+        AND w.state NOT IN ('CLOSED', 'FAILED', 'CANCELLED', 'SUPERSEDED', 'REVIEWED', 'OUTCOME_VERIFIED')
+        AND NOT (w.state = 'COMPLETED' AND w.review_required = 0)))
+  OR (c.scope = 'RUN' AND EXISTS (SELECT 1 FROM runs r WHERE r.id = c.scope_id AND r.state = 'RUNNING')))`;
+
 /** The budget and all its ancestors, leaf first (parents are immutable, depth ≤ 5). */
 export function budgetChain(ctx: StoreContext, leafId: Id): BudgetRecord[] {
   const chain: BudgetRecord[] = [];
@@ -284,14 +297,18 @@ export function settleReservationTx(ctx: StoreContext, r: ReservationRecord, usa
   const trace = { correlationId: r.runId, actorRef };
   appendEvent(ctx, 'run.usage_settled', 'run', r.runId, trace, { reservationId: r.id, purpose: r.purpose, attemptKind: r.attemptKind, economicMicros: economic, tokens, overran });
   appendAudit(ctx, 'budget.settled', 'reservation', r.id, trace, 'OK', overran ? 'OVERRUN_RECORDED' : null, { runId: r.runId, reservedMoney: r.money, chargedMoney: economic, chargedTokens: tokens });
+  // R2-03: the unused worst case went back to every level of the chain.
+  if (economic < r.money || tokens < r.tokens) wakeBudgetWaiters(ctx, chain.map((b) => b.id), 'budget.freed');
   return usageId;
 }
 
 export function releaseReservationTx(ctx: StoreContext, r: ReservationRecord, reasonCode: string, actorRef: string | null): void {
   if (r.state !== 'RESERVED' && r.state !== 'RECONCILIATION_REQUIRED') throw new QandeelError('ALREADY_SETTLED', 'the reservation is already final', { reservationId: r.id, state: r.state });
-  applyBudgetDelta(ctx, budgetChain(ctx, r.budgetId), { releaseMoney: r.money, releaseTokens: r.tokens });
+  const chain = budgetChain(ctx, r.budgetId);
+  applyBudgetDelta(ctx, chain, { releaseMoney: r.money, releaseTokens: r.tokens });
   ctx.db.run(`UPDATE budget_reservations SET state = 'RELEASED', reason_code = ?, updated_at = ? WHERE id = ?`, reasonCode, ts(ctx), r.id);
   appendAudit(ctx, 'budget.released', 'reservation', r.id, { actorRef }, 'OK', reasonCode, { runId: r.runId, money: r.money, tokens: r.tokens });
+  if (r.money > 0 || r.tokens > 0) wakeBudgetWaiters(ctx, chain.map((b) => b.id), 'budget.freed');
 }
 
 export function holdReservationTx(ctx: StoreContext, r: ReservationRecord, reasonCode: string): void {
@@ -347,4 +364,34 @@ export function wakeWorkItemJob(ctx: StoreContext, workItemId: Id, waitReasons: 
   ctx.db.run(`UPDATE queue_jobs SET state = 'QUEUED', available_at = ?, wait_reason = NULL, updated_at = ? WHERE id = ? AND state = 'WAITING'`, at, at, job.id);
   appendEvent(ctx, 'job.woken', 'job', job.id as Id, { correlationId: job.correlation_id as Id }, { reason: reasonCode });
   return true;
+}
+
+/**
+ * Real headroom: every level a new run of the Work Item would reserve against — all but a Run budget, which the
+ * next run gets fresh — can still take something in both dimensions (the reservation check's own arithmetic).
+ */
+export function chainHasHeadroom(chain: readonly BudgetRecord[]): boolean {
+  return chain.every((b) => b.scope === 'RUN' || (addMoney(b.reservedMoney, b.spentMoney) < b.capMoney && addTokens(b.reservedTokens, b.spentTokens) < b.capTokens));
+}
+
+/**
+ * R2-03: the one resume predicate of a BUDGET_EXHAUSTED wait (Stage 3 §6: work waits on budget contention, and
+ * resumes when the budget can take it again). Headroom returns on a settle below the worst case, a release (runtime
+ * or Founder reconciliation) and a cap raise; each calls this with the budgets it freed (`null`: any, the startup
+ * pass). Waiter-driven — every parked job is considered, never a window of budgets — and headroom-gated: only a
+ * waiter whose chain shares a freed level AND whose every non-Run level now has real headroom is woken, so work
+ * that is truly exhausted stays asleep. A wake that proves insufficient costs one run that re-parks before any
+ * spend (every gate re-runs, the reservation first). The queue_jobs trigger advances the wake generation.
+ */
+export function wakeBudgetWaiters(ctx: StoreContext, freedBudgetIds: readonly Id[] | null, reasonCode: string): number {
+  const freed = freedBudgetIds === null ? null : new Set<string>(freedBudgetIds);
+  let woken = 0;
+  for (const { work_item_id: workItemId } of ctx.db.all<{ work_item_id: string }>(`SELECT work_item_id FROM queue_jobs WHERE state = 'WAITING' AND wait_reason = 'BUDGET_EXHAUSTED' ORDER BY priority DESC, created_at, id`)) {
+    const leaf = budgetFor(ctx, 'WORK_ITEM', workItemId);
+    if (!leaf) continue;
+    const chain = budgetChain(ctx, leaf.id);
+    if (freed !== null && !chain.some((b) => freed.has(b.id))) continue;
+    if (chainHasHeadroom(chain) && wakeWorkItemJob(ctx, workItemId as Id, ['BUDGET_EXHAUSTED'], reasonCode)) woken++;
+  }
+  return woken;
 }

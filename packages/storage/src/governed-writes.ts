@@ -46,6 +46,7 @@ import {
   applyBudgetDelta,
   budgetChain,
   budgetFor,
+  chainHasHeadroom,
   chargedExclusions,
   employeeIdFromRef,
   getEmployeeRow,
@@ -62,7 +63,7 @@ import { routingSnapshotTx, upsertApprovalRequest, workItemDataClass } from './g
 import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { enforceRoleCertification } from './mind-core.js';
 import { academyExecutionMode, academyRun, constrainedRun, contextClassOf, manifestForReservation, txCapabilityGate } from './mind-writes.js';
-import { acceptDelegationOnStart, materializeExpiredActing, snapshotRunOrganization } from './org-core.js';
+import { OPEN_HANDOFF_STATES, acceptDelegationOnStart, materializeExpiredActing, snapshotRunOrganization } from './org-core.js';
 import { verifyFence } from './queue.js';
 import type { Fence } from './records.js';
 import { actionReviewGate, consumeActionReview, recheckReviewWait } from './review-core.js';
@@ -678,8 +679,9 @@ export function txHoldUnsettledModelCalls(ctx: StoreContext, runId: Id): number 
  * did nothing. The WAIT settle therefore re-checks, in its own transaction, whether the wait still
  * holds, and wakes the job at once if it does not:
  * - AWAITING_APPROVAL holds while this Work Item still has a PENDING tool approval;
- * - BUDGET_EXHAUSTED holds unless a cap on this Work Item's budget chain changed since the run began
- *   (exactly the event whose targeted wake could have been missed).
+ * - BUDGET_EXHAUSTED holds unless headroom returned since the run began — a cap on this Work Item's budget
+ *   chain changed, or another run's reservation was settled below its worst case or released (exactly the
+ *   events whose waiter wake could have been missed) — and every non-Run level now has real headroom (R2-03).
  * A spurious wake is harmless: the next run re-checks every gate before any spend.
  */
 export const GOVERNED_WAITS = ['AWAITING_APPROVAL', 'BUDGET_EXHAUSTED', 'AWAITING_INDEPENDENT_REVIEW', 'AWAITING_DELEGATION', 'AWAITING_CLARIFICATION', 'AWAITING_ESCALATION'] as const;
@@ -688,7 +690,8 @@ export type GovernedWait = (typeof GOVERNED_WAITS)[number];
 /**
  * C4 waits (the same lost-wake window, the same remedy). A wake is due only for an event that needs the
  * waiter — never merely for the handoff this run itself offered — so a re-check cannot loop the model:
- * - AWAITING_DELEGATION: a delegation of this Work Item was answered or closed during the run, or none is open;
+ * - AWAITING_DELEGATION: a delegation of this Work Item was answered or closed during the run, or none is open
+ *   (open = `OPEN_HANDOFF_STATES`, the same set the processor parks on — R2-04);
  * - AWAITING_CLARIFICATION / AWAITING_ESCALATION: this Work Item's handoff left that state.
  */
 function recheckHandoffWait(ctx: StoreContext, workItemId: Id, runId: Id, reason: 'AWAITING_DELEGATION' | 'AWAITING_CLARIFICATION' | 'AWAITING_ESCALATION'): void {
@@ -696,7 +699,9 @@ function recheckHandoffWait(ctx: StoreContext, workItemId: Id, runId: Id, reason
   if (started === undefined) return;
   if (reason === 'AWAITING_DELEGATION') {
     const answered = ctx.db.get(`SELECT 1 AS x FROM work_delegations WHERE parent_work_item_id = ? AND state IN ('REFUSED', 'CLARIFICATION_REQUESTED', 'ESCALATED', 'COMPLETED', 'FAILED', 'CANCELLED', 'SUPERSEDED') AND updated_at >= ? LIMIT 1`, workItemId, started);
-    const open = ctx.db.get(`SELECT 1 AS x FROM work_delegations WHERE parent_work_item_id = ? AND state IN ('OFFERED', 'ACCEPTED') LIMIT 1`, workItemId);
+    // R2-04: "open" is the one open-handoff set the processor parks on — an ESCALATED handoff (awaiting the
+    // Founder) or a pending question keeps the wait; only a state change during this run (`answered`) wakes it.
+    const open = ctx.db.get(`SELECT 1 AS x FROM work_delegations WHERE parent_work_item_id = ? AND state IN (SELECT value FROM json_each(?)) LIMIT 1`, workItemId, JSON.stringify(OPEN_HANDOFF_STATES));
     if (answered || !open) wakeWorkItemJob(ctx, workItemId, ['AWAITING_DELEGATION'], 'handoff.rechecked');
     return;
   }
@@ -725,9 +730,19 @@ export function txRecheckGovernedWait(ctx: StoreContext, workItemId: Id, runId: 
   }
   const wi = budgetFor(ctx, 'WORK_ITEM', workItemId);
   if (started === undefined || !wi) return;
-  const chain = budgetChain(ctx, wi.id).map((b) => b.id);
-  const raised = ctx.db.get(`SELECT 1 AS x FROM budget_history WHERE change_kind = 'CAP_CHANGED' AND occurred_at >= ? AND budget_id IN (SELECT value FROM json_each(?)) LIMIT 1`, started, JSON.stringify(chain));
-  if (raised) wakeWorkItemJob(ctx, workItemId, ['BUDGET_EXHAUSTED'], 'budget.rechecked');
+  const chain = budgetChain(ctx, wi.id);
+  const ids = chain.map((b) => b.id);
+  const raised = ctx.db.get(`SELECT 1 AS x FROM budget_history WHERE change_kind = 'CAP_CHANGED' AND occurred_at >= ? AND budget_id IN (SELECT value FROM json_each(?)) LIMIT 1`, started, JSON.stringify(ids));
+  // R2-03: another run's reservation gave headroom back (settled below its worst case, or released) while this
+  // run was in flight — the settle's own waiter wake found this job still CLAIMED. Every chain shares the Company
+  // level, so any such reservation freed a level of this chain; this run's own reservations never count.
+  const freed = ctx.db.get(
+    `SELECT 1 AS x FROM budget_reservations r LEFT JOIN usage_records u ON u.reservation_id = r.id
+      WHERE r.run_id <> ? AND r.updated_at >= ? AND (r.state = 'RELEASED' OR (r.state = 'SETTLED' AND (u.economic_micros < r.money OR u.charged_tokens < r.tokens))) LIMIT 1`,
+    runId,
+    started,
+  );
+  if ((raised || freed) && chainHasHeadroom(chain)) wakeWorkItemJob(ctx, workItemId, ['BUDGET_EXHAUSTED'], 'budget.rechecked');
 }
 
 // --- Recovery ---------------------------------------------------------------------------------------

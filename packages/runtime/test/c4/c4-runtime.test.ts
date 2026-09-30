@@ -7,12 +7,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { describe, test } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
-import type { Id } from '@qandeel-company/domain';
+import type { Id, ProcessorContext, ProcessorResult } from '@qandeel-company/domain';
 import { CompanyStore, GovernanceStore, OrganizationStore, type EmployeeRecord } from '@qandeel-company/storage';
 
-import { runtimeHealth, type CompanyRuntime } from '../../src/index.js';
+import { employeeTaskProcessor, runtimeHealth, type CompanyRuntime, type GovernedRunServices } from '../../src/index.js';
 import { eventually, removeRoot, tempRoot } from '../helpers.js';
 import { activateEmployeeForTest } from '@qandeel-company/storage/testing';
 
@@ -93,6 +94,23 @@ describe('C4 runtime: organizational acts go through the runtime-owned loop', ()
       assert.ok(f.local.totalCalls + f.cloud.totalCalls > 0);
     }));
 
+  test('R2-04: an escalated handoff parks the delegator at zero tokens until the Founder resumes it — no re-run per WAIT settle, no MAX_TURNS', () =>
+    withRuntime('c4-escalate', async ({ w, f, rt, o }) => {
+      const child = script({ type: 'ORG_ACTION', action: 'handoff.escalate', args: { reason: 'Conflicting guidance.' } }, final('child.done'));
+      const parent = submitTask(rt, w, { instructions: script({ type: 'ORG_ACTION', action: 'work.delegate', args: { delegateEmployeeId: o.report.id, objective: 'Draft the SEO brief', instructions: child, taskClass: 'draft.memo', budgetMoney: 200_000, budgetTokens: 200_000 } }, final('parent.done')) }, { employee: o.director });
+      const handoff = () => rt.org.organization.workDelegations({ parentWorkItemId: parent })[0];
+      await eventually(() => (handoff()?.state === 'ESCALATED' && rt.view.jobsFor(parent).at(-1)?.state === 'WAITING' ? true : undefined), 30_000, 'escalated; the delegator parked');
+      const runs = rt.view.runsForWorkItem(parent).length;
+      const calls = f.local.totalCalls + f.cloud.totalCalls;
+      await sleep(2_000);
+      assert.equal(rt.view.jobsFor(parent).at(-1)?.state, 'WAITING', 'still parked on the escalation');
+      assert.equal(rt.view.runsForWorkItem(parent).length, runs, 'no re-run while the Founder has not answered');
+      assert.equal(f.local.totalCalls + f.cloud.totalCalls, calls, 'zero tokens while parked');
+      rt.org.organization.resumeEscalatedHandoff(w.founder, handoff()?.id as string, 'guidance.given');
+      assert.equal(await until(rt, parent, ['COMPLETED', 'FAILED'], 45_000), 'COMPLETED');
+      assert.equal(handoff()?.state, 'COMPLETED');
+    }));
+
   test('C4-PROOF: an organizational act the model is not authorized for is refused and recorded; the model cannot talk its way to authority', () =>
     withRuntime('c4-org-deny', async ({ w, rt }) => {
       const id = submitTask(rt, w, { instructions: script({ type: 'ORG_ACTION', action: 'staffing.request.decide', args: { requestId: '00000000-0000-4000-8000-000000000000', decision: 'APPROVE' } }, final('tried')) });
@@ -101,6 +119,30 @@ describe('C4 runtime: organizational acts go through the runtime-owned loop', ()
       assert.deepEqual(audit.filter((a) => a.action === 'authority.denied').map((a) => a.reasonCode), ['NO_GRANT']);
       assert.equal(rt.org.organization.staffingRequests().length, 0);
     }));
+});
+
+describe('R2-04: the delegator loop answers a pending clarification instead of waiting on itself', () => {
+  // The runtime-owned loop against minimal services: every model turn proposes FINAL.
+  const loop = async (open: number, asked: number): Promise<{ result: ProcessorResult; calls: number }> => {
+    let calls = 0;
+    const ctx = { input: { taskClass: 'draft.memo', instructions: 'x', maxTurns: 3 }, resumeFrom: null, signal: new AbortController().signal, checkpoint: () => Promise.resolve() } as unknown as ProcessorContext;
+    const gov = {
+      context: {},
+      invokeModel: () => {
+        calls++;
+        return Promise.resolve({ kind: 'OK', proposal: { type: 'FINAL', summaryCode: 'done' }, usage: { inputTokens: 1, outputTokens: 1 }, deploymentId: 'd', reasoningClass: 'E1', attempts: 1, manifestId: 'm' });
+      },
+      openHandoffs: () => open,
+      clarificationsRequested: () => asked,
+    } as unknown as GovernedRunServices;
+    return { result: await employeeTaskProcessor.runGoverned(ctx, gov), calls };
+  };
+
+  test('an offered / accepted / escalated handoff parks at zero tokens; a delegate\'s question keeps the loop turning (bounded by maxTurns); none open completes', async () => {
+    assert.deepEqual(await loop(1, 0), { result: { type: 'WAIT', reasonCode: 'AWAITING_DELEGATION' }, calls: 1 });
+    assert.deepEqual(await loop(1, 1), { result: { type: 'PERMANENT_FAILURE', code: 'MAX_TURNS' }, calls: 3 }, 'the question is this run\'s to answer (handoff.clarify): parking would wait on itself');
+    assert.equal((await loop(0, 0)).result.type, 'COMPLETED');
+  });
 });
 
 describe('C4 runtime: independent review by the reviewer\'s own run', () => {

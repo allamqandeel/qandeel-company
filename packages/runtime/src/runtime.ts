@@ -100,6 +100,7 @@ import { proposeMemory } from './c3/memory-proposals.js';
 import { c4HealthOf, type C4Health } from './c4/health.js';
 import {
   GOVERNED_STEP_SPAN,
+  OPEN_HANDOFF_STATES,
   acquireSupervisor,
   beginGovernedRun,
   checkpoint,
@@ -1231,7 +1232,9 @@ export class CompanyRuntime {
         recordStepResult(store, claim.fence, g, out.outcome === 'RECORDED' ? 'TOOL_RESULT' : 'TOOL_REFUSED', JSON.stringify({ reviewDecision: out.outcome, code: out.code }));
         return { outcome: out.outcome, code: out.code };
       },
-      openHandoffs: () => OrganizationStore.for(store).workDelegations({ parentWorkItemId: run.workItemId }).filter((d) => d.state === 'OFFERED' || d.state === 'ACCEPTED' || d.state === 'CLARIFICATION_REQUESTED' || d.state === 'ESCALATED').length,
+      // R2-04: the one open-handoff set, shared with the WAIT settle re-check and the delegation trigger.
+      openHandoffs: () => OrganizationStore.for(store).workDelegations({ parentWorkItemId: run.workItemId }).filter((d) => (OPEN_HANDOFF_STATES as readonly string[]).includes(d.state)).length,
+      clarificationsRequested: () => OrganizationStore.for(store).workDelegations({ parentWorkItemId: run.workItemId }).filter((d) => d.state === 'CLARIFICATION_REQUESTED').length,
       // C5: Founder-facing messages and goal acts pass the fenced authority path; only codes and references
       // are recorded for later context (the message body is company content, never a step result).
       sendMessage: (proposal: MessageProposal, step: number) => {

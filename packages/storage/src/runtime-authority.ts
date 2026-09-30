@@ -89,7 +89,7 @@ import {
 } from './mind-writes.js';
 import { txRecordMessage, type MessageProposalInput, type RecordMessageResult } from './communications.js';
 import { txGoalAct } from './goals.js';
-import { getEmployeeRow } from './governance-core.js';
+import { getEmployeeRow, wakeBudgetWaiters } from './governance-core.js';
 import { attributed } from './governed-writes.js';
 import { materializeExpiredActing } from './org-core.js';
 import { txOrgAct, txReviewDecision, type OrgActResult, type ReviewDecisionResult } from './org-writes.js';
@@ -333,6 +333,14 @@ export function recoverGovernedOrphans(store: CompanyStore, supervisor: Supervis
   });
 }
 
+/** Recovery (supervisor fence mandatory): R2-03 — one startup pass over BUDGET_EXHAUSTED waiters whose headroom returned. */
+export function recoverBudgetWaits(store: CompanyStore, supervisor: SupervisorFence): number {
+  return write(store, 'recover budget waits', (ctx) => {
+    verifySupervisor(ctx, supervisor);
+    return wakeBudgetWaiters(ctx, null, 'budget.recovered');
+  });
+}
+
 // --- C3 governed Context Assembly and memory candidates (job fence mandatory; runtime only) --------
 
 export type { AssembleRequest, AssembleResult, CandidateProposal, StepResultKind, SubmitResult } from './mind-writes.js';
@@ -400,6 +408,8 @@ export function decidePendingCandidates(store: CompanyStore, supervisor: Supervi
 // --- C4 organizational acts and review decisions (job fence mandatory; runtime only) ------------------
 
 export type { OrgActAfter, OrgActResult, ReviewDecisionResult } from './org-writes.js';
+/** R2-04: the one open-handoff set (the runtime's `openHandoffs` counts exactly these). */
+export { OPEN_HANDOFF_STATES } from './org-core.js';
 
 /** One organizational act of the run's Employee at a Work-Item-global step (idempotent per step). */
 export function recordOrgAct(store: CompanyStore, fence: Fence, step: number, action: unknown, args: unknown): OrgActResult {
