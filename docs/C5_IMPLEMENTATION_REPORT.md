@@ -1,5 +1,9 @@
 # C5 — Founder Command Center — Attention Orbits / Living Company Universe — Implementation Report
 
+**Lifecycle update (2026-09-30, C6 start):** C5 is CLOSED / MERGED / CANONICAL — PR #10 merged as
+`7c45f2a` after exact-head run #81; see `docs/C5_CLOSURE_RECORD.md`. The status line below is the
+implementation-time history and is kept unchanged.
+
 **Status:** IMPLEMENTATION CANDIDATE / NOT CLOSED. C5 closes only after Technical Lead exact-head
 review, green CI, merge, post-merge proof and closure sync. This document is the pre-code design
 gate (sections 1–12) followed by the implementation record.

@@ -130,6 +130,8 @@ export const INTENT_LABEL: Readonly<Record<string, string>> = {
   SHOW_GOAL: 'Open a goal',
   SHOW_DEPARTMENT: 'Open a department',
   OPEN_EMPLOYEE: 'Open an employee',
+  SHOW_REPORT: 'Show a company report',
+  SHOW_PERFORMANCE: 'Show a performance profile',
   APPROVAL_DECIDE: 'Decide an approval',
   GOAL_APPROVE: 'Approve a goal',
   GOAL_STATE: 'Change a goal state',

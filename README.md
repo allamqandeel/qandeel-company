@@ -21,6 +21,8 @@ governed and auditable.
 | `C3` Memory + Context + Skills + Academy | CLOSED / MERGED / CANONICAL (PR #4, `4592b52`) |
 | `R1` Independent Core Review | CLOSED / MERGED / CANONICAL (PR #6, `bd18614`) |
 | `C4` Organization + CEO + Directors + Delegation + Review Pool | CLOSED / MERGED / CANONICAL (PR #8, `595083a`) |
+| `C5` Founder Command Center (Tree of Light) | CLOSED / MERGED / CANONICAL (PR #10, `7c45f2a`; `docs/C5_CLOSURE_RECORD.md`) |
+| `C6` Company Improvement Engine (Evaluation + Attribution + Learning + Reporting + Resilience) | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/C6_IMPLEMENTATION_REPORT.md`) |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
@@ -94,15 +96,58 @@ C3 adds no external vector database, embedding service or paid memory service. D
 
 Title ≠ Authority throughout: every organizational act needs an explicit grant and the seat. Details:
 `docs/C4_IMPLEMENTATION_REPORT.md`, decisions D-C4-01 onward. Still out of scope: the Founder Command
-Center and Founder ↔ CEO conversation (C5), reporting / learning dashboards (C6), APP-OPS (C7) and any
+Center and Founder ↔ CEO conversation (C5, since closed), the improvement engine (C6), APP-OPS (C7) and any
 QANDEEL App integration.
 
+**C6 (implementation candidate, not closed) adds the Company Improvement Engine** — so QANDEEL can prove it is
+getting better, not merely remember more. It extends the C1–C5 mechanisms and duplicates none of them:
+- a QANDEEL-owned, provider-independent **Eval Registry**: versioned definitions (dimensions, required
+  evidence, evaluator kind, minimum evidence, reference cases) that are activated only after the evaluator
+  passes its own calibration — known-good passes, known-bad fails, ambiguous evidence stays unknown, a
+  non-employee cause is not blamed, a valid creative path is not penalized;
+- **Completed ≠ Reviewed ≠ Outcome Verified**: a governed outcome verification (evidence classes and
+  references) is the only way to `OUTCOME_VERIFIED`; a qualified outcome is reviewed AND verified; external
+  outcomes are stated unavailable until C7 provides a governed source;
+- **operational judgment without a Founder bottleneck (C6-R1)**: where a Work Item's Review Plan says
+  `REVIEW_POOL` (never R4, never beside a FOUNDER key), its independent qualified reviewers verify the outcome
+  from their own cited judgments (a disagreement is never averaged) and one independent pool judge validates an
+  attribution or a lesson from its own governed, pre-budgeted review run; uncertainty escalates to the Founder,
+  who stays the exception authority. Verification authority is never execution authority: no judgment grants,
+  funds, approves, routes or raises a risk ceiling, R3 still needs the Founder's approval and R4 stays the Founder's alone;
+- evidence-based **evaluation** of each Work Item from its real lineage (reviews, runs, tools, context, usage,
+  interventions); activity is observability only; insufficient or conflicting evidence stays so;
+- **causal attribution** (Employee judgement, model, tool, context retrieval, workflow, provider, requirement,
+  external dependency, mixed, unknown), proposed from evidence and validated independently of the subject
+  Employee; a validated non-employee cause never counts against the Employee;
+- a multi-dimensional **Performance Profile** (outcome, quality, judgement, efficiency, initiative, learning
+  velocity, independence, system contribution) with sample, confidence, trend, capability and regression —
+  **no universal score, rank or leaderboard**; `READY_FOR_GREATER_RESPONSIBILITY_REVIEW` is evidence for a
+  human decision, never a promotion; **cost per qualified outcome** instead of "cheapest";
+- **learning closure** over the C3 lesson lifecycle: reflection is a hypothesis (validated only on
+  independent evidence), mistake lessons, successful patterns (candidate-first, shared only after verified
+  reuse), near-miss warnings, systemic findings when failures repeat across Employees (double-loop) or when an
+  Employee's reflected systemic problem is confirmed by a validated system cause (traceable to that Employee
+  and credited to their System Contribution only once the Founder validates it — credit, never authority), learning
+  interventions whose effect is judged on LATER comparable evidence (training completed ≠ improvement), a
+  bounded retraining loop that escalates instead of repeating, and the failure → regression / Gold case path
+  bound to hidden Academy holdouts;
+- **reports with typed claims** (FACT / ASSESSMENT / TREND / RECOMMENDATION, each judgement with evidence and
+  uncertainty): Daily Company Brief, Weekly Operating Review, Monthly People & Capability Review, on-demand
+  inspection (Company, Department, Employee, Goal, Work Item) over the existing Founder API and command
+  channel; only material exceptions join Founder Attention;
+- **resilience (Stage 15)**: recovery objectives by criticality, an encrypted **portable package** (database +
+  manifest + artifact objects, scrypt → AES-256-GCM, passphrase never stored) written to a destination outside
+  the workspace with an honest failure-domain label, generational retention, restore drills, clean-device
+  restore (sessions revoked, credential references to re-key, uncertain effects still held), and update safety
+  (Preflight → Backup → Rehearse → Migrate → Verify → Activate, `UPDATE_HOLD`, bounded rollback).
+
+Details: `docs/C6_IMPLEMENTATION_REPORT.md`, decisions D-C6-01 onward.
 | Package | Role |
 |---|---|
 | `@qandeel-company/domain` | Pure contracts: IDs, UTC clock, state machines, retry policy, processor contract |
 | `@qandeel-company/governance` | C2 pure policy kernel: Employee lifecycle, R0–R4 authority, `E0..E4` / `D0..D4`, Router Policy, checked economics, provider / tool contracts, typed proposals; C4 organization, delegation and review rules |
-| `@qandeel-company/mind` | C3 pure kernel: Memory Write Policy, deterministic retrieval and context planning, compaction, Skill pipeline / licensing / inspection, capability evaluation, Academy rules |
-| `@qandeel-company/storage` | Workspace, SQLite/WAL adapter (the only `node:sqlite` user), migrations, repositories, Artifact Store, backup; C4 Organization and Review stores |
+| `@qandeel-company/mind` | C3 pure kernel: Memory Write Policy, deterministic retrieval and context planning, compaction, Skill pipeline / licensing / inspection, capability evaluation, Academy rules; C6 evaluation, attribution, Performance Profile, learning closure and report semantics |
+| `@qandeel-company/storage` | Workspace, SQLite/WAL adapter (the only `node:sqlite` user), migrations, repositories, Artifact Store, backup; C4 Organization and Review stores; C5 Founder stores; C6 Improvement store and resilience (portable packages, retention, drills, update safety) |
 | `@qandeel-company/runtime` | Runtime Supervisor, bounded worker pool, recovery, health, CLI; C2 governed Model Runtime, Tool Executor, `c2.employee-task` loop, deterministic fakes; C3 Context Assembler and memory-proposal path |
 | `@qandeel-company/bootstrap-contract` | C0 toolchain proof (unchanged) |
 
@@ -277,6 +322,41 @@ npm run c5:acceptance -- --workspace "D:\QANDEEL-C5-ACCEPTANCE\run-1"
 - **Result and cleanup:** it prints `C5 LOCAL ACCEPTANCE — PASS` and deletes only what it created.
 - **What it needs:** no credentials, no provider keys, no network.
 
+### C6 local acceptance (Founder host)
+
+```bash
+npm run c6:acceptance -- --workspace "D:\QANDEEL-C6-ACCEPTANCE\run-1"
+```
+
+- **What it proves (real runtime, real SQLite, deterministic fake provider and tools):** the Eval Registry refuses
+  an uncalibrated grader; Goal-linked work executed by the governed runtime, reviewed by an Academy-certified
+  reviewer's own run and outcome-verified is a qualified outcome while COMPLETED alone is not; a real tool
+  failure is attributed to the tool, not the Employee; a reflection is refused validation until an independent
+  attribution exists; a validated lesson → targeted retraining → NOT_YET_TESTED until later comparable work
+  proves IMPROVEMENT_OBSERVED; a successful pattern stays candidate-first; repeated failures across Employees
+  become a systemic finding in Founder Attention; a real failure becomes a hidden Gold case; reports carry typed
+  claims and no score; cost per qualified outcome; the C5 change-signalling contract holds; an encrypted
+  portable package (honestly labelled SAME_VOLUME, then attested off-device), tamper / wrong-key refusal,
+  retention, a restore drill, a clean-device restore (identities, work, evaluation, attribution, artifacts,
+  audit; sessions revoked; re-key list) whose restarted runtime never repeats an uncertain external effect;
+  a real v9 → v10 update activated, then rolled back into `UPDATE_HOLD`.
+- **What it does NOT prove:** a physical laptop loss, a real replacement device, real cloud storage or real App
+  telemetry (L1 / Controlled Pilots / C7).
+- **Result and cleanup:** it prints `C6 LOCAL ACCEPTANCE — PASS` and deletes only what it created.
+
+### C6 recovery (operator notes)
+
+- The recovery passphrase is **your recovery material**: keep it outside the laptop (for example on paper in a
+  safe place). It is read from `QANDEEL_RECOVERY_PASSPHRASE` and never stored, logged or packaged; without it a
+  package cannot be opened.
+- `portable-backup --destination <dir> [--attest-off-device]` writes a sealed package to a directory outside the
+  workspace. Only an external drive or a mounted encrypted remote folder is off-device: a directory on the
+  laptop's own volume is reported `SAME_VOLUME` and never satisfies the off-device objective.
+- `restore-portable --workspace <new empty dir> --package <file>` restores on a clean environment; then start the
+  runtime, re-key the reported credential references, reconcile any held uncertain effects, and sign in again
+  (every old Founder session is revoked).
+- `safe-upgrade` performs a schema update with a pre-update snapshot; on failure the workspace enters
+  `UPDATE_HOLD`, which every start refuses until `clear-update-hold --reason <code>`.
 ### C5 Founder Command Center (Tree of Light)
 
 After `npm run build`:
@@ -341,7 +421,13 @@ After `npm run build`: `node packages/runtime/dist/src/cli.js <command> --worksp
 | `context-manifest --manifest <id>` | One context manifest: selected / rejected IDs, versions, hashes, classes (no content) |
 | `organization` | Read-only C4 organization: Departments, seats and holders, executive queues, health (no evidence text) |
 | `reviews` | Read-only C4 reviews: live requests, conflicts, holds, Review Pool health (no rationale or instructions) |
-
+| `improvement` | Read-only C6 health: evaluations, attributions, learning, systemic findings, recovery status |
+| `report --cadence <DAILY\|WEEKLY\|MONTHLY>` | Generates (idempotently) and prints a report's typed claims (codes, ids, counts) |
+| `portable-backup --destination <dir> [--attest-off-device]` | Encrypted portable package outside the workspace (`QANDEEL_RECOVERY_PASSPHRASE`) |
+| `restore-portable --package <file>` | Clean-environment restore into `--workspace` (a new, empty directory) |
+| `restore-drill` | Isolated restore drill of the newest live generation (recorded) |
+| `prune-backups [--keep-last n --daily n --weekly n --monthly n]` | Generational retention (never the last generation) |
+| `safe-upgrade` / `clear-update-hold --reason <code>` / `rollback-update --update <id>` | Update safety and `UPDATE_HOLD` |
 The CLI has no Founder write command: a Founder reference typed on a command line is not
 authentication. Founder authority arrives with the authenticated Founder surface (C5), and until
 then R3 work stays `WAITING_APPROVAL` (D-C2-13).
@@ -352,7 +438,7 @@ The CLI installs no service, creates no scheduled task and opens no network port
 
 CI (`.github/workflows/ci.yml`, D-R1-07 / D-C4-08) classifies each change. A documentation-only change
 takes a fast, fail-closed docs path (install, build, verifier). Every other change runs the FULL proof
-set on Windows AND Linux as parallel jobs (static, tests, sharded mutation checks, C1–C4 acceptances);
+set on Windows AND Linux as parallel jobs (static, tests, sharded mutation checks, C1–C6 acceptances and the C5 browser smoke);
 the single required status `quality-gate` passes only when every job succeeded and every recorded
 mutation ran exactly once per operating system. A push to `main` whose tree is exactly the tree a green
 PR run proved takes a fast integrity path; anything else runs the full set. A manual run
@@ -367,9 +453,9 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
 - that the baseline carries the privacy rules and no stale default-with-exception wording;
 - the lifecycle state:
   - `C0` closed;
-  - `C1`, `C2`, `C3` and `C4` not claimed closed without a closure record;
+  - `C1`–`C6` not claimed closed without a closure record;
   - `C2` not started before C1 closes, `C3` not before C2 closes, `R1` / `C4` not before C3 closes,
-    and `C5` / `C6` / `C7` not before C4 closes;
+    `C5` / `C6` / `C7` not before C4 closes, `C6` / `R2` / `C7` not before C5 closes, `R2` / `C7` not before C6 closes;
 - the C1 boundaries: `node:sqlite` only in the storage adapter, no network code in runtime packages,
   no third-party runtime dependencies, released migrations pinned by SHA-256, and the C1 proof tests
   present;
@@ -404,6 +490,10 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
   - a review never satisfies R4 (datastore CHECK) and the kernel keeps R4 Founder-only;
   - the Review Pool is not a Department; the seeded Department map is exactly the canonical five;
   - the C4 proofs and the mutation check present;
+- the C6 boundaries: the C6 proofs and mutation check present; no universal score, rank or leaderboard in code
+  or schema; no reflection, lesson content, Goal text or passphrase in C6 telemetry; the portable package
+  authenticated-encrypted and the recovery passphrase never written or taken from a command line; external
+  outcomes unavailable until C7;
 - the CI contract: triggers, SHA-pinned actions, both operating systems, complete mutation shard
   partitions, the always-running quality gate, and a fail-closed change classifier.
 

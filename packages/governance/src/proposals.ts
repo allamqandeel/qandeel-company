@@ -8,7 +8,7 @@ import { boundedText, type JsonObject } from '@qandeel-company/domain';
 
 import { isAttentionLevel, isFounderBrief, isMessagePurpose, type AttentionLevel, type FounderBrief, type MessagePurpose } from './founder.js';
 import { isOrgAction, type OrgAction } from './organization.js';
-import { isReviewOutcome, type ReviewOutcome } from './review.js';
+import { isOutcomeVerdict, isReviewOutcome, type OutcomeJudgment, type ReviewOutcome } from './review.js';
 
 export type ModelProposal =
   | { readonly type: 'FINAL'; readonly summaryCode: string }
@@ -39,7 +39,7 @@ export type ModelProposal =
    * C4: a reviewer's decision, proposed from the reviewer's OWN review Work Item. The runtime binds it to that
    * assignment, re-checks eligibility and the subject's version, and never lets it approve anything.
    */
-  | { readonly type: 'REVIEW_DECISION'; readonly outcome: ReviewOutcome; readonly reasonCode: string; readonly rationale: string | null; readonly evidenceRefs: readonly string[] }
+  | { readonly type: 'REVIEW_DECISION'; readonly outcome: ReviewOutcome; readonly reasonCode: string; readonly rationale: string | null; readonly evidenceRefs: readonly string[]; readonly outcomeJudgment?: OutcomeJudgment | null }
   /**
    * C5: a structured Founder-facing message (Stage 9): the Employee's reply in its own Founder thread, or a
    * CEO brief in the Founder Communication Standard. Only a proposal: the runtime binds it to the thread its
@@ -103,14 +103,22 @@ export function parseProposal(outputText: string): ModelProposal {
     return { type: 'ORG_ACTION', action: o.action, args: o.args as JsonObject };
   }
   if (o.type === 'REVIEW_DECISION') {
-    const allowed = new Set(['type', 'outcome', 'reasonCode', 'rationale', 'evidenceRefs']);
+    const allowed = new Set(['type', 'outcome', 'reasonCode', 'rationale', 'evidenceRefs', 'outcomeVerdict', 'outcomeEvidence']);
     if (Object.keys(o).some((k) => !allowed.has(k))) return { type: 'INVALID', code: 'MALFORMED' };
     if (!isReviewOutcome(o.outcome) || typeof o.reasonCode !== 'string' || !CODE.test(o.reasonCode)) return { type: 'INVALID', code: 'MALFORMED' };
     const rationale = o.rationale === undefined || o.rationale === null ? null : o.rationale;
     if (rationale !== null && (typeof rationale !== 'string' || rationale.length === 0 || rationale.length > 4_000)) return { type: 'INVALID', code: 'MALFORMED' };
     const refs = o.evidenceRefs === undefined ? [] : o.evidenceRefs;
     if (!Array.isArray(refs) || refs.length > 16 || refs.some((r) => typeof r !== 'string' || r.length === 0 || r.length > 128 || !/^[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9._:-]{1,95}$/.test(r))) return { type: 'INVALID', code: 'MALFORMED' };
-    return { type: 'REVIEW_DECISION', outcome: o.outcome, reasonCode: o.reasonCode, rationale: rationale as string | null, evidenceRefs: refs as string[] };
+    // C6: the reviewer's outcome judgment travels with the review decision (both fields or neither).
+    if ((o.outcomeVerdict === undefined) !== (o.outcomeEvidence === undefined)) return { type: 'INVALID', code: 'MALFORMED' };
+    let outcomeJudgment: OutcomeJudgment | null = null;
+    if (o.outcomeVerdict !== undefined) {
+      const classes = o.outcomeEvidence;
+      if (!isOutcomeVerdict(o.outcomeVerdict) || !Array.isArray(classes) || classes.length === 0 || classes.length > 8 || classes.some((c) => typeof c !== 'string' || !/^[A-Z][A-Z_]{1,31}$/.test(c))) return { type: 'INVALID', code: 'MALFORMED' };
+      outcomeJudgment = { verdict: o.outcomeVerdict, evidenceClasses: classes as string[] };
+    }
+    return { type: 'REVIEW_DECISION', outcome: o.outcome, reasonCode: o.reasonCode, rationale: rationale as string | null, evidenceRefs: refs as string[], outcomeJudgment };
   }
   if (o.type === 'MESSAGE') {
     const allowed = new Set(['type', 'purpose', 'attentionLevel', 'body', 'brief', 'contextRefs']);

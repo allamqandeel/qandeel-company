@@ -27,6 +27,7 @@ import {
   parseStaffingRequest,
   staffingReviewTarget,
   type OrgAction,
+  type OutcomeJudgment,
   type ReviewOutcome,
 } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
@@ -34,11 +35,12 @@ import { containsSecretMaterial } from '@qandeel-company/mind';
 import { budgetFor, employeeIdFromRef, getEmployeeRow, txAllocateWorkItemBudget, wakeWorkItemJob } from './governance-core.js';
 import { mapGrant } from './governance-records.js';
 import { actingState, attributed, consumeGrant, effectiveDataClass, recordDenial } from './governed-writes.js';
+import { txApplyJudgment } from './improvement.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { enforceRoleCertification } from './mind-core.js';
 import { academyRun } from './mind-writes.js';
 import { delegationChain, delegationDepth, delegationHistory, getPosition, heldSeatsAt, holdsSeat, newOrgId, primaryAssignmentAt, seatHolder, staffingHistory, directorSeatOf } from './org-core.js';
-import { mapReviewAssignment, mapWorkDelegation, type WorkDelegationRecord } from './org-records.js';
+import { mapJudgmentAssignment, mapReviewAssignment, mapWorkDelegation, type WorkDelegationRecord } from './org-records.js';
 import { getStaffingRequest, txDecideStaffing, txHireForRequest } from './organization.js';
 import { verifyFence } from './queue.js';
 import type { Fence } from './records.js';
@@ -471,7 +473,7 @@ export interface ReviewDecisionResult {
  * through). The assignment is the one this run's Work Item was created for; eligibility, independence and
  * subject freshness are re-checked at this boundary (review-core).
  */
-export function txReviewDecision(ctx: StoreContext, fence: Fence, input: { outcome: unknown; reasonCode: string; rationale: string | null; evidenceRefs: readonly string[] }): ReviewDecisionResult {
+export function txReviewDecision(ctx: StoreContext, fence: Fence, input: { outcome: unknown; reasonCode: string; rationale: string | null; evidenceRefs: readonly string[]; outcomeJudgment?: OutcomeJudgment | null }): ReviewDecisionResult {
   verifyFence(ctx, fence);
   const a = attributed(ctx, fence);
   const e = enforceRoleCertification(ctx, getEmployeeRow(ctx, a.employeeId));
@@ -480,14 +482,20 @@ export function txReviewDecision(ctx: StoreContext, fence: Fence, input: { outco
     appendAudit(ctx, 'review.decision_refused', 'run', fence.runId, { actorRef: e.ref }, 'REJECTED', code, { employeeId: e.id });
     return { outcome: 'REFUSED', code, requestState: null };
   };
-  if (!row) return deny('NOT_A_REVIEW_WORK_ITEM');
-  const assignment = mapReviewAssignment(row);
-  if (assignment.reviewerEmployeeId !== e.id) return deny('NOT_THE_ASSIGNED_REVIEWER');
+  // C6-R1: a pool judge of a C6 subject decides through this same path, from its own judgment Work Item.
+  const judgment = row ? undefined : ctx.db.get('SELECT * FROM judgment_assignments WHERE judge_work_item_id = ?', a.workItemId);
+  if (!row && !judgment) return deny('NOT_A_REVIEW_WORK_ITEM');
+  const assignment = row ? mapReviewAssignment(row) : null;
+  if (assignment && assignment.reviewerEmployeeId !== e.id) return deny('NOT_THE_ASSIGNED_REVIEWER');
   if (!canExecute(e.state) || academyRun(ctx, fence.runId)) return deny('ACADEMY_CONSTRAINED');
   if (!isReviewOutcome(input.outcome)) return deny('INVALID_ARGS');
   const rationale = input.rationale === null ? null : boundedText(input.rationale, 'rationale', 4000);
   if (rationale !== null && containsSecretMaterial(rationale)) return deny('SECRET_MATERIAL');
-  const r = recordDecision(ctx, assignment, e.ref, { outcome: input.outcome as ReviewOutcome, reasonCode: input.reasonCode, rationale, evidenceRefs: input.evidenceRefs }, fence.runId);
+  if (!assignment) {
+    const j = txApplyJudgment(ctx, mapJudgmentAssignment(judgment ?? {}), { employeeId: e.id, ref: e.ref, runId: fence.runId }, { outcome: input.outcome as ReviewOutcome, reasonCode: input.reasonCode, evidenceRefs: input.evidenceRefs });
+    return j.outcome === 'RECORDED' ? { outcome: 'RECORDED', code: j.code, requestState: j.decision } : deny(j.code);
+  }
+  const r = recordDecision(ctx, assignment, e.ref, { outcome: input.outcome as ReviewOutcome, reasonCode: input.reasonCode, rationale, evidenceRefs: input.evidenceRefs, outcomeJudgment: input.outcomeJudgment ?? null }, fence.runId);
   if (!r.recorded) return r.code === 'ALREADY_DECIDED' ? { outcome: 'RECORDED', code: 'ALREADY_DECIDED', requestState: r.request.state } : deny(r.code);
   return { outcome: 'RECORDED', code: 'RECORDED', requestState: r.request.state };
 }

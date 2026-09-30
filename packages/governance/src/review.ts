@@ -19,6 +19,23 @@ export type ReviewOutcome = (typeof REVIEW_OUTCOMES)[number];
 export const REVIEW_APPLIES = ['OUTPUT', 'ACTIONS', 'BOTH'] as const;
 export type ReviewApplies = (typeof REVIEW_APPLIES)[number];
 
+/**
+ * Who makes the C6 operational judgments on a Work Item (Stage 11 §1: a Review Plan may specify outcome
+ * verification): outcome verification, attribution validation and learning validation. REVIEW_POOL: the plan's
+ * own independent qualified reviewers — never the executor, never a title — decide them; FOUNDER (the default):
+ * the Founder does. A judgment is never execution authority: it grants, approves, funds and routes nothing.
+ */
+export const OPERATIONAL_JUDGMENTS = ['FOUNDER', 'REVIEW_POOL'] as const;
+export type OperationalJudgment = (typeof OPERATIONAL_JUDGMENTS)[number];
+
+export const OUTCOME_VERDICTS = ['ACHIEVED', 'NOT_ACHIEVED', 'INCONCLUSIVE'] as const;
+export type OutcomeVerdict = (typeof OUTCOME_VERDICTS)[number];
+/** A reviewer's judgment of the outcome, cited to evidence classes (validated against the C6 classes by storage). */
+export interface OutcomeJudgment {
+  readonly verdict: OutcomeVerdict;
+  readonly evidenceClasses: readonly string[];
+}
+
 export const REVIEWER_LEVELS = ['QUALIFIED', 'SENIOR', 'EXPERT'] as const;
 export type ReviewerLevel = (typeof REVIEWER_LEVELS)[number];
 export const reviewerLevelRank = (l: ReviewerLevel): number => REVIEWER_LEVELS.indexOf(l);
@@ -26,6 +43,7 @@ export const reviewerLevelRank = (l: ReviewerLevel): number => REVIEWER_LEVELS.i
 const isMember = <T extends string>(list: readonly T[], v: unknown): v is T => typeof v === 'string' && (list as readonly string[]).includes(v);
 export const isReviewOutcome = (v: unknown): v is ReviewOutcome => isMember(REVIEW_OUTCOMES, v);
 export const isReviewerLevel = (v: unknown): v is ReviewerLevel => isMember(REVIEWER_LEVELS, v);
+export const isOutcomeVerdict = (v: unknown): v is OutcomeVerdict => isMember(OUTCOME_VERDICTS, v);
 
 /** Review domains are dotted work-type codes (`growth.seo`, `engineering.release`). */
 export const REVIEW_DOMAIN = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+){0,7}$/;
@@ -54,6 +72,7 @@ export interface ReviewPlan {
   readonly reviewTaskClass: string;
   readonly reviewBudget: { readonly money: number; readonly tokens: number };
   readonly deadlineAt: Timestamp | null;
+  readonly operationalJudgment: OperationalJudgment;
 }
 
 const own = (o: Record<string, unknown>, k: string): unknown => (Object.hasOwn(o, k) ? o[k] : undefined);
@@ -70,7 +89,7 @@ function plain(v: unknown, field: string): Record<string, unknown> {
 export function parseReviewPlan(input: unknown): ReviewPlan {
   const o = plain(input, 'reviewPlan');
   for (const k of Object.keys(o)) {
-    if (!['domain', 'appliesTo', 'keys', 'independence', 'requiredEvidence', 'rubric', 'reviewerInstructions', 'reviewTaskClass', 'reviewBudget', 'deadlineAt'].includes(k)) throw new QandeelError('VALIDATION_FAILED', 'review plan has an unknown field', { field: `reviewPlan.${k.slice(0, 32)}` });
+    if (!['domain', 'appliesTo', 'keys', 'independence', 'requiredEvidence', 'rubric', 'reviewerInstructions', 'reviewTaskClass', 'reviewBudget', 'deadlineAt', 'operationalJudgment'].includes(k)) throw new QandeelError('VALIDATION_FAILED', 'review plan has an unknown field', { field: `reviewPlan.${k.slice(0, 32)}` });
   }
   const appliesTo = own(o, 'appliesTo');
   if (!isMember(REVIEW_APPLIES, appliesTo)) throw new QandeelError('VALIDATION_FAILED', 'appliesTo is OUTPUT, ACTIONS or BOTH', { field: 'appliesTo' });
@@ -99,7 +118,12 @@ export function parseReviewPlan(input: unknown): ReviewPlan {
   const budget = plain(own(o, 'reviewBudget'), 'reviewBudget');
   const deadline = own(o, 'deadlineAt');
   if (deadline !== undefined && deadline !== null && !isTimestamp(deadline)) throw new QandeelError('VALIDATION_FAILED', 'deadlineAt is a canonical UTC timestamp', { field: 'deadlineAt' });
+  const judgment = own(o, 'operationalJudgment') ?? 'FOUNDER';
+  if (!isMember(OPERATIONAL_JUDGMENTS, judgment)) throw new QandeelError('VALIDATION_FAILED', 'operationalJudgment is FOUNDER or REVIEW_POOL', { field: 'operationalJudgment' });
+  // A plan that reserves a FOUNDER key keeps the Founder's judgment: the pool never stands in for it.
+  if (judgment === 'REVIEW_POOL' && keys.some((k) => k.kind === 'FOUNDER')) throw new QandeelError('VALIDATION_FAILED', 'a plan with a FOUNDER key keeps Founder judgment', { field: 'operationalJudgment', reason: 'FOUNDER_KEY_RESERVES_JUDGMENT' });
   return {
+    operationalJudgment: judgment,
     domain: assertReviewDomain(own(o, 'domain')),
     appliesTo,
     keys,
@@ -174,3 +198,42 @@ export function outputSubjectFingerprint(s: { readonly workItemId: string; reado
 
 /** Risk levels whose actions need independent review (Stage 3 §2 / §4). R4 never executes at all. */
 export const actionNeedsReview = (risk: RiskLevel): boolean => risk === 'R2' || risk === 'R3';
+
+// --- C6 operational judgment through the Review Pool (Verification authority ≠ execution authority) ---------
+
+/**
+ * Who judges a Work Item's C6 subjects (outcome, attribution, learning): its plan's Review Pool only when the plan
+ * says so, and never for R4 (Founder-only sovereignty). No plan → the Founder. Everything else a judgment might
+ * touch (grants, budgets, approvals, routing, risk ceilings) is outside this rule entirely.
+ */
+export function judgmentRoute(s: { readonly planJudgment: OperationalJudgment | null; readonly risk: RiskLevel }): { readonly judge: 'REVIEW_POOL' | 'FOUNDER'; readonly reason: string } {
+  if (s.risk === 'R4') return { judge: 'FOUNDER', reason: 'R4_FOUNDER_ONLY' };
+  if (s.planJudgment === null) return { judge: 'FOUNDER', reason: 'NO_REVIEW_PLAN' };
+  if (s.planJudgment !== 'REVIEW_POOL') return { judge: 'FOUNDER', reason: 'PLAN_RESERVES_FOUNDER' };
+  return { judge: 'REVIEW_POOL', reason: 'PLAN_DELEGATES_JUDGMENT' };
+}
+
+/**
+ * The verified outcome of a SATISFIED output review whose plan delegates judgment to the pool, from each counting
+ * key's own outcome judgment — never averaged (Stage 11 §20):
+ * - a key that gave no judgment → nothing is verified (the outcome stays unverified and visible);
+ * - any INCONCLUSIVE → INCONCLUSIVE; ACHIEVED beside NOT_ACHIEVED → INCONCLUSIVE (a conflict the Founder resolves);
+ * - every key ACHIEVED → ACHIEVED; every key NOT_ACHIEVED → NOT_ACHIEVED.
+ */
+export function outcomeFromReviewKeys(keyCount: number, judgments: readonly { readonly keyIndex: number; readonly verdict: OutcomeVerdict | null }[]): { readonly verdict: OutcomeVerdict | null; readonly reason: 'KEYS_AGREE' | 'OUTCOME_JUDGMENT_MISSING' | 'OUTCOME_INCONCLUSIVE' | 'OUTCOME_CONFLICT' } {
+  const byKey = new Map<number, OutcomeVerdict | null>();
+  for (const j of judgments) if (Number.isInteger(j.keyIndex) && j.keyIndex >= 0 && j.keyIndex < keyCount) byKey.set(j.keyIndex, j.verdict);
+  const verdicts = [...byKey.values()];
+  if (keyCount < 1 || byKey.size < keyCount || verdicts.some((v) => v === null)) return { verdict: null, reason: 'OUTCOME_JUDGMENT_MISSING' };
+  if (verdicts.includes('INCONCLUSIVE')) return { verdict: 'INCONCLUSIVE', reason: 'OUTCOME_INCONCLUSIVE' };
+  if (verdicts.every((v) => v === 'ACHIEVED')) return { verdict: 'ACHIEVED', reason: 'KEYS_AGREE' };
+  if (verdicts.every((v) => v === 'NOT_ACHIEVED')) return { verdict: 'NOT_ACHIEVED', reason: 'KEYS_AGREE' };
+  return { verdict: 'INCONCLUSIVE', reason: 'OUTCOME_CONFLICT' };
+}
+
+/** A pool judge's review outcome on a C6 subject: PASS validates, FAIL rejects, any uncertainty escalates to the Founder. */
+export function judgmentFromReview(outcome: ReviewOutcome): 'VALIDATE' | 'REJECT' | 'ESCALATE' {
+  if (outcome === 'PASS') return 'VALIDATE';
+  if (outcome === 'FAIL') return 'REJECT';
+  return 'ESCALATE';
+}

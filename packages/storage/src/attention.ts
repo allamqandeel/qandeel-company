@@ -16,6 +16,7 @@ import { warrantsFounderAttention, type AttentionLane, type AttentionLevel, type
 import { founder, founderAdminWrite } from './governance.js';
 import { mapAttentionItem, mustRow, type AttentionItemRecord } from './founder-records.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
+import { txResilienceStatus } from './resilience.js';
 import { storeContext, type CompanyStore } from './store.js';
 
 /** Repeated signals about the same open item re-notify at most once per cooldown (Stage 9 §28). */
@@ -74,6 +75,32 @@ export function collectSignals(ctx: StoreContext): Signal[] {
       continue;
     }
     if (warrantsFounderAttention(purpose, level)) out.push({ dedupKey: `thread:${m.thread_id}`, lane: 'THREADS', level, sourceKind: 'THREAD', sourceRef: `thread:${m.thread_id}`, ownerRef: m.sender_ref, changedAt: m.created_at as Timestamp });
+  }
+  // C6: only MATERIAL improvement / recovery exceptions become attention — a systemic finding awaiting the
+  // Founder's decision, a failed restore drill, an off-device backup that is missing its failure domain or its
+  // objective, a rolled-back update. Routine evaluations, reports and lessons never enter.
+  for (const f of ctx.db.all<{ id: string; updated_at: string }>(`SELECT id, updated_at FROM systemic_findings WHERE state = 'CANDIDATE' ORDER BY created_at, id`)) {
+    out.push({ dedupKey: `systemic:${f.id}`, lane: 'NEEDS_ME', level: 'NEEDS_DECISION', sourceKind: 'DECISION_REQUEST', sourceRef: `systemic_finding:${f.id}`, ownerRef: null, changedAt: f.updated_at as Timestamp });
+  }
+  // C6-R1: ordinary judgment runs without the Founder; what the Review Pool could not settle reaches the Founder —
+  // a pool judge's escalation (uncertainty is never guessed) and review keys that disagreed on an outcome.
+  for (const j of ctx.db.all<{ id: string; updated_at: string }>(
+    `SELECT ja.id, ja.updated_at FROM judgment_assignments ja WHERE ja.state = 'ESCALATED'
+        AND ((ja.subject_kind = 'ATTRIBUTION' AND EXISTS (SELECT 1 FROM causal_attributions a WHERE a.id = ja.subject_id AND a.state = 'PROPOSED'))
+          OR (ja.subject_kind = 'LESSON' AND EXISTS (SELECT 1 FROM lessons l WHERE l.id = ja.subject_id AND l.stage = 'UNDER_REVIEW')))
+      ORDER BY ja.created_at, ja.id`,
+  )) {
+    out.push({ dedupKey: `judgment:${j.id}`, lane: 'NEEDS_ME', level: 'NEEDS_DECISION', sourceKind: 'DECISION_REQUEST', sourceRef: `judgment_assignment:${j.id}`, ownerRef: null, changedAt: j.updated_at as Timestamp });
+  }
+  for (const v of ctx.db.all<{ work_item_id: string; created_at: string }>(
+    `SELECT v.work_item_id, MAX(v.created_at) AS created_at FROM outcome_verifications v JOIN work_items w ON w.id = v.work_item_id
+      WHERE v.verifier_kind = 'REVIEW_POOL' AND v.verdict = 'INCONCLUSIVE' AND w.state = 'REVIEWED' GROUP BY v.work_item_id ORDER BY v.work_item_id`,
+  )) {
+    out.push({ dedupKey: `outcome:${v.work_item_id}`, lane: 'NEEDS_ME', level: 'NEEDS_DECISION', sourceKind: 'DECISION_REQUEST', sourceRef: `work_item:${v.work_item_id}`, ownerRef: null, changedAt: v.created_at as Timestamp });
+  }
+  const resilience = txResilienceStatus(ctx, ts(ctx));
+  for (const x of resilience.exceptions.filter((e) => e.material)) {
+    out.push({ dedupKey: `resilience:${x.code}`, lane: 'NEEDS_ME', level: 'NEEDS_ATTENTION', sourceKind: 'DECISION_REQUEST', sourceRef: x.ref, ownerRef: null, changedAt: x.at as Timestamp });
   }
   return out;
 }

@@ -19,12 +19,16 @@ import {
   calibrationSignal,
   dataRank,
   evaluateRequest,
+  judgmentRoute,
+  outcomeFromReviewKeys,
   outputSubjectFingerprint,
   parseReviewPlan,
   planAppliesTo,
   reviewerLevelRank,
   reviewerRoleFor,
   type DataClass,
+  type OutcomeJudgment,
+  type OutcomeVerdict,
   type ReviewOutcome,
 } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
@@ -33,7 +37,8 @@ import { employeeIdFromRef, getEmployeeRow, txAllocateWorkItemBudget, wakeWorkIt
 import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { effectiveDataClass } from './governed-writes.js';
 import { delegationChain, founderPrincipalRef, getPosition, primaryAssignmentAt, seatHolder } from './org-core.js';
-import { mapQualification, mapReviewAssignment, mapReviewPlan, mapReviewRequest, type ReviewAssignmentRecord, type ReviewPlanRecord, type ReviewRequestRecord } from './org-records.js';
+import { mapJudgmentAssignment, mapQualification, mapReviewAssignment, mapReviewPlan, mapReviewRequest, type JudgmentAssignmentRecord, type ReviewAssignmentRecord, type ReviewPlanRecord, type ReviewRequestRecord } from './org-records.js';
+import { assertOutcomeClasses, txRecordOutcome } from './outcome-core.js';
 import type { WorkItemRecord } from './records.js';
 import { applyTransition, enqueueJob, resolveDependents } from './work-core.js';
 import { txCreateWorkItem } from './work-items.js';
@@ -96,10 +101,10 @@ export function txDeclarePlan(ctx: StoreContext, item: WorkItemRecord, input: un
   const id = newId();
   try {
     ctx.db.run(
-      `INSERT INTO review_plans (id, work_item_id, version, status, domain, applies_to, keys_json, independence_json, required_evidence_json, rubric_code, rubric_version, reviewer_instructions, reviewer_instructions_sha256, review_task_class, review_budget_money, review_budget_tokens, deadline_at, declared_by_ref, declared_run_id, created_at)
-       VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO review_plans (id, work_item_id, version, status, domain, applies_to, keys_json, independence_json, required_evidence_json, rubric_code, rubric_version, reviewer_instructions, reviewer_instructions_sha256, review_task_class, review_budget_money, review_budget_tokens, deadline_at, declared_by_ref, declared_run_id, created_at, operational_judgment)
+       VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id, item.id, version, plan.domain, plan.appliesTo, JSON.stringify(plan.keys), canonicalJson(plan.independence), JSON.stringify(plan.requiredEvidence), plan.rubric.code, plan.rubric.version,
-      plan.reviewerInstructions, sha256Hex(plan.reviewerInstructions), plan.reviewTaskClass, plan.reviewBudget.money, plan.reviewBudget.tokens, plan.deadlineAt, actorRef, runId, ts(ctx),
+      plan.reviewerInstructions, sha256Hex(plan.reviewerInstructions), plan.reviewTaskClass, plan.reviewBudget.money, plan.reviewBudget.tokens, plan.deadlineAt, actorRef, runId, ts(ctx), plan.operationalJudgment,
     );
   } catch (error) {
     if (error instanceof QandeelError && error.code === 'STORAGE_INVARIANT') throw new QandeelError('INVALID_TRANSITION', 'a review plan is declared before the Work Item first runs', { workItemId: item.id, reason: 'REVIEW_PLAN_AFTER_EXECUTION' });
@@ -108,7 +113,7 @@ export function txDeclarePlan(ctx: StoreContext, item: WorkItemRecord, input: un
   if (planAppliesTo(plan.appliesTo, 'OUTPUT') && !item.reviewRequired && !['COMPLETED', 'WAITING_REVIEW', 'REVIEWED', 'OUTCOME_VERIFIED'].includes(item.state)) {
     ctx.db.run('UPDATE work_items SET review_required = 1, version = version + 1, updated_at = ? WHERE id = ? AND version = ?', ts(ctx), item.id, item.version);
   }
-  appendAudit(ctx, 'review.plan_declared', 'review_plan', id, { actorRef }, 'OK', null, { workItemId: item.id, version, keys: plan.keys.length, appliesTo: plan.appliesTo });
+  appendAudit(ctx, 'review.plan_declared', 'review_plan', id, { actorRef }, 'OK', null, { workItemId: item.id, version, keys: plan.keys.length, appliesTo: plan.appliesTo, operationalJudgment: plan.operationalJudgment });
   const declared = mapReviewPlan(ctx.db.get('SELECT * FROM review_plans WHERE id = ?', id) ?? {});
   // A subject already waiting for review under this plan is picked up at once.
   if (getWorkItemRow(ctx, item.id).state === 'WAITING_REVIEW') ensureOutputReview(ctx, item.id);
@@ -374,6 +379,8 @@ export interface DecisionInput {
   readonly reasonCode: string;
   readonly rationale: string | null;
   readonly evidenceRefs: readonly string[];
+  /** C6-R1: the reviewer's own outcome judgment (kept only on a counting Employee decision of an output review). */
+  readonly outcomeJudgment?: OutcomeJudgment | null;
 }
 
 /** Withdraws an open assignment (and ends its review Work Item's pending work) — the key is refilled by the caller. */
@@ -426,8 +433,19 @@ export function recordDecision(ctx: StoreContext, a: ReviewAssignmentRecord, rev
     }
     qualificationVersion = q.qualificationVersion;
   }
-  const id = newId();
   const counts = a.keyKind === 'SHADOW' ? 0 : 1;
+  // C6-R1: an outcome judgment is kept only where it can count (an independent Employee key of an output
+  // review); anywhere else it is simply not recorded. Its evidence classes are checked before anything is written.
+  const judgment = d.outcomeJudgment && counts === 1 && a.reviewerEmployeeId !== null && request.kind === 'REQUIRED' && request.subjectKind === 'OUTPUT' ? d.outcomeJudgment : null;
+  let judgedClasses: string[] = [];
+  if (judgment) {
+    try {
+      judgedClasses = assertOutcomeClasses(judgment.evidenceClasses);
+    } catch {
+      return { recorded: false, code: 'OUTCOME_EVIDENCE_INVALID', request };
+    }
+  }
+  const id = newId();
   ctx.db.run(
     `INSERT INTO review_decisions (id, assignment_id, request_id, reviewer_ref, reviewer_employee_id, outcome, reason_code, rationale, rationale_sha256, evidence_refs_json, plan_id, plan_version, rubric_code, rubric_version,
        subject_fingerprint, qualification_id, qualification_version, independence_json, counts, run_id, decision_version, created_at)
@@ -436,8 +454,9 @@ export function recordDecision(ctx: StoreContext, a: ReviewAssignmentRecord, rev
     plan?.id ?? null, plan?.version ?? null, plan?.rubricCode ?? null, plan?.rubricVersion ?? null, request.subjectFingerprint, a.qualificationId, qualificationVersion,
     canonicalJson({ executorExcluded: true, delegationChainExcluded: true, distinctFromOtherKeys: true, keyKind: a.keyKind }), counts, runId, ts(ctx),
   );
+  if (judgment) ctx.db.run('INSERT INTO review_outcome_judgments (decision_id, request_id, verdict, evidence_classes_json, created_at) VALUES (?, ?, ?, ?, ?)', id, request.id, judgment.verdict, JSON.stringify(judgedClasses), ts(ctx));
   ctx.db.run(`UPDATE review_assignments SET state = 'DECIDED', version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, ts(ctx), a.id, a.version);
-  appendAudit(ctx, 'review.decided', 'review_decision', id, { actorRef: reviewerRef }, 'OK', d.outcome, { requestId: request.id, keyKind: a.keyKind, counts: counts === 1 });
+  appendAudit(ctx, 'review.decided', 'review_decision', id, { actorRef: reviewerRef }, 'OK', d.outcome, { requestId: request.id, keyKind: a.keyKind, counts: counts === 1, outcomeVerdict: judgment?.verdict ?? null });
   request = counts === 1 ? resolveRequest(ctx, request.id) : getRequest(ctx, request.id);
   return { recorded: true, code: 'RECORDED', request };
 }
@@ -514,11 +533,37 @@ export function applyOutcome(ctx: StoreContext, request: ReviewRequestRecord, ou
     const reviewed = applyTransition(ctx, item, 'REVIEWED', { reasonCode: 'review.passed', trace });
     appendEvent(ctx, 'work_item.transitioned', 'work_item', item.id, trace, { reviewRequestId: request.id, outcome: 'REVIEWED' });
     resolveDependents(ctx, reviewed.id, trace);
+    // C6-R1: where the plan delegates judgment, the keys that satisfied the review also verify its outcome
+    // from their own cited judgments. A Founder resolution (conflict, escalation) leaves the outcome to the Founder.
+    const plan = request.planId === null ? null : mapReviewPlan(ctx.db.get('SELECT * FROM review_plans WHERE id = ?', request.planId) ?? {});
+    if (actorRef === SYSTEM_REVIEW_REF && plan !== null && judgmentRoute({ planJudgment: plan.operationalJudgment, risk: item.riskLevel }).judge === 'REVIEW_POOL') verifyFromReviewKeys(ctx, request, plan);
   } else {
     const ready = applyTransition(ctx, item, 'READY', { reasonCode: 'review.rework', trace });
     enqueueJob(ctx, ready, trace);
   }
   appendAudit(ctx, outcome === 'SATISFIED' ? 'review.subject_reviewed' : 'review.subject_rework', 'work_item', item.id, trace, 'OK', null, { reviewRequestId: request.id });
+}
+
+/**
+ * C6-R1: the outcome of a satisfied output review under a plan that delegates judgment, from the passing keys'
+ * own cited outcome judgments (never averaged — governance kernel). Keys that gave none leave the outcome
+ * unverified; a disagreement is recorded INCONCLUSIVE for the Founder. Verification grants nothing.
+ */
+function verifyFromReviewKeys(ctx: StoreContext, request: ReviewRequestRecord, plan: ReviewPlanRecord): void {
+  const rows = ctx.db.all<{ key_index: number; id: string; verdict: string | null; classes: string | null }>(
+    `SELECT a.key_index, d.id, j.verdict, j.evidence_classes_json AS classes FROM review_decisions d JOIN review_assignments a ON a.id = d.assignment_id
+       LEFT JOIN review_outcome_judgments j ON j.decision_id = d.id
+      WHERE d.request_id = ? AND d.counts = 1 AND d.outcome = 'PASS' ORDER BY d.created_at, d.id`,
+    request.id,
+  );
+  const out = outcomeFromReviewKeys(plan.keys.length, rows.map((r) => ({ keyIndex: Number(r.key_index), verdict: (r.verdict ?? null) as OutcomeVerdict | null })));
+  if (out.verdict === null) {
+    appendAudit(ctx, 'outcome.unverified', 'work_item', request.workItemId, { actorRef: SYSTEM_REVIEW_REF }, 'OK', out.reason, { reviewRequestId: request.id });
+    return;
+  }
+  const classes = [...new Set(rows.flatMap((r) => (r.classes === null ? [] : (JSON.parse(r.classes) as string[]))))];
+  const refs = [`review_request:${request.id}`, ...rows.map((r) => `review_decision:${r.id}`), `work_item:${request.workItemId}`];
+  txRecordOutcome(ctx, getWorkItemRow(ctx, request.workItemId), { verdict: out.verdict, classes, refs, reasonCode: `review_keys.${out.reason.toLowerCase()}` }, { kind: 'REVIEW_POOL', reviewRequestId: request.id });
 }
 
 /** Shadow (calibration) decisions against the authoritative outcome: evidence for the reviewer's trust. */
@@ -630,7 +675,7 @@ export function refillDomain(ctx: StoreContext, domain: string | null): number {
     domain, domain,
   ).map(mapReviewRequest);
   for (const r of rows) fillAssignments(ctx, r);
-  return rows.length;
+  return rows.length + refillJudgments(ctx);
 }
 
 /** A review Work Item that ended without a decision (failed, cancelled): its key is withdrawn and refilled. */
@@ -653,6 +698,7 @@ export function releaseAbandonedAssignment(ctx: StoreContext, reviewWorkItemId: 
 export function reviewAfterCompletion(ctx: StoreContext, wi: WorkItemRecord): void {
   if (wi.state === 'WAITING_REVIEW') ensureOutputReview(ctx, wi.id);
   releaseAbandonedAssignment(ctx, wi.id);
+  releaseAbandonedJudgment(ctx, wi.id);
 }
 
 /** Recovery sweep (bounded): output subjects waiting for review without a live request, and abandoned assignments. */
@@ -666,7 +712,142 @@ export function sweepReviews(ctx: StoreContext, limit: number): number {
     releaseAbandonedAssignment(ctx, w as Id);
     n++;
   }
+  for (const { w } of ctx.db.all<{ w: string }>(`SELECT a.judge_work_item_id AS w FROM judgment_assignments a JOIN work_items i ON i.id = a.judge_work_item_id WHERE a.state = 'ASSIGNED' AND i.state IN ('FAILED', 'CANCELLED', 'SUPERSEDED', 'COMPLETED', 'CLOSED') LIMIT ?`, limit)) {
+    releaseAbandonedJudgment(ctx, w as Id);
+    n++;
+  }
+  return n + refillJudgments(ctx, limit);
+}
+
+// --- C6-R1: operational judgment through the Review Pool ----------------------------------------------------
+
+export type JudgmentSubjectKind = JudgmentAssignmentRecord['subjectKind'];
+
+/** Who must not judge: the executor of the judged work, its delegation chain, the subject Employee, and every earlier judge of the subject. */
+function judgmentExclusions(ctx: StoreContext, kind: JudgmentSubjectKind, subjectId: Id, workItemId: Id, subjectEmployeeId: Id | null): string[] {
+  const executor = employeeIdFromRef(getWorkItemRow(ctx, workItemId).ownerRef);
+  // A judge who stood down only because the evidence was still pending may judge the subject again.
+  const prior = ctx.db.all<{ e: string }>(`SELECT judge_employee_id AS e FROM judgment_assignments WHERE subject_kind = ? AND subject_id = ? AND reason_code IS NOT 'EVIDENCE_PENDING'`, kind, subjectId).map((r) => r.e);
+  const parties = [executor, subjectEmployeeId, ...delegationChain(ctx, workItemId)].filter((x): x is Id => x !== null);
+  return [...new Set([...parties, ...prior])];
+}
+
+/** What the judge is shown (local governed context of its own Work Item, never telemetry). */
+function judgmentSubjectText(ctx: StoreContext, kind: JudgmentSubjectKind, subjectId: Id, workItemId: Id): string {
+  if (kind === 'ATTRIBUTION') {
+    const a = ctx.db.get<{ overall: string; causes_json: string; employee_accountable: number; confidence: string }>('SELECT overall, causes_json, employee_accountable, confidence FROM causal_attributions WHERE id = ?', subjectId);
+    return `Subject: the proposed cause analysis ${subjectId} of Work Item ${workItemId}. Overall ${a?.overall ?? '?'}, confidence ${a?.confidence ?? '?'}, Employee accountable: ${a?.employee_accountable === 1 ? 'yes' : 'no'}. Causes: ${(a?.causes_json ?? '[]').slice(0, 1500)} PASS validates it as proposed, FAIL rejects it; uncertainty escalates to the Founder.`;
+  }
+  const l = ctx.db.get<{ content: string; topic: string }>('SELECT content, topic FROM lessons WHERE id = ?', subjectId);
+  return `Subject: the lesson candidate ${subjectId} (${l?.topic ?? '?'}) from Work Item ${workItemId}: ${(l?.content ?? '').slice(0, 1500)} PASS validates it on independent evidence, FAIL rejects it; uncertainty escalates to the Founder.`;
+}
+
+/**
+ * Assigns one independent, qualified judge from the plan's Review Pool domain to a C6 subject — only where the
+ * Work Item's plan delegates judgment (governance kernel `judgmentRoute`; never R4). The judge acts from its own
+ * governed Work Item funded from the plan's pre-authorized review budget, exactly like a reviewer. Idempotent;
+ * no eligible judge (or a Quality Hold) → null: the subject waits, visible, and the Founder can always decide it.
+ */
+export function assignJudge(ctx: StoreContext, s: { subjectKind: JudgmentSubjectKind; subjectId: Id; workItemId: Id; subjectEmployeeId: Id | null }): JudgmentAssignmentRecord | null {
+  const open = ctx.db.get(`SELECT * FROM judgment_assignments WHERE subject_kind = ? AND subject_id = ? AND state = 'ASSIGNED'`, s.subjectKind, s.subjectId);
+  if (open) return mapJudgmentAssignment(open);
+  // An escalated judgment belongs to the Founder now: it is never re-drawn until someone else answers.
+  if (ctx.db.get(`SELECT 1 AS x FROM judgment_assignments WHERE subject_kind = ? AND subject_id = ? AND state IN ('DECIDED', 'ESCALATED')`, s.subjectKind, s.subjectId)) return null;
+  const item = getWorkItemRow(ctx, s.workItemId);
+  const plan = activePlan(ctx, item.id);
+  if (!plan || judgmentRoute({ planJudgment: plan.operationalJudgment, risk: item.riskLevel }).judge !== 'REVIEW_POOL') return null;
+  if (ctx.db.get(`SELECT 1 AS x FROM quality_holds WHERE state = 'ACTIVE' AND ((target_kind = 'DOMAIN' AND target_ref = ?) OR (target_kind = 'RUBRIC' AND target_ref = ?)) LIMIT 1`, plan.domain, `${plan.rubricCode}@${plan.rubricVersion}`)) return null;
+  const executor = employeeIdFromRef(item.ownerRef);
+  const dataClass = effectiveDataClass(ctx, item.id);
+  const excluded = judgmentExclusions(ctx, s.subjectKind, s.subjectId, item.id, s.subjectEmployeeId);
+  const judge = eligibleReviewers(ctx, { domain: plan.domain, mode: 'ACTIVE', dataClass, excluded, excludeDepartmentId: plan.excludeSameDepartment && executor ? getEmployeeRow(ctx, executor).departmentId : null, minLevelRank: 0, onlyEmployeeId: null, limit: 1 })[0];
+  if (!judge) return null;
+  const id = newId();
+  const instructions = `${planInstructions(ctx, plan.id)}\n${judgmentSubjectText(ctx, s.subjectKind, s.subjectId, item.id)}`.slice(0, 11_000);
+  const created = txCreateWorkItem(
+    ctx,
+    { objective: `Independent judgment ${s.subjectKind.toLowerCase()} ${s.subjectId} (assignment ${id})`, ownerRef: `employee:${judge.employeeId}`, riskLevel: 'R1', processorKind: REVIEW_PROCESSOR, processorInput: { taskClass: plan.reviewTaskClass, dataClass, instructions, maxTurns: 4 }, dedupeKey: `judgment-assignment:${id}`, ...(plan.deadlineAt !== null ? { dueAt: plan.deadlineAt } : {}), initialState: 'PROPOSED' },
+    { actorRef: SYSTEM_REVIEW_REF },
+  );
+  // Funded from the judge's own envelope within the plan's pre-authorized review budget: no budget is created or raised.
+  txAllocateWorkItemBudget(ctx, created.workItem.id, judge.employeeId, { money: plan.reviewBudgetMoney, tokens: plan.reviewBudgetTokens }, SYSTEM_REVIEW_REF, 'judgment.assignment');
+  const at = ts(ctx);
+  ctx.db.run(
+    `INSERT INTO judgment_assignments (id, subject_kind, subject_id, work_item_id, plan_id, judge_employee_id, qualification_id, judge_work_item_id, state, review_outcome, decision, reason_code, evidence_refs_json, run_id, qualification_version, version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ASSIGNED', NULL, NULL, NULL, '[]', NULL, NULL, 1, ?, ?)`,
+    id, s.subjectKind, s.subjectId, item.id, plan.id, judge.employeeId, judge.qualificationId, created.workItem.id, at, at,
+  );
+  const released = applyTransition(ctx, created.workItem, 'READY', { reasonCode: 'judgment.assigned', trace: { correlationId: created.workItem.correlationId, actorRef: SYSTEM_REVIEW_REF } });
+  enqueueJob(ctx, released, { correlationId: released.correlationId, actorRef: SYSTEM_REVIEW_REF });
+  appendAudit(ctx, 'judgment.assigned', 'judgment_assignment', id, { actorRef: SYSTEM_REVIEW_REF }, 'OK', s.subjectKind, { subjectId: s.subjectId, workItemId: item.id, judgeEmployeeId: judge.employeeId, qualificationId: judge.qualificationId });
+  return mapJudgmentAssignment(ctx.db.get('SELECT * FROM judgment_assignments WHERE id = ?', id) ?? {});
+}
+
+/** The judge is still an eligible, independent pool reviewer of the subject now (re-checked at the decision boundary). */
+export function judgeStillEligible(ctx: StoreContext, ja: JudgmentAssignmentRecord, subjectEmployeeId: Id | null): { eligible: boolean; qualificationVersion: number | null } {
+  const plan = activePlan(ctx, ja.workItemId);
+  const item = getWorkItemRow(ctx, ja.workItemId);
+  if (!plan || plan.id !== ja.planId || judgmentRoute({ planJudgment: plan.operationalJudgment, risk: item.riskLevel }).judge !== 'REVIEW_POOL') return { eligible: false, qualificationVersion: null };
+  const executor = employeeIdFromRef(item.ownerRef);
+  const independent = ja.judgeEmployeeId !== executor && ja.judgeEmployeeId !== subjectEmployeeId && !delegationChain(ctx, item.id).includes(ja.judgeEmployeeId)
+    && !(plan.excludeSameDepartment && executor !== null && getEmployeeRow(ctx, executor).departmentId !== null && getEmployeeRow(ctx, executor).departmentId === getEmployeeRow(ctx, ja.judgeEmployeeId).departmentId);
+  // Capacity is not re-counted here: this assignment is the slot the judge already holds.
+  const at = ts(ctx);
+  const q = ctx.db.get<{ v: number }>(
+    `SELECT q.qualification_version AS v FROM reviewer_qualifications q JOIN employees e ON e.id = q.employee_id JOIN certifications c ON c.id = q.certification_id
+      WHERE q.id = ? AND q.employee_id = ? AND q.domain = ? AND q.mode = 'ACTIVE' AND e.state = 'ACTIVE' AND c.status = 'VALID' AND c.valid_until > ? AND c.role_ref = ? AND q.max_data_rank >= ?
+        AND EXISTS (SELECT 1 FROM budgets b WHERE b.scope = 'EMPLOYEE' AND b.scope_id = q.employee_id AND b.status = 'OPEN')
+        AND NOT EXISTS (SELECT 1 FROM quality_holds h WHERE h.state = 'ACTIVE' AND ((h.target_kind = 'REVIEWER' AND h.target_ref = 'employee:' || q.employee_id) OR (h.target_kind = 'QUALIFICATION' AND h.target_ref = q.id) OR (h.target_kind = 'DOMAIN' AND h.target_ref = q.domain)))
+        AND NOT EXISTS (SELECT 1 FROM json_each(c.skill_pins_json) p JOIN skill_versions v ON v.id = json_extract(p.value, '$.skillVersionId') WHERE v.freshness IN ('SECURITY_HOLD', 'RETIRED') OR v.integrity <> 'OK')`,
+    ja.qualificationId, ja.judgeEmployeeId, plan.domain, at, reviewerRoleFor(plan.domain), dataRank(effectiveDataClass(ctx, item.id)),
+  );
+  return { eligible: q !== undefined && independent, qualificationVersion: q ? Number(q.v) : null };
+}
+
+export function withdrawJudgment(ctx: StoreContext, ja: JudgmentAssignmentRecord, reasonCode: string): void {
+  if (ja.state !== 'ASSIGNED') return;
+  ctx.db.run(`UPDATE judgment_assignments SET state = 'WITHDRAWN', reason_code = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, reasonCode, ts(ctx), ja.id, ja.version);
+  appendAudit(ctx, 'judgment.withdrawn', 'judgment_assignment', ja.id, { actorRef: SYSTEM_REVIEW_REF }, 'OK', reasonCode, { subjectKind: ja.subjectKind, subjectId: ja.subjectId });
+}
+
+/** The subject Employee of a judgment subject (never its judge). */
+export function judgmentSubjectEmployee(ctx: StoreContext, kind: JudgmentSubjectKind, subjectId: Id): Id | null {
+  const r = kind === 'ATTRIBUTION' ? ctx.db.get<{ e: string | null }>('SELECT employee_id AS e FROM causal_attributions WHERE id = ?', subjectId) : ctx.db.get<{ e: string | null }>('SELECT employee_id AS e FROM lessons WHERE id = ?', subjectId);
+  return (r?.e ?? null) as Id | null;
+}
+
+/**
+ * Pending C6 subjects under a pool-delegated plan that have no judge yet (none was eligible when they arose):
+ * draw one now. Called when pool capacity returns (admission, promotion, reinstatement, a lifted hold) and by the
+ * bounded recovery sweep — never a polling loop. An escalated or decided subject is never re-drawn.
+ */
+export function refillJudgments(ctx: StoreContext, limit = 200): number {
+  let n = 0;
+  const pending = `NOT EXISTS (SELECT 1 FROM judgment_assignments j WHERE j.subject_kind = ? AND j.subject_id = s.id AND j.state IN ('ASSIGNED', 'DECIDED', 'ESCALATED'))`;
+  for (const a of ctx.db.all<{ id: string; work_item_id: string; employee_id: string | null }>(
+    `SELECT s.id, s.work_item_id, s.employee_id FROM causal_attributions s JOIN review_plans p ON p.work_item_id = s.work_item_id AND p.status = 'ACTIVE' AND p.operational_judgment = 'REVIEW_POOL'
+      WHERE s.state = 'PROPOSED' AND ${pending} ORDER BY s.created_at, s.id LIMIT ?`,
+    'ATTRIBUTION', limit,
+  )) if (assignJudge(ctx, { subjectKind: 'ATTRIBUTION', subjectId: a.id as Id, workItemId: a.work_item_id as Id, subjectEmployeeId: (a.employee_id ?? null) as Id | null })) n++;
+  for (const l of ctx.db.all<{ id: string; w: string; employee_id: string }>(
+    `SELECT s.id, substr(s.event_ref, 11) AS w, s.employee_id FROM lessons s JOIN review_plans p ON p.work_item_id = substr(s.event_ref, 11) AND p.status = 'ACTIVE' AND p.operational_judgment = 'REVIEW_POOL'
+      WHERE s.stage = 'UNDER_REVIEW' AND s.event_ref GLOB 'work_item:*' AND ${pending} ORDER BY s.created_at, s.id LIMIT ?`,
+    'LESSON', limit,
+  )) if (assignJudge(ctx, { subjectKind: 'LESSON', subjectId: l.id as Id, workItemId: l.w as Id, subjectEmployeeId: l.employee_id as Id })) n++;
   return n;
+}
+
+/** A judge's Work Item that ended without a decision: the assignment is withdrawn and another judge drawn. */
+export function releaseAbandonedJudgment(ctx: StoreContext, judgeWorkItemId: Id): void {
+  const row = ctx.db.get(`SELECT * FROM judgment_assignments WHERE judge_work_item_id = ? AND state = 'ASSIGNED'`, judgeWorkItemId);
+  if (!row) return;
+  const ja = mapJudgmentAssignment(row);
+  if (!['FAILED', 'CANCELLED', 'SUPERSEDED', 'COMPLETED', 'CLOSED', 'WAITING_REVIEW', 'REVIEWED'].includes(getWorkItemRow(ctx, judgeWorkItemId).state)) return;
+  withdrawJudgment(ctx, ja, 'JUDGMENT_WORK_ENDED');
+  const pending = ja.subjectKind === 'ATTRIBUTION'
+    ? ctx.db.get(`SELECT 1 AS x FROM causal_attributions WHERE id = ? AND state = 'PROPOSED'`, ja.subjectId)
+    : ctx.db.get(`SELECT 1 AS x FROM lessons WHERE id = ? AND stage = 'UNDER_REVIEW'`, ja.subjectId);
+  if (pending) assignJudge(ctx, { subjectKind: ja.subjectKind, subjectId: ja.subjectId, workItemId: ja.workItemId, subjectEmployeeId: judgmentSubjectEmployee(ctx, ja.subjectKind, ja.subjectId) });
 }
 
 export const isoNow = (ctx: StoreContext): Timestamp => ts(ctx);

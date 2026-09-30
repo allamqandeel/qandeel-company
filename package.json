@@ -30,7 +30,7 @@
     "c1:faults": "npm run test:faults --workspace @qandeel-company/runtime",
     "c1:acceptance": "node scripts/c1-acceptance.mjs",
     "c1:mutation": "node scripts/c1-mutation-check.mjs",
-    "ci": "npm run build && npm run typecheck && npm run lint && npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation && npm run verify",
+    "ci": "npm run build && npm run typecheck && npm run lint && npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation && npm run c6:mutation && npm run verify",
     "c2:mutation": "node scripts/c2-mutation-check.mjs",
     "c2:acceptance": "node --conditions=qandeel-test scripts/c2-acceptance.mjs",
     "c3:mutation": "node scripts/c3-mutation-check.mjs",
@@ -41,7 +41,9 @@
     "c5:mutation": "node scripts/c5-mutation-check.mjs",
     "c5:acceptance": "node --conditions=qandeel-test scripts/c5-acceptance.mjs",
     "c5:visual-proof": "node --conditions=qandeel-test scripts/c5-visual-proof.mjs",
-    "c5:spike": "node --conditions=qandeel-test scripts/c5-visual-proof.mjs --spike"
+    "c5:spike": "node --conditions=qandeel-test scripts/c5-visual-proof.mjs --spike",
+    "c6:mutation": "node scripts/c6-mutation-check.mjs",
+    "c6:acceptance": "node --conditions=qandeel-test scripts/c6-acceptance.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

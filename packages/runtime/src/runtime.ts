@@ -71,11 +71,21 @@ import {
   FounderActionStore,
   FounderAuthStore,
   GoalStore,
+  ImprovementStore,
   MemoryStore,
   OrganizationStore,
   ReviewStore,
   SkillStore,
+  createPortableBackup,
   projectUniverse,
+  pruneLocalBackups,
+  prunePortableBackups,
+  resilienceStatus,
+  runRestoreDrill,
+  type BackupDestination,
+  type PortableBackupResult,
+  type ResilienceStatus,
+  type RetentionPolicy,
   type AttentionSyncReport,
   type CompanyUniverse,
 } from '@qandeel-company/storage';
@@ -185,6 +195,8 @@ export interface FounderAdmin {
   readonly communications: CommunicationStore;
   readonly attention: AttentionStore;
   readonly actions: FounderActionStore;
+  /** C6 Company Improvement Engine (evaluation, attribution, learning, reports) under the same signalling contract. */
+  readonly improvement: ImprovementStore;
   universe(options?: { at?: string }): CompanyUniverse;
 }
 
@@ -643,6 +655,30 @@ export class CompanyRuntime {
   }
 
   /**
+   * C6 resilience (Stage 15): a sealed, encrypted, verified portable package written to a destination outside
+   * the workspace. The passphrase is the operator's recovery material: used, never stored or logged.
+   */
+  async portableBackup(options: { destination: BackupDestination; passphrase: string }): Promise<PortableBackupResult> {
+    return createPortableBackup(this.#ready(), { ...options, runtimeVersion: RUNTIME_VERSION });
+  }
+
+  /** An isolated restore drill of the newest live generation (recorded; `Backup != Recovery Proof`). */
+  restoreDrill(): { result: 'PASS' | 'FAIL'; code: string; durationMs: number } {
+    return runRestoreDrill(this.#ready());
+  }
+
+  /** Generational retention of local generations (and of one destination's packages when given). */
+  pruneBackups(policy?: RetentionPolicy, destination?: BackupDestination): { local: { kept: string[]; retired: string[] }; portable: { kept: string[]; retired: string[] } | null } {
+    const store = this.#ready();
+    return { local: pruneLocalBackups(store, policy), portable: destination ? prunePortableBackups(store, destination, policy) : null };
+  }
+
+  /** Recovery health facts (freshness, verification, drills, reconciliation burden, maintenance). */
+  resilience(): ResilienceStatus {
+    return resilienceStatus(this.#ready());
+  }
+
+  /**
    * C2 governance administration (Founder-authority operations, reads, health). It is a capability
    * object, not the store: it executes nothing and claims nothing, and every call signals the
    * dispatcher afterwards so an approval or cap increase that made work actionable is picked up.
@@ -762,6 +798,21 @@ export class CompanyRuntime {
           conditional: { sync: (report) => { const r = report as AttentionSyncReport; return r.opened + r.signalled + r.resolved > 0; } },
         }),
         actions: signalling(FounderActionStore.for(s, auth), changed, { mutating: ['preview', 'confirm', 'reject', 'expireStale'], reads: ['get', 'list', 'employeeBudgetId'] }),
+        // C6 (D-C6-07): reads are silent; Founder decisions announce once; the system's idempotent derivations
+        // (evaluate, assess, report, plan) announce only when they recorded something new.
+        improvement: signalling(ImprovementStore.for(s), changed, {
+          mutating: ['registerDefinition', 'calibrateDefinition', 'activateDefinition', 'retireDefinition', 'verifyOutcome', 'decideAttribution', 'classifyObservation', 'completeTraining', 'completeReviewedTraining', 'decideSystemicFinding', 'openFailureCase', 'advanceFailureCase'],
+          reads: ['definitions', 'calibrationRuns', 'evaluation', 'evaluations', 'attributions', 'signals', 'learningGate', 'judgments', 'interventions', 'systemicFindings', 'failureCases', 'retrainingMaterial', 'latestReport', 'reports', 'profile', 'economics', 'reviewerCalibration', 'inspect', 'health'],
+          conditional: {
+            evaluate: (r) => (r as { changed: boolean }).changed,
+            assessIntervention: (r) => (r as { changed: boolean }).changed,
+            generateReport: (r) => (r as { changed: boolean }).changed,
+            planIntervention: (r) => (r as { outcome: string }).outcome !== 'AWAIT_EVIDENCE',
+            // C6-R1 system derivations: news only when they recorded something new.
+            requestLearningReview: (r) => (r as { changed: boolean }).changed,
+            planReviewedIntervention: (r) => (r as { outcome: string }).outcome !== 'AWAIT_EVIDENCE',
+          },
+        }),
         universe: (options: { at?: string } = {}): CompanyUniverse => {
           if (options.at !== undefined && !isTimestamp(options.at)) throw new QandeelError('VALIDATION_FAILED', 'at must be a canonical UTC timestamp', { field: 'at' });
           return projectUniverse(s, options.at === undefined ? {} : { at: options.at });
@@ -1176,7 +1227,7 @@ export class CompanyRuntime {
       },
       submitReviewDecision: (proposal: ReviewDecisionProposal, step: number) => {
         const g = globalStep(step);
-        const out = recordReviewDecision(store, claim.fence, { outcome: proposal.outcome, reasonCode: proposal.reasonCode, rationale: proposal.rationale, evidenceRefs: proposal.evidenceRefs });
+        const out = recordReviewDecision(store, claim.fence, { outcome: proposal.outcome, reasonCode: proposal.reasonCode, rationale: proposal.rationale, evidenceRefs: proposal.evidenceRefs, outcomeJudgment: proposal.outcomeJudgment ?? null });
         recordStepResult(store, claim.fence, g, out.outcome === 'RECORDED' ? 'TOOL_RESULT' : 'TOOL_REFUSED', JSON.stringify({ reviewDecision: out.outcome, code: out.code }));
         return { outcome: out.outcome, code: out.code };
       },

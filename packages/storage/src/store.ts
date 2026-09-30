@@ -34,6 +34,7 @@ import {
   type SupervisorLease,
 } from './runtime-state.js';
 import { SqliteConnection } from './sqlite/connection.js';
+import { assertNoUpdateHold } from './update-hold.js';
 import { openWorkspace, type WorkspaceLayout } from './workspace.js';
 import {
   dependencies,
@@ -131,6 +132,9 @@ export class CompanyStore {
 
   static [OPEN_INTERNAL](workspaceRoot: string, options: InternalOpenOptions): CompanyStore {
     const workspace = openWorkspace(workspaceRoot, { create: options.create ?? true });
+    // D15-D.5: a workspace held after a failed update is never opened to migrate or run (so never re-migrated in a loop);
+    // read-only inspection (migrationMode: 'verify', which never migrates) still sees it.
+    if (options.migrationMode !== 'verify') assertNoUpdateHold(workspace.root);
     const clock = options.clock ?? systemClock;
     const db = SqliteConnection.open({ path: workspace.databasePath, busyTimeoutMs: options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS });
     try {

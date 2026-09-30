@@ -140,7 +140,7 @@ const STORAGE_EXPORTS = ['.', './runtime-authority', './testing'];
 // D-C2-13: the test-only Founder seam resolves only under the `qandeel-test` export condition, and only
 // tests (plus the acceptance harness) may import it.
 const TEST_CONDITION = 'qandeel-test';
-const TEST_SEAM_HARNESSES = ['scripts/c2-acceptance.mjs', 'scripts/c3-acceptance.mjs', 'scripts/c4-acceptance.mjs', 'scripts/c5-acceptance.mjs', 'scripts/c5-visual-proof.mjs', 'scripts/c5/seed-company.mjs'];
+const TEST_SEAM_HARNESSES = ['scripts/c2-acceptance.mjs', 'scripts/c3-acceptance.mjs', 'scripts/c4-acceptance.mjs', 'scripts/c5-acceptance.mjs', 'scripts/c5-visual-proof.mjs', 'scripts/c5/seed-company.mjs', 'scripts/c6-acceptance.mjs'];
 const FOUNDER_SEAM_FILES = ['packages/storage/src/governance.ts', 'packages/storage/src/testing/founder-seam.ts'];
 const CLI_SOURCE = 'packages/runtime/src/cli.ts';
 const AUTHORITY_SUBPATH = '@qandeel-company/storage/runtime-authority';
@@ -185,7 +185,8 @@ const FROZEN_MIGRATIONS = [
   { file: '0005_c3_memory_context.sql', sha256: '2c2f0d8092f108de2596c15e795ba6ba8d17b316761d0ac59e45d8845409e44a' },
   { file: '0006_c3_skills_academy.sql', sha256: 'a4b8709915fbad924212e3278b64d2f58d4d1e40c5ba1ff937cb7c50637d57d8' },
 ];
-// C6 / C7 subsystems must not appear before their work packages: dashboards / analytics (C6), APP-OPS (C7).
+// Later-scope / non-goal subsystems never appear: APP-OPS (C7) and dashboards / analytics tables or packages (C6
+// deliberately builds reports with typed claims, never a dashboard or analytics store — its non-goals).
 // The Founder Command Center, the Goal model, Founder-facing communication and Founder Attention are C5's own
 // (D-C5-01: `command-center*` packages; `goals`, `communication_*`, `founder_*` tables in migration 0009).
 const LATER_SCOPE_TABLE = /\bCREATE\s+(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(\w*(?:dashboard|app_ops|appops|performance_score|employee_score|analytics)\w*)/i;
@@ -195,6 +196,19 @@ const C5_REPORT = 'docs/C5_IMPLEMENTATION_REPORT.md';
 const C5_CLOSURE = /^docs\/C5_[^/]*CLOSURE[^/]*\.md$/i;
 const C5_PROOF_MARKERS = ['C5-PROOF: c5-kernel', 'C5-PROOF: founder-surface', 'C5-PROOF: runtime-c5', 'C5-PROOF: founder-listener', 'C5-PROOF: tree-of-light-layout'];
 const C5_MUTATION_CHECK = 'scripts/c5-mutation-check.mjs';
+// --- C6 boundaries (Company Improvement Engine) -------------------------------------------------------
+const C6_REPORT = 'docs/C6_IMPLEMENTATION_REPORT.md';
+const C6_CLOSURE = /^docs\/C6_[^/]*CLOSURE[^/]*\.md$/i;
+const C7_CLOSURE = /^docs\/C7_[^/]*CLOSURE[^/]*\.md$/i;
+const C6_PROOF_MARKERS = ['C6-PROOF: improvement-kernel', 'C6-PROOF: storage-improvement', 'C6-PROOF: storage-resilience', 'C6-PROOF: runtime-c6', 'C6-PROOF: storage-founder-free'];
+const C6_MUTATION_CHECK = 'scripts/c6-mutation-check.mjs';
+// Rule A for C6: evaluations, attributions, learning, reports and recovery carry ids, states, codes and counts only.
+const C6_WRITERS = ['improvement', 'improvement-core', 'resilience', 'maintenance', 'update-hold'].map((m) => `packages/storage/src/${m}.ts`);
+const C6_CONTENT_IN_TELEMETRY = /\b(?:appendAudit|appendEvent|\.(?:info|warn|error|debug))\s*\([^\n]*[{,]\s*(?:content|reflection|body|rationale|passphrase|text|summary|title|instructions|objective)\s*[,:}]/;
+// Stage 17 Founder Decision 1: no universal employee score, rank or leaderboard — in code or in schema.
+const UNIVERSAL_SCORE = /\b(?:overall|universal|employee|performance|global|total|company)_?[Ss]core\b|\bleaderboard\s*[:=(]|\b\w*_score\s+(?:INTEGER|REAL|NUMERIC|TEXT)\b/;
+const RESILIENCE_MODULE = 'packages/storage/src/resilience.ts';
+const EVALUATION_KERNEL = 'packages/mind/src/evaluation.ts';
 // The production Founder session scope is entered only by the auth module (a session, never a ref, arms it).
 const FOUNDER_AUTH = 'packages/storage/src/founder-auth.ts';
 // Rule A for C5: message bodies, briefs, goal text and command text never enter audit, events or logs.
@@ -298,7 +312,20 @@ const MUTATION_PINS = {
     script: 'c5:mutation',
     ids: [
       'c5-founder-ref-is-authentication', 'c5-session-expiry-ignored', 'c5-session-scope-stays-armed', 'c5-csrf-gate-removed', 'c5-host-gate-removed', 'c5-text-mutates-without-confirmation', 'c5-preview-fingerprint-unchecked',
-      'c5-rank-order-flattened', 'c5-department-column-collapsed', 'c5-goal-work-link-dropped', 'c5-attention-widened-to-routine', 'c5-message-grants-authority', 'c5-message-body-in-audit', 'c5-history-uses-current-truth', 'c5-r4-offered-as-approvable', 'c5-company-goal-without-founder',
+      'c5-rank-order-flattened', 'c5-department-column-collapsed', 'c5-goal-work-link-dropped', 'c5-attention-widened-to-routine', 'c5-message-grants-authority', 'c5-message-body-in-audit', 'c5-history-uses-current-truth', 'c5-r4-offered-as-approvable', 'c5-company-goal-without-founder', 'c5-founder-reads-announce-change', 'c5-zero-delta-attention-sync-announces',
+    ],
+  },
+  [C6_MUTATION_CHECK]: {
+    script: 'c6:mutation',
+    ids: [
+      'c6-completion-counts-as-success', 'c6-activity-boosts-performance', 'c6-insufficient-evidence-judged', 'c6-system-cause-blamed-on-employee', 'c6-tool-failure-unmapped', 'c6-non-employee-negative-counted', 'c6-evaluator-cannot-return-unknown',
+      'c6-reflection-bypasses-validation', 'c6-lesson-validation-skips-gate', 'c6-pattern-auto-shared', 'c6-holdout-leaks-to-trainee', 'c6-training-equals-improvement', 'c6-retraining-loops-forever', 'c6-systemic-credit-misattributed', 'c6-systemic-credit-before-validation', 'c6-recommendation-mutates-authority',
+      'c6-universal-score-reintroduced', 'c6-cost-rewards-cheap-failure', 'c6-backup-encryption-bypassed', 'c6-backup-checksum-ignored', 'c6-retention-keeps-only-latest', 'c6-update-activates-before-verification', 'c6-update-hold-ignored',
+      'c6-restore-releases-uncertain-effect', 'c6-report-judgement-without-evidence', 'c6-outcome-verified-before-review', 'c6-external-outcome-invented',
+      // C6-R1: operational judgment through the Review Pool; verification authority is never execution authority.
+      'c6r1-ordinary-outcome-founder-only', 'c6r1-r4-judged-by-pool', 'c6r1-founder-key-pool-judgment', 'c6r1-outcome-conflict-averaged', 'c6r1-pass-verifies-without-judgment', 'c6r1-uncertainty-validates',
+      'c6r1-self-judgment', 'c6r1-judge-eligibility-not-rechecked', 'c6r1-validated-lesson-shared-company-wide', 'c6r1-judgment-budget-inflated', 'c6r1-judgment-raises-budget',
+      'c6-read-announces-change', 'c6-unchanged-derivation-announces',
     ],
   },
   // R1 Independent Core Review: one mutation per fixed finding (docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md).
@@ -997,6 +1024,79 @@ export const RULES = [
     },
   },
   {
+    id: 'c6-proofs-present',
+    check: ({ files, read }) => {
+      const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
+      const problems = C6_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
+      if (!files.includes(C6_MUTATION_CHECK)) problems.push(`missing ${C6_MUTATION_CHECK}`);
+      const ci = json(read('package.json'))?.scripts?.ci ?? '';
+      if (!/\bc6:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c6:mutation');
+      return problems;
+    },
+  },
+  {
+    id: 'c6-not-claimed-closed',
+    // C6 is an implementation candidate; it is closed only in the change that adds its record, and R2 / C7 do not
+    // start before it.
+    check: ({ files, read }) => {
+      if (files.some((f) => C6_CLOSURE.test(f))) return [];
+      const problems = [];
+      const map = read(IMPLEMENTATION_MAP);
+      const c6 = mapState(map, 'C6');
+      if (c6 !== undefined && /\bCLOSED\b/i.test(c6.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`C6 is marked ${JSON.stringify(c6)} but no docs/C6_*CLOSURE*.md record exists`);
+      const report = read(C6_REPORT);
+      if (report !== undefined && /\bC6\s*(?:—|-|:|is)?\s*CLOSED\b/i.test(report.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`${C6_REPORT} claims C6 is closed without a closure record`);
+      for (const id of ['R2', 'C7']) {
+        const st = mapState(map, id);
+        if (st !== undefined && st !== 'Not started') problems.push(`${id} is ${JSON.stringify(st)} before C6 has a closure record`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'c6-no-universal-score',
+    // Stage 17 Founder Decision 1: a Performance Profile is multi-dimensional; no universal score, rank or
+    // leaderboard exists in production code or in the schema.
+    check: ({ files, read }) =>
+      files
+        .filter((f) => ((/^packages\/[^/]+\/src\//.test(f) && isCode(f)) || (f.startsWith(MIGRATIONS_DIR) && f.endsWith('.sql'))) && UNIVERSAL_SCORE.test((read(f) ?? '').replace(/^\s*(?:\/\/|\*|\/\*|--).*$/gm, '')))
+        .map((f) => `${f} introduces a universal score, rank or leaderboard (Stage 17 FD-1)`),
+  },
+  {
+    id: 'c6-telemetry-content-free',
+    // Rule A for C6: reflections, lesson content, rationale, Goal text and the recovery passphrase never enter
+    // audit, events or logs.
+    check: ({ files, read }) =>
+      files
+        .filter((f) => (C6_WRITERS.includes(f) || f === CLI_SOURCE) && isCode(f) && C6_CONTENT_IN_TELEMETRY.test(read(f) ?? ''))
+        .map((f) => `${f} passes content into audit / events / logs (Rule A)`),
+  },
+  {
+    id: 'c6-recovery-secret-never-stored',
+    // Stage 15 D15-B.4: the portable package is AES-256-GCM authenticated ciphertext; the recovery passphrase is
+    // operator-held material that is never written, recorded, logged or taken from a command line.
+    check: ({ files, read }) => {
+      const problems = [];
+      const src = read(RESILIENCE_MODULE);
+      if (src === undefined) return files.includes(RESILIENCE_MODULE) ? [] : [`missing ${RESILIENCE_MODULE}`];
+      if (!/aes-256-gcm/.test(src) || !/setAuthTag\(/.test(src) || !/scryptSync\(/.test(src)) problems.push(`${RESILIENCE_MODULE} lost authenticated encryption (AES-256-GCM with a scrypt-derived key)`);
+      for (const line of src.split('\n')) if (/passphrase/i.test(line) && /\b(?:INSERT|UPDATE|appendAudit|appendEvent|writeFileSync|put\(|console\.)/.test(line)) problems.push(`${RESILIENCE_MODULE} writes the recovery passphrase somewhere`);
+      const cli = read(CLI_SOURCE) ?? '';
+      if (/\bpassphrase\s*:\s*\{\s*type\s*:/.test(cli)) problems.push(`${CLI_SOURCE} takes the recovery passphrase from the command line`);
+      return problems;
+    },
+  },
+  {
+    id: 'c6-external-outcomes-unavailable',
+    // C7 owns governed external outcome sources: until C7 closes, the kernel states them unavailable (never invented).
+    check: ({ files, read }) => {
+      if (files.some((f) => C7_CLOSURE.test(f))) return [];
+      const src = read(EVALUATION_KERNEL);
+      if (src === undefined) return [];
+      return /export const EXTERNAL_OUTCOMES_AVAILABLE = false;/.test(src) ? [] : [`${EVALUATION_KERNEL} makes external outcomes available before a governed C7 source exists`];
+    },
+  },
+  {
     id: 'founder-session-scope-confined',
     // C5 (D-C5-03): a Founder ref is still not authentication. The production session scope is entered only by
     // the auth module; the surface package and the runtime never arm the chokepoint themselves, never mint or
@@ -1362,7 +1462,7 @@ function syntheticRepo(overrides = {}) {
     [AUTHORITY_INDEX]: `## Missing\n\n**${STAGE_16_MISSING}.**\n`,
     [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT)),
     [SYNTH_SOURCE]: SYNTH_SOURCE_TEXT,
-    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation' } }),
+    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation && npm run c6:mutation' } }),
     'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'node --test dist/test' } }),
     'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'packages/bootstrap-contract': {}, 'node_modules/tar': { version: '7.0.0' } } }),
     '.gitattributes': '* text=auto eol=lf\n*.sh text eol=lf\n*.ps1 text eol=crlf\n*.png binary\n',
@@ -1410,6 +1510,11 @@ function syntheticRepo(overrides = {}) {
     // C5: proofs, the pinned C5 mutation check, the loopback listener, the auth store and a clean UI.
     'packages/runtime/test/c5/proofs.test.ts': C5_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
     [C5_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C5_MUTATION_CHECK].ids),
+    // C6: proofs, the pinned C6 mutation check, an encrypting resilience module and the external-outcomes seam.
+    'packages/runtime/test/c6/proofs.test.ts': C6_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
+    [C6_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C6_MUTATION_CHECK].ids),
+    [RESILIENCE_MODULE]: "const key = scryptSync(passphrase, salt, 32);\nconst c = createCipheriv('aes-256-gcm', key, iv);\nd.setAuthTag(tag);\n",
+    [EVALUATION_KERNEL]: 'export const EXTERNAL_OUTCOMES_AVAILABLE = false;\n',
     [FOUNDER_LISTENER]: SYNTH_LISTENER,
     'packages/command-center/src/security.ts': "export const LOOPBACK_HOST = '127.0.0.1';\nexport function sessionCookie(v) { return `${v}; HttpOnly; SameSite=Strict`; }\n",
     [FOUNDER_AUTH]: SYNTH_AUTH,
@@ -1624,6 +1729,33 @@ const VIOLATIONS = {
     { contents: { 'packages/command-center/src/api.ts': "this.#log('founder.command', { text: body.text });" } },
     { contents: { 'packages/storage/src/goals.ts': "appendEvent(ctx, 'goal.proposed', 'work_item', id, t, { title: input.title });" } },
   ],
+  'c6-proofs-present': [
+    { contents: { 'packages/runtime/test/c6/proofs.test.ts': '// markers removed\n' } },
+    { remove: [C6_MUTATION_CHECK] },
+    { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation' } }) } },
+  ],
+  'c6-not-claimed-closed': [
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS')}| \`C6\` | Improve | Cloud | CLOSED / MERGED |\n` } },
+    { contents: { [C6_REPORT]: '# Report\n\nC6 — CLOSED.\n' } },
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS')}| \`C6\` | Improve | Cloud | IN PROGRESS |\n| \`R2\` | Review | Review | IN PROGRESS |\n` } },
+  ],
+  'c6-no-universal-score': [
+    { contents: { 'packages/mind/src/performance.ts': 'return { employeeId, overallScore: total / n, dimensions };' } },
+    { contents: { [`${MIGRATIONS_DIR}0011_scores.sql`]: 'CREATE TABLE employee_profiles (id TEXT, performance_score INTEGER) STRICT;\n' } },
+    { contents: { 'packages/storage/src/improvement.ts': 'const leaderboard = profiles.sort((a, b) => b.positive - a.positive);' } },
+  ],
+  'c6-telemetry-content-free': [
+    { contents: { 'packages/storage/src/improvement.ts': "appendAudit(ctx, 'learning.classified', 'lesson', id, { actorRef }, 'OK', kind, { content: lesson.content });" } },
+    { contents: { [RESILIENCE_MODULE]: "const key = scryptSync(passphrase, salt, 32);\ncreateCipheriv('aes-256-gcm', key, iv);\nd.setAuthTag(tag);\nappendAudit(ctx, 'backup.portable_created', 'portable_backup', id, a, 'OK', null, { passphrase: x });\n" } },
+  ],
+  'c6-recovery-secret-never-stored': [
+    { contents: { [RESILIENCE_MODULE]: "const key = scryptSync(passphrase, salt, 32);\nconst c = createCipheriv('aes-256-ctr', key, iv);\n" } },
+    { contents: { [RESILIENCE_MODULE]: "const key = scryptSync(passphrase, salt, 32);\ncreateCipheriv('aes-256-gcm', key, iv);\nd.setAuthTag(tag);\nwriteFileSync(path.join(dir, 'recovery.key'), passphrase);\n" } },
+    { contents: { [CLI_SOURCE]: "const { values } = parseArgs({ args, options: { passphrase: { type: 'string' } } });" } },
+  ],
+  'c6-external-outcomes-unavailable': [
+    { contents: { [EVALUATION_KERNEL]: 'export const EXTERNAL_OUTCOMES_AVAILABLE = true;\n' } },
+  ],
   'ci-contract': [
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: r1-4of4, suite: 'r1:4/4' }\n", '') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace(/- \{ os: ubuntu-latest, label: c4-c5, suite: 'c4:1\/1 c5:1\/1' \}\n/, '') } },
@@ -1793,6 +1925,16 @@ const MUST_PASS = [
   { id: 'founder-listener-loopback-only', scenario: { contents: { 'packages/command-center-ui/src/app/api.ts': "const res = await fetch('http://127.0.0.1:4173/api/universe');\n// see https://example.com/docs for the wire format\n" } } },
   { id: 'c5-telemetry-content-free', scenario: { contents: { 'packages/storage/src/communications.ts': "appendAudit(ctx, 'communication.message', 'thread', t.id, { actorRef }, 'OK', m.purpose, { messageId: id, seq, bodySha256: sha, level: m.level });" } } },
   { id: 'founder-session-scope-confined', scenario: { contents: { 'packages/command-center/src/api.ts': "return ctx.runtime.founder.auth.withSession(ctx.session, (founderRef) => store.send(founderRef, id, input));" } } },
+  // A C6 candidate explicitly not closed, R2 / C7 not started; later, C6 closed with its record and R2 started.
+  { id: 'c6-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS')}| \`C6\` | Improve | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n| \`R2\` | Review | Review | Not started |\n`, [C6_REPORT]: '# Report\n\nC6 is NOT CLOSED.\n' } } },
+  { id: 'c6-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS')}| \`C6\` | Improve | Cloud | CLOSED / MERGED |\n| \`R2\` | Review | Review | IN PROGRESS |\n`, 'docs/C6_CLOSURE_RECORD.md': '' } } },
+  // Per-dimension counts, an academy percentage and a regex that FORBIDS score keys are not a universal score.
+  { id: 'c6-no-universal-score', scenario: { contents: { 'packages/mind/src/reporting.ts': ' * There is NO universal employee score, rank or leaderboard: one entry per dimension.\nconst FORBIDDEN_PARAM = /score|rank|leaderboard|overall|rating/i;\n', [`${MIGRATIONS_DIR}0006_c3.sql`]: 'CREATE TABLE academy_dimension_results (score_pct INTEGER) STRICT;\n' } } },
+  // Hashes, counts and codes in C6 telemetry are fine; the passphrase is used, never written.
+  { id: 'c6-telemetry-content-free', scenario: { contents: { 'packages/storage/src/improvement.ts': "appendAudit(ctx, 'evaluation.recorded', 'evaluation', id, { actorRef }, 'OK', state, { workItemId: wid, qualified: true });" } } },
+  { id: 'c6-recovery-secret-never-stored', scenario: { contents: { [CLI_SOURCE]: "const passphrase = process.env.QANDEEL_RECOVERY_PASSPHRASE;\n" } } },
+  // Once C7 closes, a governed external source may make outcomes available.
+  { id: 'c6-external-outcomes-unavailable', scenario: { contents: { [EVALUATION_KERNEL]: 'export const EXTERNAL_OUTCOMES_AVAILABLE = true;\n', 'docs/C7_CLOSURE_RECORD.md': '' } } },
   // The canonical five Departments seeded; a review request table carrying the R4 CHECK; tests seeding rows.
   { id: 'review-pool-not-department', scenario: { contents: { [`${MIGRATIONS_DIR}0007_c4.sql`]: CANONICAL_DEPARTMENTS.map((c, i) => `INSERT INTO departments (id, code, name) SELECT 'c4d00000-0000-4000-8000-00000000000${i + 1}', '${c}', 'x' WHERE 1;\n`).join('') } } },
   { id: 'r4-never-review-satisfied', scenario: { contents: { [`${MIGRATIONS_DIR}0008_c4.sql`]: "CREATE TABLE review_requests (\n  risk_level TEXT,\n  state TEXT,\n  CHECK (risk_level <> 'R4' OR state NOT IN ('SATISFIED', 'CONSUMED'))\n) STRICT;\n", [AUTHORITY_KERNEL]: "  if (req.risk === 'R4') return { effect: 'DENY', code: 'FOUNDER_ONLY' };\n" } } },

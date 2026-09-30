@@ -15,6 +15,8 @@ import { QandeelError } from '@qandeel-company/domain';
 
 import { founderSurfaceInternals, type GovernanceStore } from '../governance.js';
 import type { EmployeeRecord } from '../governance-records.js';
+import { loadReleasedMigrations } from '../migrations.js';
+import { openStoreForTests } from '../store.js';
 
 export const TEST_CONDITION = 'qandeel-test';
 
@@ -30,6 +32,20 @@ export function armFounderTestSurface(root: string): void {
 
 export function disarmFounderTestSurface(root: string): void {
   founderSurfaceInternals.disarm(root);
+}
+
+/**
+ * C6 update-safety fixture: a workspace created at an OLDER released schema version (the released, pinned
+ * migrations up to `version`), so an acceptance harness can prove a real Preflight → Backup → Rehearse →
+ * Migrate → Verify → Activate cycle and its rollback. Test-only; production never opens a store below current.
+ */
+export function createWorkspaceAtVersionForTest(root: string, version: number): number {
+  const store = openStoreForTests(root, { migrations: loadReleasedMigrations(version) });
+  try {
+    return store.schemaVersion;
+  } finally {
+    store.close();
+  }
 }
 
 /** SHADOW / PROBATION → ACTIVE without Academy certification: a test fixture, never a product path. */

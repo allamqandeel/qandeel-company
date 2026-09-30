@@ -68,6 +68,13 @@ export const ERROR_CODES = [
   'FOUNDER_CONFIRMATION_REQUIRED',
   'GOAL_INVALID',
   'COMMUNICATION_INVALID',
+  // C6 Company Improvement Engine (evaluation, attribution, learning, reporting, resilience).
+  'EVAL_INVALID',
+  'EVIDENCE_REQUIRED',
+  'ATTRIBUTION_INVALID',
+  'LEARNING_GATE',
+  'UPDATE_HOLD',
+  'MAINTENANCE_REFUSED',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
