@@ -3322,3 +3322,128 @@ QUESTION / DECISION_REQUEST at or after that boundary, with the governed reply o
 evidences READY — in `txBriefingStatus` (preview, store, board) and in `pilots_ready_requires_briefing` alike. Earlier
 messages stay ordinary communication history. Mutations `c7c-briefing-boundary-dropped` (code) and
 `c7c-db-briefing-boundary-dropped` (datastore); C7-C mutations 25 → 27.
+
+## D-C7D-01 — C7-D builds capability, not the QANDEEL website (Founder / Product Owner brief; executor-recorded)
+
+C7-D adds the Company's internal Digital Workshop, a safe internal Preview, exact Release Candidates and governed external
+promotion seams. It builds no website, creates no repository, chooses no framework, hosting provider, CMS, analytics,
+SEO vendor or social platform and publishes nothing; those are later Company recommendations and Founder decisions in a
+real Pilot (verifier `c7d-no-vendor-preselection`, `c7d-not-claimed-closed`). GitHub is the one approved external code
+host (brief §4.4), as a promotion target only, never the editing substrate. No sixth Department and no auto-hiring.
+
+## D-C7D-02 — A Digital Project is a context; Work stays in C1 / C5 (executor)
+
+`digital_projects` holds identity, type, title, an optional Goal, state DRAFT → ACTIVE → ARCHIVED (forward only,
+append-only history) and the creating Work Item. Tasks, ownership, delegation and review stay in the existing Work /
+Goal / Review systems; the C7-C Pilot is found through the project's Goal and its ancestors (a reference, never a copy).
+
+## D-C7D-03 — Internal authoring is a closed, Company-native Tool catalogue served by the Tool Executor (executor)
+
+Migration 0015 seeds one Tool, `digital-workspace` (egress NONE, driver code `company.digital-workspace`, reserved by
+trigger), with 17 typed actions (project, revision, file put / remove, chunked upload, finalize, inspect, read, preview,
+SEO check, candidate, promotion prepare / inspect). No action may be added to it and no generic filesystem, shell or HTTP
+action exists. Employees need an explicit Founder grant per action (R0 reads, R1 internal acts: no review, no Founder
+approval — autonomy inside the Company). The Tool Executor serves the reserved driver itself: Artifact Store I/O first
+(its own fenced, crash-safe protocol), then ONE fenced transaction applies the act and records the tool result, so a
+crash leaves either nothing (the orphan intent is retried under the same key) or the whole act.
+
+## D-C7D-04 — Content lives in the Artifact Store only (executor)
+
+A revision maps logical paths to READY content-addressed objects by id, hash and size; SQLite never holds file bytes
+(no content / blob column; verifier). A read slice reaches the run's context (bounded, ≤ 1 KiB so its JSON fits the
+2 048-character recent-result bound) while the durable tool history keeps only its digest. Text content is UTF-8 and
+secret-scanned whole before any object is stored. Ownership and state are checked before any object is stored.
+
+## D-C7D-05 — Revisions: working → FINALIZED (immutable, deterministic manifest) (executor)
+
+A working revision belongs to the Work Item that opened it (edited only by its runs). Finalizing re-hashes every object,
+checks bounds (≤ 2 000 files, ≤ 64 MiB, case-insensitive unique paths for Windows) and writes the manifest hash =
+SHA-256 of the canonical, path-sorted entry list; the datastore re-checks the count, size and READY objects. A finalized
+or abandoned revision never changes again (triggers); a change is a new revision (optionally based on a finalized one).
+Logical paths refuse traversal, absolute / drive / device paths, NUL and reserved characters, credential files,
+`node_modules`, VCS and OS folders, and are NFC-normalized; a logical path never becomes a host path.
+
+## D-C7D-06 — Internal Preview on its own loopback site (executor; research §5)
+
+Cookies are not isolated by port and SameSite ignores ports (RFC 6265, WHATWG "site"), so a preview on another port of
+127.0.0.1 would receive the Founder surface's cookies. Each opened preview therefore gets its own ephemeral listener on
+127.0.0.2 — a different host and site — closed when it expires (30 min, ≤ 4 open). Every response carries
+`Content-Security-Policy: sandbox allow-scripts` without allow-same-origin (opaque origin: no cookies, storage or service
+worker), `connect-src 'none'`, `form-action 'none'`, no frames / workers / manifests, noindex / no-store, COOP / CORP /
+COEP. It reads no cookie, sets none, has no API or path, serves only the exact finalized revision's STATIC files
+re-verified from the Artifact Store (source files are stored and exported, never served), refuses a foreign Host,
+non-GET methods and service-worker requests, and refuses the whole preview when any object is missing or corrupt. The
+Founder surface opens it with `noopener`; its existing Sec-Fetch-Site gate refuses anything the preview origin sends.
+Nothing is ever built or executed on the host to make a preview work: a build-needing revision is a capability gap.
+
+## D-C7D-07 — Release Candidates bind content; promotions bind acts; lifecycle is derived (executor)
+
+A Release Candidate binds one finalized revision and its manifest hash (immutable; a change is a new candidate). A
+promotion binds candidate × kind × Founder-registered target × the target adapter's R3 external tool action × EXACT
+arguments (ids, hashes, numbers, timestamps — always the candidate id and manifest hash). Review, Founder approval and
+execution are NOT stored on it: its state (PREPARED, UNDER_REVIEW, REVIEW_REJECTED, READY_FOR_FOUNDER, REJECTED,
+APPROVED, EXECUTING, PROMOTED, FAILED, RECONCILIATION_REQUIRED, STALE) is derived from the canonical review request
+(matched by the exact arguments its subject records), the approval and the tool invocation (matched by Work Item, tool
+action and argument hash). The existing C2 path therefore gives every promotion an independent Review Pool review of the
+exact act (the maker never reviews it) and the Founder's approval of exactly its arguments (APPROVAL_DECIDE, enriched
+with the candidate summary, kind and target). Export approval never authorizes production (another action, another
+fingerprint); one post never authorizes another. One live act per candidate × target × kind: the same terms are
+idempotent, other terms are refused while it lives, and a rejected / reworked act never regenerates for the same
+candidate (a changed candidate is the way forward). A driver resolves its content at execution time from the exact
+approved arguments, re-verified (argument hash, adapter, target, manifest recomputed, every object re-hashed).
+
+## D-C7D-08 — GitHub code-host adapter (executor; research §1)
+
+A private GitHub App: a fresh installation token per call (JWT signed with the App key obtained at the protected
+boundary through a `vault:` reference), scoped to ONE repository and exactly `contents: write, pull_requests: write,
+checks: read, statuses: read, metadata: read` (a broader grant fails closed); host-configured repository allowlist plus
+the Founder-registered target; a closed endpoint allowlist (no DELETE / PATCH, no admin, protection, secrets,
+collaborators, hooks, keys, environments, actions), one fixed host, no redirects. Effective branch rules are read through
+`GET …/rules/branches/{b}` (Metadata), never the Administration-only protection endpoint. Export: blobs → a tree that is
+exactly the candidate (no base tree) → one commit with provenance trailers → a NEW branch (created, never updated or
+forced) → one pull request; replay returns the same refs. Production merge is a separate R3 act bound to the exported head:
+only when `mergeable_state` is `clean` and every check on that head completed green, merged with the `sha` guard (GitHub
+refuses a moved head with 409). Failure before the branch exists is `sent: NO`; from the branch creation / merge call on,
+an unanswered call is `sent: UNKNOWN` → reconciliation, never a blind retry; `promotion-reconcile` reads the Company's own
+effect as evidence for the Founder's existing TOOL_RECONCILE decision. Pinned REST version `2022-11-28` with its announced
+end of support 2028-03-10 (fail closed after it; `2026-03-10` is the newer version to evaluate in a later change).
+
+## D-C7D-09 — Hosting / CMS and social seams; no provider (executor; research §2, §4)
+
+A hosting / CMS adapter declares external preview, production publish, production rollback and state read as DISTINCT
+actions (refused otherwise) and plugs a provider port with four distinct operations; a rollback is bound to the exact
+current production version. A social adapter declares a pinned API version and sunset, content types, permissions,
+account / page roles, edit / delete semantics, asynchronous publish and rate limit; its driver gate checks the identity's
+CURRENT permissions and roles, the version, the content type and that NOW is inside the exact window the approval bound,
+before any provider call; one post per promotion (stable key); an asynchronous answer is SUBMITTED, not "published".
+No comment, reply, DM, paid-spend or ad act exists. No provider is implemented.
+
+## D-C7D-10 — SEO readiness is mechanical; scheduling reuses the calendar; publication is not an outcome (executor)
+
+The SEO lint (mind) reports findings and tallies only — titles, descriptions, canonical consistency, robots / noindex /
+sitemap contradictions, crawlable links, alt text, language, viewport, hreflang syntax, structured-data syntax, route
+status intent, client-rendered pages — never a score, likelihood, volume or position; search performance needs governed
+C7-A evidence. Approved publication windows appear on the existing Company Calendar projection; execution is an ordinary
+Work Item inside the window (the queue already holds time); there is no second scheduler. Digital evidence reaches the
+C7-C Pilot board as counts and states only; a provider confirmation never counts as an outcome or market success, and
+C7-D writes no evaluation, attribution, learning or external evidence.
+
+## D-C7D-11 — New package `@qandeel-company/tool-drivers`; two reviewed network paths (executor)
+
+External Tool drivers live in a real subsystem package (GitHub driver, auth, endpoint allowlist, fixed-host HTTPS transport,
+a deterministic fake GitHub for CI, hosting and social seams). It depends only on domain and governance; it never reaches
+the store, the runtime, SQLite, the filesystem or processes (a driver receives only its resolved candidate through the
+host-wired promotion source). The only network paths added are the isolated Preview host and the GitHub HTTPS transport
+(ESLint and verifier exceptions, each with its own rules). Driver unit tests call `invoke` directly; production code still
+reaches drivers only through the Tool Executor. The deterministic fake provider gains `"$ref:<action>.<field>"` script
+arguments so multi-step scripts can use ids the Company issued.
+
+## D-C7D-12 — Research refresh consequences (executor; informative sources, not authority)
+
+GitHub docs (Apps vs PATs, installation tokens, permissions, protected branches / rulesets, merge `sha`, API versions),
+Vercel / Cloudflare preview-vs-production patterns (immutable per-commit artifact, protected noindex previews, promote the
+verified artifact, rollback to a prior production artifact), Google Search Central (crawlable links, canonical as a hint,
+noindex needs crawlability, sitemap limits, JavaScript SEO, people-first content, Search Analytics as real evidence),
+LinkedIn Posts API and Instagram content publishing (dated versions with sunsets, role-based posting, asynchronous publish,
+container expiry and publish quotas), RFC 6265 / WHATWG / MDN (cookies ignore ports, site ignores ports, CSP sandbox
+opaque origin). Consequences are D-C7D-06 … D-C7D-10. No vendor architecture imported.

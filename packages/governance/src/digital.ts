@@ -539,7 +539,9 @@ export function promotionState(f: PromotionFacts): PromotionState {
   if (f.invocation === 'SUCCEEDED') return 'PROMOTED';
   if (f.invocation === 'RECONCILIATION_REQUIRED') return 'RECONCILIATION_REQUIRED';
   if (f.invocation === 'INTENT_RECORDED') return 'EXECUTING';
-  if (f.invocation === 'FAILED') return 'FAILED';
+  // A driver that refused before acting (sent NO: a moved head, a blocked PR, red checks) consumed the approval: the
+  // exact approved act did not happen — never shown as still under review.
+  if (f.invocation === 'FAILED' || f.invocation === 'RETRYABLE') return 'FAILED';
   if (f.approval === 'REJECTED') return 'REJECTED';
   if (f.review === 'REWORK') return 'REVIEW_REJECTED';
   if (!f.candidateIntact) return 'STALE';

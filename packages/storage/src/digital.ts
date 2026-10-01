@@ -22,7 +22,6 @@ import {
   DIGITAL_WORKSPACE_DRIVER,
   PREVIEW_MODE,
   SOCIAL_PACKAGE_PATH,
-  approvalFingerprint,
   assertCandidateKind,
   assertDigitalPath,
   assertManifestBounds,
@@ -39,7 +38,6 @@ import {
   previewability,
   promotionArgs,
   promotionState,
-  toolCapability,
   type CandidateKind,
   type DigitalManifestEntry,
   type DigitalProjectState,
@@ -269,12 +267,26 @@ export function prepareDigitalAct(store: CompanyStore, fence: Fence, actionCode:
   const read = <T>(fn: () => T): T => ctx.db.snapshot(fn);
   const a = artifactsOf(store);
   const workItemId = read(() => attributed(ctx, fence).workItemId);
+  // Ownership and state are checked BEFORE any object is stored: a foreign or stale Work Item never makes the Company store
+  // content (the transaction re-checks everything).
+  const ownedRevision = (revisionId: unknown): void => {
+    const r = read(() => ctx.db.get<Row>('SELECT state, work_item_id FROM digital_revisions WHERE id = ?', assertId(revisionId, 'revisionId'))) ?? refuse('REVISION_NOT_FOUND');
+    if (s(r.state) !== 'WORKING') refuse('REVISION_NOT_WORKING');
+    if (s(r.work_item_id) !== workItemId) refuse('REVISION_NOT_OWNED');
+  };
+  const ownedUpload = (uploadId: unknown): Row => {
+    const u = read(() => ctx.db.get<Row>('SELECT * FROM digital_uploads WHERE id = ?', assertId(uploadId, 'uploadId'))) ?? refuse('UPLOAD_NOT_FOUND');
+    if (s(u.state) !== 'OPEN') refuse('UPLOAD_NOT_OPEN');
+    if (s(u.work_item_id) !== workItemId) refuse('REVISION_NOT_OWNED');
+    return u;
+  };
   const put = (bytes: Buffer, mediaType: string, label: string): DigitalPrepared => {
     const rec = a.put({ content: bytes, mediaType, label, workItemId, runId: fence.runId, fence });
     return { artifactId: rec.id, sha256: rec.sha256, sizeBytes: rec.sizeBytes, mediaType };
   };
   switch (actionCode) {
     case 'file-put': {
+      ownedRevision(args.revisionId);
       const path = assertDigitalPath(args.path);
       const media = digitalMedia(path);
       const enc = s(args.encoding);
@@ -284,6 +296,7 @@ export function prepareDigitalAct(store: CompanyStore, fence: Fence, actionCode:
       return put(bytes, media.mediaType, 'digital.file');
     }
     case 'upload-chunk': {
+      ownedUpload(args.uploadId);
       const data = s(args.data);
       if (data.length > DIGITAL_CHUNK_BASE64_MAX) refuse('CHUNK_TOO_LARGE');
       const bytes = decodeBase64(data);
@@ -292,7 +305,7 @@ export function prepareDigitalAct(store: CompanyStore, fence: Fence, actionCode:
       return put(bytes, 'application/octet-stream', 'digital.chunk');
     }
     case 'upload-commit': {
-      const u = read(() => ctx.db.get<Row>('SELECT * FROM digital_uploads WHERE id = ?', assertId(args.uploadId, 'uploadId'))) ?? refuse('UPLOAD_NOT_FOUND');
+      const u = ownedUpload(args.uploadId);
       const chunks = read(() => ctx.db.all<Row>('SELECT * FROM digital_upload_chunks WHERE upload_id = ? ORDER BY seq', s(u.id)));
       if (chunks.length !== Number(u.chunk_count)) refuse('UPLOAD_INCOMPLETE');
       const whole = Buffer.concat(chunks.map((c) => a.read(s(c.artifact_id) as Id)));
@@ -429,8 +442,14 @@ export function txPromotionView(ctx: StoreContext, p: DigitalPromotionRecord): P
   const resourceRef = `tool_action:${p.toolActionId}`;
   const inv = ctx.db.get<Row>('SELECT id, state, result_json FROM tool_invocations WHERE tool_action_id = ? AND work_item_id = ? AND args_sha256 = ? ORDER BY created_at DESC, id DESC LIMIT 1', p.toolActionId, p.workItemId, p.argsSha256);
   const appr = ctx.db.get<Row>('SELECT id, state FROM approvals WHERE work_item_id = ? AND resource_ref = ? AND args_sha256 = ? ORDER BY created_at DESC, id DESC LIMIT 1', p.workItemId, resourceRef, p.argsSha256);
-  const fingerprints = action === undefined ? [] : (['D0', 'D1', 'D2'] as const).map((dataClass) => approvalFingerprint({ subjectRef: `employee:${p.employeeId}`, action: toolCapability(action.tool_code, action.code), resourceRef, workItemId: p.workItemId, argsSha256: p.argsSha256, dataClass, risk: action.risk as 'R3', limits: { maxCostMicros: Number(action.cost) } }));
-  const review = ctx.db.get<Row>('SELECT id, state FROM review_requests WHERE work_item_id = ? AND subject_ref = ? AND subject_fingerprint IN (SELECT value FROM json_each(?)) ORDER BY created_at DESC, id DESC LIMIT 1', p.workItemId, resourceRef, JSON.stringify(fingerprints));
+  // The review of exactly this act: the Review Pool's request shows the reviewer the action with its whole canonical
+  // arguments (written once with the request), so it is matched by those exact arguments — whoever executes it.
+  const tail = action === undefined ? '' : `with arguments ${canonicalJson(p.args)}`;
+  const review = ctx.db.get<Row>(
+    `SELECT q.id, q.state FROM review_requests q JOIN review_action_subjects s ON s.request_id = q.id
+      WHERE q.work_item_id = ? AND q.subject_ref = ? AND q.subject_kind = 'ACTION' AND substr(s.subject_text, -length(?)) = ? ORDER BY q.created_at DESC, q.id DESC LIMIT 1`,
+    p.workItemId, resourceRef, tail, tail,
+  );
   const reviewState = review === undefined ? 'NONE' : ({ OPEN: 'OPEN', CONFLICT: 'OPEN', ESCALATED: 'ESCALATED', SATISFIED: 'SATISFIED', CONSUMED: 'SATISFIED', REWORK: 'REWORK', STALE: 'STALE', CANCELLED: 'STALE' } as const)[s(review.state) as 'OPEN'] ?? 'NONE';
   const c = getCandidate(ctx, p.candidateId);
   const facts: PromotionFacts = {
@@ -449,7 +468,8 @@ function candidateIntact(ctx: StoreContext, c: DigitalCandidateRecord): boolean 
     c.revisionId,
   );
   const rev = ctx.db.get<{ m: string | null; st: string }>('SELECT manifest_sha256 AS m, state AS st FROM digital_revisions WHERE id = ?', c.revisionId);
-  return bad === undefined && rev?.st === 'FINALIZED' && rev.m === c.manifestSha256 && manifestOf(ctx, c.revisionId) === c.manifestSha256;
+  // Cheap per view (the revision is immutable once FINALIZED); the export resolution re-derives the manifest itself.
+  return bad === undefined && rev?.st === 'FINALIZED' && rev.m === c.manifestSha256;
 }
 
 const manifestOf = (ctx: StoreContext, revisionId: string): string => digitalManifestSha256(activeFiles(ctx, revisionId).map((f) => ({ path: f.path, sha256: f.sha256, sizeBytes: f.sizeBytes, mediaType: f.mediaType })));
@@ -681,8 +701,11 @@ function preparePromotion(a: ActContext, args: JsonObject, prepared: DigitalPrep
     prior = (exported as PromotionView).id;
     extra = { pullNumber: ref?.pullNumber as number, expectedHeadSha: ref?.commitSha as string };
   } else if (kind === 'SOCIAL_PUBLISH') {
-    extra = { notBefore: optString(args.notBefore) ?? '', notAfter: optString(args.notAfter) ?? '' };
-    if ((extra.notAfter ?? '') <= a.at) refuse('SCHEDULE_WINDOW_PASSED');
+    const notBefore = optString(args.notBefore);
+    const notAfter = optString(args.notAfter);
+    if (notBefore === undefined || notAfter === undefined) refuse('SCHEDULE_WINDOW_INVALID');
+    extra = { notBefore: notBefore as string, notAfter: notAfter as string };
+    if ((notAfter as string) <= a.at) refuse('SCHEDULE_WINDOW_PASSED');
   } else if (kind === 'ROLLBACK_PRODUCTION') {
     extra = { expectedCurrentRef: optString(args.expectedCurrentRef) ?? '', rollbackToRef: optString(args.rollbackToRef) ?? '' };
   }
@@ -742,7 +765,7 @@ export function resolvePromotionExport(store: CompanyStore, adapterCode: string,
       if (t.adapterCode !== adapterCode) refuse('ADAPTER_MISMATCH');
       if (t.state !== 'ACTIVE') refuse('TARGET_NOT_ACTIVE');
       const c = getCandidate(ctx, p.candidateId);
-      if (c.manifestSha256 !== s(args.manifestSha256) || !candidateIntact(ctx, c)) refuse('CANDIDATE_HASH_MISMATCH');
+      if (c.manifestSha256 !== s(args.manifestSha256) || !candidateIntact(ctx, c) || manifestOf(ctx, c.revisionId) !== c.manifestSha256) refuse('CANDIDATE_HASH_MISMATCH');
       return { p, t, c, files: activeFiles(ctx, c.revisionId) };
     });
     const art = artifactsOf(store);

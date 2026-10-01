@@ -88,7 +88,11 @@ const MUTATIONS = [
   {
     id: 'c7d-workspace-ownership-dropped',
     gate: 'a working revision is edited only by runs of the Work Item that opened it',
-    edits: [{ file: `${STORAGE}/digital.js`, search: "if (r.workItemId !== workItemId)\n        refuse('REVISION_NOT_OWNED');", replace: '', expectedCount: 1 }],
+    // Both layers: the pre-transaction check (before any object is stored) and the in-transaction re-check.
+    edits: [
+      { file: `${STORAGE}/digital.js`, search: "if (r.workItemId !== workItemId)\n        refuse('REVISION_NOT_OWNED');", replace: '', expectedCount: 1 },
+      { file: `${STORAGE}/digital.js`, search: "if (s(r.work_item_id) !== workItemId)\n            refuse('REVISION_NOT_OWNED');", replace: '', expectedCount: 1 },
+    ],
     runs: [STORE],
   },
   {

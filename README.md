@@ -29,7 +29,7 @@ governed and auditable.
 | `C7-A` Operational Data + External Outcome Core (C7 = C7-A … C7-D) | CLOSED / MERGED / CANONICAL (PR #13, `e7ca688`; `docs/C7A_CLOSURE_RECORD.md`) |
 | `C7-B` Governed App Operations Control Plane | CLOSED / MERGED / CANONICAL (PR #14, `c06fd2e`; `docs/C7B_CLOSURE_RECORD.md`) |
 | `C7-C` Pilot Instrumentation Pack | CLOSED / MERGED / CANONICAL (PR #15, `f450d6a`; `docs/C7C_CLOSURE_RECORD.md`) |
-| `C7-D` Digital Presence Creation & Operations | IN PROGRESS (branch `c7d/digital-presence-creation-operations`) |
+| `C7-D` Digital Presence Creation & Operations | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/C7D_IMPLEMENTATION_REPORT.md`) |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
@@ -206,12 +206,29 @@ Company, never a second engine:
 
 C7-C builds no website, publishing, connector or transport (that is C7-D, Digital Presence Creation & Operations).
 Details: `docs/C7C_IMPLEMENTATION_REPORT.md`, decisions D-C7C-01 onward; closure: `docs/C7C_CLOSURE_RECORD.md`.
+
+**C7-D (implementation candidate, not closed) adds Digital Presence Creation & Operations capability** — the Company can
+later build and operate QANDEEL's digital presence itself; C7-D does not build the website:
+- an internal **Digital Workshop**: Digital Projects, working → FINALIZED revisions (immutable, deterministic manifest hash)
+  over the Artifact Store (file content never in SQLite), typed authoring actions of one closed Company-native Tool — no
+  shell, filesystem or HTTP tool — that Employees use with explicit grants and **no Founder approval**;
+- an **internal Preview** on its own loopback site (127.0.0.2, sandboxed opaque origin, no network, no cookies, noindex),
+  never a publication; a deterministic **SEO readiness lint** with findings only, never a score;
+- exact **Release Candidates** and **promotions**: every external act is an R3 tool action through the existing Tool
+  Executor — independent Review Pool review, the Founder's approval of exactly its arguments (candidate + manifest hash +
+  target), idempotent driver, reconciliation on an unknown outcome; export ≠ production merge ≠ another post;
+- the first external adapter, **GitHub** (installation token per call, one repository, five least-privilege permissions,
+  closed endpoint allowlist, exact-tree export, exact-head merge with no bypass), and provider-neutral **hosting / CMS and
+  social seams** with no provider selected; publication is never market success (real outcomes come only through C7-A).
+
+Details: `docs/C7D_IMPLEMENTATION_REPORT.md`, decisions D-C7D-01 onward.
 | Package | Role |
 |---|---|
 | `@qandeel-company/domain` | Pure contracts: IDs, UTC clock, state machines, retry policy, processor contract |
 | `@qandeel-company/governance` | C2 pure policy kernel: Employee lifecycle, R0–R4 authority, `E0..E4` / `D0..D4`, Router Policy, checked economics, provider / tool contracts, typed proposals; C4 organization, delegation and review rules; the C7-A intake kernel (closed contracts, allowlist, privacy refusal, source lifecycle); the C7-B control kernel (seven closed families, typed scopes / values, empty Remote Configuration register, negative-only Route Hold, R3 control acts) |
 | `@qandeel-company/mind` | C3 pure kernel: Memory Write Policy, deterministic retrieval and context planning, compaction, Skill pipeline / licensing / inspection, capability evaluation, Academy rules; C6 evaluation, attribution, Performance Profile, learning closure and report semantics |
 | `@qandeel-company/storage` | Workspace, SQLite/WAL adapter (the only `node:sqlite` user), migrations, repositories, Artifact Store, backup; C4 Organization and Review stores; C5 Founder stores; C6 Improvement store and resilience (portable packages, retention, drills, update safety); the C7-A External Evidence store (governed sources, intake, bindings, bounded refusal counters); the C7-B App Control store (proposals, issued revisions, the export of Company-issued desired controls); the C7-C Pilot store (lifecycle, bindings, the derived Evidence Board) |
+| `@qandeel-company/tool-drivers` | C7-D governed external Tool drivers: the GitHub code-host promotion adapter behind one fixed-host HTTPS transport (and a deterministic fake GitHub for CI), the provider-neutral hosting / CMS and social publication seams; reached only through the Tool Executor |
 | `@qandeel-company/runtime` | Runtime Supervisor, bounded worker pool, recovery, health, CLI; C2 governed Model Runtime, Tool Executor, `c2.employee-task` loop, deterministic fakes; C3 Context Assembler and memory-proposal path |
 | `@qandeel-company/bootstrap-contract` | C0 toolchain proof (unchanged) |
 
@@ -276,7 +293,7 @@ npm run ci
 | `npm run c7b:mutation` | Removes 33 C7-B control-plane gates (seven-family catalogue, R3 seat / grant / review / Founder approval, exact-act binding, the revision law, the datastore family / scope / value contract, ISSUED-only state, negative-only Route Hold, empty Remote Configuration register, no generic execution, content-free outbox, refusal coalescing) from the build (a datastore gate from the migration, re-pinned for that run only); their proof tests must fail (after a build). `-- --shard i/n` runs a disjoint slice; `-- --only id,id` a local focus |
 | `npm run c7c:mutation` | Removes 27 C7-C Pilot gates (READY without briefing evidence or on a briefing from before the Pilot, ACTIVE without an active root goal, a message read as authority, terminal revival, mode change, Founder bypass, repeated steps, duplicate linkage, activity as performance, aggregation, attribution / review bypass, training as improvement, zero-qualified efficiency, ledger bypass, contested or training market claims, an issued control as an outcome, audit content) from the build (a datastore gate from the migration, re-pinned for that run only); their proof tests must fail (after a build). `-- --shard i/n` / `-- --only id,id` as above |
 | `npm run verify` | Repository-contract verifier (`scripts/verify-bootstrap.mjs`) |
-| `npm run ci` | build → typecheck → lint → test → C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A + C7-B + C7-C mutation checks → verify (CI runs the same proofs, split into parallel jobs) |
+| `npm run ci` | build → typecheck → lint → test → C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A + C7-B + C7-C + C7-D mutation checks → verify (CI runs the same proofs, split into parallel jobs) |
 
 ### C1 local acceptance (Founder host)
 
@@ -583,6 +600,12 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
   Pilot writes only in its store and never from runtime / CLI / surface internals; exactly the eight readiness criteria;
   autonomy read from JUDGMENT + INDEPENDENCE only; no network path, C7-D scope or App-effect claim in a C7-C module; C7-C
   not claimed closed without its record; the C7-C proofs and mutation check present;
+- the C7-D boundaries: C7-D only after the C7-C closure record; every workshop datastore gate; only the digital tables (no
+  second review, approval, cost, schedule or Pilot store) and no content / blob / secret / score column; digital writes only
+  in its store; drivers never reach the store, runtime, SQLite or filesystem, never force, and GitHub talks to one fixed host
+  with least-privilege permissions and a closed endpoint allowlist; the Preview on 127.0.0.2, sandboxed, cookie-free; no
+  website / hosting / CMS / analytics / social vendor named; no publication-as-success claim; C7-D not claimed closed or the
+  website claimed built; the C7-D proofs and mutation check present;
 - the CI contract: triggers, SHA-pinned actions, both operating systems, complete mutation shard
   partitions, the always-running quality gate, and a fail-closed change classifier.
 

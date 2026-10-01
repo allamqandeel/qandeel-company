@@ -138,6 +138,7 @@ describe('C7-D promotions', () => {
     assert.equal(promotionState({ ...f, approval: 'CONSUMED', invocation: 'INTENT_RECORDED' }), 'EXECUTING');
     assert.equal(promotionState({ ...f, approval: 'CONSUMED', invocation: 'RECONCILIATION_REQUIRED' }), 'RECONCILIATION_REQUIRED');
     assert.equal(promotionState({ ...f, approval: 'CONSUMED', invocation: 'SUCCEEDED' }), 'PROMOTED');
+    assert.equal(promotionState({ ...f, review: 'SATISFIED', approval: 'CONSUMED', invocation: 'RETRYABLE' }), 'FAILED', 'a driver refusal after approval is a failed act, never "under review"');
     assert.equal(promotionState({ ...f, candidateIntact: false, review: 'SATISFIED', approval: 'PENDING' }), 'STALE', '6 a corrupt candidate is no longer approvable');
     assert.ok(!(PROMOTION_STATES as readonly string[]).some((s) => /SUCCESS|MARKET|TRAFFIC|RANK/.test(s)));
   });
