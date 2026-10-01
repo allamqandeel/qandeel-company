@@ -202,17 +202,18 @@ describe('C7-A source governance: nothing becomes trusted without a Founder deci
       assert.throws(() => x.x.registerSource(x.s.founder, { sourceKey: 'web-analytics.main', family: 'WEB_ANALYTICS', contractCode: 'outcome.metrics', contractVersion: 2 }), reason('UNKNOWN_CONTRACT'));
       assert.equal(x.x.registerSource(x.s.founder, { sourceKey: 'web-analytics.main', family: 'WEB_ANALYTICS', contractCode: 'outcome.metrics', contractVersion: 1 }).changed, false, 'the same contract is idempotent');
       assert.throws(() => x.x.registerSource(x.s.founder, { sourceKey: 'web-analytics.main', family: 'SEARCH', contractCode: 'outcome.metrics', contractVersion: 1 }), reason('SOURCE_IDENTITY_IMMUTABLE'));
-      // The release's contract definition changed WITHOUT a version bump (simulated in-process): the registered digest no
-      // longer matches, so intake fails closed until the Founder registers a new contract version.
-      const live = contractOf('outcome.metrics', 1) as unknown as { metrics: unknown[] };
-      const saved = live.metrics;
-      live.metrics = [...saved, { ...(saved[0] as object), metric: 'web.silently_added' }];
-      try {
-        assert.throws(() => x.x.ingest(metric('m-drift')), refusedBy('CONTRACT_DRIFT'));
-      } finally {
-        live.metrics = saved;
-      }
-      assert.equal(x.x.ingest(metric('m-ok')).outcome, 'ACCEPTED', 'the pinned definition validates again');
+      // The release's contract definition changed WITHOUT a version bump (the catalog is deeply immutable in-process, so
+      // this is a source pinned to a digest the current definition no longer produces): intake fails closed.
+      assert.ok(Object.isFrozen(contractOf('outcome.metrics', 1)?.metrics), 'a pinned contract cannot change in-process');
+      const drifted = newId();
+      db(x).immediate('pinned to an older definition', () => {
+        db(x).run(`INSERT INTO external_sources (id, source_key, lane, family, state, registered_by_ref, decided_by_ref, decision_reason_code, version, created_at, updated_at) VALUES (?, 'search.drifted', 'EXTERNAL_OUTCOME', 'SEARCH', 'DRAFT', ?, NULL, NULL, 1, ?, ?)`, drifted, x.s.founder, OCCURRED, OCCURRED);
+        db(x).run(`INSERT INTO external_source_history (source_id, version, from_state, to_state, reason_code, actor_ref, occurred_at) VALUES (?, 1, NULL, 'DRAFT', 'source.registered', ?, ?)`, drifted, x.s.founder, OCCURRED);
+        db(x).run(`INSERT INTO external_source_contracts (id, source_id, contract_code, contract_version, contract_sha256, state, registered_by_ref, created_at, updated_at) VALUES (?, ?, 'outcome.metrics', 1, ?, 'CURRENT', ?, ?, ?)`, newId(), drifted, 'd'.repeat(64), x.s.founder, OCCURRED, OCCURRED);
+      });
+      x.x.decideSource(x.s.founder, drifted, { decision: 'ACTIVATE', reasonCode: 'founder.trusted' });
+      assert.throws(() => x.x.ingest({ ...metric('m-drift', 5, { type: 'search.clicks' }), sourceKey: 'search.drifted' }), refusedBy('CONTRACT_DRIFT'));
+      assert.equal(x.x.ingest(metric('m-ok')).outcome, 'ACCEPTED', 'a source pinned to the current definition validates');
       // A current contract row naming a version this release does not know is drift too.
       db(x).immediate('drift', () => {
         db(x).run(`UPDATE external_source_contracts SET state = 'SUPERSEDED', updated_at = ? WHERE source_id = ? AND state = 'CURRENT'`, OCCURRED, id);
@@ -341,6 +342,7 @@ describe('C7-A privacy: structural, allowlist-first, and nothing refused is kept
         const all = everything(x);
         assert.ok(!all.includes(PRIVATE) && !all.includes(SECRET), '(18) nothing refused reaches storage, audit or the outbox');
         assert.equal(count(x, 'SELECT COUNT(*) AS n FROM external_records'), 0);
+        assert.equal(x.x.health().perSource[0]?.rejected, 1, 'the refusal counts against the source that sent it (by its registered id)');
         const audit = db(x).all<{ details_json: string }>(`SELECT details_json FROM audit_events WHERE action = 'external.intake_rejected' AND reason_code = ?`, why);
         assert.equal(audit.length, 1, 'the refusal itself is audited by code');
         const details = JSON.parse(String(audit[0]?.details_json)) as Record<string, unknown>;
@@ -394,6 +396,8 @@ describe('C7-A operational facts vs outcome evidence: evidence is never a verdic
       const w = reviewedWork(x);
       const op = x.x.ingest(opsEvent('o-1')).record;
       assert.throws(() => bind(x, op.id, w), reason('OPERATIONAL_FACT_IS_NOT_OUTCOME_EVIDENCE'));
+      const { actions, session } = founderActions(x);
+      assert.throws(() => actions.preview(session, 'EVIDENCE_BIND', { recordId: op.id, subjectKind: 'WORK_ITEM', subjectId: w, role: 'OUTCOME_EVIDENCE' }), reason('OPERATIONAL_FACT_IS_NOT_OUTCOME_EVIDENCE'), 'the preview refuses it too');
       assert.throws(() => verifyExternal(x, w, [op.ref]), reason('NOT_OUTCOME_EVIDENCE'));
       assert.throws(
         () => db(x).immediate('bypass', () => db(x).run(`INSERT INTO external_evidence_bindings (id, record_id, role, subject_kind, subject_id, state, bound_by_ref, reason_code, ended_by_ref, end_reason_code, superseded_by, version, created_at, updated_at) VALUES (?, ?, 'OUTCOME_EVIDENCE', 'WORK_ITEM', ?, 'ACTIVE', ?, 'x', NULL, NULL, NULL, 1, ?, ?)`, newId(), op.id, w, x.s.founder, OCCURRED, OCCURRED)),

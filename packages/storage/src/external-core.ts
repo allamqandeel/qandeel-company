@@ -137,12 +137,16 @@ export interface ExternalEvidenceView {
   readonly usable: boolean;
 }
 
+/** The bound on the report's evidence bindings per period (the claims document stays bounded). */
+export const REPORT_EVIDENCE_CAP = 500;
+
 /** Report facts (C6 reporting): availability, the period's relevant bound outcome evidence per subject, and verifications that cited it. */
 export function externalReportFacts(ctx: StoreContext, period: { from: string; to: string }): {
   state: ExternalOutcomeState;
   sources: string[];
   evidence: { subjectKind: 'WORK_ITEM' | 'GOAL'; subjectId: string; recordIds: string[]; bindingIds: string[]; types: string[] }[];
   verifications: { id: string; workItemId: string; verdict: string; recordIds: string[] }[];
+  truncated: { shown: number; total: number } | null;
 } {
   const a = externalAvailability(ctx);
   const rows = ctx.db.all<{ subject_kind: string; subject_id: string; binding_id: string; record_id: string; record_type: string }>(
@@ -150,10 +154,14 @@ export function externalReportFacts(ctx: StoreContext, period: { from: string; t
       WHERE b.state = 'ACTIVE' AND b.role = 'OUTCOME_EVIDENCE' AND x.lane = 'EXTERNAL_OUTCOME' AND s.state = 'ACTIVE'
         AND NOT EXISTS (SELECT 1 FROM external_record_conflicts k WHERE k.record_id = x.id)
         AND x.occurred_at >= ? AND x.occurred_at <= ?
-      ORDER BY b.subject_kind, b.subject_id, x.occurred_at, x.id LIMIT 500`,
+      ORDER BY b.subject_kind, b.subject_id, x.occurred_at, x.id LIMIT ?`,
     period.from,
     period.to,
+    REPORT_EVIDENCE_CAP + 1,
   );
+  // A bounded report never hides that it is bounded: the cut is disclosed (and the rest is one inspection away).
+  const truncated = rows.length > REPORT_EVIDENCE_CAP ? { shown: REPORT_EVIDENCE_CAP, total: Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM external_evidence_bindings b JOIN external_records x ON x.id = b.record_id JOIN external_sources s ON s.id = x.source_id WHERE b.state = 'ACTIVE' AND b.role = 'OUTCOME_EVIDENCE' AND x.lane = 'EXTERNAL_OUTCOME' AND s.state = 'ACTIVE' AND NOT EXISTS (SELECT 1 FROM external_record_conflicts k WHERE k.record_id = x.id) AND x.occurred_at >= ? AND x.occurred_at <= ?`, period.from, period.to)?.n ?? 0) } : null;
+  rows.splice(REPORT_EVIDENCE_CAP);
   const bySubject = new Map<string, { subjectKind: 'WORK_ITEM' | 'GOAL'; subjectId: string; recordIds: string[]; bindingIds: string[]; types: string[] }>();
   for (const r of rows) {
     const key = `${r.subject_kind}:${r.subject_id}`;
@@ -172,7 +180,7 @@ export function externalReportFacts(ctx: StoreContext, period: { from: string; t
       period.to,
     )
     .map((v) => ({ id: v.id, workItemId: v.work_item_id, verdict: v.verdict, recordIds: (JSON.parse(v.refs) as string[]).map(externalRecordIdOf).filter((x): x is string => x !== null) }));
-  return { state: a.state === 'NO_GOVERNED_SOURCE' ? 'NO_GOVERNED_SOURCE' : bySubject.size > 0 || verifications.length > 0 ? 'EVIDENCE_AVAILABLE' : 'NO_RELEVANT_EVIDENCE', sources: a.activeOutcomeSources, evidence: [...bySubject.values()], verifications };
+  return { state: a.state === 'NO_GOVERNED_SOURCE' ? 'NO_GOVERNED_SOURCE' : bySubject.size > 0 || verifications.length > 0 ? 'EVIDENCE_AVAILABLE' : 'NO_RELEVANT_EVIDENCE', sources: a.activeOutcomeSources, evidence: [...bySubject.values()], verifications, truncated };
 }
 
 /**
@@ -186,8 +194,12 @@ export function externalAttentionSignals(ctx: StoreContext): { dedupKey: string;
     out.push({ dedupKey: `external_source:${s.id}`, sourceRef: `external_source:${s.id}`, changedAt: s.updated_at, level: 'NEEDS_DECISION' });
   }
   for (const s of ctx.db.all<{ id: string; at: string }>(
+    // Judged against the source's last activation (a lifecycle decision), never any later row update such as a new
+    // contract version: only a decision about the source (suspend, re-activate) or a dismissal answers a conflict.
     `SELECT s.id, MAX(k.received_at) AS at FROM external_sources s JOIN external_record_conflicts k ON k.source_id = s.id
-      WHERE s.state = 'ACTIVE' AND k.received_at >= s.updated_at GROUP BY s.id ORDER BY s.id`,
+      WHERE s.state = 'ACTIVE'
+        AND k.received_at >= COALESCE((SELECT MAX(h.occurred_at) FROM external_source_history h WHERE h.source_id = s.id AND h.to_state = 'ACTIVE' AND h.from_state IS NOT 'ACTIVE'), s.created_at)
+      GROUP BY s.id ORDER BY s.id`,
   )) {
     out.push({ dedupKey: `external_integrity:${s.id}`, sourceRef: `external_source:${s.id}`, changedAt: s.at, level: 'URGENT' });
   }

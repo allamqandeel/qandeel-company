@@ -20,7 +20,7 @@ import { BINDING_ROLES, BINDING_SUBJECTS, SOURCE_DECISIONS, assertGoalTransition
 import { assertCauses, summarizeCauses, type AttributedCause } from '@qandeel-company/mind';
 
 import { txAssertExternalEvidence } from './external-core.js';
-import { ExternalEvidenceStore } from './external-evidence.js';
+import { ExternalEvidenceStore, txAssertBindable } from './external-evidence.js';
 import { getBudgetRow, budgetFor } from './governance-core.js';
 import { GovernanceStore, founderConfirmInternals, isGovernedJob, resolveGovernedReconciliation } from './governance.js';
 import { getGoal, GoalStore } from './goals.js';
@@ -253,7 +253,8 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
       const subjectKind = oneOf(raw, 'subjectKind', BINDING_SUBJECTS);
       const role = oneOf(raw, 'role', BINDING_ROLES);
       const subjectId = assertId(raw.subjectId, 'subjectId');
-      if (!ctx.db.get('SELECT 1 AS x FROM external_records WHERE id = ?', recordId)) throw new QandeelError('NOT_FOUND', 'external record not found', { recordId });
+      // A preview never offers a binding the confirmation would refuse (role, source state, conflict, subject).
+      txAssertBindable(ctx, recordId, role, subjectKind, subjectId);
       const supersedes = raw.supersedesBindingId === undefined || raw.supersedesBindingId === null ? null : assertId(raw.supersedesBindingId, 'supersedesBindingId');
       return { recordId, subjectKind, subjectId, role, supersedesBindingId: supersedes, reasonCode: assertCode(raw.reasonCode ?? 'founder.bound', 'reasonCode') };
     }

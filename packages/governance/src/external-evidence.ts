@@ -211,7 +211,15 @@ const OUTCOME_METRICS_V1: ContractSpec = {
 };
 
 /** Every contract this release can validate. A source names exactly one (code, version); anything else fails closed. */
-export const EXTERNAL_CONTRACTS: readonly ContractSpec[] = Object.freeze([OPS_EVENTS_V1, OUTCOME_METRICS_V1]);
+const deepFreeze = <T>(v: T): T => {
+  if (typeof v === 'object' && v !== null && !Object.isFrozen(v)) {
+    Object.freeze(v);
+    for (const x of Object.values(v as Record<string, unknown>)) deepFreeze(x);
+  }
+  return v;
+};
+/** Deeply immutable: nothing in the process can change what a pinned contract version accepts. */
+export const EXTERNAL_CONTRACTS: readonly ContractSpec[] = deepFreeze([OPS_EVENTS_V1, OUTCOME_METRICS_V1]);
 
 export function contractOf(code: unknown, version: unknown): ContractSpec | null {
   return EXTERNAL_CONTRACTS.find((c) => c.code === code && c.version === version) ?? null;

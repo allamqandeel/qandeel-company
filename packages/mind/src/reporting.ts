@@ -92,6 +92,8 @@ export interface ExternalOutcomeFacts {
   readonly evidence: readonly { readonly subjectKind: 'WORK_ITEM' | 'GOAL'; readonly subjectId: string; readonly recordIds: readonly string[]; readonly bindingIds: readonly string[]; readonly types: readonly string[] }[];
   /** Outcome verifications of the period that cited external outcome evidence. */
   readonly verifications: readonly { readonly id: string; readonly workItemId: string; readonly verdict: string; readonly recordIds: readonly string[] }[];
+  /** Set when the period held more bound evidence than a report carries: the cut is disclosed, never hidden. */
+  readonly truncated?: { readonly shown: number; readonly total: number } | null;
 }
 
 export const NO_EXTERNAL_OUTCOME_FACTS: ExternalOutcomeFacts = Object.freeze({ state: 'NO_GOVERNED_SOURCE', sources: [], evidence: [], verifications: [] });
@@ -109,6 +111,7 @@ function externalClaims(x: ExternalOutcomeFacts): Claim[] {
     const by = (v: string): number => x.verifications.filter((y) => y.verdict === v).length;
     claims.push(fact('EXTERNAL_OUTCOMES_IN_VERIFICATION', COMPANY, { verifications: x.verifications.length, achieved: by('ACHIEVED'), notAchieved: by('NOT_ACHIEVED'), inconclusive: by('INCONCLUSIVE') }, x.verifications.flatMap((v) => [`outcome_verification:${v.id}`, ...v.recordIds.map((id) => `external_record:${id}`)]).slice(0, 100)));
   }
+  if (x.truncated) claims.push(fact('EXTERNAL_OUTCOME_EVIDENCE_TRUNCATED', COMPANY, { shown: x.truncated.shown, total: x.truncated.total }, sources));
   if (claims.length === 0) claims.push(fact('EXTERNAL_OUTCOMES_NO_RELEVANT_EVIDENCE', COMPANY, { activeSources: x.sources.length }, sources));
   return claims;
 }

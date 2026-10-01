@@ -42,6 +42,9 @@ describe('C7-A: external outcomes at the C6 kernel are durable truth passed in, 
     assert.deepEqual(cited[0]?.evidenceRefs, ['external_record:r1', 'external_record:r2', 'external_binding:b1', 'external_binding:b2']);
     assert.deepEqual(cited[1]?.evidenceRefs, ['outcome_verification:v1', 'external_record:r1']);
     assert.ok(cited.every((c) => c.kind === 'FACT' && c.evidenceRefs.length > 0), 'every external-result claim cites canonical evidence');
+    // A bounded report discloses its cut (and cites the sources), never hides it.
+    const cut = composeReport(weekly({ state: 'EVIDENCE_AVAILABLE', sources: ['s1'], evidence: [{ subjectKind: 'WORK_ITEM', subjectId: 'w1', recordIds: ['r1'], bindingIds: ['b1'], types: ['web.sessions'] }], verifications: [], truncated: { shown: 500, total: 812 } })).claims.find((c) => c.code === 'EXTERNAL_OUTCOME_EVIDENCE_TRUNCATED');
+    assert.deepEqual([cut?.params, cut?.evidenceRefs], [{ shown: 500, total: 812 }, ['external_source:s1']]);
     // An inconsistent state (claims "available" with no source) still never invents availability.
     assert.equal(composeReport(weekly({ state: 'EVIDENCE_AVAILABLE', sources: [], evidence: [], verifications: [] })).claims.some((c) => c.code === 'EXTERNAL_OUTCOMES_UNAVAILABLE'), true);
   });

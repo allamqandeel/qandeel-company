@@ -184,6 +184,24 @@ function insertContract(ctx: StoreContext, sourceId: Id, contract: ContractSpec,
   return id;
 }
 
+/**
+ * Whether a record may be bound now in this role to this subject (code; the datastore re-checks it). Shared by the store
+ * and the governed preview, so a preview never offers a binding the confirmation would refuse.
+ */
+export function txAssertBindable(ctx: StoreContext, recordId: Id, role: BindingRole, subjectKind: BindingSubject, subjectId: Id): ExternalRecordView {
+  const rec = ctx.db.get<Row>('SELECT x.*, s.state AS source_state FROM external_records x JOIN external_sources s ON s.id = x.source_id WHERE x.id = ?', recordId);
+  if (!rec) throw new QandeelError('NOT_FOUND', 'external record not found', { recordId });
+  const view = mapRecord(ctx, rec);
+  if (!bindableRole(view, role, subjectKind)) throw new QandeelError('EVIDENCE_REQUIRED', 'this record cannot play that role for that subject', { recordId, reason: view.lane === 'OPERATIONAL_EVENT' && role === 'OUTCOME_EVIDENCE' ? 'OPERATIONAL_FACT_IS_NOT_OUTCOME_EVIDENCE' : 'ROLE_NOT_BINDABLE' });
+  if (s(rec.source_state) !== 'ACTIVE') throw new QandeelError('EVIDENCE_REQUIRED', 'evidence of a source that is not ACTIVE is not newly used', { recordId, reason: 'SOURCE_NOT_ACTIVE' });
+  if (view.conflicts > 0) throw new QandeelError('EVIDENCE_REQUIRED', 'a record with a conflicting replay is not usable evidence', { recordId, reason: 'RECORD_CONFLICTED' });
+  const exists = subjectKind === 'WORK_ITEM' ? ctx.db.get('SELECT 1 AS x FROM work_items WHERE id = ?', subjectId) : ctx.db.get('SELECT 1 AS x FROM goals WHERE id = ?', subjectId);
+  if (!exists) throw new QandeelError('NOT_FOUND', 'binding subject not found', { subjectKind, subjectId });
+  return view;
+}
+
+const SOURCE_KEY_SHAPE = /^[a-z0-9][a-z0-9.-]{2,63}$/;
+
 type Ingested = { kind: 'ACCEPTED' | 'DUPLICATE'; record: ExternalRecordView } | { kind: 'CONFLICT'; recordId: Id; sourceId: Id };
 
 /** The intake transaction. A refusal throws (and is audited by the caller in its own transaction); a conflict commits its record. */
@@ -323,14 +341,7 @@ export class ExternalEvidenceStore {
       const subjectKind = input.subjectKind as BindingSubject;
       const role = input.role as BindingRole;
       const reason = assertCode(input.reasonCode, 'reasonCode');
-      const rec = ctx.db.get<Row>('SELECT x.*, s.state AS source_state FROM external_records x JOIN external_sources s ON s.id = x.source_id WHERE x.id = ?', recordId);
-      if (!rec) throw new QandeelError('NOT_FOUND', 'external record not found', { recordId });
-      const view = mapRecord(ctx, rec);
-      if (!bindableRole(view, role, subjectKind)) throw new QandeelError('EVIDENCE_REQUIRED', 'this record cannot play that role for that subject', { recordId, reason: view.lane === 'OPERATIONAL_EVENT' && role === 'OUTCOME_EVIDENCE' ? 'OPERATIONAL_FACT_IS_NOT_OUTCOME_EVIDENCE' : 'ROLE_NOT_BINDABLE' });
-      if (s(rec.source_state) !== 'ACTIVE') throw new QandeelError('EVIDENCE_REQUIRED', 'evidence of a source that is not ACTIVE is not newly used', { recordId, reason: 'SOURCE_NOT_ACTIVE' });
-      if (view.conflicts > 0) throw new QandeelError('EVIDENCE_REQUIRED', 'a record with a conflicting replay is not usable evidence', { recordId, reason: 'RECORD_CONFLICTED' });
-      const exists = subjectKind === 'WORK_ITEM' ? ctx.db.get('SELECT 1 AS x FROM work_items WHERE id = ?', subjectId) : ctx.db.get('SELECT 1 AS x FROM goals WHERE id = ?', subjectId);
-      if (!exists) throw new QandeelError('NOT_FOUND', 'binding subject not found', { subjectKind, subjectId });
+      const view = txAssertBindable(ctx, recordId as Id, role, subjectKind, subjectId as Id);
       const live = ctx.db.get<Row>(`SELECT * FROM external_evidence_bindings WHERE record_id = ? AND role = ? AND subject_kind = ? AND subject_id = ? AND state = 'ACTIVE'`, recordId, role, subjectKind, subjectId);
       if (live) return { binding: mapBinding(live), changed: false };
       const prior = input.supersedesBindingId === undefined ? null : ctx.db.get<Row>('SELECT * FROM external_evidence_bindings WHERE id = ?', assertId(input.supersedesBindingId, 'supersedesBindingId'));
@@ -388,7 +399,13 @@ export class ExternalEvidenceStore {
         const reason = String(error.details.reason ?? 'REJECTED').slice(0, 64);
         const field = typeof error.details.field === 'string' ? error.details.field : null;
         try {
-          ctx.db.immediate('audit refused intake', () => appendAudit(ctx, 'external.intake_rejected', 'external_source', refused.sourceId ?? 'unresolved', { actorRef: INTAKE_ACTOR_REF }, 'REJECTED', reason, field === null ? {} : { field }));
+          ctx.db.immediate('audit refused intake', () => {
+            // A refusal raised before the source was resolved (the privacy screen runs first) is still attributed to the
+            // registered source a shape-valid key names — a registered identifier, never content — so its health counts it.
+            const key = refused.sourceId === null && typeof occurrence === 'object' && occurrence !== null ? (occurrence as Record<string, unknown>).sourceKey : undefined;
+            const named = typeof key === 'string' && SOURCE_KEY_SHAPE.test(key) ? ctx.db.get<{ id: string }>('SELECT id FROM external_sources WHERE source_key = ?', key)?.id : undefined;
+            appendAudit(ctx, 'external.intake_rejected', 'external_source', refused.sourceId ?? named ?? 'unresolved', { actorRef: INTAKE_ACTOR_REF }, 'REJECTED', reason, field === null ? {} : { field });
+          });
         } catch {
           // Auditing a refusal never masks the refusal itself.
         }
@@ -426,12 +443,20 @@ export class ExternalEvidenceStore {
   }
 
   bindings(filter: { recordId?: string; subjectKind?: BindingSubject; subjectId?: string; state?: ExternalBindingRecord['state'] } = {}): ExternalBindingRecord[] {
-    return this.#read((ctx) =>
-      ctx.db
-        .all<Row>('SELECT * FROM external_evidence_bindings ORDER BY created_at, id LIMIT 2000')
-        .map(mapBinding)
-        .filter((b) => (filter.recordId === undefined || b.recordId === filter.recordId) && (filter.subjectKind === undefined || b.subjectKind === filter.subjectKind) && (filter.subjectId === undefined || b.subjectId === filter.subjectId) && (filter.state === undefined || b.state === filter.state)),
-    );
+    return this.#read((ctx) => {
+      const clauses: string[] = [];
+      const params: string[] = [];
+      const add = (column: string, value: string | undefined): void => {
+        if (value === undefined) return;
+        clauses.push(`${column} = ?`);
+        params.push(value);
+      };
+      add('record_id', filter.recordId);
+      add('subject_kind', filter.subjectKind);
+      add('subject_id', filter.subjectId);
+      add('state', filter.state);
+      return ctx.db.all<Row>(`SELECT * FROM external_evidence_bindings${clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''} ORDER BY created_at, id LIMIT 2000`, ...params).map(mapBinding);
+    });
   }
 
   /** The external evidence bound to one Work Item or Goal (drill-down for C6 reports and inspection). */
@@ -449,14 +474,18 @@ export class ExternalEvidenceStore {
   health(): { sources: Record<SourceState, number>; perSource: { sourceId: Id; state: SourceState; lane: ExternalLane; accepted: number; conflicts: number; rejected: number; lastReceivedAt: string | null }[]; userScopedRecords: number; bindingsActive: number } {
     return this.#read((ctx) => {
       const n = (sql: string, ...p: string[]): number => Number(ctx.db.get<{ n: number }>(sql, ...p)?.n ?? 0);
+      const grouped = (sql: string): Map<string, Row> => new Map(ctx.db.all<Row>(sql).map((r) => [s(r.k), r]));
+      const records = grouped('SELECT source_id AS k, COUNT(*) AS n, MAX(received_at) AS at FROM external_records GROUP BY source_id');
+      const conflicts = grouped('SELECT source_id AS k, COUNT(*) AS n FROM external_record_conflicts GROUP BY source_id');
+      const rejected = grouped(`SELECT entity_id AS k, COUNT(*) AS n FROM audit_events WHERE action = 'external.intake_rejected' GROUP BY entity_id`);
       const perSource = ctx.db.all<Row>('SELECT id, state, lane FROM external_sources ORDER BY created_at, id').map((r) => ({
         sourceId: s(r.id) as Id,
         state: s(r.state) as SourceState,
         lane: s(r.lane) as ExternalLane,
-        accepted: n('SELECT COUNT(*) AS n FROM external_records WHERE source_id = ?', s(r.id)),
-        conflicts: n('SELECT COUNT(*) AS n FROM external_record_conflicts WHERE source_id = ?', s(r.id)),
-        rejected: n(`SELECT COUNT(*) AS n FROM audit_events WHERE action = 'external.intake_rejected' AND entity_id = ?`, s(r.id)),
-        lastReceivedAt: ctx.db.get<{ at: string | null }>('SELECT MAX(received_at) AS at FROM external_records WHERE source_id = ?', s(r.id))?.at ?? null,
+        accepted: Number(records.get(s(r.id))?.n ?? 0),
+        conflicts: Number(conflicts.get(s(r.id))?.n ?? 0),
+        rejected: Number(rejected.get(s(r.id))?.n ?? 0),
+        lastReceivedAt: os(records.get(s(r.id))?.at),
       }));
       const by = (st: SourceState): number => n('SELECT COUNT(*) AS n FROM external_sources WHERE state = ?', st);
       return {

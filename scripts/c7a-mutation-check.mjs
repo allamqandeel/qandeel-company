@@ -70,7 +70,7 @@ const MUTATIONS = [
   {
     id: 'c7a-refused-payload-audited',
     gate: 'a refused occurrence is audited by reason code only — its content never reaches audit',
-    edits: [{ file: `${STORAGE}/external-evidence.js`, search: "reason, field === null ? {} : { field }));", replace: "reason, { echo: JSON.stringify(occurrence).slice(0, 128) }));", expectedCount: 1 }],
+    edits: [{ file: `${STORAGE}/external-evidence.js`, search: "reason, field === null ? {} : { field });", replace: "reason, { echo: JSON.stringify(occurrence).slice(0, 128) });", expectedCount: 1 }],
     runs: [STORE],
   },
   // --- Source governance, contracts and lifecycle ----------------------------------------------------------------

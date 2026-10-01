@@ -131,6 +131,7 @@ describe('C7-A contracts: the frozen App operational domains, provider-neutral o
     for (const e of events) for (const k of Object.keys(e.fields)) assert.equal(forbiddenKeyClass(k), null, k);
     assert.equal(contractOf('ops.events', 1)?.lane, 'OPERATIONAL_EVENT');
     assert.equal(contractOf('ops.events', 2), null);
+    assert.ok(Object.isFrozen(EXTERNAL_CONTRACTS) && Object.isFrozen(contractOf('outcome.metrics', 1)?.metrics) && Object.isFrozen(contractOf('ops.events', 1)?.eventTypes[0]?.fields), 'the catalog is deeply immutable');
   });
 
   test('a source registers one known (contract, version) of a family it serves; its lifecycle moves forward only', () => {
