@@ -13,6 +13,8 @@ import type { CompanyRuntime } from '@qandeel-company/runtime';
 export interface ApiContext {
   readonly runtime: CompanyRuntime;
   readonly session: FounderSession;
+  /** C7-D: opens an internal Preview on the isolated preview host (absent → the preview capability is unavailable). */
+  readonly preview?: PreviewOpener;
 }
 
 type Json = Record<string, unknown>;
@@ -172,7 +174,9 @@ export function calendar(ctx: ApiContext, query: { from?: string | undefined; to
   const work = u.work.filter((w) => w.dueAt !== null && w.dueAt >= from && w.dueAt < to).map((w) => ({ at: w.dueAt as string, kind: 'WORK_DUE', ref: `work_item:${w.id}`, title: w.objective.slice(0, 80) }));
   const approvals = ctx.runtime.governance.listApprovals('APPROVED').filter((a) => a.expiresAt !== null && a.expiresAt >= from && a.expiresAt < to).map((a) => ({ at: a.expiresAt as string, kind: 'APPROVAL_EXPIRES', ref: `approval:${a.id}` }));
   const sessions = ctx.runtime.founder.auth.sessions().filter((s) => s.revokedAt === null && s.expiresAt >= from && s.expiresAt < to).map((s) => ({ at: s.expiresAt, kind: 'SESSION_EXPIRES', ref: `session:${s.id}` }));
-  const events = [...org, ...goals, ...work, ...approvals, ...sessions].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.ref < b.ref ? -1 : 1));
+  // C7-D: the exact windows approved (or awaiting approval) for a scheduled publication — the existing calendar, no second scheduler.
+  const publications = ctx.runtime.founder.digital.publicationWindows(from, to).map((p) => ({ at: p.notBefore, kind: 'PUBLICATION_WINDOW', ref: `digital_promotion:${p.promotionId}`, state: p.state, until: p.notAfter }));
+  const events = [...org, ...goals, ...work, ...approvals, ...sessions, ...publications].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.ref < b.ref ? -1 : 1));
   return { from, to, events };
 }
 
@@ -253,7 +257,35 @@ export function pilots(ctx: ApiContext): Json {
 export function pilotBoard(ctx: ApiContext, pilotId: string): Json {
   const id = str(pilotId, 'pilotId', 36);
   const store = ctx.runtime.founder.pilots;
-  return { board: store.board(id), history: store.history(id) };
+  // C7-D: the digital work produced inside the Pilot's scope, as evidence references (counts and states). A provider
+  // confirmation is never a Pilot outcome or market success; real outcomes still come only through C7-A.
+  return { board: store.board(id), history: store.history(id), digital: ctx.runtime.founder.digital.evidenceForWorkItems(store.scope(id).workItemIds) };
+}
+
+// --- C7-D Digital Workshop (reads; a Preview opens on the isolated preview host) ------------------------------
+
+export function digitalProjects(ctx: ApiContext): Json {
+  const d = ctx.runtime.founder.digital;
+  return { projects: d.projects(), decisions: d.decisions(), targets: d.targets().map((t) => ({ id: t.id, code: t.code, targetClass: t.targetClass, adapterCode: t.adapterCode, externalRef: t.externalRef, state: t.state })), health: d.health() };
+}
+
+/**
+ * One project for the Founder: what changed (revisions), what can be inspected (previews), what was packaged and
+ * reviewed (candidates), and each exact external act with its derived lifecycle — never file-by-file management.
+ */
+export function digitalProject(ctx: ApiContext, projectId: string): Json {
+  const p = ctx.runtime.founder.digital.project(str(projectId, 'projectId', 36));
+  return { ...p, publicationIsMarketSuccess: false };
+}
+
+export interface PreviewOpener {
+  open(previewId: string): Promise<{ readonly url: string; readonly expiresAt: string; readonly mode: 'INTERNAL' }>;
+}
+
+/** Opens one internal Preview for the authenticated Founder (a URL on the preview host; nothing is published). */
+export async function openDigitalPreview(ctx: ApiContext, previewId: string): Promise<Json> {
+  if (!ctx.preview) throw new QandeelError('DIGITAL_REFUSED', 'the internal preview host is not running', { reason: 'PREVIEW_HOST_UNAVAILABLE' });
+  return { preview: await ctx.preview.open(str(previewId, 'previewId', 36)) };
 }
 
 /** Outcome + trace for one in-scope Work Item (refs into the canonical lineage; blame stays with C6 attribution). */
@@ -273,6 +305,8 @@ export interface CommandResolution {
   readonly profile?: Json;
   /** C7-C read intent: the Pilots and, when exactly one matches, its Evidence Board. */
   readonly pilots?: Json;
+  /** C7-D read intent: the digital projects, the exact external acts awaiting the Founder and (one match) the project. */
+  readonly digital?: Json;
 }
 
 /** Resolves a read intent to a focus change, or a mutating one to a preview (never to a mutation). */
@@ -325,6 +359,16 @@ export function command(ctx: ApiContext, body: Json): CommandResolution {
         const ms = want === '' ? all.filter((p) => p.state !== 'COMPLETED' && p.state !== 'STOPPED') : all.filter((p) => p.id === intent.argument || norm(p.title).includes(want));
         const one = ms.length === 1 ? ms[0] : undefined;
         return { intent, focus: { lens: 'PILOT', targetId: one?.id ?? null, query: intent.argument }, matches: ms.map((p) => ({ id: p.id, label: p.title, kind: 'pilot' })), pilots: { list: all.map((p) => ({ ...p, briefingEmployeeId: p.briefingThreadId === null ? null : ctx.runtime.founder.communications.thread(p.briefingThreadId).employeeId })), goals: activatableGoals(ctx), ...(one ? { board: ctx.runtime.founder.pilots.board(one.id) } : {}) } as unknown as Json };
+      }
+      case 'SHOW_DIGITAL': {
+        // A read: the Company's digital projects and the exact external acts awaiting the Founder (decided only through the
+        // governed APPROVAL_DECIDE confirmation), and the one project the words name.
+        const d = ctx.runtime.founder.digital;
+        const all = d.projects();
+        const want = norm(intent.argument ?? '').replace(/^(?:ال)?(?:موقع|حضور رقمي|digital|website|previews?)\s*/, '');
+        const ms = want === '' ? all : all.filter((p) => p.id === intent.argument || norm(p.title).includes(want));
+        const one = ms.length === 1 ? ms[0] : all.length === 1 ? all[0] : undefined;
+        return { intent, focus: { lens: 'DIGITAL', targetId: one?.id ?? null, query: intent.argument }, matches: [], digital: { projects: all, decisions: d.decisions(), ...(one ? { project: d.project(one.id) } : {}) } as unknown as Json };
       }
       case 'SHOW_PERFORMANCE': {
         const ms = matchEmployees(u, intent.argument ?? '');

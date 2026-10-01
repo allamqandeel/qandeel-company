@@ -114,7 +114,7 @@ export function warrantsFounderAttention(purpose: MessagePurpose, level: Attenti
 // --- Founder command intents ---------------------------------------------------------------------
 
 /** Read intents change attention only; mutating intents become structured previews (explicit confirmation). */
-export const READ_INTENTS = ['OPEN_EMPLOYEE', 'SHOW_DEPARTMENT', 'SHOW_GOAL', 'WHO_WORKS_ON', 'WHAT_IS_BLOCKED', 'NEEDS_MY_APPROVAL', 'SHOW_BRIEFS', 'RETURN_TO_LIVE', 'SHOW_CEO', 'SHOW_TIMELINE', 'SHOW_REPORT', 'SHOW_PERFORMANCE', 'SHOW_PILOT'] as const;
+export const READ_INTENTS = ['OPEN_EMPLOYEE', 'SHOW_DEPARTMENT', 'SHOW_GOAL', 'WHO_WORKS_ON', 'WHAT_IS_BLOCKED', 'NEEDS_MY_APPROVAL', 'SHOW_BRIEFS', 'RETURN_TO_LIVE', 'SHOW_CEO', 'SHOW_TIMELINE', 'SHOW_REPORT', 'SHOW_PERFORMANCE', 'SHOW_PILOT', 'SHOW_DIGITAL'] as const;
 /**
  * The Founder's exception decisions (R2-21) are STRUCTURED-ONLY intents: no natural-language pattern produces
  * them (like GOAL_PROPOSE); the surface posts them with IDs / codes / bounded numbers, and they are confirmed
@@ -206,6 +206,9 @@ const PATTERNS: readonly Pattern[] = [
   { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:قسم|اداره|department|engineering|growth|product|brand|intelligence|الهندسه|النمو|المنتج|العلامه|الاستخبارات)`), intent: 'SHOW_DEPARTMENT', kind: 'READ' },
   // C7-C: open a Pilot's Evidence Board, after the goal / department reads so a goal named with the word stays a goal (a read; a Pilot is never created or moved by text).
   { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:التجربه|تجربه|pilots?)${W}|^pilots?$|^(?:التجربه|التجارب)$`), intent: 'SHOW_PILOT', kind: 'READ' },
+  // C7-D: the Company's digital work (projects, previews, candidates, exact external acts awaiting the Founder) — a read; nothing is
+  // published, approved or changed by text.
+  { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:الموقع|موقع|الحضور الرقمي|المشاريع الرقميه|المعاينه|digital|website|previews?)${W}|^(?:digital|website|الموقع|الحضور الرقمي)$`), intent: 'SHOW_DIGITAL', kind: 'READ' },
   { re: /(?:افتح|اعرض|اظهر|open|show)\s+(.+)/, intent: 'OPEN_EMPLOYEE', kind: 'READ' },
 ];
 

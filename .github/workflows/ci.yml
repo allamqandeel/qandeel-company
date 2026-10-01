@@ -165,7 +165,7 @@ jobs:
           node-version-file: .nvmrc
           package-manager-cache: false
       - run: npm ci
-      - name: Every workspace test (unit, real SQLite, multi-process, fault-injection; C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A + C7-B + C7-C, including the Founder surface, the UI model, the improvement engine, the governed external-evidence intake, the governed control plane and the Pilot instrumentation)
+      - name: Every workspace test (unit, real SQLite, multi-process, fault-injection; C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A + C7-B + C7-C + C7-D, including the Founder surface, the UI model, the improvement engine, the governed external-evidence intake, the governed control plane, the Pilot instrumentation, the Digital Workshop, the isolated Preview host and the governed promotion adapters)
         run: |
           npm run build
           npm run test
@@ -179,6 +179,7 @@ jobs:
       matrix:
         include:
           # Disjoint shards; the quality gate proves each OS ran every recorded mutation exactly once.
+          # Budget: a Windows shard targets <= 30m; repeated > 35m is a capacity defect — split it, never raise the 45m ceiling.
           - { os: windows-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }
           - { os: windows-latest, label: c3-1of2, suite: 'c3:1/2' }
           - { os: windows-latest, label: c3-2of2, suite: 'c3:2/2' }
@@ -189,8 +190,10 @@ jobs:
           - { os: windows-latest, label: c4-1of2, suite: 'c4:1/2' }
           - { os: windows-latest, label: c4-2of2, suite: 'c4:2/2' }
           - { os: windows-latest, label: c5-1of1, suite: 'c5:1/1' }
-          - { os: windows-latest, label: c6-1of2, suite: 'c6:1/2' }
-          - { os: windows-latest, label: c6-2of2, suite: 'c6:2/2' }
+          - { os: windows-latest, label: c6-1of4, suite: 'c6:1/4' }
+          - { os: windows-latest, label: c6-2of4, suite: 'c6:2/4' }
+          - { os: windows-latest, label: c6-3of4, suite: 'c6:3/4' }
+          - { os: windows-latest, label: c6-4of4, suite: 'c6:4/4' }
           - { os: windows-latest, label: c7a-1of4, suite: 'c7a:1/4' }
           - { os: windows-latest, label: c7a-2of4, suite: 'c7a:2/4' }
           - { os: windows-latest, label: c7a-3of4, suite: 'c7a:3/4' }
@@ -200,6 +203,8 @@ jobs:
           - { os: windows-latest, label: c7b-3of3, suite: 'c7b:3/3' }
           - { os: windows-latest, label: c7c-1of2, suite: 'c7c:1/2' }
           - { os: windows-latest, label: c7c-2of2, suite: 'c7c:2/2' }
+          - { os: windows-latest, label: c7d-1of2, suite: 'c7d:1/2' }
+          - { os: windows-latest, label: c7d-2of2, suite: 'c7d:2/2' }
           - { os: ubuntu-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }
           - { os: ubuntu-latest, label: c3-1of1, suite: 'c3:1/1' }
           - { os: ubuntu-latest, label: r1-1of2, suite: 'r1:1/2' }
@@ -211,6 +216,7 @@ jobs:
           - { os: ubuntu-latest, label: c7b-1of2, suite: 'c7b:1/2' }
           - { os: ubuntu-latest, label: c7b-2of2, suite: 'c7b:2/2' }
           - { os: ubuntu-latest, label: c7c-1of1, suite: 'c7c:1/1' }
+          - { os: ubuntu-latest, label: c7d-1of1, suite: 'c7d:1/1' }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:

@@ -28,6 +28,9 @@
     "@qandeel-company/governance": "0.2.0",
     "@qandeel-company/mind": "0.3.0"
   },
+  "devDependencies": {
+    "@qandeel-company/tool-drivers": "0.1.0"
+  },
   "bin": {
     "qandeel-company": "./dist/src/cli.js"
   }

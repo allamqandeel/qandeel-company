@@ -32,7 +32,9 @@ export default tseslint.config(
     // loopback Founder listener (`packages/command-center/src/server/listener.ts`, verifier rule
     // `founder-listener-loopback-only`) and the browser UI, which talks to that listener with fetch.
     files: ['packages/*/src/**/*.ts'],
-    ignores: ['packages/storage/src/sqlite/**', 'packages/command-center/src/server/listener.ts', 'packages/command-center-ui/src/**'],
+    // C7-D adds two reviewed network paths: the isolated loopback Preview host and the one fixed-host GitHub transport
+    // (verifier rules `c7d-preview-isolated` / `c7d-tool-boundary`).
+    ignores: ['packages/storage/src/sqlite/**', 'packages/command-center/src/server/listener.ts', 'packages/command-center/src/server/preview-listener.ts', 'packages/tool-drivers/src/github/https-transport.ts', 'packages/command-center-ui/src/**'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -71,6 +73,17 @@ export default tseslint.config(
           message: 'createRequire can bypass the import boundary checks; use static ESM imports (D-C1-22).',
         },
         ...C2_CONFINED,
+      ],
+    },
+  },
+  {
+    // C7-D driver unit tests exercise an adapter directly (its contract, its fail-closed gates); production code still
+    // reaches a driver only through the Tool Executor (verifier `tool-drivers-confined` scans every src module).
+    files: ['packages/tool-drivers/test/**/*.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        { selector: ":matches(ImportDeclaration, ImportExpression, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/^@qandeel-company\\/storage/]", message: 'Driver tests never reach the Company store; they use a fake promotion source.' },
       ],
     },
   },
@@ -128,7 +141,7 @@ export default tseslint.config(
   {
     // The Founder listener: the one module that may open a (loopback-only) network path; still no SQLite,
     // no child processes, no storage internals.
-    files: ['packages/command-center/src/server/listener.ts'],
+    files: ['packages/command-center/src/server/listener.ts', 'packages/command-center/src/server/preview-listener.ts', 'packages/tool-drivers/src/github/https-transport.ts'],
     rules: {
       'no-restricted-imports': [
         'error',

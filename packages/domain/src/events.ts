@@ -62,6 +62,13 @@ export const EVENT_TYPES = [
   'app_control.proposed',
   'app_control.proposal_changed',
   'app_control.revision_issued',
+  // C7-D (content-free: project / revision / candidate / preview / promotion IDs, manifest hashes and codes — never file
+  // content, a title or a summary). Aggregated on the Work Item the Employee's act belongs to.
+  'digital.project_changed',
+  'digital.revision_finalized',
+  'digital.preview_created',
+  'digital.candidate_created',
+  'digital.promotion_prepared',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

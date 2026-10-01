@@ -187,4 +187,28 @@ export type { ExternalEvidenceView, ExternalOutcomeState } from './external-core
 // Company-ISSUED desired controls. There is no write method: a control is proposed by an Employee act, reviewed by the
 // Review Pool and issued only by the Founder's R3 approval; no transport exists and nothing claims App effect.
 export { AppControlStore, CONTROL_PROPOSAL_REF, type ControlDecisionView, type ControlProposalRecord, type ControlProposalState, type ControlRevisionRecord, type IssuedControlsExport } from './app-controls.js';
-export { RESTORE_IN_PROGRESS, clearUpdateHold, readUpdateHold, restoreStatus, type RestoreMarker, type RestorePhase, type RestoreStatus, type UpdateHold } from './update-hold.js';
+export { RESTORE_IN_PROGRESS, clearUpdateHold, readUpdateHold, restoreStatus, type RestoreMarker, type RestorePhase, type RestoreStatus, type UpdateHold } from './update-hold.js';// C7-D Digital Presence Creation & Operations: the internal Digital Workshop read model (projects, revisions, previews,
+// release candidates, promotion targets and the DERIVED promotion lifecycle), Founder-only target registration, and the
+// read-only, re-verifying export a promotion driver resolves at execution time. Employee writes exist only as actions of
+// the closed `digital-workspace` Tool, through the Tool Executor; no review, approval or execution state lives here.
+export {
+  DigitalStore,
+  externalRefOf,
+  promotionArgsOf,
+  resolvePromotionExport,
+  resolvePromotionTarget,
+  type DigitalCandidateRecord,
+  type DigitalDecisionView,
+  type DigitalFileRecord,
+  type DigitalPreviewRecord,
+  type DigitalProjectRecord,
+  type DigitalPromotionRecord,
+  type DigitalRevisionRecord,
+  type DigitalTargetRecord,
+  type PreviewResolution,
+  type PromotionExport,
+  type PromotionExportFile,
+  type PromotionExportResult,
+  type PromotionView,
+  type RegisterTargetInput,
+} from './digital.js';

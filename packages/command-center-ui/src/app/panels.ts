@@ -7,7 +7,7 @@
  * Founder as a code. The sheets share the company's language: the same avatars, Department accents, gold,
  * radii and status grammar as the cards in the columns.
  */
-import { ACTION_LABEL, CALENDAR_LABEL, CAPABILITY_LABEL, DECISION_LABEL, dirOf, EVIDENCE_LABEL, FIELD_LABEL, fmtDate, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, fmtTime, hasArabic, humanize, INTENT_LABEL, KIND_LABEL, LANE_LABEL, MARKET_CLAIM_LABEL, PILOT_DECISION_LABEL, PILOT_MODE_LABEL, plural, PURPOSE_LABEL, READINESS_LABEL, RELATION_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATE_LABEL, t } from '../model/format.js';
+import { ACTION_LABEL, CALENDAR_LABEL, CAPABILITY_LABEL, DECISION_LABEL, dirOf, EVIDENCE_LABEL, FIELD_LABEL, fmtDate, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, fmtTime, hasArabic, humanize, INTENT_LABEL, KIND_LABEL, LANE_LABEL, MARKET_CLAIM_LABEL, PILOT_DECISION_LABEL, PILOT_MODE_LABEL, plural, PROMOTION_KIND_LABEL, PROMOTION_STATE_LABEL, PURPOSE_LABEL, READINESS_LABEL, RELATION_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATE_LABEL, t } from '../model/format.js';
 import type { CompanyUniverse } from '../model/types.js';
 
 type Json = Record<string, unknown>;
@@ -43,6 +43,8 @@ export interface PanelHost {
   runCommand(text: string): Promise<void>;
   /** A structured act the surface already knows (IDs / codes): posted as a governed preview, never re-typed as text. */
   previewAction(intent: string, payload: Json): Promise<void>;
+  /** C7-D: opens an internal Preview on its isolated host in a new tab without an opener (never in this page). */
+  openDigitalPreview(previewId: string): Promise<void>;
   confirmPreview(previewId: string, fingerprint: string): Promise<void>;
   rejectPreview(previewId: string): Promise<void>;
   dismissAttention(itemId: string): Promise<void>;
@@ -509,8 +511,53 @@ export function renderPalette(root: HTMLElement, host: PanelHost, result: Json |
       root.append(ul);
     }
     if (result.pilots) root.append(renderPilots(result.pilots as Json, host));
+    if (result.digital) root.append(renderDigital(result.digital as Json, host));
   }
   return input;
+}
+
+/**
+ * C7-D: the Company's digital work in the palette (no new canvas, no Tree of Light change). The Founder sees summaries —
+ * what was made, what can be inspected internally, what was reviewed, and the exact external act waiting for a decision
+ * — never a file-by-file editor. A Preview opens on its own isolated host (noopener); a decision is the existing
+ * governed approval preview the Founder confirms.
+ */
+function renderDigital(data: Json, host: PanelHost): HTMLElement {
+  const section = h('section', { class: 'pilots digital', 'aria-label': 'Digital work' });
+  section.append(h('h3', { class: 'section-title', text: 'Digital work' }));
+  const projects = (data.projects as Json[]) ?? [];
+  if (projects.length === 0) section.append(h('p', { class: 'muted small', text: 'No digital project yet. The Company researches, drafts and previews internally; you decide only what goes out under the QANDEEL name.' }));
+  const decisions = (data.decisions as Json[]) ?? [];
+  for (const d of decisions) {
+    const line = h('p', { class: 'pilot-decisions' }, h('span', { class: 'pill pill-needs_decision', text: 'Your decision' }), ' ', h('span', { text: `${t(PROMOTION_KIND_LABEL, String(d.kind))} → ${String(d.targetCode)}` }), ' ', content('span', String(d.candidateSummary)));
+    const decide = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Preview: approve this exact act' });
+    decide.addEventListener('click', () => void host.previewAction('APPROVAL_DECIDE', { approvalId: String(d.approvalId), decision: 'APPROVE' }));
+    const reject = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Preview: reject' });
+    reject.addEventListener('click', () => void host.previewAction('APPROVAL_DECIDE', { approvalId: String(d.approvalId), decision: 'REJECT' }));
+    section.append(line, h('div', { class: 'pilot-actions' }, decide, reject));
+  }
+  const ul = h('ul', { class: 'pilot-list' });
+  for (const p of projects) ul.append(h('li', { class: 'pilot' }, content('strong', String(p.title)), ' ', h('span', { class: 'pill', text: t(STATE_LABEL, String(p.state)) }), ' ', h('span', { class: 'muted small', text: `${fmtNumber(Number(p.revisions))} revisions · ${fmtNumber(Number(p.candidates))} candidates` })));
+  section.append(ul);
+  const project = data.project as Json | undefined;
+  if (project) {
+    for (const pv of ((project.previews as Json[]) ?? []).slice(0, 3)) {
+      if (pv.state !== 'READY') {
+        section.append(h('p', { class: 'muted small', text: `A revision cannot be previewed safely yet (${humanize(String(pv.gapCode))}): nothing is built or run on this computer to make it work.` }));
+        continue;
+      }
+      const open = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Open internal preview (not published)' });
+      open.addEventListener('click', () => void host.openDigitalPreview(String(pv.id)));
+      section.append(h('div', { class: 'pilot-actions' }, open));
+    }
+    for (const c of (project.candidates as Json[]) ?? []) {
+      const dl = h('dl', { class: 'facts', 'aria-label': 'Release candidate' }, h('dt', { text: 'Candidate' }), h('dd', {}, content('span', String(c.summary))));
+      for (const pr of (c.promotions as Json[]) ?? []) dl.append(h('dt', { text: t(PROMOTION_KIND_LABEL, String(pr.kind)) }), h('dd', { text: t(PROMOTION_STATE_LABEL, String(pr.state)) }));
+      section.append(dl);
+    }
+    section.append(h('p', { class: 'muted small', text: 'A provider’s confirmation means the exact act happened — not traffic, ranking or market success. Real results arrive only as governed external evidence.' }));
+  }
+  return section;
 }
 
 const NEXT_PILOT_STEP: Readonly<Record<string, string>> = { DRAFT: 'BRIEFING', BRIEFING: 'READY', READY: 'ACTIVE', ACTIVE: 'REVIEWING', REVIEWING: 'COMPLETED' };

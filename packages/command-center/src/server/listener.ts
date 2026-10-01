@@ -26,6 +26,8 @@ export interface ListenerOptions {
   readonly roots: StaticRoots;
   readonly port?: number;
   readonly log?: (event: string, fields: Record<string, string | number | boolean | null>) => void;
+  /** C7-D: the isolated internal Preview host (its own loopback site), if running. */
+  readonly preview?: api.PreviewOpener;
 }
 
 type Json = Record<string, unknown>;
@@ -73,6 +75,11 @@ const ROUTES: readonly Route[] = [
   route('GET', '/api/pilots', 'pilots', (ctx) => api.pilots(ctx)),
   route('GET', '/api/pilots/:id', 'pilot', (ctx, p) => api.pilotBoard(ctx, p[0] as string)),
   route('GET', '/api/pilots/:id/inspect', 'pilotInspect', (ctx, p, _b, q) => api.pilotInspect(ctx, p[0] as string, { workItemId: q.get('workItemId') ?? undefined })),
+  // C7-D Digital Workshop: reads, and opening an internal Preview on the isolated preview host (session + CSRF). A promotion
+  // is decided through the existing governed APPROVAL_DECIDE confirmation, never here.
+  route('GET', '/api/digital/projects', 'digitalProjects', (ctx) => api.digitalProjects(ctx)),
+  route('GET', '/api/digital/projects/:id', 'digitalProject', (ctx, p) => api.digitalProject(ctx, p[0] as string)),
+  route('POST', '/api/digital/previews/:id/open', 'digitalPreviewOpen', (ctx, p) => api.openDigitalPreview(ctx, p[0] as string)),
 ];
 
 export class FounderListener {
@@ -80,6 +87,7 @@ export class FounderListener {
   readonly #runtime: CompanyRuntime;
   readonly #roots: StaticRoots;
   readonly #log: NonNullable<ListenerOptions['log']>;
+  readonly #preview: api.PreviewOpener | undefined;
   readonly #streams = new Set<ServerResponse>();
   readonly #unsubscribe: (() => void)[] = [];
   #port = 0;
@@ -89,6 +97,7 @@ export class FounderListener {
     this.#runtime = options.runtime;
     this.#roots = options.roots;
     this.#log = options.log ?? (() => undefined);
+    this.#preview = options.preview;
     this.#port = options.port ?? 0;
     this.#server = createServer((req, res) => {
       this.#handle(req, res).catch((error: unknown) => {
@@ -195,7 +204,7 @@ export class FounderListener {
     }
     const params = match.m.slice(1).reduce<Record<string, string>>((acc, v, i) => ({ ...acc, [String(i)]: v ?? '' }), {});
     try {
-      const out = match.r.handler({ runtime: this.#runtime, session }, params, body, url.searchParams);
+      const out = await match.r.handler({ runtime: this.#runtime, session, ...(this.#preview ? { preview: this.#preview } : {}) }, params, body, url.searchParams);
       return this.#json(res, 200, { ok: true, ...(out as Json) }, method, match.r.name);
     } catch (error) {
       const code = isQandeelError(error) ? error.code : 'UNCLASSIFIED_ERROR';

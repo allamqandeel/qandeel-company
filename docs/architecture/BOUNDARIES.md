@@ -48,7 +48,7 @@ home of QANDEEL COMPANY. Results come home through GitHub branches / PRs and are
 private-conversation storage. Its App-side Product / Architecture contract is CLOSED / FROZEN (lifecycle
 sync at the C7-A start, 2026-10-01). The Company side is built in `C7` (C7-A … C7-D): C7-A (closed) adds
 only the Company-side governed intake contract, with no App transport, connector or network listener; C7-B
-(closed) adds only the Company-side governed desired-control plane; C7-C (implementation candidate) adds only Company-internal Pilot instrumentation over canonical Company evidence and reads nothing from the App. Transport, App-side
+(closed) adds only the Company-side governed desired-control plane; C7-C (closed) adds only Company-internal Pilot instrumentation over canonical Company evidence and reads nothing from the App; C7-D (implementation candidate) adds Company-side digital presence capability (an internal workshop, an isolated internal Preview, exact candidates and governed promotion through the Tool Executor) and reads nothing from the App. Transport, App-side
 consumption and enforcement stay later work (App-side Production Integration / L1) under their own authority.
 
 Three separate rules apply (see `docs/authority/COMPANY_CANONICAL_BASELINE.md` §5):

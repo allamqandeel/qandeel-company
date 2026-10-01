@@ -10,9 +10,9 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { sha256Hex, type JsonObject } from '@qandeel-company/domain';
-import { assertToolCode, type ToolDriver } from '@qandeel-company/governance';
+import { DIGITAL_WORKSPACE_DRIVER, assertToolCode, type ToolDriver } from '@qandeel-company/governance';
 import type { CompanyStore, Fence } from '@qandeel-company/storage';
-import { recordToolIntent, recordToolResult, type GovernedRunContext } from '@qandeel-company/storage/runtime-authority';
+import { recordDigitalWorkspaceAct, recordToolIntent, recordToolResult, type GovernedRunContext } from '@qandeel-company/storage/runtime-authority';
 
 import { TOOL_OUTCOME_UNKNOWN, toolAnswerSnapshot, toolFailureSnapshot, type ToolSnapshot } from './tool-boundary.js';
 import type { ToolOutcome, ToolRequest } from './types.js';
@@ -32,14 +32,16 @@ export class ToolExecutor {
     for (const d of drivers) {
       assertToolCode(d.driverCode, 'driverCode');
       if (map.has(d.driverCode)) throw new Error(`duplicate tool driver "${d.driverCode}"`);
+      if (d.driverCode === DIGITAL_WORKSPACE_DRIVER) throw new Error(`"${d.driverCode}" is the Company-native workshop, never an external driver`);
       map.set(d.driverCode, d);
     }
     this.#drivers = map;
     this.#timeoutMs = timeoutMs;
   }
 
+  /** Registered drivers plus the Company-native internal workshop (C7-D), which the executor serves itself. */
   get driverCodes(): readonly string[] {
-    return [...this.#drivers.keys()];
+    return [...this.#drivers.keys(), DIGITAL_WORKSPACE_DRIVER];
   }
 
   /**
@@ -72,6 +74,13 @@ export class ToolExecutor {
         return { kind: 'NOT_EXECUTED', code: 'TOOL_IN_FLIGHT' };
       case 'EXECUTE':
         break;
+    }
+    // C7-D: the internal Digital Workshop is not a driver — it never leaves the Company. Its act and its result commit in
+    // one fenced transaction (recordDigitalWorkspaceAct), on the same frozen, validated arguments the intent bound.
+    if (intent.driverCode === DIGITAL_WORKSPACE_DRIVER) {
+      const { state, outcome } = recordDigitalWorkspaceAct(store, fence, intent.invocationId, intent.actionCode, deepFreeze(structuredClone(intent.args)) as JsonObject);
+      if (state === 'SUCCEEDED' && outcome.ok) return { kind: 'SUCCEEDED', result: outcome.result, replayed: false };
+      return { kind: 'NOT_EXECUTED', code: outcome.ok ? 'UNKNOWN' : outcome.code };
     }
     const driver = this.#drivers.get(intent.driverCode);
     let result: ToolSnapshot;

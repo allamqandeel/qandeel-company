@@ -472,6 +472,17 @@ class App implements PanelHost {
     }
   }
 
+  /** C7-D: the preview runs on its own loopback site, in a new tab with no opener and no referrer (it can never drive this page). */
+  async openDigitalPreview(previewId: string): Promise<void> {
+    try {
+      const r = await api.post<{ preview: { url: string } }>(`/api/digital/previews/${previewId}/open`, {});
+      window.open(r.preview.url, '_blank', 'noopener,noreferrer');
+      this.note('Internal preview opened in a new tab. It is not published and not production.', 'system');
+    } catch (e) {
+      this.note(`The preview could not open (${e instanceof ApiError ? e.code : 'error'}). Nothing was published.`, 'system');
+    }
+  }
+
   showPreview(preview: Json): void {
     const d = $('preview');
     d.hidden = false;
