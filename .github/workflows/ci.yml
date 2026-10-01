@@ -179,6 +179,7 @@ jobs:
       matrix:
         include:
           # Disjoint shards; the quality gate proves each OS ran every recorded mutation exactly once.
+          # Budget: a Windows shard targets <= 30m; repeated > 35m is a capacity defect — split it, never raise the 45m ceiling.
           - { os: windows-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }
           - { os: windows-latest, label: c3-1of2, suite: 'c3:1/2' }
           - { os: windows-latest, label: c3-2of2, suite: 'c3:2/2' }
@@ -189,8 +190,10 @@ jobs:
           - { os: windows-latest, label: c4-1of2, suite: 'c4:1/2' }
           - { os: windows-latest, label: c4-2of2, suite: 'c4:2/2' }
           - { os: windows-latest, label: c5-1of1, suite: 'c5:1/1' }
-          - { os: windows-latest, label: c6-1of2, suite: 'c6:1/2' }
-          - { os: windows-latest, label: c6-2of2, suite: 'c6:2/2' }
+          - { os: windows-latest, label: c6-1of4, suite: 'c6:1/4' }
+          - { os: windows-latest, label: c6-2of4, suite: 'c6:2/4' }
+          - { os: windows-latest, label: c6-3of4, suite: 'c6:3/4' }
+          - { os: windows-latest, label: c6-4of4, suite: 'c6:4/4' }
           - { os: windows-latest, label: c7a-1of4, suite: 'c7a:1/4' }
           - { os: windows-latest, label: c7a-2of4, suite: 'c7a:2/4' }
           - { os: windows-latest, label: c7a-3of4, suite: 'c7a:3/4' }
