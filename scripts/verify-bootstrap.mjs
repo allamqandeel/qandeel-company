@@ -193,6 +193,8 @@ const FROZEN_MIGRATIONS = [
   { file: '0011_r2_integrity.sql', sha256: '97ab99eebf4fc8ce49c1e1550eb4448f8a9e515a7b02259381ab33fe95ae2550' },
   // C7-A released 0012 with PR #13 (merged 2026-10-01); it joins the frozen set in the change after its release (C7-B).
   { file: '0012_c7a_operational_data_external_outcomes.sql', sha256: '31eeff9a49e284bec44915842ea39453550cc225c9e58b100483a7ad45aaaf09' },
+  // C7-B released 0013 with PR #14 (merged 2026-10-01); it joins the frozen set in the change after its release (C7-C).
+  { file: '0013_c7b_governed_app_controls.sql', sha256: '6eb49123e3079c1256fc95d92c2de47582245109744995f437bb07c57f2d3610' },
 ];
 // Later-scope / non-goal subsystems never appear: APP-OPS (C7) and dashboards / analytics tables or packages (C6
 // deliberately builds reports with typed claims, never a dashboard or analytics store — its non-goals).
@@ -1879,8 +1881,10 @@ function syntheticRepo(overrides = {}) {
     // C7-A: proofs, the pinned C7-A mutation check, the governed verification seam and the usable-evidence predicate.
     'packages/runtime/test/c7a/proofs.test.ts': C7A_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
     [C7A_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C7A_MUTATION_CHECK].ids),
-    // C7-B: the pinned C7-B mutation check (the control-plane rules apply where its modules exist).
+    // C7-B: the pinned C7-B mutation check (the control-plane rules apply where its modules exist). Released 0013 is
+    // frozen (C7-C), so the base carries its real text and therefore the C7-B proofs it requires.
     [C7B_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C7B_MUTATION_CHECK].ids),
+    'packages/runtime/test/c7b/proofs.test.ts': C7B_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
     [OUTCOME_CORE]: '  txAssertExternalEvidence(ctx, w.id, input.classes, input.refs);\n',
     [EXTERNAL_CORE]: C7A_USABLE_REASONS.map((r) => `  return '${r}';`).join('\n'),
     [FOUNDER_LISTENER]: SYNTH_LISTENER,
@@ -2160,7 +2164,7 @@ const VIOLATIONS = {
     { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-B\` | Control | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n| \`C7-C\` | Pilot | Cloud | IN PROGRESS |\n` } },
   ],
   'c7b-proofs-present': [
-    { contents: { [C7B_KERNEL]: 'export {};\n' } },
+    { contents: { [C7B_KERNEL]: 'export {};\n' }, remove: ['packages/runtime/test/c7b/proofs.test.ts'] },
     { contents: { [C7B_KERNEL]: 'export {};\n', 'packages/runtime/test/c7b/proofs.test.ts': C7B_PROOF_MARKERS.map((m) => `// ${m}`).join('\n') }, remove: [C7B_MUTATION_CHECK] },
   ],
   'c7b-control-plane-governed': [

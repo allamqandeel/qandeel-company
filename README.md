@@ -27,7 +27,8 @@ governed and auditable.
 | `C6` Company Improvement Engine (Evaluation + Attribution + Learning + Reporting + Resilience) | CLOSED / MERGED / CANONICAL (PR #11, `b4f91ca`; `docs/C6_CLOSURE_RECORD.md`) |
 | `R2` Full Strong-v1 Independent Review | CLOSED / MERGED / CANONICAL (PR #12, `2eafbed`; `docs/R2_CLOSURE_RECORD.md`) |
 | `C7-A` Operational Data + External Outcome Core (C7 = C7-A … C7-D) | CLOSED / MERGED / CANONICAL (PR #13, `e7ca688`; `docs/C7A_CLOSURE_RECORD.md`) |
-| `C7-B` Governed App Operations Control Plane | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/C7B_IMPLEMENTATION_REPORT.md`); C7-C / C7-D not started |
+| `C7-B` Governed App Operations Control Plane | CLOSED / MERGED / CANONICAL (PR #14, `c06fd2e`; `docs/C7B_CLOSURE_RECORD.md`) |
+| `C7-C` Pilot Instrumentation Pack | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/C7C_IMPLEMENTATION_REPORT.md`); C7-D not started |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
@@ -171,7 +172,7 @@ inside the existing C6 engine — never beside it:
 C7-A has no transport, listener, SDK, control plane, publishing or Pilot objective engine. Details:
 `docs/C7A_IMPLEMENTATION_REPORT.md`, decisions D-C7A-01 onward; closure: `docs/C7A_CLOSURE_RECORD.md`.
 
-**C7-B (implementation candidate, not closed) adds the Company's governed desired-control plane toward the App**,
+**C7-B (closed) adds the Company's governed desired-control plane toward the App**,
 inside the existing governance — never beside it:
 - exactly the **seven approved control families** (Feature Flags, Kill Switch, Maintenance Mode, Rollout Control,
   Minimum Supported Version, Approved Remote Configuration, Model / Provider Route Hold), each with its own closed
@@ -188,7 +189,7 @@ inside the existing governance — never beside it:
   refusal counters that close the Company-side storage amplification of C7-A refusals.
 
 C7-B has no transport, App consumer, signing, credential, applied state or App change. Details:
-`docs/C7B_IMPLEMENTATION_REPORT.md`, decisions D-C7B-01 onward.
+`docs/C7B_IMPLEMENTATION_REPORT.md`, decisions D-C7B-01 onward; closure: `docs/C7B_CLOSURE_RECORD.md`.
 | Package | Role |
 |---|---|
 | `@qandeel-company/domain` | Pure contracts: IDs, UTC clock, state machines, retry policy, processor contract |
