@@ -335,7 +335,7 @@ const isRef = (v: unknown): boolean => typeof v === 'string' && /^[A-Za-z0-9._:-
 // --- Provider adapter declarations ---------------------------------------------------------------------------------
 
 /** Words no adapter capability, action or permission may carry: administration, protection bypass, secrets, membership, billing, destruction. */
-export const FORBIDDEN_ADAPTER_CAPABILITY = /(?:^|[._:-])(?:admin|administration|branch-protection|protection|bypass|secret|secrets|collaborators?|members?|membership|organization|billing|delete|destroy|force|deploy-keys?|webhooks?|hooks|workflows?|actions-variables|environments|keys)(?:$|[._:-])/i;
+export const FORBIDDEN_ADAPTER_CAPABILITY = /(?:^|[._:-])(?:admin|administration|branch-protection|protection|bypass|secret|secrets|collaborators?|members?|membership|org-admin|billing|delete|destroy|force|deploy-keys?|webhooks?|hooks|workflows?|actions-variables|environments|keys)(?:$|[._:-])/i;
 /** No community interaction (comments / replies / DMs) and no paid spend in C7-D: separate Product authority. */
 const INTERACTION_OR_SPEND = /(?:^|[._-])(?:comments?|reply|replies|dms?|direct-message|messages?|inbox|ads?|campaign-spend|spend|boost|sponsor)(?:$|[._-])/i;
 

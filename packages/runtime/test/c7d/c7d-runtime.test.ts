@@ -150,4 +150,60 @@ describe('C7-D Digital Workshop on the runtime', () => {
       removeRoot(root);
     }
   });
+
+  test('11/19/20 a Founder rejection is history (the same act never regenerates; a changed candidate may); an uncertain export is held for reconciliation, never retried', async () => {
+    const root = tempRoot('c7d-reject');
+    const w = seedWorld(root);
+    const rw = seedReviewer(root, w);
+    const f = fakes();
+    const github = new FakeGitHubTransport();
+    github.addRepo('qandeel-test/site');
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    let rtRef: CompanyRuntime | null = null;
+    const source = {
+      resolve: (...a: Parameters<ReturnType<CompanyRuntime['promotionSource']>['resolve']>) => (rtRef as CompanyRuntime).promotionSource().resolve(...a),
+      target: (a: string, t: string) => (rtRef as CompanyRuntime).promotionSource().target(a, t),
+      promotionArgs: (id: string) => (rtRef as CompanyRuntime).promotionSource().promotionArgs(id),
+    };
+    const driver = new GitHubCodeHostDriver({ transport: github, credentials: { appCredentials: () => ({ appId: '1001', installationId: '2002', privateKeyPem: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString() }) }, credentialRef: 'vault:github-app', source, allowedRepositories: ['qandeel-test/site'] });
+    const rt = governedRuntime(root, f, { governance: { providers: [f.local, f.cloud], toolDrivers: [...Object.values(f.drivers), driver], modelCallTimeoutMs: 5_000, toolCallTimeoutMs: 5_000 } });
+    rtRef = rt;
+    await rt.start();
+    try {
+      grantWorkshop(rt, w);
+      grantGitHub(rt, w);
+      const { targetId } = registerGitHub(rt, w);
+      await certifyAndPromote(rt, w, rw);
+      const first = await buildCandidate(rt, w, 'Rejected draft');
+      const wi1 = submitTaskWithPlan(rt, w, script(ws('promotion-prepare', { candidateId: first.candidateId, targetId, kind: 'EXPORT_SOURCE' }), gh('candidate-export', '$ref:promotion-prepare.args'), final('x')), plan('ACTIONS', 'PASS'));
+      const pending = await eventually(() => rt.governance.listApprovals('PENDING').find((a) => a.workItemId === wi1), 60_000, 'approval');
+      rt.governance.decideApproval(w.founder, pending.id, { decision: 'REJECT', reasonCode: 'founder.not_now' });
+      await done(rt, wi1, ['COMPLETED', 'FAILED', 'BLOCKED'], 60_000);
+      const promo = rt.founder.digital.project(first.projectId).candidates[0]!.promotions[0]!;
+      assert.equal(promo.state, 'REJECTED');
+      assert.equal(github.requests.length, 0, 'a rejected act never reached GitHub');
+      // The same candidate × target × kind never regenerates as a fresh approval loop.
+      const wi2 = submitTask(rt, w, { instructions: script(ws('promotion-prepare', { candidateId: first.candidateId, targetId, kind: 'EXPORT_SOURCE' }), final('x')) });
+      await done(rt, wi2, ['COMPLETED', 'FAILED', 'BLOCKED']);
+      assert.equal(rt.governance.toolInvocations(wi2).find((t) => t.failureCode !== null)?.failureCode, 'PROMOTION_REFUSED_BEFORE');
+      assert.equal(rt.founder.digital.project(first.projectId).candidates[0]!.promotions.length, 1);
+      assert.equal(rt.governance.listApprovals('PENDING').length, 0);
+      // A changed candidate is the way forward — and its export's answer is lost after the branch exists: UNKNOWN → held.
+      const second = await buildCandidate(rt, w, 'Second draft');
+      github.failNext((q) => q.method === 'POST' && q.path.endsWith('/pulls'), 'throw');
+      const wi3 = submitTaskWithPlan(rt, w, script(ws('promotion-prepare', { candidateId: second.candidateId, targetId, kind: 'EXPORT_SOURCE' }), gh('candidate-export', '$ref:promotion-prepare.args'), final('x')), plan('ACTIONS', 'PASS'));
+      const p3 = await eventually(() => rt.governance.listApprovals('PENDING').find((a) => a.workItemId === wi3), 60_000, 'approval 3');
+      rt.governance.decideApproval(w.founder, p3.id, { decision: 'APPROVE', reasonCode: 'founder.ok' });
+      assert.equal(await done(rt, wi3, ['COMPLETED', 'FAILED', 'BLOCKED'], 60_000), 'BLOCKED', explain(rt, wi3));
+      const held = rt.founder.digital.project(second.projectId).candidates[0]!.promotions[0]!;
+      assert.equal(held.state, 'RECONCILIATION_REQUIRED');
+      assert.equal(rt.governance.toolInvocations(wi3).find((t) => t.state === 'RECONCILIATION_REQUIRED') !== undefined, true);
+      await new Promise((r) => setTimeout(r, 500));
+      assert.equal(github.requests.filter((q) => q.method === 'POST' && q.path.endsWith('/git/refs')).length, 1, 'never blindly retried');
+      assert.equal(held.countsAsMarketOutcome, false);
+    } finally {
+      await rt.stop();
+      removeRoot(root);
+    }
+  });
 });
