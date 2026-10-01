@@ -220,3 +220,10 @@ and datastore boundary). Focused validation: C7-C storage 16 / 16, C5 founder su
 `9efb1a03…`. Nothing else reopened.
 
 C7-C is NOT CLOSED.
+
+## 24. Lifecycle note (appended at the C7-D start, 2026-10-01)
+
+The narrative above is history and is not rewritten. After the Technical Lead's exact-head review of `7739a97`, PR #15
+merged into `main` as `f450d6a427bf2687c9f9eb9fbb062d6ce4f36b68` (same tree `f298deda`); exact-head run #100 passed the
+full Windows + Ubuntu gate on its first attempt and post-merge run #101 passed the fast-integrity path. The canonical
+closure statement is `docs/C7C_CLOSURE_RECORD.md`: C7-C is CLOSED / MERGED / CANONICAL.

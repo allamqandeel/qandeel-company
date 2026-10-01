@@ -28,7 +28,8 @@ governed and auditable.
 | `R2` Full Strong-v1 Independent Review | CLOSED / MERGED / CANONICAL (PR #12, `2eafbed`; `docs/R2_CLOSURE_RECORD.md`) |
 | `C7-A` Operational Data + External Outcome Core (C7 = C7-A … C7-D) | CLOSED / MERGED / CANONICAL (PR #13, `e7ca688`; `docs/C7A_CLOSURE_RECORD.md`) |
 | `C7-B` Governed App Operations Control Plane | CLOSED / MERGED / CANONICAL (PR #14, `c06fd2e`; `docs/C7B_CLOSURE_RECORD.md`) |
-| `C7-C` Pilot Instrumentation Pack | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/C7C_IMPLEMENTATION_REPORT.md`); C7-D not started |
+| `C7-C` Pilot Instrumentation Pack | CLOSED / MERGED / CANONICAL (PR #15, `f450d6a`; `docs/C7C_CLOSURE_RECORD.md`) |
+| `C7-D` Digital Presence Creation & Operations | IN PROGRESS (branch `c7d/digital-presence-creation-operations`) |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
@@ -191,7 +192,7 @@ inside the existing governance — never beside it:
 C7-B has no transport, App consumer, signing, credential, applied state or App change. Details:
 `docs/C7B_IMPLEMENTATION_REPORT.md`, decisions D-C7B-01 onward; closure: `docs/C7B_CLOSURE_RECORD.md`.
 
-**C7-C (implementation candidate, not closed) adds Pilot instrumentation** — a Founder-decided context over the existing
+**C7-C (closed) adds Pilot instrumentation** — a Founder-decided context over the existing
 Company, never a second engine:
 - a durable **Pilot** (`TRAINING_INTERNAL` or `CONTROLLED_REAL`) with a forward-only lifecycle DRAFT → BRIEFING →
   READY → ACTIVE → REVIEWING → COMPLETED (or STOPPED), every step an explicit, confirmed Founder act; it grants no budget,
@@ -204,7 +205,7 @@ Company, never a second engine:
   leaderboard; internal training is never market success.
 
 C7-C builds no website, publishing, connector or transport (that is C7-D, Digital Presence Creation & Operations).
-Details: `docs/C7C_IMPLEMENTATION_REPORT.md`, decisions D-C7C-01 onward.
+Details: `docs/C7C_IMPLEMENTATION_REPORT.md`, decisions D-C7C-01 onward; closure: `docs/C7C_CLOSURE_RECORD.md`.
 | Package | Role |
 |---|---|
 | `@qandeel-company/domain` | Pure contracts: IDs, UTC clock, state machines, retry policy, processor contract |

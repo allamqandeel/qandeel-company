@@ -195,6 +195,8 @@ const FROZEN_MIGRATIONS = [
   { file: '0012_c7a_operational_data_external_outcomes.sql', sha256: '31eeff9a49e284bec44915842ea39453550cc225c9e58b100483a7ad45aaaf09' },
   // C7-B released 0013 with PR #14 (merged 2026-10-01); it joins the frozen set in the change after its release (C7-C).
   { file: '0013_c7b_governed_app_controls.sql', sha256: '6eb49123e3079c1256fc95d92c2de47582245109744995f437bb07c57f2d3610' },
+  // C7-C released 0014 with PR #15 (merged 2026-10-01); it joins the frozen set in the change after its release (C7-D).
+  { file: '0014_c7c_pilot_instrumentation.sql', sha256: '9efb1a03cf509b241a083c62d8167939acb7f1615f99c95d873a9b1594632216' },
 ];
 // Later-scope / non-goal subsystems never appear: APP-OPS (C7) and dashboards / analytics tables or packages (C6
 // deliberately builds reports with typed claims, never a dashboard or analytics store — its non-goals).
@@ -2003,8 +2005,11 @@ function syntheticRepo(overrides = {}) {
     // frozen (C7-C), so the base carries its real text and therefore the C7-B proofs it requires.
     [C7B_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C7B_MUTATION_CHECK].ids),
     'packages/runtime/test/c7b/proofs.test.ts': C7B_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
-    // C7-C: the pinned C7-C mutation check (the Pilot rules apply where its modules exist).
+    // C7-C: the pinned C7-C mutation check (the Pilot rules apply where its modules exist). Released 0014 is frozen
+    // (C7-D), so the base carries its real text and therefore the C7-C proofs it requires.
     [C7C_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C7C_MUTATION_CHECK].ids),
+    'packages/runtime/test/c7c/proofs.test.ts': C7C_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
+    'docs/C7B_CLOSURE_RECORD.md': '',
     [OUTCOME_CORE]: '  txAssertExternalEvidence(ctx, w.id, input.classes, input.refs);\n',
     [EXTERNAL_CORE]: C7A_USABLE_REASONS.map((r) => `  return '${r}';`).join('\n'),
     [FOUNDER_LISTENER]: SYNTH_LISTENER,
@@ -2279,9 +2284,9 @@ const VIOLATIONS = {
     { contents: { [C7B_STORE]: "export const pilotObjective = 'pilot_objective';\n" } },
   ],
   'c7b-not-claimed-closed': [
-    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-B\` | Control | Cloud | CLOSED / MERGED |\n` } },
-    { contents: { [C7B_REPORT]: '# Report\n\nC7-B is CLOSED.\n' } },
-    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-B\` | Control | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n| \`C7-C\` | Pilot | Cloud | IN PROGRESS |\n` } },
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-B\` | Control | Cloud | CLOSED / MERGED |\n` }, remove: ['docs/C7B_CLOSURE_RECORD.md'] },
+    { contents: { [C7B_REPORT]: '# Report\n\nC7-B is CLOSED.\n' }, remove: ['docs/C7B_CLOSURE_RECORD.md'] },
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-B\` | Control | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n| \`C7-C\` | Pilot | Cloud | IN PROGRESS |\n` }, remove: ['docs/C7B_CLOSURE_RECORD.md'] },
   ],
   'c7b-proofs-present': [
     { contents: { [C7B_KERNEL]: 'export {};\n' }, remove: ['packages/runtime/test/c7b/proofs.test.ts'] },
@@ -2310,7 +2315,7 @@ const VIOLATIONS = {
     { contents: { [EXTERNAL_STORE]: "appendAudit(ctx, 'external.intake_rejected', 'external_source', id, a, 'REJECTED', reason, {});\n", [C7B_MIGRATION]: 'CREATE TRIGGER external_intake_refusal_windows_bounded_key BEFORE INSERT ON x BEGIN SELECT 1; END;\n' } },
   ],
   'c7c-requires-c7b-closure': [
-    { contents: { [C7C_STORE]: 'export {};\n' } },
+    { contents: { [C7C_STORE]: 'export {};\n' }, remove: ['docs/C7B_CLOSURE_RECORD.md'] },
   ],
   'c7c-not-claimed-closed': [
     { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-C\` | Pilot | Cloud | CLOSED / MERGED |\n` } },
@@ -2318,7 +2323,7 @@ const VIOLATIONS = {
     { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-C\` | Pilot | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n| \`C7-D\` | Digital | Cloud | IN PROGRESS |\n` } },
   ],
   'c7c-proofs-present': [
-    { contents: { [C7C_STORE]: 'export {};\n' } },
+    { contents: { [C7C_STORE]: 'export {};\n' }, remove: ['packages/runtime/test/c7c/proofs.test.ts'] },
     { contents: { [C7C_STORE]: 'export {};\n', 'packages/runtime/test/c7c/proofs.test.ts': C7C_PROOF_MARKERS.map((m) => `// ${m}`).join('\n') }, remove: [C7C_MUTATION_CHECK] },
   ],
   'c7c-pilot-governed': [
