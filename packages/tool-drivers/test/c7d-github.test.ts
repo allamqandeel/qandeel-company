@@ -17,6 +17,13 @@ import { assertAdapterDeclaration, exportBranch, promotionArgs } from '@qandeel-
 
 import { FakeGitHubTransport, GITHUB_CODE_HOST, GITHUB_TOKEN_PERMISSIONS, GitHubCodeHostDriver, GitHubHttpsTransport, assertGitHubEndpoint, permissionsWithinRequest, type PromotionSource, type PromotionSourceExport } from '../src/index.js';
 
+/** The value a proof relies on, present by construction of the fixture. */
+function must<T>(v: T | null | undefined, what = 'value'): T {
+  if (v === null || v === undefined) throw new Error(`${what} is missing`);
+  return v;
+}
+
+
 const ID = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const SHA = 'c'.repeat(64);
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -77,9 +84,9 @@ describe('C7-D GitHub code-host adapter', () => {
     const r = first.ok ? first.result : {};
     assert.equal(r.branch, exportBranch(ID(1), ID(9)));
     assert.equal(r.pullNumber, 1);
-    const repo = gh.repos.get('qandeel-test/site')!;
-    assert.match(repo.commits.get(String(r.commitSha))!.message, /Qandeel-Manifest: c{64}/);
-    const tree = gh.requests.find((q) => q.path.endsWith('/git/trees'))!;
+    const repo = must(gh.repos.get('qandeel-test/site'));
+    assert.match(must(repo.commits.get(String(r.commitSha))).message, /Qandeel-Manifest: c{64}/);
+    const tree = must(gh.requests.find((q) => q.path.endsWith('/git/trees')));
     assert.deepEqual((tree.body as { tree: { path: string }[] }).tree.map((x) => x.path).sort(), ['about/index.html', 'index.html']);
     assert.equal((tree.body as Record<string, unknown>).base_tree, undefined, 'the exported tree is exactly the candidate');
     const writes = gh.requests.filter((q) => q.method !== 'GET' && !q.path.startsWith('/app/')).length;
@@ -114,8 +121,8 @@ describe('C7-D GitHub code-host adapter', () => {
     assert.deepEqual(await call(a.driver, 'candidate-export', a.exportArgs), { ok: false, code: 'CANDIDATE_HASH_MISMATCH', sent: 'NO' });
     assert.equal(a.gh.requests.length, 0);
     const b = world();
-    b.gh.repos.get('qandeel-test/site')!.refs.set(String(b.exportArgs.branch), 'f'.repeat(40));
-    b.gh.repos.get('qandeel-test/site')!.commits.set('f'.repeat(40), { message: 'someone else', tree: 't', parents: [] });
+    must(b.gh.repos.get('qandeel-test/site')).refs.set(String(b.exportArgs.branch), 'f'.repeat(40));
+    must(b.gh.repos.get('qandeel-test/site')).commits.set('f'.repeat(40), { message: 'someone else', tree: 't', parents: [] });
     assert.deepEqual(await call(b.driver, 'candidate-export', b.exportArgs), { ok: false, code: 'BRANCH_CONFLICT', sent: 'NO' });
     assert.equal(b.gh.requests.filter((q) => q.method === 'POST' && q.path.endsWith('/git/refs')).length, 0);
   });
@@ -141,7 +148,7 @@ describe('C7-D GitHub code-host adapter', () => {
     const ex = await call(driver, 'candidate-export', exportArgs);
     const head = String(ex.ok && ex.result.commitSha);
     const mergeArgs = promotionArgs({ kind: 'MERGE_PRODUCTION', promotionId: ID(10), candidateId: ID(1), manifestSha256: SHA, targetId: ID(5), pullNumber: 1, expectedHeadSha: head });
-    const repo = gh.repos.get('qandeel-test/site')!;
+    const repo = must(gh.repos.get('qandeel-test/site'));
     repo.mergeableState = 'blocked';
     assert.deepEqual(await call(driver, 'production-merge', mergeArgs), { ok: false, code: 'MERGE_NOT_READY', sent: 'NO' });
     repo.mergeableState = 'clean';
@@ -159,7 +166,7 @@ describe('C7-D GitHub code-host adapter', () => {
     const args2 = promotionArgs({ kind: 'MERGE_PRODUCTION', promotionId: ID(10), candidateId: ID(1), manifestSha256: SHA, targetId: ID(5), pullNumber: 1, expectedHeadSha: String(ex2.ok && ex2.result.commitSha) });
     const m = await call(w2.driver, 'production-merge', args2);
     assert.equal(m.ok, true);
-    const put = w2.gh.requests.find((q) => q.method === 'PUT')!;
+    const put = must(w2.gh.requests.find((q) => q.method === 'PUT'));
     assert.equal((put.body as { sha: string }).sha, args2.expectedHeadSha);
     assert.equal(JSON.stringify(put.body).includes('admin'), false);
     const replay = await call(w2.driver, 'production-merge', args2, 'wi:x:s9');

@@ -31,6 +31,13 @@ import {
   type SocialAdapterDeclaration,
 } from '../src/index.js';
 
+/** The value a proof relies on, present by construction of the fixture. */
+function must<T>(v: T | null | undefined, what = 'value'): T {
+  if (v === null || v === undefined) throw new Error(`${what} is missing`);
+  return v;
+}
+
+
 const refused = (fn: () => unknown, reason?: string): void => {
   assert.throws(fn, (e: unknown) => isQandeelError(e, 'DIGITAL_REFUSED') && (reason === undefined || e.details.reason === reason));
 };
@@ -68,14 +75,14 @@ describe('C7-D revisions and candidates', () => {
 
   test('4 the manifest is deterministic (order-free) and one byte or one path changes it', () => {
     assert.equal(digitalManifestSha256(e), digitalManifestSha256([...e].reverse()));
-    assert.notEqual(digitalManifestSha256(e), digitalManifestSha256([{ ...e[0]!, sha256: 'c'.repeat(64) }, e[1]!]));
-    assert.notEqual(digitalManifestSha256(e), digitalManifestSha256([{ ...e[0]!, path: 'home.html' }, e[1]!]));
-    assert.notEqual(digitalManifestSha256(e), digitalManifestSha256([{ ...e[0]!, sizeBytes: 11 }, e[1]!]));
+    assert.notEqual(digitalManifestSha256(e), digitalManifestSha256([{ ...must(e[0]), sha256: 'c'.repeat(64) }, must(e[1])]));
+    assert.notEqual(digitalManifestSha256(e), digitalManifestSha256([{ ...must(e[0]), path: 'home.html' }, must(e[1])]));
+    assert.notEqual(digitalManifestSha256(e), digitalManifestSha256([{ ...must(e[0]), sizeBytes: 11 }, must(e[1])]));
   });
 
   test('bounds: an empty revision and case-insensitive path collisions (Windows) are refused', () => {
     refused(() => assertManifestBounds([]), 'REVISION_EMPTY');
-    refused(() => assertManifestBounds([e[0]!, { ...e[0]!, path: 'INDEX.html' }]), 'PATH_COLLISION');
+    refused(() => assertManifestBounds([must(e[0]), { ...must(e[0]), path: 'INDEX.html' }]), 'PATH_COLLISION');
     assertManifestBounds(e);
   });
 
@@ -146,10 +153,10 @@ describe('C7-D adapter declarations', () => {
   test('26/28 no administration, protection, secret, membership, deletion, force or interaction / spend capability can be declared', () => {
     assertAdapterDeclaration(code);
     for (const actionCode of ['branch-protection-update', 'admin-set', 'secrets-write', 'delete-repo', 'force-push', 'comments-reply', 'dm-send', 'ads-spend', 'collaborators-add', 'webhook-create']) {
-      refused(() => assertAdapterDeclaration({ ...code, actions: [{ ...code.actions[0]!, actionCode }] }));
+      refused(() => assertAdapterDeclaration({ ...code, actions: [{ ...must(code.actions[0]), actionCode }] }));
     }
     for (const perm of ['administration', 'secrets', 'members', 'organization_hooks', 'environments', 'org-admin']) refused(() => assertAdapterDeclaration({ ...code, requiredPermissions: { [perm]: 'read' } }), 'ADAPTER_PERMISSION_FORBIDDEN');
-    refused(() => assertAdapterDeclaration({ ...code, actions: [{ ...code.actions[0]!, risk: 'R1' }] }), 'ADAPTER_MUTATION_NOT_GOVERNED');
+    refused(() => assertAdapterDeclaration({ ...code, actions: [{ ...must(code.actions[0]), risk: 'R1' }] }), 'ADAPTER_MUTATION_NOT_GOVERNED');
     refused(() => assertAdapterDeclaration({ ...code, apiVersion: 'latest' }), 'ADAPTER_VERSION_NOT_PINNED');
   });
 

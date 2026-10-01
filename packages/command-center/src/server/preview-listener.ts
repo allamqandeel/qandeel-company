@@ -16,7 +16,6 @@
  * A preview is internal inspection only: never a deployment, a publication, production, SEO or market evidence.
  * Logs carry route, status and code only (Rule A).
  */
-import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 

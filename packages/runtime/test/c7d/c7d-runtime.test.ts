@@ -18,6 +18,13 @@ import { fakes, final, governedRuntime, script, seedWorld, submitTask, type C2Wo
 import { certifyAndPromote, plan, seedReviewer, submitTaskWithPlan } from '../c4/c4-seed.js';
 import { PAGE, gh, grantGitHub, grantWorkshop, registerGitHub, ws } from './c7d-seed.js';
 
+/** The value a proof relies on, present by construction of the fixture. */
+function must<T>(v: T | null | undefined, what = 'value'): T {
+  if (v === null || v === undefined) throw new Error(`${what} is missing`);
+  return v;
+}
+
+
 const done = async (rt: CompanyRuntime, id: string, states: readonly string[], ms = 30_000): Promise<string> =>
   eventually(() => (states.includes(rt.view.getWorkItem(id as Id).state) ? rt.view.getWorkItem(id as Id).state : undefined), ms, `work item → ${states.join('|')}`);
 
@@ -39,7 +46,7 @@ async function buildCandidate(rt: CompanyRuntime, w: C2World, title = 'Launch si
   assert.equal(await done(rt, build, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED', explain(rt, build));
   const project = rt.founder.digital.projects().find((p) => p.title === title);
   assert.ok(project);
-  const revisionId = rt.founder.digital.project(project.id).revisions[0]!.id;
+  const revisionId = must(rt.founder.digital.project(project.id).revisions[0]).id;
   const pack = submitTask(rt, w, {
     instructions: script(
       ws('preview-create', { revisionId }),
@@ -49,7 +56,7 @@ async function buildCandidate(rt: CompanyRuntime, w: C2World, title = 'Launch si
     ),
   });
   assert.equal(await done(rt, pack, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED', explain(rt, pack));
-  const candidateId = rt.founder.digital.project(project.id).candidates[0]!.id;
+  const candidateId = must(rt.founder.digital.project(project.id).candidates[0]).id;
   return { projectId: project.id, revisionId, candidateId };
 }
 
@@ -63,7 +70,7 @@ describe('C7-D Digital Workshop on the runtime', () => {
       grantWorkshop(rt, w);
       const { projectId, revisionId } = await buildCandidate(rt, w);
       const p = rt.founder.digital.project(projectId);
-      const rev = p.revisions[0]!;
+      const rev = must(p.revisions[0]);
       assert.equal(rev.id, revisionId);
       assert.equal(rev.state, 'FINALIZED');
       assert.match(rev.manifestSha256 ?? '', /^[0-9a-f]{64}$/);
@@ -113,16 +120,16 @@ describe('C7-D Digital Workshop on the runtime', () => {
       const pending = await eventually(() => rt.governance.listApprovals('PENDING').find((a) => a.workItemId === exportWi), 60_000, 'export approval');
       // Before the Founder decides, nothing reached GitHub except nothing at all (no token, no write).
       assert.equal(github.requests.length, 0);
-      const promotion = rt.founder.digital.project(rt.founder.digital.projects()[0]!.id).candidates[0]!.promotions[0]!;
+      const promotion = must(must(rt.founder.digital.project(must(rt.founder.digital.projects()[0]).id).candidates[0]).promotions[0]);
       assert.equal(promotion.state, 'READY_FOR_FOUNDER');
       assert.equal(promotion.kind, 'EXPORT_SOURCE');
       assert.equal(rt.founder.digital.decisions()[0]?.approvalId, pending.id);
       // 7/9 the exact act was independently reviewed (Review Pool) before the Founder was asked — never by its maker.
       const reviews = rt.org.review.requests({ workItemId: exportWi }).filter((r) => r.subjectKind === 'ACTION');
       assert.equal(reviews.length, 1);
-      assert.ok(['SATISFIED', 'CONSUMED'].includes(reviews[0]!.state));
-      assert.equal(promotion.reviewRequestId, reviews[0]!.id);
-      const decisions = rt.org.review.decisions(reviews[0]!.id);
+      assert.ok(['SATISFIED', 'CONSUMED'].includes(must(reviews[0]).state));
+      assert.equal(promotion.reviewRequestId, must(reviews[0]).id);
+      const decisions = rt.org.review.decisions(must(reviews[0]).id);
       assert.ok(decisions.length > 0);
       for (const d of decisions) assert.notEqual(d.reviewerEmployeeId, w.employee.id);
       rt.governance.decideApproval(w.founder, pending.id, { decision: 'APPROVE', reasonCode: 'founder.export' });
@@ -131,10 +138,10 @@ describe('C7-D Digital Workshop on the runtime', () => {
       assert.equal(exported.state, 'PROMOTED');
       assert.equal(exported.countsAsMarketOutcome, false);
       assert.equal(exported.externalRef?.pullNumber, 1);
-      const repo = github.repos.get('qandeel-test/site')!;
+      const repo = must(github.repos.get('qandeel-test/site'));
       const head = repo.refs.get(String(exported.externalRef?.branch));
       assert.equal(head, exported.externalRef?.commitSha);
-      assert.match(repo.commits.get(String(head))!.message, new RegExp(`Qandeel-Promotion: ${promotion.id}`));
+      assert.match(must(repo.commits.get(String(head))).message, new RegExp(`Qandeel-Promotion: ${promotion.id}`));
       // Production is untouched: the export approval authorized the export only.
       assert.equal(repo.pulls[0]?.merged, false);
       assert.equal(github.requests.filter((r) => r.method === 'PUT').length, 0);
@@ -146,7 +153,7 @@ describe('C7-D Digital Workshop on the runtime', () => {
       rt.governance.decideApproval(w.founder, mergeApproval.id, { decision: 'APPROVE', reasonCode: 'founder.merge' });
       assert.equal(await done(rt, mergeWi, ['COMPLETED', 'FAILED', 'BLOCKED'], 60_000), 'COMPLETED', explain(rt, mergeWi));
       assert.equal(repo.pulls[0]?.merged, true);
-      const merge = rt.founder.digital.project(rt.founder.digital.projects()[0]!.id).candidates[0]!.promotions.find((p) => p.kind === 'MERGE_PRODUCTION');
+      const merge = must(rt.founder.digital.project(must(rt.founder.digital.projects()[0]).id).candidates[0]).promotions.find((p) => p.kind === 'MERGE_PRODUCTION');
       assert.equal(merge?.state, 'PROMOTED');
       assert.equal(merge?.args.expectedHeadSha, exported.externalRef?.commitSha);
       // No request ever touched administration, protection, secrets or a ref update.
@@ -187,14 +194,14 @@ describe('C7-D Digital Workshop on the runtime', () => {
       const pending = await eventually(() => rt.governance.listApprovals('PENDING').find((a) => a.workItemId === wi1), 60_000, 'approval');
       rt.governance.decideApproval(w.founder, pending.id, { decision: 'REJECT', reasonCode: 'founder.not_now' });
       await done(rt, wi1, ['COMPLETED', 'FAILED', 'BLOCKED'], 60_000);
-      const promo = rt.founder.digital.project(first.projectId).candidates[0]!.promotions[0]!;
+      const promo = must(must(rt.founder.digital.project(first.projectId).candidates[0]).promotions[0]);
       assert.equal(promo.state, 'REJECTED');
       assert.equal(github.requests.length, 0, 'a rejected act never reached GitHub');
       // The same candidate × target × kind never regenerates as a fresh approval loop.
       const wi2 = submitTask(rt, w, { instructions: script(ws('promotion-prepare', { candidateId: first.candidateId, targetId, kind: 'EXPORT_SOURCE' }), final('x')) });
       await done(rt, wi2, ['COMPLETED', 'FAILED', 'BLOCKED']);
       assert.equal(rt.governance.toolInvocations(wi2).find((t) => t.failureCode !== null)?.failureCode, 'PROMOTION_REFUSED_BEFORE');
-      assert.equal(rt.founder.digital.project(first.projectId).candidates[0]!.promotions.length, 1);
+      assert.equal(must(rt.founder.digital.project(first.projectId).candidates[0]).promotions.length, 1);
       assert.equal(rt.governance.listApprovals('PENDING').length, 0);
       // A changed candidate is the way forward — and its export's answer is lost after the branch exists: UNKNOWN → held.
       const second = await buildCandidate(rt, w, 'Second draft');
@@ -203,7 +210,7 @@ describe('C7-D Digital Workshop on the runtime', () => {
       const p3 = await eventually(() => rt.governance.listApprovals('PENDING').find((a) => a.workItemId === wi3), 60_000, 'approval 3');
       rt.governance.decideApproval(w.founder, p3.id, { decision: 'APPROVE', reasonCode: 'founder.ok' });
       assert.equal(await done(rt, wi3, ['COMPLETED', 'FAILED', 'BLOCKED'], 60_000), 'BLOCKED', explain(rt, wi3));
-      const held = rt.founder.digital.project(second.projectId).candidates[0]!.promotions[0]!;
+      const held = must(must(rt.founder.digital.project(second.projectId).candidates[0]).promotions[0]);
       assert.equal(held.state, 'RECONCILIATION_REQUIRED');
       assert.equal(rt.governance.toolInvocations(wi3).find((t) => t.state === 'RECONCILIATION_REQUIRED') !== undefined, true);
       await new Promise((r) => setTimeout(r, 500));

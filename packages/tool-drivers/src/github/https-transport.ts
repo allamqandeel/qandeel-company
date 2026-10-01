@@ -11,6 +11,16 @@ import type { GitHubRequest, GitHubResponse, GitHubTransport } from './transport
 const GITHUB_API_ORIGIN = 'https://api.github.com';
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 
+/** A JSON body, or null when it is empty or not JSON (never the raw text: provider errors are not surfaced). */
+function parseBody(text: string): unknown {
+  if (text.length === 0) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 export class GitHubHttpsTransport implements GitHubTransport {
   async send(request: GitHubRequest, signal: AbortSignal): Promise<GitHubResponse> {
     assertGitHubEndpoint(request.method, request.path);
@@ -29,12 +39,6 @@ export class GitHubHttpsTransport implements GitHubTransport {
     });
     const text = await res.text();
     if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) return { status: res.status, body: null };
-    let body: unknown = null;
-    try {
-      body = text.length === 0 ? null : JSON.parse(text);
-    } catch {
-      body = null;
-    }
-    return { status: res.status, body };
+    return { status: res.status, body: parseBody(text) };
   }
 }

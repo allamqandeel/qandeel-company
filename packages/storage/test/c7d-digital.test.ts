@@ -19,6 +19,13 @@ import { storeContext } from '../src/store.js';
 import { claimGoverned, governedItem, seed, type Seed } from './c2-helpers.js';
 import { backoff, harness, type Harness } from './helpers.js';
 
+/** The value a proof relies on, present by construction of the fixture. */
+function must<T>(v: T | null | undefined, what = 'value'): T {
+  if (v === null || v === undefined) throw new Error(`${what} is missing`);
+  return v;
+}
+
+
 const READS = new Set(['revision-inspect', 'file-read', 'seo-check', 'promotion-inspect']);
 const ACTIONS = ['project-create', 'project-activate', 'project-archive', 'revision-open', 'file-put', 'upload-begin', 'upload-chunk', 'upload-commit', 'file-remove', 'revision-finalize', 'revision-inspect', 'file-read', 'preview-create', 'seo-check', 'candidate-create', 'promotion-prepare', 'promotion-inspect'];
 
@@ -189,7 +196,7 @@ describe('C7-D Digital Workshop storage', () => {
       rejects(w.h.store, `INSERT INTO tool_actions (id, tool_id, code, risk_level, side_effects, mutates_external, requires_idempotency, data_class_ceiling, result_data_class, args_schema_json, cost_per_call_micros, status, created_at) VALUES (?, 'c7d00000-0000-4000-8000-000000000001', 'shell', 'R1', 'NONE', 0, 0, 'D1', 'D1', '{"fields":{}}', 0, 'ACTIVE', ?)`, newId(), w.h.store.now());
       assert.throws(() => GovernanceStore.for(w.h.store).registerTool(w.s.founder, { code: 'my-workspace', driverCode: 'company.digital-workspace', egress: 'NONE' }));
       // Corrupt one object of the first revision on disk: its candidate can no longer be packaged or promoted.
-      const css = DigitalStore.for(w.h.store).revisionFiles(a.revisionId).find((f) => f.path === 'style.css')!;
+      const css = must(DigitalStore.for(w.h.store).revisionFiles(a.revisionId).find((f) => f.path === 'style.css'));
       writeFileSync(new ArtifactStore(w.h.store).objectPath(css.sha256), 'tampered');
       assert.equal(w.act('candidate-create', { revisionId: a.revisionId, kind: 'CONTENT_PACKAGE', summary: 'again' }).code, 'ARTIFACT_INTEGRITY');
       const view = DigitalStore.for(w.h.store).project(a.projectId);
@@ -297,7 +304,7 @@ describe('C7-D Digital Workshop storage', () => {
       w.h.store.close();
       const reopened = w.h.open();
       assert.equal(JSON.stringify(DigitalStore.for(reopened).project(a.projectId)), before);
-      const previewId = DigitalStore.for(reopened).project(a.projectId).previews[0]!.id;
+      const previewId = must(DigitalStore.for(reopened).project(a.projectId).previews[0]).id;
       assert.equal(DigitalStore.for(reopened).previewResolution(previewId).manifestSha256, a.manifest);
     } finally {
       w.h.close();
