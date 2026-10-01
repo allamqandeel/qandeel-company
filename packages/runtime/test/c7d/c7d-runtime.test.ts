@@ -117,6 +117,14 @@ describe('C7-D Digital Workshop on the runtime', () => {
       assert.equal(promotion.state, 'READY_FOR_FOUNDER');
       assert.equal(promotion.kind, 'EXPORT_SOURCE');
       assert.equal(rt.founder.digital.decisions()[0]?.approvalId, pending.id);
+      // 7/9 the exact act was independently reviewed (Review Pool) before the Founder was asked — never by its maker.
+      const reviews = rt.org.review.requests({ workItemId: exportWi }).filter((r) => r.subjectKind === 'ACTION');
+      assert.equal(reviews.length, 1);
+      assert.ok(['SATISFIED', 'CONSUMED'].includes(reviews[0]!.state));
+      assert.equal(promotion.reviewRequestId, reviews[0]!.id);
+      const decisions = rt.org.review.decisions(reviews[0]!.id);
+      assert.ok(decisions.length > 0);
+      for (const d of decisions) assert.notEqual(d.reviewerEmployeeId, w.employee.id);
       rt.governance.decideApproval(w.founder, pending.id, { decision: 'APPROVE', reasonCode: 'founder.export' });
       assert.equal(await done(rt, exportWi, ['COMPLETED', 'FAILED', 'BLOCKED'], 60_000), 'COMPLETED', explain(rt, exportWi));
       const exported = rt.founder.digital.promotion(promotion.id);

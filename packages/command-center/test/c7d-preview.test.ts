@@ -144,6 +144,7 @@ describe('C7-D internal Preview isolation', () => {
       const pu = new URL(preview.url);
       assert.equal(pu.hostname, PREVIEW_HOST, 'a different loopback host than the Founder surface');
       assert.notEqual(pu.origin, new URL(origin).origin);
+      assert.notEqual(pu.hostname, new URL(origin).hostname, 'a different host, so a different site: the surface cookies are never sent');
       const host = `${pu.hostname}:${pu.port}`;
       // The Founder's session cookie, even if a browser sent it, changes nothing; no cookie is ever set.
       const page = await raw(preview.url, { Host: host, Cookie: `${SESSION_COOKIE}=${must(cookies[SESSION_COOKIE])}` });

@@ -94,7 +94,7 @@ const C1_CLOSURE = /^docs\/C1_[^/]*CLOSURE[^/]*\.md$/i;
 // The change that adds a real package extends this list in the same change. A placeholder
 // package is a verifier failure. C1 added domain, storage and runtime; C2 governance; C3 mind; C5 the
 // Founder Command Center surface (`command-center`) and its browser UI (`command-center-ui`).
-const ALLOWED_PACKAGES = ['bootstrap-contract', 'domain', 'governance', 'mind', 'storage', 'runtime', 'command-center', 'command-center-ui'];
+const ALLOWED_PACKAGES = ['bootstrap-contract', 'domain', 'governance', 'mind', 'tool-drivers', 'storage', 'runtime', 'command-center', 'command-center-ui'];
 
 // C1 persistence boundary: `node:sqlite` (a Release Candidate API) is imported by exactly one module.
 const SQLITE_ADAPTER = 'packages/storage/src/sqlite/connection.ts';
@@ -298,6 +298,42 @@ const C7C_TABLES = ['pilots', 'pilot_history', 'founder_action_previews'];
 // C7-D (Digital Presence Creation & Operations) never leaks into C7-C: no website, publishing, social, SEO, hosting,
 // domain or campaign capability in a C7-C module.
 const C7D_SCOPE = /\b(?:website|landing[_-]?page|seo|social[_-]?(?:post|media|channel)|publish\w*|dns|domain[_-]?name|hosting|cms|campaign\w*|ad[_-]?account)\b/i;
+// --- C7-D boundaries (Digital Presence Creation & Operations) -----------------------------------------------------
+const C7D_REPORT = 'docs/C7D_IMPLEMENTATION_REPORT.md';
+const C7D_CLOSURE = /^docs\/C7D_[^/]*CLOSURE[^/]*\.md$/i;
+const C7D_PROOF_MARKERS = ['C7D-PROOF: digital-kernel', 'C7D-PROOF: seo-readiness', 'C7D-PROOF: storage-digital', 'C7D-PROOF: github-adapter', 'C7D-PROOF: provider-seams', 'C7D-PROOF: preview-isolation', 'C7D-PROOF: runtime-c7d'];
+const C7D_MUTATION_CHECK = 'scripts/c7d-mutation-check.mjs';
+const C7D_KERNEL = 'packages/governance/src/digital.ts';
+const C7D_SEO = 'packages/mind/src/seo.ts';
+const C7D_STORE = 'packages/storage/src/digital.ts';
+const C7D_MIGRATION = `${MIGRATIONS_DIR}0015_c7d_digital_presence.sql`;
+const C7D_PREVIEW = 'packages/command-center/src/server/preview-listener.ts';
+const C7D_DRIVERS = 'packages/tool-drivers/src/';
+const C7D_TRANSPORT = 'packages/tool-drivers/src/github/https-transport.ts';
+const C7D_GITHUB_DECLARATION = 'packages/tool-drivers/src/github/declaration.ts';
+const C7D_GITHUB_ENDPOINTS = 'packages/tool-drivers/src/github/endpoints.ts';
+const C7D_FILES = [C7D_KERNEL, C7D_SEO, C7D_STORE, C7D_MIGRATION, C7D_PREVIEW];
+// The datastore gates that hold the workshop without TypeScript (immutability, exact bindings, the closed catalogue).
+const C7D_GOVERNED_TRIGGERS = [
+  'digital_projects_born_draft', 'digital_projects_identity_immutable', 'digital_projects_forward_only', 'digital_projects_no_delete',
+  'digital_revisions_born_working', 'digital_revisions_frozen', 'digital_revisions_finalize_matches_files', 'digital_revisions_no_delete',
+  'digital_revision_files_working_only_i', 'digital_revision_files_working_only_u', 'digital_revision_files_no_delete',
+  'digital_uploads_born_open', 'digital_uploads_settle_once', 'digital_upload_chunks_open_only', 'digital_upload_chunks_immutable_u', 'digital_upload_chunks_immutable_d',
+  'digital_previews_exact_revision', 'digital_previews_immutable_u', 'digital_previews_immutable_d',
+  'digital_release_candidates_exact_revision', 'digital_release_candidates_immutable_u', 'digital_release_candidates_immutable_d',
+  'digital_promotion_targets_identity_immutable', 'digital_promotion_targets_no_delete',
+  'digital_promotions_exact_binding', 'digital_promotions_immutable_u', 'digital_promotions_immutable_d',
+  'tools_digital_workspace_reserved', 'tool_actions_digital_workspace_closed', 'tools_digital_workspace_internal',
+];
+// The workshop is identity and binding only: no second review, approval, evaluation, cost, schedule or Pilot table.
+const C7D_TABLES = ['digital_projects', 'digital_project_history', 'digital_revisions', 'digital_revision_files', 'digital_uploads', 'digital_upload_chunks', 'digital_previews', 'digital_release_candidates', 'digital_promotion_targets', 'digital_promotions'];
+// File content stays in the Artifact Store: no content / blob / payload column, and no secret, token, cookie or score.
+const C7D_FORBIDDEN_COLUMN = /^\s*"?(\w*(?:content|body|blob|payload|html|markup|base64|secret|token|password|cookie|private_?key|score|rank|rating)\w*)"?\s+(?:TEXT|BLOB|ANY|INTEGER|REAL)\b/im;
+// C7-D builds capability: no website framework, hosting, CMS, analytics, SEO vendor or social platform is chosen in code.
+const C7D_VENDOR = /\b(?:vercel|netlify|cloudflare|wordpress|webflow|wix|squarespace|shopify|contentful|sanity\.io|next\.?js|nuxt|gatsby|astro\.build|google[_ -]?analytics|plausible|mixpanel|semrush|ahrefs|instagram|facebook|tiktok|linkedin|twitter|youtube|snapchat)\b/i;
+// Publication is never market success; nothing in C7-D may say otherwise.
+const C7D_SUCCESS_CLAIM = /\b(?:publicationIsMarketSuccess|countsAsMarketOutcome|countsAsOutcome|marketSuccess)\s*:\s*true\b/;
+const C7D_CLAIMED_BUILT = /QANDEEL\s+website\s+(?:is|was|has\s+been)\s+(?:built|launched|published|live|deployed)|(?:selected|chose|chosen|picked)\s+(?:vercel|netlify|cloudflare|wordpress|webflow|next\.?js|instagram|linkedin|google\s+analytics)\b/i;
 // No private App content, secret or score column on a Pilot table.
 const C7C_FORBIDDEN_COLUMN = /^\s*"?(\w*(?:transcript|audio|prompt|conversation|memory|analysis|user_?(?:id|ref)|pseudonym|secret|token|credential|password|score|rank|rating|grade)\w*)"?\s+(?:TEXT|BLOB|ANY|INTEGER|REAL)\b/im;
 // The production Founder session scope is entered only by the auth module (a session, never a ref, arms it).
@@ -489,6 +525,19 @@ const MUTATION_PINS = {
       'c7c-duplicate-thread-linkage', 'c7c-duplicate-root-goal-linkage',
       'c7c-activity-counted-as-performance', 'c7c-universal-aggregation', 'c7c-attribution-bypass', 'c7c-unauthorized-initiative-counted', 'c7c-boundary-refusal-as-autonomy', 'c7c-review-bypass', 'c7c-training-completion-as-improvement', 'c7c-zero-qualified-efficient', 'c7c-economics-bypass-ledger',
       'c7c-contested-outcome-counted', 'c7c-training-called-market-success', 'c7c-issued-control-as-outcome', 'c7c-audit-leaks-content',
+    ],
+  },
+  // C7-D Digital Presence Creation & Operations (docs/C7D_IMPLEMENTATION_REPORT.md).
+  [C7D_MUTATION_CHECK]: {
+    script: 'c7d:mutation',
+    ids: [
+      'c7d-path-traversal-accepted', 'c7d-secret-path-accepted', 'c7d-secret-content-accepted', 'c7d-finalized-revision-mutable', 'c7d-db-finalized-files-mutable', 'c7d-db-revision-unfrozen',
+      'c7d-workspace-ownership-dropped', 'c7d-chunk-hash-ignored', 'c7d-db-candidate-mutable', 'c7d-corrupt-artifact-accepted',
+      'c7d-export-args-unbound', 'c7d-db-promotion-hash-unbound', 'c7d-db-promotion-not-external', 'c7d-db-target-identity-mutable', 'c7d-refused-promotion-regenerates', 'c7d-publication-as-market-outcome',
+      'c7d-review-bypassed', 'c7d-founder-approval-bypassed',
+      'c7d-repository-allowlist-removed', 'c7d-token-permissions-broadened', 'c7d-endpoint-allowlist-removed', 'c7d-unknown-outcome-retried', 'c7d-replay-not-recognized', 'c7d-expected-head-guard-removed', 'c7d-protection-gate-removed', 'c7d-checks-ignored',
+      'c7d-preview-sandbox-removed', 'c7d-preview-on-founder-host', 'c7d-preview-host-check-removed', 'c7d-preview-serves-source', 'c7d-preview-integrity-ignored',
+      'c7d-seo-score-introduced', 'c7d-social-version-check-removed', 'c7d-schedule-window-unbound', 'c7d-forbidden-capability-declared', 'c7d-hosting-preview-production-collapsed', 'c7d-rollback-unbound',
     ],
   },
   // R1 Independent Core Review: one mutation per fixed finding (docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md).
@@ -818,10 +867,11 @@ export const RULES = [
   },
   {
     id: 'no-network-in-runtime-code',
-    // C5: the loopback Founder listener and the browser UI are the two exceptions (rule `founder-listener-loopback-only`).
+    // C5: the loopback Founder listener and the browser UI are the two exceptions (rule `founder-listener-loopback-only`);
+    // C7-D adds the isolated Preview host (rule `c7d-preview-isolated`) and the one fixed-host GitHub transport (`c7d-tool-boundary`).
     check: ({ files, read }) =>
       files
-        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && f !== FOUNDER_LISTENER && !f.startsWith(UI_SRC) && NETWORK_MODULE.test(read(f) ?? ''))
+        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && f !== FOUNDER_LISTENER && f !== C7D_PREVIEW && f !== C7D_TRANSPORT && !f.startsWith(UI_SRC) && NETWORK_MODULE.test(read(f) ?? ''))
         .map((f) => `${f} opens a network path or spawns processes (C1 runtime code has neither)`),
   },
   {
@@ -847,7 +897,7 @@ export const RULES = [
         if (/['"](?:0\.0\.0\.0|::|::0)['"]/.test(listener) || /\.listen\(\s*\d/.test(listener)) problems.push(`${FOUNDER_LISTENER} binds a non-loopback address`);
         if (/child_process|worker_threads|node:sqlite/.test(listener)) problems.push(`${FOUNDER_LISTENER} spawns processes or reaches SQLite`);
       }
-      for (const f of files.filter((x) => x.startsWith('packages/command-center/src/') && x !== FOUNDER_LISTENER && isCode(x))) {
+      for (const f of files.filter((x) => x.startsWith('packages/command-center/src/') && x !== FOUNDER_LISTENER && x !== C7D_PREVIEW && isCode(x))) {
         if (NETWORK_MODULE.test(read(f) ?? '')) problems.push(`${f} opens a network path outside the loopback listener`);
       }
       for (const f of files.filter((x) => (x.startsWith(UI_SRC) || x.startsWith('packages/command-center-ui/public/')) && /\.(?:[cm]?[jt]s|html|css)$/i.test(x))) {
@@ -1577,6 +1627,140 @@ export const RULES = [
     },
   },
   {
+    id: 'c7d-requires-c7c-closure',
+    // C7-D starts only after C7-C is closed in repository truth: a C7-D module needs docs/C7C_*CLOSURE*.md.
+    check: ({ files }) => (files.some((f) => C7D_FILES.includes(f) || f.startsWith(C7D_DRIVERS)) && !files.some((f) => C7C_CLOSURE.test(f)) ? ['C7-D modules exist but C7-C has no docs/C7C_*CLOSURE*.md record'] : []),
+  },
+  {
+    id: 'c7d-not-claimed-closed',
+    // C7-D is an implementation candidate until independent exact-head review and merge: it is closed only in the change
+    // that adds docs/C7D_*CLOSURE*.md. No report or map may claim the QANDEEL website built or a vendor chosen.
+    check: ({ files, read }) => {
+      const problems = [];
+      const report = read(C7D_REPORT);
+      if (report !== undefined && C7D_CLAIMED_BUILT.test(report.replace(/\b(?:not|never|no)\s+(?:been\s+)?/gi, ' NEGATED '))) problems.push(`${C7D_REPORT} claims the QANDEEL website built or a vendor selected`);
+      if (files.some((f) => C7D_CLOSURE.test(f))) return problems;
+      const st = mapState(read(IMPLEMENTATION_MAP), 'C7-D');
+      if (st !== undefined && /\bCLOSED\b/i.test(st.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`C7-D is marked ${JSON.stringify(st)} but no docs/C7D_*CLOSURE*.md record exists`);
+      if (report !== undefined && /\bC7-D\s*(?:—|-|:|is)?\s*CLOSED\b/i.test(report.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`${C7D_REPORT} claims C7-D is closed without a closure record`);
+      return problems;
+    },
+  },
+  {
+    id: 'c7d-proofs-present',
+    check: ({ files, read }) => {
+      if (!files.some((f) => C7D_FILES.includes(f))) return [];
+      const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
+      const problems = C7D_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
+      if (!files.includes(C7D_MUTATION_CHECK)) problems.push(`missing ${C7D_MUTATION_CHECK}`);
+      const ci = json(read('package.json'))?.scripts?.ci ?? '';
+      if (!/\bc7d:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c7d:mutation');
+      return problems;
+    },
+  },
+  {
+    id: 'c7d-digital-governed',
+    // The workshop is identity and exact binding over the Artifact Store, never a second engine: every datastore gate
+    // present; only the digital tables created; no content / blob / secret / score column; digital state written only by
+    // the C7-D store; the internal catalogue's actions are typed (no generic execution word); promotions keep no review,
+    // approval or execution state of their own; nothing C7-D writes evaluations, attributions, learning or external evidence.
+    check: ({ files, read }) => {
+      const problems = [];
+      const sql = read(C7D_MIGRATION);
+      if (sql !== undefined) {
+        for (const t of C7D_GOVERNED_TRIGGERS) if (!new RegExp(`\\bCREATE\\s+TRIGGER\\s+${t}\\b`).test(sql)) problems.push(`the digital workshop exists without the datastore gate ${t}`);
+        for (const m of sql.matchAll(/\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(\w+)/gi)) if (!C7D_TABLES.includes(m[1] ?? '')) problems.push(`${C7D_MIGRATION} creates ${m[1]} (C7-D reuses the canonical Work / Review / Approval / Cost / Pilot tables)`);
+        for (const m of sql.matchAll(/CREATE\s+TABLE\s+(digital\w*)\s*\(([\s\S]*?)\n\)\s*STRICT/g)) {
+          const col = C7D_FORBIDDEN_COLUMN.exec(m[2] ?? '');
+          if (col) problems.push(`${C7D_MIGRATION}: ${m[1]} declares ${col[1]} (file content stays in the Artifact Store; no secret or score)`);
+          if (/\bBLOB\b/i.test(m[2] ?? '')) problems.push(`${C7D_MIGRATION}: ${m[1]} declares a BLOB column (content stays in the Artifact Store)`);
+          if (/\b(?:review_state|approval_state|approved|executed_state|review_request_id|approval_id|invocation_id)\b/.test(m[2] ?? '')) problems.push(`${C7D_MIGRATION}: ${m[1]} stores review / approval / execution state (it is derived from the canonical rows)`);
+        }
+        for (const m of sql.matchAll(/\('c7d00000-[0-9a-f-]+', 'c7d00000-0000-4000-8000-000000000001', '([a-z-]+)'/g)) if (/(?:^|-)(?:shell|exec|execute|eval|cmd|command|run|script|spawn|http|fetch|request|anything)(?:-|$)/.test(m[1] ?? '')) problems.push(`${C7D_MIGRATION}: the internal catalogue names a generic execution action (${m[1]})`);
+      }
+      const writes = /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO|DELETE\s+FROM|REPLACE\s+INTO)\s+digital_\w+/i;
+      for (const f of files.filter((x) => isCode(x) && !isTestPath(x) && x !== C7D_STORE && !x.startsWith(MIGRATIONS_DIR))) if (writes.test(read(f) ?? '')) problems.push(`${f} writes digital workshop state outside ${C7D_STORE}`);
+      const store = read(C7D_STORE);
+      if (store !== undefined && /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO|DELETE\s+FROM)\s+(?:evaluation_results|causal_attributions|learning_signals|lessons|external_records|external_bindings|outcome_verifications|approvals|review_requests|review_decisions|tool_invocations|pilots)\b/i.test(store)) problems.push(`${C7D_STORE} writes a canonical review / approval / execution / evaluation / evidence / Pilot table (it reads them)`);
+      for (const f of files.filter((x) => (C7D_FILES.includes(x) || x.startsWith(C7D_DRIVERS)) && isCode(x))) {
+        const text = (read(f) ?? '').replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, '');
+        if (C7D_SUCCESS_CLAIM.test(text)) problems.push(`${f} claims publication as an outcome or market success`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'c7d-tool-boundary',
+    // External effects only through the Tool Executor and explicit, versioned adapters: no driver reaches the store, the
+    // runtime, SQLite or the filesystem; the GitHub adapter requests only the declared least-privilege permissions, has a
+    // closed endpoint allowlist (no DELETE / PATCH, no admin / protection / secret area), never forces, never follows
+    // redirects and talks to one fixed host; the internal workshop driver code is reserved.
+    check: ({ files, read }) => {
+      const problems = [];
+      for (const f of files.filter((x) => x.startsWith(C7D_DRIVERS) && isCode(x))) {
+        const text = read(f) ?? '';
+        if (/from\s+['"]@qandeel-company\/(?:storage|runtime|command-center|mind)['"]|node:sqlite|node:fs|node:child_process|worker_threads/.test(text)) problems.push(`${f} reaches the store, the runtime, the filesystem or processes (a driver gets only its resolved candidate)`);
+        if (/\bforce\s*:\s*true\b|['"]force['"]\s*:/.test(text)) problems.push(`${f} forces a ref update`);
+        if (f !== C7D_TRANSPORT && (NETWORK_MODULE.test(text) || REMOTE_URL.test(text.replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, '')))) problems.push(`${f} opens a network path outside the one approved transport`);
+      }
+      const transport = read(C7D_TRANSPORT);
+      if (transport !== undefined) {
+        if (!/const GITHUB_API_ORIGIN = 'https:\/\/api\.github\.com';/.test(transport) || [...transport.matchAll(/https?:\/\/[a-z0-9.-]+/gi)].some((m) => m[0] !== 'https://api.github.com')) problems.push(`${C7D_TRANSPORT} talks to a host other than the fixed GitHub API origin`);
+        if (!/redirect:\s*'error'/.test(transport)) problems.push(`${C7D_TRANSPORT} follows redirects`);
+        if (!/assertGitHubEndpoint\(request\.method, request\.path\)/.test(transport)) problems.push(`${C7D_TRANSPORT} sends without the endpoint allowlist`);
+      }
+      const decl = read(C7D_GITHUB_DECLARATION);
+      if (decl !== undefined) {
+        const perms = /GITHUB_TOKEN_PERMISSIONS[^=]*=\s*Object\.freeze\(\{([^}]*)\}\)/.exec(decl);
+        if (!perms) problems.push(`${C7D_GITHUB_DECLARATION}: the token permissions are not one frozen literal`);
+        else for (const m of (perms[1] ?? '').matchAll(/(\w+)\s*:/g)) if (!['contents', 'pull_requests', 'checks', 'statuses', 'metadata'].includes(m[1] ?? '')) problems.push(`${C7D_GITHUB_DECLARATION}: requests the ${m[1]} permission (least privilege: contents, pull_requests, checks, statuses, metadata)`);
+      }
+      const endpoints = read(C7D_GITHUB_ENDPOINTS);
+      if (endpoints !== undefined) {
+        const allowed = /const ALLOWED[\s\S]*?\n\];/.exec(endpoints)?.[0] ?? '';
+        if (/method:\s*'(?:DELETE|PATCH)'/.test(allowed)) problems.push(`${C7D_GITHUB_ENDPOINTS} allows DELETE / PATCH`);
+        if (/protection|collaborators|secrets|\/hooks|\/keys|admin/.test(allowed)) problems.push(`${C7D_GITHUB_ENDPOINTS} allows an administration / protection / secret endpoint`);
+      }
+      for (const f of files.filter((x) => /^packages\/[^/]+\/src\//.test(x) && isCode(x) && x !== C7D_KERNEL && x !== TOOL_EXECUTOR && x !== C7D_STORE)) {
+        if (/['"]company\.digital-workspace['"]/.test(read(f) ?? '')) problems.push(`${f} names the reserved internal workshop driver (only the kernel, the store and the Tool Executor may)`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'c7d-preview-isolated',
+    // The internal Preview is untrusted code on its own loopback site: 127.0.0.2 (never the Founder surface's host, never
+    // a wildcard or LAN address), every response sandboxed without allow-same-origin, no network / forms / workers, never
+    // a cookie, noindex; it never reaches SQLite or spawns processes.
+    check: ({ read }) => {
+      const problems = [];
+      const raw = read(C7D_PREVIEW);
+      if (raw === undefined) return problems;
+      const p = raw.replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, '');
+      if (!/export const PREVIEW_HOST = '127\.0\.0\.2';/.test(p) || !/host:\s*PREVIEW_HOST/.test(p)) problems.push(`${C7D_PREVIEW} does not bind the preview's own loopback host (127.0.0.2)`);
+      if (/['"](?:0\.0\.0\.0|::|::0|127\.0\.0\.1|localhost)['"]/.test(p)) problems.push(`${C7D_PREVIEW} binds or names the Founder surface's host or a non-loopback address`);
+      if (!/sandbox allow-scripts;/.test(p) || /allow-same-origin|allow-forms|allow-top-navigation|allow-popups/.test(p)) problems.push(`${C7D_PREVIEW}: responses are not sandboxed to an opaque origin`);
+      for (const d of ["connect-src 'none'", "form-action 'none'", "worker-src 'none'", 'noindex']) if (!p.includes(d)) problems.push(`${C7D_PREVIEW}: missing ${d}`);
+      if (/Set-Cookie|req\.headers\.cookie|parseCookies/i.test(p)) problems.push(`${C7D_PREVIEW} reads or sets a cookie`);
+      if (/node:sqlite|child_process|worker_threads|node:fs/.test(p)) problems.push(`${C7D_PREVIEW} reaches SQLite, the filesystem or processes`);
+      return problems;
+    },
+  },
+  {
+    id: 'c7d-no-vendor-preselection',
+    // C7-D builds the capability; the Company researches and recommends the stack later. No C7-D module names a website
+    // framework, hosting provider, CMS, analytics, SEO vendor or social platform (GitHub is the one approved code host).
+    check: ({ files, read }) => {
+      const problems = [];
+      for (const f of files.filter((x) => (C7D_FILES.includes(x) || x.startsWith(C7D_DRIVERS)) && isCode(x))) {
+        const text = (read(f) ?? '').replace(/^\s*(?:\/\/|\*|\/\*|--).*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+        const m = C7D_VENDOR.exec(text);
+        if (m) problems.push(`${f} names ${m[0]} (no website / hosting / CMS / analytics / SEO / social vendor is preselected in C7-D)`);
+      }
+      return problems;
+    },
+  },
+  {
     id: 'founder-session-scope-confined',
     // C5 (D-C5-03): a Founder ref is still not authentication. The production session scope is entered only by
     // the auth module; the surface package and the runtime never arm the chokepoint themselves, never mint or
@@ -1945,7 +2129,7 @@ function syntheticRepo(overrides = {}) {
     [AUTHORITY_INDEX]: `## Missing\n\n**${STAGE_16_MISSING}.**\n`,
     [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT)),
     [SYNTH_SOURCE]: SYNTH_SOURCE_TEXT,
-    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation && npm run c6:mutation && npm run c7a:mutation && npm run c7b:mutation && npm run c7c:mutation' } }),
+    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation && npm run c6:mutation && npm run c7a:mutation && npm run c7b:mutation && npm run c7c:mutation && npm run c7d:mutation' } }),
     'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'node --test dist/test' } }),
     'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'packages/bootstrap-contract': {}, 'node_modules/tar': { version: '7.0.0' } } }),
     '.gitattributes': '* text=auto eol=lf\n*.sh text eol=lf\n*.ps1 text eol=crlf\n*.png binary\n',
@@ -2010,6 +2194,8 @@ function syntheticRepo(overrides = {}) {
     [C7C_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C7C_MUTATION_CHECK].ids),
     'packages/runtime/test/c7c/proofs.test.ts': C7C_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
     'docs/C7B_CLOSURE_RECORD.md': '',
+    // C7-D: the pinned C7-D mutation check (the workshop rules apply where its modules exist).
+    [C7D_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C7D_MUTATION_CHECK].ids),
     [OUTCOME_CORE]: '  txAssertExternalEvidence(ctx, w.id, input.classes, input.refs);\n',
     [EXTERNAL_CORE]: C7A_USABLE_REASONS.map((r) => `  return '${r}';`).join('\n'),
     [FOUNDER_LISTENER]: SYNTH_LISTENER,
@@ -2340,6 +2526,50 @@ const VIOLATIONS = {
     { contents: { [C7C_STORE]: 'export function publishLandingPage(): void {}\n' } },
     { contents: { [C7C_EVIDENCE]: 'export const controlState = APPLIED;\n' } },
   ],
+  // C7-D: started before C7-C closed, claimed closed / built, proofs missing, gates missing, a content column, a second
+  // table, writes outside the store, a success claim, driver boundary breaches, preview isolation breaches, a vendor.
+  'c7d-requires-c7c-closure': [
+    { contents: { [C7D_STORE]: 'export {};\n' }, remove: ['docs/C7C_CLOSURE_RECORD.md'] },
+    { contents: { 'packages/tool-drivers/src/index.ts': 'export {};\n' }, remove: ['docs/C7C_CLOSURE_RECORD.md'] },
+  ],
+  'c7d-not-claimed-closed': [
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-D\` | Digital | Cloud | CLOSED / MERGED |\n` } },
+    { contents: { [C7D_REPORT]: '# Report\n\nC7-D is CLOSED.\n' } },
+    { contents: { [C7D_REPORT]: '# Report\n\nThe QANDEEL website is built and live.\n' } },
+    { contents: { [C7D_REPORT]: '# Report\n\nWe selected Vercel for hosting.\n' } },
+  ],
+  'c7d-proofs-present': [
+    { contents: { [C7D_STORE]: 'export {};\n' } },
+  ],
+  'c7d-digital-governed': [
+    { contents: { [C7D_MIGRATION]: 'CREATE TABLE digital_projects (\n  id TEXT NOT NULL\n) STRICT;\n' } },
+    { contents: { [C7D_MIGRATION]: `CREATE TABLE digital_files (\n  file_content TEXT NOT NULL\n) STRICT;\n${C7D_GOVERNED_TRIGGERS.map((t) => `CREATE TRIGGER ${t} BEFORE INSERT ON x BEGIN SELECT 1; END;`).join('\n')}\n` } },
+    { contents: { [C7D_MIGRATION]: `CREATE TABLE digital_revisions (\n  id TEXT NOT NULL,\n  approval_state TEXT NOT NULL\n) STRICT;\n${C7D_GOVERNED_TRIGGERS.map((t) => `CREATE TRIGGER ${t} BEFORE INSERT ON x BEGIN SELECT 1; END;`).join('\n')}\n` } },
+    { contents: { 'packages/runtime/src/digital-hack.ts': "ctx.db.run('UPDATE digital_revisions SET state = ? WHERE id = ?', s, id);\n" } },
+    { contents: { [C7D_STORE]: "ctx.db.run('UPDATE approvals SET state = ? WHERE id = ?', s, id);\n" } },
+    { contents: { [C7D_STORE]: 'export const view = { countsAsMarketOutcome: true };\n' } },
+  ],
+  'c7d-tool-boundary': [
+    { contents: { 'packages/tool-drivers/src/x.ts': "import { CompanyStore } from '@qandeel-company/storage';\n" } },
+    { contents: { 'packages/tool-drivers/src/y.ts': "const r = await fetch('https://api.vendor.example/v1');\n" } },
+    { contents: { 'packages/tool-drivers/src/w.ts': 'send({ ref: x, force: true });\n' } },
+    { contents: { [C7D_TRANSPORT]: "const GITHUB_API_ORIGIN = 'https://api.github.com';\nconst other = 'https://evil.example';\nredirect: 'error';\nassertGitHubEndpoint(request.method, request.path);\n" } },
+    { contents: { [C7D_TRANSPORT]: "const GITHUB_API_ORIGIN = 'https://api.github.com';\nredirect: 'follow';\nassertGitHubEndpoint(request.method, request.path);\n" } },
+    { contents: { [C7D_GITHUB_DECLARATION]: "export const GITHUB_TOKEN_PERMISSIONS: Readonly<Record<string, string>> = Object.freeze({ contents: 'write', administration: 'read' });\n" } },
+    { contents: { [C7D_GITHUB_ENDPOINTS]: "const ALLOWED = [\n  { method: 'DELETE', re: /x/, mutates: true },\n];\n" } },
+    { contents: { [C7D_GITHUB_ENDPOINTS]: "const ALLOWED = [\n  { method: 'PUT', re: /branches\\/main\\/protection/, mutates: true },\n];\n" } },
+    { contents: { 'packages/runtime/src/z.ts': "const d = 'company.digital-workspace';\n" } },
+  ],
+  'c7d-preview-isolated': [
+    { contents: { [C7D_PREVIEW]: "export const PREVIEW_HOST = '127.0.0.1';\nserver.listen({ host: PREVIEW_HOST });\n" } },
+    { contents: { [C7D_PREVIEW]: "export const PREVIEW_HOST = '127.0.0.2';\nserver.listen({ host: PREVIEW_HOST });\nconst csp = \"sandbox allow-scripts allow-same-origin; connect-src 'none'; form-action 'none'; worker-src 'none'\"; const robots = 'noindex';\n" } },
+    { contents: { [C7D_PREVIEW]: "export const PREVIEW_HOST = '127.0.0.2';\nserver.listen({ host: PREVIEW_HOST });\nconst csp = \"sandbox allow-scripts; form-action 'none'; worker-src 'none'\"; const robots = 'noindex';\n" } },
+    { contents: { [C7D_PREVIEW]: "export const PREVIEW_HOST = '127.0.0.2';\nserver.listen({ host: PREVIEW_HOST });\nconst csp = \"sandbox allow-scripts; connect-src 'none'; form-action 'none'; worker-src 'none'\"; const robots = 'noindex';\nres.setHeader('Set-Cookie', c);\n" } },
+  ],
+  'c7d-no-vendor-preselection': [
+    { contents: { [C7D_STORE]: "export const HOSTING = 'vercel';\n" } },
+    { contents: { 'packages/tool-drivers/src/social/linkedin.ts': "export const VERSION = 'linkedin-202609';\n" } },
+  ],
   'ci-contract': [    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: r1-4of4, suite: 'r1:4/4' }\n", '') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace(/- \{ os: ubuntu-latest, label: c4-c5, suite: 'c4:1\/1 c5:1\/1' \}\n/, '') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('acceptance]\n    if: always()\n', 'acceptance]\n    if: success()\n') } },
@@ -2557,6 +2787,15 @@ const MUST_PASS = [
   { id: 'c7c-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-C\` | Pilot | Cloud | CLOSED / MERGED / CANONICAL |\n| \`C7-D\` | Digital | Cloud | IN PROGRESS |\n`, 'docs/C7C_CLOSURE_RECORD.md': '' } } },
   { id: 'c7c-pilot-governed', scenario: { contents: { [C7C_STORE]: "ctx.db.run(`UPDATE pilots SET state = ? WHERE id = ?`, s, id);\nctx.db.get('SELECT 1 FROM evaluation_results');\n", 'packages/storage/test/c7c.test.ts': "db.run(`UPDATE pilots SET state = 'READY'`);\n", [C7C_MIGRATION]: `CREATE TABLE pilots (\n  id TEXT NOT NULL,\n  title TEXT NOT NULL\n) STRICT;\n${C7C_GOVERNED_TRIGGERS.map((t) => `CREATE TRIGGER ${t} BEFORE INSERT ON x BEGIN SELECT 1; END;`).join('\n')}\n` } } },
   { id: 'c7c-no-c7d-or-network', scenario: { contents: { [C7C_STORE]: "// C7-D builds the website and publishes; C7-C does not.\nexport const marketClaim = 'NOT_SUPPORTED';\n", [C7C_EVIDENCE]: "export const note = 'never APPLIED in the App';\n" } } },
+  // C7-D legitimate states: C7-C closed and C7-D in progress; a report saying the website is NOT built and no vendor was
+  // selected; a complete migration with labels and hashes; tests seeding digital rows; a comment naming vendors; the
+  // fixed-host transport; least-privilege permissions; an isolated preview.
+  { id: 'c7d-requires-c7c-closure', scenario: { contents: { [C7D_STORE]: 'export {};\n', 'docs/C7C_CLOSURE_RECORD.md': '' } } },
+  { id: 'c7d-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-C\` | Pilot | Cloud | CLOSED / MERGED / CANONICAL |\n| \`C7-D\` | Digital | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n`, [C7D_REPORT]: '# Report\n\nC7-D is NOT CLOSED. The QANDEEL website is not built; no hosting vendor was selected.\n' } } },
+  { id: 'c7d-digital-governed', scenario: { contents: { [C7D_MIGRATION]: `CREATE TABLE digital_projects (\n  id TEXT NOT NULL,\n  title TEXT NOT NULL,\n  manifest_sha256 TEXT\n) STRICT;\n${C7D_GOVERNED_TRIGGERS.map((t) => `CREATE TRIGGER ${t} BEFORE INSERT ON x BEGIN SELECT 1; END;`).join('\n')}\n`, [C7D_STORE]: "ctx.db.run('UPDATE digital_projects SET state = ? WHERE id = ?', s, id);\nctx.db.get('SELECT state FROM approvals WHERE id = ?', id);\nexport const view = { countsAsMarketOutcome: false };\n", 'packages/storage/test/c7d.test.ts': "db.run('UPDATE digital_revisions SET state = ?', s);\n" } } },
+  { id: 'c7d-tool-boundary', scenario: { contents: { [C7D_TRANSPORT]: "import { assertGitHubEndpoint } from './endpoints.js';\nconst GITHUB_API_ORIGIN = 'https://api.github.com';\nconst r = await fetch(`${GITHUB_API_ORIGIN}${request.path}`, { redirect: 'error' });\nassertGitHubEndpoint(request.method, request.path);\n", [C7D_GITHUB_DECLARATION]: "export const GITHUB_TOKEN_PERMISSIONS: Readonly<Record<string, 'read' | 'write'>> = Object.freeze({ contents: 'write', pull_requests: 'write', checks: 'read', statuses: 'read', metadata: 'read' });\n", [C7D_GITHUB_ENDPOINTS]: "const ALLOWED = [\n  { method: 'PUT', re: /pulls\\/1\\/merge/, mutates: true },\n];\nconst FORBIDDEN = /protection|secrets/;\n", [C7D_KERNEL]: "export const DIGITAL_WORKSPACE_DRIVER = 'company.digital-workspace';\n" } } },
+  { id: 'c7d-preview-isolated', scenario: { contents: { [C7D_PREVIEW]: "// never the Founder surface's host (127.0.0.1); cookies are never read\nexport const PREVIEW_HOST = '127.0.0.2';\nserver.listen({ host: PREVIEW_HOST, port: 0 });\nconst csp = `sandbox allow-scripts; connect-src 'none'; form-action 'none'; worker-src 'none'`;\nconst robots = 'noindex, nofollow';\n" } } },
+  { id: 'c7d-no-vendor-preselection', scenario: { contents: { [C7D_STORE]: "// No vendor (Vercel, Netlify, WordPress, LinkedIn) is chosen here: the Company researches it.\nexport const x = 1;\n", 'packages/tool-drivers/src/github/driver.ts': "export const host = 'github';\n" } } },
   // The canonical five Departments seeded; a review request table carrying the R4 CHECK; tests seeding rows.
   { id: 'review-pool-not-department', scenario: { contents: { [`${MIGRATIONS_DIR}0007_c4.sql`]: CANONICAL_DEPARTMENTS.map((c, i) => `INSERT INTO departments (id, code, name) SELECT 'c4d00000-0000-4000-8000-00000000000${i + 1}', '${c}', 'x' WHERE 1;\n`).join('') } } },
   { id: 'r4-never-review-satisfied', scenario: { contents: { [`${MIGRATIONS_DIR}0008_c4.sql`]: "CREATE TABLE review_requests (\n  risk_level TEXT,\n  state TEXT,\n  CHECK (risk_level <> 'R4' OR state NOT IN ('SATISFIED', 'CONSUMED'))\n) STRICT;\n", [AUTHORITY_KERNEL]: "  if (req.risk === 'R4') return { effect: 'DENY', code: 'FOUNDER_ONLY' };\n" } } },

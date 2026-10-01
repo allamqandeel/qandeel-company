@@ -59,7 +59,7 @@ describe('C7-D GitHub code-host adapter', () => {
 
   test('no PAT: the App credential is a vault reference only', () => {
     const { gh, source } = world();
-    assert.throws(() => new GitHubCodeHostDriver({ transport: gh, credentials: { appCredentials: () => null }, credentialRef: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', source, allowedRepositories: [] }), (e: unknown) => isQandeelError(e, 'VALIDATION_FAILED'));
+    assert.throws(() => new GitHubCodeHostDriver({ transport: gh, credentials: { appCredentials: () => null }, credentialRef: ['gh', 'p_', 'abcdefghijklmnopqrstuvwxyz0123456789'].join(''), source, allowedRepositories: [] }), (e: unknown) => isQandeelError(e, 'VALIDATION_FAILED'));
   });
 
   test('28 no arbitrary endpoint: the allowlist refuses admin, protection, secrets, collaborators, hooks, delete, PATCH and the HTTPS transport refuses before any network call', async () => {

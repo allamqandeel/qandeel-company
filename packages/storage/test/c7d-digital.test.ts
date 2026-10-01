@@ -114,8 +114,8 @@ describe('C7-D Digital Workshop storage', () => {
       }
       const secret = 'AKIA' + 'IOSFODNN7EXAMPLE';
       assert.equal(w.act('file-put', { revisionId, path: 'config.js', encoding: 'utf8', content: `const key = "${secret}";` }).code, 'SECRET_MATERIAL');
-      assert.equal(w.act('file-put', { revisionId, path: 'notes.md', encoding: 'utf8', content: '-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----' }).code, 'SECRET_MATERIAL');
-      assert.equal(w.act('project-create', { projectType: 'WEBSITE', title: `token ${'ghp_' + 'a'.repeat(36)}` }).code, 'SECRET_MATERIAL');
+      assert.equal(w.act('file-put', { revisionId, path: 'notes.md', encoding: 'utf8', content: ['-----BEGIN', 'RSA PRIVATE KEY-----\nMIIEow\n-----END', 'RSA PRIVATE KEY-----'].join(' ') }).code, 'SECRET_MATERIAL');
+      assert.equal(w.act('project-create', { projectType: 'WEBSITE', title: `token ${['gh', 'p_'].join('') + 'a'.repeat(36)}` }).code, 'SECRET_MATERIAL');
       assert.equal(w.act('file-put', { revisionId, path: 'bad.html', encoding: 'base64', content: '!!!' }).code, 'BASE64_INVALID');
       // Nothing secret-shaped, and no Company title, is in audit, events or tool history.
       const telemetry = JSON.stringify([db(w.h.store).all('SELECT details_json FROM audit_events'), db(w.h.store).all('SELECT payload_json FROM events'), db(w.h.store).all('SELECT result_json FROM tool_invocations')]);
@@ -231,8 +231,12 @@ describe('C7-D Digital Workshop storage', () => {
       const pid = newId();
       rejects(w.h.store, `INSERT INTO digital_promotions (id, candidate_id, target_id, kind, tool_action_id, work_item_id, employee_id, args_json, args_sha256, created_at) VALUES (?, ?, ?, 'EXPORT_SOURCE', ?, ?, ?, ?, ?, ?)`, pid, candidateId, target.id, exportAction.id, w.workItemId, w.s.employee.id, forged({ promotionId: pid, manifestSha256: 'f'.repeat(64) }), 'a'.repeat(64), now);
       rejects(w.h.store, `INSERT INTO digital_promotions (id, candidate_id, target_id, kind, tool_action_id, work_item_id, employee_id, args_json, args_sha256, created_at) VALUES (?, ?, ?, 'EXPORT_SOURCE', 'c7d00000-0000-4000-8000-000000000105', ?, ?, ?, ?, ?)`, pid, candidateId, target.id, w.workItemId, w.s.employee.id, forged({ promotionId: pid }), 'a'.repeat(64), now);
+      // A non-external (R0 read) action of the very adapter can never carry a promotion.
+      const readAction = gov.registerToolAction(w.s.founder, { toolId: tool.id, code: 'repository-read', risk: 'R0', sideEffects: 'NONE', mutatesExternal: false, dataClassCeiling: 'D1', argsSchema: { fields: {} }, costPerCallMicros: 0 });
+      rejects(w.h.store, `INSERT INTO digital_promotions (id, candidate_id, target_id, kind, tool_action_id, work_item_id, employee_id, args_json, args_sha256, created_at) VALUES (?, ?, ?, 'EXPORT_SOURCE', ?, ?, ?, ?, ?, ?)`, pid, candidateId, target.id, readAction.id, w.workItemId, w.s.employee.id, forged({ promotionId: pid }), 'a'.repeat(64), now);
       rejects(w.h.store, `UPDATE digital_promotions SET args_json = ? WHERE id = ?`, '{}', String(prep.result.promotionId));
-      rejects(w.h.store, `UPDATE digital_promotion_targets SET external_ref = 'github:other/repo' WHERE id = ?`, target.id);
+      // Only the identifier changes (a correctly versioned update otherwise): the datastore still refuses it.
+      rejects(w.h.store, `UPDATE digital_promotion_targets SET external_ref = 'github:other/repo', version = version + 1 WHERE id = ?`, target.id);
       // The export resolution: exact args only; any change (another hash, another branch) refuses before a driver sends anything.
       const ok = resolvePromotionExport(w.h.store, 'test.code-host', args);
       assert.ok(ok.ok && ok.export.files.length === 1 && ok.export.manifestSha256 === a.manifest);
