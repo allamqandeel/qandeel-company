@@ -434,6 +434,14 @@ button.chip:hover { background: var(--paper); border-color: rgba(29, 27, 38, 0.2
 .palette-input::placeholder { color: var(--fg-3); }
 .palette-result { margin: 10px 2px 0; color: var(--fg-2); }
 .palette-matches { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+/* C7-C: the Pilots section of the palette (logical properties; Arabic titles keep their own direction and line-height). */
+.pilots { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-strong); max-height: 52vh; overflow-y: auto; }
+.pilot-list { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 10px; }
+.pilot-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.pilot-decisions { margin: 8px 0; line-height: 1.6; }
+.pilots .readiness { margin-top: 8px; }
+.pilot-create { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.pilot-create input { flex: 1; min-width: 12rem; border: 1px solid var(--line-strong); border-radius: var(--radius-s); padding: 7px 10px; line-height: 1.6; }
 .preview { position: absolute; inset: 0; margin: auto; width: min(540px, 90vw); height: max-content; background: var(--surface-strong); border: 1px solid rgba(196, 138, 31, 0.5); border-radius: var(--radius); box-shadow: 0 30px 80px rgba(40, 34, 60, 0.25); padding: 22px 24px; z-index: 40; }
 .preview[hidden] { display: none; }
 .preview-title { margin: 0 0 4px; font-size: 18px; font-weight: 600; }

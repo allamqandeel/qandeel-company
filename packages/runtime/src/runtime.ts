@@ -73,6 +73,7 @@ import {
   GoalStore,
   ImprovementStore,
   ExternalEvidenceStore,
+  PilotStore,
   MemoryStore,
   OrganizationStore,
   ReviewStore,
@@ -202,6 +203,8 @@ export interface FounderAdmin {
   readonly improvement: ImprovementStore;
   /** C7-A governed sources, evidence bindings and the content-free intake seam, under the same signalling contract. */
   readonly external: ExternalEvidenceStore;
+  /** C7-C Pilots: Founder-decided contexts and their derived Evidence Board, under the same signalling contract. */
+  readonly pilots: PilotStore;
   universe(options?: { at?: string }): CompanyUniverse;
 }
 
@@ -858,6 +861,8 @@ export class CompanyRuntime {
           // the record) before refusing: the Founder's world changed. A repeated one changed nothing.
           committedRefusal: { ingest: (e) => isQandeelError(e, 'INTAKE_CONFLICT') && e.details.recorded === true },
         }),
+        // C7-C: a Pilot step announces once; the board, scope and inspection are derived reads and stay silent.
+        pilots: signalling(PilotStore.for(s), changed, { mutating: ['create', 'advance'], reads: ['get', 'list', 'history', 'briefing', 'scope', 'board', 'inspect', 'health'] }),
         universe: (options: { at?: string } = {}): CompanyUniverse => {
           if (options.at !== undefined && !isTimestamp(options.at)) throw new QandeelError('VALIDATION_FAILED', 'at must be a canonical UTC timestamp', { field: 'at' });
           return projectUniverse(s, options.at === undefined ? {} : { at: options.at });

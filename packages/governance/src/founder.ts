@@ -11,6 +11,8 @@
  */
 import { QandeelError } from '@qandeel-company/domain';
 
+import { PILOT_INTENTS } from './pilot.js';
+
 // --- Goals (Stage 2 §3) -------------------------------------------------------------------------
 
 export const GOAL_KINDS = ['COMPANY', 'DEPARTMENT'] as const;
@@ -112,7 +114,7 @@ export function warrantsFounderAttention(purpose: MessagePurpose, level: Attenti
 // --- Founder command intents ---------------------------------------------------------------------
 
 /** Read intents change attention only; mutating intents become structured previews (explicit confirmation). */
-export const READ_INTENTS = ['OPEN_EMPLOYEE', 'SHOW_DEPARTMENT', 'SHOW_GOAL', 'WHO_WORKS_ON', 'WHAT_IS_BLOCKED', 'NEEDS_MY_APPROVAL', 'SHOW_BRIEFS', 'RETURN_TO_LIVE', 'SHOW_CEO', 'SHOW_TIMELINE', 'SHOW_REPORT', 'SHOW_PERFORMANCE'] as const;
+export const READ_INTENTS = ['OPEN_EMPLOYEE', 'SHOW_DEPARTMENT', 'SHOW_GOAL', 'WHO_WORKS_ON', 'WHAT_IS_BLOCKED', 'NEEDS_MY_APPROVAL', 'SHOW_BRIEFS', 'RETURN_TO_LIVE', 'SHOW_CEO', 'SHOW_TIMELINE', 'SHOW_REPORT', 'SHOW_PERFORMANCE', 'SHOW_PILOT'] as const;
 /**
  * The Founder's exception decisions (R2-21) are STRUCTURED-ONLY intents: no natural-language pattern produces
  * them (like GOAL_PROPOSE); the surface posts them with IDs / codes / bounded numbers, and they are confirmed
@@ -126,7 +128,9 @@ export const EXCEPTION_INTENTS = ['TOOL_RECONCILE', 'RESERVATION_RECONCILE', 'JO
  * (uphold, replace or retract). Structured-only, like the exception decisions: no text produces them.
  */
 export const EXTERNAL_EVIDENCE_INTENTS = ['SOURCE_REGISTER', 'SOURCE_DECIDE', 'EVIDENCE_BIND', 'EVIDENCE_UNBIND', 'OUTCOME_CONTEST_RESOLVE'] as const;
-export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS, ...EXTERNAL_EVIDENCE_INTENTS] as const;
+// C7-C: the Pilot intents (`./pilot.ts`) are structured-only too — a Pilot is created and moved only by an explicit,
+// confirmed Founder act, never by text and never by a message in the briefing thread.
+export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS, ...EXTERNAL_EVIDENCE_INTENTS, ...PILOT_INTENTS] as const;
 export type ReadIntent = (typeof READ_INTENTS)[number];
 export type MutatingIntent = (typeof MUTATING_INTENTS)[number];
 
@@ -196,6 +200,8 @@ const PATTERNS: readonly Pattern[] = [
   { re: /(?:daily|weekly|monthly|يومي|اليومي|اسبوعي|الاسبوعي|شهري|الشهري)\s*(?:company\s+)?(?:report|review|brief|تقرير|مراجعه|موجز)|(?:report|review|brief|تقرير|مراجعه|موجز)\s*(?:ال)?(?:daily|weekly|monthly|يومي|اسبوعي|شهري)/, intent: 'SHOW_REPORT', kind: 'READ' },
   { re: /(?:performance|اداء)\s+(?:of\s+)?\S|how\s+is\s+.+\s+(?:doing|performing)/, intent: 'SHOW_PERFORMANCE', kind: 'READ' },
   { re: new RegExp(String.raw`(?:اعرض|اظهر|عرض|show|open)${W}.*(?:موجز|ملخصات|briefs?)|^briefs?$|^(?:الموجز|الملخصات)$`), intent: 'SHOW_BRIEFS', kind: 'READ' },
+  // C7-C: open a Pilot's Evidence Board (a read; a Pilot is never created or moved by text).
+  { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:التجربه|تجربه|pilots?)${W}|^pilots?$|^(?:التجربه|التجارب)$`), intent: 'SHOW_PILOT', kind: 'READ' },
   { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:الزمن|التاريخ|timeline|history)|^timeline$`), intent: 'SHOW_TIMELINE', kind: 'READ' },
   { re: new RegExp(String.raw`(?:افتح|اعرض|اظهر|show|open)${W}.*(?:المدير التنفيذي|الرئيس التنفيذي|ceo)${W}|^ceo$|^(?:المدير التنفيذي|الرئيس التنفيذي)$`), intent: 'SHOW_CEO', kind: 'READ' },
   { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:هدف|goal)`), intent: 'SHOW_GOAL', kind: 'READ' },
@@ -365,6 +371,7 @@ function argumentOf(normalized: string, intent: ReadIntent): string | null {
   }
   if (intent === 'SHOW_GOAL') rest = rest.replace(FILLERS, '').replace(/^(?:هدف|goal)\s*/, '').replace(/\s*(?:هدف|goal)$/, '');
   if (intent === 'SHOW_DEPARTMENT') rest = rest.replace(/^(?:قسم|اداره|إدارة|department)\s*/, '');
+  if (intent === 'SHOW_PILOT') rest = rest.replace(FILLERS, '').replace(/^(?:ال)?(?:تجربه|التجارب|pilots?)\s*/, '');
   if (intent === 'SHOW_REPORT') return /weekly|اسبوع/.test(rest) ? 'WEEKLY' : /monthly|شهر/.test(rest) ? 'MONTHLY' : 'DAILY';
   if (intent === 'SHOW_PERFORMANCE') rest = (/(?:performance|اداء)\s+(?:of\s+)?(.+)$/.exec(rest)?.[1] ?? /how\s+is\s+(.+?)\s+(?:doing|performing)/.exec(rest)?.[1] ?? '').trim();
   rest = rest.replace(FILLERS, '').trim();

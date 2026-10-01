@@ -86,6 +86,9 @@ export const ERROR_CODES = [
   // C7-B governed Company → App controls: a control revision refused by the closed family / scope / value contract (the
   // reason is a code; nothing about the App is executed or changed).
   'CONTROL_REFUSED',
+  // C7-C Pilot instrumentation: a Pilot step refused by its lifecycle, briefing evidence or root-goal rule (the reason is a
+  // code; a Pilot never grants anything).
+  'PILOT_INVALID',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

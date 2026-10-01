@@ -69,6 +69,10 @@ const ROUTES: readonly Route[] = [
   route('GET', '/api/improvement/inspect', 'inspect', (ctx, _p, _b, q) => api.inspect(ctx, { kind: q.get('kind') ?? 'COMPANY', id: q.get('id') ?? undefined })),
   route('GET', '/api/improvement/profiles/:id', 'profile', (ctx, p) => api.profile(ctx, p[0] as string)),
   route('GET', '/api/improvement/resilience', 'resilience', (ctx) => api.resilience(ctx)),
+  // C7-C Pilots: reads only (a Pilot is created and moved through /api/previews, confirmed with its fingerprint).
+  route('GET', '/api/pilots', 'pilots', (ctx) => api.pilots(ctx)),
+  route('GET', '/api/pilots/:id', 'pilot', (ctx, p) => api.pilotBoard(ctx, p[0] as string)),
+  route('GET', '/api/pilots/:id/inspect', 'pilotInspect', (ctx, p, _b, q) => api.pilotInspect(ctx, p[0] as string, { workItemId: q.get('workItemId') ?? undefined })),
 ];
 
 export class FounderListener {

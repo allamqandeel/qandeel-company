@@ -7,7 +7,7 @@
  * Founder as a code. The sheets share the company's language: the same avatars, Department accents, gold,
  * radii and status grammar as the cards in the columns.
  */
-import { ACTION_LABEL, CALENDAR_LABEL, CAPABILITY_LABEL, DECISION_LABEL, dirOf, FIELD_LABEL, fmtDate, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, fmtTime, hasArabic, humanize, INTENT_LABEL, KIND_LABEL, LANE_LABEL, plural, PURPOSE_LABEL, RELATION_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATE_LABEL, t } from '../model/format.js';
+import { ACTION_LABEL, CALENDAR_LABEL, CAPABILITY_LABEL, DECISION_LABEL, dirOf, EVIDENCE_LABEL, FIELD_LABEL, fmtDate, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, fmtTime, hasArabic, humanize, INTENT_LABEL, KIND_LABEL, LANE_LABEL, MARKET_CLAIM_LABEL, PILOT_DECISION_LABEL, PILOT_MODE_LABEL, plural, PURPOSE_LABEL, READINESS_LABEL, RELATION_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATE_LABEL, t } from '../model/format.js';
 import type { CompanyUniverse } from '../model/types.js';
 
 type Json = Record<string, unknown>;
@@ -508,12 +508,81 @@ export function renderPalette(root: HTMLElement, host: PanelHost, result: Json |
       }
       root.append(ul);
     }
+    if (result.pilots) root.append(renderPilots(result.pilots as Json, host));
   }
   return input;
 }
 
+const NEXT_PILOT_STEP: Readonly<Record<string, string>> = { DRAFT: 'BRIEFING', BRIEFING: 'READY', READY: 'ACTIVE', ACTIVE: 'REVIEWING', REVIEWING: 'COMPLETED' };
+
+/**
+ * C7-C: the Founder's Pilots in the palette (no new canvas, no Tree of Light change). Each Pilot shows its mode, state,
+ * the exact decision it waits for, its briefing conversation and — when one is open — the advisory readiness checklist,
+ * each criterion with its own evidence state (never a score). Every step is a structured preview the Founder confirms.
+ */
+function renderPilots(data: Json, host: PanelHost): HTMLElement {
+  const section = h('section', { class: 'pilots', 'aria-label': 'Pilots' });
+  const list = (data.list as Json[]) ?? [];
+  const goals = (data.goals as Json[]) ?? [];
+  const board = data.board as Json | undefined;
+  section.append(h('h3', { class: 'section-title', text: 'Pilots' }));
+  if (list.length === 0) section.append(h('p', { class: 'muted small', text: 'No pilot yet. A pilot starts as a draft: talk with the CEO first, then decide when it is ready.' }));
+  const ul = h('ul', { class: 'pilot-list' });
+  for (const p of list) {
+    const state = String(p.state);
+    const li = h('li', { class: 'pilot' }, content('strong', String(p.title)), ' ', h('span', { class: 'pill', text: t(PILOT_MODE_LABEL, String(p.mode)) }), ' ', h('span', { class: 'pill', text: t(STATE_LABEL, state) }));
+    const actions = h('div', { class: 'pilot-actions' });
+    if (typeof p.briefingThreadId === 'string') {
+      const open = h('button', { type: 'button', class: 'link', text: 'Open the CEO briefing' });
+      open.addEventListener('click', () => host.openThread(String(p.briefingThreadId), ''));
+      actions.append(open);
+    }
+    const next = NEXT_PILOT_STEP[state];
+    if (next !== undefined && next !== 'ACTIVE') {
+      const b = h('button', { type: 'button', class: 'btn btn-quiet', text: `Preview: ${t(STATE_LABEL, next)}` });
+      b.addEventListener('click', () => void host.previewAction('PILOT_ADVANCE', { pilotId: String(p.id), to: next }));
+      actions.append(b);
+    }
+    if (next === 'ACTIVE') {
+      for (const g of goals) {
+        const b = h('button', { type: 'button', class: 'btn btn-quiet', text: `Preview: activate on “${String(g.title)}”` });
+        b.dir = dirOf(String(g.title));
+        b.addEventListener('click', () => void host.previewAction('PILOT_ADVANCE', { pilotId: String(p.id), to: 'ACTIVE', goalId: String(g.id) }));
+        actions.append(b);
+      }
+    }
+    if (state !== 'COMPLETED' && state !== 'STOPPED') {
+      const stop = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Preview: stop' });
+      stop.addEventListener('click', () => void host.previewAction('PILOT_ADVANCE', { pilotId: String(p.id), to: 'STOPPED' }));
+      actions.append(stop);
+    }
+    li.append(actions);
+    ul.append(li);
+  }
+  section.append(ul);
+  if (board) {
+    const decisions = (board.decisionsNeeded as string[]) ?? [];
+    if (decisions.length > 0) section.append(h('p', { class: 'pilot-decisions' }, h('span', { class: 'pill pill-needs_decision', text: 'Your decision' }), ' ', decisions.map((d) => t(PILOT_DECISION_LABEL, d)).join(' · ')));
+    const external = (board.external as Json) ?? {};
+    section.append(h('p', { class: 'muted small', text: t(MARKET_CLAIM_LABEL, String(external.marketClaim)) }));
+    const dl = h('dl', { class: 'facts readiness', 'aria-label': 'Readiness evidence (advisory, never a score)' });
+    for (const r of (board.readiness as Json[]) ?? []) dl.append(h('dt', { text: t(READINESS_LABEL, String(r.criterion)) }), h('dd', { text: t(EVIDENCE_LABEL, String(r.state)) }));
+    section.append(dl, h('p', { class: 'muted small', text: 'Readiness is advisory evidence. You decide the next phase.' }));
+  }
+  // Creating a pilot: a title and a mode, posted as a structured preview (nothing exists until you confirm).
+  const form = h('form', { class: 'pilot-create' });
+  const title = h('input', { type: 'text', maxlength: 160, placeholder: 'Pilot title', 'aria-label': 'Pilot title', dir: 'auto', required: true }) as HTMLInputElement;
+  const mode = h('select', { 'aria-label': 'Pilot mode' }, h('option', { value: 'TRAINING_INTERNAL', text: t(PILOT_MODE_LABEL, 'TRAINING_INTERNAL') }), h('option', { value: 'CONTROLLED_REAL', text: t(PILOT_MODE_LABEL, 'CONTROLLED_REAL') })) as HTMLSelectElement;
+  form.append(title, mode, h('button', { type: 'submit', class: 'btn btn-quiet', text: 'Preview: create pilot' }));
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (title.value.trim()) void host.previewAction('PILOT_CREATE', { title: title.value.trim(), mode: mode.value });
+  });
+  section.append(form);
+  return section;
+}
 /** Payload fields the Founder reads: identifiers are resolved to names or dropped, never shown as codes. */
-const HIDDEN_FIELDS = new Set(['reasonCode', 'currency', 'approvalId', 'goalId', 'budgetId', 'requestId', 'conflictId', 'employeeId', 'invocationId', 'reservationId', 'jobId', 'findingId', 'attributionId', 'lessonId', 'promotionId', 'workItemId']);
+const HIDDEN_FIELDS = new Set(['pilotId', 'threadId', 'reasonCode', 'currency', 'approvalId', 'goalId', 'budgetId', 'requestId', 'conflictId', 'employeeId', 'invocationId', 'reservationId', 'jobId', 'findingId', 'attributionId', 'lessonId', 'promotionId', 'workItemId']);
 
 export function renderPreview(root: HTMLElement, preview: Json, host: PanelHost): void {
   root.replaceChildren();
