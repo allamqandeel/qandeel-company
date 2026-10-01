@@ -133,6 +133,7 @@ export const INTENT_LABEL: Readonly<Record<string, string>> = {
   SHOW_REPORT: 'Show a company report',
   SHOW_PERFORMANCE: 'Show a performance profile',
   SHOW_PILOT: 'Show a pilot',
+  SHOW_DIGITAL: 'Show digital work',
   APPROVAL_DECIDE: 'Decide an approval',
   GOAL_APPROVE: 'Approve a goal',
   GOAL_STATE: 'Change a goal state',
@@ -212,6 +213,9 @@ export const FIELD_LABEL: Readonly<Record<string, string>> = {
 };
 
 /** C7-C: Pilot modes, readiness criteria and evidence states in words (advisory evidence, never a score). */
+/** C7-D: where one exact external act stands (derived from its review, the Founder's approval and its execution). */
+export const PROMOTION_STATE_LABEL: Readonly<Record<string, string>> = { PREPARED: 'Prepared', UNDER_REVIEW: 'Under independent review', REVIEW_REJECTED: 'Rework requested by review', READY_FOR_FOUNDER: 'Waiting for your decision', REJECTED: 'You rejected it', APPROVED: 'Approved, not yet done', EXECUTING: 'In progress', PROMOTED: 'Done (provider confirmed)', FAILED: 'Failed', RECONCILIATION_REQUIRED: 'Outcome uncertain — needs reconciliation', STALE: 'No longer valid' };
+export const PROMOTION_KIND_LABEL: Readonly<Record<string, string>> = { EXPORT_SOURCE: 'Export source to the code host', MERGE_PRODUCTION: 'Merge to production', PREVIEW_EXTERNAL: 'External preview', PUBLISH_PRODUCTION: 'Publish to production', ROLLBACK_PRODUCTION: 'Roll production back', SOCIAL_PUBLISH: 'Publish a social post' };
 export const PILOT_MODE_LABEL: Readonly<Record<string, string>> = { TRAINING_INTERNAL: 'Internal training', CONTROLLED_REAL: 'Controlled real-world' };
 export const READINESS_LABEL: Readonly<Record<string, string>> = { FOUNDER_DIALOGUE: 'Founder dialogue', GOAL_DECOMPOSITION: 'Goal decomposition', CROSS_DEPARTMENT_EXECUTION: 'Cross-department execution', REVIEW_DISCIPLINE: 'Review discipline', APPROPRIATE_AUTONOMY: 'Appropriate autonomy', LEARNING_CLOSURE: 'Learning closure', COST_DISCIPLINE: 'Cost discipline', REAL_WORLD_OUTCOME: 'Real-world outcome' };
 export const EVIDENCE_LABEL: Readonly<Record<string, string>> = { INSUFFICIENT_EVIDENCE: 'Not enough evidence yet', SUPPORTED: 'Supported by evidence', CONCERN: 'Concern', CONTESTED: 'Contested', NOT_APPLICABLE: 'Not applicable' };

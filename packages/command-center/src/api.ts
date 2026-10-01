@@ -303,6 +303,8 @@ export interface CommandResolution {
   readonly profile?: Json;
   /** C7-C read intent: the Pilots and, when exactly one matches, its Evidence Board. */
   readonly pilots?: Json;
+  /** C7-D read intent: the digital projects, the exact external acts awaiting the Founder and (one match) the project. */
+  readonly digital?: Json;
 }
 
 /** Resolves a read intent to a focus change, or a mutating one to a preview (never to a mutation). */
@@ -355,6 +357,16 @@ export function command(ctx: ApiContext, body: Json): CommandResolution {
         const ms = want === '' ? all.filter((p) => p.state !== 'COMPLETED' && p.state !== 'STOPPED') : all.filter((p) => p.id === intent.argument || norm(p.title).includes(want));
         const one = ms.length === 1 ? ms[0] : undefined;
         return { intent, focus: { lens: 'PILOT', targetId: one?.id ?? null, query: intent.argument }, matches: ms.map((p) => ({ id: p.id, label: p.title, kind: 'pilot' })), pilots: { list: all.map((p) => ({ ...p, briefingEmployeeId: p.briefingThreadId === null ? null : ctx.runtime.founder.communications.thread(p.briefingThreadId).employeeId })), goals: activatableGoals(ctx), ...(one ? { board: ctx.runtime.founder.pilots.board(one.id) } : {}) } as unknown as Json };
+      }
+      case 'SHOW_DIGITAL': {
+        // A read: the Company's digital projects and the exact external acts awaiting the Founder (decided only through the
+        // governed APPROVAL_DECIDE confirmation), and the one project the words name.
+        const d = ctx.runtime.founder.digital;
+        const all = d.projects();
+        const want = norm(intent.argument ?? '').replace(/^(?:ال)?(?:موقع|حضور رقمي|digital|website|previews?)\s*/, '');
+        const ms = want === '' ? all : all.filter((p) => p.id === intent.argument || norm(p.title).includes(want));
+        const one = ms.length === 1 ? ms[0] : all.length === 1 ? all[0] : undefined;
+        return { intent, focus: { lens: 'DIGITAL', targetId: one?.id ?? null, query: intent.argument }, matches: [], digital: { projects: all, decisions: d.decisions(), ...(one ? { project: d.project(one.id) } : {}) } as unknown as Json };
       }
       case 'SHOW_PERFORMANCE': {
         const ms = matchEmployees(u, intent.argument ?? '');
