@@ -116,6 +116,7 @@ export function statusForCode(code: string): number {
     case 'BUDGET_EXHAUSTED':
     case 'DEDUPE_CONFLICT':
     case 'CURRENCY_MISMATCH':
+    case 'DIGITAL_REFUSED':
       return 409;
     case 'VALIDATION_FAILED':
       return 400;

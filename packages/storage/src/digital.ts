@@ -936,6 +936,8 @@ export class DigitalStore {
       if (p.state !== 'READY' || p.entryPath === null) refuse(p.gapCode ?? 'PREVIEW_NOT_READY');
       const r = getRevision(ctx, p.revisionId);
       if (r.state !== 'FINALIZED' || r.manifestSha256 !== p.manifestSha256 || manifestOf(ctx, r.id) !== p.manifestSha256) refuse('PREVIEW_MANIFEST_MISMATCH');
+      // A missing or corrupt object anywhere in the revision refuses the whole preview (never a partial site).
+      if (ctx.db.get(`SELECT 1 AS x FROM digital_revision_files f LEFT JOIN artifacts a ON a.id = f.artifact_id WHERE f.revision_id = ? AND f.state = 'ACTIVE' AND (a.id IS NULL OR a.state <> 'READY' OR a.sha256 <> f.sha256) LIMIT 1`, r.id)) refuse('PREVIEW_CONTENT_INTEGRITY');
       return { previewId: p.id, revisionId: r.id, manifestSha256: p.manifestSha256, entryPath: p.entryPath as string, files: new Map(activeFiles(ctx, r.id).map((f) => [f.path, f])) };
     });
   }

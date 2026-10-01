@@ -6,6 +6,7 @@ import { CompanyRuntime, DeterministicFakeProvider, FakeToolDriver, employeeTask
 
 import { BriefingPolicy } from './briefing.js';
 import { FounderListener } from './server/listener.js';
+import { PreviewHost } from './server/preview-listener.js';
 import { defaultStaticRoots, type StaticRoots } from './static.js';
 
 export interface FounderSurfaceOptions {
@@ -22,6 +23,8 @@ export interface FounderSurfaceOptions {
 export class FounderSurface {
   readonly runtime: CompanyRuntime;
   readonly listener: FounderListener;
+  /** C7-D: the isolated internal Preview host (its own loopback site; previews open on demand and expire). */
+  readonly previews: PreviewHost;
   readonly briefing: BriefingPolicy | null;
   readonly fakes: { readonly providers: readonly DeterministicFakeProvider[]; readonly drivers: readonly FakeToolDriver[] };
   #unsubscribe: (() => void) | null = null;
@@ -40,7 +43,8 @@ export class FounderSurface {
     };
     this.runtime = new CompanyRuntime(runtimeOptions);
     const log = options.log ?? (() => undefined);
-    this.listener = new FounderListener({ runtime: this.runtime, roots: options.roots ?? defaultStaticRoots(), ...(options.port !== undefined ? { port: options.port } : {}), log });
+    this.previews = new PreviewHost({ runtime: this.runtime, log });
+    this.listener = new FounderListener({ runtime: this.runtime, roots: options.roots ?? defaultStaticRoots(), ...(options.port !== undefined ? { port: options.port } : {}), log, preview: this.previews });
     this.briefing = options.briefing === false ? null : new BriefingPolicy(this.runtime.founder, { log });
   }
 
@@ -67,6 +71,7 @@ export class FounderSurface {
     } catch {
       // The store may already be closed by a failed runtime; sessions expire on their own.
     }
+    await this.previews.close();
     await this.listener.close();
     await this.runtime.stop();
   }
