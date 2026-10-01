@@ -181,4 +181,9 @@ export { rollbackSchemaUpdate, safeUpgrade, type RollbackReport, type SafeUpgrad
 // outcome verification and evaluation only; there is no transport, listener or per-user browsing path.
 export { ExternalEvidenceStore, INTAKE_ACTOR_REF, contractDigest, type ExternalBindingRecord, type ExternalRecordView, type ExternalSourceRecord, type IntakeResult } from './external-evidence.js';
 export type { ExternalEvidenceView, ExternalOutcomeState } from './external-core.js';
+// C7-B Governed App Operations Control Plane: read-only inspection of control proposals, the closed family catalogue,
+// the (empty) approved Remote Configuration register, immutable issued revisions and the deterministic export of
+// Company-ISSUED desired controls. There is no write method: a control is proposed by an Employee act, reviewed by the
+// Review Pool and issued only by the Founder's R3 approval; no transport exists and nothing claims App effect.
+export { AppControlStore, CONTROL_PROPOSAL_REF, type ControlDecisionView, type ControlProposalRecord, type ControlProposalState, type ControlRevisionRecord, type IssuedControlsExport } from './app-controls.js';
 export { RESTORE_IN_PROGRESS, clearUpdateHold, readUpdateHold, restoreStatus, type RestoreMarker, type RestorePhase, type RestoreStatus, type UpdateHold } from './update-hold.js';

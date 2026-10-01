@@ -19,8 +19,11 @@ export interface EventEnvelope {
   readonly payload: JsonObject;
 }
 
-/** C7-A adds `external_source`: a governed source of operational facts / external outcome evidence (0012). */
-export const AGGREGATE_TYPES = ['work_item', 'job', 'run', 'artifact', 'runtime', 'backup', 'external_source'] as const;
+/**
+ * C7-A adds `external_source`: a governed source of operational facts / external outcome evidence (0012). C7-B adds
+ * `app_control`: one Company → App control series (proposals and issued desired revisions, 0013).
+ */
+export const AGGREGATE_TYPES = ['work_item', 'job', 'run', 'artifact', 'runtime', 'backup', 'external_source', 'app_control'] as const;
 export type AggregateType = (typeof AGGREGATE_TYPES)[number];
 
 export const EVENT_TYPES = [
@@ -54,6 +57,11 @@ export const EVENT_TYPES = [
   'external_record.accepted',
   'external_record.conflict_detected',
   'external_binding.changed',
+  // C7-B (content-free: proposal / series / revision IDs, family and operation codes, fingerprints — never a rationale;
+  // ISSUED is Company desired state, never a claim that the App applied anything).
+  'app_control.proposed',
+  'app_control.proposal_changed',
+  'app_control.revision_issued',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

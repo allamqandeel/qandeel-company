@@ -33,6 +33,7 @@ import {
 } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
+import { txControlReviewSettled } from './app-controls.js';
 import { employeeIdFromRef, getEmployeeRow, txAllocateWorkItemBudget, wakeWorkItemJob } from './governance-core.js';
 import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { effectiveDataClass } from './governed-writes.js';
@@ -643,6 +644,8 @@ export function applyOutcome(ctx: StoreContext, request: ReviewRequestRecord, ou
   const item = getWorkItemRow(ctx, request.workItemId);
   const trace = { correlationId: item.correlationId, actorRef };
   if (request.subjectKind === 'ACTION') {
+    // C7-B: a settled review of a Company → App control proposal puts that exact act to the Founder (or ends it).
+    txControlReviewSettled(ctx, request, outcome, actorRef);
     // Exactly the waiting Work Item wakes; its next run re-runs the full authority path before any effect.
     wakeWorkItemJob(ctx, item.id, ['AWAITING_INDEPENDENT_REVIEW'], outcome === 'SATISFIED' ? 'review.passed' : 'review.rework');
     return;
@@ -794,6 +797,18 @@ export function consumeActionReview(ctx: StoreContext, requestId: Id, invocation
   if (r.state !== 'SATISFIED') throw new QandeelError('REVIEW_STALE', 'the action review is no longer satisfied', { requestId });
   const changed = ctx.db.run(`UPDATE review_requests SET state = 'CONSUMED', resolution_ref = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ? AND state = 'SATISFIED'`, `tool_invocation:${invocationId}`, ts(ctx), r.id, r.version).changes;
   if (changed !== 1) throw new QandeelError('VERSION_CONFLICT', 'the action review changed concurrently', { requestId });
+  requestHistory(ctx, r.id, r.version + 1, 'SATISFIED', 'CONSUMED', 'review.consumed', SYSTEM_REVIEW_REF);
+}
+
+/**
+ * C7-B: the satisfied review of a Company → App control proposal is consumed by the one revision it authorized (single
+ * use, like `consumeActionReview` for a tool intent), in the issuing transaction.
+ */
+export function consumeControlReview(ctx: StoreContext, requestId: Id, revisionRef: string): void {
+  const r = getRequest(ctx, requestId);
+  if (r.state !== 'SATISFIED') throw new QandeelError('REVIEW_STALE', 'the control review is no longer satisfied', { requestId });
+  const changed = ctx.db.run(`UPDATE review_requests SET state = 'CONSUMED', resolution_ref = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ? AND state = 'SATISFIED'`, revisionRef, ts(ctx), r.id, r.version).changes;
+  if (changed !== 1) throw new QandeelError('VERSION_CONFLICT', 'the control review changed concurrently', { requestId });
   requestHistory(ctx, r.id, r.version + 1, 'SATISFIED', 'CONSUMED', 'review.consumed', SYSTEM_REVIEW_REF);
 }
 

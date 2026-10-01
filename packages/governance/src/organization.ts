@@ -6,8 +6,9 @@
  *   eligibility / context input; every organizational act still needs an explicit grant (authority.ts).
  *   Work delegation ≠ authority delegation: handing work to someone never widens what they may do.
  */
-import { QandeelError, boundedText, type Timestamp } from '@qandeel-company/domain';
+import { QandeelError, boundedText, type RiskLevel, type Timestamp } from '@qandeel-company/domain';
 
+import { APP_CONTROL_CAPABILITY, APP_CONTROL_RISK, controlGrantResource } from './app-controls.js';
 import { assertCatalogCode } from './classes.js';
 import { assertMoney, assertTokens } from './economics.js';
 
@@ -215,6 +216,8 @@ export const ORG_ACTIONS = [
   'handoff.clarify',
   'handoff.escalate',
   'review.plan.declare',
+  // C7-B: a Company → App control revision (R3 — see `orgActRequest`); proposed only, never issued by the act itself.
+  'control.propose',
 ] as const;
 export type OrgAction = (typeof ORG_ACTIONS)[number];
 export const isOrgAction = (v: unknown): v is OrgAction => isMember(ORG_ACTIONS, v);
@@ -232,11 +235,26 @@ const ORG_ACTION_CAPABILITY: Readonly<Record<OrgAction, string | null>> = Object
   'handoff.clarify': null,
   'handoff.escalate': null,
   'review.plan.declare': 'org.review.plan',
+  'control.propose': APP_CONTROL_CAPABILITY,
 });
 
 /** The grant an act needs (`null`: the act only answers one's own handoff). Unknown acts have none. */
 export function orgActionCapability(action: OrgAction): string | null {
   return Object.hasOwn(ORG_ACTION_CAPABILITY, action) ? ORG_ACTION_CAPABILITY[action] : null;
+}
+
+/**
+ * The risk and resource an act is decided at. Organizational acts are R1 on `*` (internal, reversible). A Company →
+ * App control revision is production-impacting: R3 in Strong v1 (Stage 3 §2–§3) — its decision therefore requires
+ * BOTH an independent review and the Founder's approval — on the family's grant resource (a grant may be scoped to
+ * one family). No act lowers this.
+ */
+export function orgActRequest(action: OrgAction, args: unknown): { readonly risk: RiskLevel; readonly resource: string } {
+  if (action === 'control.propose') {
+    const family = args !== null && typeof args === 'object' && Object.hasOwn(args, 'family') ? (args as Record<string, unknown>).family : undefined;
+    return { risk: APP_CONTROL_RISK, resource: controlGrantResource(family) };
+  }
+  return { risk: 'R1', resource: '*' };
 }
 
 /**

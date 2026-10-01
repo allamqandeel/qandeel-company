@@ -205,6 +205,28 @@ export function txAssertBindable(ctx: StoreContext, recordId: Id, role: BindingR
 
 const SOURCE_KEY_SHAPE = /^[a-z0-9][a-z0-9.-]{2,63}$/;
 
+/** The coalescing window of intake refusals (engineering policy, not Product semantics). */
+export const REFUSAL_WINDOW_MS = 3_600_000;
+const REFUSAL_REASON = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/**
+ * C7-B — the Company-side storage-amplification guard of R-C7A-04. One durable counter per (registered source id or
+ * `unresolved`, refusal reason code, hour window): the caller audits only the FIRST refusal of a window (returns true);
+ * every later one only counts. The key space is bounded by registered sources × the kernel's closed reason codes × time
+ * — never by anything a producer supplies (an unknown reason folds into `OTHER`) — and nothing of the refused payload
+ * is stored. No timer runs: the window is derived from the refusal's own time. This is NOT network / edge rate
+ * limiting (L1 / App-side Production Integration own that): it only bounds what refusals cost the Company's datastore.
+ */
+export function txCountRefusal(ctx: StoreContext, sourceRef: string, reasonCode: string): boolean {
+  const reason = REFUSAL_REASON.test(reasonCode) ? reasonCode : 'OTHER';
+  const at = ts(ctx);
+  const window = new Date(Math.floor(Date.parse(at) / REFUSAL_WINDOW_MS) * REFUSAL_WINDOW_MS).toISOString();
+  const updated = ctx.db.run('UPDATE external_intake_refusal_windows SET refusals = refusals + 1, last_at = ? WHERE source_ref = ? AND reason_code = ? AND window_start = ?', at, sourceRef, reason, window).changes;
+  if (updated === 1) return false;
+  ctx.db.run('INSERT INTO external_intake_refusal_windows (source_ref, reason_code, window_start, refusals, first_at, last_at) VALUES (?, ?, ?, 1, ?, ?)', sourceRef, reason, window, at, at);
+  return true;
+}
+
 type Ingested = { kind: 'ACCEPTED' | 'DUPLICATE'; record: ExternalRecordView } | { kind: 'CONFLICT'; recordId: Id; sourceId: Id; recorded: boolean; contested: number };
 
 /** The intake transaction. A refusal throws (and is audited by the caller in its own transaction); a conflict commits its record. */
@@ -239,7 +261,9 @@ function txIngest(ctx: StoreContext, raw: unknown, refused: { sourceId: Id | nul
       // contested (by the datastore) and C6 restates its evaluation — history stays, the Founder decides.
       contested = txOutcomesContestedBy(ctx, conflictId as Id).length;
     }
-    appendAudit(ctx, 'external.intake_conflict', 'external_record', recordId, { actorRef: INTAKE_ACTOR_REF }, 'REJECTED', 'CONFLICTING_REPLAY', { sourceId: source.id, repeated: known, contestedVerifications: contested });
+    // C7-B (R-C7A-04): a NEW conflict is always audited; the same conflicting replay sent again is counted per window and
+    // audited once per window (it commits nothing new), so a misbehaving producer cannot grow the audit without bound.
+    if (!known || txCountRefusal(ctx, source.id, 'CONFLICTING_REPLAY_REPEATED')) appendAudit(ctx, 'external.intake_conflict', 'external_record', recordId, { actorRef: INTAKE_ACTOR_REF }, 'REJECTED', 'CONFLICTING_REPLAY', { sourceId: source.id, repeated: known, contestedVerifications: contested });
     return { kind: 'CONFLICT', recordId, sourceId: source.id, recorded: !known, contested };
   }
   const id = newId();
@@ -412,7 +436,8 @@ export class ExternalEvidenceStore {
             // registered source a shape-valid key names — a registered identifier, never content — so its health counts it.
             const key = refused.sourceId === null && typeof occurrence === 'object' && occurrence !== null ? (occurrence as Record<string, unknown>).sourceKey : undefined;
             const named = typeof key === 'string' && SOURCE_KEY_SHAPE.test(key) ? ctx.db.get<{ id: string }>('SELECT id FROM external_sources WHERE source_key = ?', key)?.id : undefined;
-            appendAudit(ctx, 'external.intake_rejected', 'external_source', refused.sourceId ?? named ?? 'unresolved', { actorRef: INTAKE_ACTOR_REF }, 'REJECTED', reason, field === null ? {} : { field });
+            // C7-B (R-C7A-04): refusals are counted per (source, reason, window); only the first of a window is audited.
+            if (txCountRefusal(ctx, refused.sourceId ?? named ?? 'unresolved', reason)) appendAudit(ctx, 'external.intake_rejected', 'external_source', refused.sourceId ?? named ?? 'unresolved', { actorRef: INTAKE_ACTOR_REF }, 'REJECTED', reason, field === null ? {} : { field });
           });
         } catch {
           // Auditing a refusal never masks the refusal itself.
@@ -486,7 +511,8 @@ export class ExternalEvidenceStore {
       const grouped = (sql: string): Map<string, Row> => new Map(ctx.db.all<Row>(sql).map((r) => [s(r.k), r]));
       const records = grouped('SELECT source_id AS k, COUNT(*) AS n, MAX(received_at) AS at FROM external_records GROUP BY source_id');
       const conflicts = grouped('SELECT source_id AS k, COUNT(*) AS n FROM external_record_conflicts GROUP BY source_id');
-      const rejected = grouped(`SELECT entity_id AS k, COUNT(*) AS n FROM audit_events WHERE action = 'external.intake_rejected' GROUP BY entity_id`);
+      // Refusals are counted by the bounded refusal counters (C7-B, R-C7A-04; history before 0013 folded in), never by audit rows.
+      const rejected = grouped(`SELECT source_ref AS k, SUM(refusals) AS n FROM external_intake_refusal_windows WHERE reason_code <> 'CONFLICTING_REPLAY_REPEATED' GROUP BY source_ref`);
       const perSource = ctx.db.all<Row>('SELECT id, state, lane FROM external_sources ORDER BY created_at, id').map((r) => ({
         sourceId: s(r.id) as Id,
         state: s(r.state) as SourceState,

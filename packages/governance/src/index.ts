@@ -6,6 +6,7 @@
  * cost economics, the provider-adapter and tool-driver contracts and typed model proposals.
  * Persistence lives in @qandeel-company/storage; execution in @qandeel-company/runtime.
  */
+export * from './app-controls.js';
 export * from './authority.js';
 export * from './classes.js';
 export * from './economics.js';

@@ -33,6 +33,7 @@ import {
   type Timestamp,
 } from '@qandeel-company/domain';
 import {
+  APP_CONTROL_APPROVAL_ACTION,
   PARENT_SCOPE,
   parentScopeFor,
   QUALIFICATION_NEXT,
@@ -77,6 +78,7 @@ import {
   MAX_EXTERNAL_DATA_CLASS,
 } from '@qandeel-company/governance';
 
+import { txControlApprovalDecided } from './app-controls.js';
 import {
   CHILD_CAN_SPEND_SQL,
   admitBudgetWaiters,
@@ -1015,6 +1017,8 @@ export class GovernanceStore {
       );
       approvalHistory(ctx, id, a.version + 1, 'PENDING', to, reason, p.ref);
       appendAudit(ctx, `approval.${to.toLowerCase()}`, 'approval', id, { actorRef: p.ref }, 'OK', reason, { risk: a.risk, action: a.action.slice(0, 64) });
+      // C7-B: the Founder's decision on an R3 Company → App control approval issues (or ends) exactly the approved act.
+      if (a.action === APP_CONTROL_APPROVAL_ACTION) txControlApprovalDecided(ctx, a, to, p.ref);
       if (to === 'APPROVED' && a.workItemId !== null) {
         if (a.action === 'work_item.execute') releaseApprovedWorkItem(ctx, a.workItemId, id, p.ref);
         else wakeWorkItemJob(ctx, a.workItemId, ['AWAITING_APPROVAL'], 'approval.granted');
