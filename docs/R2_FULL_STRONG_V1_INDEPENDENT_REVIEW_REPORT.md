@@ -777,3 +777,11 @@ reviewer. GitHub CI on the PR head is the full-system gate.
 
 **State:** RA-1, RB-1, RB-2 closed; FB-2 and AC-01 closed at §16.5. **CLOSURE CANDIDATE — READY FOR TECHNICAL LEAD
 EXACT-HEAD REVIEW.** No closure record is written before that review and the merge. C7 not started.
+
+---
+
+**Lifecycle note (added 2026-10-01 at the C7-A start; the review narrative above is unchanged history).** After the
+Technical Lead's exact-head review, PR #12 merged at head `ba6f4b7a2d09a2731718103f20d7efab003f19b3` into `main` as
+`2eafbedac0d7c8e60e72d2a2ca48fcc6ff967bc5` (exact-head run #88 full proof set SUCCESS; post-merge run #89
+fast-integrity SUCCESS). R2 is **CLOSED / MERGED / CANONICAL**; the canonical closure statement is
+`docs/R2_CLOSURE_RECORD.md`.

@@ -5,9 +5,9 @@ product and business. The Founder remains the human Product Authority; the Compa
 governed and auditable.
 
 > **Separate from the QANDEEL App.** The App is a different repository, product, runtime and data
-> boundary. Nothing here imports, reads or writes the App. Future integration happens only through
-> the governed `APP-OPS-01` boundary. It is not implemented, and operational telemetry is always
-> content-free.
+> boundary. Nothing here imports, reads or writes the App. Integration happens only through the governed
+> `APP-OPS-01` boundary (its App-side contract is frozen). C7-A adds only the Company-side governed intake contract;
+> no App transport, connector or control plane exists, and operational telemetry is always content-free.
 
 ## Current state
 
@@ -22,7 +22,9 @@ governed and auditable.
 | `R1` Independent Core Review | CLOSED / MERGED / CANONICAL (PR #6, `bd18614`) |
 | `C4` Organization + CEO + Directors + Delegation + Review Pool | CLOSED / MERGED / CANONICAL (PR #8, `595083a`) |
 | `C5` Founder Command Center (Tree of Light) | CLOSED / MERGED / CANONICAL (PR #10, `7c45f2a`; `docs/C5_CLOSURE_RECORD.md`) |
-| `C6` Company Improvement Engine (Evaluation + Attribution + Learning + Reporting + Resilience) | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/C6_IMPLEMENTATION_REPORT.md`) |
+| `C6` Company Improvement Engine (Evaluation + Attribution + Learning + Reporting + Resilience) | CLOSED / MERGED / CANONICAL (PR #11, `b4f91ca`; `docs/C6_CLOSURE_RECORD.md`) |
+| `R2` Full Strong-v1 Independent Review | CLOSED / MERGED / CANONICAL (PR #12, `2eafbed`; `docs/R2_CLOSURE_RECORD.md`) |
+| `C7-A` Operational Data + External Outcome Core (C7 = C7-A … C7-D) | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/C7A_IMPLEMENTATION_REPORT.md`); C7-B / C7-C / C7-D not started |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
@@ -142,12 +144,35 @@ getting better, not merely remember more. It extends the C1–C5 mechanisms and 
   (Preflight → Backup → Rehearse → Migrate → Verify → Activate, `UPDATE_HOLD`, bounded rollback).
 
 Details: `docs/C6_IMPLEMENTATION_REPORT.md`, decisions D-C6-01 onward.
+
+**C7-A (implementation candidate, not closed) adds the Company's first trustworthy connection to real-world evidence**,
+inside the existing C6 engine — never beside it:
+- a **governed source registry**: provider-neutral sources (the App's operational stream, or an outcome family —
+  search, web, store, business, campaign, social, App health) under a closed, versioned, digest-pinned contract;
+  DRAFT until the Founder activates it through the governed confirmation; SUSPEND fails closed; RETIRE is final;
+- a **content-free intake seam** (`ExternalEvidenceStore.ingest`) that App-side integration and L1 can call later:
+  allowlist-first validation, refusal by reason code (private content, credentials, raw payloads, bags, free text and
+  secrets are refused and never stored, logged or echoed), idempotency by (source, producer event id), conflicting
+  replays recorded and never applied, event time ≠ receipt time; a user-scoped diagnostic's pseudonym is never stored;
+- **explicit Founder bindings** of an accepted record to a Work Item or Goal — outcome evidence (outcome lane only) or
+  an external dependency failure; evidence is never a verdict;
+- **C6 integration**: `EXTERNAL_OUTCOME` is runtime truth (no static flag); the Founder or, where the plan delegates,
+  the Review Pool verifies outcomes on usable governed evidence; the evaluator, attribution (an external dependency is
+  a non-employee cause), reports (unavailable / nothing relevant / cited evidence) and inspection cite canonical records;
+- **contracts held by the datastore**: the release's contract catalogue is SQLite state, so a direct write cannot create
+  evidence of another family, type, domain, unit, scope or field shape than the source's registered contract allows;
+- **late integrity conflicts**: a conflicting replay contests every verification that rested on the record — it stays
+  history, leaves current C6 truth (evaluation, profile, economics, reports) and reaches the Founder, who upholds,
+  replaces (on usable evidence) or retracts it through the governed confirmation.
+
+C7-A has no transport, listener, SDK, control plane, publishing or Pilot objective engine. Details:
+`docs/C7A_IMPLEMENTATION_REPORT.md`, decisions D-C7A-01 onward.
 | Package | Role |
 |---|---|
 | `@qandeel-company/domain` | Pure contracts: IDs, UTC clock, state machines, retry policy, processor contract |
-| `@qandeel-company/governance` | C2 pure policy kernel: Employee lifecycle, R0–R4 authority, `E0..E4` / `D0..D4`, Router Policy, checked economics, provider / tool contracts, typed proposals; C4 organization, delegation and review rules |
+| `@qandeel-company/governance` | C2 pure policy kernel: Employee lifecycle, R0–R4 authority, `E0..E4` / `D0..D4`, Router Policy, checked economics, provider / tool contracts, typed proposals; C4 organization, delegation and review rules; the C7-A intake kernel (closed contracts, allowlist, privacy refusal, source lifecycle) |
 | `@qandeel-company/mind` | C3 pure kernel: Memory Write Policy, deterministic retrieval and context planning, compaction, Skill pipeline / licensing / inspection, capability evaluation, Academy rules; C6 evaluation, attribution, Performance Profile, learning closure and report semantics |
-| `@qandeel-company/storage` | Workspace, SQLite/WAL adapter (the only `node:sqlite` user), migrations, repositories, Artifact Store, backup; C4 Organization and Review stores; C5 Founder stores; C6 Improvement store and resilience (portable packages, retention, drills, update safety) |
+| `@qandeel-company/storage` | Workspace, SQLite/WAL adapter (the only `node:sqlite` user), migrations, repositories, Artifact Store, backup; C4 Organization and Review stores; C5 Founder stores; C6 Improvement store and resilience (portable packages, retention, drills, update safety); the C7-A External Evidence store (governed sources, intake, bindings) |
 | `@qandeel-company/runtime` | Runtime Supervisor, bounded worker pool, recovery, health, CLI; C2 governed Model Runtime, Tool Executor, `c2.employee-task` loop, deterministic fakes; C3 Context Assembler and memory-proposal path |
 | `@qandeel-company/bootstrap-contract` | C0 toolchain proof (unchanged) |
 
@@ -208,8 +233,9 @@ npm run ci
 | `npm run c3:acceptance -- --workspace <dir>` | C3 local acceptance in a disposable directory (below) |
 | `npm run c4:mutation` | Removes 25 C4 organization / delegation / review / P-07 gates from the build; their proof tests must fail (after a build). `-- --shard i/n` runs a disjoint slice |
 | `npm run c4:acceptance -- --workspace <dir>` | C4 local acceptance in a disposable directory (below) |
+| `npm run c7a:mutation` | Removes 48 C7-A intake / privacy / source-governance / usable-evidence / C6-seam / contest / datastore-contract gates from the build (a datastore gate from the migration, re-pinned for that run only); their proof tests must fail (after a build). `-- --shard i/n` runs a disjoint slice; `-- --only id,id` a local focus |
 | `npm run verify` | Repository-contract verifier (`scripts/verify-bootstrap.mjs`) |
-| `npm run ci` | build → typecheck → lint → test → C1 + C2 + C3 + R1 + C4 mutation checks → verify (CI runs the same proofs, split into parallel jobs) |
+| `npm run ci` | build → typecheck → lint → test → C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A mutation checks → verify (CI runs the same proofs, split into parallel jobs) |
 
 ### C1 local acceptance (Founder host)
 
@@ -427,6 +453,7 @@ After `npm run build`: `node packages/runtime/dist/src/cli.js <command> --worksp
 | `reviews` | Read-only C4 reviews: live requests, conflicts, holds, Review Pool health (no rationale or instructions) |
 | `improvement` | Read-only C6 health: evaluations, attributions, learning, systemic findings, recovery status |
 | `report --cadence <DAILY\|WEEKLY\|MONTHLY>` | Generates (idempotently) and prints a report's typed claims (codes, ids, counts) |
+| `external` | Read-only C7-A: external-outcome availability and governed source health (ids, states, counts; no record content, no intake / register / bind command) |
 | `portable-backup --destination <dir> [--attest-off-device]` | Encrypted portable package outside the workspace (`QANDEEL_RECOVERY_PASSPHRASE`) |
 | `restore-portable --package <file> [--discard-partial-restore]` | Clean-environment restore into `--workspace` (a new, empty directory, or one holding an interrupted restore to resume) |
 | `restore-status` | The target's hold and live-restore marker (attempt, package, phase, history); never opens the database |
@@ -497,8 +524,13 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
   - the C4 proofs and the mutation check present;
 - the C6 boundaries: the C6 proofs and mutation check present; no universal score, rank or leaderboard in code
   or schema; no reflection, lesson content, Goal text or passphrase in C6 telemetry; the portable package
-  authenticated-encrypted and the recovery passphrase never written or taken from a command line; external
-  outcomes unavailable until C7;
+  authenticated-encrypted and the recovery passphrase never written or taken from a command line;
+- the C7-A boundaries: no static external-outcome flag (availability is governed evidence) and every outcome
+  verification runs the governed external-evidence rule backed by datastore triggers (including the registered-contract
+  and late-conflict contest triggers), and the evaluator trusts only a current verification; content-free intake telemetry, no
+  raw-payload / user / secret column and no pseudonym outside the kernel; external-evidence writes confined to the C7-A
+  storage modules (no CLI / runtime register, bind or ingest); no parallel evaluation / learning / report store; no C7-B /
+  C7-C / C7-D scope; C7-A not claimed closed without its record; the C7-A proofs and mutation check present;
 - the CI contract: triggers, SHA-pinned actions, both operating systems, complete mutation shard
   partitions, the always-running quality gate, and a fail-closed change classifier.
 

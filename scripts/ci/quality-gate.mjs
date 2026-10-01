@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-export const MUTATION_SCRIPTS = ['c1', 'c2', 'c3', 'r1', 'c4', 'c5', 'c6'];
+export const MUTATION_SCRIPTS = ['c1', 'c2', 'c3', 'r1', 'c4', 'c5', 'c6', 'c7a'];
 export const OPERATING_SYSTEMS = ['windows-latest', 'ubuntu-latest'];
 const REQUIRED = {
   docs: ['classify', 'docs-fast'],

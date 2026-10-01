@@ -8,6 +8,7 @@ import { type Id } from '@qandeel-company/domain';
 import { runFailureCodesOf } from '@qandeel-company/governance';
 import type { AdverseSourceEvent, AdverseSourceKind, AttributionFact, AttributionState, DirectCause, EvaluationFact, EvidenceClass, FollowupFact, ItemDimension, RiskLevel, ValidatedAttributionFact, Verdict, WorkEvidence } from '@qandeel-company/mind';
 
+import { externalDependencyFailures, verificationExternalRefs, verificationValidity, type VerificationState } from './external-core.js';
 import type { StoreContext } from './internal.js';
 import { getWorkItemRow } from './internal.js';
 
@@ -41,10 +42,18 @@ export function subjectOf(ctx: StoreContext, workItemId: Id): { employeeId: Id |
   return e ? { employeeId: e.id as Id, departmentId: (e.department_id ?? null) as Id | null } : { employeeId: null, departmentId: null };
 }
 
-export function latestVerdict(ctx: StoreContext, workItemId: Id): { id: Id; verdict: 'ACHIEVED' | 'NOT_ACHIEVED' | 'INCONCLUSIVE' } | null {
-  const decisive = ctx.db.get<{ id: string; verdict: string }>(`SELECT id, verdict FROM outcome_verifications WHERE work_item_id = ? AND verdict <> 'INCONCLUSIVE' LIMIT 1`, workItemId);
-  const any = decisive ?? ctx.db.get<{ id: string; verdict: string }>('SELECT id, verdict FROM outcome_verifications WHERE work_item_id = ? ORDER BY created_at DESC, id DESC LIMIT 1', workItemId);
-  return any ? { id: any.id as Id, verdict: any.verdict as 'ACHIEVED' | 'NOT_ACHIEVED' | 'INCONCLUSIVE' } : null;
+/**
+ * A Work Item's verification as every C6 reader sees it: the decisive one (the end of its replacement chain), else the
+ * latest. C7-A: with its CURRENT validity — a verification whose external evidence later had an integrity conflict is
+ * CONTESTED until the Founder upholds, replaces or retracts it; only a `current` one is outcome truth.
+ */
+export function latestVerdict(ctx: StoreContext, workItemId: Id): { id: Id; verdict: 'ACHIEVED' | 'NOT_ACHIEVED' | 'INCONCLUSIVE'; validity: VerificationState; current: boolean } | null {
+  const unreplaced = `work_item_id = ? AND NOT EXISTS (SELECT 1 FROM outcome_verifications n WHERE n.replaces_verification_id = v.id)`;
+  const decisive = ctx.db.get<{ id: string; verdict: string }>(`SELECT id, verdict FROM outcome_verifications v WHERE ${unreplaced} AND verdict <> 'INCONCLUSIVE' LIMIT 1`, workItemId);
+  const any = decisive ?? ctx.db.get<{ id: string; verdict: string }>(`SELECT id, verdict FROM outcome_verifications v WHERE ${unreplaced} ORDER BY created_at DESC, id DESC LIMIT 1`, workItemId);
+  if (!any) return null;
+  const validity = verificationValidity(ctx, any.id as Id);
+  return { id: any.id as Id, verdict: any.verdict as 'ACHIEVED' | 'NOT_ACHIEVED' | 'INCONCLUSIVE', validity: validity.state, current: validity.state === 'VALID' || validity.state === 'UPHELD' };
 }
 
 /** Builds the evaluator's view of one Work Item. Deterministic for a given database state. */
@@ -54,7 +63,15 @@ export function gatherWorkEvidence(ctx: StoreContext, workItemId: Id): { evidenc
   const transitions = new Set(ctx.db.all<{ to_state: string }>('SELECT DISTINCT to_state FROM work_item_transitions WHERE work_item_id = ?', workItemId).map((r) => r.to_state));
   const completed = transitions.has('COMPLETED') || ['COMPLETED', 'WAITING_REVIEW', 'REVIEWED', 'OUTCOME_VERIFIED'].includes(w.state);
   const reviewed = transitions.has('REVIEWED') || w.state === 'REVIEWED' || w.state === 'OUTCOME_VERIFIED';
-  const verdict = latestVerdict(ctx, workItemId);
+  const recorded = latestVerdict(ctx, workItemId);
+  // C7-A: a verification that is not current (contested by a later integrity conflict on its external evidence, or
+  // retracted) is history, never outcome truth: no current outcome, and a contested one is conflicting evidence.
+  const verdict = recorded?.current ? recorded : null;
+  const contested = recorded?.validity === 'CONTESTED' ? recorded : null;
+  // C7-A: governed external evidence enters only through C6's own paths — the verification that cited it (usable,
+  // Founder-bound outcome evidence), and Founder-bound external dependency failures. Never inferred, never a verdict.
+  const externalCited = verdict === null ? [] : verificationExternalRefs(ctx, verdict.id);
+  const externalFailures = externalDependencyFailures(ctx, workItemId);
 
   const decisions = ctx.db.all<{ id: string; outcome: string }>(
     `SELECT d.id, d.outcome FROM review_decisions d JOIN review_requests r ON r.id = d.request_id WHERE r.work_item_id = ? AND r.kind = 'REQUIRED' AND d.counts = 1 ORDER BY d.created_at, d.id`,
@@ -119,7 +136,8 @@ export function gatherWorkEvidence(ctx: StoreContext, workItemId: Id): { evidenc
   const risk = (['R0', 'R1', 'R2', 'R3', 'R4'].includes(w.riskLevel) ? w.riskLevel : 'R1') as RiskLevel;
   const classes = new Set<EvidenceClass>(['WORK_LINEAGE']);
   if (decisions.length > 0) classes.add('REVIEW_DECISION');
-  if (verdict !== null) classes.add('OUTCOME_VERIFICATION');
+  // A contested verification is still recorded evidence — evidence in dispute, which the evaluator states as a conflict.
+  if (verdict !== null || contested !== null) classes.add('OUTCOME_VERIFICATION');
   if (runs.length > 0) classes.add('RUN_TRACE');
   if (toolRows.length > 0) classes.add('TOOL_RESULT');
   if (artifacts > 0) classes.add('ARTIFACT');
@@ -127,6 +145,7 @@ export function gatherWorkEvidence(ctx: StoreContext, workItemId: Id): { evidenc
   if (rework > 0) classes.add('REWORK');
   if (escalations + founderInterventions > 0) classes.add('INTERVENTION');
   if (ctx.db.get('SELECT 1 AS x FROM academy_attempts WHERE work_item_id = ?', workItemId)) classes.add('ACADEMY');
+  if (externalCited.length > 0) classes.add('EXTERNAL_OUTCOME');
   const evidence: WorkEvidence = {
     workItemId,
     employeeId,
@@ -136,6 +155,8 @@ export function gatherWorkEvidence(ctx: StoreContext, workItemId: Id): { evidenc
     completed,
     reviewed,
     outcome: verdict?.verdict ?? null,
+    // Present only when contested, so an uncontested Work Item's evidence (and its digest) is unchanged.
+    ...(contested ? { outcomeContested: true } : {}),
     review: { pass: count('PASS'), fail: count('FAIL'), uncertain: count('UNCERTAIN'), insufficient: count('INSUFFICIENT_EVIDENCE'), rework, openConflict },
     runs: { total: runs.length, failed: runs.filter((r) => r.state === 'FAILED_PERMANENT' || r.state === 'FAILED_RETRYABLE').length, retried: runs.filter((r) => r.attempt > 1).length },
     failures: {
@@ -146,7 +167,7 @@ export function gatherWorkEvidence(ctx: StoreContext, workItemId: Id): { evidenc
       provider: codeCount(PROVIDER_CODES),
       model: codeCount(MODEL_CODES),
       context: codeCount(CONTEXT_CODES) + contextFailed.filter((c) => unrecoveredRun(c.run_id)).length,
-      external: 0, // No governed external-outcome source exists before C7.
+      external: externalFailures.length,
       workflow: codeCount(WORKFLOW_CODES),
       requirementChanged: anyRunCode(REQUIREMENT_CODES) > 0 || w.state === 'SUPERSEDED',
     },
@@ -166,7 +187,9 @@ export function gatherWorkEvidence(ctx: StoreContext, workItemId: Id): { evidenc
     activity: { messages, toolCalls: toolRows.length, tokens, runs: runs.length },
     evidenceClasses: [...classes],
   };
-  const refs = [`work_item:${workItemId}`, ...decisions.map((d) => `review_decision:${d.id}`), ...(verdict ? [`outcome_verification:${verdict.id}`] : []), ...runs.map((r) => `run:${r.id}`)].slice(0, EVIDENCE_REF_CAP);
+  // A contested verification is cited with the conflicts that contest it: the evaluation says what it could not trust.
+  const contestRefs = contested ? [`outcome_verification:${contested.id}`, ...verificationValidity(ctx, contested.id).conflictIds.map((id) => `external_record_conflict:${id}`)] : [];
+  const refs = [`work_item:${workItemId}`, ...decisions.map((d) => `review_decision:${d.id}`), ...(verdict ? [`outcome_verification:${verdict.id}`] : []), ...contestRefs, ...externalCited, ...externalFailures, ...runs.map((r) => `run:${r.id}`)].slice(0, EVIDENCE_REF_CAP);
   return { evidence, refs };
 }
 
@@ -221,7 +244,8 @@ export function adverseSourceEvents(ctx: StoreContext, workItemId: Id): AdverseS
     if (failed || boundary) out.push({ sourceRef: `run:${r.id}`, kind: 'RUN_FAILURE', actStartedAt: r.started_at, actEndedAt: r.ended_at, recordedAt: r.ended_at ?? r.started_at });
   });
   const verdict = latestVerdict(ctx, workItemId);
-  if (verdict?.verdict === 'NOT_ACHIEVED') {
+  // C7-A: a verification that is not current truth (contested / retracted) is no adverse event of the Employee's act.
+  if (verdict?.verdict === 'NOT_ACHIEVED' && verdict.current) {
     const v = ctx.db.get<{ created_at: string; review_request_id: string | null }>('SELECT created_at, review_request_id FROM outcome_verifications WHERE id = ?', verdict.id);
     if (v) {
       const subject = v.review_request_id === null

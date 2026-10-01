@@ -81,13 +81,16 @@ App authority.
 ## 6. App separation
 
 - The QANDEEL App and QANDEEL COMPANY are separate repositories, runtimes and data boundaries.
-- `APP-OPS-01` is the governed future App ↔ Company operational boundary.
-  - Its App-side contract is still a **candidate** in the App's Product track (not frozen on
-    2026-09-26).
-  - The Company side is implemented later (`C7` in the implementation map). **No Company runtime
-    integration exists yet.**
-  - Whatever APP-OPS-01 finally specifies, operational telemetry stays content-free (Rule A), and the
-    Company and the App stay separate.
+- `APP-OPS-01` is the governed App ↔ Company operational boundary.
+  - Its App-side Product / Architecture contract is **CLOSED / FROZEN** in the App's Product track
+    (lifecycle sync recorded at the C7-A start, 2026-10-01; it was a candidate when this baseline was
+    first written). Approval of an operational domain there does not mean the App already emits it.
+  - The Company side is implemented in `C7`, split into C7-A … C7-D (see the implementation map).
+    C7-A adds only the Company-side governed intake contract (content-free operational facts and
+    governed external outcome evidence). **No live App ↔ Company transport, connector or control plane
+    exists yet.**
+  - Operational telemetry stays content-free (Rule A), APP-OPS-01 carries no private user content
+    (Rule B), and the Company and the App stay separate.
 
 ## 7. Strong v1 closure
 

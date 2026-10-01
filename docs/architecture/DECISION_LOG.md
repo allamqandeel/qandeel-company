@@ -2863,3 +2863,189 @@ unchanged. PG-08 Department-scoped grants are not implemented; no migration.
   intervention planning and a reported systemic problem read the signal's own `attribution_id` (when a decision
   SUPERSEDED it — Founder corrected causes or a re-proposal — its earliest VALIDATED successor whose evidence holds all
   of its references); only a signal recorded without an attribution falls back to its Work Item's latest VALIDATED one.
+
+## D-C7A-01 — C7 split into four bounded sub-stages; APP-OPS-01 frozen; future Marketing Operations and the Founder publish gate (Product Owner / Founder, recorded at the C7-A start, 2026-10-01; recorded, not reopened)
+
+- **APP-OPS-01 is CLOSED / FROZEN** in the App's Product track. The Company summaries that still called it a
+  candidate were lifecycle drift; they are synced (`COMPANY_CANONICAL_BASELINE.md` §6, `BOUNDARIES.md`). Approved App →
+  Company operational domains: service / app health; crashes / errors; latency / performance; session status; call
+  status; AI provider; model; runtime path / state; cost / usage cost; feature usage; subscriptions / business metrics;
+  releases / version adoption; ratings / reviews; user-specific operational diagnostics without user content. Approval
+  of a domain is not evidence that the App emits it; no source or data is invented. Ratings / reviews enter the
+  content-free core only as aggregate metrics; public review text is outside C7-A. Rules A / B / C are unchanged and
+  have no incident exception.
+- **C7 is one roadmap stage implemented as four bounded sub-stages:** C7-A Operational Data + External Outcome Core;
+  C7-B Governed App Operations Control Plane; C7-C Pilot Instrumentation Pack; C7-D Marketing, Website & Social
+  Operations. Each is a separate work package with its own review; none implements another's scope.
+- **Future C7-D (recorded only, not implemented by C7-A).** Marketing Operations becomes a major operating unit,
+  strategically directed by Brand & Creative + Strategic Market Intelligence, with strong Growth collaboration and one
+  clear day-to-day operating lead (website, SEO / content / landing pages, social accounts, content and creative
+  production, video editing / motion, scheduling and publishing, community management, marketing analytics and
+  campaign learning). **At initial Company operation every external publication in QANDEEL's name requires explicit
+  Founder approval before Publish**; Employees may research, ideate, create, edit, review and prepare autonomously.
+  Delegated publishing may exist later only by a deliberate, bounded, revocable Founder grant based on demonstrated
+  trust — never automatically. C7-A adds no publishing, website editing, social connector, marketing staffing or sixth
+  top-level Department; C4's canonical five-Department set is unchanged.
+
+## D-C7A-02 — One governed intake core, two semantic lanes, extending C6 (Technical Lead / executor, C7-A; architecture gate)
+
+- **Lanes.** An `OPERATIONAL_EVENT` is a content-free fact of one of the frozen App → Company operational domains; an
+  `EXTERNAL_OUTCOME` observation is a measured real-world result (search, web, store, business, campaign, social, App
+  health). Both enter through ONE intake core (`ExternalEvidenceStore.ingest`) and ONE record table
+  (`external_records`, lane-specific CHECKs); an operational fact is never outcome evidence.
+- **Where the code lives.** The pure intake kernel (contracts, allowlist, privacy refusal, lifecycle, role matrix) is
+  `packages/governance/src/external-evidence.ts` — policy, like the D0..D4 data classes; storage owns
+  `external-core.ts` (the one usable-evidence predicate, read by every C6 seam) and `external-evidence.ts` (the store).
+  No new package: a C7-A package would have been a thin wrapper over governance + storage, not a subsystem.
+- **No parallel engine.** `External evidence → Outcome Verification → C6 Evaluation → Attribution → Learning /
+  Performance / Reporting`: C7-A writes no evaluation, attribution, lesson, report or Work Item state (verifier rule
+  `c7a-extends-c6-only`). No transport, listener, queue, SDK or provider dependency is added.
+
+## D-C7A-03 — External-outcome availability is runtime truth; the C6 refusal becomes the governed rule (Technical Lead / executor, C7-A)
+
+- `EXTERNAL_OUTCOMES_AVAILABLE` is removed. The Eval Registry receives `{ governedSource }` from durable source state
+  (`assertEvalDefinition(spec, external)`, default fail-closed); reports receive `ExternalOutcomeFacts`.
+- An outcome verification may cite `EXTERNAL_OUTCOME` exactly when it cites `external_record:<id>` references and every
+  one is USABLE for the verified Work Item: an outcome-lane record, of an ACTIVE source, without a conflicting replay,
+  under an ACTIVE Founder `OUTCOME_EVIDENCE` binding to that Work Item (`txAssertExternalEvidence`, both verifier paths).
+  No governed source → `EXTERNAL_OUTCOME_UNAVAILABLE`, as before.
+- Migration 0012 replaces 0010's `evidence_classes_json NOT LIKE '%EXTERNAL_OUTCOME%'` CHECKs on
+  `outcome_verifications` and `review_outcome_judgments` by the row-preserving rebuild of D-C4-01 (rows copied back
+  BEFORE the 0010 triggers are re-created) and adds triggers that re-check the same predicate in the datastore.
+- The pinned C6 mutation `c6-external-outcome-invented` keeps its id and now targets the runtime gate
+  ("no governed source is active").
+
+## D-C7A-04 — Governed source registry: Founder-decided, contract-pinned, forward-only (Technical Lead / executor, C7-A)
+
+- A source is a stable, provider-neutral key and family (`APP_OPERATIONS`, or one outcome family); a provider is a
+  source registration, never an evidence contract. Lifecycle DRAFT → ACTIVE ⇄ SUSPENDED → RETIRED (final), enforced in
+  code and by trigger; history append-only; nothing is deleted.
+- Contracts are code-defined, closed, versioned (`ops.events@1`, `outcome.metrics@1`) and pinned per source by the
+  SHA-256 of their canonical definition: a definition that changes without a version bump fails closed
+  (`CONTRACT_DRIFT`); a new version is a Founder registration that supersedes the current one for new intake only.
+- Registering, deciding and binding are Founder acts through the existing chokepoint (`founderAdminWrite` + `founder`)
+  and four structured-only governed-confirmation intents (`SOURCE_REGISTER`, `SOURCE_DECIDE`, `EVIDENCE_BIND`,
+  `EVIDENCE_UNBIND`; `founder_action_previews` rebuilt like R2-21). No Employee, model or producer can authorize a
+  source; no parallel approval subsystem. Founder Attention receives only a source awaiting activation and a source
+  integrity conflict.
+- No credential is stored: a provider credential never enters SQLite (verifier column rule).
+
+## D-C7A-05 — Intake: allowlist first, refusal without echo, idempotent by producer identity (Technical Lead / executor, C7-A)
+
+- The envelope is screened before anything reads it (even its source key): arrays, depth, size, forbidden key NAMES at
+  any depth (private content, credentials, raw payloads, free-form bags), whitespace in any value (free text cannot
+  ride in an identifier) and secret-shaped values are refused with a reason CODE. Every field of every type is declared
+  with a bounded shape; numeric units are fixed by the contract, never chosen by the producer.
+- A refusal is audited in its own transaction with the reason code and at most a DECLARED field name — an unknown key
+  may itself be content and is never repeated. Nothing refused is stored.
+- Identity is (source, producer event id); the fingerprint is the SHA-256 of the canonical normalized identity. An exact
+  replay is a no-op returning the canonical record; a different fingerprint is a conflicting replay — recorded,
+  audited, evented, never applied — and the first record stops being usable evidence. Event time and receipt time are
+  distinct; out-of-order delivery is accepted; a future occurrence beyond a 5-minute skew is refused.
+
+## D-C7A-06 — User-scoped diagnostics carry a pseudonym that is never stored (Technical Lead / executor, C7-A; within Rules A / B / C)
+
+`user.diagnostic` accepts only a producer-side 64-hex pseudonym, a code and a state. The pseudonym contributes to the
+occurrence fingerprint (two users' identical facts are distinct occurrences) and is never part of the stored
+normalized fields (datastore trigger) — there is no per-user record, lookup, search or browsing path; per-user facts
+are visible only as an aggregate count. Future automated per-user reliability processing would need its own governed
+design. Ratings / reviews enter only as aggregate metrics; public review text is outside C7-A (D-C7A-01).
+
+## D-C7A-07 — Explicit Founder bindings; evidence is never a verdict (Technical Lead / executor, C7-A)
+
+- Only the Founder binds an accepted record to an existing Work Item or Goal: `OUTCOME_EVIDENCE` (outcome lane; Work
+  Item or Goal) or `DEPENDENCY_FAILURE` (an operational fact that signals a failure; Work Item only). No timing
+  inference, no "best match", no Employee self-binding (`bound_by_ref` must be a Founder ref, CHECK). Revoking or
+  superseding keeps history; a binding of a suspended source or a conflicted record is refused.
+- A record or a binding changes no Work Item, evaluation, attribution, lesson, authority, budget or App behaviour. It
+  becomes useful only through C6: a verifier (the Founder, or the Review Pool where the plan delegates judgment) cites
+  it; the Review Pool's cited external evidence is re-checked at resolution and, if no longer usable, the outcome is
+  recorded INCONCLUSIVE for the Founder (never silently decided on what remains).
+- The evaluator sees `EXTERNAL_OUTCOME` (and cites the records) only from a verification that cited usable evidence;
+  `WorkEvidence.failures.external` counts Founder-bound dependency failures of ACTIVE sources — so the existing,
+  unchanged attribution rules can choose `EXTERNAL_DEPENDENCY`; a negative external result alone yields at most a
+  PROPOSED cause that nothing counts until an independent decision.
+- Reports state the three truths: `EXTERNAL_OUTCOMES_UNAVAILABLE` (no governed source), `EXTERNAL_OUTCOMES_NO_RELEVANT_EVIDENCE`
+  (citing the sources), or `EXTERNAL_OUTCOME_EVIDENCE` / `EXTERNAL_OUTCOMES_IN_VERIFICATION` (citing record, binding and
+  verification refs). No automatic success threshold exists (C7-C).
+
+## D-C7A-08 — One outbox: the `external_source` aggregate (Technical Lead / executor, C7-A)
+
+The provider-neutral outbox gains the `external_source` aggregate (0012 rebuilds `events` to widen its CHECK; every row
+and its `seq` kept; AUTOINCREMENT continues) and six content-free event types: registered, contract registered, state
+changed, record accepted, conflict detected, binding changed. State, history, audit and the event commit in one
+`BEGIN IMMEDIATE`; an exact replay writes nothing.
+
+## D-C7A-09 — Proofs, verifier, mutation and CI for C7-A (Technical Lead / executor, C7-A)
+
+- Proofs: `governance/test/c7a-intake.test.ts`, `storage/test/c7a-external-evidence.test.ts` (brief §18 items 1–35),
+  `mind/test/c7a-kernel.test.ts`, `runtime/test/c7a/c7a-runtime.test.ts`; `scripts/c7a-mutation-check.mjs` (29
+  mutations, pinned, sharded 2 + 1 in CI, counted by the quality gate; 46 (48 with the pattern-reuse correction) and sharded 4 + 2 after D-C7A-10 / D-C7A-11,
+  whose datastore mutations re-pin the mutated migration in the compiled pin table for their run only).
+- Verifier: `c6-external-outcomes-unavailable` is replaced by `external-outcomes-governed` (no static flag; the governed
+  verification call; the four usable-evidence conditions; the datastore triggers); new `c7a-not-claimed-closed`,
+  `c7a-proofs-present`, `c7a-intake-content-free`, `external-evidence-writes-confined`, `c7a-extends-c6-only`,
+  `c7-later-scope-not-leaked`; 0011 joins the frozen migrations. `no-app-ops-implementation` is unchanged: C7-A code
+  uses the neutral "operational" vocabulary, so any App-side / transport implementation named for APP-OPS still fails.
+- No separate C7-A acceptance script: the storage proof suite exercises every path end to end through the real stores
+  (Founder chokepoint, governed confirmation, Review Pool, C6 evaluator) and the runtime suite proves the signalling
+  contract and the read-only CLI; the live-runtime pilot of real sources belongs to L1 / C7-C.
+
+## D-C7A-10 — The datastore holds the registered contract, not only TypeScript (Technical Lead review MAJOR 2, C7-A)
+
+- Finding (TL exact-head review of `194599c`): migration 0012 re-checked an ACTIVE source, its CURRENT contract, the lane
+  and a global field allowlist, but not that a record's type, domain, unit, scope and type-specific fields belong to the
+  contract its source registered. A direct datastore write could create trusted evidence the TypeScript normalizer
+  refuses.
+- Decision: the release's contract catalogue lives in the datastore — `external_contract_catalog` (code, version, lane,
+  digest), `external_contract_families`, `external_contract_types` (domain, source family, unit, value bounds and
+  integrality, window rule, user scoping, failure-signal rule), `external_contract_scopes` and `external_contract_fields`
+  (each stored field with its shape: enum values, int bounds, code / ident / version / currency / ratio). It is seeded in
+  0012 from the same `EXTERNAL_CONTRACTS` the kernel validates with, then frozen by triggers (a later contract version
+  arrives in its own migration). A storage proof holds catalogue = TypeScript definitions exactly, so there is one
+  definition with two enforcement points.
+- Triggers: `external_source_contracts_catalogued` (a source registers only a catalogued version for its family and lane,
+  pinned by the catalogued digest); `external_records_conform_to_contract` (type of the source's contract AND family, its
+  own domain, unit, bounds, window, allowed scope, user scoping and derived failure signal); `external_records_fields_conform`
+  (stored fields are exactly the type's declared fields, each in its shape; required ones present). The TypeScript drift
+  check stays as the first, typed refusal.
+- 0012 is amended in place, not followed by a 0013: it is part of this unmerged candidate (no released Company has
+  applied it); 0001–0011 are untouched and the new pin replaces the candidate's.
+
+## D-C7A-11 — A late integrity conflict takes a disputed outcome out of current C6 truth (Technical Lead review MAJOR 1, C7-A)
+
+- Finding: a conflicting replay made a record unusable for NEW use, but a decisive verification that had already cited it
+  stayed current truth — the Work Item kept its qualified evaluation and profile / economics / learning gates / reports
+  kept counting an outcome resting on contested evidence.
+- Decision: a verification is history and is never rewritten; its CURRENT validity is a separate append-only record,
+  `outcome_verification_validity` (none = valid). The datastore trigger `external_record_conflicts_contest_verifications`
+  contests, in the conflict's own transaction and whoever writes it, every current verification citing the conflicted
+  record. Only an evidence-integrity conflict contests: suspending, retiring or unbinding never invalidates history.
+- C6 consumes it through its own lineage: `latestVerdict` carries the validity; `gatherWorkEvidence` reads a contested
+  verification as no current outcome plus `outcomeContested`, which the kernel's `evidenceConflicts` states as
+  `OUTCOME_EVIDENCE_CONTESTED` (CONFLICTING_EVIDENCE, never qualified, never an adverse event of the Employee); the intake
+  path then restates the Work Item's live evaluations through the same evaluator (`txRestateCurrentTruth`: a new result
+  supersedes the qualified one, which stays history). Reports state the contestation (`EXTERNAL_OUTCOME_CONTESTED`,
+  `OUTCOMES_CONTESTED`) and never count it as a result; Founder Attention gets one NEEDS_DECISION item per contested
+  verification; reviewer calibration ignores a verdict that is not current; a successful-pattern lesson (it stays
+  VALIDATED as history) counts as a contribution, a report claim or a shareable pattern only while its success is current
+  qualified truth; the runtime announces an intake conflict that committed (`recorded`), though `ingest` refuses it.
+- Resolution is a Founder decision through the governed confirmation (`OUTCOME_CONTEST_RESOLVE`, structured only):
+  UPHOLD (it stands, current again), REPLACE (a Founder re-verification of the same Work Item and verdict on usable
+  evidence — the governed external-evidence rule applies, so never on the disputed record; `replaces_verification_id`,
+  one per verification) or RETRACT (no current verified outcome). REPLACED / RETRACTED are final; a NEW conflict after
+  UPHOLD contests again. Each decision restates C6 truth in the same transaction.
+- Kept as is (residual): the Work Item lifecycle state (OUTCOME_VERIFIED / CLOSED) is history and is not reversed, and a
+  replacement keeps the verdict — a verdict change after a contest would need a Work Item lifecycle Product decision. A
+  causal attribution already VALIDATED on a contested NOT_ACHIEVED outcome is not reopened (C6: decided generations never
+  reopen); the contested verification is no longer an adverse source event for learning effect.
+- Pattern reuse (Technical Lead exact-head review of `e895bcf`, same root cause): the `PATTERN_OUTCOME_CURRENT` gate
+  also governs reuse. `txPlanIntervention` refuses a `PATTERN_REUSE` of a pattern whose originating success is not
+  current qualified truth (`LEARNING_GATE` / `PATTERN_OUTCOME_NOT_CURRENT`; TARGETED_RETRAINING is not a pattern
+  authority and is untouched). `txRestateCurrentTruth` cancels, in the same transaction, every open (PLANNED /
+  TRAINING_COMPLETED) reuse of a pattern that Work Item's success produced once it is no longer current — the existing
+  forward-only CANCELLED state (history row `intervention.pattern_outcome_not_current`, audit
+  `learning.intervention_cancelled`), so it never completes, never yields IMPROVEMENT_OBSERVED and never counts toward
+  sharing; the 0010 forward trigger makes CANCELLED final. A verified reuse counts as the author's contribution only
+  while its pattern's success is current. UPHOLD / a valid REPLACE re-open only FUTURE reuse; an interrupted reuse stays
+  history (no automatic resumption); RETRACT keeps reuse unavailable. No schema change.

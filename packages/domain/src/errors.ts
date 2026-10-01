@@ -79,6 +79,10 @@ export const ERROR_CODES = [
   // that failed after the hold was written (the hold stays in force).
   'SCHEMA_UPDATE_REQUIRED',
   'MAINTENANCE_FAILED',
+  // C7-A governed intake of content-free operational facts and external outcome evidence: a refused occurrence (the
+  // reason is a code, never the refused payload) and a conflicting replay of an already accepted one.
+  'INTAKE_REJECTED',
+  'INTAKE_CONFLICT',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

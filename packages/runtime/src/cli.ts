@@ -55,6 +55,9 @@
  *   rollback-update --workspace <dir> --update <id> [--discard-post-update-work]   restore a kept pre-update snapshot
  *                   (bounded period); refused when work was recorded after activation unless acknowledged; the
  *                   replaced live database is retained as a pre-rollback snapshot
+ * C7-A read-only command (content-free: source ids, states, lanes, counts — never a record payload, a producer
+ * payload or a user reference; there is no intake, register, activate or bind command on any CLI):
+ *   external        --workspace <dir>                      external-outcome availability and governed source health
  * * There is deliberately no Founder write command (no register-founder, approve or reject): a
  * Founder reference typed on a command line is not authentication. Founder authority arrives with
  * the authenticated Founder surface (C5); until then R3 work stays WAITING_APPROVAL (D-C2-13).
@@ -73,6 +76,7 @@ import {
   CompanyStore,
   DEFAULT_RETENTION,
   DirectoryDestination,
+  ExternalEvidenceStore,
   GovernanceStore,
   ImprovementStore,
   MemoryStore,
@@ -99,7 +103,7 @@ import { Logger, jsonLinesSink } from './logger.js';
 import { CompanyRuntime, RUNTIME_VERSION } from './runtime.js';
 import { notifyRuntime } from './wake.js';
 
-const USAGE = 'usage: qandeel-company <init|start|health|submit|cancel|backup|verify-backup|restore-check|verify-artifacts|governance|approvals|mind|capability-gaps|context-manifest|organization|reviews|improvement|report|portable-backup|restore-portable|restore-status|restore-drill|prune-backups|safe-upgrade|clear-update-hold|rollback-update> --workspace <dir> [options]';
+const USAGE = 'usage: qandeel-company <init|start|health|submit|cancel|backup|verify-backup|restore-check|verify-artifacts|governance|approvals|mind|capability-gaps|context-manifest|organization|reviews|improvement|external|report|portable-backup|restore-portable|restore-status|restore-drill|prune-backups|safe-upgrade|clear-update-hold|rollback-update> --workspace <dir> [options]';
 
 function out(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -343,6 +347,16 @@ export async function main(argv: readonly string[]): Promise<void> {
       try {
         const im = ImprovementStore.for(store);
         out({ ok: true, command, health: im.health(), systemic: im.systemicFindings().map((f) => ({ findingId: f.id, state: f.state, targetKind: f.targetKind, cause: f.cause, occurrences: f.occurrences })), resilience: resilienceStatus(store) });
+      } finally {
+        store.close();
+      }
+      return;
+    }
+    case 'external': {
+      const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
+      try {
+        const ex = ExternalEvidenceStore.for(store);
+        out({ ok: true, command, availability: ex.availability(), health: ex.health(), sources: ex.sources().map((x) => ({ sourceId: x.id, family: x.family, lane: x.lane, state: x.state, contractVersion: x.contract?.version ?? null })) });
       } finally {
         store.close();
       }

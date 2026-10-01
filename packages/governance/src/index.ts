@@ -10,6 +10,7 @@ export * from './authority.js';
 export * from './classes.js';
 export * from './economics.js';
 export * from './employee.js';
+export * from './external-evidence.js';
 export * from './founder.js';
 export * from './organization.js';
 export * from './proposals.js';

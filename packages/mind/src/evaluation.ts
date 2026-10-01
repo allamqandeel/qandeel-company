@@ -54,8 +54,16 @@ export type ReferenceCaseKind = (typeof REFERENCE_CASE_KINDS)[number];
 export const RISK_LEVELS = ['R0', 'R1', 'R2', 'R3', 'R4'] as const;
 export type RiskLevel = (typeof RISK_LEVELS)[number];
 
-/** Validated external outcomes (campaign, traffic, App health) arrive only with C7 sources; until then: unavailable. */
-export const EXTERNAL_OUTCOMES_AVAILABLE = false;
+/**
+ * C7-A: external outcome evidence is RUNTIME truth, never a compile-time flag. Whether a governed external outcome source
+ * exists is read from durable source state by the caller (storage) and passed in; absent that, nothing may require or
+ * cite external outcomes (fail closed). Usable evidence itself is decided by storage from governed records and bindings.
+ */
+export interface ExternalOutcomeContext {
+  /** At least one governed external outcome source is ACTIVE. */
+  readonly governedSource: boolean;
+}
+export const NO_EXTERNAL_OUTCOME_SOURCE: ExternalOutcomeContext = Object.freeze({ governedSource: false });
 
 /**
  * The durable facts of one Work Item as the evaluator sees them: counts, codes and references only (Rule A —
@@ -71,6 +79,12 @@ export interface WorkEvidence {
   readonly completed: boolean;
   readonly reviewed: boolean;
   readonly outcome: 'ACHIEVED' | 'NOT_ACHIEVED' | 'INCONCLUSIVE' | null;
+  /**
+   * C7-A: the Work Item's recorded verification is CONTESTED — external evidence it rested on later had an integrity
+   * conflict, and the Founder has not decided it. `outcome` is then null (no current verified outcome) and the evidence
+   * is in conflict until that decision. Absent when not contested.
+   */
+  readonly outcomeContested?: boolean;
   readonly review: { readonly pass: number; readonly fail: number; readonly uncertain: number; readonly insufficient: number; readonly rework: number; readonly openConflict: boolean };
   readonly runs: { readonly total: number; readonly failed: number; readonly retried: number };
   /**
@@ -132,7 +146,7 @@ const CODE = /^[a-z0-9][a-z0-9.-]{0,63}$/;
 const has = <T>(list: readonly T[], v: unknown): v is T => (list as readonly unknown[]).includes(v);
 
 /** Structural validation of a definition (the registry refuses anything else). */
-export function assertEvalDefinition(spec: EvalDefinitionSpec): void {
+export function assertEvalDefinition(spec: EvalDefinitionSpec, external: ExternalOutcomeContext = NO_EXTERNAL_OUTCOME_SOURCE): void {
   const bad = (field: string, why: string): never => {
     throw new QandeelError('EVAL_INVALID', `eval definition ${why}`, { field });
   };
@@ -142,7 +156,7 @@ export function assertEvalDefinition(spec: EvalDefinitionSpec): void {
   if (!Array.isArray(spec.dimensions) || spec.dimensions.length === 0 || !spec.dimensions.every((d) => has(ITEM_DIMENSIONS, d))) bad('dimensions', 'names known item dimensions');
   if (new Set(spec.dimensions).size !== spec.dimensions.length) bad('dimensions', 'lists each dimension once');
   if (!Array.isArray(spec.requiredEvidence) || !spec.requiredEvidence.every((c) => has(EVIDENCE_CLASSES, c))) bad('requiredEvidence', 'names known evidence classes');
-  if (spec.requiredEvidence.includes('EXTERNAL_OUTCOME') && !EXTERNAL_OUTCOMES_AVAILABLE) bad('requiredEvidence', 'cannot require external outcomes before a governed source exists (C7)');
+  if (spec.requiredEvidence.includes('EXTERNAL_OUTCOME') && !external.governedSource) bad('requiredEvidence', 'cannot require external outcomes while no governed external outcome source is active');
   if (!has(EVALUATOR_KINDS, spec.evaluatorKind)) bad('evaluatorKind', 'names a known evaluator kind');
   const m = spec.minimumEvidence;
   if (!m || !Number.isInteger(m.minSample) || m.minSample < 1 || m.minSample > 1000 || !Number.isInteger(m.minTrendSample) || m.minTrendSample < 1 || m.minTrendSample > 1000 || !Number.isInteger(m.recencyDays) || m.recencyDays < 1 || m.recencyDays > 3660) bad('minimumEvidence', 'bounds minimum evidence');
@@ -226,6 +240,7 @@ function dimensionVerdict(dimension: ItemDimension, ev: WorkEvidence, qualified:
 export function evidenceConflicts(ev: WorkEvidence): string[] {
   const out: string[] = [];
   if (ev.review.openConflict) out.push('REVIEW_CONFLICT_OPEN');
+  if (ev.outcomeContested === true) out.push('OUTCOME_EVIDENCE_CONTESTED');
   if (ev.outcome === 'NOT_ACHIEVED' && ev.review.pass > 0 && ev.review.fail === 0) out.push('REVIEW_PASSED_OUTCOME_FAILED');
   if (ev.outcome === 'ACHIEVED' && !ev.reviewed && ev.review.fail > 0) out.push('OUTCOME_ACHIEVED_REVIEW_FAILED');
   return out;
@@ -401,8 +416,8 @@ function judgeCase(spec: EvalDefinitionSpec, c: ReferenceCase): ReferenceCaseRes
 }
 
 /** Runs every reference case; a definition calibrates only when it covers every kind and passes every case. */
-export function calibrateDefinition(spec: EvalDefinitionSpec): CalibrationResult {
-  assertEvalDefinition(spec);
+export function calibrateDefinition(spec: EvalDefinitionSpec, external: ExternalOutcomeContext = NO_EXTERNAL_OUTCOME_SOURCE): CalibrationResult {
+  assertEvalDefinition(spec, external);
   if (!EXECUTABLE_EVALUATORS.includes(spec.evaluatorKind)) {
     return { passed: false, coverage: [], missingKinds: [...REFERENCE_CASE_KINDS], cases: [] };
   }
