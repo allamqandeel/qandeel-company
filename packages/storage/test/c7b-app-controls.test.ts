@@ -326,10 +326,10 @@ describe('C7-B versioned desired state', () => {
 
 // =================================================================================================================
 describe('C7-B datastore contract (TypeScript bypassed)', () => {
-  /** A harness isolating the family / scope / value and sequence triggers: R3 linkage and foreign keys switched off for it. */
+  /** A harness isolating the family / scope / value and sequence triggers: R3 linkage, issue-time authority and foreign keys switched off for it. */
   function contract(w: W): (row: Record<string, unknown>) => void {
     const d = raw(w.h);
-    d.execScript('PRAGMA foreign_keys = OFF; DROP TRIGGER app_control_revisions_r3_governed;');
+    d.execScript('PRAGMA foreign_keys = OFF; DROP TRIGGER app_control_revisions_r3_governed; DROP TRIGGER app_control_revisions_authority_current;');
     const series = newId();
     d.run(`INSERT INTO app_control_series (id, family, scope_kind, scope_json, created_at) VALUES (?, 'FEATURE_FLAG', 'CAPABILITY', '{"capability":"voice.call","kind":"CAPABILITY"}', ?)`, series, w.h.store.now());
     return (o): Id => {
@@ -437,6 +437,204 @@ describe('C7-B datastore contract (TypeScript bypassed)', () => {
       d.run(`UPDATE review_requests SET state = 'CONSUMED', version = version + 1 WHERE id = ?`, String(p.reviewRequestId));
       aborts(() => row(), 'a consumed review never authorizes again');
       assert.equal(n(w.h, 'SELECT COUNT(*) AS n FROM app_control_revisions'), 0);
+    });
+  });
+});
+
+// =================================================================================================================
+// TL exact-head review (PR #14), MAJOR 1: authority is re-decided at the issue boundary, where the act takes effect.
+describe('C7-B issue-time authority (TL MAJOR 1)', () => {
+  const approve = (w: W, approvalId: unknown) => w.s.gov.decideApproval(w.s.founder, String(approvalId), { decision: 'APPROVE', reasonCode: 'founder.approved' });
+  const denied = (reason: string) => (e: unknown): boolean => isQandeelError(e) && e.code === 'AUTHORITY_DENIED' && e.details.reason === reason;
+  /** Refused whole: nothing issued, nothing decided, the act still awaits the Founder (who may still reject it). */
+  function refusedWhole(w: W, r: ReturnType<typeof reviewed>, reason: string): void {
+    const history = w.controls.proposalHistory(r.proposal.id);
+    assert.throws(() => approve(w, r.proposal.approvalId), denied(reason));
+    assert.equal(n(w.h, 'SELECT COUNT(*) AS n FROM app_control_revisions'), 0, 'no revision');
+    assert.deepEqual(w.controls.issuedControls().controls, []);
+    assert.equal(w.s.gov.getApproval(r.proposal.approvalId as Id).state, 'PENDING', 'nothing was decided');
+    assert.equal(ReviewStore.for(w.h.store).requests({ workItemId: r.run.workItemId }).find((q) => q.id === r.proposal.reviewRequestId)?.state, 'SATISFIED', 'the review is not consumed');
+    assert.equal(w.controls.proposal(r.proposal.id).state, 'AWAITING_FOUNDER');
+    assert.deepEqual(w.controls.proposalHistory(r.proposal.id), history, 'history is coherent: nothing half-written');
+    // The governed preview never offers the approval either; the Founder can still reject the act.
+    const auth = FounderAuthStore.for(w.h.store);
+    const session = auth.redeemLaunchToken(auth.mintLaunchToken().token).session;
+    const actions = FounderActionStore.for(w.h.store, auth);
+    assert.throws(() => actions.preview(session, 'APPROVAL_DECIDE', { approvalId: r.proposal.approvalId, decision: 'APPROVE' }), denied(reason));
+    // Without TypeScript the datastore refuses the revision too (the approval forced APPROVED in this scratch database).
+    const d = raw(w.h);
+    d.run(`UPDATE approvals SET state = 'APPROVED', decided_by_ref = ?, decided_at = ?, version = version + 1, updated_at = ? WHERE id = ?`, w.s.founder, w.h.store.now(), w.h.store.now(), String(r.proposal.approvalId));
+    const series = newId();
+    d.run(`INSERT INTO app_control_series (id, family, scope_kind, scope_json, created_at) VALUES (?, 'FEATURE_FLAG', 'CAPABILITY', '{"capability":"voice.call","kind":"CAPABILITY"}', ?)`, series, w.h.store.now());
+    assert.throws(
+      () => d.run(
+        `INSERT INTO app_control_revisions (id, series_id, revision, prior_revision_id, family, scope_kind, scope_json, operation, value_json, reason_code, proposal_id, proposer_ref, review_request_id, approval_id, issued_by_ref, issued_at, digest, company_state)
+         VALUES (?, ?, 1, NULL, 'FEATURE_FLAG', 'CAPABILITY', '{"capability":"voice.call","kind":"CAPABILITY"}', 'SET', '{"state":"DISABLED"}', 'incident.voice-errors', ?, ?, ?, ?, ?, ?, ?, 'ISSUED')`,
+        newId(), series, r.proposal.id, `employee:${r.proposal.proposerEmployeeId}`, String(r.proposal.reviewRequestId), String(r.proposal.approvalId), w.s.founder, w.h.store.now(), sha256Hex(newId()),
+      ),
+      (e: unknown) => e instanceof Error && /still holds the seat and a current R3 grant/.test(String((e as { cause?: Error }).cause?.message ?? e.message)),
+      'the datastore re-checks issue-time authority',
+    );
+    assert.equal(n(w.h, 'SELECT COUNT(*) AS n FROM app_control_revisions'), 0);
+  }
+
+  test('the seat ends after the review and before the Founder approves: refused, no revision', () => {
+    withWorld((w) => {
+      const r = reviewed(w, flag('DISABLED'));
+      const org = OrganizationStore.for(w.h.store);
+      org.endAssignment(w.s.founder, org.seatHolder(seat(w.h, LEAD).id).holder?.id ?? '', 'leave');
+      refusedWhole(w, r, 'CONTROL_SEAT_NOT_HELD');
+    });
+  });
+
+  test('acting coverage expires before the Founder approves: refused, no revision', () => {
+    withWorld((w) => {
+      const org = OrganizationStore.for(w.h.store);
+      const cover = placed(w.h, w.s, STORE_LEAD);
+      w.s.gov.grant(w.s.founder, { employeeId: cover.id, capability: 'app-control.issue', riskCeiling: 'R3', dataClassCeiling: 'D1', reasonCode: 'founder.grant' });
+      org.endAssignment(w.s.founder, org.seatHolder(seat(w.h, LEAD).id).holder?.id ?? '', 'leave');
+      org.assignActing(w.s.founder, { positionId: seat(w.h, LEAD).id, employeeId: cover.id, until: new Date(Date.parse(w.h.store.now()) + 3_600_000).toISOString(), scope: ['control.propose'], reasonCode: 'cover' });
+      const p = propose(w, flag('DISABLED'), cover);
+      assert.equal(p.out.outcome, 'DONE', 'acting coverage naming the act may propose');
+      decideActionReview(w.h, p.run.workItemId, 'PASS');
+      const r = { ...p, proposal: w.controls.proposal(String(p.proposal?.id)) };
+      assert.equal(r.proposal.state, 'AWAITING_FOUNDER');
+      w.h.clock.advance(2 * 3_600_000);
+      refusedWhole(w, r, 'CONTROL_SEAT_NOT_HELD');
+    });
+  });
+
+  test('the grant is revoked after the proposal: refused, no revision', () => {
+    withWorld((w) => {
+      const r = reviewed(w, flag('DISABLED'));
+      w.s.gov.revokeGrant(w.s.founder, w.grantId, 'founder.revoked');
+      refusedWhole(w, r, 'CONTROL_GRANT_NOT_CURRENT');
+    });
+  });
+
+  test('the grant expires after the proposal: refused, no revision', () => {
+    withWorld((w) => {
+      w.s.gov.grant(w.s.founder, { employeeId: w.lead.id, capability: 'app-control.issue', riskCeiling: 'R3', dataClassCeiling: 'D1', expiresAt: new Date(Date.parse(w.h.store.now()) + 3_600_000).toISOString(), reasonCode: 'founder.grant' });
+      const r = reviewed(w, flag('DISABLED'));
+      w.h.clock.advance(2 * 3_600_000);
+      refusedWhole(w, r, 'CONTROL_GRANT_NOT_CURRENT');
+    }, { grant: 'none' });
+  });
+
+  test('authority unchanged: a single-use grant consumed by this very act still issues it (consumption is not loss of authority)', () => {
+    withWorld((w) => {
+      const g = w.s.gov.grant(w.s.founder, { employeeId: w.lead.id, capability: 'app-control.issue', resourceScope: 'feature-flag', riskCeiling: 'R3', dataClassCeiling: 'D1', maxUses: 1, reasonCode: 'founder.grant' });
+      const r = reviewed(w, flag('DISABLED'));
+      assert.equal(r.proposal.grantId, g.id);
+      assert.equal(n(w.h, 'SELECT uses AS n FROM permission_grants WHERE id = ?', g.id), 1, 'the grant was used by this act');
+      approve(w, r.proposal.approvalId);
+      assert.equal(w.controls.proposal(r.proposal.id).state, 'ISSUED');
+      assert.equal(n(w.h, 'SELECT COUNT(*) AS n FROM app_control_revisions'), 1);
+      // The grant is spent: a NEW act needs new authority.
+      assert.equal(propose(w, flag('ENABLED', 1)).out.code, 'NO_GRANT');
+    }, { grant: 'none' });
+  });
+});
+
+// =================================================================================================================
+// TL exact-head review (PR #14), MAJOR 2: a STALE review never strands the control proposal nor keeps its approval alive.
+describe('C7-B Review Plan supersession (TL MAJOR 2)', () => {
+  const V2 = reviewPlan({ appliesTo: 'ACTIONS', reviewerInstructions: 'Judge the exact control act against the rubric again; cite evidence.' });
+  const requests = (w: W, workItemId: Id) => ReviewStore.for(w.h.store).requests({ workItemId }).filter((q) => q.subjectKind === 'ACTION');
+
+  test('OPEN review → plan superseded → STALE → the same proposal is reviewed afresh under the active plan → approved → issued once', () => {
+    withWorld((w) => {
+      const p = propose(w, flag('DISABLED'));
+      const old = String(p.proposal?.reviewRequestId);
+      ReviewStore.for(w.h.store).declarePlan(w.s.founder, p.run.workItemId, V2);
+      const now = w.controls.proposal(String(p.proposal?.id));
+      assert.equal(now.state, 'PROPOSED', 'not stranded, not ended');
+      assert.notEqual(now.reviewRequestId, old, 'bound to a fresh review');
+      const [stale, fresh] = [requests(w, p.run.workItemId).find((q) => q.id === old), requests(w, p.run.workItemId).find((q) => q.id === now.reviewRequestId)];
+      assert.equal(stale?.state, 'STALE', 'the old review is kept as history and never reused');
+      assert.deepEqual([fresh?.state, fresh?.subjectFingerprint, fresh?.subjectRef, fresh?.riskLevel], ['OPEN', now.fingerprint, now.ref, 'R3'], 'the same exact act');
+      assert.equal(fresh?.planId, ReviewStore.for(w.h.store).plans(p.run.workItemId).find((x) => x.status === 'ACTIVE')?.id, 'under the active plan');
+      assert.equal(n(w.h, 'SELECT COUNT(*) AS n FROM app_control_proposals'), 1, 'no replacement proposal, no new Work Item');
+      decideActionReview(w.h, p.run.workItemId, 'PASS');
+      const awaiting = w.controls.proposal(now.id);
+      assert.equal(awaiting.state, 'AWAITING_FOUNDER');
+      w.s.gov.decideApproval(w.s.founder, String(awaiting.approvalId), { decision: 'APPROVE', reasonCode: 'founder.approved' });
+      const [rev] = w.controls.revisions(String(w.controls.series()[0]?.id));
+      assert.deepEqual([rev?.reviewRequestId, rev?.approvalId], [now.reviewRequestId, awaiting.approvalId], 'issued on the fresh review only');
+      assert.equal(n(w.h, 'SELECT COUNT(*) AS n FROM app_control_revisions'), 1, 'exactly one revision');
+      assert.deepEqual(w.controls.proposalHistory(now.id).map((x) => `${x.to}:${x.reasonCode}`), ['PROPOSED:app_control.proposed', 'PROPOSED:review.stale', 'PROPOSED:review.rebound', 'AWAITING_FOUNDER:review.passed', 'ISSUED:founder.approved']);
+    });
+  });
+
+  test('SATISFIED review with a PENDING approval → plan superseded: the approval is REVOKED and can never issue; a new review and a new approval of the same act issue', () => {
+    withWorld((w) => {
+      const r = reviewed(w, flag('DISABLED'));
+      const [oldReview, oldApproval] = [String(r.proposal.reviewRequestId), String(r.proposal.approvalId)];
+      ReviewStore.for(w.h.store).declarePlan(w.s.founder, r.run.workItemId, V2);
+      assert.equal(w.s.gov.getApproval(oldApproval as Id).state, 'REVOKED', 'the pending approval no longer stands on a stale review');
+      const back = w.controls.proposal(r.proposal.id);
+      assert.equal(back.state, 'PROPOSED');
+      assert.equal(requests(w, r.run.workItemId).find((q) => q.id === oldReview)?.state, 'STALE');
+      assert.equal(requests(w, r.run.workItemId).find((q) => q.id === back.reviewRequestId)?.state, 'OPEN');
+      // The old approval cannot be used: not by the engine, not through the governed preview, not by direct SQL.
+      assert.throws(() => w.s.gov.decideApproval(w.s.founder, oldApproval, { decision: 'APPROVE', reasonCode: 'founder.approved' }), code('INVALID_TRANSITION'));
+      const auth = FounderAuthStore.for(w.h.store);
+      const session = auth.redeemLaunchToken(auth.mintLaunchToken().token).session;
+      assert.throws(() => FounderActionStore.for(w.h.store, auth).preview(session, 'APPROVAL_DECIDE', { approvalId: oldApproval, decision: 'APPROVE' }), (e: unknown) => isQandeelError(e));
+      aborts(() => raw(w.h).run(`UPDATE app_control_proposals SET state = 'AWAITING_FOUNDER', version = version + 1 WHERE id = ?`, r.proposal.id), 'never back to the Founder on the stale review');
+      assert.equal(n(w.h, 'SELECT COUNT(*) AS n FROM app_control_revisions'), 0);
+      // Only after the new independent review a NEW approval of the same exact act exists, and only it issues.
+      decideActionReview(w.h, r.run.workItemId, 'PASS');
+      const awaiting = w.controls.proposal(r.proposal.id);
+      assert.equal(awaiting.state, 'AWAITING_FOUNDER');
+      assert.notEqual(awaiting.approvalId, oldApproval);
+      const fresh = w.s.gov.getApproval(awaiting.approvalId as Id);
+      assert.deepEqual([fresh.state, fresh.argsSha256, fresh.risk], ['PENDING', awaiting.fingerprint, 'R3']);
+      w.s.gov.decideApproval(w.s.founder, fresh.id, { decision: 'APPROVE', reasonCode: 'founder.approved' });
+      assert.equal(w.controls.proposal(r.proposal.id).state, 'ISSUED');
+      const [rev] = w.controls.revisions(String(w.controls.series()[0]?.id));
+      assert.deepEqual([rev?.approvalId, rev?.reviewRequestId], [fresh.id, awaiting.reviewRequestId]);
+      assert.equal(w.s.gov.getApproval(oldApproval as Id).state, 'REVOKED', 'history kept');
+      assert.deepEqual(w.controls.proposalHistory(r.proposal.id).map((x) => x.to).join('>'), 'PROPOSED>AWAITING_FOUNDER>PROPOSED>PROPOSED>AWAITING_FOUNDER>ISSUED');
+    });
+  });
+
+  test('without a plan reviewing actions the proposal waits (never stranded): the exact act again, or the next plan, recovers it — no new Work Item', () => {
+    withWorld((w) => {
+      const p = propose(w, flag('DISABLED'));
+      const rv = ReviewStore.for(w.h.store);
+      rv.declarePlan(w.s.founder, p.run.workItemId, reviewPlan({ appliesTo: 'OUTPUT' }));
+      assert.equal(w.controls.proposal(String(p.proposal?.id)).state, 'PROPOSED');
+      // The executor re-presents the exact act: the same proposal answers (never a duplicate), still waiting for a plan.
+      const again = recordOrgAct(w.h.store, p.run.claim.fence, ++step, 'control.propose', flag('DISABLED'));
+      assert.deepEqual([again.outcome, again.resultRef], ['DONE', p.out.resultRef]);
+      assert.equal(n(w.h, 'SELECT COUNT(*) AS n FROM app_control_proposals'), 1);
+      rv.declarePlan(w.s.founder, p.run.workItemId, V2);
+      const now = w.controls.proposal(String(p.proposal?.id));
+      assert.equal(requests(w, p.run.workItemId).find((q) => q.id === now.reviewRequestId)?.state, 'OPEN', 'the next plan reviews the same act');
+      decideActionReview(w.h, p.run.workItemId, 'PASS');
+      assert.equal(w.controls.proposal(now.id).state, 'AWAITING_FOUNDER');
+    });
+  });
+
+  test('an exact act that drew REWORK is never revived by a new plan; another series revision makes a recovered act STALE', () => {
+    withWorld((w) => {
+      const p = propose(w, flag('DISABLED'));
+      decideActionReview(w.h, p.run.workItemId, 'FAIL');
+      assert.equal(w.controls.proposal(String(p.proposal?.id)).state, 'REVIEW_REJECTED');
+      const before = requests(w, p.run.workItemId).length;
+      ReviewStore.for(w.h.store).declarePlan(w.s.founder, p.run.workItemId, V2);
+      assert.equal(w.controls.proposal(String(p.proposal?.id)).state, 'REVIEW_REJECTED');
+      assert.equal(requests(w, p.run.workItemId).length, before, 'no fresh review of a rejected act');
+    });
+    withWorld((w) => {
+      const a = propose(w, flag('DISABLED'));
+      issued(w, flag('INTERNAL'));
+      // A was made against revision 0 and is STALE already; a superseded plan does not bring it back.
+      assert.equal(w.controls.proposal(String(a.proposal?.id)).state, 'STALE');
+      ReviewStore.for(w.h.store).declarePlan(w.s.founder, a.run.workItemId, V2);
+      assert.equal(w.controls.proposal(String(a.proposal?.id)).state, 'STALE');
+      assert.equal(n(w.h, 'SELECT COUNT(*) AS n FROM app_control_revisions'), 1);
     });
   });
 });

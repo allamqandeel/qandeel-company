@@ -223,6 +223,62 @@ const MUTATIONS = [
     edits: [{ file: `${GOV}/app-controls.js`, search: 'if (EXECUTION_KEY.test(k))', replace: 'if (false)', expectedCount: 1 }],
     runs: [KERNEL],
   },
+  // --- TL MAJOR 1: authority re-decided at the issue boundary (seat / acting coverage, current grant) -----------------
+  {
+    id: 'c7b-issue-seat-unchecked',
+    gate: 'nothing issues for a proposer who lost the seat or the acting coverage after proposing',
+    edits: [{ file: `${STORAGE}/app-controls.js`, search: "return 'CONTROL_SEAT_NOT_HELD';", replace: 'void 0;', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7b-issue-grant-unchecked',
+    gate: 'nothing issues on a grant revoked or expired after proposing',
+    edits: [{ file: `${STORAGE}/app-controls.js`, search: "return 'CONTROL_GRANT_NOT_CURRENT';", replace: 'void 0;', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7b-db-issue-seat-unchecked',
+    gate: 'the datastore refuses a revision whose proposer no longer holds the seat at issue time',
+    edits: [{ file: MIGRATION, search: "AND a.status = 'ACTIVE' AND a.effective_from <= NEW.issued_at AND (a.effective_to IS NULL OR a.effective_to > NEW.issued_at)", replace: 'AND 1', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7b-db-issue-grant-revocation-unchecked',
+    gate: 'the datastore refuses a revision on a grant revoked after proposing',
+    edits: [{ file: MIGRATION, search: "WHERE p.id = NEW.proposal_id AND g.employee_id = p.proposer_employee_id AND g.status = 'ACTIVE'", replace: 'WHERE p.id = NEW.proposal_id AND g.employee_id = p.proposer_employee_id', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7b-db-issue-grant-expiry-unchecked',
+    gate: 'the datastore refuses a revision on a grant expired after proposing',
+    edits: [{ file: MIGRATION, search: 'AND (g.expires_at IS NULL OR g.expires_at > NEW.issued_at)', replace: '', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  // --- TL MAJOR 2: a STALE review (Review Plan superseded) never strands a proposal nor keeps its approval alive ------
+  {
+    id: 'c7b-stale-hook-unwired',
+    gate: 'a control review going STALE reaches the control plane (its proposal and pending approval)',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'txControlReviewStale(ctx, r, actorRef);', replace: 'void 0;', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7b-stale-review-not-recovered',
+    gate: 'a proposal whose review went STALE on plan supersession is reviewed afresh under the active plan',
+    edits: [{ file: `${STORAGE}/review-core.js`, search: 'recoverControlReviews(ctx, item.id);', replace: 'void 0;', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7b-stale-approval-not-revoked',
+    gate: 'an approval PENDING on a review that went STALE is revoked (it can never issue)',
+    edits: [{ file: `${STORAGE}/app-controls.js`, search: "revokePendingApproval(ctx, p.approvalId, 'app_control.review_stale', actorRef);", replace: 'void 0;', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7b-db-founder-entry-unguarded',
+    gate: 'the datastore puts a proposal to the Founder only on a satisfied review and a PENDING approval (never a revoked one)',
+    edits: [{ file: MIGRATION, search: "  OR (NEW.state = 'AWAITING_FOUNDER' AND OLD.state <> 'AWAITING_FOUNDER'", replace: "  OR (0 AND NEW.state = 'AWAITING_FOUNDER' AND OLD.state <> 'AWAITING_FOUNDER'", expectedCount: 1 }],
+    runs: [STORE],
+  },
   // --- Content-free outbox and the C7-A refusal amplification bound -------------------------------------------------
   {
     id: 'c7b-event-carries-content',

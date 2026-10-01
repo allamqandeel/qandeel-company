@@ -42,6 +42,7 @@ Remote Configuration family is frozen). No App file was written. Stage 16 remain
 |---|---|
 | `code-review` (high, on `main...HEAD` + working tree, before the final gate) | 7 findings: a REJECT of a control approval was blocked by the preview whenever the act was no longer issuable (fixed: only APPROVE requires issuability; the preview states the review as it is; proof added); `proposals()` filtered after its LIMIT (fixed: SQL filter); the Product charter version took the SQLite wall clock instead of Company time (fixed: the latest audited Company instant, never before the superseded version); an already-rejected act was recorded STALE (fixed: REJECTED with that approval); the proposal trigger ignored grant expiry / uses (fixed); a STALE proposal's open review and the two aggregate ids of `app_control` events were kept as residuals (R-C7B-07, R-C7B-09) |
 | `security-review` | Invoked, but could not run on this host (its pre-step shells out through the Bash tool, which exits on every command here). Its checklist was applied by hand instead: the only issuing path is the Founder's `decideApproval` of an approval whose action is `app-control.issue` — no other code path can create such an approval (tool approvals carry `tool:*` actions, Work Item approvals `work_item.execute`), and the hook refuses an approval with no awaiting proposal; the grant resource is derived from the same family the kernel validates; nothing in C7-B stores a secret, key or signature, executes, spawns, imports dynamically or opens a network path (verifier rule `c7b-no-generic-execution`). No finding |
+| `code-review` (TL-correction cycle, on the D-C7B-09 / D-C7B-10 working-tree diff) | 1 finding, fixed: the bounded recovery sweep selected stranded control proposals without requiring an ACTIVE plan, so proposals that can only wait for a plan could fill its LIMIT every sweep and starve a recoverable one; the sweep now selects only Work Items with an ACTIVE plan |
 
 The other available skills (React Native, animation, UI design, document / slide formats, Arabic copy) do not apply to a
 backend governance / storage work package and were not used.
@@ -157,12 +158,25 @@ value, from → to, reason, evidence, review status, risk) and approval issues i
 Attention: the pending R3 approval (NEEDS_DECISION), and the existing review-conflict / escalation items; normal
 history adds nothing. A telemetry failure or outage never issues a control.
 
+**Issue-time authority (D-C7B-09, TL MAJOR 1).** Authority is re-decided where the act takes effect: the issue
+transaction (and the governed APPROVE preview) re-checks that the proposer may still act, still holds the seat it
+proposed from or acting coverage naming `control.propose`, and that the very grant the act was decided under is still
+ACTIVE, unexpired, R3 and covering the family. Its `uses` is not re-tested (consumed by this act at proposal time).
+A refusal is whole (`AUTHORITY_DENIED` + reason; nothing issued or decided); the Founder may still reject. The
+datastore re-checks it (`app_control_revisions_authority_current`).
+
+**Review Plan supersession (D-C7B-10, TL MAJOR 2).** A control review that goes STALE revokes any approval PENDING on
+it and returns the proposal to PROPOSED; the same proposal is then bound to a fresh review of the same exact act under
+the active plan (never a duplicate proposal, never a new Work Item, never the stale review again); only after that
+review passes does a new approval exist, and only it issues. A rework-rejected act is never revived; a moved series or
+an ended Work Item makes the act STALE; without a plan reviewing actions it waits for the next plan (or the sweep).
+
 ## 11. Migration 0013
 
 `0013_c7b_governed_app_controls.sql` (pinned): the seat and charter version; `app_control_families` (seven rows,
 closed); `app_remote_config_families` (empty, release-only); `app_control_proposals` + history; `app_control_series`;
 `app_control_revisions`; `external_intake_refusal_windows` (+ history fold-in from the audit); the row-preserving
-rebuild of `events` adding the `app_control` aggregate. All STRICT, no hard delete, append-only history, forward-only
+rebuild of `events` adding the `app_control` aggregate. After the TL exact-head review (still unreleased, re-pinned): `app_control_revisions_authority_current` (issue-time seat + current grant) and the forward-trigger rules of D-C7B-10 (review / approval replaced only once STALE / REVOKED; AWAITING_FOUNDER only on a SATISFIED review and a PENDING approval). All STRICT, no hard delete, append-only history, forward-only
 updates; state, history, audit and outbox commit in one `BEGIN IMMEDIATE`. 0001–0012 untouched. An existing Company
 upgrades only through safe-upgrade (proof 3 proves v12 → v13 rows, outbox, charter history and refusal fold-in).
 
@@ -184,10 +198,10 @@ counter and one audit row (proof 60–63). **Network / WAF / edge rate limiting 
 | Suite | Marker | Tests |
 |---|---|---|
 | `governance/test/c7b-controls.test.ts` | `C7B-PROOF: control-kernel` | 14 (catalogue, scopes, each family, Remote Configuration, Route Hold, no generic execution / private content, fingerprints, revision law, R3 decision, envelope keys) |
-| `storage/test/c7b-app-controls.test.ts` | `C7B-PROOF: storage-control-plane` | 19 (brief §32 items 1–65, grouped) |
+| `storage/test/c7b-app-controls.test.ts` | `C7B-PROOF: storage-control-plane` | 28 (brief §32 items 1–65, grouped; plus 5 issue-time authority proofs (D-C7B-09) and 4 Review Plan supersession proofs (D-C7B-10)) |
 
-`scripts/c7b-mutation-check.mjs` — 33 mutations (catalogue ×2, R3 seat / grant / review / approval ×9, exact act and
-revision law ×8, datastore contract ×7, kernel guards ×4, outbox and refusal bound ×3), pinned in the verifier; CI shards
+`scripts/c7b-mutation-check.mjs` — 42 mutations (catalogue ×2, R3 seat / grant / review / approval ×9, exact act and
+revision law ×8, datastore contract ×7, kernel guards ×4, issue-time authority ×5, stale review / approval ×4, outbox and refusal bound ×3), pinned in the verifier; CI shards
 Windows 1/3 … 3/3, Ubuntu 1/2 + 2/2, counted by the quality gate. Verifier: six new rules plus the narrowed
 `c7-later-scope-not-leaked`; 81 rules, each proved able to fail by the self-test.
 
@@ -197,7 +211,17 @@ the proposer and adds a datastore clause refusing a revision whose counting revi
 
 ## 15. Validation
 
-(Completed below with the commands actually run.)
+Focused validation during implementation (QUALITY COMPLETE, VALIDATION PROPORTIONAL TO CHANGE):
+- `storage/test/c7b-app-controls.test.ts` — 28/28 (the 19 original + 5 issue-time authority + 4 Review Plan supersession proofs).
+- Nearest regressions (shared review / approval / migration code): `migrations`, `c4-review`, `r1-review`,
+  `c4-organization`, `c2-governance`, `c3-review-fixes`, `c7a-external-evidence` — 192/192.
+- The 9 new mutations (`--only`) — 9/9 caught; every existing mutation anchor in the touched files still applies
+  exactly once.
+- Verifier 81/81 rules, self-test 80 rules each able to fail; `typecheck` clean; `eslint --max-warnings=0` clean.
+
+The one final full local `npm run ci` (build, typecheck, lint, every workspace test, every mutation suite c1 … c7b,
+verify) runs on the exact closure-candidate head; its result and the GitHub CI status of that head are reported in
+the PR handoff, not here (writing them here would change the head they describe).
 
 ## 16. Residuals / deferred
 
@@ -211,11 +235,9 @@ the proposer and adds a datastore clause refusing a revision whose counting revi
 - **R-C7B-05** Network / edge rate limiting of intake: L1 / Production Integration (C7-B bounds only Company storage).
 - **R-C7B-06** No dedicated Command Center form for control decisions: the Founder decides through the existing
   `APPROVAL_DECIDE` confirmation (structured preview); no UI redesign.
-- **R-C7B-07** A proposal whose action review went STALE (its plan was superseded) stays PROPOSED until the same act is
-  proposed again from its Work Item (which refreshes the review) or the series moves (STALE).
 - **R-C7B-09** `app_control` outbox events use the proposal id as aggregate id for proposal events and the series id for
   `revision_issued` (the proposal id is the correlation id of both); a later consumer joins them by correlation id.
-- **R-C7B-07 (extended)** A proposal made STALE by another issued revision keeps its open action review until a reviewer
+- **R-C7B-07** (the plan-supersession part is resolved by D-C7B-10) A proposal made STALE by another issued revision keeps its open action review until a reviewer
   decides it (the decision then changes nothing); cancelling such reviews needs a Review Pool withdrawal path for ACTION
   subjects.
 - **R-C7B-08** Standing / delegated R3 authority for specific control categories is a later explicit governed

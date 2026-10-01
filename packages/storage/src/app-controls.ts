@@ -23,12 +23,15 @@
 import { QandeelError, canonicalJson, isQandeelError, newId, sha256Hex, type Id } from '@qandeel-company/domain';
 import {
   APP_CONTROL_APPROVAL_ACTION,
+  APP_CONTROL_CAPABILITY,
   APP_CONTROL_RISK,
   APP_OPERATIONS_LEAD_SEAT,
   COMPANY_CONTROL_STATES,
   ISSUED_CONTROL_CONTRACT,
   assertRemoteConfigFamily,
+  canExecute,
   controlChangeProblem,
+  controlGrantResource,
   controlProposalFingerprint,
   controlReviewSubject,
   controlRevisionDigest,
@@ -41,6 +44,7 @@ import {
   type RemoteConfigFamily,
 } from '@qandeel-company/governance';
 
+import { getEmployeeRow } from './governance-core.js';
 import { upsertApprovalRequest } from './governance.js';
 import { mapApproval, type ApprovalRecord } from './governance-records.js';
 import { attributed } from './governed-writes.js';
@@ -48,7 +52,7 @@ import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from 
 import { heldSeatsAt } from './org-core.js';
 import type { ReviewRequestRecord } from './org-records.js';
 import type { Fence } from './records.js';
-import { actionReviewGate, consumeControlReview } from './review-core.js';
+import { TERMINAL, actionReviewGate, consumeControlReview } from './review-core.js';
 import type { Row } from './sqlite/connection.js';
 import { storeContext, type CompanyStore } from './store.js';
 
@@ -65,6 +69,8 @@ export interface ControlProposalRecord {
   readonly runId: Id;
   readonly proposerEmployeeId: Id;
   readonly proposerPositionId: Id;
+  /** The explicit Founder-created R3 grant the act was decided under (re-checked current at the issue boundary). */
+  readonly grantId: Id;
   readonly family: ControlFamily;
   readonly scope: ControlScope;
   readonly operation: ControlOperation;
@@ -113,6 +119,7 @@ const mapProposal = (r: Row): ControlProposalRecord => ({
   runId: s(r.run_id) as Id,
   proposerEmployeeId: s(r.proposer_employee_id) as Id,
   proposerPositionId: s(r.proposer_position_id) as Id,
+  grantId: s(r.grant_id) as Id,
   family: s(r.family) as ControlFamily,
   scope: JSON.parse(s(r.scope_json)) as ControlScope,
   operation: s(r.operation) as ControlOperation,
@@ -194,7 +201,29 @@ const approvalScope = (p: ControlProposalRecord): Parameters<typeof upsertApprov
   limits: { maxCostMicros: null },
 });
 
-/** The outcome of a `control.propose` act: a durable proposal, or a refusal code (the org-act boundary records it). */
+/** The App Operations & Release Lead seat, held as a permanent seat or by acting coverage that names this act. */
+const coversControlAct = (x: ReturnType<typeof heldSeatsAt>[number]): boolean =>
+  x.position.code === APP_OPERATIONS_LEAD_SEAT && x.position.status === 'ACTIVE' && (x.assignment.kind !== 'ACTING' || x.assignment.actingScope.length === 0 || x.assignment.actingScope.includes('control.propose'));
+
+/**
+ * The proposer's authority, decided again NOW — at the issue boundary, where the act takes effect (the datastore re-checks
+ * it, 0013): still an Employee who may act, still in the seat (or acting coverage naming this act), and the very grant the
+ * act was decided under still current — not revoked, not expired, still covering the family. The grant's use was consumed
+ * by this act when it was proposed, so its `uses` counter is not re-tested: consumption by this act is not loss of authority.
+ */
+function issueAuthorityProblem(ctx: StoreContext, p: ControlProposalRecord): string | null {
+  const at = ts(ctx);
+  if (!canExecute(getEmployeeRow(ctx, p.proposerEmployeeId).state)) return 'PROPOSER_NOT_ELIGIBLE';
+  if (!heldSeatsAt(ctx, p.proposerEmployeeId, at).some((x) => x.position.id === p.proposerPositionId && coversControlAct(x))) return 'CONTROL_SEAT_NOT_HELD';
+  const g = ctx.db.get<Row>('SELECT * FROM permission_grants WHERE id = ?', p.grantId);
+  if (
+    !g || s(g.status) !== 'ACTIVE' || s(g.employee_id) !== p.proposerEmployeeId || s(g.capability) !== APP_CONTROL_CAPABILITY || s(g.risk_ceiling) !== APP_CONTROL_RISK
+    || !s(g.granted_by_ref).startsWith('founder:') || (g.expires_at !== null && s(g.expires_at) <= at) || (s(g.resource_scope) !== '*' && s(g.resource_scope) !== controlGrantResource(p.family))
+  ) return 'CONTROL_GRANT_NOT_CURRENT';
+  return null;
+}
+
+/** The outcome of a `control.propose` act:a durable proposal, or a refusal code (the org-act boundary records it). */
 export type ProposeOutcome = { readonly ref: string } | { readonly refused: string };
 
 /**
@@ -208,7 +237,7 @@ export function txProposeControl(ctx: StoreContext, fence: Fence, e: { id: Id; r
   const item = getWorkItemRow(ctx, attributed(ctx, fence).workItemId);
   // Title ≠ Authority, and authority ≠ seat: the grant was decided already; the operating seat (or acting coverage that
   // names this act) is required as well — a grant held outside the seat cannot impersonate the persistent role.
-  const seat = heldSeatsAt(ctx, e.id, at).find((x) => x.position.code === APP_OPERATIONS_LEAD_SEAT && x.position.status === 'ACTIVE' && (x.assignment.kind !== 'ACTING' || x.assignment.actingScope.length === 0 || x.assignment.actingScope.includes('control.propose')));
+  const seat = heldSeatsAt(ctx, e.id, at).find(coversControlAct);
   if (!seat) return { refused: 'CONTROL_SEAT_NOT_HELD' };
   if (grantId === null) return { refused: 'NO_GRANT' };
   let p;
@@ -224,7 +253,11 @@ export function txProposeControl(ctx: StoreContext, fence: Fence, e: { id: Id; r
     // The exact act again: idempotent while it lives; a decided one is never silently regenerated.
     const x = mapProposal(prior);
     if (x.state === 'ISSUED') return { ref: `app_control_revision:${String(x.revisionId)}` };
-    if (x.state === 'PROPOSED' || x.state === 'AWAITING_FOUNDER') return { ref: x.ref };
+    if (x.state === 'PROPOSED' || x.state === 'AWAITING_FOUNDER') {
+      // Never stranded on a review that went STALE: the same act is bound to a fresh review (never a new proposal).
+      recoverControlReviews(ctx, item.id);
+      return { ref: x.ref };
+    }
     return { refused: x.state === 'STALE' ? 'STALE_EXPECTED_REVISION' : x.state === 'REVIEW_REJECTED' ? 'REVIEW_REJECTED' : 'CONTROL_REJECTED' };
   }
   const current = currentRevision(ctx, p.family, p.scopeKey);
@@ -265,7 +298,7 @@ function getRequestFor(ctx: StoreContext, id: Id): Pick<ReviewRequestRecord, 'id
 export function txControlReviewSettled(ctx: StoreContext, request: Pick<ReviewRequestRecord, 'id' | 'subjectRef' | 'subjectFingerprint'>, outcome: 'SATISFIED' | 'REWORK', actorRef: string): void {
   if (!request.subjectRef.startsWith(CONTROL_PROPOSAL_REF)) return;
   const p = getProposal(ctx, request.subjectRef.slice(CONTROL_PROPOSAL_REF.length));
-  if (p === null || p.state !== 'PROPOSED' || p.fingerprint !== request.subjectFingerprint) return;
+  if (p === null || p.state !== 'PROPOSED' || p.fingerprint !== request.subjectFingerprint || p.reviewRequestId !== request.id) return;
   if (outcome === 'REWORK') {
     moveProposal(ctx, p, 'REVIEW_REJECTED', 'review.rework', actorRef, { reviewRequestId: request.id });
     return;
@@ -288,7 +321,79 @@ export function txControlReviewSettled(ctx: StoreContext, request: Pick<ReviewRe
   moveProposal(ctx, p, 'AWAITING_FOUNDER', 'review.passed', actorRef, { approvalId: approval.id, reviewRequestId: request.id });
 }
 
-/** What the Founder is deciding — the decision-ready, codes-only description a governed preview shows (and re-checks). */
+/**
+ * The independent review of a live control proposal went STALE (review-core `setRequestState`, same transaction) — its
+ * Review Plan was superseded, or its subject could no longer be reviewed. That review never counts again, and neither
+ * does anything built on it: an approval PENDING on it is REVOKED (the Founder can no longer issue on a review that no
+ * longer stands) and the proposal returns to PROPOSED, awaiting a fresh review of the same exact act
+ * (`recoverControlReviews`). History is kept whole; nothing is issued or deleted.
+ */
+export function txControlReviewStale(ctx: StoreContext, request: Pick<ReviewRequestRecord, 'id' | 'subjectRef'>, actorRef: string): void {
+  if (!request.subjectRef.startsWith(CONTROL_PROPOSAL_REF)) return;
+  const p = getProposal(ctx, request.subjectRef.slice(CONTROL_PROPOSAL_REF.length));
+  if (p === null || p.reviewRequestId !== request.id || (p.state !== 'PROPOSED' && p.state !== 'AWAITING_FOUNDER')) return;
+  if (p.state === 'AWAITING_FOUNDER' && p.approvalId !== null) revokePendingApproval(ctx, p.approvalId, 'app_control.review_stale', actorRef);
+  moveProposal(ctx, p, 'PROPOSED', 'review.stale', actorRef);
+}
+
+function revokePendingApproval(ctx: StoreContext, approvalId: Id, reasonCode: string, actorRef: string): void {
+  const a = mapApproval(ctx.db.get<Row>('SELECT * FROM approvals WHERE id = ?', approvalId) ?? {});
+  if (a.state !== 'PENDING') return;
+  const changed = ctx.db.run(`UPDATE approvals SET state = 'REVOKED', version = version + 1, updated_at = ? WHERE id = ? AND version = ? AND state = 'PENDING'`, ts(ctx), a.id, a.version).changes;
+  if (changed !== 1) throw new QandeelError('VERSION_CONFLICT', 'the control approval changed concurrently', { approvalId: a.id });
+  ctx.db.run('INSERT INTO approval_history (approval_id, version, from_state, to_state, reason_code, actor_ref, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?)', a.id, a.version + 1, 'PENDING', 'REVOKED', reasonCode, actorRef, ts(ctx));
+  appendAudit(ctx, 'approval.revoked', 'approval', a.id, { actorRef }, 'OK', reasonCode, { risk: a.risk, action: a.action.slice(0, 64) });
+}
+
+/**
+ * Recovery of the control proposals of one Work Item whose review went STALE (called where a review goes stale —
+ * Review Plan supersession, a review decided too late — after the executor's own wake, and by the recovery sweep).
+ * The SAME proposal — the same exact act, never a duplicate — is bound to a fresh independent review under the Work
+ * Item's active plan; the stale review is never reused. Deterministic outcomes: a fresh review (OPEN, or one already
+ * satisfied of this exact act, which goes on to the Founder); REVIEW_REJECTED when this exact act already drew a rework
+ * verdict (never revived); STALE when its series moved, its Work Item ended, or it cannot be shown whole under the new
+ * plan. Without an active plan reviewing actions it waits, and the next plan declaration recovers it.
+ */
+export function recoverControlReviews(ctx: StoreContext, workItemId: Id): number {
+  const stranded = ctx.db.all<Row>(
+    `SELECT c.* FROM app_control_proposals c JOIN review_requests q ON q.id = c.review_request_id WHERE c.work_item_id = ? AND c.state = 'PROPOSED' AND q.state = 'STALE' ORDER BY c.created_at, c.id`,
+    workItemId,
+  );
+  let moved = 0;
+  for (const p of stranded.map(mapProposal)) if (rebindControlReview(ctx, p)) moved++;
+  return moved;
+}
+
+function rebindControlReview(ctx: StoreContext, p: ControlProposalRecord): boolean {
+  const item = getWorkItemRow(ctx, p.workItemId);
+  if (TERMINAL.includes(item.state)) {
+    moveProposal(ctx, p, 'STALE', 'app_control.work_item_ended', CONTROL_ACTOR);
+    return true;
+  }
+  if ((currentRevision(ctx, p.family, canonicalJson(p.scope))?.revision ?? 0) !== p.expectedRevision) {
+    moveProposal(ctx, p, 'STALE', 'app_control.series_moved', CONTROL_ACTOR);
+    return true;
+  }
+  // The same act, shown whole exactly as its first reviewers saw it (integrity-checked, written once with that request).
+  const subject = ctx.db.get<{ t: string; h: string }>('SELECT subject_text AS t, subject_sha256 AS h FROM review_action_subjects WHERE request_id = ?', p.reviewRequestId);
+  if (!subject || sha256Hex(subject.t) !== subject.h) throw new QandeelError('STORAGE_INVARIANT', 'a control review subject failed its integrity check', { proposalId: p.id });
+  const gate = actionReviewGate(ctx, { item, fingerprint: p.fingerprint, subjectRef: p.ref, dataClass: 'D1', risk: APP_CONTROL_RISK, actionSubject: subject.t });
+  if (gate.kind === 'REFUSED') {
+    moveProposal(ctx, p, 'STALE', 'review.subject_too_large', CONTROL_ACTOR);
+    return true;
+  }
+  // No active plan reviewing actions yet: it waits, and the next plan declaration recovers it.
+  if (gate.requestId === null) return false;
+  if (gate.kind === 'REWORK') {
+    moveProposal(ctx, p, 'REVIEW_REJECTED', 'review.rework', CONTROL_ACTOR, { reviewRequestId: gate.requestId });
+    return true;
+  }
+  moveProposal(ctx, p, 'PROPOSED', 'review.rebound', CONTROL_ACTOR, { reviewRequestId: gate.requestId });
+  if (gate.kind === 'SATISFIED') txControlReviewSettled(ctx, getRequestFor(ctx, gate.requestId), 'SATISFIED', CONTROL_ACTOR);
+  return true;
+}
+
+/** What the Founder is deciding —the decision-ready, codes-only description a governed preview shows (and re-checks). */
 export interface ControlDecisionView {
   readonly proposalId: Id;
   readonly family: ControlFamily;
@@ -321,6 +426,10 @@ function assertIssuable(ctx: StoreContext, p: ControlProposalRecord): Id {
   const review = ctx.db.get<{ id: string }>(`SELECT id FROM review_requests WHERE id = ? AND kind = 'REQUIRED' AND subject_kind = 'ACTION' AND state = 'SATISFIED' AND subject_fingerprint = ?`, p.reviewRequestId, p.fingerprint);
   if (!review) throw new QandeelError('REVIEW_REQUIRED', 'an R3 control is issued only on a satisfied independent review of exactly this act', { proposalId: p.id });
   if ((currentRevision(ctx, p.family, canonicalJson(p.scope))?.revision ?? 0) !== p.expectedRevision) throw new QandeelError('INVALID_TRANSITION', 'another revision of this control was issued first; a new act needs a new review', { proposalId: p.id, reason: 'STALE_EXPECTED_REVISION' });
+  // Authority is decided where the act takes effect, not inherited from proposal time: nothing issues for a proposer who
+  // lost the seat, the acting coverage or the grant meanwhile (refused whole; the Founder may still reject the act).
+  const lost = issueAuthorityProblem(ctx, p);
+  if (lost !== null) throw new QandeelError('AUTHORITY_DENIED', 'the proposer no longer holds the authority this control needs', { proposalId: p.id, reason: lost });
   return review.id as Id;
 }
 
@@ -365,14 +474,7 @@ export function txControlApprovalDecided(ctx: StoreContext, approval: ApprovalRe
   // Concurrent proposals of the same series were made against a revision that is no longer current.
   for (const o of ctx.db.all<Row>(`SELECT * FROM app_control_proposals WHERE family = ? AND scope_json = ? AND state IN ('PROPOSED', 'AWAITING_FOUNDER') AND id <> ? ORDER BY created_at, id`, p.family, scopeJson, p.id).map(mapProposal)) {
     moveProposal(ctx, o, 'STALE', 'app_control.series_moved', founderRef);
-    if (o.approvalId !== null) {
-      const a = mapApproval(ctx.db.get<Row>('SELECT * FROM approvals WHERE id = ?', o.approvalId) ?? {});
-      if (a.state === 'PENDING') {
-        ctx.db.run(`UPDATE approvals SET state = 'REVOKED', version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, at, a.id, a.version);
-        ctx.db.run('INSERT INTO approval_history (approval_id, version, from_state, to_state, reason_code, actor_ref, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?)', a.id, a.version + 1, 'PENDING', 'REVOKED', 'app_control.series_moved', founderRef, at);
-        appendAudit(ctx, 'approval.revoked', 'approval', a.id, { actorRef: founderRef }, 'OK', 'app_control.series_moved', { risk: a.risk, action: a.action.slice(0, 64) });
-      }
-    }
+    if (o.approvalId !== null) revokePendingApproval(ctx, o.approvalId, 'app_control.series_moved', founderRef);
   }
   appendAudit(ctx, 'app_control.revision_issued', 'app_control_series', seriesId, { actorRef: founderRef, correlationId: p.id }, 'OK', p.operation, { revisionId, revision, family: p.family, proposalId: p.id, approvalId: approval.id, reviewRequestId });
   appendEvent(ctx, 'app_control.revision_issued', 'app_control', seriesId, { correlationId: p.id, actorRef: founderRef }, { revisionId, revision, family: p.family, operation: p.operation, digest });

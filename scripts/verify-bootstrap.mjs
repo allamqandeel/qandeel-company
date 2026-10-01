@@ -265,7 +265,7 @@ const C7B_FAMILIES = ['FEATURE_FLAG', 'KILL_SWITCH', 'MAINTENANCE_MODE', 'ROLLOU
 // The datastore gates every C7-B table carries (code checks are re-checked by triggers).
 const C7B_GOVERNED_TRIGGERS = [
   'app_control_families_closed_i', 'app_control_families_closed_u', 'app_control_families_closed_d', 'app_remote_config_families_release_only',
-  'app_control_proposals_governed', 'app_control_proposals_forward', 'app_control_revisions_sequence', 'app_control_revisions_r3_governed', 'app_control_revisions_conform',
+  'app_control_proposals_governed', 'app_control_proposals_forward', 'app_control_revisions_sequence', 'app_control_revisions_r3_governed', 'app_control_revisions_authority_current', 'app_control_revisions_conform',
   'app_control_revisions_append_only_u', 'app_control_revisions_append_only_d', 'external_intake_refusal_windows_bounded_key',
 ];
 // Company state is what the Company ISSUED: no applied / acknowledged / delivered / effective-in-App claim anywhere in C7-B.
@@ -447,6 +447,8 @@ const MUTATION_PINS = {
       'c7b-fingerprint-ignores-value', 'c7b-db-act-not-bound', 'c7b-stale-expectation-unguarded', 'c7b-concurrent-proposal-not-staled', 'c7b-db-sequence-unguarded', 'c7b-no-change-reissued', 'c7b-db-history-mutable', 'c7b-db-proposal-revivable',
       'c7b-db-family-scope-unchecked', 'c7b-db-scope-identifiers-unchecked', 'c7b-db-value-unchecked', 'c7b-db-route-hold-selects', 'c7b-db-remote-config-ungated', 'c7b-db-register-open', 'c7b-db-applied-state-admitted',
       'c7b-route-hold-not-negative', 'c7b-route-selection-unnamed', 'c7b-remote-config-gate-removed', 'c7b-generic-execution-unnamed',
+      'c7b-issue-seat-unchecked', 'c7b-issue-grant-unchecked', 'c7b-db-issue-seat-unchecked', 'c7b-db-issue-grant-revocation-unchecked', 'c7b-db-issue-grant-expiry-unchecked',
+      'c7b-stale-hook-unwired', 'c7b-stale-review-not-recovered', 'c7b-stale-approval-not-revoked', 'c7b-db-founder-entry-unguarded',
       'c7b-event-carries-content', 'c7b-refusals-audited-per-row', 'c7b-db-refusal-key-unbounded',
     ],
   },
@@ -1403,7 +1405,7 @@ export const RULES = [
       const writes = /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO|DELETE\s+FROM|REPLACE\s+INTO)\s+app_(?:control|remote_config)\w*/i;
       for (const f of files.filter((x) => isCode(x) && !isTestPath(x) && x !== C7B_STORE)) if (writes.test(read(f) ?? '')) problems.push(`${f} writes control-plane state outside ${C7B_STORE}`);
       for (const f of files.filter((x) => (x.startsWith('packages/runtime/src/') || x === CLI_SOURCE || x.startsWith('packages/command-center/src/')) && isCode(x))) {
-        if (/\b(?:txProposeControl|txControlApprovalDecided|txControlReviewSettled)\b/.test(read(f) ?? '')) problems.push(`${f} reaches the control plane's internal writes (controls are proposed by Employee acts and issued only by the Founder's approval)`);
+        if (/\b(?:txProposeControl|txControlApprovalDecided|txControlReviewSettled|txControlReviewStale|recoverControlReviews)\b/.test(read(f) ?? '')) problems.push(`${f} reaches the control plane's internal writes (controls are proposed by Employee acts and issued only by the Founder's approval)`);
       }
       return problems;
     },

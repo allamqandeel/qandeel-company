@@ -102,7 +102,9 @@ CREATE TRIGGER app_remote_config_families_immutable_d BEFORE DELETE ON app_remot
 -- its Founder approval the existing approval engine, both bound to `fingerprint`. A proposal never issues itself.
 -- PROPOSED → AWAITING_FOUNDER (review satisfied; a PENDING R3 approval) → ISSUED | REJECTED; PROPOSED → REVIEW_REJECTED |
 -- REJECTED (this exact act was already rejected by the Founder);
--- PROPOSED / AWAITING_FOUNDER → STALE (another revision of the series was issued first).
+-- PROPOSED / AWAITING_FOUNDER → STALE (another revision of the series was issued first, or its Work Item ended);
+-- AWAITING_FOUNDER → PROPOSED (its review went STALE when the Review Plan was superseded: the pending approval is REVOKED
+-- and the same exact act is reviewed afresh under the active plan).
 -- =====================================================================================================
 CREATE TABLE app_control_proposals (
   id                    TEXT    NOT NULL PRIMARY KEY CHECK (length(id) = 36),
@@ -157,9 +159,22 @@ WHEN NEW.id IS NOT OLD.id OR NEW.work_item_id IS NOT OLD.work_item_id OR NEW.run
   OR NEW.scope_json IS NOT OLD.scope_json OR NEW.operation IS NOT OLD.operation OR NEW.value_json IS NOT OLD.value_json OR NEW.reason_code IS NOT OLD.reason_code
   OR NEW.evidence_refs_json IS NOT OLD.evidence_refs_json OR NEW.expected_revision IS NOT OLD.expected_revision OR NEW.fingerprint IS NOT OLD.fingerprint
   OR NEW.created_at IS NOT OLD.created_at OR NEW.version <> OLD.version + 1
-  OR (OLD.approval_id IS NOT NULL AND NEW.approval_id IS NOT OLD.approval_id) OR (OLD.revision_id IS NOT NULL AND NEW.revision_id IS NOT OLD.revision_id)
+  OR (OLD.revision_id IS NOT NULL AND NEW.revision_id IS NOT OLD.revision_id)
+  -- A review is replaced only once it went STALE, an approval only once it was REVOKED: neither is ever reused or swapped.
+  OR (OLD.review_request_id IS NOT NULL AND NEW.review_request_id IS NOT OLD.review_request_id
+      AND NOT EXISTS (SELECT 1 FROM review_requests q WHERE q.id = OLD.review_request_id AND q.state = 'STALE'))
+  OR (OLD.approval_id IS NOT NULL AND NEW.approval_id IS NOT OLD.approval_id
+      AND NOT EXISTS (SELECT 1 FROM approvals x WHERE x.id = OLD.approval_id AND x.state = 'REVOKED'))
+  -- It reaches the Founder only on a satisfied review of exactly this act and a PENDING approval (never a revoked one).
+  OR (NEW.state = 'AWAITING_FOUNDER' AND OLD.state <> 'AWAITING_FOUNDER'
+      AND (NOT EXISTS (SELECT 1 FROM approvals x WHERE x.id = NEW.approval_id AND x.state = 'PENDING' AND x.args_sha256 = NEW.fingerprint)
+        OR NOT EXISTS (SELECT 1 FROM review_requests q WHERE q.id = NEW.review_request_id AND q.state = 'SATISFIED' AND q.subject_fingerprint = NEW.fingerprint)))
   OR NOT ((OLD.state = 'PROPOSED' AND NEW.state IN ('PROPOSED', 'AWAITING_FOUNDER', 'REVIEW_REJECTED', 'REJECTED', 'STALE'))
-       OR (OLD.state = 'AWAITING_FOUNDER' AND NEW.state IN ('ISSUED', 'REJECTED', 'STALE')))
+       OR (OLD.state = 'AWAITING_FOUNDER' AND NEW.state IN ('ISSUED', 'REJECTED', 'STALE'))
+       -- Its review went STALE (Review Plan superseded): back to PROPOSED for a fresh review, its pending approval REVOKED.
+       OR (OLD.state = 'AWAITING_FOUNDER' AND NEW.state = 'PROPOSED'
+           AND EXISTS (SELECT 1 FROM review_requests q WHERE q.id = OLD.review_request_id AND q.state = 'STALE')
+           AND EXISTS (SELECT 1 FROM approvals x WHERE x.id = OLD.approval_id AND x.state = 'REVOKED')))
 BEGIN SELECT RAISE(ABORT, 'a control proposal is immutable and only moves forward'); END;
 CREATE TRIGGER app_control_proposals_no_delete BEFORE DELETE ON app_control_proposals BEGIN SELECT RAISE(ABORT, 'control proposals are durable history'); END;
 
@@ -248,6 +263,25 @@ WHEN NOT EXISTS (SELECT 1 FROM app_control_proposals p
                   WHERE x.id = NEW.approval_id AND x.state = 'APPROVED' AND x.action = 'app-control.issue' AND x.risk_level = 'R3'
                     AND x.args_sha256 = p.fingerprint AND x.work_item_id = p.work_item_id AND x.decided_by_ref = NEW.issued_by_ref)
 BEGIN SELECT RAISE(ABORT, 'an issued control is exactly its proposal, independently reviewed (never by its maker) and approved by the issuing Founder (R3)'); END;
+
+-- Authority is decided where the act takes effect: at issue time the proposer is still an Employee who may act, still in
+-- the App Operations & Release Lead seat it proposed from (or acting coverage naming the act), and the very grant the act
+-- was decided under is still current — not revoked, not expired, still covering the family. Its use was consumed by this
+-- act at proposal time, so `uses` is not re-tested here: consumption by this act is not a loss of authority.
+CREATE TRIGGER app_control_revisions_authority_current BEFORE INSERT ON app_control_revisions
+WHEN NOT EXISTS (SELECT 1 FROM app_control_proposals p JOIN employees e ON e.id = p.proposer_employee_id
+                  WHERE p.id = NEW.proposal_id AND e.state = 'ACTIVE')
+  OR NOT EXISTS (SELECT 1 FROM app_control_proposals p JOIN org_positions o ON o.id = p.proposer_position_id
+                   JOIN position_assignments a ON a.position_id = p.proposer_position_id AND a.employee_id = p.proposer_employee_id
+                  WHERE p.id = NEW.proposal_id AND o.code = 'product.app-operations-release-lead' AND o.status = 'ACTIVE'
+                    AND a.status = 'ACTIVE' AND a.effective_from <= NEW.issued_at AND (a.effective_to IS NULL OR a.effective_to > NEW.issued_at)
+                    AND (a.kind = 'PRIMARY' OR json_array_length(a.acting_scope_json) = 0 OR EXISTS (SELECT 1 FROM json_each(a.acting_scope_json) s WHERE s.value = 'control.propose')))
+  OR NOT EXISTS (SELECT 1 FROM app_control_proposals p JOIN permission_grants g ON g.id = p.grant_id
+                  WHERE p.id = NEW.proposal_id AND g.employee_id = p.proposer_employee_id AND g.status = 'ACTIVE'
+                    AND g.capability = 'app-control.issue' AND g.risk_ceiling = 'R3' AND g.granted_by_ref GLOB 'founder:*'
+                    AND (g.expires_at IS NULL OR g.expires_at > NEW.issued_at)
+                    AND (g.resource_scope = '*' OR g.resource_scope = (SELECT f.grant_resource FROM app_control_families f WHERE f.family = p.family)))
+BEGIN SELECT RAISE(ABORT, 'a control is issued only while its proposer still holds the seat and a current R3 grant'); END;
 
 -- The closed family / scope / value contract, held by the datastore (TypeScript bypassed or not): the family's own scope
 -- kinds; scope identifiers that are short opaque codes (no user, PII, selector or expression); the family's one typed

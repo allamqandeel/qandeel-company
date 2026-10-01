@@ -3139,7 +3139,43 @@ Integration own them.
 ## D-C7B-08 — Proofs, verifier, mutation and CI for C7-B (Technical Lead / executor, C7-B)
 
 Proof markers `C7B-PROOF: control-kernel` (governance) and `C7B-PROOF: storage-control-plane` (storage);
-`scripts/c7b-mutation-check.mjs` (33 mutations, pinned; Windows 3 shards, Ubuntu 2); verifier rules
+`scripts/c7b-mutation-check.mjs` (33 mutations, 42 after D-C7B-09/10, pinned; Windows 3 shards, Ubuntu 2); verifier rules
 `c7b-not-claimed-closed`, `c7b-proofs-present`, `c7b-control-plane-governed`, `c7b-no-generic-execution`,
 `c7b-roles-separate`, `c7b-intake-refusals-bounded`; `c7-later-scope-not-leaked` now confines the control-family
 vocabulary to the C7-B modules and keeps C7-C / C7-D out entirely; 0012 joins the frozen migrations.
+
+## D-C7B-09 — Authority is re-decided at the issue boundary (Technical Lead exact-head review of PR #14, MAJOR 1)
+
+The production-impacting act is the issue, not the proposal: `proposal → independent review → Founder approval → issue`
+can span days, and the proposer may lose the App Operations & Release Lead seat, its acting coverage may end, or the R3
+grant may be revoked or expire meanwhile. Decision: the issue transaction re-decides the proposer's authority NOW
+(`issueAuthorityProblem`, inside `assertIssuable`, so the governed preview refuses an APPROVE exactly as confirm does):
+the Employee may still act (`canExecute`), still holds the seat it proposed from (or acting coverage naming
+`control.propose`, current at the issue instant), and the very grant the act was decided under (`grant_id`) is still
+ACTIVE, unexpired, Founder-created R3 `app-control.issue` and still covers the family. The grant's `uses` is NOT
+re-tested: its one use was consumed by this act at proposal time, and consumption by the act is not a loss of
+authority (proved with a single-use grant that still issues). A refusal is whole (`AUTHORITY_DENIED` with the reason
+code; nothing issued, the approval stays PENDING, the review SATISFIED, the history unchanged); the Founder may still
+REJECT the act. The datastore holds the same invariant without TypeScript (`app_control_revisions_authority_current`).
+
+## D-C7B-10 — A STALE review never strands a control proposal nor keeps its approval alive (TL exact-head review of PR #14, MAJOR 2)
+
+The existing Review Plan lifecycle supersedes a plan and makes its open / satisfied requests STALE (Stage 11; R2-02).
+Before this decision a control proposal kept pointing at its STALE review (and an AWAITING_FOUNDER one kept a PENDING
+approval resting on it), and neither an org-act replay nor `txProposeControl` re-opened a review. Decision (Option A of
+the review — the same proposal is bound to a new review request under the active plan):
+- Every transition of a control review to STALE (`setRequestState`) reaches `txControlReviewStale` in the same
+  transaction: an approval PENDING on it is REVOKED (`app_control.review_stale`) and the proposal returns to PROPOSED
+  (history `review.stale`). The stale review is never reused; the revoked approval can never issue (engine,
+  preview and datastore).
+- `recoverControlReviews` binds the SAME proposal (same exact act, same fingerprint — never a duplicate, no new Work
+  Item) to a fresh ACTION review under the active plan (`review.rebound`), with the same integrity-checked subject its
+  first reviewers saw; once that review is satisfied a NEW PENDING R3 approval of the same act is created, and only it
+  issues. It runs where a control review goes stale (after the plan declaration, after the executor's own R2-02
+  wake), when the exact act is presented again, and in the bounded recovery sweep. Deterministic outcomes: a fresh
+  review; REVIEW_REJECTED when this exact act already drew a rework verdict (never revived); STALE when the series
+  moved, the Work Item ended, or the act cannot be shown whole under the new plan; without a plan that reviews actions
+  it waits, and the next plan declaration recovers it.
+- The datastore: a review is replaced only once it is STALE, an approval only once it is REVOKED; AWAITING_FOUNDER →
+  PROPOSED only with a STALE review and a REVOKED approval; and a proposal reaches AWAITING_FOUNDER only on a SATISFIED
+  review and a PENDING approval of exactly its fingerprint (0013 `app_control_proposals_forward`).
