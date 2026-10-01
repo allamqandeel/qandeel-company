@@ -174,7 +174,9 @@ export function calendar(ctx: ApiContext, query: { from?: string | undefined; to
   const work = u.work.filter((w) => w.dueAt !== null && w.dueAt >= from && w.dueAt < to).map((w) => ({ at: w.dueAt as string, kind: 'WORK_DUE', ref: `work_item:${w.id}`, title: w.objective.slice(0, 80) }));
   const approvals = ctx.runtime.governance.listApprovals('APPROVED').filter((a) => a.expiresAt !== null && a.expiresAt >= from && a.expiresAt < to).map((a) => ({ at: a.expiresAt as string, kind: 'APPROVAL_EXPIRES', ref: `approval:${a.id}` }));
   const sessions = ctx.runtime.founder.auth.sessions().filter((s) => s.revokedAt === null && s.expiresAt >= from && s.expiresAt < to).map((s) => ({ at: s.expiresAt, kind: 'SESSION_EXPIRES', ref: `session:${s.id}` }));
-  const events = [...org, ...goals, ...work, ...approvals, ...sessions].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.ref < b.ref ? -1 : 1));
+  // C7-D: the exact windows approved (or awaiting approval) for a scheduled publication — the existing calendar, no second scheduler.
+  const publications = ctx.runtime.founder.digital.publicationWindows(from, to).map((p) => ({ at: p.notBefore, kind: 'PUBLICATION_WINDOW', ref: `digital_promotion:${p.promotionId}`, state: p.state, until: p.notAfter }));
+  const events = [...org, ...goals, ...work, ...approvals, ...sessions, ...publications].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.ref < b.ref ? -1 : 1));
   return { from, to, events };
 }
 

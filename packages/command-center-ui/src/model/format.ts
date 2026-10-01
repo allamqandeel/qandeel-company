@@ -241,7 +241,7 @@ export const RESULT_LABEL: Readonly<Record<string, string>> = {
   lesson_promotion: 'lesson sharing',
   pilot: 'pilot',
 };
-export const CALENDAR_LABEL: Readonly<Record<string, string>> = { ACTING_ENDS: 'Acting cover ends', DELEGATION_DUE: 'Delegation due', STAFFING_DECISION_DUE: 'Staffing decision due', GOAL_HORIZON: 'Goal horizon', WORK_DUE: 'Work due', APPROVAL_EXPIRES: 'Approval expires', SESSION_EXPIRES: 'Your session ends' };
+export const CALENDAR_LABEL: Readonly<Record<string, string>> = { ACTING_ENDS: 'Acting cover ends', DELEGATION_DUE: 'Delegation due', STAFFING_DECISION_DUE: 'Staffing decision due', GOAL_HORIZON: 'Goal horizon', WORK_DUE: 'Work due', APPROVAL_EXPIRES: 'Approval expires', SESSION_EXPIRES: 'Your session ends', PUBLICATION_WINDOW: 'Publication window (exact, approved per post)' };
 
 /** A table lookup that never leaks a code: unknown codes become readable words ("work_item.execute" → "work item execute"). */
 export const t = (table: Readonly<Record<string, string>>, code: string): string => table[code] ?? humanize(code);

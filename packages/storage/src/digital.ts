@@ -671,9 +671,6 @@ function preparePromotion(a: ActContext, args: JsonObject, prepared: DigitalPrep
   const tool = promotionAction(ctx, t, kind);
   const siblings = ctx.db.all<Row>('SELECT * FROM digital_promotions WHERE candidate_id = ? AND target_id = ? AND kind = ? ORDER BY created_at, id', c.id, t.id, kind).map(mapPromotion).map((p) => txPromotionView(ctx, p));
   if (siblings.some((v) => isRefusedPromotion(v.state))) refuse('PROMOTION_REFUSED_BEFORE');
-  const live = siblings.find((v) => !['STALE', 'FAILED'].includes(v.state));
-  if (live) return { ok: true, result: { promotionId: live.id, tool: tool.toolCode, action: tool.actionCode, args: live.args, risk: 'R3', state: live.state, existing: true } };
-  const promotionId = newId();
   let prior: Id | null = null;
   let extra: { pullNumber?: number; expectedHeadSha?: string; notBefore?: string; notAfter?: string; expectedCurrentRef?: string; rollbackToRef?: string } = {};
   if (kind === 'MERGE_PRODUCTION') {
@@ -689,6 +686,15 @@ function preparePromotion(a: ActContext, args: JsonObject, prepared: DigitalPrep
   } else if (kind === 'ROLLBACK_PRODUCTION') {
     extra = { expectedCurrentRef: optString(args.expectedCurrentRef) ?? '', rollbackToRef: optString(args.rollbackToRef) ?? '' };
   }
+  // One live act per candidate × target × kind: the same terms again are idempotent; other terms (another window, another
+  // head) are never silently swapped for the live act's — they wait for it to be decided, or come as a new candidate.
+  const live = siblings.find((v) => !['STALE', 'FAILED'].includes(v.state));
+  if (live) {
+    const same = canonicalJson(promotionArgs({ kind, promotionId: live.id, candidateId: c.id, manifestSha256: c.manifestSha256, targetId: t.id, ...extra })) === canonicalJson(live.args);
+    if (!same) refuse('PROMOTION_LIVE_WITH_OTHER_TERMS');
+    return { ok: true, result: { promotionId: live.id, tool: tool.toolCode, action: tool.actionCode, args: live.args, risk: 'R3', state: live.state, existing: true } };
+  }
+  const promotionId = newId();
   const exact = promotionArgs({ kind, promotionId, candidateId: c.id, manifestSha256: c.manifestSha256, targetId: t.id, ...extra });
   const argsSha256 = sha256Hex(canonicalJson(exact));
   ctx.db.run(
@@ -961,6 +967,19 @@ export class DigitalStore {
         countsAsOutcome: false,
       };
     });
+  }
+
+  /**
+   * The exact publication windows prepared promotions bound (for the existing Company Calendar projection — there is no
+   * second scheduler; a window is executed by an ordinary Work Item within it, and the driver refuses outside it).
+   */
+  publicationWindows(from: string, to: string): { promotionId: Id; kind: PromotionKind; notBefore: string; notAfter: string; state: PromotionState }[] {
+    return this.#read((ctx) =>
+      ctx.db
+        .all<Row>(`SELECT * FROM digital_promotions WHERE kind = 'SOCIAL_PUBLISH' AND json_extract(args_json, '$.notAfter') >= ? AND json_extract(args_json, '$.notBefore') < ? ORDER BY json_extract(args_json, '$.notBefore'), id LIMIT 500`, from, to)
+        .map(mapPromotion)
+        .map((p) => ({ promotionId: p.id, kind: p.kind, notBefore: s(p.args.notBefore), notAfter: s(p.args.notAfter), state: txPromotionView(ctx, p).state })),
+    );
   }
 
   /** Content-free counts. */

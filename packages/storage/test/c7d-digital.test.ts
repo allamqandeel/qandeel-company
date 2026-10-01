@@ -251,6 +251,38 @@ describe('C7-D Digital Workshop storage', () => {
     }
   });
 
+  test('17/37/38 a scheduled post binds its exact window (the calendar shows it; a moved window is a different act needing its own approval)', () => {
+    const w = world();
+    try {
+      const gov = GovernanceStore.for(w.h.store);
+      const tool = gov.registerTool(w.s.founder, { code: 'social-x', driverCode: 'test.social', egress: 'EXTERNAL', credentialRef: 'vault:social-x' });
+      const id = { type: 'string' as const, required: true, maxLength: 36 };
+      const ts = { type: 'string' as const, required: true, maxLength: 24 };
+      gov.registerToolAction(w.s.founder, { toolId: tool.id, code: 'post', risk: 'R3', sideEffects: 'UNSAFE', mutatesExternal: true, dataClassCeiling: 'D1', argsSchema: { fields: { promotionId: id, candidateId: id, manifestSha256: { type: 'string', required: true, maxLength: 64 }, targetId: id, notBefore: ts, notAfter: ts } }, costPerCallMicros: 0 });
+      const target = DigitalStore.for(w.h.store).registerTarget(w.s.founder, { code: 'page', targetClass: 'SOCIAL_CHANNEL', adapterCode: 'test.social', externalRef: 'social:page-1', actions: { SOCIAL_PUBLISH: 'post' } });
+      const pkg = { v: 1, channelIntent: 'LAUNCH_TEASER', text: 'QANDEEL', media: [], links: [], timing: null, goalRefs: [], hypothesis: 'Invite early interest.' };
+      const a = finalizedRevision(w, { 'social/post.json': JSON.stringify(pkg) });
+      const c = w.act('candidate-create', { revisionId: a.revisionId, kind: 'SOCIAL_POST', summary: 'Launch teaser' });
+      assert.ok(c.ok, String(c.code));
+      const p1 = w.act('promotion-prepare', { candidateId: String(c.result.candidateId), targetId: target.id, kind: 'SOCIAL_PUBLISH', notBefore: '2030-01-01T09:00:00.000Z', notAfter: '2030-01-01T10:00:00.000Z' });
+      assert.ok(p1.ok, String(p1.code));
+      const windows = DigitalStore.for(w.h.store).publicationWindows('2029-12-31T00:00:00.000Z', '2030-01-02T00:00:00.000Z');
+      assert.deepEqual(windows.map((x) => [x.promotionId, x.notBefore, x.notAfter, x.state]), [[p1.result.promotionId, '2030-01-01T09:00:00.000Z', '2030-01-01T10:00:00.000Z', 'PREPARED']]);
+      assert.equal(w.act('promotion-prepare', { candidateId: String(c.result.candidateId), targetId: target.id, kind: 'SOCIAL_PUBLISH', notBefore: '2020-01-01T09:00:00.000Z', notAfter: '2020-01-01T10:00:00.000Z' }).code, 'SCHEDULE_WINDOW_PASSED');
+      // Another future window while this act is live is never silently swapped for it.
+      assert.equal(w.act('promotion-prepare', { candidateId: String(c.result.candidateId), targetId: target.id, kind: 'SOCIAL_PUBLISH', notBefore: '2030-02-01T09:00:00.000Z', notAfter: '2030-02-01T10:00:00.000Z' }).code, 'PROMOTION_LIVE_WITH_OTHER_TERMS');
+      assert.equal(w.act('promotion-prepare', { candidateId: String(c.result.candidateId), targetId: target.id, kind: 'SOCIAL_PUBLISH', notBefore: '2030-01-01T09:00:00.000Z', notAfter: '2030-01-01T10:00:00.000Z' }).result.promotionId, p1.result.promotionId, 'the same terms are idempotent');
+      const args1 = p1.result.args as JsonObject;
+      assert.equal(args1.notBefore, '2030-01-01T09:00:00.000Z');
+      // The approval fingerprint binds the argument hash: a different window can never reuse this act's approval.
+      const row = db(w.h.store).get<{ h: string }>('SELECT args_sha256 AS h FROM digital_promotions WHERE id = ?', String(p1.result.promotionId));
+      assert.equal(row?.h, sha256Hex(canonicalJson(args1)));
+      assert.notEqual(sha256Hex(canonicalJson({ ...args1, notAfter: '2030-01-01T12:00:00.000Z' })), row?.h);
+    } finally {
+      w.h.close();
+    }
+  });
+
   test('33 restart keeps revisions, previews, candidates and promotions exact (no Cloud-session source of truth)', () => {
     const w = world();
     try {

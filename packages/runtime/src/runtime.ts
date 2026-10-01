@@ -873,7 +873,7 @@ export class CompanyRuntime {
         pilots: signalling(PilotStore.for(s), changed, { mutating: ['create', 'advance'], reads: ['get', 'list', 'history', 'briefing', 'scope', 'decisions', 'board', 'inspect', 'health'] }),
         // C7-D: target registration announces once; projects, candidates, the derived promotion lifecycle and the preview
         // resolution are reads and stay silent.
-        digital: signalling(DigitalStore.for(s), changed, { mutating: ['registerTarget', 'setTargetState'], reads: ['targets', 'projects', 'project', 'revisionFiles', 'promotion', 'decisions', 'previewResolution', 'evidenceForWorkItems', 'health'] }),
+        digital: signalling(DigitalStore.for(s), changed, { mutating: ['registerTarget', 'setTargetState'], reads: ['targets', 'projects', 'project', 'revisionFiles', 'promotion', 'decisions', 'previewResolution', 'evidenceForWorkItems', 'publicationWindows', 'health'] }),
         universe: (options: { at?: string } = {}): CompanyUniverse => {
           if (options.at !== undefined && !isTimestamp(options.at)) throw new QandeelError('VALIDATION_FAILED', 'at must be a canonical UTC timestamp', { field: 'at' });
           return projectUniverse(s, options.at === undefined ? {} : { at: options.at });
