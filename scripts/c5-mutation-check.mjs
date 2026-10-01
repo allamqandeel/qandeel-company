@@ -143,7 +143,7 @@ const MUTATIONS = [
   {
     id: 'c5-zero-delta-attention-sync-announces',
     gate: 'attention reconciliation announces a change only when it opened, signalled or resolved an item (D-C5-17)',
-    edits: [{ file: `${RT}/runtime.js`, search: 'if (conditional[name]?.(result))\n                changed();', replace: 'changed();', expectedCount: 1 }],
+    edits: [{ file: `${RT}/runtime.js`, search: 'if (conditional[name]?.(result))\n                    changed();', replace: 'changed();', expectedCount: 1 }],
     runs: [SIGNAL],
   },
   // --- R2 (Full Strong-v1 review) remediation, cluster K5 ---
