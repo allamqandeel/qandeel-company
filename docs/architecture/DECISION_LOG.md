@@ -3049,3 +3049,133 @@ changed, record accepted, conflict detected, binding changed. State, history, au
   sharing; the 0010 forward trigger makes CANCELLED final. A verified reuse counts as the author's contribution only
   while its pattern's success is current. UPHOLD / a valid REPLACE re-open only FUTURE reuse; an interrupted reuse stays
   history (no automatic resumption); RETRACT keeps reuse unavailable. No schema change.
+
+## D-C7B-01 — C7-B Product decisions (Founder / Product Owner, recorded at the C7-B start, 2026-10-01; recorded, not reopened)
+
+Recorded from the approved C7-B brief and the frozen App-side APP-OPS-01 contract (read-only, PO-OPS-07 / -08 / -09 /
+-15 / -16 / -17 / -18 / -19): the Company owns its decisions and the **issuing** of governed controls, the App owns
+Product truth and every **effective** control value; a Company outage or a missing / unauthenticated response is never a
+control; exactly seven families (Feature Flags, Kill Switch, Maintenance Mode, Rollout Control, Minimum Supported
+Version, Approved Remote Configuration, Model / Provider Route Hold) and no eighth without controlled Product /
+Architecture approval; no generic remote execution (new App code is a release); a control only restricts — a less
+restrictive revision or a RELEASE removes the Company's own overlay and grants no Product, entitlement, launch,
+consent, privacy or Safety authority; no initial Remote Configuration family is approved; a Route Hold is negative only;
+the persistent **QANDEEL App Operations & Release Lead** (Product, under the Product Director) is distinct from the App
+Store Release & Reputation Lead, and Title ≠ Authority; every Company → App control issue / change / release is **R3** in
+Strong v1 (independent review AND Founder approval), with no emergency bypass. Transport, authentication, signing, TTL,
+last-known-good, App-side retention and application are later App-side Production Integration / Security work.
+
+## D-C7B-02 — One control plane inside the existing governance (Technical Lead / executor, C7-B; architecture gate)
+
+- A control revision is the Employee act `control.propose` (`ORG_ACTIONS`), reached from a governed run as an
+  `ORG_ACTION` proposal through the existing fenced `txOrgAct` boundary (idempotent per Work Item step, containment on
+  denial). `orgActRequest` decides it at **R3 on the family's grant resource** (all other organizational acts stay R1 on
+  `*`); `decideEmployeeAction` therefore returns review `INDEPENDENT` AND approval `FOUNDER`.
+- The act needs the explicit capability `app-control.issue` (one bounded capability; resource = a family code or `*`)
+  with an R3 ceiling — a Founder-created C2 grant; it is not an organizational capability, so Founder delegation (R1)
+  can never confer it and nobody self-grants — AND the App Operations & Release Lead seat (primary, or acting coverage
+  whose scope names the act). A seat without a grant, or a grant without the seat, issues nothing.
+- Independent review is the existing ACTION review (`actionReviewGate`, the Work Item's Review Plan, the Review Pool;
+  the maker is excluded; no plan → refused). When it is SATISFIED, `applyOutcome` puts exactly that act to the Founder as
+  a PENDING R3 approval (`upsertApprovalRequest`, `argsSha256` = the act's fingerprint); REWORK ends the proposal.
+- The Founder decides through the existing approval engine (`decideApproval`, reached in production through the
+  existing governed confirmation `APPROVAL_DECIDE`, whose preview now states the control decision-ready: family,
+  scope, operation, value, from → to, reason, evidence, review). Approval **issues** in the same transaction
+  (`txControlApprovalDecided`): the next revision, the review and the approval consumed once, concurrent proposals of
+  the series STALE (their pending approvals REVOKED). REJECT ends the act; the same act never regenerates.
+- No new approval, review, confirmation, attention, audit, event or organization system; no new Founder intent (an R3
+  approval already reaches Founder Attention). Review conflicts / escalations of a control reach the Founder through the
+  existing items.
+
+## D-C7B-03 — Desired ≠ effective; the outbound read seam (Technical Lead / executor, C7-B)
+
+The only Company state of an issued revision is `ISSUED` (datastore CHECK). There is no applied / delivered /
+acknowledged / effective state, column or table, and none may be fabricated before authenticated App-side evidence
+exists. `AppControlStore.issuedControls()` is the deterministic, bounded export (`company.issued-controls@1`: series,
+revision, family, scope, operation, typed value, issued time, digest, `companyState: ISSUED`) — no rationale, actor,
+evidence, secret or metadata bag; a digest is a fingerprint, never authentication. No transport, listener, webhook,
+queue or SDK exists. An absent control is never a control.
+
+## D-C7B-04 — Series, proposals and immutable revisions held by the datastore (Technical Lead / executor, C7-B)
+
+- A **series** is one family on one exact canonical scope (immutable identity). A **revision** is append-only: revision
+  n+1 of its series with `prior_revision_id` = the current one (compare-and-swap: a stale, skipped, rolled-back or second
+  current revision is refused by `app_control_revisions_sequence` + `UNIQUE (series_id, revision)` under BEGIN
+  IMMEDIATE); a RELEASE needs a live SET; an identical SET is no change.
+- The proposal fingerprint binds family, scope, operation, value, reason, evidence and the expected revision; any
+  material change is a new act (new review, new approval).
+- Datastore gates (TypeScript bypassed): the closed family catalogue; seat + R3 grant + admitted scope on every proposal;
+  forward-only proposals; `app_control_revisions_r3_governed` (exactly the AWAITING_FOUNDER proposal, a SATISFIED R3
+  ACTION review of that fingerprint never decided by the maker, an APPROVED R3 approval of that fingerprint decided by the
+  issuing Founder); `app_control_revisions_conform` (family scope kinds, opaque scope identifiers, exactly the family's
+  typed value, no repeated key, Remote Configuration only under an approved register family, Route Hold only HELD);
+  append-only revisions and series.
+
+## D-C7B-05 — The App Operations & Release Lead seat (Technical Lead / executor, C7-B)
+
+Migration 0013 creates the seat `product.app-operations-release-lead` (LEAD, Product, reports to `director.product`,
+`CANONICAL_MAP`, ACTIVE, vacant) and a new Product charter version listing it (the previous version superseded, never
+edited; BASELINE stays BASELINE). The App Store Release & Reputation Lead seat is untouched. No Employee, assignment,
+persona, model or grant is created.
+
+## D-C7B-06 — Approved Remote Configuration: an empty, release-only register (Technical Lead / executor, C7-B)
+
+A future family is one typed value (BOOLEAN, bounded INTEGER or a closed code ENUM — never free text, JSON, expression,
+script or prompt) with its allowed scopes and its Product Owner + Architecture approval references
+(`assertRemoteConfigFamily`; `app_remote_config_families`). The production register is empty in code and datastore; a
+runtime insert is refused (`app_remote_config_families_release_only`): a later controlled release adds a family in its
+own migration without redesigning the plane. Until then every Remote Configuration fails closed with
+`NO_APPROVED_REMOTE_CONFIG_FAMILY`.
+
+## D-C7B-07 — Bounded refusal counters close the Company-side part of R-C7A-04 (Technical Lead / executor, C7-B)
+
+A refused intake (and a repeated conflicting replay) is counted in `external_intake_refusal_windows` per (registered
+source id or `unresolved`, reason code, hour window); only the first of a window is audited. Keys never come from a
+producer-supplied string (datastore trigger); nothing of the refused payload is stored; no timer runs; accepted intake is
+unchanged; source health counts the counters (history before 0013 folded in from the audit). The window length is
+engineering policy. Network / edge rate limiting and DoS protection are NOT solved here: L1 / App-side Production
+Integration own them.
+
+## D-C7B-08 — Proofs, verifier, mutation and CI for C7-B (Technical Lead / executor, C7-B)
+
+Proof markers `C7B-PROOF: control-kernel` (governance) and `C7B-PROOF: storage-control-plane` (storage);
+`scripts/c7b-mutation-check.mjs` (33 mutations, 42 after D-C7B-09/10, pinned; Windows 3 shards, Ubuntu 2); verifier rules
+`c7b-not-claimed-closed`, `c7b-proofs-present`, `c7b-control-plane-governed`, `c7b-no-generic-execution`,
+`c7b-roles-separate`, `c7b-intake-refusals-bounded`; `c7-later-scope-not-leaked` now confines the control-family
+vocabulary to the C7-B modules and keeps C7-C / C7-D out entirely; 0012 joins the frozen migrations.
+
+## D-C7B-09 — Authority is re-decided at the issue boundary (Technical Lead exact-head review of PR #14, MAJOR 1)
+
+The production-impacting act is the issue, not the proposal: `proposal → independent review → Founder approval → issue`
+can span days, and the proposer may lose the App Operations & Release Lead seat, its acting coverage may end, or the R3
+grant may be revoked or expire meanwhile. Decision: the issue transaction re-decides the proposer's authority NOW
+(`issueAuthorityProblem`, inside `assertIssuable`, so the governed preview refuses an APPROVE exactly as confirm does):
+the Employee may still act (`canExecute`), still holds the seat it proposed from (or acting coverage naming
+`control.propose`, current at the issue instant), and the very grant the act was decided under (`grant_id`) is still
+ACTIVE, unexpired, Founder-created R3 `app-control.issue` and still covers the family. The grant's `uses` is NOT
+re-tested: its one use was consumed by this act at proposal time, and consumption by the act is not a loss of
+authority (proved with a single-use grant that still issues). A refusal is whole (`AUTHORITY_DENIED` with the reason
+code; nothing issued, the approval stays PENDING, the review SATISFIED, the history unchanged); the Founder may still
+REJECT the act. The datastore holds the same invariant without TypeScript (`app_control_revisions_authority_current`).
+
+## D-C7B-10 — A STALE review never strands a control proposal nor keeps its approval alive (TL exact-head review of PR #14, MAJOR 2)
+
+The existing Review Plan lifecycle supersedes a plan and makes its open / satisfied requests STALE (Stage 11; R2-02).
+Before this decision a control proposal kept pointing at its STALE review (and an AWAITING_FOUNDER one kept a PENDING
+approval resting on it), and neither an org-act replay nor `txProposeControl` re-opened a review. Decision (Option A of
+the review — the same proposal is bound to a new review request under the active plan):
+- Every transition of a control review to STALE (`setRequestState`) reaches `txControlReviewStale` in the same
+  transaction: an approval PENDING on it is REVOKED (`app_control.review_stale`) and the proposal returns to PROPOSED
+  (history `review.stale`). The stale review is never reused; the revoked approval can never issue (engine,
+  preview and datastore).
+- `recoverControlReviews` binds the SAME proposal (same exact act, same fingerprint — never a duplicate, no new Work
+  Item) to a fresh ACTION review under the active plan (`review.rebound`), with the same integrity-checked subject its
+  first reviewers saw; once that review is satisfied a NEW PENDING R3 approval of the same act is created, and only it
+  issues. It runs where a control review goes stale (after the plan declaration, after the executor's own R2-02
+  wake), when the exact act is presented again, and in the bounded recovery sweep. Deterministic outcomes: a fresh
+  review; REVIEW_REJECTED when this exact act already drew a rework verdict (never revived); STALE when the series
+  moved, the Work Item ended, or the act cannot be shown whole under the new plan; without a plan that reviews actions
+  it waits, and the next plan declaration recovers it.
+- The datastore: a review is replaced only once it is STALE, an approval only once it is REVOKED; AWAITING_FOUNDER →
+  PROPOSED only with a STALE review and a REVOKED approval; and a proposal reaches AWAITING_FOUNDER only on a SATISFIED
+  review and a PENDING approval of exactly its fingerprint (0013 `app_control_proposals_forward`).

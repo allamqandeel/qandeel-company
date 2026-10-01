@@ -191,6 +191,8 @@ const FROZEN_MIGRATIONS = [
   { file: '0010_c6_improvement_engine.sql', sha256: 'a8696420f2c20abc8dfe1b62b729adedc57314cfecd7e644bc31687fa9c989ee' },
   // R2 released 0011 with PR #12 (merged 2026-09-30); it joins the frozen set in the change after its release (C7-A).
   { file: '0011_r2_integrity.sql', sha256: '97ab99eebf4fc8ce49c1e1550eb4448f8a9e515a7b02259381ab33fe95ae2550' },
+  // C7-A released 0012 with PR #13 (merged 2026-10-01); it joins the frozen set in the change after its release (C7-B).
+  { file: '0012_c7a_operational_data_external_outcomes.sql', sha256: '31eeff9a49e284bec44915842ea39453550cc225c9e58b100483a7ad45aaaf09' },
 ];
 // Later-scope / non-goal subsystems never appear: APP-OPS (C7) and dashboards / analytics tables or packages (C6
 // deliberately builds reports with typed claims, never a dashboard or analytics store — its non-goals).
@@ -244,9 +246,32 @@ const C7A_FORBIDDEN_COLUMN = /^\s*"?(\w*(?:raw|payload|body|content|text|message
 // C7-A extends C6; it never creates a parallel evaluation / learning / performance / report store, and never writes a verdict.
 const C7A_PARALLEL_TABLE = /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"?((?:external|c7)\w*(?:evaluat|lesson|learning|attribution|performance|profile|score|report|verdict)\w*)/i;
 const C7A_VERDICT_WRITE = /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO)\s+(?:evaluation_results|causal_attributions|learning_\w+|lessons|report_snapshots|work_items|outcome_verifications)\b|\b(?:applyTransition|txTransition|txRecordOutcome)\s*\(/;
-// Later C7 sub-stages never leak into C7-A: the App control plane (C7-B), the Pilot objective engine (C7-C), publishing,
-// website / social connectors and campaign management (C7-D).
-const C7_LATER_SCOPE = /feature[_-]?flag|kill[_-]?switch|maintenance[_-]?mode|remote[_-]?config|rollout[_-]?control|min(?:imum)?[_-]?supported[_-]?version|route[_-]?hold|publish[_-]?(?:post|content|social)|social[_-]?connector|website[_-]?edit|cms[_-]?(?:page|edit|publish)|campaign[_-]?(?:plan|management|budget)|paid[_-]?ads|pilot[_-]?objective/i;
+// Later C7 sub-stages never leak: the Pilot objective engine (C7-C), publishing, website / social connectors and
+// campaign management (C7-D) appear nowhere; the App control families (C7-B) appear only in the C7-B modules.
+const C7_LATER_SCOPE = /publish[_-]?(?:post|content|social)|social[_-]?connector|website[_-]?edit|cms[_-]?(?:page|edit|publish)|campaign[_-]?(?:plan|management|budget)|paid[_-]?ads|pilot[_-]?objective/i;
+// --- C7-B boundaries (Governed App Operations Control Plane) ------------------------------------------------------
+const C7B_REPORT = 'docs/C7B_IMPLEMENTATION_REPORT.md';
+const C7B_CLOSURE = /^docs\/C7B_[^/]*CLOSURE[^/]*\.md$/i;
+const C7B_PROOF_MARKERS = ['C7B-PROOF: control-kernel', 'C7B-PROOF: storage-control-plane'];
+const C7B_MUTATION_CHECK = 'scripts/c7b-mutation-check.mjs';
+const C7B_KERNEL = 'packages/governance/src/app-controls.ts';
+const C7B_STORE = 'packages/storage/src/app-controls.ts';
+const C7B_MIGRATION = `${MIGRATIONS_DIR}0013_c7b_governed_app_controls.sql`;
+// The control families' own vocabulary lives only in the C7-B kernel, store and migration (never a second control path).
+const C7B_FILES = [C7B_KERNEL, C7B_STORE, C7B_MIGRATION];
+const C7B_SCOPE = /feature[_-]?flag|kill[_-]?switch|maintenance[_-]?mode|remote[_-]?config|rollout[_-]?control|min(?:imum)?[_-]?supported[_-]?version|route[_-]?hold/i;
+// Exactly the seven Product-approved control families (APP-OPS-01 §11, PO-OPS-07), in their canonical order.
+const C7B_FAMILIES = ['FEATURE_FLAG', 'KILL_SWITCH', 'MAINTENANCE_MODE', 'ROLLOUT_CONTROL', 'MINIMUM_SUPPORTED_VERSION', 'APPROVED_REMOTE_CONFIGURATION', 'ROUTE_HOLD'];
+// The datastore gates every C7-B table carries (code checks are re-checked by triggers).
+const C7B_GOVERNED_TRIGGERS = [
+  'app_control_families_closed_i', 'app_control_families_closed_u', 'app_control_families_closed_d', 'app_remote_config_families_release_only',
+  'app_control_proposals_governed', 'app_control_proposals_forward', 'app_control_revisions_sequence', 'app_control_revisions_r3_governed', 'app_control_revisions_authority_current', 'app_control_revisions_conform',
+  'app_control_revisions_append_only_u', 'app_control_revisions_append_only_d', 'external_intake_refusal_windows_bounded_key',
+];
+// Company state is what the Company ISSUED: no applied / acknowledged / delivered / effective-in-App claim anywhere in C7-B.
+const C7B_EFFECT_CLAIM = /\b(?:APPLIED|ACKNOWLEDGED|DELIVERED|EFFECTIVE_IN_APP|LIVE_IN_APP|ACTIVE_IN_APP|APPLIED_IN_APP)\b/;
+// No generic execution: no evaluation, process, network or dynamic import in a C7-B module.
+const C7B_EXECUTION = /\beval\s*\(|\bnew\s+Function\s*\(|\bimport\s*\(|(?:from\s+|require\s*\(\s*)['"](?:node:)?(?:child_process|vm|worker_threads|http|https|http2|net|tls|dgram|dns)['"]|\bfetch\s*\(/;
 // The production Founder session scope is entered only by the auth module (a session, never a ref, arms it).
 const FOUNDER_AUTH = 'packages/storage/src/founder-auth.ts';
 // Rule A for C5: message bodies, briefs, goal text and command text never enter audit, events or logs.
@@ -411,6 +436,20 @@ const MUTATION_PINS = {
       'c7a-contest-not-restated', 'c7a-contested-verdict-trusted', 'c7a-contest-not-a-conflict', 'c7a-report-presents-contested', 'c7a-attention-misses-contest', 'c7a-contest-resolution-not-founder', 'c7a-contested-pattern-counts', 'c7a-contested-pattern-reused', 'c7a-contested-open-reuse-progresses', 'c7a-db-conflict-contests-nothing', 'c7a-db-validity-forgeable',
       // D-C7A-10: the datastore enforces the registered contract, not only TypeScript.
       'c7a-db-contract-not-catalogued', 'c7a-db-type-family-unchecked', 'c7a-db-type-unchecked', 'c7a-db-domain-unchecked', 'c7a-db-unit-unchecked', 'c7a-db-scope-unchecked', 'c7a-db-duplicate-keys-admitted', 'c7a-db-fields-unchecked',
+    ],
+  },
+  // C7-B Governed App Operations Control Plane (docs/C7B_IMPLEMENTATION_REPORT.md).
+  [C7B_MUTATION_CHECK]: {
+    script: 'c7b:mutation',
+    ids: [
+      'c7b-eighth-family-admitted', 'c7b-db-family-catalogue-open',
+      'c7b-org-act-not-r3', 'c7b-grant-family-scope-ignored', 'c7b-seat-not-required', 'c7b-db-proposal-seat-unchecked', 'c7b-review-settle-unhooked', 'c7b-review-not-required-at-issue', 'c7b-db-review-not-required', 'c7b-approval-unhooked', 'c7b-db-founder-approval-not-required',
+      'c7b-fingerprint-ignores-value', 'c7b-db-act-not-bound', 'c7b-stale-expectation-unguarded', 'c7b-concurrent-proposal-not-staled', 'c7b-db-sequence-unguarded', 'c7b-no-change-reissued', 'c7b-db-history-mutable', 'c7b-db-proposal-revivable',
+      'c7b-db-family-scope-unchecked', 'c7b-db-scope-identifiers-unchecked', 'c7b-db-value-unchecked', 'c7b-db-route-hold-selects', 'c7b-db-remote-config-ungated', 'c7b-db-register-open', 'c7b-db-applied-state-admitted',
+      'c7b-route-hold-not-negative', 'c7b-route-selection-unnamed', 'c7b-remote-config-gate-removed', 'c7b-generic-execution-unnamed',
+      'c7b-issue-seat-unchecked', 'c7b-issue-grant-unchecked', 'c7b-db-issue-seat-unchecked', 'c7b-db-issue-grant-revocation-unchecked', 'c7b-db-issue-grant-expiry-unchecked',
+      'c7b-stale-hook-unwired', 'c7b-stale-review-not-recovered', 'c7b-stale-approval-not-revoked', 'c7b-db-founder-entry-unguarded',
+      'c7b-event-carries-content', 'c7b-refusals-audited-per-row', 'c7b-db-refusal-key-unbounded',
     ],
   },
   // R1 Independent Core Review: one mutation per fixed finding (docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md).
@@ -1284,13 +1323,136 @@ export const RULES = [
   },
   {
     id: 'c7-later-scope-not-leaked',
-    // C7-A builds no App control plane (feature flags, kill switch, maintenance mode, rollout control, minimum
-    // supported version, remote configuration, route holds — C7-B), no Pilot objective engine (C7-C) and no publishing,
-    // website editing, social connector or campaign management (C7-D): not in code, not in schema.
+    // No Pilot objective engine (C7-C) and no publishing, website editing, social connector or campaign management
+    // (C7-D) anywhere — not in code, not in schema. The App control families (C7-B) exist only in the C7-B kernel, store
+    // and migration: no other module grows a second control path.
     check: ({ files, read }) =>
       files
-        .filter((f) => ((/^packages\/[^/]+\/src\//.test(f) && isCode(f)) || (f.startsWith(MIGRATIONS_DIR) && f.endsWith('.sql'))) && C7_LATER_SCOPE.test((read(f) ?? '').replace(/^\s*(?:\/\/|\*|\/\*|--).*$/gm, '')))
-        .map((f) => `${f} implements a later C7 sub-stage (C7-B control plane, C7-C pilot objectives or C7-D publishing / connectors)`),
+        .filter((f) => (/^packages\/[^/]+\/src\//.test(f) && isCode(f)) || (f.startsWith(MIGRATIONS_DIR) && f.endsWith('.sql')))
+        .flatMap((f) => {
+          const text = (read(f) ?? '').replace(/^\s*(?:\/\/|\*|\/\*|--).*$/gm, '');
+          if (C7_LATER_SCOPE.test(text)) return [`${f} implements a later C7 sub-stage (C7-C pilot objectives or C7-D publishing / connectors)`];
+          if (!C7B_FILES.includes(f) && C7B_SCOPE.test(text)) return [`${f} implements App control families outside the C7-B control plane modules`];
+          return [];
+        }),
+  },
+  {
+    id: 'c7b-not-claimed-closed',
+    // C7-B is an implementation candidate until independent exact-head review and merge: it is closed only in the change
+    // that adds docs/C7B_*CLOSURE*.md, and C7-C / C7-D do not start before it.
+    check: ({ files, read }) => {
+      if (files.some((f) => C7B_CLOSURE.test(f))) return [];
+      const problems = [];
+      const map = read(IMPLEMENTATION_MAP);
+      const c7b = mapState(map, 'C7-B');
+      if (c7b !== undefined && /\bCLOSED\b/i.test(c7b.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`C7-B is marked ${JSON.stringify(c7b)} but no docs/C7B_*CLOSURE*.md record exists`);
+      const report = read(C7B_REPORT);
+      if (report !== undefined && /\bC7-B\s*(?:—|-|:|is)?\s*CLOSED\b/i.test(report.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`${C7B_REPORT} claims C7-B is closed without a closure record`);
+      if (c7b !== undefined) {
+        for (const id of ['C7-C', 'C7-D']) {
+          const st = mapState(map, id);
+          if (st !== undefined && st !== 'Not started') problems.push(`${id} is ${JSON.stringify(st)} before C7-B has a closure record`);
+        }
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'c7b-proofs-present',
+    check: ({ files, read }) => {
+      if (!files.includes(C7B_KERNEL) && !files.includes(C7B_MIGRATION)) return [];
+      const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
+      const problems = C7B_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
+      if (!files.includes(C7B_MUTATION_CHECK)) problems.push(`missing ${C7B_MUTATION_CHECK}`);
+      const ci = json(read('package.json'))?.scripts?.ci ?? '';
+      if (!/\bc7b:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c7b:mutation');
+      return problems;
+    },
+  },
+  {
+    id: 'c7b-control-plane-governed',
+    // Exactly the seven approved families (kernel and datastore); the production Remote Configuration register empty
+    // (no migration seeds an approved family); every datastore gate present; ISSUED is the only Company state; a control
+    // act is decided at R3 through the org-act boundary; the issuing hook sits in the approval engine only; writes to the
+    // control tables only in the C7-B store.
+    check: ({ files, read }) => {
+      const problems = [];
+      const kernel = read(C7B_KERNEL);
+      if (kernel !== undefined) {
+        const fam = /export const CONTROL_FAMILIES = \[([^\]]*)\] as const;/.exec(kernel);
+        const listed = fam ? [...fam[1].matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]) : null;
+        if (listed === null || listed.join() !== C7B_FAMILIES.join()) problems.push(`${C7B_KERNEL} declares control families other than exactly the seven approved ones`);
+        if (!/export const PRODUCTION_REMOTE_CONFIG_FAMILIES: readonly RemoteConfigFamily\[\] = Object\.freeze\(\[\]\);/.test(kernel)) problems.push(`${C7B_KERNEL}: the production Remote Configuration register is not empty (a family needs Product Owner + Architecture approval)`);
+        if (!/export const APP_CONTROL_RISK = 'R3';/.test(kernel)) problems.push(`${C7B_KERNEL}: a Company → App control is not R3 (independent review AND Founder approval)`);
+        if (/\b(?:app|remote)[.-]execute\b/.test(kernel)) problems.push(`${C7B_KERNEL} names a generic execution capability`);
+      }
+      const sql = files.filter((f) => f.startsWith(MIGRATIONS_DIR) && f.endsWith('.sql')).map((f) => read(f) ?? '').join('\n');
+      if (/\bCREATE\s+TABLE\s+app_control_revisions\b/i.test(sql)) {
+        for (const t of C7B_GOVERNED_TRIGGERS) if (!new RegExp(`\\bCREATE\\s+TRIGGER\\s+${t}\\b`).test(sql)) problems.push(`the control plane exists without the governed datastore trigger ${t}`);
+        const chk = /family\s+TEXT\s+NOT NULL PRIMARY KEY CHECK \(family IN \(([^)]*)\)\)/.exec(sql);
+        if (!chk || [...chk[1].matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]).join() !== C7B_FAMILIES.join()) problems.push('the datastore family catalogue is not exactly the seven approved families');
+        if (!/company_state\s+TEXT\s+NOT NULL CHECK \(company_state = 'ISSUED'\)/.test(sql)) problems.push('an issued revision may hold a Company state other than ISSUED');
+        if (/\bINSERT\s+INTO\s+app_remote_config_families\b/i.test(sql)) problems.push('a migration seeds an approved Remote Configuration family without Product + Architecture authority');
+      }
+      for (const f of files.filter((x) => C7B_FILES.includes(x))) {
+        const text = (read(f) ?? '').replace(/^\s*(?:\/\/|\*|\/\*|--).*$/gm, '').replace(/'[^'\n]*'/g, (q) => (/^'(?:APPLIED|ACKNOWLEDGED|DELIVERED|EFFECTIVE_IN_APP|LIVE_IN_APP|ACTIVE_IN_APP|APPLIED_IN_APP)'$/.test(q) ? q : "''"));
+        if (C7B_EFFECT_CLAIM.test(text)) problems.push(`${f} records an App-applied / effective state (the Company states what it ISSUED; the App owns effect)`);
+      }
+      const orgWrites = read('packages/storage/src/org-writes.ts');
+      if (orgWrites !== undefined && files.includes(C7B_STORE) && !/decideEmployeeAction\('EMPLOYEE', actingState\(ctx, fence\.runId, e\), grants, \{ capability, resource: req\.resource, risk: req\.risk,/.test(orgWrites)) problems.push('org-writes.ts no longer decides a control act at its R3 risk on its family');
+      const gov = read('packages/storage/src/governance.ts');
+      if (gov !== undefined && files.includes(C7B_STORE) && !/if \(a\.action === APP_CONTROL_APPROVAL_ACTION\) txControlApprovalDecided\(ctx, a, to, p\.ref\);/.test(gov)) problems.push('a control is no longer issued by the Founder\'s R3 approval decision');
+      const writes = /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO|DELETE\s+FROM|REPLACE\s+INTO)\s+app_(?:control|remote_config)\w*/i;
+      for (const f of files.filter((x) => isCode(x) && !isTestPath(x) && x !== C7B_STORE)) if (writes.test(read(f) ?? '')) problems.push(`${f} writes control-plane state outside ${C7B_STORE}`);
+      for (const f of files.filter((x) => (x.startsWith('packages/runtime/src/') || x === CLI_SOURCE || x.startsWith('packages/command-center/src/')) && isCode(x))) {
+        if (/\b(?:txProposeControl|txControlApprovalDecided|txControlReviewSettled|txControlReviewStale|recoverControlReviews)\b/.test(read(f) ?? '')) problems.push(`${f} reaches the control plane's internal writes (controls are proposed by Employee acts and issued only by the Founder's approval)`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'c7b-no-generic-execution',
+    // PO-OPS-08 / PO-OPS-19: a control is typed data, never code. No C7-B module evaluates, spawns, imports dynamically or
+    // opens a network path; nothing in it stores a secret, key or signature (a digest is a fingerprint, not authentication).
+    check: ({ files, read }) => {
+      const problems = [];
+      for (const f of files.filter((x) => C7B_FILES.includes(x))) {
+        const text = (read(f) ?? '').replace(/^\s*(?:\/\/|\*|\/\*|--).*$/gm, '');
+        if (f.endsWith('.ts') && C7B_EXECUTION.test(text)) problems.push(`${f} can execute, spawn or reach the network (no generic remote execution)`);
+        const col = /^\s*"?(\w*(?:secret|token|credential|password|api_?key|private_?key|signing|signature|transcript|prompt|conversation|user_id|email|phone)\w*)"?\s+(?:TEXT|BLOB|ANY|INTEGER|REAL)\b/im.exec(f.endsWith('.sql') ? text : '');
+        if (col) problems.push(`${f} declares ${col[1]} (no secret, key, signature or private-content column in the control plane)`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'c7b-roles-separate',
+    // PO-OPS-09: the App Operations & Release Lead is its own vacant Product seat under the Product Director. The release
+    // never merges it with the App Store Release & Reputation Lead, never edits that seat, never hires, assigns or grants.
+    check: ({ read }) => {
+      const sql = read(C7B_MIGRATION);
+      if (sql === undefined) return [];
+      const problems = [];
+      if (!/INSERT INTO org_positions[\s\S]*?'product\.app-operations-release-lead', 'QANDEEL App Operations & Release Lead', 'DEPARTMENT', d\.id, 'LEAD'/.test(sql)) problems.push(`${C7B_MIGRATION} does not create the distinct App Operations & Release Lead LEAD seat`);
+      if (!/dir\.code = 'director\.product'/.test(sql)) problems.push(`${C7B_MIGRATION}: the seat does not report to the Product Director`);
+      if (/\bUPDATE\s+org_positions\b/i.test(sql) || /\bUPDATE[^;]*app-store-release-reputation-lead/i.test(sql)) problems.push(`${C7B_MIGRATION} changes an existing seat (the App Store Release & Reputation Lead stays as it is)`);
+      if (/\bINSERT\s+INTO\s+(?:employees|position_assignments|permission_grants|authority_delegations)\b/i.test(sql)) problems.push(`${C7B_MIGRATION} hires, assigns or grants (a seat is vacant and grants nothing)`);
+      return problems;
+    },
+  },
+  {
+    id: 'c7b-intake-refusals-bounded',
+    // R-C7A-04 (Company-side part): a refused intake is audited only as the first of its (source, reason, window) counter;
+    // the counter key is a registered source or `unresolved`, never a supplied string.
+    check: ({ read }) => {
+      const store = read(EXTERNAL_STORE);
+      const sql = read(C7B_MIGRATION);
+      if (store === undefined || sql === undefined) return [];
+      const problems = [];
+      if (!/if \(txCountRefusal\(ctx, refused\.sourceId \?\? named \?\? 'unresolved', reason\)\) appendAudit\(ctx, 'external\.intake_rejected'/.test(store)) problems.push(`${EXTERNAL_STORE} audits refused intake without the bounded refusal counter`);
+      if (!/\bCREATE\s+TRIGGER\s+external_intake_refusal_windows_bounded_key\b/.test(sql)) problems.push(`${C7B_MIGRATION}: refusal counters are not bounded to registered sources`);
+      return problems;
+    },
   },
   {
     id: 'founder-session-scope-confined',
@@ -1650,6 +1812,9 @@ const SYNTH_RUNTIME = [
   '',
 ].join('\n');
 
+// C7-B: the release-created App Operations & Release Lead seat under the Product Director (its own LEAD seat).
+const SYNTH_C7B_SEAT = "INSERT INTO org_positions (id, code, title, scope, department_id, kind) SELECT 'x', 'product.app-operations-release-lead', 'QANDEEL App Operations & Release Lead', 'DEPARTMENT', d.id, 'LEAD'\n  FROM departments d JOIN org_positions dir ON dir.code = 'director.product' AND dir.department_id = d.id;\n";
+
 function syntheticRepo(overrides = {}) {
   const baseContents = {
     ...Object.fromEntries([...REQUIRED_FILES, ...REQUIRED_DOCS].map((f) => [f, ''])),
@@ -1658,7 +1823,7 @@ function syntheticRepo(overrides = {}) {
     [AUTHORITY_INDEX]: `## Missing\n\n**${STAGE_16_MISSING}.**\n`,
     [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT)),
     [SYNTH_SOURCE]: SYNTH_SOURCE_TEXT,
-    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation && npm run c6:mutation && npm run c7a:mutation' } }),
+    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation && npm run c6:mutation && npm run c7a:mutation && npm run c7b:mutation' } }),
     'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'node --test dist/test' } }),
     'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'packages/bootstrap-contract': {}, 'node_modules/tar': { version: '7.0.0' } } }),
     '.gitattributes': '* text=auto eol=lf\n*.sh text eol=lf\n*.ps1 text eol=crlf\n*.png binary\n',
@@ -1714,6 +1879,8 @@ function syntheticRepo(overrides = {}) {
     // C7-A: proofs, the pinned C7-A mutation check, the governed verification seam and the usable-evidence predicate.
     'packages/runtime/test/c7a/proofs.test.ts': C7A_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
     [C7A_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C7A_MUTATION_CHECK].ids),
+    // C7-B: the pinned C7-B mutation check (the control-plane rules apply where its modules exist).
+    [C7B_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C7B_MUTATION_CHECK].ids),
     [OUTCOME_CORE]: '  txAssertExternalEvidence(ctx, w.id, input.classes, input.refs);\n',
     [EXTERNAL_CORE]: C7A_USABLE_REASONS.map((r) => `  return '${r}';`).join('\n'),
     [FOUNDER_LISTENER]: SYNTH_LISTENER,
@@ -1958,8 +2125,9 @@ const VIOLATIONS = {
     { contents: { [EVALUATION_KERNEL]: 'export const EXTERNAL_OUTCOMES_AVAILABLE = true;\n' } },
     { contents: { [OUTCOME_CORE]: 'export function txRecordOutcome(ctx, w, input) {\n  insert(ctx, w, input);\n}\n' } },
     { contents: { [EXTERNAL_CORE]: "  return 'NOT_OUTCOME_EVIDENCE';\n  return 'SOURCE_NOT_ACTIVE';\n  return 'RECORD_CONFLICTED';\n  return null;\n" } },
-    { contents: { [`${MIGRATIONS_DIR}0012_c7a.sql`]: 'CREATE TABLE external_records (id TEXT) STRICT;\nCREATE TRIGGER external_records_governed_source BEFORE INSERT ON external_records BEGIN SELECT 1; END;\n' } },
-    { contents: { [IMPROVEMENT_CORE]: 'export function gatherWorkEvidence(recorded) {\n  const verdict = recorded;\n  return verdict;\n}\n' } },
+    // 0012 is frozen (C7-B): the synthetic base carries its real text, so the violation replaces that file itself.
+    { contents: { [`${MIGRATIONS_DIR}0012_c7a_operational_data_external_outcomes.sql`]: 'CREATE TABLE external_records (id TEXT) STRICT;\nCREATE TRIGGER external_records_governed_source BEFORE INSERT ON external_records BEGIN SELECT 1; END;\n' } },
+    { contents: { [IMPROVEMENT_CORE]:'export function gatherWorkEvidence(recorded) {\n  const verdict = recorded;\n  return verdict;\n}\n' } },
   ],
   'c7a-not-claimed-closed': [
     { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-A\` | Core | Cloud | CLOSED / MERGED |\n` } },
@@ -1984,6 +2152,38 @@ const VIOLATIONS = {
   'c7-later-scope-not-leaked': [
     { contents: { 'packages/storage/src/app-control.ts': 'export function setKillSwitch(on: boolean): boolean {\n  return on;\n}\n' } },
     { contents: { [`${MIGRATIONS_DIR}0013_x.sql`]: 'CREATE TABLE feature_flags (id TEXT) STRICT;\n' } },
+    { contents: { [C7B_STORE]: "export const pilotObjective = 'pilot_objective';\n" } },
+  ],
+  'c7b-not-claimed-closed': [
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-B\` | Control | Cloud | CLOSED / MERGED |\n` } },
+    { contents: { [C7B_REPORT]: '# Report\n\nC7-B is CLOSED.\n' } },
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-B\` | Control | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n| \`C7-C\` | Pilot | Cloud | IN PROGRESS |\n` } },
+  ],
+  'c7b-proofs-present': [
+    { contents: { [C7B_KERNEL]: 'export {};\n' } },
+    { contents: { [C7B_KERNEL]: 'export {};\n', 'packages/runtime/test/c7b/proofs.test.ts': C7B_PROOF_MARKERS.map((m) => `// ${m}`).join('\n') }, remove: [C7B_MUTATION_CHECK] },
+  ],
+  'c7b-control-plane-governed': [
+    { contents: { [C7B_KERNEL]: `export const CONTROL_FAMILIES = [${[...C7B_FAMILIES, 'REMOTE_EXECUTION'].map((f) => `'${f}'`).join(', ')}] as const;\nexport const PRODUCTION_REMOTE_CONFIG_FAMILIES: readonly RemoteConfigFamily[] = Object.freeze([]);\nexport const APP_CONTROL_RISK = 'R3';\n` } },
+    { contents: { [C7B_KERNEL]: `export const CONTROL_FAMILIES = [${C7B_FAMILIES.map((f) => `'${f}'`).join(', ')}] as const;\nexport const PRODUCTION_REMOTE_CONFIG_FAMILIES: readonly RemoteConfigFamily[] = Object.freeze([{ code: 'demo' }]);\nexport const APP_CONTROL_RISK = 'R3';\n` } },
+    { contents: { [C7B_KERNEL]: `export const CONTROL_FAMILIES = [${C7B_FAMILIES.map((f) => `'${f}'`).join(', ')}] as const;\nexport const PRODUCTION_REMOTE_CONFIG_FAMILIES: readonly RemoteConfigFamily[] = Object.freeze([]);\nexport const APP_CONTROL_RISK = 'R1';\n` } },
+    { contents: { [C7B_MIGRATION]: 'CREATE TABLE app_control_revisions (id TEXT) STRICT;\nCREATE TRIGGER app_control_revisions_sequence BEFORE INSERT ON x BEGIN SELECT 1; END;\n' } },
+    { contents: { [`${MIGRATIONS_DIR}0014_x.sql`]: "INSERT INTO app_remote_config_families (code) VALUES ('max-retries');\n", [C7B_MIGRATION]: `CREATE TABLE app_control_revisions (\n  company_state      TEXT    NOT NULL CHECK (company_state = 'ISSUED')\n) STRICT;\n  family            TEXT    NOT NULL PRIMARY KEY CHECK (family IN (${C7B_FAMILIES.map((f) => `'${f}'`).join(', ')})),\n${C7B_GOVERNED_TRIGGERS.map((t) => `CREATE TRIGGER ${t} BEFORE INSERT ON x BEGIN SELECT 1; END;`).join('\n')}\n` } },
+    { contents: { [C7B_STORE]: "ctx.db.run(`INSERT INTO app_control_revisions (id, company_state) VALUES (?, 'APPLIED')`, id);\n" } },
+    { contents: { [C7B_STORE]: 'export {};\n', 'packages/storage/src/improvement.ts': "ctx.db.run('UPDATE app_control_proposals SET state = ? WHERE id = ?', 'ISSUED', id);" } },
+    { contents: { [C7B_STORE]: 'export {};\n', [CLI_SOURCE]: 'txControlApprovalDecided(ctx, a, "APPROVED", founder);\n' } },
+  ],
+  'c7b-no-generic-execution': [
+    { contents: { [C7B_STORE]: 'export const run = (code: string): unknown => eval(code);\n' } },
+    { contents: { [C7B_KERNEL]: "import { execFile } from 'node:child_process';\n" } },
+    { contents: { [C7B_MIGRATION]: 'CREATE TABLE app_control_keys (\n  id TEXT NOT NULL,\n  signing_key TEXT NOT NULL\n) STRICT;\n' } },
+  ],
+  'c7b-roles-separate': [
+    { contents: { [C7B_MIGRATION]: "UPDATE org_positions SET title = 'App Store & Operations Lead' WHERE code = 'product.app-store-release-reputation-lead';\n" } },
+    { contents: { [C7B_MIGRATION]: `${SYNTH_C7B_SEAT}INSERT INTO position_assignments (id) VALUES ('x');\n` } },
+  ],
+  'c7b-intake-refusals-bounded': [
+    { contents: { [EXTERNAL_STORE]: "appendAudit(ctx, 'external.intake_rejected', 'external_source', id, a, 'REJECTED', reason, {});\n", [C7B_MIGRATION]: 'CREATE TRIGGER external_intake_refusal_windows_bounded_key BEFORE INSERT ON x BEGIN SELECT 1; END;\n' } },
   ],
   'ci-contract': [
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: r1-4of4, suite: 'r1:4/4' }\n", '') } },
@@ -2179,7 +2379,24 @@ const MUST_PASS = [
   },
   { id: 'external-evidence-writes-confined', scenario: { contents: { [EXTERNAL_STORE]: "ctx.db.run('INSERT INTO external_records (id) VALUES (?)', id);", 'packages/storage/test/c7a.test.ts': "db.run('INSERT INTO external_records (id) VALUES (?)', id);", [CLI_SOURCE]: 'out({ health: ExternalEvidenceStore.for(store).health() });\n' } } },
   { id: 'c7a-extends-c6-only', scenario: { contents: { [EXTERNAL_CORE]: "ctx.db.get('SELECT evidence_refs_json AS refs FROM outcome_verifications WHERE id = ?', id);", [`${MIGRATIONS_DIR}0012_c7a.sql`]: 'CREATE TABLE external_records (id TEXT) STRICT;\n' } } },
-  { id: 'c7-later-scope-not-leaked', scenario: { contents: { [EXTERNAL_STORE]: '// C7-A has no kill switch, feature flag or social connector (C7-B / C7-D).\nexport const x = 1;\n', 'packages/storage/src/maintenance.ts': "export const records = 'maintenance_records';\nrolloutUpdate(founder, id);\n" } } },
+  { id: 'c7-later-scope-not-leaked', scenario: { contents: { [EXTERNAL_STORE]: '// C7-A has no kill switch, feature flag or social connector (C7-B / C7-D).\nexport const x = 1;\n', 'packages/storage/src/maintenance.ts': "export const records = 'maintenance_records';\nrolloutUpdate(founder, id);\n", [C7B_KERNEL]: "export const CONTROL_FAMILIES = ['FEATURE_FLAG', 'KILL_SWITCH', 'ROUTE_HOLD'] as const;\n", [C7B_MIGRATION]: "CREATE TABLE app_control_families (family TEXT CHECK (family IN ('KILL_SWITCH', 'MAINTENANCE_MODE'))) STRICT;\n" } } },
+  // C7-B as an implementation candidate, explicitly not closed, C7-C / C7-D not started; later, closed with its record.
+  { id: 'c7b-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-B\` | Control | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n| \`C7-C\` | Pilot | Cloud | Not started |\n`, [C7B_REPORT]: '# Report\n\nC7-B is NOT CLOSED (implementation candidate).\n' } } },
+  { id: 'c7b-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-B\` | Control | Cloud | CLOSED / MERGED / CANONICAL |\n| \`C7-C\` | Pilot | Cloud | IN PROGRESS |\n`, 'docs/C7B_CLOSURE_RECORD.md': '' } } },
+  // The governed control plane: seven families, an empty register, R3, every trigger, ISSUED only; a comment or a quoted
+  // refusal message naming "applied" is not a state.
+  {
+    id: 'c7b-control-plane-governed',
+    scenario: {
+      contents: {
+        [C7B_KERNEL]: `export const CONTROL_FAMILIES = [${C7B_FAMILIES.map((f) => `'${f}'`).join(', ')}] as const;\nexport const PRODUCTION_REMOTE_CONFIG_FAMILIES: readonly RemoteConfigFamily[] = Object.freeze([]);\nexport const APP_CONTROL_RISK = 'R3';\n// Issued is not APPLIED: the App decides what is effective.\n`,
+        [C7B_MIGRATION]: `CREATE TABLE app_control_revisions (\n  company_state      TEXT    NOT NULL CHECK (company_state = 'ISSUED')\n) STRICT;\n  family            TEXT    NOT NULL PRIMARY KEY CHECK (family IN (${C7B_FAMILIES.map((f) => `'${f}'`).join(', ')})),\n${C7B_GOVERNED_TRIGGERS.map((t) => `CREATE TRIGGER ${t} BEFORE INSERT ON x BEGIN SELECT 1; END;`).join('\n')}\n`,
+        [C7B_STORE]: "ctx.db.run(`INSERT INTO app_control_revisions (id, company_state) VALUES (?, 'ISSUED')`, id);\nthrow new QandeelError('X', 'issued is not applied in the App');\n",
+        'packages/storage/test/c7b.test.ts': "raw.run(`UPDATE app_control_revisions SET company_state = 'APPLIED'`);\n",
+      },
+    },
+  },
+  { id: 'c7b-roles-separate', scenario: { contents: { [C7B_MIGRATION]: SYNTH_C7B_SEAT } } },
   // The canonical five Departments seeded; a review request table carrying the R4 CHECK; tests seeding rows.
   { id: 'review-pool-not-department', scenario: { contents: { [`${MIGRATIONS_DIR}0007_c4.sql`]: CANONICAL_DEPARTMENTS.map((c, i) => `INSERT INTO departments (id, code, name) SELECT 'c4d00000-0000-4000-8000-00000000000${i + 1}', '${c}', 'x' WHERE 1;\n`).join('') } } },
   { id: 'r4-never-review-satisfied', scenario: { contents: { [`${MIGRATIONS_DIR}0008_c4.sql`]: "CREATE TABLE review_requests (\n  risk_level TEXT,\n  state TEXT,\n  CHECK (risk_level <> 'R4' OR state NOT IN ('SATISFIED', 'CONSUMED'))\n) STRICT;\n", [AUTHORITY_KERNEL]: "  if (req.risk === 'R4') return { effect: 'DENY', code: 'FOUNDER_ONLY' };\n" } } },

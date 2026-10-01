@@ -83,6 +83,9 @@ export const ERROR_CODES = [
   // reason is a code, never the refused payload) and a conflicting replay of an already accepted one.
   'INTAKE_REJECTED',
   'INTAKE_CONFLICT',
+  // C7-B governed Company → App controls: a control revision refused by the closed family / scope / value contract (the
+  // reason is a code; nothing about the App is executed or changed).
+  'CONTROL_REFUSED',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

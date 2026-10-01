@@ -33,6 +33,7 @@ import {
 } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
+import { recoverControlReviews, txControlReviewSettled, txControlReviewStale } from './app-controls.js';
 import { employeeIdFromRef, getEmployeeRow, txAllocateWorkItemBudget, wakeWorkItemJob } from './governance-core.js';
 import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { effectiveDataClass } from './governed-writes.js';
@@ -47,7 +48,7 @@ import { txCreateWorkItem } from './work-items.js';
 
 export const SYSTEM_REVIEW_REF = 'system:runtime';
 const REVIEW_PROCESSOR = 'c2.employee-task';
-const TERMINAL: readonly string[] = ['CLOSED', 'FAILED', 'CANCELLED', 'SUPERSEDED'];
+export const TERMINAL: readonly string[] =['CLOSED', 'FAILED', 'CANCELLED', 'SUPERSEDED'];
 
 export function activePlan(ctx: StoreContext, workItemId: Id): ReviewPlanRecord | null {
   const r = ctx.db.get(`SELECT * FROM review_plans WHERE work_item_id = ? AND status = 'ACTIVE'`, workItemId);
@@ -79,6 +80,8 @@ export function setRequestState(ctx: StoreContext, r: ReviewRequestRecord, to: R
   if (changed !== 1) throw new QandeelError('VERSION_CONFLICT', 'review request changed concurrently', { requestId: r.id });
   requestHistory(ctx, r.id, r.version + 1, r.state, to, reasonCode, actorRef);
   appendAudit(ctx, 'review.request_state', 'review_request', r.id, { actorRef }, 'OK', reasonCode, { from: r.state, to, workItemId: r.workItemId });
+  // C7-B: a control proposal never keeps standing on a review that no longer counts (nor its pending approval).
+  if (to === 'STALE') txControlReviewStale(ctx, r, actorRef);
   return getRequest(ctx, r.id);
 }
 
@@ -125,6 +128,8 @@ export function txDeclarePlan(ctx: StoreContext, item: WorkItemRecord, input: un
   wakeStrandedActionWait(ctx, item.id);
   // RR1-2: the slots the superseded reviews held are free again.
   for (const e of new Set(freed)) reviewerCapacityFreed(ctx, e);
+  // C7-B: a control proposal whose review just went STALE is reviewed afresh under this plan (the same exact act).
+  recoverControlReviews(ctx, item.id);
   return declared;
 }
 
@@ -380,6 +385,7 @@ export function fillAssignments(ctx: StoreContext, request: ReviewRequestRecord)
     const freed = withdrawAll(ctx, request.id, 'SUBJECT_CHANGED');
     wakeStrandedActionWait(ctx, request.workItemId);
     for (const e of new Set(freed)) reviewerCapacityFreed(ctx, e);
+    recoverControlReviews(ctx, request.workItemId);
     return getRequest(ctx, stale.id);
   }
   const plan = request.planId === null ? null : mapReviewPlan(ctx.db.get('SELECT * FROM review_plans WHERE id = ?', request.planId) ?? {});
@@ -535,6 +541,7 @@ function decideAssignment(ctx: StoreContext, a: ReviewAssignmentRecord, reviewer
     request = setRequestState(ctx, request, 'STALE', 'review.plan_superseded', SYSTEM_REVIEW_REF);
     // R2-02: the executor waiting on this action review re-presents it under the active plan.
     if (request.subjectKind === 'ACTION') wakeStrandedActionWait(ctx, request.workItemId);
+    recoverControlReviews(ctx, request.workItemId);
     return { recorded: false, code: 'REVIEW_STALE', request };
   }
   const item = getWorkItemRow(ctx, request.workItemId);
@@ -544,6 +551,7 @@ function decideAssignment(ctx: StoreContext, a: ReviewAssignmentRecord, reviewer
   if (stale) {
     withdrawAssignment(ctx, a, 'SUBJECT_CHANGED');
     request = setRequestState(ctx, request, 'STALE', 'review.subject_changed', SYSTEM_REVIEW_REF);
+    recoverControlReviews(ctx, request.workItemId);
     return { recorded: false, code: 'REVIEW_STALE', request };
   }
   // The reviewer's eligibility and independence are decided again now, not inherited from assignment time.
@@ -643,6 +651,8 @@ export function applyOutcome(ctx: StoreContext, request: ReviewRequestRecord, ou
   const item = getWorkItemRow(ctx, request.workItemId);
   const trace = { correlationId: item.correlationId, actorRef };
   if (request.subjectKind === 'ACTION') {
+    // C7-B: a settled review of a Company → App control proposal puts that exact act to the Founder (or ends it).
+    txControlReviewSettled(ctx, request, outcome, actorRef);
     // Exactly the waiting Work Item wakes; its next run re-runs the full authority path before any effect.
     wakeWorkItemJob(ctx, item.id, ['AWAITING_INDEPENDENT_REVIEW'], outcome === 'SATISFIED' ? 'review.passed' : 'review.rework');
     return;
@@ -794,6 +804,18 @@ export function consumeActionReview(ctx: StoreContext, requestId: Id, invocation
   if (r.state !== 'SATISFIED') throw new QandeelError('REVIEW_STALE', 'the action review is no longer satisfied', { requestId });
   const changed = ctx.db.run(`UPDATE review_requests SET state = 'CONSUMED', resolution_ref = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ? AND state = 'SATISFIED'`, `tool_invocation:${invocationId}`, ts(ctx), r.id, r.version).changes;
   if (changed !== 1) throw new QandeelError('VERSION_CONFLICT', 'the action review changed concurrently', { requestId });
+  requestHistory(ctx, r.id, r.version + 1, 'SATISFIED', 'CONSUMED', 'review.consumed', SYSTEM_REVIEW_REF);
+}
+
+/**
+ * C7-B: the satisfied review of a Company → App control proposal is consumed by the one revision it authorized (single
+ * use, like `consumeActionReview` for a tool intent), in the issuing transaction.
+ */
+export function consumeControlReview(ctx: StoreContext, requestId: Id, revisionRef: string): void {
+  const r = getRequest(ctx, requestId);
+  if (r.state !== 'SATISFIED') throw new QandeelError('REVIEW_STALE', 'the control review is no longer satisfied', { requestId });
+  const changed = ctx.db.run(`UPDATE review_requests SET state = 'CONSUMED', resolution_ref = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ? AND state = 'SATISFIED'`, revisionRef, ts(ctx), r.id, r.version).changes;
+  if (changed !== 1) throw new QandeelError('VERSION_CONFLICT', 'the control review changed concurrently', { requestId });
   requestHistory(ctx, r.id, r.version + 1, 'SATISFIED', 'CONSUMED', 'review.consumed', SYSTEM_REVIEW_REF);
 }
 
@@ -957,6 +979,10 @@ export function sweepReviews(ctx: StoreContext, limit: number): number {
   )) {
     wakeStrandedActionWait(ctx, w as Id);
     n++;
+  }
+  // C7-B: control proposals left on a STALE review (a crash, or a plan that arrived later) are reviewed afresh.
+  for (const { w } of ctx.db.all<{ w: string }>(`SELECT DISTINCT c.work_item_id AS w FROM app_control_proposals c JOIN review_requests q ON q.id = c.review_request_id WHERE c.state = 'PROPOSED' AND q.state = 'STALE' AND EXISTS (SELECT 1 FROM review_plans p WHERE p.work_item_id = c.work_item_id AND p.status = 'ACTIVE') LIMIT ?`, limit)) {
+    n += recoverControlReviews(ctx, w as Id);
   }
   for (const { w } of ctx.db.all<{ w: string }>(`SELECT a.review_work_item_id AS w FROM review_assignments a JOIN work_items i ON i.id = a.review_work_item_id WHERE a.state = 'ASSIGNED' AND ${ENDED_SQL} LIMIT ?`, limit)) {
     releaseAbandonedAssignment(ctx, w as Id);

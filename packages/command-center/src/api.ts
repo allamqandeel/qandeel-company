@@ -442,6 +442,11 @@ function structuredSummary(ctx: ApiContext, preview: { intentKind: string; paylo
   const s = (k: string): string => String(p[k] ?? '');
   switch (preview.intentKind) {
     case 'APPROVAL_DECIDE': {
+      // C7-B: a Company → App control is stated as the exact reviewed act it is, and as Company desired state only.
+      if (p.controlFamily !== undefined) {
+        const verb = p.decision === 'REJECT' ? 'Reject' : 'Approve and issue';
+        return `${verb} the R3 Company control ${s('controlFamily')} ${s('controlOperation')} ${s('controlValue')} on ${s('controlScope')} (now: ${s('controlFrom')}; reason: ${s('controlReason')}; independently reviewed). Issued is Company desired state, not applied in the App; a control only restricts and grants no Product authority`;
+      }
       const a = ctx.runtime.governance.getApproval(s('approvalId') as Id);
       const subject = a.workItemId !== null ? (ctx.runtime.founder.universe().work.find((w) => w.id === a.workItemId)?.objective ?? a.subjectRef) : a.subjectRef;
       return `${p.decision === 'REJECT' ? 'Reject' : 'Approve'} the ${a.risk} approval request for: ${subject}`;

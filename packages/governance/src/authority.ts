@@ -27,10 +27,12 @@ export const riskRank = (r: RiskLevel): number => RISK_RANK[r];
  * code) and `knowledge.restricted` (a Restricted knowledge scope, resource = its scope code), or (C4)
  * one organizational act (`org.staffing.request`, `org.staffing.decide`, `org.work.delegate`, …;
  * resource = department code or `*`), or (C5, PO-R2-D / AC-01) one goal act from a governed run
- * (`org.goal.derive`, `org.goal.link`; always beside the Director seat, never instead of it). A title or
+ * (`org.goal.derive`, `org.goal.link`; always beside the Director seat, never instead of it), or (C7-B) the one
+ * bounded Company → App control capability `app-control.issue` (R3; resource = a control family's grant code or `*`;
+ * always beside the App Operations & Release Lead seat, independent review and Founder approval). A title or
  * Position is never a capability.
  */
-export const CAPABILITY = /^(?:model\.invoke|knowledge\.(?:read|restricted)|org\.(?:staffing\.(?:request|review|decide|hire)|work\.(?:delegate|support|reprioritize)|review\.plan|goal\.(?:derive|link))|tool:[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){1,4})$/;
+export const CAPABILITY = /^(?:model\.invoke|knowledge\.(?:read|restricted)|org\.(?:staffing\.(?:request|review|decide|hire)|work\.(?:delegate|support|reprioritize)|review\.plan|goal\.(?:derive|link))|app-control\.issue|tool:[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){1,4})$/;
 
 export function assertCapability(v: unknown, field = 'capability'): string {
   if (typeof v !== 'string' || v.length > 128 || !CAPABILITY.test(v)) throw new QandeelError('VALIDATION_FAILED', 'capability must be "model.invoke", "knowledge.read", "knowledge.restricted", an "org.*" organizational act or "tool:<tool>.<action>"', { field });

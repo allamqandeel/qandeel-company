@@ -275,3 +275,11 @@ mutations caught; verifier 75 / 75; ESLint clean on the changed files.
 
 One final full GitHub CI (Windows + Ubuntu, quality gate) on the closure-candidate head; its status is reported on the
 PR. C7-A is NOT CLOSED: the Technical Lead's exact-head review decides.
+
+## 18. Lifecycle note (appended at the C7-B start, 2026-10-01)
+
+The narrative above is history and is not rewritten. After the Technical Lead's exact-head review of `4decc90`, PR #13
+merged into `main` as `e7ca688f3a5ac2de5c317fbca31c5dad3dba2a41` (same tree `507ae100`); exact-head run #93 passed the
+full Windows + Ubuntu gate and post-merge run #94 passed the fast-integrity path. The canonical closure statement is
+`docs/C7A_CLOSURE_RECORD.md`: C7-A is CLOSED / MERGED / CANONICAL. Residual R-C7A-04 (refusal storage amplification) is
+taken up, for its Company-side part only, by C7-B.

@@ -16,9 +16,10 @@
  * `BEGIN IMMEDIATE` — the check, the effect, CONFIRMED and the audit commit together or not at all.
  */
 import { QandeelError, assertCode, assertId, boundedJson, canonicalJson, isTimestamp, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { BINDING_ROLES, BINDING_SUBJECTS, SOURCE_DECISIONS, assertGoalTransition, assertSourceRegistration, isGoalState, isMutatingIntent, nextSourceState, type GoalState, type MutatingIntent, type SourceDecision, type SourceState } from '@qandeel-company/governance';
+import { APP_CONTROL_APPROVAL_ACTION, BINDING_ROLES, BINDING_SUBJECTS, SOURCE_DECISIONS, assertGoalTransition, assertSourceRegistration, isGoalState, isMutatingIntent, nextSourceState, type GoalState, type MutatingIntent, type SourceDecision, type SourceState } from '@qandeel-company/governance';
 import { assertCauses, summarizeCauses, type AttributedCause } from '@qandeel-company/mind';
 
+import { txControlDecisionView } from './app-controls.js';
 import { txAssertExternalEvidence } from './external-core.js';
 import { ExternalEvidenceStore, txAssertBindable } from './external-evidence.js';
 import { getBudgetRow, budgetFor } from './governance-core.js';
@@ -92,7 +93,12 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
       if (!a) throw new QandeelError('NOT_FOUND', 'approval not found', { approvalId });
       if (a.state !== 'PENDING') throw new QandeelError('INVALID_TRANSITION', 'only a pending approval can be decided', { approvalId, state: a.state });
       if (a.risk_level === 'R4' || a.risk_level === 'R2') throw new QandeelError('FOUNDER_ONLY', 'R4 is never approvable through the approval engine and R2 is review-only', { approvalId, risk: a.risk_level });
-      return { approvalId, decision, reasonCode: assertCode(raw.reasonCode ?? 'founder.decided', 'reasonCode'), risk: a.risk_level, subjectRef: a.subject_ref, action: a.action.slice(0, 64) };
+      const base = { approvalId, decision, reasonCode: assertCode(raw.reasonCode ?? 'founder.decided', 'reasonCode'), risk: a.risk_level, subjectRef: a.subject_ref, action: a.action.slice(0, 64) };
+      if (a.action !== APP_CONTROL_APPROVAL_ACTION) return base;
+      // C7-B: an R3 Company → App control is decided on its exact, reviewed act — what control, which scope, what
+      // restriction changes (from → to), why, the evidence cited and the risk; re-checked decidable now (never stale).
+      const c = txControlDecisionView(ctx, approvalId, decision);
+      return { ...base, proposalId: c.proposalId, controlFamily: c.family, controlScope: c.scope, controlOperation: c.operation, controlValue: c.value, controlFrom: c.from, controlReason: c.reasonCode, controlEvidenceRefs: [...c.evidenceRefs], controlReview: c.review };
     }
     case 'GOAL_APPROVE': {
       const g = getGoal(ctx, assertId(raw.goalId, 'goalId'));

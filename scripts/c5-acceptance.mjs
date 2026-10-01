@@ -165,7 +165,9 @@ try {
     check(ceo.holderEmployeeId === world.employees['company.ceo'].id && ceo.reportsToFounder, 'the CEO holds the nearest orbit and reports to the Founder');
     const brand = u.seats.find((s) => s.code === 'director.brand-creative');
     check(brand.holderKind === 'ACTING' && brand.holderEmployeeId === world.employees['director.product'].id && brand.coveredEmployeeId === null, 'a vacant Director seat covered ACTING is shown truthfully (nobody invented)');
-    check(u.seats.filter((s) => s.status === 'ACTIVE' && s.holderEmployeeId === null).length === 2, 'two vacant specialist seats');
+    // C7-B adds the canonical App Operations & Release Lead seat; the seeded world leaves it vacant (nobody is invented).
+    check(u.seats.filter((s) => s.status === 'ACTIVE' && s.holderEmployeeId === null && s.code !== 'product.app-operations-release-lead').length === 2, 'two vacant specialist seats');
+    check(u.seats.some((s) => s.code === 'product.app-operations-release-lead' && s.holderEmployeeId === null), 'the C7-B App Operations & Release Lead seat is shown vacant, never invented');
     const kinds = new Set(u.relations.map((r) => r.kind));
     check(kinds.has('DELEGATION') && kinds.has('APPROVAL'), `live relations only: ${[...kinds].join(',')}`);
     check(u.work.some((w) => w.running) && u.work.some((w) => w.state === 'BLOCKED') && u.work.some((w) => w.state === 'WAITING_APPROVAL'), 'running, blocked and awaiting-approval work visible');

@@ -639,7 +639,7 @@ describe('C7-A integration into the existing C6 engine', () => {
       assert.equal(count(x, 'SELECT COUNT(*) AS n FROM evaluation_results WHERE id = ?', e.id), 1, 'the one evaluation store');
       assert.ok(x.m.profile(x.s.employee.id).dimensions.find((d) => d.dimension === 'OUTCOME')?.evidenceRefs.includes(`evaluation:${e.id}`), 'the existing profile reads it');
       const tables = db(x).all<{ name: string }>(`SELECT name FROM sqlite_schema WHERE type = 'table'`).map((t) => t.name);
-      assert.deepEqual(tables.filter((t) => /^(external|c7)/.test(t)).sort(), ['external_binding_history', 'external_contract_catalog', 'external_contract_families', 'external_contract_fields', 'external_contract_scopes', 'external_contract_types', 'external_evidence_bindings', 'external_record_conflicts', 'external_records', 'external_source_contracts', 'external_source_history', 'external_sources']);
+      assert.deepEqual(tables.filter((t) => /^(external|c7)/.test(t)).sort(), ['external_binding_history', 'external_contract_catalog', 'external_contract_families', 'external_contract_fields', 'external_contract_scopes', 'external_contract_types', 'external_evidence_bindings', 'external_intake_refusal_windows', 'external_record_conflicts', 'external_records', 'external_source_contracts', 'external_source_history', 'external_sources']); // C7-B adds only the bounded refusal counters (R-C7A-04)
       assert.deepEqual(tables.filter((t) => /evaluat|lesson|learning|attribution|performance|score|report/.test(t) && !['evaluation_results', 'eval_definitions', 'eval_definition_history', 'eval_calibration_runs', 'lessons', 'lesson_promotions', 'learning_signals', 'learning_interventions', 'learning_intervention_history', 'causal_attributions', 'causal_attribution_history', 'report_snapshots', 'lesson_history', 'run_attributions'].includes(t)), [], 'only the pre-existing C2–C6 stores');
     });
   });
@@ -964,7 +964,8 @@ describe('C7-A durability', () => {
       v11.close();
       const v12 = openStoreForTests(root, { clock: new ManualClock(), liveSchemaUpdate: true });
       try {
-        assert.deepEqual(v12.migration.applied, [12]);
+        // C7-B appended 0013 after 0012: the upgrade applies every pending release, in order.
+        assert.deepEqual(v12.migration.applied, [12, 13]);
         const d = storeContext(v12).db;
         assert.deepEqual({ events: Number(d.get<{ n: number }>('SELECT COUNT(*) AS n FROM events')?.n), maxSeq: Number(d.get<{ n: number }>('SELECT MAX(seq) AS n FROM events')?.n) }, counts11, 'the outbox keeps every event and its order');
         assert.equal(v12.getWorkItem(workItem.id).state, 'READY');
@@ -983,19 +984,20 @@ describe('C7-A durability', () => {
     }
   });
 
-  test('(33) released migrations 0001–0011 are byte-identical to their pins; 0012 is pinned', () => {
+  test('(33) released migrations 0001–0012 are byte-identical to their pins (0012 frozen at the C7-A release)', () => {
     const pins: Record<number, string> = {
       1: '3022ed5ed626f9394cfa9a7e897d2ed4e7bcb9b94c8de7a9a4bde7c0c658436e', 2: 'b3060a1ea7a3e57e8bf0f76a4edba437c9f1b8d2886ef97ff5ca2b6920b0a7c2', 3: 'f47cf341f677585d762672929bdf2f41eeb4bf7440463b68846bac0c777762e4',
       4: '51dd9a38df306751eace1dc6cf82e231b92e487b7e913b061f336e8c25a0066c', 5: '2c2f0d8092f108de2596c15e795ba6ba8d17b316761d0ac59e45d8845409e44a', 6: 'a4b8709915fbad924212e3278b64d2f58d4d1e40c5ba1ff937cb7c50637d57d8',
       7: '9c46b838c21caf7b38d5db1244fc6fdd83c5e47f1a24fe2f973a9828f417fc3b', 8: 'd937856f2a730ff33d3fb83f61c8e6b3ce0c932c4189492d6c50e8eeafb899f5', 9: '803f9eef58fad2afaabbca562c509648aaf59cc21ad647728957fa31d6ab00b1',
       10: 'a8696420f2c20abc8dfe1b62b729adedc57314cfecd7e644bc31687fa9c989ee', 11: '97ab99eebf4fc8ce49c1e1550eb4448f8a9e515a7b02259381ab33fe95ae2550',
+      12: '31eeff9a49e284bec44915842ea39453550cc225c9e58b100483a7ad45aaaf09',
     };
     for (const pin of RELEASED_MIGRATIONS) {
       const text = readFileSync(new URL(`../../migrations/${pin.file}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
       assert.equal(sha256Hex(text), pin.sha256, pin.file);
-      if (pin.version <= 11) assert.equal(pin.sha256, pins[pin.version], `${pin.file} is a released migration and never changes`);
+      if (pin.version <= 12) assert.equal(pin.sha256, pins[pin.version], `${pin.file} is a released migration and never changes`);
     }
-    assert.equal(RELEASED_MIGRATIONS.at(-1)?.file, '0012_c7a_operational_data_external_outcomes.sql');
+    assert.equal(RELEASED_MIGRATIONS[11]?.file, '0012_c7a_operational_data_external_outcomes.sql');
   });
 
   test('(34) a failed intake or registration rolls back completely: no half-written source, record, history, audit or event', () => {

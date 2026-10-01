@@ -16,13 +16,14 @@ import {
   assertDelegationBounds,
   assertTaskClass,
   canExecute,
-  decideOrgAct,
+  decideEmployeeAction,
   delegationCycle,
   isOrgAction,
   isReviewOutcome,
   isStaffingReviewAction,
   limitsAllow,
   orgActionCapability,
+  orgActRequest,
   parseDelegationLimits,
   parseStaffingRequest,
   staffingReviewTarget,
@@ -32,6 +33,7 @@ import {
 } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
+import { txProposeControl } from './app-controls.js';
 import { budgetFor, employeeIdFromRef, getEmployeeRow, txAllocateWorkItemBudget, wakeWorkItemJob } from './governance-core.js';
 import { mapGrant } from './governance-records.js';
 import { actingState, attributed, consumeGrant, effectiveDataClass, recordDenial } from './governed-writes.js';
@@ -405,6 +407,12 @@ function perform(ctx: StoreContext, fence: Fence, step: number, e: { id: Id; ref
         throw error;
       }
     }
+    case 'control.propose': {
+      // C7-B: only a proposal — its independent review and the Founder's approval come next; nothing is issued here.
+      const out = txProposeControl(ctx, fence, { id: e.id, ref: e.ref }, args, grantId);
+      if ('refused' in out) return refuse(out.refused);
+      return out.ref;
+    }
   }
   return null;
 }
@@ -444,7 +452,9 @@ export function txOrgAct(ctx: StoreContext, fence: Fence, step: number, actionIn
   let grantId: Id | null = null;
   if (capability !== null) {
     const grants = ctx.db.all(`SELECT * FROM permission_grants WHERE employee_id = ? AND status = 'ACTIVE'`, e.id).map(mapGrant);
-    const decision = decideOrgAct(actingState(ctx, fence.runId, e), grants, { capability, resource: '*', at: ts(ctx) });
+    // Organizational acts are R1 on `*`; a Company → App control revision is R3 on its family (C7-B, `orgActRequest`).
+    const req = orgActRequest(action, args);
+    const decision = decideEmployeeAction('EMPLOYEE', actingState(ctx, fence.runId, e), grants, { capability, resource: req.resource, risk: req.risk, dataClass: 'D1', at: ts(ctx) });
     if (decision.effect === 'DENY') {
       const { paused } = recordDenial(ctx, fence, e.id, decision.code, { capability });
       return refused(decision.code, paused);
