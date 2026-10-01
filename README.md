@@ -6,8 +6,10 @@ governed and auditable.
 
 > **Separate from the QANDEEL App.** The App is a different repository, product, runtime and data
 > boundary. Nothing here imports, reads or writes the App. Integration happens only through the governed
-> `APP-OPS-01` boundary (its App-side contract is frozen). C7-A adds only the Company-side governed intake contract;
-> no App transport, connector or control plane exists, and operational telemetry is always content-free.
+> `APP-OPS-01` boundary (its App-side contract is frozen). C7-A adds only the Company-side governed intake contract
+> and C7-B only the Company-side record of governed, issued (desired) controls; no App transport or connector exists,
+> nothing the Company issues is effective in the App until the App applies it, and operational telemetry is always
+> content-free.
 
 ## Current state
 
@@ -24,7 +26,8 @@ governed and auditable.
 | `C5` Founder Command Center (Tree of Light) | CLOSED / MERGED / CANONICAL (PR #10, `7c45f2a`; `docs/C5_CLOSURE_RECORD.md`) |
 | `C6` Company Improvement Engine (Evaluation + Attribution + Learning + Reporting + Resilience) | CLOSED / MERGED / CANONICAL (PR #11, `b4f91ca`; `docs/C6_CLOSURE_RECORD.md`) |
 | `R2` Full Strong-v1 Independent Review | CLOSED / MERGED / CANONICAL (PR #12, `2eafbed`; `docs/R2_CLOSURE_RECORD.md`) |
-| `C7-A` Operational Data + External Outcome Core (C7 = C7-A … C7-D) | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/C7A_IMPLEMENTATION_REPORT.md`); C7-B / C7-C / C7-D not started |
+| `C7-A` Operational Data + External Outcome Core (C7 = C7-A … C7-D) | CLOSED / MERGED / CANONICAL (PR #13, `e7ca688`; `docs/C7A_CLOSURE_RECORD.md`) |
+| `C7-B` Governed App Operations Control Plane | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/C7B_IMPLEMENTATION_REPORT.md`); C7-C / C7-D not started |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing

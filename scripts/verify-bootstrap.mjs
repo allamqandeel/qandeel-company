@@ -191,6 +191,8 @@ const FROZEN_MIGRATIONS = [
   { file: '0010_c6_improvement_engine.sql', sha256: 'a8696420f2c20abc8dfe1b62b729adedc57314cfecd7e644bc31687fa9c989ee' },
   // R2 released 0011 with PR #12 (merged 2026-09-30); it joins the frozen set in the change after its release (C7-A).
   { file: '0011_r2_integrity.sql', sha256: '97ab99eebf4fc8ce49c1e1550eb4448f8a9e515a7b02259381ab33fe95ae2550' },
+  // C7-A released 0012 with PR #13 (merged 2026-10-01); it joins the frozen set in the change after its release (C7-B).
+  { file: '0012_c7a_operational_data_external_outcomes.sql', sha256: '31eeff9a49e284bec44915842ea39453550cc225c9e58b100483a7ad45aaaf09' },
 ];
 // Later-scope / non-goal subsystems never appear: APP-OPS (C7) and dashboards / analytics tables or packages (C6
 // deliberately builds reports with typed claims, never a dashboard or analytics store — its non-goals).
@@ -1958,8 +1960,9 @@ const VIOLATIONS = {
     { contents: { [EVALUATION_KERNEL]: 'export const EXTERNAL_OUTCOMES_AVAILABLE = true;\n' } },
     { contents: { [OUTCOME_CORE]: 'export function txRecordOutcome(ctx, w, input) {\n  insert(ctx, w, input);\n}\n' } },
     { contents: { [EXTERNAL_CORE]: "  return 'NOT_OUTCOME_EVIDENCE';\n  return 'SOURCE_NOT_ACTIVE';\n  return 'RECORD_CONFLICTED';\n  return null;\n" } },
-    { contents: { [`${MIGRATIONS_DIR}0012_c7a.sql`]: 'CREATE TABLE external_records (id TEXT) STRICT;\nCREATE TRIGGER external_records_governed_source BEFORE INSERT ON external_records BEGIN SELECT 1; END;\n' } },
-    { contents: { [IMPROVEMENT_CORE]: 'export function gatherWorkEvidence(recorded) {\n  const verdict = recorded;\n  return verdict;\n}\n' } },
+    // 0012 is frozen (C7-B): the synthetic base carries its real text, so the violation replaces that file itself.
+    { contents: { [`${MIGRATIONS_DIR}0012_c7a_operational_data_external_outcomes.sql`]: 'CREATE TABLE external_records (id TEXT) STRICT;\nCREATE TRIGGER external_records_governed_source BEFORE INSERT ON external_records BEGIN SELECT 1; END;\n' } },
+    { contents: { [IMPROVEMENT_CORE]:'export function gatherWorkEvidence(recorded) {\n  const verdict = recorded;\n  return verdict;\n}\n' } },
   ],
   'c7a-not-claimed-closed': [
     { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-A\` | Core | Cloud | CLOSED / MERGED |\n` } },
