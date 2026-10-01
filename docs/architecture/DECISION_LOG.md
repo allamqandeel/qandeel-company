@@ -3179,3 +3179,136 @@ the review — the same proposal is bound to a new review request under the acti
 - The datastore: a review is replaced only once it is STALE, an approval only once it is REVOKED; AWAITING_FOUNDER →
   PROPOSED only with a STALE review and a REVOKED approval; and a proposal reaches AWAITING_FOUNDER only on a SATISFIED
   review and a PENDING approval of exactly its fingerprint (0013 `app_control_proposals_forward`).
+
+## D-C7C-01 — C7-C Product decisions (Founder / Product Owner, recorded at the C7-C start, 2026-10-01; recorded, not reopened)
+
+Recorded from the approved C7-C brief (§4): the Company is completed before the App and the website so the Founder can
+talk with, train and observe it; **conversation comes before large execution** and conversation ≠ authority (a message
+never creates / approves a Goal, grants budget, tools or authority, publishes, changes policy, activates App controls or
+becomes canonical truth; silence is never approval); **no universal employee score**, ranking, leaderboard, grade,
+activity-count productivity or blended company score — Employee evidence stays exactly the eight C6 dimensions and
+"appropriate autonomy" is evidence under JUDGMENT + INDEPENDENCE (no ninth dimension; legitimate clarification is not
+negative); outcome before activity; **internal quality ≠ market success** (`TRAINING_INTERNAL` proves capability and
+discipline only; `CONTROLLED_REAL` market claims come only from current governed C7-A evidence; absence of external
+evidence is not failure unless the Pilot requires it; an issued C7-B control is never an outcome); the **Founder remains
+final authority** (Pilot evidence is advisory: supported / insufficient / concern / contested; it never promotes,
+demotes, terminates, expands authority, declares production readiness or closes Strong v1).
+
+## D-C7C-02 — A Pilot is a context, not a second engine (Technical Lead / executor, C7-C; architecture gate)
+
+- The mechanism census (C7-C report §5) found every Pilot need already served: C5 threads, governed reply Work Items and
+  the pending-reply predicate; C5 Goals, Founder approval, Department derivation and Goal → Work links; the C6 kernel
+  (`buildPerformanceProfile`, `costPerQualifiedOutcome`, attribution standing) whose storage reads already accept a Work
+  Item set; C6 inspection; C7-A current verification truth; the C7-B proposal records; Founder Attention; the governed
+  confirmation. So C7-C stores only what nothing else holds: a Pilot's identity, mode, lifecycle and two bindings.
+- Migration 0014: `pilots` (mode, title as Company content, `requires_external_outcome`, state, `briefing_thread_id`,
+  `root_goal_id`, created by the Founder, version, timestamps) and `pilot_history` (one row per step, Founder actor,
+  matching the Pilot's version and state). The bindings are columns, each written once (a link table would add a second
+  identity for the same fact); two partial unique indexes make one Pilot per thread and per root Goal. No events
+  aggregate (like the other C5 Founder stores, a Pilot step writes a content-free audit row; the surface is told through
+  the runtime's signalling). Datastore gates: born DRAFT, immutable identity / mode / title / bindings, forward-only
+  steps (terminal never revives), the briefing binding (an open Founder ↔ CEO thread, entering BRIEFING), READY only
+  with briefing evidence, ACTIVE only on a qualifying root Goal, no hard delete, append-only history.
+- Every Pilot write is the Founder's own act through the C2 chokepoint (`founderAdminWrite` + `founder()`; Employees,
+  delegates and references are refused), in one `BEGIN IMMEDIATE` with its history and audit. A Pilot grants no budget,
+  tool, role or authority, and no metric, message or Employee ever moves it.
+
+## D-C7C-03 — The pre-execution briefing reuses C5 (Technical Lead / executor, C7-C)
+
+Entering BRIEFING binds an existing open Founder ↔ CEO thread, or opens one through the existing `txOpenThread`; a
+Pilot-opened thread carries the context `DECISION` / `pilot:<id>` so the Founder's general direct CEO thread is never
+silently reused as (or replaced by) a Pilot briefing (found by the C7-C storage proofs). No message body is copied.
+READY needs proof that a conversation happened, never a claim about its quality: a response-required Founder REQUEST /
+QUESTION / DECISION_REQUEST in that thread whose governed reply Work Item has recorded an Employee reply from its own run
+(the C5 pending-reply predicate). An FYI, a Founder message alone, an Employee message that answers nothing, or time
+passing never suffices; the Founder still takes the READY step explicitly. Reasoning quality is judged by normal Work / C6
+evidence, not by message counts.
+
+## D-C7C-04 — The root Company Goal and the derived scope (Technical Lead / executor, C7-C)
+
+- ACTIVE binds exactly one root Goal: kind COMPANY, Founder-approved, ACTIVE, with success criteria, not the root of
+  another Pilot. The Pilot never creates or approves it; the existing Founder Goal path does (the CEO may recommend).
+- C5 gap closed (additive): the governed `GOAL_PROPOSE` preview now carries `successCriteria` (≤ 12 short lines,
+  secret-scanned by the Goal store). Before, a Founder-proposed goal from the surface always had none, so no Pilot could
+  have been activated from the surface.
+- Scope is derived, never stored: root Goal → its Department Goals → their live Goal → Work links → the Work Items' own
+  lineage (`parent_id`), bounded at 2 000 items. Ownership and scheduling stay in the Work engine.
+
+## D-C7C-05 — The Evidence Board is a projection that reuses C6 (Technical Lead / executor, C7-C)
+
+Sections: Pilot / briefing / scope; outcomes (lifecycle, qualified, under review, rework, blocked, failed, contested,
+not achieved, completed-not-verified); review integrity (REQUIRED review states, independent vs maker decisions,
+conflicts); Founder Attention items whose source lies in scope (no second notification bus); the exact decisions the
+Pilot waits for; people evidence (the C6 Performance Profile on the Pilot-scoped live evaluations, attributions,
+learning effects and contributions — eight dimensions, C6 sample / confidence / level / trend / attribution rules;
+people listed by id, never ordered by a measure); autonomy; collaboration (delegation records, departments, unresolved
+handoffs — message volume is observability only); learning (signals → lessons → interventions → systemic findings of
+scoped work); economics (`costPerQualifiedOutcome` over every scoped evaluation: failures and overhead included); external
+outcomes (C7-A current truth); C7-B proposals as desired-state context; the readiness checklist; observability. Outcome +
+trace: `inspect(pilot, workItem)` returns references into the canonical lineage (work item, runs, reviews, delegations,
+approvals, tool invocations, evaluation, attribution, learning signals, external bindings, control proposals) and where the
+trace points (result, tool, handoff, escalation, review, model / provider, context, workflow, requirement, external
+dependency); accountability comes only from a VALIDATED C6 attribution — C7-C never blames.
+
+## D-C7C-06 — Appropriate autonomy is JUDGMENT + INDEPENDENCE (Technical Lead / executor, C7-C)
+
+Per item, from its C6 verdicts only: an authority-boundary refusal (JUDGMENT NEGATIVE) is never positive; a correct
+escalation (JUDGMENT POSITIVE, CORRECT_ESCALATION) is good judgment, never dependence; Founder intervention the work needed
+(INDEPENDENCE NEGATIVE) is evidenced dependence, counted against an Employee only through C6 attribution; a qualified
+outcome without intervention or a proven different route is routine work handled independently; otherwise insufficient
+evidence. Clarification requests are read by no dimension, so they are never negative. Inside a Pilot an item whose own
+JUDGMENT is NEGATIVE contributes no POSITIVE INITIATIVE (an attempted unauthorized act is never initiative); the
+employee-wide C6 profile is unchanged (see residual R-C7C-04).
+
+## D-C7C-07 — Readiness is an advisory checklist (Technical Lead / executor, C7-C)
+
+Eight criteria, each with its own state (`INSUFFICIENT_EVIDENCE` / `SUPPORTED` / `CONCERN` / `CONTESTED`, and
+`NOT_APPLICABLE` only for the real-world criterion of a training Pilot), bounded params and evidence refs, `isDecision:
+false`; nothing is weighted, averaged or summed. No new numeric thresholds were invented: states follow C6's own
+evidence semantics (sufficiency, accountable negatives, pending attribution, IMPROVEMENT_OBSERVED, cost per qualified
+outcome DEFINED / NO_QUALIFIED_OUTCOME). Pilot success thresholds and objective windows are a Founder decision (R-C7C-01).
+
+## D-C7C-08 — C7-A and C7-B at the Pilot boundary (Technical Lead / executor, C7-C)
+
+A market claim exists only for CONTROLLED_REAL: SUPPORTED only through qualified outcomes whose CURRENT verification cites
+usable governed external evidence; any in-scope verification a later integrity conflict CONTESTED makes the claim
+CONTESTED at once; the Founder's C7-A resolution (uphold / replace / retract) is followed as current truth; history is
+never rewritten. A training Pilot never claims market success, even with evidence. C7-B proposals in scope are shown as
+counts by state with `desiredStateOnly: true`, `countsAsOutcome: false`, `appEffectKnown: false`; nothing in C7-C names a
+control family or an App effect. No intake, connector, scraper or transport was added.
+
+## D-C7C-09 — The Founder surface: structured intents, one read, a palette section (Technical Lead / executor, C7-C)
+
+`PILOT_CREATE` and `PILOT_ADVANCE` are structured-only intents of the governed confirmation (preview → fingerprint →
+confirm once, inside the verified session; no text pattern produces them; a preview never offers a step the confirmation
+would refuse — `planPilotStep` is the same check, without effect). `SHOW_PILOT` is a read intent (EN / AR). The API adds
+`GET /api/pilots`, `/api/pilots/:id` and `/api/pilots/:id/inspect`; the palette shows the Pilots, the exact decision each
+waits for, a link into the CEO briefing thread, the readiness checklist in words and preview buttons for each step. No
+Tree of Light redesign; Arabic titles keep their own direction and line-height.
+
+## D-C7C-10 — Proofs, verifier, mutation and CI for C7-C (Technical Lead / executor, C7-C)
+
+Proof markers `C7C-PROOF: pilot-kernel` (governance), `pilot-evidence-kernel` (mind), `storage-pilots` (storage),
+`runtime-c7c` (runtime); `scripts/c7c-mutation-check.mjs` (25 mutations, pinned; 136 s locally; Windows 2 shards, Ubuntu
+1); verifier rules `c7c-requires-c7b-closure`, `c7c-not-claimed-closed`, `c7c-proofs-present`, `c7c-pilot-governed`,
+`c7c-no-c7d-or-network`; 0013 joins the frozen migrations.
+
+## D-C7C-11 — Research refresh consequences (Technical Lead / executor, C7-C; informative sources, not authority)
+
+DORA metrics guide: no single metric, measures in tension, context matters, metrics as targets invite gaming, team
+improvement over comparison → a checklist of independent criteria, no blended number, no cross-Employee comparison or
+ordering. Anthropic "Demystifying evals for AI agents": grade outcome and transcript, combine grader types, errors compound
+across steps, do not punish valid creative paths → outcome + trace inspection, C6's VALID_CREATIVE_PATH kept, C7-C adds no
+step-checking grader. OpenAI agent evals / trace grading: traces expose tool choice, handoff and policy problems;
+repeatable evals once "good" is defined → failure localization by area over canonical refs; repeatable Pilot evals wait
+for the Founder's definition of good (R-C7C-01). No vendor infrastructure imported.
+
+## D-C7C-12 — C7-D scope clarification: Digital Presence Creation & Operations (Founder / Product Owner; recorded, not implemented)
+
+C7-D is renamed and clarified: BUILD (research, sitemap / information architecture, UX, copy, visual direction, code,
+tests, preview, SEO preparation) and OPERATE (website updates, landing pages, SEO, content, social, marketing operations,
+measurement, governed external publishing). The future flow: a broad Founder Goal → research → questions → strategy →
+site structure → technical proposal → design / copy / code → tests → preview → Founder decisions where required →
+governed publication → real result evidence back through C7-A → C6 → C7-C. Initial external publication under the
+QANDEEL name stays Founder-approved. No website framework, hosting, CMS, analytics, SEO or social vendor is preselected,
+and none of this is implemented in C7-C (verifier `c7c-no-c7d-or-network`).

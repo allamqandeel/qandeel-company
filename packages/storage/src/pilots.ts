@@ -28,7 +28,7 @@ import { boundEvidence, externalAvailability, verificationExternalRefs } from '.
 import { founder, founderAdminWrite } from './governance.js';
 import { getGoal } from './goals.js';
 import { PATTERN_OUTCOME_CURRENT } from './improvement.js';
-import { attributionFacts, gatherWorkEvidence, latestVerdict, liveEvaluations } from './improvement-core.js';
+import { LATEST_LIVE_EVALUATION, attributionFacts, gatherWorkEvidence, latestVerdict, liveEvaluations } from './improvement-core.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
 import { storeContext, type CompanyStore } from './store.js';
 
@@ -265,8 +265,7 @@ type LiveDims = { readonly work_item_id: string; readonly employee_id: string | 
 function liveDimensionRows(ctx: StoreContext, ids: readonly string[]): LiveDims[] {
   return ctx.db.all<LiveDims>(
     `SELECT e.id, e.work_item_id, e.employee_id, e.dimensions_json FROM evaluation_results e
-      WHERE e.work_item_id IN ${IN_SET} AND e.superseded_by IS NULL
-        AND NOT EXISTS (SELECT 1 FROM evaluation_results m WHERE m.work_item_id = e.work_item_id AND m.superseded_by IS NULL AND (m.created_at > e.created_at OR (m.created_at = e.created_at AND m.rowid > e.rowid)))
+      WHERE e.work_item_id IN ${IN_SET} AND ${LATEST_LIVE_EVALUATION}
       ORDER BY e.work_item_id`,
     idsParam(ids),
   );
@@ -290,6 +289,7 @@ export function txPilotBoard(ctx: StoreContext, p: PilotRecord): PilotBoard {
   const notAchieved = verdicts.filter((v) => v !== null && v.current && v.verdict === 'NOT_ACHIEVED').length;
   const requiredStates = countBy(ctx.db.all<{ k: string; c: number }>(`SELECT state AS k, COUNT(*) AS c FROM review_requests WHERE work_item_id IN ${IN_SET} AND kind = 'REQUIRED' GROUP BY state ORDER BY state`, set));
   const qualified = evals.filter((e) => e.qualifiedOutcome).length;
+  const completedOrReviewed = new Set(ctx.db.all<{ id: string }>(`SELECT id FROM work_items WHERE id IN ${IN_SET} AND state IN ('COMPLETED', 'REVIEWED')`, set).map((r) => r.id));
 
   // Review integrity (the Review Pool's own records; no shortcut).
   const decisions = ctx.db.all<{ id: string; maker: number }>(
@@ -409,7 +409,7 @@ export function txPilotBoard(ctx: StoreContext, p: PilotRecord): PilotBoard {
       contested,
       notAchieved,
       // Completion is not success: completed / reviewed work with no current ACHIEVED verification is shown apart.
-      completedNotVerified: ids.filter((id, i) => ['COMPLETED', 'REVIEWED'].includes(ctx.db.get<{ s: string }>('SELECT state AS s FROM work_items WHERE id = ?', id)?.s ?? '') && !(verdicts[i]?.current && verdicts[i]?.verdict === 'ACHIEVED')).length,
+      completedNotVerified: ids.filter((id, i) => completedOrReviewed.has(id) && !(verdicts[i]?.current && verdicts[i]?.verdict === 'ACHIEVED')).length,
     },
     reviewIntegrity: { required: requiredStates, independentDecisions: decisions.filter((d) => d.maker !== 1).length, makerSelfDecisions: decisions.filter((d) => d.maker === 1).length, openConflicts: n(conflicts.OPEN), resolvedConflicts: n(conflicts.RESOLVED), refs: decisions.slice(0, 50).map((d) => `review_decision:${d.id}`) },
     founderAttention: { openItems: attention },
@@ -628,6 +628,14 @@ export class PilotStore {
 
   scope(id: string): PilotScope {
     return this.#read((ctx) => txPilotScope(ctx, getPilot(ctx, assertId(id, 'pilotId'))));
+  }
+
+  /** The exact decisions a Pilot waits for (without building its whole Evidence Board). */
+  decisions(id: string): string[] {
+    return this.#read((ctx) => {
+      const p = getPilot(ctx, assertId(id, 'pilotId'));
+      return decisionsNeeded(ctx, p, txBriefingStatus(ctx, p.briefingThreadId), scopedAttention(ctx, p, txPilotScope(ctx, p)).length);
+    });
   }
 
   /** The Pilot Evidence Board: a deterministic projection of canonical evidence at this moment (nothing stored). */

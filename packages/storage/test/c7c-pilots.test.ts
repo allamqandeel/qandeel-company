@@ -15,6 +15,7 @@ import { PERFORMANCE_DIMENSIONS, standardWorkOutcomeDefinition } from '@qandeel-
 import { AppControlStore, CommunicationStore, ExternalEvidenceStore, FounderActionStore, FounderAuthStore, GoalStore, ImprovementStore, PilotStore, ReviewStore, loadReleasedMigrations, type EmployeeRecord, type PilotRecord } from '../src/index.js';
 import { recordMessage, recordOrgAct, recordReviewDecision, reserveBudget, settle, settleReservation } from '../src/runtime-authority.js';
 import { openStoreForTests, storeContext } from '../src/store.js';
+import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
 import { GOVERNED_KIND, seed, testManifest, type Seed } from './c2-helpers.js';
 import { activeReviewer, claimItem, decideActionReview, placed, reviewPlan, runFor } from './c4-helpers.js';
 import { backoff, harness, removeRoot, tempRoot, type Harness } from './helpers.js';
@@ -127,6 +128,10 @@ const budgetsOf = (w: W): string => JSON.stringify(db(w).all('SELECT id, cap_mon
 describe('C7-C Pilot lifecycle and the pre-execution Founder briefing', () => {
   test('(1, 2) a Pilot exists before any Goal; DRAFT → BRIEFING is durable and binds one open Founder ↔ CEO thread; nothing is copied from it', () => {
     withWorld((w) => {
+      // A Pilot act passes the Founder chokepoint: outside an authenticated session (or the test seam) it fails closed.
+      disarmFounderTestSurface(w.h.root);
+      assert.throws(() => w.pilots.create(w.s.founder, { mode: 'TRAINING_INTERNAL', title: TITLE }), code('FOUNDER_SURFACE_UNAVAILABLE'));
+      armFounderTestSurface(w.h.root);
       const goalsBefore = count(w, 'SELECT COUNT(*) AS n FROM goals');
       const p = w.pilots.create(w.s.founder, { mode: 'TRAINING_INTERNAL', title: TITLE });
       assert.deepEqual([p.state, p.rootGoalId, p.briefingThreadId, p.version], ['DRAFT', null, null, 1]);
@@ -235,7 +240,8 @@ describe('C7-C Pilot lifecycle and the pre-execution Founder briefing', () => {
       assert.throws(() => w.pilots.advance(w.s.founder, draft.id, { to: 'BRIEFING', reasonCode: 'x' }), code('PILOT_INVALID'));
       assert.deepEqual(w.pilots.history(draft.id).map((h) => h.toState), ['DRAFT', 'STOPPED'], 'STOPPED stays as history');
       aborts(() => db(w).run(`UPDATE pilots SET state = 'ACTIVE', closed_at = NULL, version = version + 1 WHERE id = ?`, pilot.id), 'no revival');
-      aborts(() => db(w).run(`UPDATE pilots SET mode = 'CONTROLLED_REAL', version = version + 1 WHERE id = ?`, draft.id), 'the mode never changes');
+      const fresh = w.pilots.create(w.s.founder, { mode: 'TRAINING_INTERNAL', title: 'تجربة' });
+      aborts(() => db(w).run(`UPDATE pilots SET mode = 'CONTROLLED_REAL', state = 'STOPPED', closed_at = updated_at, version = version + 1 WHERE id = ?`, fresh.id), 'the mode never changes, even on an allowed step');
       aborts(() => db(w).run('DELETE FROM pilots WHERE id = ?', draft.id), 'no hard delete');
       aborts(() => db(w).run(`UPDATE pilot_history SET reason_code = 'x' WHERE pilot_id = ?`, draft.id), 'history is append-only');
       aborts(() => db(w).run('DELETE FROM pilot_history WHERE pilot_id = ?', draft.id), 'history is append-only');
@@ -344,6 +350,7 @@ describe('C7-C canonical scope and the Evidence Board', () => {
       w.m.evaluate(failed);
       const board = w.pilots.board(pilot.id);
       assert.deepEqual(board.economics, w.m.economics({ goalId }), 'the same C6 computation over the same canonical facts');
+      assert.deepEqual(w.pilots.decisions(pilot.id), board.decisionsNeeded, 'the cheap decisions read agrees with the board');
       assert.equal(board.economics.qualifiedOutcomes, 1);
       assert.ok(board.economics.totalCostMicros > 0 && board.economics.costPerQualifiedOutcomeMicros === board.economics.totalCostMicros, 'the failed item\'s cost is carried by the qualified outcome');
       assert.equal(board.readiness.find((r) => r.criterion === 'COST_DISCIPLINE')?.state, 'SUPPORTED');

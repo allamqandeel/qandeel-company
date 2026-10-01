@@ -190,12 +190,27 @@ inside the existing governance — never beside it:
 
 C7-B has no transport, App consumer, signing, credential, applied state or App change. Details:
 `docs/C7B_IMPLEMENTATION_REPORT.md`, decisions D-C7B-01 onward; closure: `docs/C7B_CLOSURE_RECORD.md`.
+
+**C7-C (implementation candidate, not closed) adds Pilot instrumentation** — a Founder-decided context over the existing
+Company, never a second engine:
+- a durable **Pilot** (`TRAINING_INTERNAL` or `CONTROLLED_REAL`) with a forward-only lifecycle DRAFT → BRIEFING →
+  READY → ACTIVE → REVIEWING → COMPLETED (or STOPPED), every step an explicit, confirmed Founder act; it grants no budget,
+  tool, role or authority, and no metric or message moves it;
+- **conversation first**: the Founder briefs the CEO in an ordinary C5 thread; READY needs a governed CEO reply to a
+  Founder request (silence is never agreement); ACTIVE needs a Founder-approved Company Goal with success criteria;
+- an **Evidence Board** derived live from Goals / Work / Review, the C6 engine (the eight-dimension profile, attribution,
+  learning, cost per qualified outcome), C7-A real-world evidence and C7-B issued controls (context only): outcome and
+  trace, appropriate autonomy through JUDGMENT + INDEPENDENCE, and an advisory readiness checklist — no score, rank or
+  leaderboard; internal training is never market success.
+
+C7-C builds no website, publishing, connector or transport (that is C7-D, Digital Presence Creation & Operations).
+Details: `docs/C7C_IMPLEMENTATION_REPORT.md`, decisions D-C7C-01 onward.
 | Package | Role |
 |---|---|
 | `@qandeel-company/domain` | Pure contracts: IDs, UTC clock, state machines, retry policy, processor contract |
 | `@qandeel-company/governance` | C2 pure policy kernel: Employee lifecycle, R0–R4 authority, `E0..E4` / `D0..D4`, Router Policy, checked economics, provider / tool contracts, typed proposals; C4 organization, delegation and review rules; the C7-A intake kernel (closed contracts, allowlist, privacy refusal, source lifecycle); the C7-B control kernel (seven closed families, typed scopes / values, empty Remote Configuration register, negative-only Route Hold, R3 control acts) |
 | `@qandeel-company/mind` | C3 pure kernel: Memory Write Policy, deterministic retrieval and context planning, compaction, Skill pipeline / licensing / inspection, capability evaluation, Academy rules; C6 evaluation, attribution, Performance Profile, learning closure and report semantics |
-| `@qandeel-company/storage` | Workspace, SQLite/WAL adapter (the only `node:sqlite` user), migrations, repositories, Artifact Store, backup; C4 Organization and Review stores; C5 Founder stores; C6 Improvement store and resilience (portable packages, retention, drills, update safety); the C7-A External Evidence store (governed sources, intake, bindings, bounded refusal counters); the C7-B App Control store (proposals, issued revisions, the export of Company-issued desired controls) |
+| `@qandeel-company/storage` | Workspace, SQLite/WAL adapter (the only `node:sqlite` user), migrations, repositories, Artifact Store, backup; C4 Organization and Review stores; C5 Founder stores; C6 Improvement store and resilience (portable packages, retention, drills, update safety); the C7-A External Evidence store (governed sources, intake, bindings, bounded refusal counters); the C7-B App Control store (proposals, issued revisions, the export of Company-issued desired controls); the C7-C Pilot store (lifecycle, bindings, the derived Evidence Board) |
 | `@qandeel-company/runtime` | Runtime Supervisor, bounded worker pool, recovery, health, CLI; C2 governed Model Runtime, Tool Executor, `c2.employee-task` loop, deterministic fakes; C3 Context Assembler and memory-proposal path |
 | `@qandeel-company/bootstrap-contract` | C0 toolchain proof (unchanged) |
 
@@ -258,8 +273,9 @@ npm run ci
 | `npm run c4:acceptance -- --workspace <dir>` | C4 local acceptance in a disposable directory (below) |
 | `npm run c7a:mutation` | Removes 48 C7-A intake / privacy / source-governance / usable-evidence / C6-seam / contest / datastore-contract gates from the build (a datastore gate from the migration, re-pinned for that run only); their proof tests must fail (after a build). `-- --shard i/n` runs a disjoint slice; `-- --only id,id` a local focus |
 | `npm run c7b:mutation` | Removes 33 C7-B control-plane gates (seven-family catalogue, R3 seat / grant / review / Founder approval, exact-act binding, the revision law, the datastore family / scope / value contract, ISSUED-only state, negative-only Route Hold, empty Remote Configuration register, no generic execution, content-free outbox, refusal coalescing) from the build (a datastore gate from the migration, re-pinned for that run only); their proof tests must fail (after a build). `-- --shard i/n` runs a disjoint slice; `-- --only id,id` a local focus |
+| `npm run c7c:mutation` | Removes 25 C7-C Pilot gates (READY without briefing evidence, ACTIVE without an active root goal, a message read as authority, terminal revival, mode change, Founder bypass, repeated steps, duplicate linkage, activity as performance, aggregation, attribution / review bypass, training as improvement, zero-qualified efficiency, ledger bypass, contested or training market claims, an issued control as an outcome, audit content) from the build (a datastore gate from the migration, re-pinned for that run only); their proof tests must fail (after a build). `-- --shard i/n` / `-- --only id,id` as above |
 | `npm run verify` | Repository-contract verifier (`scripts/verify-bootstrap.mjs`) |
-| `npm run ci` | build → typecheck → lint → test → C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A + C7-B mutation checks → verify (CI runs the same proofs, split into parallel jobs) |
+| `npm run ci` | build → typecheck → lint → test → C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A + C7-B + C7-C mutation checks → verify (CI runs the same proofs, split into parallel jobs) |
 
 ### C1 local acceptance (Founder host)
 
@@ -561,6 +577,11 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
   spawn, dynamic import or network path and no secret / key / signature / private column in C7-B; the App Operations
   & Release Lead created as its own vacant seat (no seat edited, nobody hired, assigned or granted); refusals counted,
   not audited row by row; C7-B not claimed closed without its record; the C7-B proofs and mutation check present;
+- the C7-C boundaries: C7-C only after the C7-B closure record; every Pilot datastore gate; only the Pilot identity and
+  history tables (no second evaluator, ledger, review or learning store); no private-content, secret or score column;
+  Pilot writes only in its store and never from runtime / CLI / surface internals; exactly the eight readiness criteria;
+  autonomy read from JUDGMENT + INDEPENDENCE only; no network path, C7-D scope or App-effect claim in a C7-C module; C7-C
+  not claimed closed without its record; the C7-C proofs and mutation check present;
 - the CI contract: triggers, SHA-pinned actions, both operating systems, complete mutation shard
   partitions, the always-running quality gate, and a fail-closed change classifier.
 

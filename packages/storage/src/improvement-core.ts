@@ -326,6 +326,9 @@ export function liveEvaluations(ctx: StoreContext, filter: { employeeId?: Id; de
   if (filter.departmentId !== undefined) add('e.department_id = ?', filter.departmentId);
   if (filter.from !== undefined) add('e.created_at >= ?', filter.from);
   if (filter.to !== undefined) add('e.created_at <= ?', filter.to);
+  // C7-C: a Work Item set (a Goal's or a Pilot's scope) is filtered BEFORE the bound, so older scoped evidence is never
+  // crowded out by newer evaluations elsewhere in the Company.
+  if (filter.workItemIds !== undefined) add('e.work_item_id IN (SELECT value FROM json_each(?))', JSON.stringify(filter.workItemIds));
   const rows = ctx.db.all(`${LIVE_EVALS}${clauses.length ? ` AND ${clauses.join(' AND ')}` : ''} ORDER BY e.created_at DESC, e.rowid DESC LIMIT 5000`, ...params) as unknown as EvalRow[];
   // The newest 5000 live evaluations, returned oldest first (a bound that never drops recent evidence).
   rows.reverse();

@@ -200,12 +200,12 @@ const PATTERNS: readonly Pattern[] = [
   { re: /(?:daily|weekly|monthly|يومي|اليومي|اسبوعي|الاسبوعي|شهري|الشهري)\s*(?:company\s+)?(?:report|review|brief|تقرير|مراجعه|موجز)|(?:report|review|brief|تقرير|مراجعه|موجز)\s*(?:ال)?(?:daily|weekly|monthly|يومي|اسبوعي|شهري)/, intent: 'SHOW_REPORT', kind: 'READ' },
   { re: /(?:performance|اداء)\s+(?:of\s+)?\S|how\s+is\s+.+\s+(?:doing|performing)/, intent: 'SHOW_PERFORMANCE', kind: 'READ' },
   { re: new RegExp(String.raw`(?:اعرض|اظهر|عرض|show|open)${W}.*(?:موجز|ملخصات|briefs?)|^briefs?$|^(?:الموجز|الملخصات)$`), intent: 'SHOW_BRIEFS', kind: 'READ' },
-  // C7-C: open a Pilot's Evidence Board (a read; a Pilot is never created or moved by text).
-  { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:التجربه|تجربه|pilots?)${W}|^pilots?$|^(?:التجربه|التجارب)$`), intent: 'SHOW_PILOT', kind: 'READ' },
   { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:الزمن|التاريخ|timeline|history)|^timeline$`), intent: 'SHOW_TIMELINE', kind: 'READ' },
   { re: new RegExp(String.raw`(?:افتح|اعرض|اظهر|show|open)${W}.*(?:المدير التنفيذي|الرئيس التنفيذي|ceo)${W}|^ceo$|^(?:المدير التنفيذي|الرئيس التنفيذي)$`), intent: 'SHOW_CEO', kind: 'READ' },
   { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:هدف|goal)`), intent: 'SHOW_GOAL', kind: 'READ' },
   { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:قسم|اداره|department|engineering|growth|product|brand|intelligence|الهندسه|النمو|المنتج|العلامه|الاستخبارات)`), intent: 'SHOW_DEPARTMENT', kind: 'READ' },
+  // C7-C: open a Pilot's Evidence Board, after the goal / department reads so a goal named with the word stays a goal (a read; a Pilot is never created or moved by text).
+  { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:التجربه|تجربه|pilots?)${W}|^pilots?$|^(?:التجربه|التجارب)$`), intent: 'SHOW_PILOT', kind: 'READ' },
   { re: /(?:افتح|اعرض|اظهر|open|show)\s+(.+)/, intent: 'OPEN_EMPLOYEE', kind: 'READ' },
 ];
 

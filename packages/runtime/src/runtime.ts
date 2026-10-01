@@ -862,7 +862,7 @@ export class CompanyRuntime {
           committedRefusal: { ingest: (e) => isQandeelError(e, 'INTAKE_CONFLICT') && e.details.recorded === true },
         }),
         // C7-C: a Pilot step announces once; the board, scope and inspection are derived reads and stay silent.
-        pilots: signalling(PilotStore.for(s), changed, { mutating: ['create', 'advance'], reads: ['get', 'list', 'history', 'briefing', 'scope', 'board', 'inspect', 'health'] }),
+        pilots: signalling(PilotStore.for(s), changed, { mutating: ['create', 'advance'], reads: ['get', 'list', 'history', 'briefing', 'scope', 'decisions', 'board', 'inspect', 'health'] }),
         universe: (options: { at?: string } = {}): CompanyUniverse => {
           if (options.at !== undefined && !isTimestamp(options.at)) throw new QandeelError('VALIDATION_FAILED', 'at must be a canonical UTC timestamp', { field: 'at' });
           return projectUniverse(s, options.at === undefined ? {} : { at: options.at });

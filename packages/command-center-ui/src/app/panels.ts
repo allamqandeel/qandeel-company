@@ -534,7 +534,7 @@ function renderPilots(data: Json, host: PanelHost): HTMLElement {
     const actions = h('div', { class: 'pilot-actions' });
     if (typeof p.briefingThreadId === 'string') {
       const open = h('button', { type: 'button', class: 'link', text: 'Open the CEO briefing' });
-      open.addEventListener('click', () => host.openThread(String(p.briefingThreadId), ''));
+      open.addEventListener('click', () => host.openThread(String(p.briefingThreadId), String(p.briefingEmployeeId ?? '')));
       actions.append(open);
     }
     const next = NEXT_PILOT_STEP[state];

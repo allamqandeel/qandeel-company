@@ -41,5 +41,7 @@ describe('C7-C Pilot intents are structured-only', () => {
       const c = classifyFounderIntent(text);
       assert.ok(c.kind === 'READ' && c.intent === 'SHOW_PILOT', `"${text}" opens the Pilot board`);
     }
+    const goal = classifyFounderIntent('show goal pilot launch egypt');
+    assert.ok(goal.kind === 'READ' && goal.intent === 'SHOW_GOAL', 'a goal named with the word pilot stays a goal read');
   });
 });

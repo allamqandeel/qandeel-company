@@ -245,7 +245,8 @@ function activatableGoals(ctx: ApiContext): Json[] {
 /** The Founder's Pilots (identity, mode, state, bindings) with the exact decision each one waits for. */
 export function pilots(ctx: ApiContext): Json {
   const store = ctx.runtime.founder.pilots;
-  return { pilots: store.list().map((p) => ({ ...p, decisionsNeeded: store.board(p.id).decisionsNeeded })), goals: activatableGoals(ctx), health: store.health() };
+  const comm = ctx.runtime.founder.communications;
+  return { pilots: store.list().map((p) => ({ ...p, decisionsNeeded: store.decisions(p.id), briefingEmployeeId: p.briefingThreadId === null ? null : comm.thread(p.briefingThreadId).employeeId })), goals: activatableGoals(ctx), health: store.health() };
 }
 
 /** One Pilot's Evidence Board: a projection of canonical evidence (no score, no ranking, never a decision). */
@@ -323,7 +324,7 @@ export function command(ctx: ApiContext, body: Json): CommandResolution {
         const want = norm(intent.argument ?? '');
         const ms = want === '' ? all.filter((p) => p.state !== 'COMPLETED' && p.state !== 'STOPPED') : all.filter((p) => p.id === intent.argument || norm(p.title).includes(want));
         const one = ms.length === 1 ? ms[0] : undefined;
-        return { intent, focus: { lens: 'PILOT', targetId: one?.id ?? null, query: intent.argument }, matches: ms.map((p) => ({ id: p.id, label: p.title, kind: 'pilot' })), pilots: { list: all, goals: activatableGoals(ctx), ...(one ? { board: ctx.runtime.founder.pilots.board(one.id) } : {}) } as unknown as Json };
+        return { intent, focus: { lens: 'PILOT', targetId: one?.id ?? null, query: intent.argument }, matches: ms.map((p) => ({ id: p.id, label: p.title, kind: 'pilot' })), pilots: { list: all.map((p) => ({ ...p, briefingEmployeeId: p.briefingThreadId === null ? null : ctx.runtime.founder.communications.thread(p.briefingThreadId).employeeId })), goals: activatableGoals(ctx), ...(one ? { board: ctx.runtime.founder.pilots.board(one.id) } : {}) } as unknown as Json };
       }
       case 'SHOW_PERFORMANCE': {
         const ms = matchEmployees(u, intent.argument ?? '');
