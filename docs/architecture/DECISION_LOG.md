@@ -2980,7 +2980,7 @@ changed, record accepted, conflict detected, binding changed. State, history, au
 
 - Proofs: `governance/test/c7a-intake.test.ts`, `storage/test/c7a-external-evidence.test.ts` (brief §18 items 1–35),
   `mind/test/c7a-kernel.test.ts`, `runtime/test/c7a/c7a-runtime.test.ts`; `scripts/c7a-mutation-check.mjs` (29
-  mutations, pinned, sharded 2 + 1 in CI, counted by the quality gate; 46 and sharded 4 + 2 after D-C7A-10 / D-C7A-11,
+  mutations, pinned, sharded 2 + 1 in CI, counted by the quality gate; 46 (48 with the pattern-reuse correction) and sharded 4 + 2 after D-C7A-10 / D-C7A-11,
   whose datastore mutations re-pin the mutated migration in the compiled pin table for their run only).
 - Verifier: `c6-external-outcomes-unavailable` is replaced by `external-outcomes-governed` (no static flag; the governed
   verification call; the four usable-evidence conditions; the datastore triggers); new `c7a-not-claimed-closed`,
@@ -3039,3 +3039,13 @@ changed, record accepted, conflict detected, binding changed. State, history, au
   replacement keeps the verdict — a verdict change after a contest would need a Work Item lifecycle Product decision. A
   causal attribution already VALIDATED on a contested NOT_ACHIEVED outcome is not reopened (C6: decided generations never
   reopen); the contested verification is no longer an adverse source event for learning effect.
+- Pattern reuse (Technical Lead exact-head review of `e895bcf`, same root cause): the `PATTERN_OUTCOME_CURRENT` gate
+  also governs reuse. `txPlanIntervention` refuses a `PATTERN_REUSE` of a pattern whose originating success is not
+  current qualified truth (`LEARNING_GATE` / `PATTERN_OUTCOME_NOT_CURRENT`; TARGETED_RETRAINING is not a pattern
+  authority and is untouched). `txRestateCurrentTruth` cancels, in the same transaction, every open (PLANNED /
+  TRAINING_COMPLETED) reuse of a pattern that Work Item's success produced once it is no longer current — the existing
+  forward-only CANCELLED state (history row `intervention.pattern_outcome_not_current`, audit
+  `learning.intervention_cancelled`), so it never completes, never yields IMPROVEMENT_OBSERVED and never counts toward
+  sharing; the 0010 forward trigger makes CANCELLED final. A verified reuse counts as the author's contribution only
+  while its pattern's success is current. UPHOLD / a valid REPLACE re-open only FUTURE reuse; an interrupted reuse stays
+  history (no automatic resumption); RETRACT keeps reuse unavailable. No schema change.

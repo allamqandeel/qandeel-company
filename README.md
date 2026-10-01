@@ -233,7 +233,7 @@ npm run ci
 | `npm run c3:acceptance -- --workspace <dir>` | C3 local acceptance in a disposable directory (below) |
 | `npm run c4:mutation` | Removes 25 C4 organization / delegation / review / P-07 gates from the build; their proof tests must fail (after a build). `-- --shard i/n` runs a disjoint slice |
 | `npm run c4:acceptance -- --workspace <dir>` | C4 local acceptance in a disposable directory (below) |
-| `npm run c7a:mutation` | Removes 46 C7-A intake / privacy / source-governance / usable-evidence / C6-seam / contest / datastore-contract gates from the build (a datastore gate from the migration, re-pinned for that run only); their proof tests must fail (after a build). `-- --shard i/n` runs a disjoint slice; `-- --only id,id` a local focus |
+| `npm run c7a:mutation` | Removes 48 C7-A intake / privacy / source-governance / usable-evidence / C6-seam / contest / datastore-contract gates from the build (a datastore gate from the migration, re-pinned for that run only); their proof tests must fail (after a build). `-- --shard i/n` runs a disjoint slice; `-- --only id,id` a local focus |
 | `npm run verify` | Repository-contract verifier (`scripts/verify-bootstrap.mjs`) |
 | `npm run ci` | build → typecheck → lint → test → C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A mutation checks → verify (CI runs the same proofs, split into parallel jobs) |
 

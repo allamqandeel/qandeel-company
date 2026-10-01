@@ -138,12 +138,12 @@ v11 → v12; proof 32 proves rows, `seq` order and triggers).
 | Suite | Marker | Tests |
 |---|---|---|
 | `governance/test/c7a-intake.test.ts` | `C7A-PROOF: intake-kernel` | 8 (allowlist, refusal matrix, units, windows, pseudonym, contracts, lifecycle, role matrix) |
-| `storage/test/c7a-external-evidence.test.ts` | `C7A-PROOF: storage-external-evidence` | 46 (brief §18 items 1–35; 19 privacy cases; 36–39 for §15) |
+| `storage/test/c7a-external-evidence.test.ts` | `C7A-PROOF: storage-external-evidence` | 47 (brief §18 items 1–35; 19 privacy cases; 36–39 for §15; 40 for §16) |
 | `mind/test/c7a-kernel.test.ts` | `C7A-PROOF: c6-seam-kernel` | 3 (no flag; registry gate; report states; disclosed cut; contested = conflicting evidence, reported as contested) |
 | `runtime/test/c7a/c7a-runtime.test.ts` | `C7A-PROOF: runtime-c7a` | 1 (signalling contract; read-only CLI; no write command) |
 
-`scripts/c7a-mutation-check.mjs` — 46 mutations (privacy ×6, source governance ×7, idempotency ×2, separation /
-authority ×2, usable-evidence ×7, C6 seams ×5, late-conflict contest ×9, datastore contract ×8), all caught; the
+`scripts/c7a-mutation-check.mjs` — 48 mutations (privacy ×6, source governance ×7, idempotency ×2, separation /
+authority ×2, usable-evidence ×7, C6 seams ×5, late-conflict contest ×11, datastore contract ×8), all caught; the
 datastore mutations edit the migration for their run and re-pin it in the compiled pin table only; CI shards Windows
 1/4 … 4/4, Ubuntu 1/2 + 2/2, counted by the quality gate. `c6-external-outcome-invented` keeps its id and targets the runtime gate. §18 items 36–40 are verifier
 rules (`c7-later-scope-not-leaked`, `no-network-in-runtime-code`, `external-evidence-writes-confined`,
@@ -240,6 +240,38 @@ Mutations ×8 (each trigger condition removed in turn) plus the existing drift m
 Scope held: no change to the privacy decisions, Founder authority, Review Pool authority, the C6 evaluation
 architecture, C7-B / C7-C / C7-D or the App repository.
 
-## 16. Final gate
+GitHub CI run #92 on `e895bcf` (after a C5 mutation anchor followed the runtime wrapper's new indentation): all
+green, Windows + Ubuntu, quality gate included.
 
-(Recorded after the single full local `npm run ci` on the closure-candidate head; GitHub CI is the cross-platform gate.)
+## 16. Technical Lead exact-head review of `e895bcf` — one MAJOR inside D-C7A-11 (contested pattern reuse)
+
+**Finding:** a successful pattern whose originating outcome became CONTESTED could still be planned for a new
+`PATTERN_REUSE`, and a reuse already open (PLANNED / TRAINING_COMPLETED) could continue. Root cause: the
+`PATTERN_OUTCOME_CURRENT` gate governed the profile, reports and sharing, but not the reuse planning point nor reuses
+already open. **Correction** (D-C7A-11, no schema change, no new subsystem):
+- `txPlanIntervention` refuses `PATTERN_REUSE` unless the pattern's originating success is current qualified truth
+  (`LEARNING_GATE` / `PATTERN_OUTCOME_NOT_CURRENT`); TARGETED_RETRAINING is untouched.
+- `txRestateCurrentTruth` (run by the contest and by every Founder resolution) cancels each open reuse of a pattern
+  the Work Item's success produced once it is no longer current — the existing forward-only CANCELLED state, with a
+  history row and an audit row (ids / codes only). It never completes, never yields IMPROVEMENT_OBSERVED, never counts
+  toward sharing or contribution; the 0010 forward trigger refuses any revival.
+- A verified reuse counts as the author's contribution only while its pattern's success is current.
+- UPHOLD / a valid REPLACE make FUTURE reuse eligible again; the interrupted reuse stays history; RETRACT keeps reuse
+  unavailable.
+
+**Proof (40):** qualified success → SUCCESSFUL_PATTERN → validated lesson → PATTERN_REUSE planned and training
+completed → late conflicting replay → CONTESTED; then: no new reuse (`PATTERN_OUTCOME_NOT_CURRENT`); the open reuse is
+CANCELLED, cannot complete, assess or be revived by direct SQL; no IMPROVEMENT_OBSERVED, no contribution; lesson and full
+intervention history kept (PLANNED → TRAINING_COMPLETED → CANCELLED) with audit; Attention NEEDS_DECISION unchanged;
+UPHOLD → new reuse plans; a new conflict cancels that PLANNED reuse; valid REPLACE → new reuse plans; the replacement
+contested and RETRACTED → reuse refused; all three interrupted reuses remain as history.
+**Mutations (+2, caught):** `c7a-contested-pattern-reused` (planning gate removed), `c7a-contested-open-reuse-progresses`
+(open reuse not cancelled). Pinned in the verifier.
+
+**Focused validation:** C7-A storage 47 / 47; C6 storage (improvement / founder-free / resilience) 73 / 73; the two new
+mutations caught; verifier 75 / 75; ESLint clean on the changed files.
+
+## 17. Final gate
+
+One final full GitHub CI (Windows + Ubuntu, quality gate) on the closure-candidate head; its status is reported on the
+PR. C7-A is NOT CLOSED: the Technical Lead's exact-head review decides.

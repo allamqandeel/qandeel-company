@@ -778,6 +778,80 @@ describe('C7-A late integrity conflict: disputed evidence leaves current C6 trut
       assert.equal(count(x, `SELECT COUNT(*) AS n FROM audit_events WHERE action = 'outcome.contest_resolved'`), 2);
     });
   });
+
+  test('(40) qualified success → SUCCESSFUL_PATTERN → validated lesson → PATTERN_REUSE open → late conflicting replay: no new reuse, the open reuse is cancelled (history kept); UPHOLD / valid REPLACE re-open FUTURE reuse, RETRACT keeps it closed', () => {
+    withSeed((x) => {
+      outcomeSource(x);
+      const w = reviewedWork(x, true);
+      const rec = x.x.ingest(metric('m-1', 1800)).record;
+      bind(x, rec.id, w);
+      const v = verifyExternal(x, w, [rec.ref, `work_item:${w}`]);
+      assert.equal(x.m.evaluate(w).evaluation.qualifiedOutcome, true);
+      const [pattern] = x.m.signals({ workItemId: w, kind: 'SUCCESSFUL_PATTERN' });
+      assert.ok(pattern, 'the qualified success yields a pattern candidate');
+      const mem = MemoryStore.for(x.h.store);
+      const lesson = mem.nominateLesson(x.s.founder, pattern.observationId as Id, 'pattern.candidate');
+      mem.validateLesson(x.s.founder, lesson.id, { decision: 'VALIDATE', reasonCode: 'pattern.validated' });
+      const reuse = () => x.m.planIntervention(x.s.founder, lesson.id, { kind: 'PATTERN_REUSE' });
+      const notCurrent = (e: unknown): boolean => isQandeelError(e, 'LEARNING_GATE') && e.details.reason === 'PATTERN_OUTCOME_NOT_CURRENT';
+      const stateOf = (id: Id): string | undefined => x.m.interventions({ lessonId: lesson.id }).find((i) => i.id === id)?.state;
+      const contributions = (): readonly string[] => x.m.profile(x.s.employee.id).dimensions.find((d) => d.dimension === 'SYSTEM_CONTRIBUTION')?.evidenceRefs ?? [];
+
+      // A reuse of the trusted pattern is planned and its training completed (an open reuse).
+      const r1 = reuse().intervention;
+      assert.ok(r1);
+      x.m.completeTraining(x.s.founder, r1.id);
+      assert.equal(stateOf(r1.id), 'TRAINING_COMPLETED');
+
+      // The late conflicting replay contests the originating outcome.
+      assert.throws(() => x.x.ingest(metric('m-1', 9000)), (e) => isQandeelError(e, 'INTAKE_CONFLICT') && e.details.recorded === true);
+      assert.deepEqual(states(x, v.verificationId), ['CONTESTED']);
+      // 1. No new PATTERN_REUSE can be planned from the contested pattern.
+      assert.throws(reuse, notCurrent);
+      // 2. The open reuse cannot progress as trusted learning: cancelled in the conflict's own transaction.
+      assert.equal(stateOf(r1.id), 'CANCELLED');
+      assert.throws(() => x.m.completeTraining(x.s.founder, r1.id), code('INVALID_TRANSITION'));
+      assert.deepEqual([x.m.assessIntervention(r1.id).changed, x.m.interventions({ lessonId: lesson.id }).find((i) => i.id === r1.id)?.effect], [false, 'NOT_YET_TESTED']);
+      assert.throws(() => db(x).immediate('revive', () => db(x).run(`UPDATE learning_interventions SET state = 'TRAINING_COMPLETED', version = version + 1 WHERE id = ?`, r1.id)), code('STORAGE_INVARIANT'), 'a cancelled reuse never resumes');
+      // 3. It never counts as verified reuse, contribution or a basis for sharing.
+      assert.equal(count(x, `SELECT COUNT(*) AS n FROM learning_interventions WHERE lesson_id = ? AND effect = 'IMPROVEMENT_OBSERVED'`, lesson.id), 0);
+      assert.ok(!contributions().some((r) => r === `lesson:${lesson.id}` || r === `learning_intervention:${r1.id}`));
+      // 4. History is preserved: the lesson, the reuse and its every step stay.
+      assert.equal(count(x, `SELECT COUNT(*) AS n FROM lessons WHERE id = ? AND stage = 'VALIDATED'`, lesson.id), 1);
+      assert.deepEqual(db(x).all<{ state: string; reason_code: string }>('SELECT state, reason_code FROM learning_intervention_history WHERE intervention_id = ? ORDER BY id', r1.id).map((h) => `${h.state}:${h.reason_code}`), ['PLANNED:intervention.planned', 'TRAINING_COMPLETED:training.completed', 'CANCELLED:intervention.pattern_outcome_not_current']);
+      assert.equal(count(x, `SELECT COUNT(*) AS n FROM audit_events WHERE action = 'learning.intervention_cancelled' AND entity_id = ?`, r1.id), 1);
+      // 5. The Founder Attention / contest path is unchanged.
+      AttentionStore.for(x.h.store).sync();
+      assert.ok(AttentionStore.for(x.h.store).list().some((i) => i.dedupKey === `outcome_contest:${v.verificationId}` && i.level === 'NEEDS_DECISION'));
+
+      // 6. UPHOLD restores FUTURE reuse eligibility; the interrupted reuse stays history.
+      x.m.resolveOutcomeContest(x.s.founder, v.verificationId, { decision: 'UPHOLD', reasonCode: 'founder.producer_bug' });
+      const r2 = reuse().intervention;
+      assert.ok(r2 && r2.id !== r1.id && r2.state === 'PLANNED');
+      assert.equal(stateOf(r1.id), 'CANCELLED');
+      // A new conflict contests it again: the PLANNED reuse is cancelled too.
+      assert.throws(() => x.x.ingest(metric('m-1', 4321)), code('INTAKE_CONFLICT'));
+      assert.equal(stateOf(r2.id), 'CANCELLED');
+      assert.throws(reuse, notCurrent);
+
+      // 7. A valid REPLACE (fresh usable evidence) restores future reuse eligibility.
+      const rec2 = x.x.ingest(metric('m-2', 1750)).record;
+      bind(x, rec2.id, w);
+      const replaced = x.m.resolveOutcomeContest(x.s.founder, v.verificationId, { decision: 'REPLACE', reasonCode: 'founder.replaced', evidenceClasses: ['EXTERNAL_OUTCOME', 'REVIEW_DECISION'], evidenceRefs: [rec2.ref, `work_item:${w}`] });
+      assert.equal(x.m.evaluation(w)?.qualifiedOutcome, true);
+      const r3 = reuse().intervention;
+      assert.ok(r3 && r3.state === 'PLANNED');
+
+      // 8. RETRACT keeps reuse unavailable: the replacement is contested in turn, then retracted.
+      assert.throws(() => x.x.ingest(metric('m-2', 99)), code('INTAKE_CONFLICT'));
+      assert.equal(stateOf(r3.id), 'CANCELLED');
+      const replacementId = (replaced as { replacementVerificationId?: Id }).replacementVerificationId ?? (db(x).get<{ id: string }>('SELECT id FROM outcome_verifications WHERE replaces_verification_id = ?', v.verificationId)?.id as Id);
+      x.m.resolveOutcomeContest(x.s.founder, replacementId, { decision: 'RETRACT', reasonCode: 'founder.retracted' });
+      assert.equal(x.m.evaluation(w)?.qualifiedOutcome, false);
+      assert.throws(reuse, notCurrent);
+      assert.deepEqual(x.m.interventions({ lessonId: lesson.id }).map((i) => i.state), ['CANCELLED', 'CANCELLED', 'CANCELLED'], 'every interrupted reuse is history; none was deleted');
+    });
+  });
 });
 
 // =================================================================================================================

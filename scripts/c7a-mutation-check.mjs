@@ -265,6 +265,18 @@ const MUTATIONS = [
     runs: [STORE],
   },
   {
+    id: 'c7a-contested-pattern-reused',
+    gate: 'no PATTERN_REUSE is planned from a pattern whose originating success is no longer current qualified truth',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: "    if (input.kind === 'PATTERN_REUSE' && !ctx.db.get(`SELECT 1 AS x FROM learning_signals s WHERE s.observation_id = ? AND ${PATTERN_OUTCOME_CURRENT}`, l.observation_id))", replace: '    if (false)', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7a-contested-open-reuse-progresses',
+    gate: 'a reuse open when its pattern\'s originating outcome is contested is cancelled (history kept): it never completes or yields an effect',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: "AND i.state IN ('PLANNED', 'TRAINING_COMPLETED') AND NOT ${PATTERN_OUTCOME_CURRENT} ORDER BY i.id`", replace: 'AND 0 ORDER BY i.id`', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
     id: 'c7a-db-conflict-contests-nothing',
     gate: 'the datastore contests every current verification citing a conflicted record, whoever writes the conflict',
     edits: [{ file: MIGRATION, search: "     AND COALESCE((SELECT y.state FROM outcome_verification_validity y WHERE y.verification_id = o.id ORDER BY y.seq DESC LIMIT 1), 'VALID') IN ('VALID', 'UPHELD');\nEND;", replace: '     AND 0;\nEND;', expectedCount: 1 }],

@@ -408,7 +408,7 @@ const MUTATION_PINS = {
       'c7a-external-check-skipped-at-verification', 'c7a-operational-record-citable', 'c7a-suspended-source-usable', 'c7a-conflicted-record-usable', 'c7a-unbound-evidence-usable', 'c7a-pool-judgment-unchecked', 'c7a-pool-resolution-not-rechecked',
       'c7a-external-class-not-evidence', 'c7a-dependency-failure-ignored', 'c7a-report-always-unavailable', 'c7a-registry-requires-external-without-source', 'c7a-attention-misses-external-exceptions',
       // D-C7A-11: a late integrity conflict takes the disputed outcome out of current C6 truth until the Founder decides.
-      'c7a-contest-not-restated', 'c7a-contested-verdict-trusted', 'c7a-contest-not-a-conflict', 'c7a-report-presents-contested', 'c7a-attention-misses-contest', 'c7a-contest-resolution-not-founder', 'c7a-contested-pattern-counts', 'c7a-db-conflict-contests-nothing', 'c7a-db-validity-forgeable',
+      'c7a-contest-not-restated', 'c7a-contested-verdict-trusted', 'c7a-contest-not-a-conflict', 'c7a-report-presents-contested', 'c7a-attention-misses-contest', 'c7a-contest-resolution-not-founder', 'c7a-contested-pattern-counts', 'c7a-contested-pattern-reused', 'c7a-contested-open-reuse-progresses', 'c7a-db-conflict-contests-nothing', 'c7a-db-validity-forgeable',
       // D-C7A-10: the datastore enforces the registered contract, not only TypeScript.
       'c7a-db-contract-not-catalogued', 'c7a-db-type-family-unchecked', 'c7a-db-type-unchecked', 'c7a-db-domain-unchecked', 'c7a-db-unit-unchecked', 'c7a-db-scope-unchecked', 'c7a-db-duplicate-keys-admitted', 'c7a-db-fields-unchecked',
     ],

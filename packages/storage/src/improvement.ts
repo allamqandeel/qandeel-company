@@ -695,7 +695,7 @@ function reportFacts(ctx: StoreContext, cadence: ReportCadence, at: string): Rep
 function txProfile(ctx: StoreContext, employeeId: Id, at: string): PerformanceProfile {
   const patterns = ctx.db.all<{ id: string }>(`SELECT l.id FROM lessons l JOIN learning_signals s ON s.observation_id = l.observation_id WHERE s.kind = 'SUCCESSFUL_PATTERN' AND l.stage = 'VALIDATED' AND l.employee_id = ? AND ${PATTERN_OUTCOME_CURRENT}`, employeeId).map((r) => r.id);
   // R2-16: a verified reuse of the Employee's pattern is their contribution to the system only when SOMEONE ELSE reused it.
-  const reuses = ctx.db.all<{ id: string }>(`SELECT i.id FROM learning_interventions i JOIN lessons l ON l.id = i.lesson_id WHERE i.kind = 'PATTERN_REUSE' AND i.effect = 'IMPROVEMENT_OBSERVED' AND l.employee_id = ? AND i.employee_id <> l.employee_id`, employeeId).map((r) => r.id);
+  const reuses = ctx.db.all<{ id: string }>(`SELECT i.id FROM learning_interventions i JOIN lessons l ON l.id = i.lesson_id JOIN learning_signals s ON s.observation_id = l.observation_id WHERE i.kind = 'PATTERN_REUSE' AND i.effect = 'IMPROVEMENT_OBSERVED' AND l.employee_id = ? AND i.employee_id <> l.employee_id AND ${PATTERN_OUTCOME_CURRENT}`, employeeId).map((r) => r.id);
   return buildPerformanceProfile({
     employeeId,
     at,
@@ -738,6 +738,8 @@ function txPlanIntervention(ctx: StoreContext, lessonId: Id, input: { kind: 'TAR
   const comparableKey = (input.comparableKey ?? attribution?.comparableKey ?? (signal ? liveEvaluationRow(ctx, signal.workItemId)?.comparableKey : undefined) ?? 'unclassified').slice(0, 96);
   const employeeId = assertId(input.employeeId ?? l.employee_id, 'employeeId');
   if (input.kind === 'PATTERN_REUSE' && signal?.kind !== 'SUCCESSFUL_PATTERN') throw new QandeelError('LEARNING_GATE', 'only a validated successful pattern is reused', { lessonId: l.id, reason: 'NOT_A_PATTERN' });
+  // D-C7A-11: a pattern whose success is no longer current qualified truth (contested / retracted) is never reused.
+  if (input.kind === 'PATTERN_REUSE' && !ctx.db.get(`SELECT 1 AS x FROM learning_signals s WHERE s.observation_id = ? AND ${PATTERN_OUTCOME_CURRENT}`, l.observation_id)) throw new QandeelError('LEARNING_GATE', 'the success this pattern came from is no longer current qualified truth', { lessonId: l.id, reason: 'PATTERN_OUTCOME_NOT_CURRENT' });
   // R2-16: one open reuse of a lesson per Employee — the next waits for the previous one's effect (its own later work).
   if (input.kind === 'PATTERN_REUSE' && ctx.db.get(`SELECT 1 AS x FROM learning_interventions WHERE lesson_id = ? AND employee_id = ? AND kind = 'PATTERN_REUSE' AND state IN ('PLANNED', 'TRAINING_COMPLETED')`, l.id, employeeId)) return { outcome: 'AWAIT_EVIDENCE' as const, intervention: null, findingId: null };
   if (input.kind === 'TARGETED_RETRAINING') {
@@ -874,6 +876,19 @@ export function txRestateCurrentTruth(ctx: StoreContext, workItemId: Id): Id[] {
     if (!ctx.db.get('SELECT 1 AS x FROM evaluation_results WHERE work_item_id = ? AND definition_id = ? AND superseded_by IS NULL', workItemId, d.definition_id)) continue;
     txEvaluate(ctx, workItemId, mapDefinition(present(ctx.db.get('SELECT * FROM eval_definitions WHERE id = ?', d.definition_id))));
     restated.push(d.definition_id as Id);
+  }
+  // D-C7A-11: an open reuse of a pattern this Work Item's success produced no longer rests on trusted learning — it is
+  // cancelled (forward-only; history kept), so it never completes, never yields an effect and never counts toward
+  // sharing. A later UPHOLD / REPLACE re-opens only FUTURE reuse; the interrupted one stays history.
+  const at = ts(ctx);
+  for (const r of ctx.db.all<{ id: string }>(
+    `SELECT i.id FROM learning_interventions i JOIN lessons l ON l.id = i.lesson_id JOIN learning_signals s ON s.observation_id = l.observation_id
+      WHERE s.work_item_id = ? AND s.kind = 'SUCCESSFUL_PATTERN' AND i.kind = 'PATTERN_REUSE' AND i.state IN ('PLANNED', 'TRAINING_COMPLETED') AND NOT ${PATTERN_OUTCOME_CURRENT} ORDER BY i.id`,
+    workItemId,
+  )) {
+    ctx.db.run(`UPDATE learning_interventions SET state = 'CANCELLED', version = version + 1, updated_at = ? WHERE id = ?`, at, r.id);
+    ctx.db.run('INSERT INTO learning_intervention_history (intervention_id, version, state, effect, reason_code, actor_ref, occurred_at) SELECT id, version, state, effect, ?, ?, ? FROM learning_interventions WHERE id = ?', 'intervention.pattern_outcome_not_current', SYSTEM_EVALUATOR_REF, at, r.id);
+    appendAudit(ctx, 'learning.intervention_cancelled', 'learning_intervention', r.id, { actorRef: SYSTEM_EVALUATOR_REF }, 'OK', 'PATTERN_OUTCOME_NOT_CURRENT', { workItemId });
   }
   return restated;
 }
