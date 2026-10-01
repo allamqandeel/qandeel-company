@@ -215,7 +215,9 @@ Focused validation during implementation (QUALITY COMPLETE, VALIDATION PROPORTIO
 - `storage/test/c7b-app-controls.test.ts` — 28/28 (the 19 original + 5 issue-time authority + 4 Review Plan supersession proofs).
 - Nearest regressions (shared review / approval / migration code): `migrations`, `c4-review`, `r1-review`,
   `c4-organization`, `c2-governance`, `c3-review-fixes`, `c7a-external-evidence` — 192/192.
-- The 9 new mutations (`--only`) — 9/9 caught; every existing mutation anchor in the touched files still applies
+- The whole C7-B mutation suite — 42/42 caught (GitHub CI on `3931ed6` showed `c7b-db-proposal-revivable` no longer
+  caught: the new AWAITING_FOUNDER entry rule also refused the one revival that proved it, so the forward-only transition
+  list is now proved directly by REJECTED → PROPOSED / STALE revivals); every existing mutation anchor in the touched files still applies
   exactly once.
 - Verifier 81/81 rules, self-test 80 rules each able to fail; `typecheck` clean; `eslint --max-warnings=0` clean.
 

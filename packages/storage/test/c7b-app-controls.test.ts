@@ -240,6 +240,9 @@ describe('C7-B R3 governance through the existing review and approval engines', 
       assert.equal(w.controls.series().length, 0, 'nothing issued');
       assert.throws(() => w.s.gov.decideApproval(w.s.founder, String(r.proposal.approvalId), { decision: 'APPROVE', reasonCode: 'x' }), code('INVALID_TRANSITION'), 'a decided approval is history');
       aborts(() => raw(w.h).run("UPDATE app_control_proposals SET state = 'AWAITING_FOUNDER', version = version + 1 WHERE id = ?", r.proposal.id), 'a rejected proposal is never revived (datastore)');
+      // The forward-only transition list itself (no other rule refuses these): a decided act never returns to review.
+      aborts(() => raw(w.h).run("UPDATE app_control_proposals SET state = 'PROPOSED', version = version + 1 WHERE id = ?", r.proposal.id), 'REJECTED → PROPOSED');
+      aborts(() => raw(w.h).run("UPDATE app_control_proposals SET state = 'STALE', version = version + 1 WHERE id = ?", r.proposal.id), 'REJECTED → STALE');
       // The same act from the same Work Item is refused; it never comes back as a fresh approval loop.
       assert.equal(recordOrgAct(w.h.store, r.run.claim.fence, ++step, 'control.propose', flag('DISABLED')).code, 'CONTROL_REJECTED');
       assert.equal(n(w.h, `SELECT COUNT(*) AS n FROM approvals WHERE action = 'app-control.issue'`), 1);
