@@ -305,7 +305,7 @@ function escalatedToFounder(ctx: StoreContext, attributionId: Id): boolean {
  * for sharing — only while the success it came from is CURRENT qualified truth. A validated lesson stays history; an
  * outcome later contested by an integrity conflict on its evidence (or retracted) stops counting it.
  */
-const PATTERN_OUTCOME_CURRENT = `EXISTS (SELECT 1 FROM evaluation_results e WHERE e.work_item_id = s.work_item_id AND ${LATEST_LIVE_EVALUATION} AND e.qualified_outcome = 1)`;
+export const PATTERN_OUTCOME_CURRENT = `EXISTS (SELECT 1 FROM evaluation_results e WHERE e.work_item_id = s.work_item_id AND ${LATEST_LIVE_EVALUATION} AND e.qualified_outcome = 1)`;
 
 function liveEvaluationRow(ctx: StoreContext, workItemId: Id): EvaluationRecord | null {
   const r = ctx.db.get(`SELECT * FROM evaluation_results WHERE work_item_id = ? AND superseded_by IS NULL ORDER BY created_at DESC, id DESC LIMIT 1`, workItemId);

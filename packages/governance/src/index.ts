@@ -14,6 +14,7 @@ export * from './employee.js';
 export * from './external-evidence.js';
 export * from './founder.js';
 export * from './organization.js';
+export * from './pilot.js';
 export * from './proposals.js';
 export * from './providers.js';
 export * from './review.js';

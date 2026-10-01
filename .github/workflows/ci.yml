@@ -165,7 +165,7 @@ jobs:
           node-version-file: .nvmrc
           package-manager-cache: false
       - run: npm ci
-      - name: Every workspace test (unit, real SQLite, multi-process, fault-injection; C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A + C7-B, including the Founder surface, the UI model, the improvement engine, the governed external-evidence intake and the governed control plane)
+      - name: Every workspace test (unit, real SQLite, multi-process, fault-injection; C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A + C7-B + C7-C, including the Founder surface, the UI model, the improvement engine, the governed external-evidence intake, the governed control plane and the Pilot instrumentation)
         run: |
           npm run build
           npm run test
@@ -198,6 +198,8 @@ jobs:
           - { os: windows-latest, label: c7b-1of3, suite: 'c7b:1/3' }
           - { os: windows-latest, label: c7b-2of3, suite: 'c7b:2/3' }
           - { os: windows-latest, label: c7b-3of3, suite: 'c7b:3/3' }
+          - { os: windows-latest, label: c7c-1of2, suite: 'c7c:1/2' }
+          - { os: windows-latest, label: c7c-2of2, suite: 'c7c:2/2' }
           - { os: ubuntu-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }
           - { os: ubuntu-latest, label: c3-1of1, suite: 'c3:1/1' }
           - { os: ubuntu-latest, label: r1-1of2, suite: 'r1:1/2' }
@@ -208,6 +210,7 @@ jobs:
           - { os: ubuntu-latest, label: c7a-2of2, suite: 'c7a:2/2' }
           - { os: ubuntu-latest, label: c7b-1of2, suite: 'c7b:1/2' }
           - { os: ubuntu-latest, label: c7b-2of2, suite: 'c7b:2/2' }
+          - { os: ubuntu-latest, label: c7c-1of1, suite: 'c7c:1/1' }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:

@@ -104,6 +104,7 @@ export { ReviewStore, type ReviewHealth } from './review.js';
 // acts are written only through the fenced runtime-authority subpath.
 export { FounderAuthStore, LAUNCH_TOKEN_TTL_MS, SESSION_IDLE_MS, SESSION_TTL_MS, type FounderSession } from './founder-auth.js';
 export { GoalStore, type ProposeGoalInput } from './goals.js';
+export { PILOT_SCOPE_CAP, PilotStore, type AdvancePilotInput, type BriefingStatus, type CreatePilotInput, type PilotBoard, type PilotHistoryRecord, type PilotPeopleEvidence, type PilotRecord, type PilotScope, type PilotWorkInspection } from './pilots.js';
 export { CommunicationStore, FOUNDER_BRIEF_TASK_CLASS, FOUNDER_REPLY_TASK_CLASS, type FounderSendInput, type OpenThreadInput } from './communications.js';
 export { AttentionStore, ATTENTION_COOLDOWN_MS, type AttentionSyncReport } from './attention.js';
 export { FounderActionStore, PREVIEW_TTL_MS, type ConfirmResult } from './founder-actions.js';

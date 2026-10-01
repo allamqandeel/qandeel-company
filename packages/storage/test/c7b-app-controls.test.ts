@@ -86,7 +86,7 @@ describe('C7-B lifecycle, migration and the persistent seat', () => {
       assert.equal(sha256Hex(readFileSync(new URL(`../../migrations/${pin.file}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n')), pin.sha256, pin.file);
       if (frozen[pin.version] !== undefined) assert.equal(pin.sha256, frozen[pin.version], `${pin.file} never changes`);
     }
-    assert.equal(RELEASED_MIGRATIONS.at(-1)?.file, '0013_c7b_governed_app_controls.sql');
+    assert.equal(RELEASED_MIGRATIONS.find((m) => m.version === 13)?.file, '0013_c7b_governed_app_controls.sql');
   });
 
   test('(3) a released v12 Company upgrades to v13: every row kept, the seat and charter version added, past refusals folded into bounded counters', () => {
@@ -102,7 +102,7 @@ describe('C7-B lifecycle, migration and the persistent seat', () => {
       v12.close();
       const v13 = openStoreForTests(root, { clock: new ManualClock(), liveSchemaUpdate: true });
       try {
-        assert.deepEqual(v13.migration.applied, [13]);
+        assert.deepEqual(v13.migration.applied, [13, 14]);
         const d = storeContext(v13).db;
         assert.equal(Number(d.get<{ n: number }>('SELECT COUNT(*) AS n FROM events')?.n), before.events, 'the outbox keeps every event');
         assert.equal(Number(d.get<{ n: number }>('SELECT COUNT(*) AS n FROM audit_events')?.n), before.audit, 'audit history is untouched');

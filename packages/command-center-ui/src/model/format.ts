@@ -132,6 +132,7 @@ export const INTENT_LABEL: Readonly<Record<string, string>> = {
   OPEN_EMPLOYEE: 'Open an employee',
   SHOW_REPORT: 'Show a company report',
   SHOW_PERFORMANCE: 'Show a performance profile',
+  SHOW_PILOT: 'Show a pilot',
   APPROVAL_DECIDE: 'Decide an approval',
   GOAL_APPROVE: 'Approve a goal',
   GOAL_STATE: 'Change a goal state',
@@ -149,6 +150,8 @@ export const INTENT_LABEL: Readonly<Record<string, string>> = {
   LESSON_DECIDE: 'Decide a lesson',
   OUTCOME_VERIFY: 'Verify an outcome',
   PROMOTION_DECIDE: 'Decide sharing a lesson',
+  PILOT_CREATE: 'Create a pilot',
+  PILOT_ADVANCE: 'Take a pilot step',
 };
 
 /** Decisions and outcomes in a preview, in words. */
@@ -200,7 +203,20 @@ export const FIELD_LABEL: Readonly<Record<string, string>> = {
   risk: 'Risk',
   target: 'Shared with',
   title: 'Goal',
+  mode: 'Pilot mode',
+  from: 'From',
+  requiresExternalOutcome: 'Needs real-world evidence',
+  answeredBriefingRequests: 'Briefing requests answered',
+  unansweredBriefingRequests: 'Briefing requests unanswered',
+  successCriteria: 'Success criteria',
 };
+
+/** C7-C: Pilot modes, readiness criteria and evidence states in words (advisory evidence, never a score). */
+export const PILOT_MODE_LABEL: Readonly<Record<string, string>> = { TRAINING_INTERNAL: 'Internal training', CONTROLLED_REAL: 'Controlled real-world' };
+export const READINESS_LABEL: Readonly<Record<string, string>> = { FOUNDER_DIALOGUE: 'Founder dialogue', GOAL_DECOMPOSITION: 'Goal decomposition', CROSS_DEPARTMENT_EXECUTION: 'Cross-department execution', REVIEW_DISCIPLINE: 'Review discipline', APPROPRIATE_AUTONOMY: 'Appropriate autonomy', LEARNING_CLOSURE: 'Learning closure', COST_DISCIPLINE: 'Cost discipline', REAL_WORLD_OUTCOME: 'Real-world outcome' };
+export const EVIDENCE_LABEL: Readonly<Record<string, string>> = { INSUFFICIENT_EVIDENCE: 'Not enough evidence yet', SUPPORTED: 'Supported by evidence', CONCERN: 'Concern', CONTESTED: 'Contested', NOT_APPLICABLE: 'Not applicable' };
+export const PILOT_DECISION_LABEL: Readonly<Record<string, string>> = { START_BRIEFING: 'Start the briefing with the CEO', ASK_CEO_A_BRIEFING_REQUEST: 'Ask the CEO a question or request in the briefing', AWAITING_GOVERNED_REPLY: 'Waiting for the CEO’s reply (silence is not agreement)', DECIDE_READY: 'Decide whether the pilot is ready', APPROVE_ROOT_COMPANY_GOAL_WITH_SUCCESS_CRITERIA: 'Approve a company goal with success criteria', DECIDE_ACTIVE_ON_ROOT_GOAL: 'Decide whether to activate the pilot on its goal', DECIDE_OPEN_PILOT_ATTENTION_ITEMS: 'Decide the pilot’s open items', DECIDE_COMPLETION: 'Decide whether the pilot is complete' };
+export const MARKET_CLAIM_LABEL: Readonly<Record<string, string>> = { NOT_CLAIMABLE_TRAINING_INTERNAL: 'Internal training: no market claim', NOT_SUPPORTED: 'No governed real-world evidence yet', SUPPORTED_BY_GOVERNED_EVIDENCE: 'Supported by governed real-world evidence', CONTESTED: 'Contested by a later evidence conflict' };
 
 export const SCOPE_LABEL: Readonly<Record<string, string>> = { EMPLOYEE: 'Employee', DEPARTMENT: 'Department', COMPANY: 'Company', WORK_ITEM: 'Work item' };
 export const RESULT_LABEL: Readonly<Record<string, string>> = {
@@ -219,6 +235,7 @@ export const RESULT_LABEL: Readonly<Record<string, string>> = {
   lesson: 'lesson',
   outcome_verification: 'outcome verification',
   lesson_promotion: 'lesson sharing',
+  pilot: 'pilot',
 };
 export const CALENDAR_LABEL: Readonly<Record<string, string>> = { ACTING_ENDS: 'Acting cover ends', DELEGATION_DUE: 'Delegation due', STAFFING_DECISION_DUE: 'Staffing decision due', GOAL_HORIZON: 'Goal horizon', WORK_DUE: 'Work due', APPROVAL_EXPIRES: 'Approval expires', SESSION_EXPIRES: 'Your session ends' };
 

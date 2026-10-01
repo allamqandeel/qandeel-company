@@ -16,8 +16,8 @@
  * `BEGIN IMMEDIATE` — the check, the effect, CONFIRMED and the audit commit together or not at all.
  */
 import { QandeelError, assertCode, assertId, boundedJson, canonicalJson, isTimestamp, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { APP_CONTROL_APPROVAL_ACTION, BINDING_ROLES, BINDING_SUBJECTS, SOURCE_DECISIONS, assertGoalTransition, assertSourceRegistration, isGoalState, isMutatingIntent, nextSourceState, type GoalState, type MutatingIntent, type SourceDecision, type SourceState } from '@qandeel-company/governance';
-import { assertCauses, summarizeCauses, type AttributedCause } from '@qandeel-company/mind';
+import { APP_CONTROL_APPROVAL_ACTION, BINDING_ROLES, BINDING_SUBJECTS, PILOT_MODES, SOURCE_DECISIONS, assertGoalTransition, assertSourceRegistration, isGoalState, isMutatingIntent, nextSourceState, type GoalState, type MutatingIntent, type PilotMode, type PilotState, type SourceDecision, type SourceState } from '@qandeel-company/governance';
+import { assertCauses, containsSecretMaterial, summarizeCauses, type AttributedCause } from '@qandeel-company/mind';
 
 import { txControlDecisionView } from './app-controls.js';
 import { txAssertExternalEvidence } from './external-core.js';
@@ -32,6 +32,7 @@ import { MemoryStore } from './memory.js';
 import { OrganizationStore } from './organization.js';
 import { getStaffingRequest } from './organization.js';
 import { CONTEST_DECISIONS, assertOutcomeClasses, txContestedVerification, type ContestDecision } from './outcome-core.js';
+import { PilotStore, planPilotStep, txBriefingStatus } from './pilots.js';
 import { txResolveReconciliation } from './queue.js';
 import { ReviewStore } from './review.js';
 import { storeContext, type CompanyStore } from './store.js';
@@ -119,7 +120,11 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
       const parentGoalId = kind === 'DEPARTMENT' ? assertId(raw.parentGoalId, 'parentGoalId') : null;
       const horizonTo = raw.horizonTo === undefined || raw.horizonTo === null ? null : raw.horizonTo;
       if (horizonTo !== null && !isTimestamp(horizonTo)) throw new QandeelError('VALIDATION_FAILED', 'horizonTo must be a canonical UTC timestamp', { field: 'horizonTo' });
-      return { kind, departmentId, parentGoalId, title: s('title', 160), summary: s('summary', 2000), ownerRef: s('ownerRef'), horizonTo: horizonTo as string | null, activate: raw.activate === true };
+      // C7-C: success criteria travel with the proposal (a Pilot activates only on a root goal that states them); each is a
+      // short line of Company content, secret-scanned again by the Goal store.
+      const criteria = raw.successCriteria === undefined || raw.successCriteria === null ? [] : raw.successCriteria;
+      if (!Array.isArray(criteria) || criteria.length > 12 || !criteria.every((c) => typeof c === 'string' && c.trim().length > 0 && c.length <= 400)) throw new QandeelError('VALIDATION_FAILED', 'successCriteria is a list of at most 12 short lines', { field: 'successCriteria' });
+      return { kind, departmentId, parentGoalId, title: s('title', 160), summary: s('summary', 2000), ownerRef: s('ownerRef'), horizonTo: horizonTo as string | null, activate: raw.activate === true, successCriteria: criteria as string[] };
     }
     case 'STAFFING_DECIDE': {
       const r = getStaffingRequest(ctx, assertId(raw.requestId, 'requestId'));
@@ -290,6 +295,23 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
       txAssertExternalEvidence(ctx, v.workItemId, evidenceClasses, evidenceRefs);
       return { ...base, evidenceClasses, evidenceRefs };
     }
+    // --- C7-C: the Pilot is created and moved only by an explicit Founder act (structured only; the store re-checks) ---
+    case 'PILOT_CREATE': {
+      const mode = oneOf(raw, 'mode', PILOT_MODES);
+      const title = s('title', 160);
+      // The preview payload is durable: a secret never enters it (the store refuses it again at confirm).
+      if (containsSecretMaterial(title)) throw new QandeelError('VALIDATION_FAILED', 'pilot title carries secret material', { field: 'title', reason: 'SECRET_MATERIAL' });
+      const requiresExternalOutcome = raw.requiresExternalOutcome === true;
+      if (requiresExternalOutcome && mode !== 'CONTROLLED_REAL') throw new QandeelError('VALIDATION_FAILED', 'only a controlled real-world pilot may require external outcome evidence', { field: 'requiresExternalOutcome' });
+      return { mode, title, requiresExternalOutcome, reasonCode: assertCode(raw.reasonCode ?? 'pilot.created', 'reasonCode') };
+    }
+    case 'PILOT_ADVANCE': {
+      // A preview never offers a step the confirmation would refuse (lifecycle, briefing evidence, root goal, bindings).
+      const plan = planPilotStep(ctx, assertId(raw.pilotId, 'pilotId'), { to: raw.to as PilotState, reasonCode: String(raw.reasonCode ?? 'pilot.advanced'), ...(raw.threadId === undefined || raw.threadId === null ? {} : { threadId: String(raw.threadId) }), ...(raw.goalId === undefined || raw.goalId === null ? {} : { goalId: String(raw.goalId) }) });
+      if (plan.noop) throw new QandeelError('INVALID_TRANSITION', 'the pilot already took this step', { pilotId: plan.pilot.id, state: plan.pilot.state });
+      const briefing = txBriefingStatus(ctx, plan.pilot);
+      return { pilotId: plan.pilot.id, from: plan.pilot.state, to: plan.to, mode: plan.pilot.mode, threadId: plan.threadId, goalId: plan.goalId, answeredBriefingRequests: briefing.answered.length, unansweredBriefingRequests: briefing.pending.length, reasonCode: plan.reasonCode };
+    }
     default:
       throw new QandeelError('VALIDATION_FAILED', 'unknown intent', { field: 'intent' });
   }
@@ -443,7 +465,7 @@ export class FounderActionStore {
       }
       case 'GOAL_PROPOSE': {
         const goals = GoalStore.for(this.#store);
-        let g = goals.propose(founderRef, { kind: pl.kind as 'COMPANY' | 'DEPARTMENT', departmentId: pl.departmentId as string | null, parentGoalId: pl.parentGoalId as string | null, title: str('title'), summary: str('summary'), ownerRef: str('ownerRef'), horizonTo: pl.horizonTo as string | null });
+        let g = goals.propose(founderRef, { kind: pl.kind as 'COMPANY' | 'DEPARTMENT', departmentId: pl.departmentId as string | null, parentGoalId: pl.parentGoalId as string | null, title: str('title'), summary: str('summary'), ownerRef: str('ownerRef'), horizonTo: pl.horizonTo as string | null, successCriteria: strings('successCriteria') });
         if (pl.activate === true) {
           g = goals.transition(founderRef, g.id, { to: 'APPROVED', reasonCode: 'goal.approved' });
           g = goals.transition(founderRef, g.id, { to: 'ACTIVE', reasonCode: 'goal.activated' });
@@ -530,6 +552,15 @@ export class FounderActionStore {
         const replace = pl.decision === 'REPLACE';
         const out = ImprovementStore.for(this.#store).resolveOutcomeContest(founderRef, str('verificationId'), { decision: pl.decision as ContestDecision, reasonCode: str('reasonCode'), ...(replace ? { evidenceClasses: strings('evidenceClasses'), evidenceRefs: strings('evidenceRefs') } : {}) });
         return `outcome_verification:${out.verificationId}`;
+      }
+      // --- C7-C: at the PilotStore boundary (Founder only; the datastore re-checks every rule) ---
+      case 'PILOT_CREATE': {
+        const pilot = PilotStore.for(this.#store).create(founderRef, { mode: pl.mode as PilotMode, title: str('title'), requiresExternalOutcome: pl.requiresExternalOutcome === true }, { reasonCode: str('reasonCode') });
+        return `pilot:${pilot.id}`;
+      }
+      case 'PILOT_ADVANCE': {
+        const pilot = PilotStore.for(this.#store).advance(founderRef, str('pilotId'), { to: pl.to as PilotState, reasonCode: str('reasonCode'), ...(pl.threadId ? { threadId: str('threadId') } : {}), ...(pl.goalId ? { goalId: str('goalId') } : {}) });
+        return `pilot:${pilot.id}`;
       }
     }
   }

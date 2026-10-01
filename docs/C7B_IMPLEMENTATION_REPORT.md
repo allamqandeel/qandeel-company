@@ -259,3 +259,11 @@ the PR handoff, not here (writing them here would change the head they describe)
 No App code, transport, listener, SDK, credential, key, signature, applied state, real Kill Switch, maintenance or
 upgrade screen, provider routing, model selection, OTA, Pilot instrumentation, publishing, dashboard, Department or
 Employee was built. C7-B is NOT CLOSED.
+
+## 19. Lifecycle note (appended at the C7-C start, 2026-10-01)
+
+The narrative above is history and is not rewritten. After the Technical Lead's exact-head review of `ddded00`, PR #14
+merged into `main` as `c06fd2e2f0e348efdfdc947322a80b69cf8ff088` (same tree `dd53656d`); exact-head run #97 passed the
+full Windows + Ubuntu gate on its third attempt (same-head targeted reruns of a Windows fault-injection lease-timing
+flake and a timed-out `r1-1of4` mutation shard; no code change) and post-merge run #98 passed the fast-integrity path.
+The canonical closure statement is `docs/C7B_CLOSURE_RECORD.md`: C7-B is CLOSED / MERGED / CANONICAL.
