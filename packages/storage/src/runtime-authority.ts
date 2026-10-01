@@ -13,7 +13,7 @@
  * rebuilt from the publicly readable lease row is refused. Every worker write presents its job fence. Recovery writes that take a claim away
  * from a worker also present the supervisor fence.
  */
-import { QandeelError, isQandeelError, type Id, type JsonValue, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
+import { QandeelError, isQandeelError, type Id, type JsonObject, type JsonValue, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
 import type { DataClass, OutcomeJudgment, ProviderFailureClass } from '@qandeel-company/governance';
 
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
@@ -88,6 +88,7 @@ import {
   type SubmitResult,
 } from './mind-writes.js';
 import { txRecordMessage, type MessageProposalInput, type RecordMessageResult } from './communications.js';
+import { digitalRefusalCode, prepareDigitalAct, txDigitalAct, type DigitalActOutcome, type DigitalPrepared } from './digital.js';
 import { txGoalAct } from './goals.js';
 import { getEmployeeRow, recoverBudgetAdmissions } from './governance-core.js';
 import { attributed } from './governed-writes.js';
@@ -323,6 +324,30 @@ export function recordToolIntent(store: CompanyStore, fence: Fence, input: ToolI
 
 export function recordToolResult(store: CompanyStore, fence: Fence, invocationId: Id, outcome: ToolDriverOutcome): string {
   return write(store, 'tool result', (ctx) => txToolResult(ctx, fence, invocationId, outcome));
+}
+
+/**
+ * C7-D: the effect of one internal `digital-workspace` act, called by the Tool Executor for an EXECUTE intent of that
+ * Company-native tool (the intent has already passed the full authority path). Artifact Store I/O happens first (its own
+ * fenced, crash-safe protocol); then ONE fenced transaction applies the act and records the tool result together — so a
+ * crash leaves either nothing (the orphan intent is retried under the same key) or the whole act. The run receives the
+ * act's result; the durable invocation keeps a content-free digest where the result carries file content.
+ */
+export function recordDigitalWorkspaceAct(store: CompanyStore, fence: Fence, invocationId: Id, actionCode: string, args: JsonObject): { readonly state: string; readonly outcome: DigitalActOutcome } {
+  let prepared: DigitalPrepared = {};
+  let refusal: string | null = null;
+  try {
+    prepared = prepareDigitalAct(store, fence, actionCode, args);
+  } catch (error) {
+    refusal = digitalRefusalCode(error);
+    if (refusal === null) throw error;
+  }
+  return fenced(store, 'digital act', fence, (ctx) => {
+    verifyFence(ctx, fence);
+    const outcome: DigitalActOutcome = refusal !== null ? { ok: false, code: refusal, sent: 'NO' } : txDigitalAct(ctx, fence, actionCode, args, prepared);
+    const durable: ToolDriverOutcome = outcome.ok ? { ok: true, result: outcome.durable ?? outcome.result } : outcome;
+    return { state: txToolResult(ctx, fence, invocationId, durable), outcome };
+  });
 }
 
 /** Recovery (supervisor fence mandatory): classify governed work of runs that are no longer running. */

@@ -89,6 +89,9 @@ export const ERROR_CODES = [
   // C7-C Pilot instrumentation: a Pilot step refused by its lifecycle, briefing evidence or root-goal rule (the reason is a
   // code; a Pilot never grants anything).
   'PILOT_INVALID',
+  // C7-D digital presence: a digital workspace, preview, candidate or promotion act refused by its contract (the reason is
+  // a code in `details.reason`; never the refused content).
+  'DIGITAL_REFUSED',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

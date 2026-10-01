@@ -10,6 +10,7 @@
     "packages/domain",
     "packages/governance",
     "packages/mind",
+    "packages/tool-drivers",
     "packages/storage",
     "packages/runtime",
     "packages/command-center-ui",

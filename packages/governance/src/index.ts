@@ -9,6 +9,7 @@
 export * from './app-controls.js';
 export * from './authority.js';
 export * from './classes.js';
+export * from './digital.js';
 export * from './economics.js';
 export * from './employee.js';
 export * from './external-evidence.js';

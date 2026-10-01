@@ -36,6 +36,7 @@ import {
   type BackoffPolicy,
   type Clock,
   type Id,
+  type JsonObject,
   type JsonValue,
   type Processor,
   type ProcessorContext,
@@ -74,6 +75,11 @@ import {
   ImprovementStore,
   ExternalEvidenceStore,
   PilotStore,
+  DigitalStore,
+  promotionArgsOf,
+  resolvePromotionExport,
+  resolvePromotionTarget,
+  type PromotionExportResult,
   MemoryStore,
   OrganizationStore,
   ReviewStore,
@@ -205,6 +211,8 @@ export interface FounderAdmin {
   readonly external: ExternalEvidenceStore;
   /** C7-C Pilots: Founder-decided contexts and their derived Evidence Board, under the same signalling contract. */
   readonly pilots: PilotStore;
+  /** C7-D: the Digital Workshop read model and Founder-only promotion-target registration. */
+  readonly digital: DigitalStore;
   universe(options?: { at?: string }): CompanyUniverse;
 }
 
@@ -863,6 +871,9 @@ export class CompanyRuntime {
         }),
         // C7-C: a Pilot step announces once; the board, scope and inspection are derived reads and stay silent.
         pilots: signalling(PilotStore.for(s), changed, { mutating: ['create', 'advance'], reads: ['get', 'list', 'history', 'briefing', 'scope', 'decisions', 'board', 'inspect', 'health'] }),
+        // C7-D: target registration announces once; projects, candidates, the derived promotion lifecycle and the preview
+        // resolution are reads and stay silent.
+        digital: signalling(DigitalStore.for(s), changed, { mutating: ['registerTarget', 'setTargetState'], reads: ['targets', 'projects', 'project', 'revisionFiles', 'promotion', 'decisions', 'previewResolution', 'evidenceForWorkItems', 'health'] }),
         universe: (options: { at?: string } = {}): CompanyUniverse => {
           if (options.at !== undefined && !isTimestamp(options.at)) throw new QandeelError('VALIDATION_FAILED', 'at must be a canonical UTC timestamp', { field: 'at' });
           return projectUniverse(s, options.at === undefined ? {} : { at: options.at });
@@ -897,6 +908,22 @@ export class CompanyRuntime {
   mindHealth(): C3Health {
     if (!this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
     return c3HealthOf(this.#store);
+  }
+
+  /**
+   * C7-D: the read-only, re-verifying promotion source an external promotion driver is wired to by the host. A driver
+   * resolves the exact candidate its approved arguments name — never the store, a workspace path or another candidate.
+   */
+  promotionSource(): { resolve(adapterCode: string, args: JsonObject, options: { includeContent: boolean }): PromotionExportResult; target(adapterCode: string, targetId: string): ReturnType<typeof resolvePromotionTarget>; promotionArgs(promotionId: string): JsonObject | null } {
+    const open = (): CompanyStore => {
+      if (!this.#store || this.#store.isClosed) throw new QandeelError('RUNTIME_NOT_READY', 'runtime store is not open');
+      return this.#store;
+    };
+    return Object.freeze({
+      resolve: (adapterCode: string, args: JsonObject, options: { includeContent: boolean }) => resolvePromotionExport(open(), adapterCode, args, options),
+      target: (adapterCode: string, targetId: string) => resolvePromotionTarget(open(), adapterCode, targetId),
+      promotionArgs: (promotionId: string) => promotionArgsOf(open(), promotionId),
+    });
   }
 
   /** Governed execution diagnostics (content-free). */

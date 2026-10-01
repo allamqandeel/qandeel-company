@@ -82,7 +82,7 @@ export class DeterministicFakeProvider implements ProviderAdapter {
         }
       }
     }
-    let entry = script[turn] ?? { type: 'FINAL', summaryCode: 'fake.done' };
+    let entry: unknown = script[turn] ?? { type: 'FINAL', summaryCode: 'fake.done' };
     // C5: `{ hold: <ms>, then: <entry> }` keeps the call (and so the run) visibly in progress — a bounded,
     // abortable wait, never a real model — so live proofs can show work that is running right now.
     if (typeof entry === 'object' && entry !== null && 'hold' in entry) {
@@ -99,11 +99,40 @@ export class DeterministicFakeProvider implements ProviderAdapter {
       entry = then ?? { type: 'FINAL', summaryCode: 'fake.done' };
     }
     if (typeof entry === 'object' && entry !== null && 'fail' in entry) throw new ProviderError(String((entry as { fail: unknown }).fail) as ProviderFailureClass);
+    // C7-D: a scripted argument `"$ref:<action>.<field>"` takes that field from the newest recent tool result of that
+    // action (deterministic; a multi-step script can use ids the Company itself issued, e.g. a revision id).
+    entry = resolveRefs(entry, request.messages.filter((m) => m.role === 'tool').map((m) => m.content).reverse());
     const outputText = typeof entry === 'string' ? entry : JSON.stringify(entry);
     const inputBytes = request.messages.reduce((n, m) => n + Buffer.byteLength(m.content, 'utf8'), 0);
     const usage = this.#usageOverride.get(request.deploymentCode) ?? { inputTokens: Math.ceil(inputBytes / 4) + 1, outputTokens: Math.min(request.maxOutputTokens, Math.ceil(Buffer.byteLength(outputText, 'utf8') / 4) + 1) };
     return { outputText, usage };
   }
+}
+
+const REF = /^\$ref:([a-z][a-z0-9-]*)\.([A-Za-z0-9.]+)$/;
+
+function resolveRefs(entry: unknown, newestFirst: readonly string[]): unknown {
+  if (typeof entry === 'string') {
+    const m = REF.exec(entry);
+    if (!m) return entry;
+    for (const content of newestFirst) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(content);
+      } catch {
+        continue;
+      }
+      const o = parsed as { action?: unknown; result?: unknown };
+      if (o?.action !== m[1] || typeof o.result !== 'object' || o.result === null) continue;
+      let v: unknown = o.result;
+      for (const k of (m[2] as string).split('.')) v = typeof v === 'object' && v !== null ? (v as Record<string, unknown>)[k] : undefined;
+      if (v !== undefined) return v;
+    }
+    return entry;
+  }
+  if (Array.isArray(entry)) return entry.map((x) => resolveRefs(x, newestFirst));
+  if (typeof entry === 'object' && entry !== null) return Object.fromEntries(Object.entries(entry).map(([k, v]) => [k, resolveRefs(v, newestFirst)]));
+  return entry;
 }
 
 /** Deterministic tool drivers. Each records its invocations so tests can prove it was (not) called. */
