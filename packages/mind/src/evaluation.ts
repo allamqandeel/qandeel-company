@@ -79,6 +79,12 @@ export interface WorkEvidence {
   readonly completed: boolean;
   readonly reviewed: boolean;
   readonly outcome: 'ACHIEVED' | 'NOT_ACHIEVED' | 'INCONCLUSIVE' | null;
+  /**
+   * C7-A: the Work Item's recorded verification is CONTESTED — external evidence it rested on later had an integrity
+   * conflict, and the Founder has not decided it. `outcome` is then null (no current verified outcome) and the evidence
+   * is in conflict until that decision. Absent when not contested.
+   */
+  readonly outcomeContested?: boolean;
   readonly review: { readonly pass: number; readonly fail: number; readonly uncertain: number; readonly insufficient: number; readonly rework: number; readonly openConflict: boolean };
   readonly runs: { readonly total: number; readonly failed: number; readonly retried: number };
   /**
@@ -234,6 +240,7 @@ function dimensionVerdict(dimension: ItemDimension, ev: WorkEvidence, qualified:
 export function evidenceConflicts(ev: WorkEvidence): string[] {
   const out: string[] = [];
   if (ev.review.openConflict) out.push('REVIEW_CONFLICT_OPEN');
+  if (ev.outcomeContested === true) out.push('OUTCOME_EVIDENCE_CONTESTED');
   if (ev.outcome === 'NOT_ACHIEVED' && ev.review.pass > 0 && ev.review.fail === 0) out.push('REVIEW_PASSED_OUTCOME_FAILED');
   if (ev.outcome === 'ACHIEVED' && !ev.reviewed && ev.review.fail > 0) out.push('OUTCOME_ACHIEVED_REVIEW_FAILED');
   return out;

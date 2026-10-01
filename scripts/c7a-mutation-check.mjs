@@ -2,14 +2,16 @@
 // C7-A mutation check: proves the Operational Data + External Outcome Core gates are not vacuous.
 //
 // Each mutation removes (or bypasses) one semantic gate in the COMPILED output (packages/*/dist), runs the proof
-// tests that must catch it, requires them to FAIL, and restores every file (always, in `finally`). Sources are
-// never touched; released migrations are never edited (they are pinned by checksum) — the datastore triggers stay as
-// defence in depth, so each mutation below is caught by the proof that names the code-level refusal. Run after
-// `npm run build`:
+// tests that must catch it, requires them to FAIL, and restores every file (always, in `finally`). TypeScript sources
+// are never touched. A DATASTORE mutation (D-C7A-10 / D-C7A-11: the triggers that hold the registered contract and the
+// contest of disputed evidence) edits the C7-A migration for that one run and re-pins it in the compiled pin table only
+// (`dist/src/migrations.js`), so the proofs open a database built by the mutated schema; both files are restored.
+// Run after `npm run build`:
 //
 //   npm run c7a:mutation                          all mutations
 //   npm run c7a:mutation -- --shard 2/3           the second of three disjoint shards (CI parallelism)
 //   npm run c7a:mutation -- --report <file.json>  also write the ids run / caught (CI proof parity)
+//   npm run c7a:mutation -- --only <id,id>        only the named mutations (a local focus; never a parity report)
 //
 // A mutation the tests do not catch - or one that no longer applies because the guarded code moved - fails this
 // script. The families are the C7-A brief's adversarial proofs (section 18): privacy refusal by name, free text,
@@ -19,6 +21,7 @@
 // dependency failure, reports, the Eval Registry gate, Founder Attention).
 
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +37,8 @@ const SEAM = { cwd: 'packages/mind', tests: ['dist/test/c7a-kernel.test.js'] };
 const GOV = 'packages/governance/dist/src';
 const MIND = 'packages/mind/dist/src';
 const STORAGE = 'packages/storage/dist/src';
+const MIGRATION = 'packages/storage/migrations/0012_c7a_operational_data_external_outcomes.sql';
+const PINS = `${STORAGE}/migrations.js`;
 
 const MUTATIONS = [
   // --- Privacy: allowlist first, content never kept or echoed -------------------------------------------------
@@ -216,12 +221,134 @@ const MUTATIONS = [
     edits: [{ file: `${STORAGE}/attention.js`, search: '    for (const x of externalAttentionSignals(ctx)) {', replace: '    for (const x of []) {', expectedCount: 1 }],
     runs: [STORE],
   },
+  // --- D-C7A-11: a late integrity conflict takes the disputed outcome out of current C6 truth --------------------------
+  {
+    id: 'c7a-contest-not-restated',
+    gate: 'a conflicting replay restates C6 current truth in its own transaction (the qualified evaluation is superseded)',
+    edits: [{ file: `${STORAGE}/external-evidence.js`, search: 'contested = txOutcomesContestedBy(ctx, conflictId).length;', replace: 'contested = 0;', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7a-contested-verdict-trusted',
+    gate: 'the evaluator never trusts a verification that is not current (contested / retracted)',
+    edits: [{ file: `${STORAGE}/improvement-core.js`, search: 'const verdict = recorded?.current ? recorded : null;', replace: 'const verdict = recorded;', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7a-contest-not-a-conflict',
+    gate: 'a contested outcome is conflicting evidence to the evaluator (never averaged into a verdict)',
+    edits: [{ file: `${MIND}/evaluation.js`, search: "    if (ev.outcomeContested === true)\n        out.push('OUTCOME_EVIDENCE_CONTESTED');\n", replace: '', expectedCount: 1 }],
+    runs: [SEAM, STORE],
+  },
+  {
+    id: 'c7a-report-presents-contested',
+    gate: 'a report presents only current verifications as external results; a contested one is stated as contested',
+    edits: [{ file: `${MIND}/reporting.js`, search: 'const current = x.verifications.filter((v) => v.validity === undefined);', replace: 'const current = x.verifications;', expectedCount: 1 }],
+    runs: [SEAM, STORE],
+  },
+  {
+    id: 'c7a-attention-misses-contest',
+    gate: 'each contested verification is a decision the Founder owes (Founder Attention)',
+    edits: [{ file: `${STORAGE}/external-core.js`, search: "WHERE y.state = 'CONTESTED' AND y.seq", replace: "WHERE y.state = 'NEVER' AND y.seq", expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7a-contest-resolution-not-founder',
+    gate: 'only the Founder decides a contested verification (uphold / replace / retract), through the existing chokepoint',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: "const p = founder(ctx, actorRef, subject.employeeId ? `employee:${subject.employeeId}` : null, 'outcome contest resolution');", replace: 'const p = { ref: actorRef };', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7a-contested-pattern-counts',
+    gate: 'a pattern lesson counts as a contribution only while the success it came from is current qualified truth',
+    edits: [{ file: `${STORAGE}/improvement.js`, search: "AND l.stage = 'VALIDATED' AND l.employee_id = ? AND ${PATTERN_OUTCOME_CURRENT}`", replace: "AND l.stage = 'VALIDATED' AND l.employee_id = ?`", expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7a-db-conflict-contests-nothing',
+    gate: 'the datastore contests every current verification citing a conflicted record, whoever writes the conflict',
+    edits: [{ file: MIGRATION, search: "     AND COALESCE((SELECT y.state FROM outcome_verification_validity y WHERE y.verification_id = o.id ORDER BY y.seq DESC LIMIT 1), 'VALID') IN ('VALID', 'UPHELD');\nEND;", replace: '     AND 0;\nEND;', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7a-db-validity-forgeable',
+    gate: 'verification validity moves forward only: no contest without a conflict on cited evidence, no decision without a contest',
+    edits: [{ file: MIGRATION, search: "BEGIN SELECT RAISE(ABORT, 'a verification is contested only by a conflict on evidence it cites, and only a contested one is upheld, replaced or retracted (REPLACED / RETRACTED are final)'); END;", replace: 'BEGIN SELECT 1; END;', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  // --- D-C7A-10: the datastore enforces the registered contract, not only TypeScript ------------------------------------
+  {
+    id: 'c7a-db-contract-not-catalogued',
+    gate: 'a source registers only a catalogued contract version, pinned by the catalogued digest',
+    edits: [{ file: MIGRATION, search: "BEGIN SELECT RAISE(ABORT, 'a source registers a catalogued contract version for its family and lane, pinned by the catalogued digest'); END;", replace: 'BEGIN SELECT 1; END;', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7a-db-type-family-unchecked',
+    gate: 'a record type belongs to its source family (a SEARCH source never carries a web metric)',
+    edits: [{ file: MIGRATION, search: 'AND t.domain = NEW.domain AND t.source_family = s.family', replace: 'AND t.domain = NEW.domain', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7a-db-type-unchecked',
+    gate: 'a record type is one the registered contract defines (no unknown operational type)',
+    edits: [{ file: MIGRATION, search: 'AND t.record_type = NEW.record_type AND t.domain = NEW.domain', replace: 'AND t.domain = NEW.domain', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7a-db-domain-unchecked',
+    gate: 'a record carries its type\'s own domain',
+    edits: [{ file: MIGRATION, search: 'AND t.record_type = NEW.record_type AND t.domain = NEW.domain', replace: 'AND t.record_type = NEW.record_type', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7a-db-unit-unchecked',
+    gate: 'an outcome record carries its metric\'s own unit',
+    edits: [{ file: MIGRATION, search: '     AND t.unit IS NEW.unit AND t.user_scoped = NEW.user_scoped\n', replace: '     AND t.user_scoped = NEW.user_scoped\n', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7a-db-scope-unchecked',
+    gate: 'an outcome record uses a scope its metric allows',
+    edits: [{ file: MIGRATION, search: 'AND p.record_type = t.record_type AND p.scope_kind = NEW.scope_kind))', replace: 'AND p.record_type = t.record_type))', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7a-db-duplicate-keys-admitted',
+    gate: 'a record never repeats a field key (SQLite and JSON readers would see different values)',
+    edits: [{ file: MIGRATION, search: 'WHEN (SELECT COUNT(*) FROM json_each(NEW.normalized_fields_json)) <> (SELECT COUNT(DISTINCT key) FROM json_each(NEW.normalized_fields_json))\n   OR EXISTS', replace: 'WHEN EXISTS', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7a-db-fields-unchecked',
+    gate: 'a record\'s stored fields are exactly its type\'s declared fields, each in its declared shape',
+    edits: [{ file: MIGRATION, search: "BEGIN SELECT RAISE(ABORT, 'a record''s stored fields are exactly the fields its contract declares for its type, each in its declared shape'); END;", replace: 'BEGIN SELECT 1; END;', expectedCount: 1 }],
+    runs: [STORE],
+  },
 ];
+
+// A datastore mutation re-pins the mutated migration in the compiled pin table (never in source), for that run only.
+const sha256 = (text) => createHash('sha256').update(text.replace(/\r\n/g, '\n')).digest('hex');
+function repin(originals, mutated) {
+  for (const [file, text] of [...mutated]) {
+    if (!file.endsWith('.sql')) continue;
+    const pins = path.join(ROOT, PINS);
+    const pinText = mutated.get(pins) ?? readFileSync(pins, 'utf8');
+    if (!originals.has(pins)) originals.set(pins, pinText);
+    const from = sha256(originals.get(file) ?? '');
+    if (pinText.split(from).length !== 2) throw new Error(`the compiled pin table does not pin ${path.basename(file)} exactly once (rebuild)`);
+    mutated.set(pins, pinText.split(from).join(sha256(text)));
+  }
+}
 
 // --shard i/n (1-based) runs a disjoint slice; --report <file> records the ids run and caught.
 const args = process.argv.slice(2);
 const shardArg = args.includes('--shard') ? String(args[args.indexOf('--shard') + 1]) : '1/1';
 const reportFile = args.includes('--report') ? String(args[args.indexOf('--report') + 1]) : null;
+// --only <id,id> runs the named mutations (focused local validation); CI and `npm run ci` always run the full set.
+const only = args.includes('--only') ? new Set(String(args[args.indexOf('--only') + 1]).split(',')) : null;
+if (only !== null && reportFile !== null) throw new Error('--only is a local focus; it never produces a parity report');
+for (const id of only ?? []) if (!MUTATIONS.some((m) => m.id === id)) throw new Error(`--only names an unknown mutation: ${id}`);
 const [shardIndex, shardCount] = shardArg.split('/').map(Number);
 if (!(Number.isInteger(shardIndex) && Number.isInteger(shardCount) && shardCount >= 1 && shardIndex >= 1 && shardIndex <= shardCount)) throw new Error(`--shard must be i/n with 1 <= i <= n (got ${shardArg})`);
 const inShard = (i) => i % shardCount === shardIndex - 1;
@@ -236,7 +363,7 @@ const caught = [];
 let index = -1;
 for (const m of MUTATIONS) {
   index++;
-  if (!inShard(index)) continue;
+  if (!inShard(index) || (only !== null && !only.has(m.id))) continue;
   ran.push(m.id);
   const originals = new Map();
   let applicable = true;
@@ -260,6 +387,7 @@ for (const m of MUTATIONS) {
       const file = path.join(ROOT, e.file);
       mutated.set(file, (mutated.get(file) ?? '').split(e.search).join(e.replace));
     }
+    repin(originals, mutated);
     for (const [file, text] of mutated) writeFileSync(file, text);
     const caughtBy = m.runs.filter(({ cwd, tests }) => failed(spawnSync(process.execPath, ['--test', '--test-concurrency=1', ...tests], { cwd: path.join(ROOT, cwd), encoding: 'utf8', shell: false, windowsHide: true, timeout: 900_000, env: TEST_ENV })));
     if (caughtBy.length > 0) {

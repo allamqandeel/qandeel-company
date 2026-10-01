@@ -428,6 +428,7 @@ function resolveMutatingTarget(ctx: ApiContext, u: CompanyUniverse, command: Ext
     case 'SOURCE_DECIDE':
     case 'EVIDENCE_BIND':
     case 'EVIDENCE_UNBIND':
+    case 'OUTCOME_CONTEST_RESOLVE':
       // Structured only (a form or a rail action posts IDs / codes), never free text (D-C5-07, R2-21, C7-A).
       return null;
   }
@@ -487,6 +488,12 @@ function structuredSummary(ctx: ApiContext, preview: { intentKind: string; paylo
       return `Bind the external record as ${p.role === 'DEPENDENCY_FAILURE' ? 'a dependency failure' : 'outcome evidence'} of the ${p.subjectKind === 'GOAL' ? 'goal' : 'work item'} (evidence, not a verdict)`;
     case 'EVIDENCE_UNBIND':
       return 'End the external evidence binding (its history is kept)';
+    case 'OUTCOME_CONTEST_RESOLVE':
+      return p.decision === 'UPHOLD'
+        ? `Uphold the contested ${s('verdict').toLowerCase().replace('_', ' ')} verification: it counts as current truth again despite the evidence conflict`
+        : p.decision === 'REPLACE'
+          ? `Replace the contested ${s('verdict').toLowerCase().replace('_', ' ')} verification with a re-verification on the cited evidence (the contested one stays history)`
+          : 'Retract the contested verification: the work item has no current verified outcome (history is kept)';
     default:
       return preview.intentKind;
   }

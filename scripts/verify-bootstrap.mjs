@@ -216,6 +216,7 @@ const C6_CONTENT_IN_TELEMETRY = /\b(?:appendAudit|appendEvent|\.(?:info|warn|err
 const UNIVERSAL_SCORE = /\b(?:overall|universal|employee|performance|global|total|company)_?[Ss]core\b|\bleaderboard\s*[:=(]|\b\w*_score\s+(?:INTEGER|REAL|NUMERIC|TEXT)\b/;
 const RESILIENCE_MODULE = 'packages/storage/src/resilience.ts';
 const EVALUATION_KERNEL = 'packages/mind/src/evaluation.ts';
+const IMPROVEMENT_CORE = 'packages/storage/src/improvement-core.ts';
 // --- C7-A boundaries (Operational Data + External Outcome Core) ---------------------------------------------------
 const C7A_REPORT = 'docs/C7A_IMPLEMENTATION_REPORT.md';
 const C7A_PROOF_MARKERS = ['C7A-PROOF: intake-kernel', 'C7A-PROOF: storage-external-evidence', 'C7A-PROOF: c6-seam-kernel', 'C7A-PROOF: runtime-c7a'];
@@ -229,8 +230,13 @@ const EXTERNAL_WRITERS = [EXTERNAL_CORE, EXTERNAL_STORE];
 const EXTERNAL_WRITE = /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO|DELETE\s+FROM|REPLACE\s+INTO)\s+external_\w+/i;
 // Rule A for C7-A: an intake payload, its fields, values or producer identity never enter audit, events or logs.
 const C7A_CONTENT_IN_TELEMETRY = /\b(?:appendAudit|appendEvent|sourceEvent|\.(?:info|warn|error|debug))\s*\([^\n]*[{,]\s*(?:occurrence|envelope|payload|fields|raw|body|content|text|message|value|producerEventId|sourceKey|userPseudonym|echo)\s*[,:}]/;
-// The governed datastore seam every C7-A evidence table carries (code checks are re-checked by triggers).
-const C7A_GOVERNED_TRIGGERS = ['external_records_governed_source', 'external_records_fields_declared', 'external_evidence_bindings_governed', 'outcome_verifications_external_evidence_governed', 'review_outcome_judgments_external_evidence_governed'];
+// The governed datastore seam every C7-A evidence table carries (code checks are re-checked by triggers): the registered
+// contract held by the datastore (D-C7A-10) and the contest of a verification whose evidence a later conflict disputed
+// (D-C7A-11) included.
+const C7A_GOVERNED_TRIGGERS = [
+  'external_records_governed_source', 'external_records_fields_declared', 'external_evidence_bindings_governed', 'outcome_verifications_external_evidence_governed', 'review_outcome_judgments_external_evidence_governed',
+  'external_source_contracts_catalogued', 'external_records_conform_to_contract', 'external_records_fields_conform', 'external_record_conflicts_contest_verifications', 'outcome_verification_validity_forward', 'outcome_verifications_replacement_governed',
+];
 // The one usable-evidence predicate: an outcome-lane record of an ACTIVE source, unconflicted, bound to THIS Work Item.
 const C7A_USABLE_REASONS = ['NOT_OUTCOME_EVIDENCE', 'SOURCE_NOT_ACTIVE', 'RECORD_CONFLICTED', 'NOT_BOUND_TO_WORK_ITEM'];
 // No raw payload bag, no stored user reference, no secret in a C7-A table.
@@ -401,6 +407,10 @@ const MUTATION_PINS = {
       'c7a-conflicting-replay-accepted', 'c7a-replay-not-idempotent', 'c7a-operational-fact-as-outcome-evidence', 'c7a-binding-not-founder',
       'c7a-external-check-skipped-at-verification', 'c7a-operational-record-citable', 'c7a-suspended-source-usable', 'c7a-conflicted-record-usable', 'c7a-unbound-evidence-usable', 'c7a-pool-judgment-unchecked', 'c7a-pool-resolution-not-rechecked',
       'c7a-external-class-not-evidence', 'c7a-dependency-failure-ignored', 'c7a-report-always-unavailable', 'c7a-registry-requires-external-without-source', 'c7a-attention-misses-external-exceptions',
+      // D-C7A-11: a late integrity conflict takes the disputed outcome out of current C6 truth until the Founder decides.
+      'c7a-contest-not-restated', 'c7a-contested-verdict-trusted', 'c7a-contest-not-a-conflict', 'c7a-report-presents-contested', 'c7a-attention-misses-contest', 'c7a-contest-resolution-not-founder', 'c7a-contested-pattern-counts', 'c7a-db-conflict-contests-nothing', 'c7a-db-validity-forgeable',
+      // D-C7A-10: the datastore enforces the registered contract, not only TypeScript.
+      'c7a-db-contract-not-catalogued', 'c7a-db-type-family-unchecked', 'c7a-db-type-unchecked', 'c7a-db-domain-unchecked', 'c7a-db-unit-unchecked', 'c7a-db-scope-unchecked', 'c7a-db-duplicate-keys-admitted', 'c7a-db-fields-unchecked',
     ],
   },
   // R1 Independent Core Review: one mutation per fixed finding (docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md).
@@ -1184,6 +1194,9 @@ export const RULES = [
       if (outcome !== undefined && !/\btxAssertExternalEvidence\(ctx, w\.id, input\.classes, input\.refs\);/.test(outcome)) problems.push(`${OUTCOME_CORE} records an outcome without the governed external-evidence rule`);
       const core = read(EXTERNAL_CORE);
       if (core !== undefined) for (const why of C7A_USABLE_REASONS) if (!core.includes(`'${why}'`)) problems.push(`${EXTERNAL_CORE} lost the usable-evidence condition ${why}`);
+      // D-C7A-11: the evaluator reads only a CURRENT verification (a contested or retracted one is history, never truth).
+      const evidence = read(IMPROVEMENT_CORE);
+      if (evidence !== undefined && /\bexport function gatherWorkEvidence\b/.test(evidence) && !/\bconst verdict = recorded\?\.current \? recorded : null;/.test(evidence)) problems.push(`${IMPROVEMENT_CORE} lets the evaluator trust a verification that is not current truth (contested / retracted)`);
       const sql = files.filter((f) => f.startsWith(MIGRATIONS_DIR) && f.endsWith('.sql')).map((f) => read(f) ?? '').join('\n');
       if (/\bCREATE\s+TABLE\s+external_records\b/i.test(sql)) {
         for (const t of C7A_GOVERNED_TRIGGERS) if (!new RegExp(`\\bCREATE\\s+TRIGGER\\s+${t}\\b`).test(sql)) problems.push(`external evidence exists without the governed datastore trigger ${t}`);
@@ -1946,6 +1959,7 @@ const VIOLATIONS = {
     { contents: { [OUTCOME_CORE]: 'export function txRecordOutcome(ctx, w, input) {\n  insert(ctx, w, input);\n}\n' } },
     { contents: { [EXTERNAL_CORE]: "  return 'NOT_OUTCOME_EVIDENCE';\n  return 'SOURCE_NOT_ACTIVE';\n  return 'RECORD_CONFLICTED';\n  return null;\n" } },
     { contents: { [`${MIGRATIONS_DIR}0012_c7a.sql`]: 'CREATE TABLE external_records (id TEXT) STRICT;\nCREATE TRIGGER external_records_governed_source BEFORE INSERT ON external_records BEGIN SELECT 1; END;\n' } },
+    { contents: { [IMPROVEMENT_CORE]: 'export function gatherWorkEvidence(recorded) {\n  const verdict = recorded;\n  return verdict;\n}\n' } },
   ],
   'c7a-not-claimed-closed': [
     { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-A\` | Core | Cloud | CLOSED / MERGED |\n` } },
@@ -2152,7 +2166,7 @@ const MUST_PASS = [
   // pseudonym; a normalized-fields column; reads of C6 rows; comments that name later scope are not implementations.
   { id: 'c7a-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-A\` | Core | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n| \`C7-B\` | Control | Cloud | Not started |\n`, [C7A_REPORT]: '# Report\n\nC7-A is NOT CLOSED (implementation candidate).\n' } } },
   { id: 'c7a-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-A\` | Core | Cloud | CLOSED / MERGED / CANONICAL |\n| \`C7-B\` | Control | Cloud | IN PROGRESS |\n`, 'docs/C7A_CLOSURE_RECORD.md': '' } } },
-  { id: 'external-outcomes-governed', scenario: { contents: { [`${MIGRATIONS_DIR}0012_c7a.sql`]: `CREATE TABLE external_records (id TEXT) STRICT;\n${C7A_GOVERNED_TRIGGERS.map((t) => `CREATE TRIGGER ${t} BEFORE INSERT ON x BEGIN SELECT 1; END;`).join('\n')}\n` } } },
+  { id: 'external-outcomes-governed', scenario: { contents: { [`${MIGRATIONS_DIR}0012_c7a.sql`]:`CREATE TABLE external_records (id TEXT) STRICT;\n${C7A_GOVERNED_TRIGGERS.map((t) => `CREATE TRIGGER ${t} BEFORE INSERT ON x BEGIN SELECT 1; END;`).join('\n')}\n` } } },
   {
     id: 'c7a-intake-content-free',
     scenario: {

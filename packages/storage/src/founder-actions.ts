@@ -30,7 +30,7 @@ import { appendAudit, ts, type StoreContext } from './internal.js';
 import { MemoryStore } from './memory.js';
 import { OrganizationStore } from './organization.js';
 import { getStaffingRequest } from './organization.js';
-import { assertOutcomeClasses } from './outcome-core.js';
+import { CONTEST_DECISIONS, assertOutcomeClasses, txContestedVerification, type ContestDecision } from './outcome-core.js';
 import { txResolveReconciliation } from './queue.js';
 import { ReviewStore } from './review.js';
 import { storeContext, type CompanyStore } from './store.js';
@@ -262,6 +262,27 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
       const bindingId = assertId(raw.bindingId, 'bindingId');
       heldRow(ctx, 'SELECT state FROM external_evidence_bindings WHERE id = ?', bindingId, 'binding', ['ACTIVE']);
       return { bindingId, reasonCode: assertCode(raw.reasonCode ?? 'founder.unbound', 'reasonCode') };
+    }
+    case 'OUTCOME_CONTEST_RESOLVE': {
+      const verificationId = assertId(raw.verificationId, 'verificationId');
+      const decision = oneOf(raw, 'decision', CONTEST_DECISIONS);
+      // A preview never offers a decision the confirmation would refuse: the verification is contested now, and a
+      // replacement's evidence passes the same governed external-evidence rule.
+      const v = txContestedVerification(ctx, verificationId);
+      const base = { verificationId, decision, workItemId: v.workItemId, verdict: v.verdict, reasonCode: assertCode(raw.reasonCode ?? 'founder.decided', 'reasonCode') };
+      if (decision !== 'REPLACE') {
+        if (raw.evidenceClasses !== undefined || raw.evidenceRefs !== undefined) throw new QandeelError('VALIDATION_FAILED', 'evidence accompanies a REPLACE decision only', { field: 'evidenceRefs' });
+        return base;
+      }
+      const list = (field: string, max: number, shape: RegExp): string[] => {
+        const v = raw[field];
+        if (!Array.isArray(v) || v.length === 0 || v.length > max || !v.every((x) => typeof x === 'string' && shape.test(x))) throw new QandeelError('EVIDENCE_REQUIRED', 'a replacement verification names its evidence', { field });
+        return [...new Set(v as string[])];
+      };
+      const evidenceClasses = assertOutcomeClasses(list('evidenceClasses', 8, /^[A-Z_]{2,48}$/));
+      const evidenceRefs = list('evidenceRefs', 16, OUTCOME_REF);
+      txAssertExternalEvidence(ctx, v.workItemId, evidenceClasses, evidenceRefs);
+      return { ...base, evidenceClasses, evidenceRefs };
     }
     default:
       throw new QandeelError('VALIDATION_FAILED', 'unknown intent', { field: 'intent' });
@@ -497,6 +518,12 @@ export class FounderActionStore {
       case 'EVIDENCE_UNBIND': {
         const b = ExternalEvidenceStore.for(this.#store).unbindEvidence(founderRef, str('bindingId'), str('reasonCode'));
         return `external_binding:${b.id}`;
+      }
+      case 'OUTCOME_CONTEST_RESOLVE': {
+        // At the C6 boundary that owns verifications (no second implementation).
+        const replace = pl.decision === 'REPLACE';
+        const out = ImprovementStore.for(this.#store).resolveOutcomeContest(founderRef, str('verificationId'), { decision: pl.decision as ContestDecision, reasonCode: str('reasonCode'), ...(replace ? { evidenceClasses: strings('evidenceClasses'), evidenceRefs: strings('evidenceRefs') } : {}) });
+        return `outcome_verification:${out.verificationId}`;
       }
     }
   }

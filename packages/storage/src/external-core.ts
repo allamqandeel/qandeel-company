@@ -81,6 +81,16 @@ export function externalDependencyFailures(ctx: StoreContext, workItemId: Id): s
     .map((r) => `${EXTERNAL_REF_PREFIX}${r.id}`);
 }
 
+/** A recorded verification's current validity (history is never rewritten; none recorded = VALID). */
+export type VerificationState = 'VALID' | 'CONTESTED' | 'UPHELD' | 'REPLACED' | 'RETRACTED';
+
+/** The latest validity of a verification, and — while CONTESTED — the integrity conflict that contests it. */
+export function verificationValidity(ctx: StoreContext, verificationId: Id): { state: VerificationState; conflictIds: string[] } {
+  const last = ctx.db.get<{ state: string; conflict_id: string | null }>('SELECT state, conflict_id FROM outcome_verification_validity WHERE verification_id = ? ORDER BY seq DESC LIMIT 1', verificationId);
+  const state = (last?.state ?? 'VALID') as VerificationState;
+  return { state, conflictIds: state === 'CONTESTED' && last?.conflict_id ? [last.conflict_id] : [] };
+}
+
 /** The external references a recorded verification cited (empty when it cited none). */
 export function verificationExternalRefs(ctx: StoreContext, verificationId: Id): string[] {
   const v = ctx.db.get<{ classes: string; refs: string }>('SELECT evidence_classes_json AS classes, evidence_refs_json AS refs FROM outcome_verifications WHERE id = ?', verificationId);
@@ -145,7 +155,7 @@ export function externalReportFacts(ctx: StoreContext, period: { from: string; t
   state: ExternalOutcomeState;
   sources: string[];
   evidence: { subjectKind: 'WORK_ITEM' | 'GOAL'; subjectId: string; recordIds: string[]; bindingIds: string[]; types: string[] }[];
-  verifications: { id: string; workItemId: string; verdict: string; recordIds: string[] }[];
+  verifications: { id: string; workItemId: string; verdict: string; recordIds: string[]; validity?: 'CONTESTED' | 'REPLACED' | 'RETRACTED'; conflictIds?: string[] }[];
   truncated: { shown: number; total: number } | null;
 } {
   const a = externalAvailability(ctx);
@@ -171,22 +181,48 @@ export function externalReportFacts(ctx: StoreContext, period: { from: string; t
     if (!e.types.includes(r.record_type)) e.types.push(r.record_type);
     bySubject.set(key, e);
   }
-  const verifications = ctx.db
-    .all<{ id: string; work_item_id: string; verdict: string; refs: string }>(
-      `SELECT v.id, v.work_item_id, v.verdict, v.evidence_refs_json AS refs FROM outcome_verifications v
-        WHERE v.created_at >= ? AND v.created_at <= ? AND EXISTS (SELECT 1 FROM json_each(v.evidence_classes_json) c WHERE c.value = 'EXTERNAL_OUTCOME')
-        ORDER BY v.created_at, v.id`,
-      period.from,
-      period.to,
-    )
-    .map((v) => ({ id: v.id, workItemId: v.work_item_id, verdict: v.verdict, recordIds: (JSON.parse(v.refs) as string[]).map(externalRecordIdOf).filter((x): x is string => x !== null) }));
-  return { state: a.state === 'NO_GOVERNED_SOURCE' ? 'NO_GOVERNED_SOURCE' : bySubject.size > 0 || verifications.length > 0 ? 'EVIDENCE_AVAILABLE' : 'NO_RELEVANT_EVIDENCE', sources: a.activeOutcomeSources, evidence: [...bySubject.values()], verifications, truncated };
+  // The period's externally-backed verifications, and every one CONTESTED now (a dispute is reported until decided):
+  // each with its current validity, so a report never presents a contested or superseded one as an external result.
+  // Bounded like the evidence: contested ones first (a dispute is never the part that is cut), and a cut is disclosed.
+  const verificationRows = ctx.db.all<{ id: string; work_item_id: string; verdict: string; refs: string }>(
+    `SELECT v.id, v.work_item_id, v.verdict, v.evidence_refs_json AS refs FROM outcome_verifications v
+      WHERE EXISTS (SELECT 1 FROM json_each(v.evidence_classes_json) c WHERE c.value = 'EXTERNAL_OUTCOME')
+        AND ((v.created_at >= ? AND v.created_at <= ?)
+             OR (SELECT y.state FROM outcome_verification_validity y WHERE y.verification_id = v.id ORDER BY y.seq DESC LIMIT 1) = 'CONTESTED')
+      ORDER BY (SELECT y.state FROM outcome_verification_validity y WHERE y.verification_id = v.id ORDER BY y.seq DESC LIMIT 1) IS 'CONTESTED' DESC, v.created_at, v.id LIMIT ?`,
+    period.from,
+    period.to,
+    REPORT_EVIDENCE_CAP + 1,
+  );
+  const verificationsCut = verificationRows.length > REPORT_EVIDENCE_CAP
+    ? Number(ctx.db.get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM outcome_verifications v WHERE EXISTS (SELECT 1 FROM json_each(v.evidence_classes_json) c WHERE c.value = 'EXTERNAL_OUTCOME')
+            AND ((v.created_at >= ? AND v.created_at <= ?) OR (SELECT y.state FROM outcome_verification_validity y WHERE y.verification_id = v.id ORDER BY y.seq DESC LIMIT 1) = 'CONTESTED')`,
+        period.from, period.to,
+      )?.n ?? 0)
+    : null;
+  verificationRows.splice(REPORT_EVIDENCE_CAP);
+  const verifications = verificationRows
+    .map((v) => {
+      const validity = verificationValidity(ctx, v.id as Id);
+      const notCurrent = validity.state === 'CONTESTED' || validity.state === 'REPLACED' || validity.state === 'RETRACTED' ? { validity: validity.state, ...(validity.state === 'CONTESTED' ? { conflictIds: validity.conflictIds } : {}) } : {};
+      return { id: v.id, workItemId: v.work_item_id, verdict: v.verdict, recordIds: (JSON.parse(v.refs) as string[]).map(externalRecordIdOf).filter((x): x is string => x !== null), ...notCurrent };
+    });
+  return {
+    state: a.state === 'NO_GOVERNED_SOURCE' ? 'NO_GOVERNED_SOURCE' : bySubject.size > 0 || verifications.length > 0 ? 'EVIDENCE_AVAILABLE' : 'NO_RELEVANT_EVIDENCE',
+    sources: a.activeOutcomeSources,
+    evidence: [...bySubject.values()],
+    verifications,
+    // The disclosed cut covers both bounded lists (evidence bindings first; else the verifications).
+    truncated: truncated ?? (verificationsCut === null ? null : { shown: REPORT_EVIDENCE_CAP, total: verificationsCut }),
+  };
 }
 
 /**
  * Material external-evidence exceptions for Founder Attention (C5 lanes; never routine ingestion): a registered source
- * awaiting the Founder's activation decision, and an ACTIVE source whose producer replayed an accepted occurrence with
- * different content (an integrity conflict) since the source's last decision.
+ * awaiting the Founder's activation decision, an ACTIVE source whose producer replayed an accepted occurrence with
+ * different content (an integrity conflict) since the source's last decision, and each verification that conflict
+ * contested.
  */
 export function externalAttentionSignals(ctx: StoreContext): { dedupKey: string; sourceRef: string; changedAt: string; level: 'NEEDS_DECISION' | 'URGENT' }[] {
   const out: { dedupKey: string; sourceRef: string; changedAt: string; level: 'NEEDS_DECISION' | 'URGENT' }[] = [];
@@ -202,6 +238,15 @@ export function externalAttentionSignals(ctx: StoreContext): { dedupKey: string;
       GROUP BY s.id ORDER BY s.id`,
   )) {
     out.push({ dedupKey: `external_integrity:${s.id}`, sourceRef: `external_source:${s.id}`, changedAt: s.at, level: 'URGENT' });
+  }
+  // A verification CONTESTED by an integrity conflict on evidence it cited is out of current truth until the Founder
+  // upholds, replaces or retracts it: each one is a decision the Founder owes (whatever the source's state now).
+  for (const v of ctx.db.all<{ verification_id: string; occurred_at: string }>(
+    `SELECT y.verification_id, y.occurred_at FROM outcome_verification_validity y
+      WHERE y.state = 'CONTESTED' AND y.seq = (SELECT MAX(z.seq) FROM outcome_verification_validity z WHERE z.verification_id = y.verification_id)
+      ORDER BY y.verification_id`,
+  )) {
+    out.push({ dedupKey: `outcome_contest:${v.verification_id}`, sourceRef: `outcome_verification:${v.verification_id}`, changedAt: v.occurred_at, level: 'NEEDS_DECISION' });
   }
   return out;
 }

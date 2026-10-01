@@ -122,9 +122,10 @@ export const EXCEPTION_INTENTS = ['TOOL_RECONCILE', 'RESERVATION_RECONCILE', 'JO
 /**
  * C7-A: what the Company may treat as real-world evidence is a Founder decision — registering a governed source (or a
  * new contract version of it), activating / suspending / retiring it, and binding an accepted record to Company work
- * or a Goal (or ending that binding). Structured-only, like the exception decisions: no text produces them.
+ * or a Goal (or ending that binding) — and deciding a verification a later evidence-integrity conflict contested
+ * (uphold, replace or retract). Structured-only, like the exception decisions: no text produces them.
  */
-export const EXTERNAL_EVIDENCE_INTENTS = ['SOURCE_REGISTER', 'SOURCE_DECIDE', 'EVIDENCE_BIND', 'EVIDENCE_UNBIND'] as const;
+export const EXTERNAL_EVIDENCE_INTENTS = ['SOURCE_REGISTER', 'SOURCE_DECIDE', 'EVIDENCE_BIND', 'EVIDENCE_UNBIND', 'OUTCOME_CONTEST_RESOLVE'] as const;
 export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS, ...EXTERNAL_EVIDENCE_INTENTS] as const;
 export type ReadIntent = (typeof READ_INTENTS)[number];
 export type MutatingIntent = (typeof MUTATING_INTENTS)[number];

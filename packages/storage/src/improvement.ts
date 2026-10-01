@@ -65,14 +65,14 @@ import {
   type SystemicTarget,
 } from '@qandeel-company/mind';
 
-import { boundEvidence, externalAvailability, externalReportFacts } from './external-core.js';
+import { boundEvidence, externalAvailability, externalReportFacts, verificationValidity } from './external-core.js';
 import { founder, founderAdminWrite } from './governance.js';
 import { EVIDENCE_REF_CAP, LATEST_LIVE_EVALUATION, adverseSourceEvents, attributionFacts, followupFacts, gatherWorkEvidence, latestVerdict, liveEvaluations, subjectOf, validatedAttributionFacts } from './improvement-core.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { mapLesson } from './mind-records.js';
 import { insertLesson, txLessonUnderReview, txRecordLessonDecision } from './mind-writes.js';
 import { mapJudgmentAssignment, type JudgmentAssignmentRecord } from './org-records.js';
-import { assertOutcomeClasses, txRecordOutcome } from './outcome-core.js';
+import { CONTEST_DECISIONS, assertOutcomeClasses, txContestedVerification, txRecordOutcome, txResolveContest, type ContestDecision } from './outcome-core.js';
 import { txResilienceStatus } from './resilience.js';
 import { activePlan, assignJudge, drawJudge, judgeStillEligible, judgmentSubjectEmployee, registerLessonJudgeDraw, withdrawJudgment, type JudgmentSubjectKind } from './review-core.js';
 import { storeContext, type CompanyStore } from './store.js';
@@ -300,6 +300,13 @@ function escalatedToFounder(ctx: StoreContext, attributionId: Id): boolean {
   return ctx.db.get(`SELECT 1 AS x FROM judgment_assignments WHERE subject_kind = 'ATTRIBUTION' AND subject_id = ? AND state = 'ESCALATED' LIMIT 1`, attributionId) !== undefined;
 }
 
+/**
+ * D-C7A-11: a successful pattern (alias `s`, its learning signal) counts — in a profile's contributions, in reports and
+ * for sharing — only while the success it came from is CURRENT qualified truth. A validated lesson stays history; an
+ * outcome later contested by an integrity conflict on its evidence (or retracted) stops counting it.
+ */
+const PATTERN_OUTCOME_CURRENT = `EXISTS (SELECT 1 FROM evaluation_results e WHERE e.work_item_id = s.work_item_id AND ${LATEST_LIVE_EVALUATION} AND e.qualified_outcome = 1)`;
+
 function liveEvaluationRow(ctx: StoreContext, workItemId: Id): EvaluationRecord | null {
   const r = ctx.db.get(`SELECT * FROM evaluation_results WHERE work_item_id = ? AND superseded_by IS NULL ORDER BY created_at DESC, id DESC LIMIT 1`, workItemId);
   return r ? mapEvaluation(r) : null;
@@ -327,10 +334,13 @@ export function txLearningValidationGate(ctx: StoreContext, lessonId: Id): { all
  * own reuses count only with distinct evidence per reuse (PG-03).
  */
 export function txPatternShareGate(ctx: StoreContext, lessonId: Id, target: string): { allowed: boolean; reason: string } {
-  const pattern = ctx.db.get(`SELECT 1 AS x FROM lessons l JOIN learning_signals s ON s.observation_id = l.observation_id WHERE l.id = ? AND s.kind = 'SUCCESSFUL_PATTERN'`, lessonId);
+  const pattern = ctx.db.get<{ current: number }>(`SELECT ${PATTERN_OUTCOME_CURRENT} AS current FROM lessons l JOIN learning_signals s ON s.observation_id = l.observation_id WHERE l.id = ? AND s.kind = 'SUCCESSFUL_PATTERN'`, lessonId);
   if (!pattern) return { allowed: true, reason: 'NOT_A_PATTERN' };
   const evidence = ctx.db.all<{ refs: string }>(`SELECT evidence_refs_json AS refs FROM learning_interventions WHERE lesson_id = ? AND kind = 'PATTERN_REUSE' AND effect = 'IMPROVEMENT_OBSERVED' ORDER BY created_at, id`, lessonId).map((r) => j<string[]>(r.refs));
-  return patternExpansionAllowed(target, disjointVerifiedReuses(evidence));
+  const gate = patternExpansionAllowed(target, disjointVerifiedReuses(evidence));
+  // D-C7A-11: a pattern whose success is no longer current truth (its outcome contested / retracted) is never widened.
+  if (gate.allowed && target !== 'PERSONAL' && Number(pattern.current) !== 1) return { allowed: false, reason: 'PATTERN_OUTCOME_NOT_CURRENT' };
+  return gate;
 }
 
 function attributionHistory(ctx: StoreContext, id: Id, version: number, from: string | null, to: string, reason: string, actor: string): void {
@@ -633,9 +643,15 @@ function reportFacts(ctx: StoreContext, cadence: ReportCadence, at: string): Rep
   const employees = [...new Set(ctx.db.all<{ e: string }>(`SELECT DISTINCT employee_id AS e FROM evaluation_results WHERE employee_id IS NOT NULL AND superseded_by IS NULL ORDER BY employee_id`).map((r) => r.e))] as Id[];
   const profiles = cadence === 'DAILY' || cadence === 'WEEKLY' || cadence === 'MONTHLY' ? employees.map((e) => txProfile(ctx, e, at)) : [];
   const resilience = txResilienceStatus(ctx, at);
-  const verifications = ctx.db.all<{ id: string; work_item_id: string; verdict: string }>('SELECT id, work_item_id, verdict FROM outcome_verifications WHERE created_at >= ? AND created_at <= ? ORDER BY created_at, id', period.from, period.to);
+  // C7-A: each with its current validity — a contested / replaced / retracted verification is reported as such, never as an outcome.
+  const verifications = ctx.db
+    .all<{ id: string; work_item_id: string; verdict: string }>('SELECT id, work_item_id, verdict FROM outcome_verifications WHERE created_at >= ? AND created_at <= ? ORDER BY created_at, id', period.from, period.to)
+    .map((v) => {
+      const state = verificationValidity(ctx, v.id as Id).state;
+      return { ...v, validity: state === 'VALID' || state === 'UPHELD' ? undefined : state };
+    });
   const signals = (kind: LearningKind): string[] =>
-    ctx.db.all<{ id: string }>(`SELECT l.id FROM lessons l JOIN learning_signals s ON s.observation_id = l.observation_id WHERE s.kind = ? AND l.stage = 'VALIDATED' AND l.updated_at >= ? AND l.updated_at <= ? ORDER BY l.id`, kind, period.from, period.to).map((r) => r.id);
+    ctx.db.all<{ id: string }>(`SELECT l.id FROM lessons l JOIN learning_signals s ON s.observation_id = l.observation_id WHERE s.kind = ? AND l.stage = 'VALIDATED' AND l.updated_at >= ? AND l.updated_at <= ? AND (s.kind <> 'SUCCESSFUL_PATTERN' OR ${PATTERN_OUTCOME_CURRENT}) ORDER BY l.id`, kind, period.from, period.to).map((r) => r.id);
   const validated = ctx.db.all<{ id: string }>(`SELECT id FROM lessons WHERE stage = 'VALIDATED' AND updated_at >= ? AND updated_at <= ? ORDER BY id`, period.from, period.to).map((r) => r.id);
   const findings = ctx.db.all(`SELECT * FROM systemic_findings WHERE state IN ('CANDIDATE', 'VALIDATED') ORDER BY created_at, id`).map(mapFinding);
   const effects = ctx.db.all<{ id: string; effect: string }>(`SELECT id, effect FROM learning_interventions WHERE assessed_at IS NOT NULL AND assessed_at >= ? AND assessed_at <= ? ORDER BY id`, period.from, period.to).map((r) => ({ interventionId: r.id, effect: r.effect as LearningEffect }));
@@ -653,7 +669,7 @@ function reportFacts(ctx: StoreContext, cadence: ReportCadence, at: string): Rep
   return {
     cadence,
     period,
-    verifications: verifications.map((v) => ({ id: v.id, workItemId: v.work_item_id, verdict: v.verdict as 'ACHIEVED' | 'NOT_ACHIEVED' | 'INCONCLUSIVE' })),
+    verifications: verifications.map((v) => ({ id: v.id, workItemId: v.work_item_id, verdict: v.verdict as 'ACHIEVED' | 'NOT_ACHIEVED' | 'INCONCLUSIVE', ...(v.validity === undefined ? {} : { validity: v.validity }) })),
     failedWork: ctx.db.all<{ id: string }>(`SELECT id FROM work_items WHERE state = 'FAILED' AND updated_at >= ? AND updated_at <= ? ORDER BY id LIMIT 200`, period.from, period.to).map((r) => r.id),
     deadLetters: ctx.db.all<{ id: string }>(`SELECT id FROM queue_jobs WHERE state = 'DEAD_LETTER' ORDER BY id LIMIT 200`).map((r) => r.id),
     reconciliationHeld: ctx.db.all<{ id: string }>(`SELECT id FROM queue_jobs WHERE state = 'RECONCILIATION_HOLD' ORDER BY id LIMIT 200`).map((r) => r.id),
@@ -677,7 +693,7 @@ function reportFacts(ctx: StoreContext, cadence: ReportCadence, at: string): Rep
 }
 
 function txProfile(ctx: StoreContext, employeeId: Id, at: string): PerformanceProfile {
-  const patterns = ctx.db.all<{ id: string }>(`SELECT l.id FROM lessons l JOIN learning_signals s ON s.observation_id = l.observation_id WHERE s.kind = 'SUCCESSFUL_PATTERN' AND l.stage = 'VALIDATED' AND l.employee_id = ?`, employeeId).map((r) => r.id);
+  const patterns = ctx.db.all<{ id: string }>(`SELECT l.id FROM lessons l JOIN learning_signals s ON s.observation_id = l.observation_id WHERE s.kind = 'SUCCESSFUL_PATTERN' AND l.stage = 'VALIDATED' AND l.employee_id = ? AND ${PATTERN_OUTCOME_CURRENT}`, employeeId).map((r) => r.id);
   // R2-16: a verified reuse of the Employee's pattern is their contribution to the system only when SOMEONE ELSE reused it.
   const reuses = ctx.db.all<{ id: string }>(`SELECT i.id FROM learning_interventions i JOIN lessons l ON l.id = i.lesson_id WHERE i.kind = 'PATTERN_REUSE' AND i.effect = 'IMPROVEMENT_OBSERVED' AND l.employee_id = ? AND i.employee_id <> l.employee_id`, employeeId).map((r) => r.id);
   return buildPerformanceProfile({
@@ -699,7 +715,7 @@ function txReviewerCalibration(ctx: StoreContext): ReviewerMetaEvaluation[] {
     .map((d) => {
       const v = latestVerdict(ctx, d.work_item_id as Id);
       const overturned = d.outcome === 'FAIL' && ctx.db.get(`SELECT 1 AS x FROM review_conflicts WHERE request_id = ? AND state = 'RESOLVED' AND resolution = 'PASS'`, d.request_id) !== undefined;
-      return { decisionId: d.id, qualificationId: d.qualification_id, workItemId: d.work_item_id, outcome: d.outcome as 'PASS', counts: d.counts === 1, at: d.created_at, laterOutcome: v === null || v.verdict === 'INCONCLUSIVE' ? null : v.verdict, overturned };
+      return { decisionId: d.id, qualificationId: d.qualification_id, workItemId: d.work_item_id, outcome: d.outcome as 'PASS', counts: d.counts === 1, at: d.created_at, laterOutcome: v === null || !v.current || v.verdict === 'INCONCLUSIVE' ? null : v.verdict, overturned };
     });
   const calibrations = ctx.db.all<{ qualification_id: string; signal: string; created_at: string }>('SELECT qualification_id, signal, created_at FROM review_calibrations ORDER BY created_at').map((c) => ({ qualificationId: c.qualification_id, signal: c.signal as 'AGREE' | 'DISAGREE', at: c.created_at }));
   return reviewerMetaEvaluation(decisions, calibrations);
@@ -759,6 +775,123 @@ function txCompleteTraining(ctx: StoreContext, i: InterventionRecord, reasonCode
   ctx.db.run('INSERT INTO learning_intervention_history (intervention_id, version, state, effect, reason_code, actor_ref, occurred_at) SELECT id, version, state, effect, ?, ?, ? FROM learning_interventions WHERE id = ?', reasonCode, actorRef, at, i.id);
   appendAudit(ctx, 'learning.training_completed', 'learning_intervention', i.id, { actorRef }, 'OK', reasonCode, {});
   return mapIntervention(present(ctx.db.get('SELECT * FROM learning_interventions WHERE id = ?', i.id)));
+}
+
+export type EvaluateResult = { evaluation: EvaluationRecord; changed: boolean; attributionId: Id | null; signals: Id[] };
+
+/**
+ * Evaluates one Work Item under one definition (the C6 evaluator; shared by `evaluate` and by C7-A's current-truth
+ * restatement). Idempotent: unchanged evidence returns the live result (`changed: false`); changed evidence supersedes it.
+ * Also proposes an attribution for an adverse outcome and records candidate-first learning signals.
+ */
+function txEvaluate(ctx: StoreContext, wid: Id, def: ReturnType<typeof mapDefinition>): EvaluateResult {
+  const { evidence, refs } = gatherWorkEvidence(ctx, wid);
+  const evidenceText = canonicalJson({ evidence, refs });
+  const evidenceSha = sha256Hex(evidenceText);
+  // R2-14: one live evaluation per Work Item and definition CODE — a new version of the code supersedes the
+  // live result of every older version (the Work Item is one unit of evidence, never one per version).
+  const lives = ctx.db.all(`SELECT r.* FROM evaluation_results r JOIN eval_definitions d ON d.id = r.definition_id WHERE r.work_item_id = ? AND d.code = ? AND r.superseded_by IS NULL ORDER BY r.created_at, r.rowid`, wid, def.code);
+  const live = lives.find((r) => s(r.definition_id) === def.id);
+  // RB-1 / RB-2: with no undecided generation, the adverse source events of `refs` that no decided generation covers
+  // get ONE new generation (PO-R2-C); the first proposal of a Work Item covers everything. Decided ones never reopen.
+  const nextGeneration = (evaluationId: Id): Id | null => {
+    const decided = ctx.db.all<{ evidence_refs_json: string }>(`SELECT evidence_refs_json FROM causal_attributions WHERE work_item_id = ? AND state IN ('VALIDATED', 'REJECTED')`, wid);
+    const covered = new Set(decided.flatMap((d) => JSON.parse(d.evidence_refs_json) as string[]));
+    const events = adverseSourceEvents(ctx, wid).map((e) => e.sourceRef).filter((r) => refs.includes(r));
+    if (decided.length > 0 && !events.some((r) => !covered.has(r))) return null;
+    const coveredEvents = new Set(events.filter((r) => covered.has(r)));
+    return insertAttribution(ctx, { workItemId: wid, evaluationId, employeeId: evidence.employeeId as Id | null, comparableKey: evidence.comparableKey, causes: proposeAttribution(evidence).causes, source: 'EVALUATOR_PROPOSAL', state: 'PROPOSED', actorRef: SYSTEM_EVALUATOR_REF, reasonCode: decided.length === 0 ? 'evaluator.proposed' : 'evaluator.new_generation', evidenceRefs: refs.filter((r) => !coveredEvents.has(r)) });
+  };
+  if (live && lives.length === 1 && s(live.evidence_sha256) === evidenceSha) {
+    // Unchanged evidence: nothing is re-evaluated — but a generation decided since may leave uncovered events.
+    const recordedDue = (JSON.parse(s(live.evidence_json)) as { attributionDue?: boolean }).attributionDue === true;
+    const fresh = recordedDue && liveAttribution(ctx, wid)?.state !== 'PROPOSED' ? nextGeneration(s(live.id) as Id) : null;
+    if (fresh !== null) assignJudge(ctx, { subjectKind: 'ATTRIBUTION', subjectId: fresh, workItemId: wid, subjectEmployeeId: evidence.employeeId as Id | null });
+    return { evaluation: mapEvaluation(live), changed: false, attributionId: liveAttribution(ctx, wid)?.id ?? null, signals: [] };
+  }
+  const outcome = evaluateWork(def.spec, evidence);
+  // RR3: the one "an attribution is due" predicate — recorded with the evaluation and deciding the proposal below.
+  const due = attributionDue(evidence);
+  const id = newId();
+  const at = ts(ctx);
+  for (const prior of lives) ctx.db.run('UPDATE evaluation_results SET superseded_by = ? WHERE id = ?', id, s(prior.id));
+  ctx.db.run(
+    `INSERT INTO evaluation_results (id, work_item_id, employee_id, department_id, definition_id, comparable_key, risk_level, evidence_state, qualified_outcome, dimensions_json, missing_json, conflicts_json, cost_json, observability_json, evidence_json, evidence_sha256, evaluator_ref, superseded_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+    id, wid, evidence.employeeId, evidence.departmentId, def.id, evidence.comparableKey, evidence.riskLevel, outcome.evidenceState, outcome.qualifiedOutcome ? 1 : 0, JSON.stringify(outcome.dimensions), JSON.stringify(outcome.missingEvidence), JSON.stringify(outcome.conflicts),
+    JSON.stringify(evidence.cost), JSON.stringify(evidence.activity), JSON.stringify({ refs, classes: evidence.evidenceClasses, attributionDue: due }), evidenceSha, SYSTEM_EVALUATOR_REF, at,
+  );
+  appendAudit(ctx, 'evaluation.recorded', 'evaluation', id, { actorRef: SYSTEM_EVALUATOR_REF }, 'OK', outcome.evidenceState, { workItemId: wid, qualified: outcome.qualifiedOutcome, definitionId: def.id });
+  if (outcome.qualifiedOutcome) wakeLessonJudgments(ctx, wid);
+  // Attribution: proposed from evidence when something went wrong; validated only by an independent decision.
+  let attributionId: Id | null;
+  const proposal = proposeAttribution(evidence);
+  // RB-1 / RB-2: sequential generations. At most one undecided proposal; it is never replaced because new adverse
+  // evidence arrived (new events wait until it is decided), and one a pool judge ESCALATED is the Founder's until
+  // decided (PO-R2-A). With no undecided proposal, the adverse source events no decided generation covers get ONE
+  // new generation (PO-R2-C); decided generations are never reopened.
+  const current = liveAttribution(ctx, wid);
+  const pending = current !== null && current.state === 'PROPOSED' ? current : null;
+  const founderOwned = pending !== null && escalatedToFounder(ctx, pending.id as Id);
+  if (due) {
+    if (pending === null) attributionId = nextGeneration(id) ?? current?.id ?? null;
+    else if (!founderOwned && canonicalJson(pending.causes) !== canonicalJson(proposal.causes)) {
+      // The undecided proposal's causes changed (not merely new events): re-proposed before anyone decided it.
+      setAttributionState(ctx, pending, 'SUPERSEDED', SYSTEM_EVALUATOR_REF, 'evidence.changed');
+      attributionId = insertAttribution(ctx, { workItemId: wid, evaluationId: id, employeeId: evidence.employeeId as Id | null, comparableKey: evidence.comparableKey, causes: proposal.causes, source: 'EVALUATOR_PROPOSAL', state: 'PROPOSED', actorRef: SYSTEM_EVALUATOR_REF, reasonCode: 'evaluator.reproposed', evidenceRefs: refs });
+    } else attributionId = pending.id;
+  } else if (pending !== null && !founderOwned && !proposal.needed) {
+    // Nothing adverse remains (e.g. reworked and verified): an unvalidated proposal must not stay decidable.
+    setAttributionState(ctx, pending, 'SUPERSEDED', SYSTEM_EVALUATOR_REF, 'evidence.not_adverse');
+    attributionId = null;
+  } else attributionId = current?.id ?? null;
+  // A live proposal goes to an independent pool judge where the plan delegates judgment (otherwise: the Founder).
+  if (attributionId !== null && liveAttribution(ctx, wid)?.state === 'PROPOSED') assignJudge(ctx, { subjectKind: 'ATTRIBUTION', subjectId: attributionId, workItemId: wid, subjectEmployeeId: evidence.employeeId as Id | null });
+  // Candidate-first learning signals (never validated here).
+  const signals: Id[] = [];
+  if (evidence.employeeId !== null && outcome.evidenceState === 'SUFFICIENT_EVIDENCE') {
+    const verdicts = Object.fromEntries(outcome.dimensions.map((d) => [d.dimension, d.verdict]));
+    if (isSmartSuccess({ qualifiedOutcome: outcome.qualifiedOutcome, verdicts })) {
+      const codes = outcome.dimensions.filter((d) => d.verdict === 'POSITIVE').map((d) => d.basis);
+      signals.push(systemObservation(ctx, evidence.employeeId as Id, wid, 'SUCCESSFUL_PATTERN', 'c6.successful-pattern', codes, evidence.comparableKey));
+    }
+    const near = nearMissCodes(evidence);
+    if (near.length > 0 && evidence.outcome === 'ACHIEVED') signals.push(systemObservation(ctx, evidence.employeeId as Id, wid, 'NEAR_MISS_WARNING', 'c6.near-miss', near, evidence.comparableKey));
+  }
+  return { evaluation: mapEvaluation(present(ctx.db.get('SELECT * FROM evaluation_results WHERE id = ?', id))), changed: true, attributionId, signals };
+}
+
+/**
+ * C7-A: restates a Work Item's CURRENT C6 truth after its verification's validity changed (contested by a late
+ * integrity conflict on its external evidence, or upheld / replaced / retracted by the Founder): each live evaluation is
+ * re-run through the same evaluator under its own definition, so the new result supersedes it (history kept) and every
+ * reader — profile, economics, learning gates, reports — reads the corrected truth. Never a parallel evaluation.
+ */
+export function txRestateCurrentTruth(ctx: StoreContext, workItemId: Id): Id[] {
+  const restated: Id[] = [];
+  for (const d of ctx.db.all<{ definition_id: string }>('SELECT DISTINCT definition_id FROM evaluation_results WHERE work_item_id = ? AND superseded_by IS NULL ORDER BY definition_id', workItemId)) {
+    // One live result per definition code: restating one version supersedes the others of its code.
+    if (!ctx.db.get('SELECT 1 AS x FROM evaluation_results WHERE work_item_id = ? AND definition_id = ? AND superseded_by IS NULL', workItemId, d.definition_id)) continue;
+    txEvaluate(ctx, workItemId, mapDefinition(present(ctx.db.get('SELECT * FROM eval_definitions WHERE id = ?', d.definition_id))));
+    restated.push(d.definition_id as Id);
+  }
+  return restated;
+}
+
+/**
+ * C7-A: an integrity conflict was recorded on an accepted external record (a conflicting replay of the same producer
+ * occurrence). The datastore contested, in the same transaction, every current verification that cited it; here each
+ * contested Work Item's C6 truth is restated so it no longer counts as a qualified outcome, and the contest is audited
+ * (ids and codes only). The verifications themselves stay history; the Founder decides them (Founder Attention).
+ */
+export function txOutcomesContestedBy(ctx: StoreContext, conflictId: Id): Id[] {
+  const contested = ctx.db.all<{ verification_id: string; work_item_id: string }>(
+    `SELECT y.verification_id, v.work_item_id FROM outcome_verification_validity y JOIN outcome_verifications v ON v.id = y.verification_id WHERE y.conflict_id = ? AND y.state = 'CONTESTED' ORDER BY y.id`,
+    conflictId,
+  );
+  for (const c of contested) appendAudit(ctx, 'outcome.contested', 'work_item', c.work_item_id, { actorRef: 'system:external-intake' }, 'OK', 'evidence.integrity_conflict', { verificationId: c.verification_id, conflictId });
+  for (const workItemId of [...new Set(contested.map((c) => c.work_item_id))]) txRestateCurrentTruth(ctx, workItemId as Id);
+  return contested.map((c) => c.verification_id as Id);
 }
 
 export class ImprovementStore {
@@ -884,6 +1017,28 @@ export class ImprovementStore {
     });
   }
 
+  /**
+   * C7-A: the Founder's decision on a verification CONTESTED by a later integrity conflict on its external evidence —
+   * UPHOLD, REPLACE (with the re-verification's evidence classes and references) or RETRACT. History is kept; the Work
+   * Item's C6 truth is restated through the same evaluator in the same transaction.
+   */
+  resolveOutcomeContest(actorRef: string, verificationId: string, input: { decision: ContestDecision; reasonCode: string; evidenceClasses?: readonly string[]; evidenceRefs?: readonly string[] }): { verificationId: Id; state: 'UPHELD' | 'REPLACED' | 'RETRACTED' } {
+    return this.#admin('resolve contested outcome', actorRef, (ctx) => {
+      const v = txContestedVerification(ctx, assertId(verificationId, 'verificationId'));
+      const subject = subjectOf(ctx, v.workItemId);
+      const p = founder(ctx, actorRef, subject.employeeId ? `employee:${subject.employeeId}` : null, 'outcome contest resolution');
+      if (!(CONTEST_DECISIONS as readonly string[]).includes(input.decision)) throw new QandeelError('VALIDATION_FAILED', 'decision is UPHOLD, REPLACE or RETRACT', { field: 'decision' });
+      const replace = input.decision === 'REPLACE';
+      if (!replace && (input.evidenceClasses !== undefined || input.evidenceRefs !== undefined)) throw new QandeelError('VALIDATION_FAILED', 'evidence accompanies a REPLACE decision only', { field: 'evidenceRefs' });
+      const classes = replace ? assertOutcomeClasses(input.evidenceClasses ?? []) : [];
+      const refs = replace ? [...new Set(input.evidenceRefs ?? [])] : [];
+      if (replace && (refs.length === 0 || refs.length > 50 || !refs.every((r) => typeof r === 'string' && /^[a-z_]{2,32}:[A-Za-z0-9._:-]{1,96}$/.test(r)))) throw new QandeelError('EVIDENCE_REQUIRED', 'a replacement verification cites its evidence records', { field: 'evidenceRefs' });
+      const out = txResolveContest(ctx, v.id, input.decision, { classes, refs, reasonCode: assertCode(input.reasonCode, 'reasonCode') }, p.ref);
+      txRestateCurrentTruth(ctx, v.workItemId);
+      return out;
+    });
+  }
+
   // --- Evaluation (system) ----------------------------------------------------------------------------
 
   /**
@@ -891,87 +1046,13 @@ export class ImprovementStore {
    * returns the live result (`changed: false`); changed evidence supersedes it. Also proposes an attribution
    * for an adverse outcome and records candidate-first learning signals (smart success, near miss).
    */
-  evaluate(workItemId: string, options: { definitionCode?: string } = {}): { evaluation: EvaluationRecord; changed: boolean; attributionId: Id | null; signals: Id[] } {
+  evaluate(workItemId: string, options: { definitionCode?: string } = {}): EvaluateResult {
     return this.#system('evaluate work item', (ctx) => {
       const wid = assertId(workItemId, 'workItemId');
       const code = options.definitionCode ?? STANDARD_DEFINITION_CODE;
       const defRow = ctx.db.get(`SELECT * FROM eval_definitions WHERE code = ? AND status = 'ACTIVE'`, code);
       if (!defRow) throw new QandeelError('EVAL_INVALID', 'no active, calibrated eval definition for this code', { code: code.slice(0, 64), reason: 'NO_ACTIVE_DEFINITION' });
-      const def = mapDefinition(defRow);
-      const { evidence, refs } = gatherWorkEvidence(ctx, wid);
-      const evidenceText = canonicalJson({ evidence, refs });
-      const evidenceSha = sha256Hex(evidenceText);
-      // R2-14: one live evaluation per Work Item and definition CODE — a new version of the code supersedes the
-      // live result of every older version (the Work Item is one unit of evidence, never one per version).
-      const lives = ctx.db.all(`SELECT r.* FROM evaluation_results r JOIN eval_definitions d ON d.id = r.definition_id WHERE r.work_item_id = ? AND d.code = ? AND r.superseded_by IS NULL ORDER BY r.created_at, r.rowid`, wid, def.code);
-      const live = lives.find((r) => s(r.definition_id) === def.id);
-      // RB-1 / RB-2: with no undecided generation, the adverse source events of `refs` that no decided generation covers
-      // get ONE new generation (PO-R2-C); the first proposal of a Work Item covers everything. Decided ones never reopen.
-      const nextGeneration = (evaluationId: Id): Id | null => {
-        const decided = ctx.db.all<{ evidence_refs_json: string }>(`SELECT evidence_refs_json FROM causal_attributions WHERE work_item_id = ? AND state IN ('VALIDATED', 'REJECTED')`, wid);
-        const covered = new Set(decided.flatMap((d) => JSON.parse(d.evidence_refs_json) as string[]));
-        const events = adverseSourceEvents(ctx, wid).map((e) => e.sourceRef).filter((r) => refs.includes(r));
-        if (decided.length > 0 && !events.some((r) => !covered.has(r))) return null;
-        const coveredEvents = new Set(events.filter((r) => covered.has(r)));
-        return insertAttribution(ctx, { workItemId: wid, evaluationId, employeeId: evidence.employeeId as Id | null, comparableKey: evidence.comparableKey, causes: proposeAttribution(evidence).causes, source: 'EVALUATOR_PROPOSAL', state: 'PROPOSED', actorRef: SYSTEM_EVALUATOR_REF, reasonCode: decided.length === 0 ? 'evaluator.proposed' : 'evaluator.new_generation', evidenceRefs: refs.filter((r) => !coveredEvents.has(r)) });
-      };
-      if (live && lives.length === 1 && s(live.evidence_sha256) === evidenceSha) {
-        // Unchanged evidence: nothing is re-evaluated — but a generation decided since may leave uncovered events.
-        const recordedDue = (JSON.parse(s(live.evidence_json)) as { attributionDue?: boolean }).attributionDue === true;
-        const fresh = recordedDue && liveAttribution(ctx, wid)?.state !== 'PROPOSED' ? nextGeneration(s(live.id) as Id) : null;
-        if (fresh !== null) assignJudge(ctx, { subjectKind: 'ATTRIBUTION', subjectId: fresh, workItemId: wid, subjectEmployeeId: evidence.employeeId as Id | null });
-        return { evaluation: mapEvaluation(live), changed: false, attributionId: liveAttribution(ctx, wid)?.id ?? null, signals: [] };
-      }
-      const outcome = evaluateWork(def.spec, evidence);
-      // RR3: the one "an attribution is due" predicate — recorded with the evaluation and deciding the proposal below.
-      const due = attributionDue(evidence);
-      const id = newId();
-      const at = ts(ctx);
-      for (const prior of lives) ctx.db.run('UPDATE evaluation_results SET superseded_by = ? WHERE id = ?', id, s(prior.id));
-      ctx.db.run(
-        `INSERT INTO evaluation_results (id, work_item_id, employee_id, department_id, definition_id, comparable_key, risk_level, evidence_state, qualified_outcome, dimensions_json, missing_json, conflicts_json, cost_json, observability_json, evidence_json, evidence_sha256, evaluator_ref, superseded_by, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-        id, wid, evidence.employeeId, evidence.departmentId, def.id, evidence.comparableKey, evidence.riskLevel, outcome.evidenceState, outcome.qualifiedOutcome ? 1 : 0, JSON.stringify(outcome.dimensions), JSON.stringify(outcome.missingEvidence), JSON.stringify(outcome.conflicts),
-        JSON.stringify(evidence.cost), JSON.stringify(evidence.activity), JSON.stringify({ refs, classes: evidence.evidenceClasses, attributionDue: due }), evidenceSha, SYSTEM_EVALUATOR_REF, at,
-      );
-      appendAudit(ctx, 'evaluation.recorded', 'evaluation', id, { actorRef: SYSTEM_EVALUATOR_REF }, 'OK', outcome.evidenceState, { workItemId: wid, qualified: outcome.qualifiedOutcome, definitionId: def.id });
-      if (outcome.qualifiedOutcome) wakeLessonJudgments(ctx, wid);
-      // Attribution: proposed from evidence when something went wrong; validated only by an independent decision.
-      let attributionId: Id | null;
-      const proposal = proposeAttribution(evidence);
-      // RB-1 / RB-2: sequential generations. At most one undecided proposal; it is never replaced because new adverse
-      // evidence arrived (new events wait until it is decided), and one a pool judge ESCALATED is the Founder's until
-      // decided (PO-R2-A). With no undecided proposal, the adverse source events no decided generation covers get ONE
-      // new generation (PO-R2-C); decided generations are never reopened.
-      const current = liveAttribution(ctx, wid);
-      const pending = current !== null && current.state === 'PROPOSED' ? current : null;
-      const founderOwned = pending !== null && escalatedToFounder(ctx, pending.id as Id);
-      if (due) {
-        if (pending === null) attributionId = nextGeneration(id) ?? current?.id ?? null;
-        else if (!founderOwned && canonicalJson(pending.causes) !== canonicalJson(proposal.causes)) {
-          // The undecided proposal's causes changed (not merely new events): re-proposed before anyone decided it.
-          setAttributionState(ctx, pending, 'SUPERSEDED', SYSTEM_EVALUATOR_REF, 'evidence.changed');
-          attributionId = insertAttribution(ctx, { workItemId: wid, evaluationId: id, employeeId: evidence.employeeId as Id | null, comparableKey: evidence.comparableKey, causes: proposal.causes, source: 'EVALUATOR_PROPOSAL', state: 'PROPOSED', actorRef: SYSTEM_EVALUATOR_REF, reasonCode: 'evaluator.reproposed', evidenceRefs: refs });
-        } else attributionId = pending.id;
-      } else if (pending !== null && !founderOwned && !proposal.needed) {
-        // Nothing adverse remains (e.g. reworked and verified): an unvalidated proposal must not stay decidable.
-        setAttributionState(ctx, pending, 'SUPERSEDED', SYSTEM_EVALUATOR_REF, 'evidence.not_adverse');
-        attributionId = null;
-      } else attributionId = current?.id ?? null;
-      // A live proposal goes to an independent pool judge where the plan delegates judgment (otherwise: the Founder).
-      if (attributionId !== null && liveAttribution(ctx, wid)?.state === 'PROPOSED') assignJudge(ctx, { subjectKind: 'ATTRIBUTION', subjectId: attributionId, workItemId: wid, subjectEmployeeId: evidence.employeeId as Id | null });
-      // Candidate-first learning signals (never validated here).
-      const signals: Id[] = [];
-      if (evidence.employeeId !== null && outcome.evidenceState === 'SUFFICIENT_EVIDENCE') {
-        const verdicts = Object.fromEntries(outcome.dimensions.map((d) => [d.dimension, d.verdict]));
-        if (isSmartSuccess({ qualifiedOutcome: outcome.qualifiedOutcome, verdicts })) {
-          const codes = outcome.dimensions.filter((d) => d.verdict === 'POSITIVE').map((d) => d.basis);
-          signals.push(systemObservation(ctx, evidence.employeeId as Id, wid, 'SUCCESSFUL_PATTERN', 'c6.successful-pattern', codes, evidence.comparableKey));
-        }
-        const near = nearMissCodes(evidence);
-        if (near.length > 0 && evidence.outcome === 'ACHIEVED') signals.push(systemObservation(ctx, evidence.employeeId as Id, wid, 'NEAR_MISS_WARNING', 'c6.near-miss', near, evidence.comparableKey));
-      }
-      return { evaluation: mapEvaluation(present(ctx.db.get('SELECT * FROM evaluation_results WHERE id = ?', id))), changed: true, attributionId, signals };
+      return txEvaluate(ctx, wid, mapDefinition(defRow));
     });
   }
 

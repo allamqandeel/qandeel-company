@@ -158,7 +158,12 @@ inside the existing C6 engine — never beside it:
   an external dependency failure; evidence is never a verdict;
 - **C6 integration**: `EXTERNAL_OUTCOME` is runtime truth (no static flag); the Founder or, where the plan delegates,
   the Review Pool verifies outcomes on usable governed evidence; the evaluator, attribution (an external dependency is
-  a non-employee cause), reports (unavailable / nothing relevant / cited evidence) and inspection cite canonical records.
+  a non-employee cause), reports (unavailable / nothing relevant / cited evidence) and inspection cite canonical records;
+- **contracts held by the datastore**: the release's contract catalogue is SQLite state, so a direct write cannot create
+  evidence of another family, type, domain, unit, scope or field shape than the source's registered contract allows;
+- **late integrity conflicts**: a conflicting replay contests every verification that rested on the record — it stays
+  history, leaves current C6 truth (evaluation, profile, economics, reports) and reaches the Founder, who upholds,
+  replaces (on usable evidence) or retracts it through the governed confirmation.
 
 C7-A has no transport, listener, SDK, control plane, publishing or Pilot objective engine. Details:
 `docs/C7A_IMPLEMENTATION_REPORT.md`, decisions D-C7A-01 onward.
@@ -228,7 +233,7 @@ npm run ci
 | `npm run c3:acceptance -- --workspace <dir>` | C3 local acceptance in a disposable directory (below) |
 | `npm run c4:mutation` | Removes 25 C4 organization / delegation / review / P-07 gates from the build; their proof tests must fail (after a build). `-- --shard i/n` runs a disjoint slice |
 | `npm run c4:acceptance -- --workspace <dir>` | C4 local acceptance in a disposable directory (below) |
-| `npm run c7a:mutation` | Removes 29 C7-A intake / privacy / source-governance / usable-evidence / C6-seam gates from the build; their proof tests must fail (after a build). `-- --shard i/n` runs a disjoint slice |
+| `npm run c7a:mutation` | Removes 46 C7-A intake / privacy / source-governance / usable-evidence / C6-seam / contest / datastore-contract gates from the build (a datastore gate from the migration, re-pinned for that run only); their proof tests must fail (after a build). `-- --shard i/n` runs a disjoint slice; `-- --only id,id` a local focus |
 | `npm run verify` | Repository-contract verifier (`scripts/verify-bootstrap.mjs`) |
 | `npm run ci` | build → typecheck → lint → test → C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A mutation checks → verify (CI runs the same proofs, split into parallel jobs) |
 
@@ -521,7 +526,8 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
   or schema; no reflection, lesson content, Goal text or passphrase in C6 telemetry; the portable package
   authenticated-encrypted and the recovery passphrase never written or taken from a command line;
 - the C7-A boundaries: no static external-outcome flag (availability is governed evidence) and every outcome
-  verification runs the governed external-evidence rule backed by datastore triggers; content-free intake telemetry, no
+  verification runs the governed external-evidence rule backed by datastore triggers (including the registered-contract
+  and late-conflict contest triggers), and the evaluator trusts only a current verification; content-free intake telemetry, no
   raw-payload / user / secret column and no pseudonym outside the kernel; external-evidence writes confined to the C7-A
   storage modules (no CLI / runtime register, bind or ingest); no parallel evaluation / learning / report store; no C7-B /
   C7-C / C7-D scope; C7-A not claimed closed without its record; the C7-A proofs and mutation check present;

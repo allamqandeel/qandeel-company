@@ -1,7 +1,7 @@
 /**
  * C7-A on the real runtime: the external-evidence capability joins the C5 change-signalling contract (reads silent,
- * failures silent, a Founder decision announces once, an intake announces only a NEW accepted record — an exact
- * replay or a refusal is silent), and the read-only CLI reports availability and source health content-free (there
+ * failures silent, a Founder decision announces once, an intake announces only a NEW accepted record or a NEW recorded
+ * conflict — an exact replay, a repeated conflict or a refusal is silent), and the read-only CLI reports availability and source health content-free (there
  * is no intake, register, activate or bind command). C7A-PROOF: runtime-c7a
  */
 import assert from 'node:assert/strict';
@@ -70,7 +70,9 @@ describe('C7-A runtime: governed external evidence under the Founder change-sign
         assert.equal(f.external.ingest(occurrence('o-1')).outcome, 'DUPLICATE');
         assert.equal(m.changes, 3, 'an exact replay is not news');
         assert.throws(() => f.external.ingest(occurrence('o-1', 99)), (e: unknown) => isQandeelError(e, 'INTAKE_CONFLICT'));
-        assert.equal(m.changes, 3, 'a refused conflicting replay announces nothing (its record and audit are durable)');
+        assert.equal(m.changes, 4, 'a NEW conflicting replay is refused but committed its conflict (and any contest, D-C7A-11): it announces once');
+        assert.throws(() => f.external.ingest(occurrence('o-1', 99)), (e: unknown) => isQandeelError(e, 'INTAKE_CONFLICT'));
+        assert.equal(m.changes, 4, 'the same conflicting replay again changes nothing new and announces nothing');
         assert.equal(f.external.availability().state, 'NO_RELEVANT_EVIDENCE');
         assert.equal(f.improvement.inspect({ kind: 'COMPANY' }).externalOutcomes !== undefined, true);
       } finally {

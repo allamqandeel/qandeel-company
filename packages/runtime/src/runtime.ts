@@ -263,6 +263,8 @@ interface SignallingContract {
   readonly reads: readonly string[];
   /** Announces once only when the predicate holds for what the call returned. */
   readonly conditional?: Readonly<Record<string, (result: unknown) => boolean>>;
+  /** For a conditional method: announces once when it throws a refusal that nevertheless committed new state. */
+  readonly committedRefusal?: Readonly<Record<string, (error: unknown) => boolean>>;
 }
 
 /**
@@ -286,7 +288,21 @@ function signalling<T extends object>(target: T, changed: () => void, contract: 
     const kind = classes.get(name);
     if (kind === 'read') out[name] = (...args: unknown[]) => fn.apply(target, args);
     else if (kind === 'mutating') out[name] = (...args: unknown[]) => { const result = fn.apply(target, args); changed(); return result; };
-    else out[name] = (...args: unknown[]) => { const result = fn.apply(target, args); if (conditional[name]?.(result)) changed(); return result; };
+    else {
+      // A refusal that still committed something (e.g. a recorded intake conflict) announces when the contract says so.
+      const committedRefusal = contract.committedRefusal?.[name];
+      out[name] = (...args: unknown[]) => {
+        let result: unknown;
+        try {
+          result = fn.apply(target, args);
+        } catch (error) {
+          if (committedRefusal?.(error)) changed();
+          throw error;
+        }
+        if (conditional[name]?.(result)) changed();
+        return result;
+      };
+    }
   }
   return Object.freeze(out) as unknown as T;
 }
@@ -820,7 +836,7 @@ export class CompanyRuntime {
         // C6 (D-C6-07): reads are silent; Founder decisions announce once; the system's idempotent derivations
         // (evaluate, assess, report, plan) announce only when they recorded something new.
         improvement: signalling(ImprovementStore.for(s), changed, {
-          mutating: ['registerDefinition', 'calibrateDefinition', 'activateDefinition', 'retireDefinition', 'verifyOutcome', 'decideAttribution', 'classifyObservation', 'completeTraining', 'completeReviewedTraining', 'decideSystemicFinding', 'openFailureCase', 'advanceFailureCase'],
+          mutating: ['registerDefinition', 'calibrateDefinition', 'activateDefinition', 'retireDefinition', 'verifyOutcome', 'resolveOutcomeContest', 'decideAttribution', 'classifyObservation', 'completeTraining', 'completeReviewedTraining', 'decideSystemicFinding', 'openFailureCase', 'advanceFailureCase'],
           reads: ['definitions', 'calibrationRuns', 'evaluation', 'evaluations', 'attributions', 'signals', 'learningGate', 'judgments', 'interventions', 'systemicFindings', 'failureCases', 'retrainingMaterial', 'latestReport', 'reports', 'profile', 'economics', 'reviewerCalibration', 'inspect', 'health'],
           conditional: {
             evaluate: (r) => (r as { changed: boolean }).changed,
@@ -838,6 +854,9 @@ export class CompanyRuntime {
           mutating: ['registerSource', 'decideSource', 'bindEvidence', 'unbindEvidence'],
           reads: ['sources', 'source', 'sourceHistory', 'record', 'bindings', 'evidenceFor', 'availability', 'health'],
           conditional: { ingest: (r) => (r as { changed: boolean }).changed },
+          // A NEW conflicting replay commits its conflict (and, D-C7A-11, the contest of the verifications that rested on
+          // the record) before refusing: the Founder's world changed. A repeated one changed nothing.
+          committedRefusal: { ingest: (e) => isQandeelError(e, 'INTAKE_CONFLICT') && e.details.recorded === true },
         }),
         universe: (options: { at?: string } = {}): CompanyUniverse => {
           if (options.at !== undefined && !isTimestamp(options.at)) throw new QandeelError('VALIDATION_FAILED', 'at must be a canonical UTC timestamp', { field: 'at' });

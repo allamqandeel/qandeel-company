@@ -79,7 +79,9 @@ describe('C6 runtime: the Improvement capability under the Founder change-signal
     withRuntime('c6-signal', async ({ rt, w }) => {
       const f = rt.founder;
       const methods = Object.keys(f.improvement).filter((k) => typeof (f.improvement as unknown as Record<string, unknown>)[k] === 'function').sort();
-      assert.equal(methods.length, 37);
+      // 37 C6 methods + C7-A's `resolveOutcomeContest` (D-C7A-11, a Founder decision: mutating).
+      assert.equal(methods.length, 38);
+      assert.ok(methods.includes('resolveOutcomeContest'));
       assert.ok(Object.isFrozen(f.improvement));
       const m = meter(rt);
       try {

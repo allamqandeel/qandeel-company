@@ -10,14 +10,15 @@ import { readFileSync } from 'node:fs';
 import { describe, test } from 'node:test';
 
 import { ManualClock, canonicalJson, isQandeelError, newId, sha256Hex, type Id } from '@qandeel-company/domain';
-import { contractOf, normalizeOccurrence, type OutcomeJudgment } from '@qandeel-company/governance';
+import { EXTERNAL_CONTRACTS, contractOf, normalizeOccurrence, type OutcomeJudgment } from '@qandeel-company/governance';
 import { standardWorkOutcomeDefinition } from '@qandeel-company/mind';
 
-import { AttentionStore, ExternalEvidenceStore, FounderActionStore, FounderAuthStore, GoalStore, ImprovementStore, RELEASED_MIGRATIONS, ReviewStore, loadReleasedMigrations, type EmployeeRecord } from '../src/index.js';
-import { recordReviewDecision, settle } from '../src/runtime-authority.js';
+import { AttentionStore, ExternalEvidenceStore, FounderActionStore, FounderAuthStore, GoalStore, ImprovementStore, MemoryStore, RELEASED_MIGRATIONS, ReviewStore, loadReleasedMigrations, type EmployeeRecord } from '../src/index.js';
+import { contractDigest } from '../src/external-evidence.js';
+import { recordReviewDecision, reserveBudget, settle, settleReservation } from '../src/runtime-authority.js';
 import { openStoreForTests, storeContext } from '../src/store.js';
 import { disarmFounderTestSurface, armFounderTestSurface } from '../src/testing/founder-seam.js';
-import { GOVERNED_KIND, seed, type Seed } from './c2-helpers.js';
+import { GOVERNED_KIND, seed, testManifest, type Seed } from './c2-helpers.js';
 import { activeReviewer, claimItem, reviewPlan } from './c4-helpers.js';
 import { backoff, harness, owner, removeRoot, tempRoot, type Harness } from './helpers.js';
 
@@ -88,12 +89,18 @@ const opsEvent = (producerEventId: string, type = 'service.health', fields: Reco
 });
 
 /** Ordinary governed work prepared by the Founder (budget + plan) and executed by the Employee to its review. */
-function prepared(x: X, plan: Record<string, unknown> = FOUNDER_PLAN, who: EmployeeRecord = x.s.employee): Id {
+function prepared(x: X, plan: Record<string, unknown> = FOUNDER_PLAN, who: EmployeeRecord = x.s.employee, withCost = false): Id {
   const { workItem } = x.h.store.createWorkItem({ objective: 'governed growth work', ownerRef: who.ref, processorKind: GOVERNED_KIND, processorInput: { taskClass: 'draft.memo', dataClass: 'D1', instructions: 'x' } });
   x.s.gov.createBudget(x.s.founder, { scope: 'WORK_ITEM', scopeId: workItem.id, capMoney: 100_000, capTokens: 100_000, reasonCode: 'seed' });
   ReviewStore.for(x.h.store).declarePlan(x.s.founder, workItem.id, plan);
   if (x.h.store.getWorkItem(workItem.id).state === 'PROPOSED') x.h.store.transitionWorkItem(workItem.id, { to: 'READY', reasonCode: 'release' });
   const claim = claimItem(x.h, workItem.id, `w-${newId().slice(0, 8)}`);
+  if (withCost) {
+    // One governed model call on the usage ledger: a qualified outcome with cost evidence can be a smart success.
+    const r = reserveBudget(x.h.store, claim.fence, { purpose: 'MODEL_CALL', attemptKind: 'PRIMARY', deploymentId: x.s.deploymentId, priceCardId: x.s.priceCardId, routePolicyId: x.s.policyId, money: 1_000, tokens: 1_000, contextManifestId: testManifest(x.h, claim.fence, who.id) });
+    assert.ok(r.ok, 'the model call is reserved');
+    if (r.ok) settleReservation(x.h.store, claim.fence, r.reservation.id, { inputTokens: 100, outputTokens: 50, withinBounds: true, sessionId: null, outcome: 'OK' });
+  }
   settle(x.h.store, claim.fence, { type: 'COMPLETED', evidence: { summaryCode: 'draft.ready' } }, { backoff });
   return workItem.id;
 }
@@ -111,8 +118,8 @@ function review(x: X, workItemId: Id, outcome: 'PASS' | 'FAIL', judgment: Outcom
 }
 
 /** A reviewed Work Item (Founder-judged plan) whose outcome is still unverified. */
-function reviewedWork(x: X): Id {
-  const w = prepared(x);
+function reviewedWork(x: X, withCost = false): Id {
+  const w = prepared(x, FOUNDER_PLAN, x.s.employee, withCost);
   review(x, w, 'PASS');
   assert.equal(x.h.store.getWorkItem(w).state, 'REVIEWED');
   return w;
@@ -202,11 +209,22 @@ describe('C7-A source governance: nothing becomes trusted without a Founder deci
       assert.throws(() => x.x.registerSource(x.s.founder, { sourceKey: 'web-analytics.main', family: 'WEB_ANALYTICS', contractCode: 'outcome.metrics', contractVersion: 2 }), reason('UNKNOWN_CONTRACT'));
       assert.equal(x.x.registerSource(x.s.founder, { sourceKey: 'web-analytics.main', family: 'WEB_ANALYTICS', contractCode: 'outcome.metrics', contractVersion: 1 }).changed, false, 'the same contract is idempotent');
       assert.throws(() => x.x.registerSource(x.s.founder, { sourceKey: 'web-analytics.main', family: 'SEARCH', contractCode: 'outcome.metrics', contractVersion: 1 }), reason('SOURCE_IDENTITY_IMMUTABLE'));
-      // The release's contract definition changed WITHOUT a version bump (the catalog is deeply immutable in-process, so
-      // this is a source pinned to a digest the current definition no longer produces): intake fails closed.
+      // D-C7A-10: the datastore holds this release's contract catalogue — a version it does not catalogue, or a digest that
+      // is not the catalogued one, cannot even be registered, whoever writes.
       assert.ok(Object.isFrozen(contractOf('outcome.metrics', 1)?.metrics), 'a pinned contract cannot change in-process');
+      const forgeContract = (version: number, sha: string) => () =>
+        db(x).immediate('forge a contract', () => {
+          db(x).run(`UPDATE external_source_contracts SET state = 'SUPERSEDED', updated_at = ? WHERE source_id = ? AND state = 'CURRENT'`, OCCURRED, id);
+          db(x).run(`INSERT INTO external_source_contracts (id, source_id, contract_code, contract_version, contract_sha256, state, registered_by_ref, created_at, updated_at) VALUES (?, ?, 'outcome.metrics', ?, ?, 'CURRENT', ?, ?, ?)`, newId(), id, version, sha, x.s.founder, OCCURRED, OCCURRED);
+        });
+      assert.throws(forgeContract(7, 'b'.repeat(64)), code('STORAGE_INVARIANT'), 'a contract version this release does not catalogue');
+      assert.throws(forgeContract(1, 'd'.repeat(64)), code('STORAGE_INVARIANT'), 'a digest that is not the catalogued one');
+      assert.throws(() => db(x).immediate('re-catalogue', () => db(x).run(`UPDATE external_contract_catalog SET contract_sha256 = ?`, 'd'.repeat(64))), code('STORAGE_INVARIANT'), 'the catalogue is frozen');
+      // A database whose catalogue predates a definition change made WITHOUT a version bump (simulated: a database without
+      // this release's registration guard, holding a source pinned to an older digest): intake fails closed in code.
       const drifted = newId();
       db(x).immediate('pinned to an older definition', () => {
+        db(x).run('DROP TRIGGER external_source_contracts_catalogued');
         db(x).run(`INSERT INTO external_sources (id, source_key, lane, family, state, registered_by_ref, decided_by_ref, decision_reason_code, version, created_at, updated_at) VALUES (?, 'search.drifted', 'EXTERNAL_OUTCOME', 'SEARCH', 'DRAFT', ?, NULL, NULL, 1, ?, ?)`, drifted, x.s.founder, OCCURRED, OCCURRED);
         db(x).run(`INSERT INTO external_source_history (source_id, version, from_state, to_state, reason_code, actor_ref, occurred_at) VALUES (?, 1, NULL, 'DRAFT', 'source.registered', ?, ?)`, drifted, x.s.founder, OCCURRED);
         db(x).run(`INSERT INTO external_source_contracts (id, source_id, contract_code, contract_version, contract_sha256, state, registered_by_ref, created_at, updated_at) VALUES (?, ?, 'outcome.metrics', 1, ?, 'CURRENT', ?, ?, ?)`, newId(), drifted, 'd'.repeat(64), x.s.founder, OCCURRED, OCCURRED);
@@ -214,12 +232,6 @@ describe('C7-A source governance: nothing becomes trusted without a Founder deci
       x.x.decideSource(x.s.founder, drifted, { decision: 'ACTIVATE', reasonCode: 'founder.trusted' });
       assert.throws(() => x.x.ingest({ ...metric('m-drift', 5, { type: 'search.clicks' }), sourceKey: 'search.drifted' }), refusedBy('CONTRACT_DRIFT'));
       assert.equal(x.x.ingest(metric('m-ok')).outcome, 'ACCEPTED', 'a source pinned to the current definition validates');
-      // A current contract row naming a version this release does not know is drift too.
-      db(x).immediate('drift', () => {
-        db(x).run(`UPDATE external_source_contracts SET state = 'SUPERSEDED', updated_at = ? WHERE source_id = ? AND state = 'CURRENT'`, OCCURRED, id);
-        db(x).run(`INSERT INTO external_source_contracts (id, source_id, contract_code, contract_version, contract_sha256, state, registered_by_ref, created_at, updated_at) VALUES (?, ?, 'outcome.metrics', 7, ?, 'CURRENT', ?, ?, ?)`, newId(), id, 'b'.repeat(64), x.s.founder, OCCURRED, OCCURRED);
-      });
-      assert.throws(() => x.x.ingest(metric('m-2')), refusedBy('CONTRACT_DRIFT'));
       assert.throws(() => db(x).immediate('rewrite', () => db(x).run(`UPDATE external_source_contracts SET contract_sha256 = ? WHERE source_id = ? AND state = 'CURRENT'`, 'c'.repeat(64), id)), code('STORAGE_INVARIANT'), 'a contract version is immutable');
     });
   });
@@ -268,14 +280,15 @@ describe('C7-A idempotency and provenance', () => {
     withSeed((x) => {
       const sourceId = outcomeSource(x);
       const first = x.x.ingest(metric('m-1', 1200)).record;
-      assert.throws(() => x.x.ingest(metric('m-1', 9999)), (e) => isQandeelError(e, 'INTAKE_CONFLICT') && e.details.recordId === first.id);
+      // A 9-digit sentinel: a short number would also turn up by chance inside a random id or fingerprint.
+      assert.throws(() => x.x.ingest(metric('m-1', 987654321)), (e) => isQandeelError(e, 'INTAKE_CONFLICT') && e.details.recordId === first.id);
       assert.equal(x.x.record(first.id).value, 1200, 'the first accepted record stands');
       assert.equal(x.x.record(first.id).conflicts, 1);
-      assert.throws(() => x.x.ingest(metric('m-1', 9999)), code('INTAKE_CONFLICT'));
+      assert.throws(() => x.x.ingest(metric('m-1', 987654321)), code('INTAKE_CONFLICT'));
       assert.equal(count(x, 'SELECT COUNT(*) AS n FROM external_record_conflicts'), 1, 'the same conflicting replay is recorded once');
       assert.equal(count(x, `SELECT COUNT(*) AS n FROM audit_events WHERE action = 'external.intake_conflict'`), 2, 'every conflicting replay is audited');
       assert.equal(count(x, `SELECT COUNT(*) AS n FROM events WHERE type = 'external_record.conflict_detected'`), 1);
-      assert.ok(!everything(x).includes('9999'), 'the conflicting value is never stored, audited or evented');
+      assert.ok(!everything(x).includes('987654321'), 'the conflicting value is never stored, audited or evented');
       // A source integrity conflict is a material exception for the Founder.
       AttentionStore.for(x.h.store).sync();
       assert.ok(AttentionStore.for(x.h.store).list().some((i) => i.dedupKey === `external_integrity:${sourceId}` && i.level === 'URGENT'));
@@ -626,8 +639,240 @@ describe('C7-A integration into the existing C6 engine', () => {
       assert.equal(count(x, 'SELECT COUNT(*) AS n FROM evaluation_results WHERE id = ?', e.id), 1, 'the one evaluation store');
       assert.ok(x.m.profile(x.s.employee.id).dimensions.find((d) => d.dimension === 'OUTCOME')?.evidenceRefs.includes(`evaluation:${e.id}`), 'the existing profile reads it');
       const tables = db(x).all<{ name: string }>(`SELECT name FROM sqlite_schema WHERE type = 'table'`).map((t) => t.name);
-      assert.deepEqual(tables.filter((t) => /^(external|c7)/.test(t)).sort(), ['external_binding_history', 'external_evidence_bindings', 'external_record_conflicts', 'external_records', 'external_source_contracts', 'external_source_history', 'external_sources']);
+      assert.deepEqual(tables.filter((t) => /^(external|c7)/.test(t)).sort(), ['external_binding_history', 'external_contract_catalog', 'external_contract_families', 'external_contract_fields', 'external_contract_scopes', 'external_contract_types', 'external_evidence_bindings', 'external_record_conflicts', 'external_records', 'external_source_contracts', 'external_source_history', 'external_sources']);
       assert.deepEqual(tables.filter((t) => /evaluat|lesson|learning|attribution|performance|score|report/.test(t) && !['evaluation_results', 'eval_definitions', 'eval_definition_history', 'eval_calibration_runs', 'lessons', 'lesson_promotions', 'learning_signals', 'learning_interventions', 'learning_intervention_history', 'causal_attributions', 'causal_attribution_history', 'report_snapshots', 'lesson_history', 'run_attributions'].includes(t)), [], 'only the pre-existing C2–C6 stores');
+    });
+  });
+});
+
+// =================================================================================================================
+describe('C7-A late integrity conflict: disputed evidence leaves current C6 truth until the Founder decides (D-C7A-11)', () => {
+  const states = (x: X, verificationId: Id): string[] => db(x).all<{ state: string }>('SELECT state FROM outcome_verification_validity WHERE verification_id = ? ORDER BY seq', verificationId).map((r) => r.state);
+  const outcomeRefs = (x: X): readonly string[] => x.m.profile(x.s.employee.id).dimensions.find((d) => d.dimension === 'OUTCOME')?.evidenceRefs ?? [];
+
+  test('(36) accept → bind → decisive verification → qualified evaluation → a late conflicting replay: history kept; evaluation, profile, economics, reports and Attention stop trusting it; a governed Founder replacement restores current truth', () => {
+    withSeed((x) => {
+      outcomeSource(x);
+      const w = reviewedWork(x, true);
+      const rec = x.x.ingest(metric('m-1', 1800)).record;
+      bind(x, rec.id, w);
+      const v = verifyExternal(x, w, [rec.ref, `work_item:${w}`]);
+      const qualified = x.m.evaluate(w).evaluation;
+      assert.equal(qualified.qualifiedOutcome, true);
+      assert.ok(outcomeRefs(x).includes(`evaluation:${qualified.id}`) && x.m.economics({ employeeId: x.s.employee.id }).qualifiedOutcomes === 1, 'counted as a qualified success before');
+      // Learning built on it: the success's pattern lesson, validated by the Founder, counts as the Employee's contribution.
+      const [pattern] = x.m.signals({ workItemId: w, kind: 'SUCCESSFUL_PATTERN' });
+      assert.ok(pattern, 'the qualified success yields a pattern candidate');
+      const mem = MemoryStore.for(x.h.store);
+      const lesson = mem.nominateLesson(x.s.founder, pattern.observationId as Id, 'pattern.candidate');
+      mem.validateLesson(x.s.founder, lesson.id, { decision: 'VALIDATE', reasonCode: 'pattern.validated' });
+      const patterns = (): readonly string[] => (x.m.profile(x.s.employee.id).dimensions.find((d) => d.dimension === 'SYSTEM_CONTRIBUTION')?.evidenceRefs ?? []).filter((r) => r.startsWith('lesson:')).map((r) => r.slice('lesson:'.length));
+      assert.ok(patterns().includes(lesson.id), 'the validated pattern is the Employee\'s system contribution');
+
+      // The late conflicting replay of the same producer occurrence (it commits, then refuses: the runtime announces it).
+      assert.throws(() => x.x.ingest(metric('m-1', 9000)), (e) => isQandeelError(e, 'INTAKE_CONFLICT') && e.details.recorded === true && e.details.contestedVerifications === 1);
+      assert.throws(() => x.x.ingest(metric('m-1', 9000)), (e) => isQandeelError(e, 'INTAKE_CONFLICT') && e.details.recorded === false, 'a repeated conflict commits nothing new');
+
+      // History is preserved: the verification, the qualified evaluation and the lifecycle are never rewritten.
+      assert.equal(count(x, 'SELECT COUNT(*) AS n FROM outcome_verifications WHERE id = ?', v.verificationId), 1);
+      assert.equal(count(x, 'SELECT COUNT(*) AS n FROM evaluation_results WHERE id = ?', qualified.id), 1);
+      assert.equal(x.h.store.getWorkItem(w).state, 'OUTCOME_VERIFIED', 'the Work Item lifecycle is history');
+      assert.deepEqual(states(x, v.verificationId), ['CONTESTED']);
+      // Current qualified truth no longer counts it — restated through the same C6 evaluator, in the conflict's transaction.
+      const now = x.m.evaluation(w);
+      assert.notEqual(now?.id, qualified.id, 'the qualified evaluation is superseded, not edited');
+      assert.deepEqual([now?.qualifiedOutcome, now?.evidenceState, now?.conflicts], [false, 'CONFLICTING_EVIDENCE', ['OUTCOME_EVIDENCE_CONTESTED']]);
+      assert.ok(now?.evidenceRefs.includes(`outcome_verification:${v.verificationId}`) && now.evidenceRefs.some((r) => r.startsWith('external_record_conflict:')), 'the evaluation cites what it could not trust');
+      assert.ok(!now?.evidenceRefs.includes(rec.ref) && !(x.m.inspect({ kind: 'WORK_ITEM', id: w }) as { evidence: { evidenceClasses: string[] } }).evidence.evidenceClasses.includes('EXTERNAL_OUTCOME'), 'the disputed record is no longer external outcome evidence');
+      assert.equal(x.m.evaluate(w).changed, false, 'the restated truth is stable');
+      // Profile / performance / economics no longer count it as a qualified success.
+      assert.ok(!outcomeRefs(x).includes(`evaluation:${qualified.id}`));
+      assert.equal(x.m.economics({ employeeId: x.s.employee.id }).qualifiedOutcomes, 0);
+      assert.equal(x.m.health().qualifiedOutcomes, 0);
+      // Learning stops relying on it: the lesson stays VALIDATED (history) but no longer counts as a contribution.
+      assert.equal(count(x, `SELECT COUNT(*) AS n FROM lessons WHERE id = ? AND stage = 'VALIDATED'`, lesson.id), 1);
+      assert.ok(!patterns().includes(lesson.id), 'a pattern from a contested success is not a contribution');
+      assert.deepEqual((x.m.inspect({ kind: 'WORK_ITEM', id: w }) as { verification: { validity: string; current: boolean } }).verification, { id: v.verificationId, verdict: 'ACHIEVED', validity: 'CONTESTED', current: false });
+      // Current reporting states the contestation and never presents it as a trusted external result.
+      const weekly = x.m.generateReport('WEEKLY').report.claims;
+      const contestedClaim = weekly.find((c) => c.code === 'EXTERNAL_OUTCOME_CONTESTED');
+      assert.deepEqual(contestedClaim?.subject, { kind: 'WORK_ITEM', id: w });
+      assert.ok(contestedClaim?.evidenceRefs.includes(`outcome_verification:${v.verificationId}`) && contestedClaim.evidenceRefs.some((r) => r.startsWith('external_record_conflict:')));
+      assert.ok(!weekly.some((c) => c.code === 'EXTERNAL_OUTCOMES_IN_VERIFICATION' && c.evidenceRefs.includes(`outcome_verification:${v.verificationId}`)));
+      assert.ok(!weekly.some((c) => c.code === 'EXTERNAL_OUTCOME_EVIDENCE' && c.evidenceRefs.includes(rec.ref)));
+      const daily = x.m.generateReport('DAILY').report.claims;
+      assert.ok(daily.find((c) => c.code === 'OUTCOMES_CONTESTED')?.evidenceRefs.includes(`outcome_verification:${v.verificationId}`));
+      assert.ok(!daily.some((c) => c.code === 'OUTCOMES_ACHIEVED' && c.evidenceRefs.includes(`outcome_verification:${v.verificationId}`)));
+      // Founder Attention receives it as a decision the Founder owes.
+      AttentionStore.for(x.h.store).sync();
+      assert.ok(AttentionStore.for(x.h.store).list().some((i) => i.dedupKey === `outcome_contest:${v.verificationId}` && i.level === 'NEEDS_DECISION' && i.lane === 'NEEDS_ME'));
+
+      // Governed Founder replacement: never on the disputed record; on fresh usable evidence it restores current truth.
+      const { actions, session } = founderActions(x);
+      assert.throws(() => actions.preview(session, 'OUTCOME_CONTEST_RESOLVE', { verificationId: v.verificationId, decision: 'REPLACE', evidenceClasses: ['EXTERNAL_OUTCOME', 'REVIEW_DECISION'], evidenceRefs: [rec.ref] }), reason('RECORD_CONFLICTED'));
+      assert.throws(() => x.m.resolveOutcomeContest(x.s.employee.ref, v.verificationId, { decision: 'UPHOLD', reasonCode: 'mine' }), (e) => isQandeelError(e) && ['FOUNDER_ONLY', 'AUTHORITY_DENIED', 'SELF_ESCALATION_REFUSED'].includes(e.code), 'an Employee never decides its own contested outcome');
+      const rec2 = x.x.ingest(metric('m-2', 1750)).record;
+      bind(x, rec2.id, w);
+      const p = actions.preview(session, 'OUTCOME_CONTEST_RESOLVE', { verificationId: v.verificationId, decision: 'REPLACE', evidenceClasses: ['EXTERNAL_OUTCOME', 'REVIEW_DECISION'], evidenceRefs: [rec2.ref, `work_item:${w}`] });
+      const replacementId = actions.confirm(session, p.id, p.fingerprint).resultRef.slice('outcome_verification:'.length);
+      assert.notEqual(replacementId, v.verificationId);
+      const restored = x.m.evaluation(w);
+      assert.deepEqual([restored?.qualifiedOutcome, restored?.evidenceState], [true, 'SUFFICIENT_EVIDENCE']);
+      assert.ok(restored?.evidenceRefs.includes(rec2.ref) && restored.evidenceRefs.includes(`outcome_verification:${replacementId}`) && !restored.evidenceRefs.includes(rec.ref));
+      assert.equal(x.m.economics({ employeeId: x.s.employee.id }).qualifiedOutcomes, 1);
+      assert.ok(patterns().includes(lesson.id), 'the re-verified success counts its pattern again');
+      // Nothing was deleted: both verifications, the contest and its resolution, and every evaluation stay history.
+      assert.deepEqual(states(x, v.verificationId), ['CONTESTED', 'REPLACED']);
+      assert.equal(count(x, 'SELECT COUNT(*) AS n FROM outcome_verifications WHERE work_item_id = ?', w), 2);
+      assert.equal(count(x, 'SELECT COUNT(*) AS n FROM evaluation_results WHERE work_item_id = ?', w), 3);
+      AttentionStore.for(x.h.store).sync();
+      assert.ok(!AttentionStore.for(x.h.store).list().some((i) => i.dedupKey === `outcome_contest:${v.verificationId}` && i.state === 'OPEN'), 'the Founder decision answers it');
+      const after = x.m.generateReport('WEEKLY').report.claims;
+      assert.ok(after.some((c) => c.code === 'EXTERNAL_OUTCOMES_IN_VERIFICATION' && c.evidenceRefs.includes(`outcome_verification:${replacementId}`) && !c.evidenceRefs.includes(`outcome_verification:${v.verificationId}`)));
+      assert.ok(!after.some((c) => c.code === 'EXTERNAL_OUTCOME_CONTESTED'));
+      // REPLACED is final; a replacement is the one current decisive verification.
+      assert.throws(() => x.m.resolveOutcomeContest(x.s.founder, v.verificationId, { decision: 'UPHOLD', reasonCode: 'again' }), reason('NOT_CONTESTED'));
+      for (const sql of ['DELETE FROM outcome_verification_validity', `UPDATE outcome_verification_validity SET state = 'UPHELD'`]) assert.throws(() => db(x).immediate('rewrite', () => db(x).run(sql)), code('STORAGE_INVARIANT'), sql);
+    });
+  });
+
+  test('(37) only an evidence-integrity conflict contests (never a suspension); the datastore contests even a directly written conflict; UPHOLD restores, a second conflict re-contests, RETRACT ends it; validity cannot be forged', () => {
+    withSeed((x) => {
+      const sourceId = outcomeSource(x);
+      const w = reviewedWork(x);
+      const rec = x.x.ingest(metric('m-1', 1800)).record;
+      bind(x, rec.id, w);
+      const v = verifyExternal(x, w, [rec.ref, `work_item:${w}`]);
+      const first = x.m.evaluate(w).evaluation;
+      // Ordinary suspension is not evidence of a dispute: nothing is invalidated retroactively.
+      x.x.decideSource(x.s.founder, sourceId, { decision: 'SUSPEND', reasonCode: 'founder.paused' });
+      assert.deepEqual(states(x, v.verificationId), []);
+      assert.deepEqual([x.m.evaluate(w).changed, x.m.evaluation(w)?.id, x.m.evaluation(w)?.qualifiedOutcome], [false, first.id, true]);
+      x.x.decideSource(x.s.founder, sourceId, { decision: 'ACTIVATE', reasonCode: 'founder.resumed' });
+      // A forged validity row is refused: no contest without a conflict on cited evidence, no decision without a contest.
+      assert.throws(() => db(x).immediate('forge', () => db(x).run(`INSERT INTO outcome_verification_validity (verification_id, seq, state, conflict_id, replacement_verification_id, actor_ref, reason_code, occurred_at) VALUES (?, 1, 'RETRACTED', NULL, NULL, ?, 'x', ?)`, v.verificationId, x.s.founder, OCCURRED)), code('STORAGE_INVARIANT'));
+      // The datastore contests even a conflict written without the intake path, in that write's own transaction.
+      db(x).immediate('direct conflict', () => db(x).run('INSERT INTO external_record_conflicts (id, record_id, source_id, conflicting_fingerprint, received_at) VALUES (?, ?, ?, ?, ?)', newId(), rec.id, sourceId, 'e'.repeat(64), OCCURRED));
+      assert.deepEqual(states(x, v.verificationId), ['CONTESTED']);
+      assert.equal(x.m.evaluate(w).evaluation.qualifiedOutcome, false, 'the evaluator never trusts a contested verification');
+      // UPHOLD: the Founder's decision that the verification stands — current truth again (a new evaluation, history kept).
+      const up = x.m.resolveOutcomeContest(x.s.founder, v.verificationId, { decision: 'UPHOLD', reasonCode: 'founder.producer_bug' });
+      assert.deepEqual(up, { verificationId: v.verificationId, state: 'UPHELD' });
+      assert.equal(x.m.evaluation(w)?.qualifiedOutcome, true);
+      // A NEW conflicting replay after the decision contests it again (new information), restated in the same transaction.
+      assert.throws(() => x.x.ingest(metric('m-1', 4321)), code('INTAKE_CONFLICT'));
+      assert.deepEqual(states(x, v.verificationId), ['CONTESTED', 'UPHELD', 'CONTESTED']);
+      assert.equal(x.m.evaluation(w)?.qualifiedOutcome, false);
+      // RETRACT: no current verified outcome — never qualified, never an adverse event either; final.
+      assert.throws(() => x.m.resolveOutcomeContest(x.s.founder, v.verificationId, { decision: 'RETRACT', reasonCode: 'founder.retracted', evidenceRefs: [rec.ref] }), code('VALIDATION_FAILED'));
+      x.m.resolveOutcomeContest(x.s.founder, v.verificationId, { decision: 'RETRACT', reasonCode: 'founder.retracted' });
+      assert.deepEqual(states(x, v.verificationId), ['CONTESTED', 'UPHELD', 'CONTESTED', 'RETRACTED']);
+      const retracted = x.m.evaluation(w);
+      assert.equal(retracted?.qualifiedOutcome, false);
+      assert.ok(!retracted?.conflicts.includes('OUTCOME_EVIDENCE_CONTESTED'), 'decided: no longer a pending dispute');
+      assert.throws(() => x.m.resolveOutcomeContest(x.s.founder, v.verificationId, { decision: 'UPHOLD', reasonCode: 'again' }), reason('NOT_CONTESTED'));
+      db(x).immediate('a later conflict', () => db(x).run('INSERT INTO external_record_conflicts (id, record_id, source_id, conflicting_fingerprint, received_at) VALUES (?, ?, ?, ?, ?)', newId(), rec.id, sourceId, 'f'.repeat(64), OCCURRED));
+      assert.deepEqual(states(x, v.verificationId), ['CONTESTED', 'UPHELD', 'CONTESTED', 'RETRACTED'], 'RETRACTED is final: a later conflict contests nothing');
+      // Every contest and decision is audited by ids and codes only.
+      assert.equal(count(x, `SELECT COUNT(*) AS n FROM audit_events WHERE action = 'outcome.contested'`), 1, 'the intake path audits its contest (the direct write had no code path)');
+      assert.equal(count(x, `SELECT COUNT(*) AS n FROM audit_events WHERE action = 'outcome.contest_resolved'`), 2);
+    });
+  });
+});
+
+// =================================================================================================================
+describe('C7-A the datastore enforces the registered contract, not only TypeScript (D-C7A-10)', () => {
+  /** A direct datastore write under an ACTIVE source and its CURRENT contract — the bypass every case below attempts. */
+  const forge = (x: X, sourceId: Id, row: { lane: string; type: string; domain: string; scopeKind?: string | null; value?: number | null; unit?: string | null; window?: boolean; fields?: Record<string, unknown>; failure?: 0 | 1; userScoped?: 0 | 1 }) => {
+    const contractId = x.x.source(sourceId).contract?.id as Id;
+    const outcome = row.lane === 'EXTERNAL_OUTCOME';
+    return () =>
+      db(x).immediate('bypass', () =>
+        db(x).run(
+          `INSERT INTO external_records (id, source_id, contract_id, producer_event_id, lane, record_type, domain, occurred_at, received_at, scope_kind, scope_ref, window_from, window_to, value_num, unit, normalized_fields_json, user_scoped, failure_signal, fingerprint, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACCEPTED')`,
+          newId(), sourceId, contractId, newId(), row.lane, row.type, row.domain, OCCURRED, OCCURRED,
+          row.scopeKind === undefined ? (outcome ? 'SITE' : null) : row.scopeKind, outcome ? 'qandeel-site' : null,
+          row.window === false || !outcome ? null : '2026-09-19T00:00:00.000Z', row.window === false || !outcome ? null : '2026-09-26T00:00:00.000Z',
+          row.value === undefined ? (outcome ? 10 : null) : row.value, row.unit === undefined ? (outcome ? 'COUNT' : null) : row.unit,
+          JSON.stringify(row.fields ?? {}), row.userScoped ?? 0, row.failure ?? 0, 'a'.repeat(64),
+        ),
+      );
+  };
+
+  test('(38) every contract-incompatible record fails closed at the datastore under an ACTIVE source and its CURRENT contract', () => {
+    withSeed((x) => {
+      const search = outcomeSource(x, 'search.console', 'SEARCH');
+      const ops = opsSource(x);
+      const opsContract = x.x.source(ops).contract?.id as Id;
+      const ok = { lane: 'EXTERNAL_OUTCOME', type: 'search.clicks', domain: 'SEARCH' };
+      // The control: a conforming direct write is accepted, so every refusal below is about the contract, not the bypass.
+      assert.doesNotThrow(forge(x, search, ok));
+      assert.doesNotThrow(forge(x, ops, { lane: 'OPERATIONAL_EVENT', type: 'service.health', domain: 'SERVICE_HEALTH', fields: { service: 'voice-api', state: 'DOWN' }, failure: 1 }));
+      const refused = (what: string, f: () => void): void => assert.throws(f, code('STORAGE_INVARIANT'), what);
+      // 1. A SEARCH source carrying a WEB_ANALYTICS record type (with its own family as domain, and with the type's).
+      refused('SEARCH source / web type', forge(x, search, { ...ok, type: 'web.sessions', domain: 'WEB_ANALYTICS' }));
+      refused('SEARCH source / web type under its own domain', forge(x, search, { ...ok, type: 'web.sessions' }));
+      // 2. A valid type under the wrong domain.
+      refused('wrong outcome domain', forge(x, search, { ...ok, domain: 'WEB_ANALYTICS' }));
+      refused('wrong operational domain', forge(x, ops, { lane: 'OPERATIONAL_EVENT', type: 'service.health', domain: 'CRASH_ERROR', fields: { service: 'voice-api', state: 'DOWN' }, failure: 1 }));
+      // 3. An operational event type the contract does not define.
+      refused('unknown operational type', forge(x, ops, { lane: 'OPERATIONAL_EVENT', type: 'service.unknown', domain: 'SERVICE_HEALTH', fields: { service: 'voice-api', state: 'DOWN' }, failure: 1 }));
+      refused('an outcome metric under the operational contract', forge(x, ops, { lane: 'OPERATIONAL_EVENT', type: 'search.clicks', domain: 'SEARCH' }));
+      refused('an unknown operational type with no fields to betray it', forge(x, ops, { lane: 'OPERATIONAL_EVENT', type: 'feature.unknown', domain: 'FEATURE_USAGE' }));
+      // 4. Type-specific field mismatch: another type's field, a wrong enum value, a wrong shape, a missing required field.
+      const health = (fields: Record<string, unknown>, failure: 0 | 1 = 1) => forge(x, ops, { lane: 'OPERATIONAL_EVENT', type: 'service.health', domain: 'SERVICE_HEALTH', fields, failure });
+      refused('another type\'s field', health({ service: 'voice-api', state: 'DOWN', errorCode: 'E_TIMEOUT' }));
+      refused('a value outside the enum', health({ service: 'voice-api', state: 'EXPLODED' }));
+      refused('an ident in a code shape', forge(x, ops, { lane: 'OPERATIONAL_EVENT', type: 'app.error', domain: 'CRASH_ERROR', fields: { errorCode: 'lower_case', component: 'voice', count: 1 }, failure: 1 }));
+      refused('an int out of its declared bounds', forge(x, ops, { lane: 'OPERATIONAL_EVENT', type: 'app.error', domain: 'CRASH_ERROR', fields: { errorCode: 'E_TIMEOUT', component: 'voice', count: 0 }, failure: 1 }));
+      refused('a missing required field', health({ service: 'voice-api' }));
+      refused('a failure signal the contract does not derive', health({ service: 'voice-api', state: 'UP' }, 1));
+      // A duplicated key: SQLite reads the first value, every JSON reader the last — never a way to disagree with the contract.
+      const duplicated = (failure: 0 | 1) => () =>
+        db(x).immediate('bypass', () => db(x).run(`INSERT INTO external_records (id, source_id, contract_id, producer_event_id, lane, record_type, domain, occurred_at, received_at, scope_kind, scope_ref, window_from, window_to, value_num, unit, normalized_fields_json, user_scoped, failure_signal, fingerprint, status)
+          VALUES (?, ?, ?, ?, 'OPERATIONAL_EVENT', 'service.health', 'SERVICE_HEALTH', ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, '{"service":"voice-api","state":"UP","state":"DOWN"}', 0, ?, ?, 'ACCEPTED')`, newId(), ops, opsContract, newId(), OCCURRED, OCCURRED, failure, 'a'.repeat(64)));
+      refused('a duplicated field (SQLite would read UP, a JSON reader DOWN)', duplicated(0));
+      refused('a duplicated field, the other way', duplicated(1));
+      refused('a currency on a metric without one', forge(x, search, { ...ok, fields: { currency: 'USD' } }));
+      // 5. A unit that is not the metric's (and a value outside the metric's bounds).
+      refused('wrong unit', forge(x, search, { ...ok, unit: 'RATIO' }));
+      refused('a ratio above 1', forge(x, search, { ...ok, type: 'search.click_through_rate', unit: 'RATIO', value: 3 }));
+      refused('a fractional count', forge(x, search, { ...ok, value: 10.5 }));
+      // 6. A scope the metric does not allow; a required window missing.
+      refused('invalid scope', forge(x, search, { ...ok, scopeKind: 'CAMPAIGN' }));
+      refused('missing required window', forge(x, search, { ...ok, window: false }));
+      // 7. The bypass itself: none of the refused rows exists; the conforming ones do.
+      assert.equal(count(x, 'SELECT COUNT(*) AS n FROM external_records'), 2);
+      // And a pseudonym-bearing type must be marked user-scoped (and only it).
+      refused('a user diagnostic not marked user-scoped', forge(x, ops, { lane: 'OPERATIONAL_EVENT', type: 'user.diagnostic', domain: 'USER_DIAGNOSTIC', fields: { code: 'E_MIC', state: 'FAILED' } }));
+      assert.doesNotThrow(forge(x, ops, { lane: 'OPERATIONAL_EVENT', type: 'user.diagnostic', domain: 'USER_DIAGNOSTIC', fields: { code: 'E_MIC', state: 'FAILED' }, userScoped: 1 }));
+    });
+  });
+
+  test('(39) the datastore catalogue is exactly the release\'s TypeScript contracts (one definition, two enforcement points)', () => {
+    withSeed((x) => {
+      const rows = (sql: string) => db(x).all(sql).map((r) => JSON.stringify(r));
+      const catalogued = { contracts: rows('SELECT contract_code, contract_version, lane, contract_sha256 FROM external_contract_catalog ORDER BY 1, 2'), types: rows('SELECT * FROM external_contract_types ORDER BY 1, 2, 3'), fields: rows('SELECT * FROM external_contract_fields ORDER BY 1, 2, 3, 4'), scopes: rows('SELECT * FROM external_contract_scopes ORDER BY 1, 2, 3, 4') };
+      const expected = { contracts: [] as string[], types: [] as string[], fields: [] as string[], scopes: [] as string[] };
+      for (const c of EXTERNAL_CONTRACTS) {
+        expected.contracts.push(JSON.stringify({ contract_code: c.code, contract_version: c.version, lane: c.lane, contract_sha256: contractDigest(c) }));
+        for (const t of c.eventTypes) {
+          const mode = t.failure === 'ALWAYS' || t.failure === 'NEVER' ? t.failure : 'FIELD';
+          expected.types.push(JSON.stringify({ contract_code: c.code, contract_version: c.version, record_type: t.type, domain: t.domain, source_family: 'APP_OPERATIONS', unit: null, value_min: null, value_max: null, value_integer: null, window_required: 0, user_scoped: Object.values(t.fields).some((d) => d.spec.kind === 'pseudonym') ? 1 : 0, failure_mode: mode, failure_field: mode === 'FIELD' && typeof t.failure === 'object' ? t.failure.field : null, failure_values_json: mode === 'FIELD' && typeof t.failure === 'object' ? JSON.stringify(t.failure.values) : null }));
+          for (const [field, d] of Object.entries(t.fields)) {
+            if (d.spec.kind === 'pseudonym') continue;
+            expected.fields.push(JSON.stringify({ contract_code: c.code, contract_version: c.version, record_type: t.type, field, shape: d.spec.kind, required: d.required ? 1 : 0, int_min: d.spec.kind === 'int' ? d.spec.min : null, int_max: d.spec.kind === 'int' ? d.spec.max : null, enum_json: d.spec.kind === 'enum' ? JSON.stringify(d.spec.values) : null }));
+          }
+        }
+        for (const m of c.metrics) {
+          expected.types.push(JSON.stringify({ contract_code: c.code, contract_version: c.version, record_type: m.metric, domain: m.family, source_family: m.family, unit: m.unit, value_min: m.min, value_max: m.max, value_integer: m.integer ? 1 : 0, window_required: m.window === 'REQUIRED' ? 1 : 0, user_scoped: 0, failure_mode: 'NEVER', failure_field: null, failure_values_json: null }));
+          for (const s of m.scopes) expected.scopes.push(JSON.stringify({ contract_code: c.code, contract_version: c.version, record_type: m.metric, scope_kind: s }));
+          if (m.currency) expected.fields.push(JSON.stringify({ contract_code: c.code, contract_version: c.version, record_type: m.metric, field: 'currency', shape: 'currency', required: 1, int_min: null, int_max: null, enum_json: null }));
+        }
+      }
+      const sort = (o: typeof expected) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, [...v].sort()]));
+      assert.deepEqual(sort(catalogued), sort(expected));
     });
   });
 });

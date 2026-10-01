@@ -2980,7 +2980,8 @@ changed, record accepted, conflict detected, binding changed. State, history, au
 
 - Proofs: `governance/test/c7a-intake.test.ts`, `storage/test/c7a-external-evidence.test.ts` (brief §18 items 1–35),
   `mind/test/c7a-kernel.test.ts`, `runtime/test/c7a/c7a-runtime.test.ts`; `scripts/c7a-mutation-check.mjs` (29
-  mutations, pinned, sharded 2 + 1 in CI, counted by the quality gate).
+  mutations, pinned, sharded 2 + 1 in CI, counted by the quality gate; 46 and sharded 4 + 2 after D-C7A-10 / D-C7A-11,
+  whose datastore mutations re-pin the mutated migration in the compiled pin table for their run only).
 - Verifier: `c6-external-outcomes-unavailable` is replaced by `external-outcomes-governed` (no static flag; the governed
   verification call; the four usable-evidence conditions; the datastore triggers); new `c7a-not-claimed-closed`,
   `c7a-proofs-present`, `c7a-intake-content-free`, `external-evidence-writes-confined`, `c7a-extends-c6-only`,
@@ -2989,3 +2990,52 @@ changed, record accepted, conflict detected, binding changed. State, history, au
 - No separate C7-A acceptance script: the storage proof suite exercises every path end to end through the real stores
   (Founder chokepoint, governed confirmation, Review Pool, C6 evaluator) and the runtime suite proves the signalling
   contract and the read-only CLI; the live-runtime pilot of real sources belongs to L1 / C7-C.
+
+## D-C7A-10 — The datastore holds the registered contract, not only TypeScript (Technical Lead review MAJOR 2, C7-A)
+
+- Finding (TL exact-head review of `194599c`): migration 0012 re-checked an ACTIVE source, its CURRENT contract, the lane
+  and a global field allowlist, but not that a record's type, domain, unit, scope and type-specific fields belong to the
+  contract its source registered. A direct datastore write could create trusted evidence the TypeScript normalizer
+  refuses.
+- Decision: the release's contract catalogue lives in the datastore — `external_contract_catalog` (code, version, lane,
+  digest), `external_contract_families`, `external_contract_types` (domain, source family, unit, value bounds and
+  integrality, window rule, user scoping, failure-signal rule), `external_contract_scopes` and `external_contract_fields`
+  (each stored field with its shape: enum values, int bounds, code / ident / version / currency / ratio). It is seeded in
+  0012 from the same `EXTERNAL_CONTRACTS` the kernel validates with, then frozen by triggers (a later contract version
+  arrives in its own migration). A storage proof holds catalogue = TypeScript definitions exactly, so there is one
+  definition with two enforcement points.
+- Triggers: `external_source_contracts_catalogued` (a source registers only a catalogued version for its family and lane,
+  pinned by the catalogued digest); `external_records_conform_to_contract` (type of the source's contract AND family, its
+  own domain, unit, bounds, window, allowed scope, user scoping and derived failure signal); `external_records_fields_conform`
+  (stored fields are exactly the type's declared fields, each in its shape; required ones present). The TypeScript drift
+  check stays as the first, typed refusal.
+- 0012 is amended in place, not followed by a 0013: it is part of this unmerged candidate (no released Company has
+  applied it); 0001–0011 are untouched and the new pin replaces the candidate's.
+
+## D-C7A-11 — A late integrity conflict takes a disputed outcome out of current C6 truth (Technical Lead review MAJOR 1, C7-A)
+
+- Finding: a conflicting replay made a record unusable for NEW use, but a decisive verification that had already cited it
+  stayed current truth — the Work Item kept its qualified evaluation and profile / economics / learning gates / reports
+  kept counting an outcome resting on contested evidence.
+- Decision: a verification is history and is never rewritten; its CURRENT validity is a separate append-only record,
+  `outcome_verification_validity` (none = valid). The datastore trigger `external_record_conflicts_contest_verifications`
+  contests, in the conflict's own transaction and whoever writes it, every current verification citing the conflicted
+  record. Only an evidence-integrity conflict contests: suspending, retiring or unbinding never invalidates history.
+- C6 consumes it through its own lineage: `latestVerdict` carries the validity; `gatherWorkEvidence` reads a contested
+  verification as no current outcome plus `outcomeContested`, which the kernel's `evidenceConflicts` states as
+  `OUTCOME_EVIDENCE_CONTESTED` (CONFLICTING_EVIDENCE, never qualified, never an adverse event of the Employee); the intake
+  path then restates the Work Item's live evaluations through the same evaluator (`txRestateCurrentTruth`: a new result
+  supersedes the qualified one, which stays history). Reports state the contestation (`EXTERNAL_OUTCOME_CONTESTED`,
+  `OUTCOMES_CONTESTED`) and never count it as a result; Founder Attention gets one NEEDS_DECISION item per contested
+  verification; reviewer calibration ignores a verdict that is not current; a successful-pattern lesson (it stays
+  VALIDATED as history) counts as a contribution, a report claim or a shareable pattern only while its success is current
+  qualified truth; the runtime announces an intake conflict that committed (`recorded`), though `ingest` refuses it.
+- Resolution is a Founder decision through the governed confirmation (`OUTCOME_CONTEST_RESOLVE`, structured only):
+  UPHOLD (it stands, current again), REPLACE (a Founder re-verification of the same Work Item and verdict on usable
+  evidence — the governed external-evidence rule applies, so never on the disputed record; `replaces_verification_id`,
+  one per verification) or RETRACT (no current verified outcome). REPLACED / RETRACTED are final; a NEW conflict after
+  UPHOLD contests again. Each decision restates C6 truth in the same transaction.
+- Kept as is (residual): the Work Item lifecycle state (OUTCOME_VERIFIED / CLOSED) is history and is not reversed, and a
+  replacement keeps the verdict — a verdict change after a contest would need a Work Item lifecycle Product decision. A
+  causal attribution already VALIDATED on a contested NOT_ACHIEVED outcome is not reopened (C6: decided generations never
+  reopen); the contested verification is no longer an adverse source event for learning effect.

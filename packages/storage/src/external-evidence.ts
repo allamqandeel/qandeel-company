@@ -11,7 +11,9 @@
  * - Bindings: only the Founder states that an accepted record is relevant to a Work Item or a Goal (an operational fact
  *   is never outcome evidence; it may only explain a Work Item's failure as an external dependency).
  * - Evidence is not a verdict: nothing here touches a Work Item, an evaluation, an attribution, a lesson, authority,
- *   budget or the App. C6 reads usable evidence through its own outcome-verification and evaluation paths.
+ *   budget or the App. C6 reads usable evidence through its own outcome-verification and evaluation paths; when a
+ *   conflicting replay puts accepted evidence in dispute, C6 itself (`txOutcomesContestedBy`) takes the verifications
+ *   that rested on it out of current truth in the same transaction (D-C7A-11).
  *
  * State, history, audit and the outbox event of every mutation commit in one short `BEGIN IMMEDIATE`. Audit and
  * events carry ids, codes and counts only; a refused occurrence is audited by reason code, never by its content.
@@ -38,6 +40,7 @@ import {
 
 import { boundEvidence, externalAvailability, type ExternalEvidenceView, type ExternalOutcomeState } from './external-core.js';
 import { founder, founderAdminWrite } from './governance.js';
+import { txOutcomesContestedBy } from './improvement.js';
 import { appendAudit, appendEvent, ts, type StoreContext } from './internal.js';
 import type { Row } from './sqlite/connection.js';
 import { storeContext, type CompanyStore } from './store.js';
@@ -202,7 +205,7 @@ export function txAssertBindable(ctx: StoreContext, recordId: Id, role: BindingR
 
 const SOURCE_KEY_SHAPE = /^[a-z0-9][a-z0-9.-]{2,63}$/;
 
-type Ingested = { kind: 'ACCEPTED' | 'DUPLICATE'; record: ExternalRecordView } | { kind: 'CONFLICT'; recordId: Id; sourceId: Id };
+type Ingested = { kind: 'ACCEPTED' | 'DUPLICATE'; record: ExternalRecordView } | { kind: 'CONFLICT'; recordId: Id; sourceId: Id; recorded: boolean; contested: number };
 
 /** The intake transaction. A refusal throws (and is audited by the caller in its own transaction); a conflict commits its record. */
 function txIngest(ctx: StoreContext, raw: unknown, refused: { sourceId: Id | null }): Ingested {
@@ -227,12 +230,17 @@ function txIngest(ctx: StoreContext, raw: unknown, refused: { sourceId: Id | nul
     // A conflicting replay: recorded and audited, never applied; the first accepted record stands.
     const recordId = s(existing.id) as Id;
     const known = ctx.db.get('SELECT 1 AS x FROM external_record_conflicts WHERE record_id = ? AND conflicting_fingerprint = ?', recordId, fingerprint) !== undefined;
+    let contested = 0;
     if (!known) {
-      ctx.db.run('INSERT INTO external_record_conflicts (id, record_id, source_id, conflicting_fingerprint, received_at) VALUES (?, ?, ?, ?, ?)', newId(), recordId, source.id, fingerprint, receivedAt);
+      const conflictId = newId();
+      ctx.db.run('INSERT INTO external_record_conflicts (id, record_id, source_id, conflicting_fingerprint, received_at) VALUES (?, ?, ?, ?, ?)', conflictId, recordId, source.id, fingerprint, receivedAt);
       sourceEvent(ctx, 'external_record.conflict_detected', source.id, INTAKE_ACTOR_REF, { recordId, lane: n.lane });
+      // The disputed evidence leaves current C6 truth in this same transaction: every verification that rested on it is
+      // contested (by the datastore) and C6 restates its evaluation — history stays, the Founder decides.
+      contested = txOutcomesContestedBy(ctx, conflictId as Id).length;
     }
-    appendAudit(ctx, 'external.intake_conflict', 'external_record', recordId, { actorRef: INTAKE_ACTOR_REF }, 'REJECTED', 'CONFLICTING_REPLAY', { sourceId: source.id, repeated: known });
-    return { kind: 'CONFLICT', recordId, sourceId: source.id };
+    appendAudit(ctx, 'external.intake_conflict', 'external_record', recordId, { actorRef: INTAKE_ACTOR_REF }, 'REJECTED', 'CONFLICTING_REPLAY', { sourceId: source.id, repeated: known, contestedVerifications: contested });
+    return { kind: 'CONFLICT', recordId, sourceId: source.id, recorded: !known, contested };
   }
   const id = newId();
   ctx.db.run(
@@ -412,7 +420,8 @@ export class ExternalEvidenceStore {
       }
       throw error;
     }
-    if (out.kind === 'CONFLICT') throw new QandeelError('INTAKE_CONFLICT', 'the same producer occurrence was replayed with different content; the first accepted record stands', { recordId: out.recordId, sourceId: out.sourceId, reason: 'CONFLICTING_REPLAY' });
+    // `recorded`: this replay committed a NEW conflict (and `contestedVerifications` were taken out of current truth).
+    if (out.kind === 'CONFLICT') throw new QandeelError('INTAKE_CONFLICT', 'the same producer occurrence was replayed with different content; the first accepted record stands', { recordId: out.recordId, sourceId: out.sourceId, reason: 'CONFLICTING_REPLAY', recorded: out.recorded, contestedVerifications: out.contested });
     return { outcome: out.kind, changed: out.kind === 'ACCEPTED', record: out.record };
   }
 
