@@ -9,12 +9,13 @@
  * - Statements are codes with scalar parameters; rendering to words is presentation, so a synthesis layer
  *   (the CEO, a model) may phrase them but cannot add evidence that is not here.
  * - No universal score, rank or leaderboard is ever emitted; a recommendation is never permission to act.
- * - External outcomes (campaigns, traffic, App health) are stated as unavailable until a governed source
- *   exists (C7) — never invented.
+ * - External outcomes (search, web, store, business, campaign, social, App health) are reported from governed
+ *   evidence only (C7-A): no governed source → stated unavailable; a governed source but nothing relevant → said so;
+ *   relevant bound evidence → cited by its canonical record refs. Never invented.
  */
 import { QandeelError } from '@qandeel-company/domain';
 
-import { EXTERNAL_OUTCOMES_AVAILABLE, type Confidence, type EvidenceState } from './evaluation.js';
+import type { Confidence, EvidenceState } from './evaluation.js';
 import { costPerQualifiedOutcome, dimensionOf, type EvaluationFact, type LearningEffect, type PerformanceProfile, type ReviewerMetaEvaluation } from './performance.js';
 import type { SystemicCandidate } from './improvement.js';
 
@@ -78,6 +79,38 @@ export interface ReportFacts {
   readonly recertificationDue: readonly string[];
   readonly departmentGaps: readonly { readonly departmentId: string; readonly openGaps: number; readonly refs: readonly string[] }[];
   readonly minSample: number;
+  /** C7-A: governed external outcome evidence of the period (durable truth, read by storage). */
+  readonly external: ExternalOutcomeFacts;
+}
+
+/** The three truthful states of external outcomes, and the canonical evidence behind them (ids and codes only). */
+export interface ExternalOutcomeFacts {
+  readonly state: 'NO_GOVERNED_SOURCE' | 'NO_RELEVANT_EVIDENCE' | 'EVIDENCE_AVAILABLE';
+  /** ACTIVE governed external outcome sources. */
+  readonly sources: readonly string[];
+  /** Usable outcome evidence bound to a subject, observed in the period. */
+  readonly evidence: readonly { readonly subjectKind: 'WORK_ITEM' | 'GOAL'; readonly subjectId: string; readonly recordIds: readonly string[]; readonly bindingIds: readonly string[]; readonly types: readonly string[] }[];
+  /** Outcome verifications of the period that cited external outcome evidence. */
+  readonly verifications: readonly { readonly id: string; readonly workItemId: string; readonly verdict: string; readonly recordIds: readonly string[] }[];
+}
+
+export const NO_EXTERNAL_OUTCOME_FACTS: ExternalOutcomeFacts = Object.freeze({ state: 'NO_GOVERNED_SOURCE', sources: [], evidence: [], verifications: [] });
+
+/** External outcome claims: every external-result claim cites canonical evidence; an absence is stated, never filled. */
+function externalClaims(x: ExternalOutcomeFacts): Claim[] {
+  if (x.state === 'NO_GOVERNED_SOURCE' || x.sources.length === 0) return [fact('EXTERNAL_OUTCOMES_UNAVAILABLE', COMPANY, { reason: 'NO_GOVERNED_SOURCE' }, [])];
+  const sources = x.sources.map((id) => `external_source:${id}`);
+  if (x.evidence.length === 0 && x.verifications.length === 0) return [fact('EXTERNAL_OUTCOMES_NO_RELEVANT_EVIDENCE', COMPANY, { activeSources: x.sources.length }, sources)];
+  const claims: Claim[] = [];
+  for (const e of x.evidence) {
+    claims.push(fact('EXTERNAL_OUTCOME_EVIDENCE', { kind: e.subjectKind, id: e.subjectId }, { records: e.recordIds.length, metrics: e.types.slice(0, 6).join(',').slice(0, 128) }, [...e.recordIds.map((id) => `external_record:${id}`), ...e.bindingIds.map((id) => `external_binding:${id}`)].slice(0, 100)));
+  }
+  if (x.verifications.length > 0) {
+    const by = (v: string): number => x.verifications.filter((y) => y.verdict === v).length;
+    claims.push(fact('EXTERNAL_OUTCOMES_IN_VERIFICATION', COMPANY, { verifications: x.verifications.length, achieved: by('ACHIEVED'), notAchieved: by('NOT_ACHIEVED'), inconclusive: by('INCONCLUSIVE') }, x.verifications.flatMap((v) => [`outcome_verification:${v.id}`, ...v.recordIds.map((id) => `external_record:${id}`)]).slice(0, 100)));
+  }
+  if (claims.length === 0) claims.push(fact('EXTERNAL_OUTCOMES_NO_RELEVANT_EVIDENCE', COMPANY, { activeSources: x.sources.length }, sources));
+  return claims;
 }
 
 export interface CompanyReport {
@@ -158,7 +191,7 @@ function weeklyClaims(f: ReportFacts): Claim[] {
     }
   }
   for (const r of f.resilienceExceptions) claims.push(fact(r.code, { kind: 'SYSTEM', id: null }, {}, [r.ref]));
-  claims.push(fact('EXTERNAL_OUTCOMES_UNAVAILABLE', COMPANY, { available: EXTERNAL_OUTCOMES_AVAILABLE, source: 'C7' }, []));
+  claims.push(...externalClaims(f.external));
   return claims;
 }
 

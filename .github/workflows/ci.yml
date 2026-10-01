@@ -165,7 +165,7 @@ jobs:
           node-version-file: .nvmrc
           package-manager-cache: false
       - run: npm ci
-      - name: Every workspace test (unit, real SQLite, multi-process, fault-injection; C1 + C2 + C3 + R1 + C4 + C5 + C6, including the Founder surface, the UI model and the improvement engine)
+      - name: Every workspace test (unit, real SQLite, multi-process, fault-injection; C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A, including the Founder surface, the UI model, the improvement engine and the governed external-evidence intake)
         run: |
           npm run build
           npm run test
@@ -191,12 +191,15 @@ jobs:
           - { os: windows-latest, label: c5-1of1, suite: 'c5:1/1' }
           - { os: windows-latest, label: c6-1of2, suite: 'c6:1/2' }
           - { os: windows-latest, label: c6-2of2, suite: 'c6:2/2' }
+          - { os: windows-latest, label: c7a-1of2, suite: 'c7a:1/2' }
+          - { os: windows-latest, label: c7a-2of2, suite: 'c7a:2/2' }
           - { os: ubuntu-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }
           - { os: ubuntu-latest, label: c3-1of1, suite: 'c3:1/1' }
           - { os: ubuntu-latest, label: r1-1of2, suite: 'r1:1/2' }
           - { os: ubuntu-latest, label: r1-2of2, suite: 'r1:2/2' }
           - { os: ubuntu-latest, label: c4-c5, suite: 'c4:1/1 c5:1/1' }
           - { os: ubuntu-latest, label: c6-1of1, suite: 'c6:1/1' }
+          - { os: ubuntu-latest, label: c7a-1of1, suite: 'c7a:1/1' }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:

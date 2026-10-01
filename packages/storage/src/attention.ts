@@ -13,6 +13,7 @@
 import { QandeelError, assertCode, assertId, newId, type Timestamp } from '@qandeel-company/domain';
 import { warrantsFounderAttention, type AttentionLane, type AttentionLevel, type MessagePurpose } from '@qandeel-company/governance';
 
+import { externalAttentionSignals } from './external-core.js';
 import { GOVERNED_JOB_SQL, founder, founderAdminWrite } from './governance.js';
 import { mapAttentionItem, mustRow, type AttentionItemRecord } from './founder-records.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
@@ -131,6 +132,11 @@ export function collectSignals(ctx: StoreContext): Signal[] {
   const resilience = txResilienceStatus(ctx, ts(ctx));
   for (const x of resilience.exceptions.filter((e) => e.material)) {
     out.push({ dedupKey: `resilience:${x.code}:${x.ref}`, lane: 'NEEDS_ME', level: 'NEEDS_ATTENTION', sourceKind: 'DECISION_REQUEST', sourceRef: x.ref, ownerRef: null, changedAt: x.at as Timestamp });
+  }
+  // C7-A: only material external-evidence exceptions — a source awaiting the Founder's activation decision and a source
+  // integrity conflict (a replayed occurrence with different content). Normal ingestion never enters Founder Attention.
+  for (const x of externalAttentionSignals(ctx)) {
+    out.push({ dedupKey: x.dedupKey, lane: 'NEEDS_ME', level: x.level, sourceKind: 'DECISION_REQUEST', sourceRef: x.sourceRef, ownerRef: null, changedAt: x.changedAt as Timestamp });
   }
   return out;
 }

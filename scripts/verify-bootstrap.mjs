@@ -189,6 +189,8 @@ const FROZEN_MIGRATIONS = [
   { file: '0008_c4_review_quality.sql', sha256: 'd937856f2a730ff33d3fb83f61c8e6b3ce0c932c4189492d6c50e8eeafb899f5' },
   { file: '0009_c5_founder_surface.sql', sha256: '803f9eef58fad2afaabbca562c509648aaf59cc21ad647728957fa31d6ab00b1' },
   { file: '0010_c6_improvement_engine.sql', sha256: 'a8696420f2c20abc8dfe1b62b729adedc57314cfecd7e644bc31687fa9c989ee' },
+  // R2 released 0011 with PR #12 (merged 2026-09-30); it joins the frozen set in the change after its release (C7-A).
+  { file: '0011_r2_integrity.sql', sha256: '97ab99eebf4fc8ce49c1e1550eb4448f8a9e515a7b02259381ab33fe95ae2550' },
 ];
 // Later-scope / non-goal subsystems never appear: APP-OPS (C7) and dashboards / analytics tables or packages (C6
 // deliberately builds reports with typed claims, never a dashboard or analytics store — its non-goals).
@@ -204,7 +206,7 @@ const C5_MUTATION_CHECK = 'scripts/c5-mutation-check.mjs';
 // --- C6 boundaries (Company Improvement Engine) -------------------------------------------------------
 const C6_REPORT = 'docs/C6_IMPLEMENTATION_REPORT.md';
 const C6_CLOSURE = /^docs\/C6_[^/]*CLOSURE[^/]*\.md$/i;
-const C7_CLOSURE = /^docs\/C7_[^/]*CLOSURE[^/]*\.md$/i;
+const C7A_CLOSURE = /^docs\/C7A_[^/]*CLOSURE[^/]*\.md$/i;
 const C6_PROOF_MARKERS = ['C6-PROOF: improvement-kernel', 'C6-PROOF: storage-improvement', 'C6-PROOF: storage-resilience', 'C6-PROOF: runtime-c6', 'C6-PROOF: storage-founder-free'];
 const C6_MUTATION_CHECK = 'scripts/c6-mutation-check.mjs';
 // Rule A for C6: evaluations, attributions, learning, reports and recovery carry ids, states, codes and counts only.
@@ -214,6 +216,31 @@ const C6_CONTENT_IN_TELEMETRY = /\b(?:appendAudit|appendEvent|\.(?:info|warn|err
 const UNIVERSAL_SCORE = /\b(?:overall|universal|employee|performance|global|total|company)_?[Ss]core\b|\bleaderboard\s*[:=(]|\b\w*_score\s+(?:INTEGER|REAL|NUMERIC|TEXT)\b/;
 const RESILIENCE_MODULE = 'packages/storage/src/resilience.ts';
 const EVALUATION_KERNEL = 'packages/mind/src/evaluation.ts';
+// --- C7-A boundaries (Operational Data + External Outcome Core) ---------------------------------------------------
+const C7A_REPORT = 'docs/C7A_IMPLEMENTATION_REPORT.md';
+const C7A_PROOF_MARKERS = ['C7A-PROOF: intake-kernel', 'C7A-PROOF: storage-external-evidence', 'C7A-PROOF: c6-seam-kernel', 'C7A-PROOF: runtime-c7a'];
+const C7A_MUTATION_CHECK = 'scripts/c7a-mutation-check.mjs';
+const OUTCOME_CORE = 'packages/storage/src/outcome-core.ts';
+const EXTERNAL_CORE = 'packages/storage/src/external-core.ts';
+const EXTERNAL_STORE = 'packages/storage/src/external-evidence.ts';
+const INTAKE_KERNEL = 'packages/governance/src/external-evidence.ts';
+// Governed source / record / binding state changes only in the C7-A storage modules (tests seed through the stores).
+const EXTERNAL_WRITERS = [EXTERNAL_CORE, EXTERNAL_STORE];
+const EXTERNAL_WRITE = /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO|DELETE\s+FROM|REPLACE\s+INTO)\s+external_\w+/i;
+// Rule A for C7-A: an intake payload, its fields, values or producer identity never enter audit, events or logs.
+const C7A_CONTENT_IN_TELEMETRY = /\b(?:appendAudit|appendEvent|sourceEvent|\.(?:info|warn|error|debug))\s*\([^\n]*[{,]\s*(?:occurrence|envelope|payload|fields|raw|body|content|text|message|value|producerEventId|sourceKey|userPseudonym|echo)\s*[,:}]/;
+// The governed datastore seam every C7-A evidence table carries (code checks are re-checked by triggers).
+const C7A_GOVERNED_TRIGGERS = ['external_records_governed_source', 'external_records_fields_declared', 'external_evidence_bindings_governed', 'outcome_verifications_external_evidence_governed', 'review_outcome_judgments_external_evidence_governed'];
+// The one usable-evidence predicate: an outcome-lane record of an ACTIVE source, unconflicted, bound to THIS Work Item.
+const C7A_USABLE_REASONS = ['NOT_OUTCOME_EVIDENCE', 'SOURCE_NOT_ACTIVE', 'RECORD_CONFLICTED', 'NOT_BOUND_TO_WORK_ITEM'];
+// No raw payload bag, no stored user reference, no secret in a C7-A table.
+const C7A_FORBIDDEN_COLUMN = /^\s*"?(\w*(?:raw|payload|body|content|text|message|transcript|prompt|pseudonym|user_ref|user_id|credential|secret|token)\w*)"?\s+(?:TEXT|BLOB|ANY|INTEGER|REAL)\b/im;
+// C7-A extends C6; it never creates a parallel evaluation / learning / performance / report store, and never writes a verdict.
+const C7A_PARALLEL_TABLE = /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"?((?:external|c7)\w*(?:evaluat|lesson|learning|attribution|performance|profile|score|report|verdict)\w*)/i;
+const C7A_VERDICT_WRITE = /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO)\s+(?:evaluation_results|causal_attributions|learning_\w+|lessons|report_snapshots|work_items|outcome_verifications)\b|\b(?:applyTransition|txTransition|txRecordOutcome)\s*\(/;
+// Later C7 sub-stages never leak into C7-A: the App control plane (C7-B), the Pilot objective engine (C7-C), publishing,
+// website / social connectors and campaign management (C7-D).
+const C7_LATER_SCOPE = /feature[_-]?flag|kill[_-]?switch|maintenance[_-]?mode|remote[_-]?config|rollout[_-]?control|min(?:imum)?[_-]?supported[_-]?version|route[_-]?hold|publish[_-]?(?:post|content|social)|social[_-]?connector|website[_-]?edit|cms[_-]?(?:page|edit|publish)|campaign[_-]?(?:plan|management|budget)|paid[_-]?ads|pilot[_-]?objective/i;
 // The production Founder session scope is entered only by the auth module (a session, never a ref, arms it).
 const FOUNDER_AUTH = 'packages/storage/src/founder-auth.ts';
 // Rule A for C5: message bodies, briefs, goal text and command text never enter audit, events or logs.
@@ -363,6 +390,17 @@ const MUTATION_PINS = {
       'c6fb2-marker-after-db-copy', 'c6fb2-inspection-opens-partial-restore', 'c6fb2-marker-lifted-before-commit', 'c6fb2-restore-hold-clearable', 'c6fb2-other-package-hijacks-partial-restore', 'c6fb2-bypass-not-bound-to-attempt',
       // R2 second wave (cluster Q2): freed reviewer capacity is a wake (RR1-2).
       'c6rr1-decided-judgment-frees-nothing', 'c6rr1-withdrawn-judgment-frees-nothing', 'c6rr1-withdrawal-redraws-its-subject', 'c6rr1-decided-key-frees-nothing', 'c6rr1-released-key-frees-nothing', 'c6rr1-judgments-before-reviews', 'c6rr1-sweep-skips-waiting-actions',
+    ],
+  },
+  // C7-A Operational Data + External Outcome Core (docs/C7A_IMPLEMENTATION_REPORT.md).
+  [C7A_MUTATION_CHECK]: {
+    script: 'c7a:mutation',
+    ids: [
+      'c7a-private-field-not-refused-by-name', 'c7a-free-text-admitted', 'c7a-secret-value-admitted', 'c7a-unknown-field-passes', 'c7a-pseudonym-stored', 'c7a-refused-payload-audited',
+      'c7a-inactive-source-ingests', 'c7a-contract-drift-ignored', 'c7a-metric-family-unchecked', 'c7a-future-occurrence-accepted', 'c7a-source-lifecycle-not-forward', 'c7a-source-registry-not-founder', 'c7a-source-activation-not-founder',
+      'c7a-conflicting-replay-accepted', 'c7a-replay-not-idempotent', 'c7a-operational-fact-as-outcome-evidence', 'c7a-binding-not-founder',
+      'c7a-external-check-skipped-at-verification', 'c7a-operational-record-citable', 'c7a-suspended-source-usable', 'c7a-conflicted-record-usable', 'c7a-unbound-evidence-usable', 'c7a-pool-judgment-unchecked', 'c7a-pool-resolution-not-rechecked',
+      'c7a-external-class-not-evidence', 'c7a-dependency-failure-ignored', 'c7a-report-always-unavailable', 'c7a-registry-requires-external-without-source', 'c7a-attention-misses-external-exceptions',
     ],
   },
   // R1 Independent Core Review: one mutation per fixed finding (docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md).
@@ -1133,14 +1171,113 @@ export const RULES = [
     },
   },
   {
-    id: 'c6-external-outcomes-unavailable',
-    // C7 owns governed external outcome sources: until C7 closes, the kernel states them unavailable (never invented).
+    id: 'external-outcomes-governed',
+    // C7-A replaces the pre-C7 guard ("EXTERNAL_OUTCOMES_AVAILABLE = false" until C7) with stronger rules: there is no
+    // static availability flag at all (availability is durable source / evidence truth); every outcome verification
+    // runs the governed external-evidence rule; the one usable-evidence predicate keeps all four conditions; and any
+    // migration that creates external evidence also creates the datastore triggers that re-check it.
     check: ({ files, read }) => {
-      if (files.some((f) => C7_CLOSURE.test(f))) return [];
-      const src = read(EVALUATION_KERNEL);
-      if (src === undefined) return [];
-      return /export const EXTERNAL_OUTCOMES_AVAILABLE = false;/.test(src) ? [] : [`${EVALUATION_KERNEL} makes external outcomes available before a governed C7 source exists`];
+      const problems = [];
+      const kernel = read(EVALUATION_KERNEL);
+      if (kernel !== undefined && /\bEXTERNAL_OUTCOMES_AVAILABLE\b/.test(kernel.replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, ''))) problems.push(`${EVALUATION_KERNEL} declares a static external-outcome availability flag (availability is governed runtime evidence)`);
+      const outcome = read(OUTCOME_CORE);
+      if (outcome !== undefined && !/\btxAssertExternalEvidence\(ctx, w\.id, input\.classes, input\.refs\);/.test(outcome)) problems.push(`${OUTCOME_CORE} records an outcome without the governed external-evidence rule`);
+      const core = read(EXTERNAL_CORE);
+      if (core !== undefined) for (const why of C7A_USABLE_REASONS) if (!core.includes(`'${why}'`)) problems.push(`${EXTERNAL_CORE} lost the usable-evidence condition ${why}`);
+      const sql = files.filter((f) => f.startsWith(MIGRATIONS_DIR) && f.endsWith('.sql')).map((f) => read(f) ?? '').join('\n');
+      if (/\bCREATE\s+TABLE\s+external_records\b/i.test(sql)) {
+        for (const t of C7A_GOVERNED_TRIGGERS) if (!new RegExp(`\\bCREATE\\s+TRIGGER\\s+${t}\\b`).test(sql)) problems.push(`external evidence exists without the governed datastore trigger ${t}`);
+      }
+      return problems;
     },
+  },
+  {
+    id: 'c7a-not-claimed-closed',
+    // C7-A is an implementation candidate until independent exact-head review and merge: it is closed only in the change
+    // that adds docs/C7A_*CLOSURE*.md, and its later sibling sub-stages (C7-B, C7-C, C7-D) do not start before it.
+    check: ({ files, read }) => {
+      if (files.some((f) => C7A_CLOSURE.test(f))) return [];
+      const problems = [];
+      const map = read(IMPLEMENTATION_MAP);
+      const c7a = mapState(map, 'C7-A');
+      if (c7a !== undefined && /\bCLOSED\b/i.test(c7a.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`C7-A is marked ${JSON.stringify(c7a)} but no docs/C7A_*CLOSURE*.md record exists`);
+      const report = read(C7A_REPORT);
+      if (report !== undefined && /\bC7-A\s*(?:—|-|:|is)?\s*CLOSED\b/i.test(report.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`${C7A_REPORT} claims C7-A is closed without a closure record`);
+      for (const id of ['C7-B', 'C7-C', 'C7-D']) {
+        const st = mapState(map, id);
+        if (st !== undefined && st !== 'Not started') problems.push(`${id} is ${JSON.stringify(st)} before C7-A has a closure record`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'c7a-proofs-present',
+    check: ({ files, read }) => {
+      const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
+      const problems = C7A_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
+      if (!files.includes(C7A_MUTATION_CHECK)) problems.push(`missing ${C7A_MUTATION_CHECK}`);
+      const ci = json(read('package.json'))?.scripts?.ci ?? '';
+      if (!/\bc7a:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c7a:mutation');
+      return problems;
+    },
+  },
+  {
+    id: 'c7a-intake-content-free',
+    // Rules A / B / C at the intake: the intake payload, its fields and values, the producer identity and any user
+    // pseudonym never enter audit, events or logs; storage, runtime and the Founder surface never name the pseudonym
+    // (it exists only inside the kernel's identity fingerprint); no C7-A table has a raw-payload, user or secret column.
+    check: ({ files, read }) => {
+      const problems = files
+        .filter((f) => (EXTERNAL_WRITERS.includes(f) || f === INTAKE_KERNEL || f === OUTCOME_CORE) && isCode(f) && C7A_CONTENT_IN_TELEMETRY.test(read(f) ?? ''))
+        .map((f) => `${f} passes intake content into audit / events / logs (Rule A)`);
+      for (const f of files.filter((x) => /^packages\/(?:storage|runtime|command-center|command-center-ui|mind)\/src\//.test(x) && isCode(x))) {
+        if (/userPseudonym|user_pseudonym/.test(read(f) ?? '')) problems.push(`${f} handles a user pseudonym (only the intake kernel may, for the fingerprint)`);
+      }
+      for (const f of files.filter((x) => x.startsWith(MIGRATIONS_DIR) && x.endsWith('.sql'))) {
+        for (const m of (read(f) ?? '').matchAll(/CREATE\s+TABLE\s+(external_\w+)\s*\(([\s\S]*?)\n\)\s*STRICT/g)) {
+          const col = C7A_FORBIDDEN_COLUMN.exec(m[2] ?? '');
+          if (col) problems.push(`${f}: ${m[1]} declares ${col[1]} (no raw payload, user reference or secret is stored)`);
+        }
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'external-evidence-writes-confined',
+    // Governed source / record / conflict / binding state changes only in the C7-A storage modules; runtime code and
+    // the CLI never register, activate, bind or ingest (Founder acts and the producer seam) — the CLI is read-only.
+    check: ({ files, read }) => {
+      const problems = files
+        .filter((f) => isCode(f) && !EXTERNAL_WRITERS.includes(f) && !isTestPath(f) && EXTERNAL_WRITE.test(read(f) ?? ''))
+        .map((f) => `${f} writes governed external-evidence state outside the C7-A storage modules`);
+      for (const f of files.filter((x) => (x.startsWith('packages/runtime/src/') || x === CLI_SOURCE) && isCode(x))) {
+        if (/\.(?:registerSource|decideSource|bindEvidence|unbindEvidence|ingest)\s*\(/.test(read(f) ?? '')) problems.push(`${f} registers, decides, binds or ingests (Founder acts and the producer seam are never runtime / CLI commands)`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'c7a-extends-c6-only',
+    // External evidence flows Evidence → Outcome Verification → C6 evaluation → attribution → learning / reporting:
+    // C7-A creates no parallel evaluation / learning / performance / report store, and its modules never write a
+    // verdict, an evaluation, an attribution, a lesson, a report or a Work Item state.
+    check: ({ files, read }) => [
+      ...files.filter((f) => f.startsWith(MIGRATIONS_DIR) && f.endsWith('.sql')).flatMap((f) => {
+        const m = (read(f) ?? '').match(C7A_PARALLEL_TABLE);
+        return m ? [`${f} creates ${m[1]} (C7-A extends the C6 engine; it never duplicates it)`] : [];
+      }),
+      ...files.filter((f) => (EXTERNAL_WRITERS.includes(f) || f === INTAKE_KERNEL) && isCode(f) && C7A_VERDICT_WRITE.test(read(f) ?? '')).map((f) => `${f} writes a verdict / evaluation / attribution / Work Item state (evidence is never a verdict)`),
+    ],
+  },
+  {
+    id: 'c7-later-scope-not-leaked',
+    // C7-A builds no App control plane (feature flags, kill switch, maintenance mode, rollout control, minimum
+    // supported version, remote configuration, route holds — C7-B), no Pilot objective engine (C7-C) and no publishing,
+    // website editing, social connector or campaign management (C7-D): not in code, not in schema.
+    check: ({ files, read }) =>
+      files
+        .filter((f) => ((/^packages\/[^/]+\/src\//.test(f) && isCode(f)) || (f.startsWith(MIGRATIONS_DIR) && f.endsWith('.sql'))) && C7_LATER_SCOPE.test((read(f) ?? '').replace(/^\s*(?:\/\/|\*|\/\*|--).*$/gm, '')))
+        .map((f) => `${f} implements a later C7 sub-stage (C7-B control plane, C7-C pilot objectives or C7-D publishing / connectors)`),
   },
   {
     id: 'founder-session-scope-confined',
@@ -1508,7 +1645,7 @@ function syntheticRepo(overrides = {}) {
     [AUTHORITY_INDEX]: `## Missing\n\n**${STAGE_16_MISSING}.**\n`,
     [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT)),
     [SYNTH_SOURCE]: SYNTH_SOURCE_TEXT,
-    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation && npm run c6:mutation' } }),
+    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation && npm run c6:mutation && npm run c7a:mutation' } }),
     'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'node --test dist/test' } }),
     'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'packages/bootstrap-contract': {}, 'node_modules/tar': { version: '7.0.0' } } }),
     '.gitattributes': '* text=auto eol=lf\n*.sh text eol=lf\n*.ps1 text eol=crlf\n*.png binary\n',
@@ -1560,7 +1697,12 @@ function syntheticRepo(overrides = {}) {
     'packages/runtime/test/c6/proofs.test.ts': C6_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
     [C6_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C6_MUTATION_CHECK].ids),
     [RESILIENCE_MODULE]: "const key = scryptSync(passphrase, salt, 32);\nconst c = createCipheriv('aes-256-gcm', key, iv);\nd.setAuthTag(tag);\n",
-    [EVALUATION_KERNEL]: 'export const EXTERNAL_OUTCOMES_AVAILABLE = false;\n',
+    [EVALUATION_KERNEL]: 'export interface ExternalOutcomeContext {\n  readonly governedSource: boolean;\n}\n',
+    // C7-A: proofs, the pinned C7-A mutation check, the governed verification seam and the usable-evidence predicate.
+    'packages/runtime/test/c7a/proofs.test.ts': C7A_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
+    [C7A_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C7A_MUTATION_CHECK].ids),
+    [OUTCOME_CORE]: '  txAssertExternalEvidence(ctx, w.id, input.classes, input.refs);\n',
+    [EXTERNAL_CORE]: C7A_USABLE_REASONS.map((r) => `  return '${r}';`).join('\n'),
     [FOUNDER_LISTENER]: SYNTH_LISTENER,
     'packages/command-center/src/security.ts': "export const LOOPBACK_HOST = '127.0.0.1';\nexport function sessionCookie(v) { return `${v}; HttpOnly; SameSite=Strict`; }\n",
     [FOUNDER_AUTH]: SYNTH_AUTH,
@@ -1799,8 +1941,35 @@ const VIOLATIONS = {
     { contents: { [RESILIENCE_MODULE]: "const key = scryptSync(passphrase, salt, 32);\ncreateCipheriv('aes-256-gcm', key, iv);\nd.setAuthTag(tag);\nwriteFileSync(path.join(dir, 'recovery.key'), passphrase);\n" } },
     { contents: { [CLI_SOURCE]: "const { values } = parseArgs({ args, options: { passphrase: { type: 'string' } } });" } },
   ],
-  'c6-external-outcomes-unavailable': [
+  'external-outcomes-governed': [
     { contents: { [EVALUATION_KERNEL]: 'export const EXTERNAL_OUTCOMES_AVAILABLE = true;\n' } },
+    { contents: { [OUTCOME_CORE]: 'export function txRecordOutcome(ctx, w, input) {\n  insert(ctx, w, input);\n}\n' } },
+    { contents: { [EXTERNAL_CORE]: "  return 'NOT_OUTCOME_EVIDENCE';\n  return 'SOURCE_NOT_ACTIVE';\n  return 'RECORD_CONFLICTED';\n  return null;\n" } },
+    { contents: { [`${MIGRATIONS_DIR}0012_c7a.sql`]: 'CREATE TABLE external_records (id TEXT) STRICT;\nCREATE TRIGGER external_records_governed_source BEFORE INSERT ON external_records BEGIN SELECT 1; END;\n' } },
+  ],
+  'c7a-not-claimed-closed': [
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-A\` | Core | Cloud | CLOSED / MERGED |\n` } },
+    { contents: { [C7A_REPORT]: '# Report\n\nC7-A is CLOSED.\n' } },
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-A\` | Core | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n| \`C7-B\` | Control | Cloud | IN PROGRESS |\n` } },
+  ],
+  'c7a-proofs-present': [{ remove: ['packages/runtime/test/c7a/proofs.test.ts'] }, { remove: [C7A_MUTATION_CHECK] }],
+  'c7a-intake-content-free': [
+    { contents: { [EXTERNAL_STORE]: "appendAudit(ctx, 'external.intake_rejected', 'external_source', id, a, 'REJECTED', reason, { occurrence: JSON.stringify(raw).slice(0, 128) });" } },
+    { contents: { [EXTERNAL_CORE]: "sourceEvent(ctx, 'external_record.accepted', id, a, { recordId, value: n.value });" } },
+    { contents: { 'packages/storage/src/support.ts': 'export const lookup = (input: { userPseudonym: string }) => input.userPseudonym;\n' } },
+    { contents: { [`${MIGRATIONS_DIR}0012_c7a.sql`]: 'CREATE TABLE external_records (\n  id TEXT NOT NULL,\n  raw_payload_json TEXT NOT NULL\n) STRICT;\n' } },
+  ],
+  'external-evidence-writes-confined': [
+    { contents: { 'packages/storage/src/improvement.ts': "ctx.db.run('UPDATE external_sources SET state = ? WHERE id = ?', 'ACTIVE', id);" } },
+    { contents: { [CLI_SOURCE]: 'const r = ExternalEvidenceStore.for(store).ingest(JSON.parse(text));\n' } },
+  ],
+  'c7a-extends-c6-only': [
+    { contents: { [`${MIGRATIONS_DIR}0012_c7a.sql`]: 'CREATE TABLE external_evaluations (id TEXT) STRICT;\n' } },
+    { contents: { [EXTERNAL_STORE]: "ctx.db.run('UPDATE work_items SET state = ? WHERE id = ?', 'OUTCOME_VERIFIED', id);" } },
+  ],
+  'c7-later-scope-not-leaked': [
+    { contents: { 'packages/storage/src/app-control.ts': 'export function setKillSwitch(on: boolean): boolean {\n  return on;\n}\n' } },
+    { contents: { [`${MIGRATIONS_DIR}0013_x.sql`]: 'CREATE TABLE feature_flags (id TEXT) STRICT;\n' } },
   ],
   'ci-contract': [
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: r1-4of4, suite: 'r1:4/4' }\n", '') } },
@@ -1979,8 +2148,24 @@ const MUST_PASS = [
   // Hashes, counts and codes in C6 telemetry are fine; the passphrase is used, never written.
   { id: 'c6-telemetry-content-free', scenario: { contents: { 'packages/storage/src/improvement.ts': "appendAudit(ctx, 'evaluation.recorded', 'evaluation', id, { actorRef }, 'OK', state, { workItemId: wid, qualified: true });" } } },
   { id: 'c6-recovery-secret-never-stored', scenario: { contents: { [CLI_SOURCE]: "const passphrase = process.env.QANDEEL_RECOVERY_PASSPHRASE;\n" } } },
-  // Once C7 closes, a governed external source may make outcomes available.
-  { id: 'c6-external-outcomes-unavailable', scenario: { contents: { [EVALUATION_KERNEL]: 'export const EXTERNAL_OUTCOMES_AVAILABLE = true;\n', 'docs/C7_CLOSURE_RECORD.md': '' } } },
+  // C7-A: governed evidence with every datastore trigger; content-free intake telemetry; the kernel (only) names the
+  // pseudonym; a normalized-fields column; reads of C6 rows; comments that name later scope are not implementations.
+  { id: 'c7a-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-A\` | Core | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n| \`C7-B\` | Control | Cloud | Not started |\n`, [C7A_REPORT]: '# Report\n\nC7-A is NOT CLOSED (implementation candidate).\n' } } },
+  { id: 'c7a-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-A\` | Core | Cloud | CLOSED / MERGED / CANONICAL |\n| \`C7-B\` | Control | Cloud | IN PROGRESS |\n`, 'docs/C7A_CLOSURE_RECORD.md': '' } } },
+  { id: 'external-outcomes-governed', scenario: { contents: { [`${MIGRATIONS_DIR}0012_c7a.sql`]: `CREATE TABLE external_records (id TEXT) STRICT;\n${C7A_GOVERNED_TRIGGERS.map((t) => `CREATE TRIGGER ${t} BEFORE INSERT ON x BEGIN SELECT 1; END;`).join('\n')}\n` } } },
+  {
+    id: 'c7a-intake-content-free',
+    scenario: {
+      contents: {
+        [EXTERNAL_STORE]: "appendAudit(ctx, 'external.record_accepted', 'external_record', id, a, 'OK', n.lane, { sourceId: source.id, domain: n.domain });\nappendAudit(ctx, 'external.intake_rejected', 'external_source', id, a, 'REJECTED', reason, field === null ? {} : { field });",
+        [INTAKE_KERNEL]: "userPseudonym: req({ kind: 'pseudonym' }),",
+        [`${MIGRATIONS_DIR}0012_c7a.sql`]: 'CREATE TABLE external_records (\n  id TEXT NOT NULL,\n  normalized_fields_json TEXT NOT NULL,\n  user_scoped INTEGER NOT NULL\n) STRICT;\n',
+      },
+    },
+  },
+  { id: 'external-evidence-writes-confined', scenario: { contents: { [EXTERNAL_STORE]: "ctx.db.run('INSERT INTO external_records (id) VALUES (?)', id);", 'packages/storage/test/c7a.test.ts': "db.run('INSERT INTO external_records (id) VALUES (?)', id);", [CLI_SOURCE]: 'out({ health: ExternalEvidenceStore.for(store).health() });\n' } } },
+  { id: 'c7a-extends-c6-only', scenario: { contents: { [EXTERNAL_CORE]: "ctx.db.get('SELECT evidence_refs_json AS refs FROM outcome_verifications WHERE id = ?', id);", [`${MIGRATIONS_DIR}0012_c7a.sql`]: 'CREATE TABLE external_records (id TEXT) STRICT;\n' } } },
+  { id: 'c7-later-scope-not-leaked', scenario: { contents: { [EXTERNAL_STORE]: '// C7-A has no kill switch, feature flag or social connector (C7-B / C7-D).\nexport const x = 1;\n', 'packages/storage/src/maintenance.ts': "export const records = 'maintenance_records';\nrolloutUpdate(founder, id);\n" } } },
   // The canonical five Departments seeded; a review request table carrying the R4 CHECK; tests seeding rows.
   { id: 'review-pool-not-department', scenario: { contents: { [`${MIGRATIONS_DIR}0007_c4.sql`]: CANONICAL_DEPARTMENTS.map((c, i) => `INSERT INTO departments (id, code, name) SELECT 'c4d00000-0000-4000-8000-00000000000${i + 1}', '${c}', 'x' WHERE 1;\n`).join('') } } },
   { id: 'r4-never-review-satisfied', scenario: { contents: { [`${MIGRATIONS_DIR}0008_c4.sql`]: "CREATE TABLE review_requests (\n  risk_level TEXT,\n  state TEXT,\n  CHECK (risk_level <> 'R4' OR state NOT IN ('SATISFIED', 'CONSUMED'))\n) STRICT;\n", [AUTHORITY_KERNEL]: "  if (req.risk === 'R4') return { effect: 'DENY', code: 'FOUNDER_ONLY' };\n" } } },

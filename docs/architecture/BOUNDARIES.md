@@ -44,9 +44,11 @@ home of QANDEEL COMPANY. Results come home through GitHub branches / PRs and are
 
 ## App operations boundary
 
-`APP-OPS-01` is the **governed future App ↔ Company operational boundary**. It is not shared
-private-conversation storage. Its App-side contract is still a candidate, and the Company side is
-not implemented (`C7`).
+`APP-OPS-01` is the **governed App ↔ Company operational boundary**. It is not shared
+private-conversation storage. Its App-side Product / Architecture contract is CLOSED / FROZEN (lifecycle
+sync at the C7-A start, 2026-10-01). The Company side is built in `C7` (C7-A … C7-D): C7-A adds only the
+Company-side governed intake contract, with no App transport, connector, network listener or control
+plane; those stay later work (C7-B and beyond) under their own authority.
 
 Three separate rules apply (see `docs/authority/COMPANY_CANONICAL_BASELINE.md` §5):
 - **Operational telemetry is ALWAYS content-free.** It carries no private conversation text,

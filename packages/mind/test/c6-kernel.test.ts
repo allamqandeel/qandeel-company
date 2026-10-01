@@ -23,6 +23,7 @@ import {
   learningValidationGate,
   nearMissCodes,
   nextInterventionDecision,
+  NO_EXTERNAL_OUTCOME_FACTS,
   patternExpansionAllowed,
   proposeAttribution,
   reportedSystemicCandidate,
@@ -90,6 +91,7 @@ function reportBase(cadence: ReportFacts['cadence']): ReportFacts {
     recertificationDue: [],
     departmentGaps: [],
     minSample: 3,
+    external: NO_EXTERNAL_OUTCOME_FACTS,
   };
 }
 

@@ -72,6 +72,7 @@ import {
   FounderAuthStore,
   GoalStore,
   ImprovementStore,
+  ExternalEvidenceStore,
   MemoryStore,
   OrganizationStore,
   ReviewStore,
@@ -199,6 +200,8 @@ export interface FounderAdmin {
   readonly actions: FounderActionStore;
   /** C6 Company Improvement Engine (evaluation, attribution, learning, reports) under the same signalling contract. */
   readonly improvement: ImprovementStore;
+  /** C7-A governed sources, evidence bindings and the content-free intake seam, under the same signalling contract. */
+  readonly external: ExternalEvidenceStore;
   universe(options?: { at?: string }): CompanyUniverse;
 }
 
@@ -828,6 +831,13 @@ export class CompanyRuntime {
             requestLearningReview: (r) => (r as { changed: boolean }).changed,
             planReviewedIntervention: (r) => (r as { outcome: string }).outcome !== 'AWAIT_EVIDENCE',
           },
+        }),
+        // C7-A: Founder registry / lifecycle / binding decisions announce once; intake announces only a NEW accepted record
+        // (an exact replay is silent); reads are silent.
+        external: signalling(ExternalEvidenceStore.for(s), changed, {
+          mutating: ['registerSource', 'decideSource', 'bindEvidence', 'unbindEvidence'],
+          reads: ['sources', 'source', 'sourceHistory', 'record', 'bindings', 'evidenceFor', 'availability', 'health'],
+          conditional: { ingest: (r) => (r as { changed: boolean }).changed },
         }),
         universe: (options: { at?: string } = {}): CompanyUniverse => {
           if (options.at !== undefined && !isTimestamp(options.at)) throw new QandeelError('VALIDATION_FAILED', 'at must be a canonical UTC timestamp', { field: 'at' });

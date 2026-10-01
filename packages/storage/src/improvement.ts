@@ -21,7 +21,6 @@
 import { QandeelError, assertCode, assertId, canonicalJson, isTimestamp, newId, sha256Hex, type Id } from '@qandeel-company/domain';
 import { judgmentFromReview, judgmentRoute, type DataClass, type ReviewOutcome } from '@qandeel-company/governance';
 import {
-  EXTERNAL_OUTCOMES_AVAILABLE,
   LEARNING_KINDS,
   assertCauses,
   assertEvalDefinition,
@@ -66,6 +65,7 @@ import {
   type SystemicTarget,
 } from '@qandeel-company/mind';
 
+import { boundEvidence, externalAvailability, externalReportFacts } from './external-core.js';
 import { founder, founderAdminWrite } from './governance.js';
 import { EVIDENCE_REF_CAP, LATEST_LIVE_EVALUATION, adverseSourceEvents, attributionFacts, followupFacts, gatherWorkEvidence, latestVerdict, liveEvaluations, subjectOf, validatedAttributionFacts } from './improvement-core.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
@@ -671,6 +671,8 @@ function reportFacts(ctx: StoreContext, cadence: ReportCadence, at: string): Rep
     recertificationDue: ctx.db.all<{ id: string }>(`SELECT id FROM certifications WHERE status = 'REVIEW_DUE' ORDER BY id`).map((r) => r.id),
     departmentGaps: [...byDept.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([departmentId, refs]) => ({ departmentId, openGaps: refs.length, refs })),
     minSample: 3,
+    // C7-A: external outcomes from durable governed evidence (never a flag): unavailable / nothing relevant / cited.
+    external: externalReportFacts(ctx, period),
   };
 }
 
@@ -790,7 +792,7 @@ export class ImprovementStore {
   registerDefinition(actorRef: string, spec: EvalDefinitionSpec, options: { provenance?: string } = {}): EvalDefinitionRecord {
     return this.#admin('register eval definition', actorRef, (ctx) => {
       const p = founder(ctx, actorRef, null, 'eval registry');
-      assertEvalDefinition(spec);
+      assertEvalDefinition(spec, { governedSource: externalAvailability(ctx).state !== 'NO_GOVERNED_SOURCE' });
       const text = canonicalJson(spec);
       if (text.length > 65_536) throw new QandeelError('EVAL_INVALID', 'eval definition is too large', { field: 'spec' });
       const version = Number(ctx.db.get<{ v: number | null }>('SELECT MAX(def_version) AS v FROM eval_definitions WHERE code = ?', spec.code)?.v ?? 0) + 1;
@@ -812,7 +814,7 @@ export class ImprovementStore {
     return this.#admin('calibrate eval definition', actorRef, (ctx) => {
       const p = founder(ctx, actorRef, null, 'eval calibration');
       const d = must(ctx.db.get('SELECT * FROM eval_definitions WHERE id = ?', assertId(definitionId, 'definitionId')), mapDefinition, 'eval definition', definitionId);
-      const result = calibrateDefinition(d.spec);
+      const result = calibrateDefinition(d.spec, { governedSource: externalAvailability(ctx).state !== 'NO_GOVERNED_SOURCE' });
       const id = newId();
       ctx.db.run(`INSERT INTO eval_calibration_runs (id, definition_id, spec_sha256, passed, coverage_json, results_json, actor_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, d.id, d.specSha256, result.passed ? 1 : 0, JSON.stringify(result.coverage), JSON.stringify(result.cases), p.ref, ts(ctx));
       appendAudit(ctx, 'eval.calibrated', 'eval_definition', d.id, { actorRef: p.ref }, result.passed ? 'OK' : 'REJECTED', result.passed ? 'CALIBRATION_PASSED' : 'CALIBRATION_FAILED', { runId: id, cases: result.cases.length, missingKinds: result.missingKinds.length });
@@ -1347,6 +1349,7 @@ export class ImprovementStore {
             verification: latestVerdict(ctx, id),
             evaluation: liveEvaluationRow(ctx, id),
             attribution: liveAttribution(ctx, id),
+            externalEvidence: boundEvidence(ctx, 'WORK_ITEM', id),
             signals: ctx.db.all('SELECT * FROM learning_signals WHERE work_item_id = ? ORDER BY created_at, id', id).map(mapSignal),
           };
         }
@@ -1364,7 +1367,7 @@ export class ImprovementStore {
           const id = assertId(subject.id, 'id');
           const links = ctx.db.all<{ w: string }>('SELECT work_item_id AS w FROM goal_work_links WHERE goal_id = ? AND ended_at IS NULL', id).map((r) => r.w as Id);
           const evals = liveEvaluations(ctx, { workItemIds: links });
-          return { subject: { kind: 'GOAL', id }, linkedWork: links, economics: costPerQualifiedOutcome(evals), qualified: evals.filter((e) => e.qualifiedOutcome).map((e) => e.workItemId), evaluations: evals.map((e) => e.evaluationId) };
+          return { subject: { kind: 'GOAL', id }, linkedWork: links, economics: costPerQualifiedOutcome(evals), qualified: evals.filter((e) => e.qualifiedOutcome).map((e) => e.workItemId), evaluations: evals.map((e) => e.evaluationId), externalEvidence: boundEvidence(ctx, 'GOAL', id) };
         }
         case 'COMPANY':
           return {
@@ -1373,7 +1376,7 @@ export class ImprovementStore {
             systemic: ctx.db.all(`SELECT * FROM systemic_findings WHERE state IN ('CANDIDATE', 'VALIDATED') ORDER BY created_at, id`).map(mapFinding),
             resilience: txResilienceStatus(ctx, at),
             latestReports: ['DAILY', 'WEEKLY', 'MONTHLY'].map((c) => ctx.db.get<{ id: string; period_to: string }>('SELECT id, period_to FROM report_snapshots WHERE cadence = ? ORDER BY period_to DESC, id DESC LIMIT 1', c) ?? null),
-            externalOutcomes: { available: EXTERNAL_OUTCOMES_AVAILABLE, source: 'C7' },
+            externalOutcomes: externalAvailability(ctx),
           };
         default:
           throw new QandeelError('VALIDATION_FAILED', 'unknown inspection subject', { field: 'kind' });

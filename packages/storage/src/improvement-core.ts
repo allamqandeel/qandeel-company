@@ -8,6 +8,7 @@ import { type Id } from '@qandeel-company/domain';
 import { runFailureCodesOf } from '@qandeel-company/governance';
 import type { AdverseSourceEvent, AdverseSourceKind, AttributionFact, AttributionState, DirectCause, EvaluationFact, EvidenceClass, FollowupFact, ItemDimension, RiskLevel, ValidatedAttributionFact, Verdict, WorkEvidence } from '@qandeel-company/mind';
 
+import { externalDependencyFailures, verificationExternalRefs } from './external-core.js';
 import type { StoreContext } from './internal.js';
 import { getWorkItemRow } from './internal.js';
 
@@ -55,6 +56,10 @@ export function gatherWorkEvidence(ctx: StoreContext, workItemId: Id): { evidenc
   const completed = transitions.has('COMPLETED') || ['COMPLETED', 'WAITING_REVIEW', 'REVIEWED', 'OUTCOME_VERIFIED'].includes(w.state);
   const reviewed = transitions.has('REVIEWED') || w.state === 'REVIEWED' || w.state === 'OUTCOME_VERIFIED';
   const verdict = latestVerdict(ctx, workItemId);
+  // C7-A: governed external evidence enters only through C6's own paths — the verification that cited it (usable,
+  // Founder-bound outcome evidence), and Founder-bound external dependency failures. Never inferred, never a verdict.
+  const externalCited = verdict === null ? [] : verificationExternalRefs(ctx, verdict.id);
+  const externalFailures = externalDependencyFailures(ctx, workItemId);
 
   const decisions = ctx.db.all<{ id: string; outcome: string }>(
     `SELECT d.id, d.outcome FROM review_decisions d JOIN review_requests r ON r.id = d.request_id WHERE r.work_item_id = ? AND r.kind = 'REQUIRED' AND d.counts = 1 ORDER BY d.created_at, d.id`,
@@ -127,6 +132,7 @@ export function gatherWorkEvidence(ctx: StoreContext, workItemId: Id): { evidenc
   if (rework > 0) classes.add('REWORK');
   if (escalations + founderInterventions > 0) classes.add('INTERVENTION');
   if (ctx.db.get('SELECT 1 AS x FROM academy_attempts WHERE work_item_id = ?', workItemId)) classes.add('ACADEMY');
+  if (externalCited.length > 0) classes.add('EXTERNAL_OUTCOME');
   const evidence: WorkEvidence = {
     workItemId,
     employeeId,
@@ -146,7 +152,7 @@ export function gatherWorkEvidence(ctx: StoreContext, workItemId: Id): { evidenc
       provider: codeCount(PROVIDER_CODES),
       model: codeCount(MODEL_CODES),
       context: codeCount(CONTEXT_CODES) + contextFailed.filter((c) => unrecoveredRun(c.run_id)).length,
-      external: 0, // No governed external-outcome source exists before C7.
+      external: externalFailures.length,
       workflow: codeCount(WORKFLOW_CODES),
       requirementChanged: anyRunCode(REQUIREMENT_CODES) > 0 || w.state === 'SUPERSEDED',
     },
@@ -166,7 +172,7 @@ export function gatherWorkEvidence(ctx: StoreContext, workItemId: Id): { evidenc
     activity: { messages, toolCalls: toolRows.length, tokens, runs: runs.length },
     evidenceClasses: [...classes],
   };
-  const refs = [`work_item:${workItemId}`, ...decisions.map((d) => `review_decision:${d.id}`), ...(verdict ? [`outcome_verification:${verdict.id}`] : []), ...runs.map((r) => `run:${r.id}`)].slice(0, EVIDENCE_REF_CAP);
+  const refs = [`work_item:${workItemId}`, ...decisions.map((d) => `review_decision:${d.id}`), ...(verdict ? [`outcome_verification:${verdict.id}`] : []), ...externalCited, ...externalFailures, ...runs.map((r) => `run:${r.id}`)].slice(0, EVIDENCE_REF_CAP);
   return { evidence, refs };
 }
 

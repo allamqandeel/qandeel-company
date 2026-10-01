@@ -424,7 +424,11 @@ function resolveMutatingTarget(ctx: ApiContext, u: CompanyUniverse, command: Ext
     case 'LESSON_DECIDE':
     case 'OUTCOME_VERIFY':
     case 'PROMOTION_DECIDE':
-      // Structured only (a form or a rail action posts IDs / codes), never free text (D-C5-07, R2-21).
+    case 'SOURCE_REGISTER':
+    case 'SOURCE_DECIDE':
+    case 'EVIDENCE_BIND':
+    case 'EVIDENCE_UNBIND':
+      // Structured only (a form or a rail action posts IDs / codes), never free text (D-C5-07, R2-21, C7-A).
       return null;
   }
 }
@@ -475,6 +479,14 @@ function structuredSummary(ctx: ApiContext, preview: { intentKind: string; paylo
       return `Record the verified outcome: ${s('verdict').toLowerCase().replace('_', ' ')}`;
     case 'PROMOTION_DECIDE':
       return `${p.decision === 'APPROVE' ? 'Approve' : 'Reject'} sharing the lesson`;
+    case 'SOURCE_REGISTER':
+      return `Register the governed ${s('family').toLowerCase().replace('_', ' ')} source ${s('sourceKey')} (contract ${s('contractCode')} v${s('contractVersion')}); it is trusted by nothing until activated`;
+    case 'SOURCE_DECIDE':
+      return p.decision === 'ACTIVATE' ? `Activate the source ${s('sourceKey')}: its accepted records may become evidence` : p.decision === 'SUSPEND' ? `Suspend the source ${s('sourceKey')}: no new evidence from it is used; its history is kept` : `Retire the source ${s('sourceKey')} (final)`;
+    case 'EVIDENCE_BIND':
+      return `Bind the external record as ${p.role === 'DEPENDENCY_FAILURE' ? 'a dependency failure' : 'outcome evidence'} of the ${p.subjectKind === 'GOAL' ? 'goal' : 'work item'} (evidence, not a verdict)`;
+    case 'EVIDENCE_UNBIND':
+      return 'End the external evidence binding (its history is kept)';
     default:
       return preview.intentKind;
   }

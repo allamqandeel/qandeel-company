@@ -16,9 +16,11 @@
  * `BEGIN IMMEDIATE` — the check, the effect, CONFIRMED and the audit commit together or not at all.
  */
 import { QandeelError, assertCode, assertId, boundedJson, canonicalJson, isTimestamp, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { assertGoalTransition, isGoalState, isMutatingIntent, type GoalState, type MutatingIntent } from '@qandeel-company/governance';
+import { BINDING_ROLES, BINDING_SUBJECTS, SOURCE_DECISIONS, assertGoalTransition, assertSourceRegistration, isGoalState, isMutatingIntent, nextSourceState, type GoalState, type MutatingIntent, type SourceDecision, type SourceState } from '@qandeel-company/governance';
 import { assertCauses, summarizeCauses, type AttributedCause } from '@qandeel-company/mind';
 
+import { txAssertExternalEvidence } from './external-core.js';
+import { ExternalEvidenceStore } from './external-evidence.js';
 import { getBudgetRow, budgetFor } from './governance-core.js';
 import { GovernanceStore, founderConfirmInternals, isGovernedJob, resolveGovernedReconciliation } from './governance.js';
 import { getGoal, GoalStore } from './goals.js';
@@ -221,13 +223,44 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
         return [...new Set(v as string[])];
       };
       const evidenceClasses = assertOutcomeClasses(list('evidenceClasses', 8, /^[A-Z_]{2,48}$/));
-      return { workItemId, verdict, evidenceClasses, evidenceRefs: list('evidenceRefs', 16, OUTCOME_REF), reasonCode: assertCode(raw.reasonCode ?? 'founder.verified', 'reasonCode') };
+      const evidenceRefs = list('evidenceRefs', 16, OUTCOME_REF);
+      // C7-A: a preview never offers a verification on external evidence that is not usable for this Work Item.
+      txAssertExternalEvidence(ctx, workItemId, evidenceClasses, evidenceRefs);
+      return { workItemId, verdict, evidenceClasses, evidenceRefs, reasonCode: assertCode(raw.reasonCode ?? 'founder.verified', 'reasonCode') };
     }
     case 'PROMOTION_DECIDE': {
       const promotionId = assertId(raw.promotionId, 'promotionId');
       const decision = oneOf(raw, 'decision', ['APPROVE', 'REJECT'] as const);
       const pr = heldRow<{ state: string; target: string }>(ctx, 'SELECT state, target FROM lesson_promotions WHERE id = ?', promotionId, 'promotion', ['PENDING_REVIEW']);
       return { promotionId, decision, target: pr.target, reasonCode: assertCode(raw.reasonCode ?? 'founder.decided', 'reasonCode') };
+    }
+    // --- C7-A: what the Company may treat as real-world evidence (structured only; the store re-checks everything) ---
+    case 'SOURCE_REGISTER': {
+      const { sourceKey, family, contract } = assertSourceRegistration({ sourceKey: raw.sourceKey, family: raw.family, contractCode: raw.contractCode, contractVersion: raw.contractVersion });
+      return { sourceKey, family, contractCode: contract.code, contractVersion: contract.version, lane: contract.lane, reasonCode: assertCode(raw.reasonCode ?? 'source.registered', 'reasonCode') };
+    }
+    case 'SOURCE_DECIDE': {
+      const sourceId = assertId(raw.sourceId, 'sourceId');
+      const decision = oneOf(raw, 'decision', SOURCE_DECISIONS);
+      const src = ctx.db.get<{ state: string; source_key: string }>('SELECT state, source_key FROM external_sources WHERE id = ?', sourceId);
+      if (!src) throw new QandeelError('NOT_FOUND', 'external source not found', { sourceId });
+      // A preview never offers a lifecycle step the source cannot take.
+      const to = nextSourceState(src.state as SourceState, decision as SourceDecision);
+      return { sourceId, decision, from: src.state, to, sourceKey: src.source_key, reasonCode: assertCode(raw.reasonCode ?? 'founder.decided', 'reasonCode') };
+    }
+    case 'EVIDENCE_BIND': {
+      const recordId = assertId(raw.recordId, 'recordId');
+      const subjectKind = oneOf(raw, 'subjectKind', BINDING_SUBJECTS);
+      const role = oneOf(raw, 'role', BINDING_ROLES);
+      const subjectId = assertId(raw.subjectId, 'subjectId');
+      if (!ctx.db.get('SELECT 1 AS x FROM external_records WHERE id = ?', recordId)) throw new QandeelError('NOT_FOUND', 'external record not found', { recordId });
+      const supersedes = raw.supersedesBindingId === undefined || raw.supersedesBindingId === null ? null : assertId(raw.supersedesBindingId, 'supersedesBindingId');
+      return { recordId, subjectKind, subjectId, role, supersedesBindingId: supersedes, reasonCode: assertCode(raw.reasonCode ?? 'founder.bound', 'reasonCode') };
+    }
+    case 'EVIDENCE_UNBIND': {
+      const bindingId = assertId(raw.bindingId, 'bindingId');
+      heldRow(ctx, 'SELECT state FROM external_evidence_bindings WHERE id = ?', bindingId, 'binding', ['ACTIVE']);
+      return { bindingId, reasonCode: assertCode(raw.reasonCode ?? 'founder.unbound', 'reasonCode') };
     }
     default:
       throw new QandeelError('VALIDATION_FAILED', 'unknown intent', { field: 'intent' });
@@ -446,6 +479,23 @@ export class FounderActionStore {
       case 'PROMOTION_DECIDE': {
         const pr = MemoryStore.for(this.#store).decidePromotion(founderRef, str('promotionId'), { decision: pl.decision as 'APPROVE' | 'REJECT', reasonCode: str('reasonCode') });
         return `lesson_promotion:${pr.id}`;
+      }
+      // --- C7-A: each at the ExternalEvidenceStore boundary (no second implementation) ---
+      case 'SOURCE_REGISTER': {
+        const out = ExternalEvidenceStore.for(this.#store).registerSource(founderRef, { sourceKey: str('sourceKey'), family: str('family'), contractCode: str('contractCode'), contractVersion: Number(pl.contractVersion), reasonCode: str('reasonCode') });
+        return `external_source:${out.source.id}`;
+      }
+      case 'SOURCE_DECIDE': {
+        const src = ExternalEvidenceStore.for(this.#store).decideSource(founderRef, str('sourceId'), { decision: pl.decision as SourceDecision, reasonCode: str('reasonCode') });
+        return `external_source:${src.id}`;
+      }
+      case 'EVIDENCE_BIND': {
+        const out = ExternalEvidenceStore.for(this.#store).bindEvidence(founderRef, { recordId: str('recordId'), subjectKind: str('subjectKind'), subjectId: str('subjectId'), role: str('role'), reasonCode: str('reasonCode'), ...(pl.supersedesBindingId ? { supersedesBindingId: str('supersedesBindingId') } : {}) });
+        return `external_binding:${out.binding.id}`;
+      }
+      case 'EVIDENCE_UNBIND': {
+        const b = ExternalEvidenceStore.for(this.#store).unbindEvidence(founderRef, str('bindingId'), str('reasonCode'));
+        return `external_binding:${b.id}`;
       }
     }
   }

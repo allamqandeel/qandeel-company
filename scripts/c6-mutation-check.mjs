@@ -250,8 +250,9 @@ const MUTATIONS = [
   },
   {
     id: 'c6-external-outcome-invented',
-    gate: 'external outcomes are unavailable until a governed source exists (C7); none is accepted as evidence',
-    edits: [{ file: `${STORAGE}/outcome-core.js`, search: "if (classes.includes('EXTERNAL_OUTCOME') && !EXTERNAL_OUTCOMES_AVAILABLE)\n", replace: 'if (false)\n', expectedCount: 1 }],
+    // C7-A: the pre-C7 compile-time flag became runtime truth; the gate is now "no governed source is active" (D-C7A-03).
+    gate: 'external outcomes are unavailable while no governed source is active; none is invented as evidence',
+    edits: [{ file: `${STORAGE}/external-core.js`, search: "if (declared && externalAvailability(ctx).state === 'NO_GOVERNED_SOURCE')", replace: 'if (false)', expectedCount: 1 }],
     runs: [STORE, FREE],
   },
   // --- R2 (cluster K4): C6 distinguishes productive learning from repeated activity -----------------------------

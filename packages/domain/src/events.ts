@@ -19,7 +19,8 @@ export interface EventEnvelope {
   readonly payload: JsonObject;
 }
 
-export const AGGREGATE_TYPES = ['work_item', 'job', 'run', 'artifact', 'runtime', 'backup'] as const;
+/** C7-A adds `external_source`: a governed source of operational facts / external outcome evidence (0012). */
+export const AGGREGATE_TYPES = ['work_item', 'job', 'run', 'artifact', 'runtime', 'backup', 'external_source'] as const;
 export type AggregateType = (typeof AGGREGATE_TYPES)[number];
 
 export const EVENT_TYPES = [
@@ -46,6 +47,13 @@ export const EVENT_TYPES = [
   'run.attributed',
   'run.usage_settled',
   'run.tool_invocation',
+  // C7-A (content-free: source / record / binding IDs, codes and counts only — never an intake payload).
+  'external_source.registered',
+  'external_source.contract_registered',
+  'external_source.state_changed',
+  'external_record.accepted',
+  'external_record.conflict_detected',
+  'external_binding.changed',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

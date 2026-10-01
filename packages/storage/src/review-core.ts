@@ -38,6 +38,7 @@ import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from 
 import { effectiveDataClass } from './governed-writes.js';
 import { delegationChain, founderPrincipalRef, getPosition, primaryAssignmentAt, seatHolder } from './org-core.js';
 import { mapJudgmentAssignment, mapQualification, mapReviewAssignment, mapReviewPlan, mapReviewRequest, type JudgmentAssignmentRecord, type ReviewAssignmentRecord, type ReviewPlanRecord, type ReviewRequestRecord } from './org-records.js';
+import { externalEvidenceProblem, isExternalRef } from './external-core.js';
 import { assertOutcomeClasses, txRecordOutcome } from './outcome-core.js';
 import type { WorkItemRecord } from './records.js';
 import type { SqlValue } from './sqlite/connection.js';
@@ -574,6 +575,12 @@ function decideAssignment(ctx: StoreContext, a: ReviewAssignmentRecord, reviewer
     } catch {
       return { recorded: false, code: 'OUTCOME_EVIDENCE_INVALID', request };
     }
+    // C7-A: a reviewer judges from external outcomes only on usable governed evidence bound to THIS Work Item, cited by
+    // its own decision (it cannot bind evidence; only the Founder does). Citing external records requires the class.
+    const external = d.evidenceRefs.filter(isExternalRef);
+    if (judgedClasses.includes('EXTERNAL_OUTCOME') !== (external.length > 0) || external.some((ref) => externalEvidenceProblem(ctx, ref, request.workItemId) !== null)) {
+      return { recorded: false, code: 'OUTCOME_EVIDENCE_INVALID', request };
+    }
   }
   const id = newId();
   ctx.db.run(
@@ -679,6 +686,18 @@ function verifyFromReviewKeys(ctx: StoreContext, request: ReviewRequestRecord, p
   }
   const classes = [...new Set(rows.flatMap((r) => (r.classes === null ? [] : (JSON.parse(r.classes) as string[]))))];
   const refs = [`review_request:${request.id}`, ...rows.map((r) => `review_decision:${r.id}`), `work_item:${request.workItemId}`];
+  // C7-A: the external records the passing keys cited, re-checked NOW (a source suspended or a binding ended since the
+  // decisions makes them unusable). Unusable external evidence never verifies: the outcome goes to the Founder as
+  // INCONCLUSIVE (an exception), never silently ACHIEVED / NOT_ACHIEVED on what remains.
+  if (classes.includes('EXTERNAL_OUTCOME')) {
+    const external = [...new Set(rows.flatMap((r) => (JSON.parse(ctx.db.get<{ refs: string }>('SELECT evidence_refs_json AS refs FROM review_decisions WHERE id = ?', r.id)?.refs ?? '[]') as string[]).filter(isExternalRef)))];
+    if (external.length === 0 || external.some((ref) => externalEvidenceProblem(ctx, ref, request.workItemId) !== null)) {
+      const rest = classes.filter((c) => c !== 'EXTERNAL_OUTCOME');
+      txRecordOutcome(ctx, getWorkItemRow(ctx, request.workItemId), { verdict: 'INCONCLUSIVE', classes: rest.length > 0 ? rest : ['REVIEW_DECISION'], refs, reasonCode: 'review_keys.external_evidence_unusable' }, { kind: 'REVIEW_POOL', reviewRequestId: request.id });
+      return;
+    }
+    refs.push(...external.slice(0, 16));
+  }
   txRecordOutcome(ctx, getWorkItemRow(ctx, request.workItemId), { verdict: out.verdict, classes, refs, reasonCode: `review_keys.${out.reason.toLowerCase()}` }, { kind: 'REVIEW_POOL', reviewRequestId: request.id });
 }
 
