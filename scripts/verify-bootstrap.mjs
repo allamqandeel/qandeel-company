@@ -482,7 +482,7 @@ const MUTATION_PINS = {
   [C7C_MUTATION_CHECK]: {
     script: 'c7c:mutation',
     ids: [
-      'c7c-ready-without-briefing', 'c7c-db-ready-without-briefing', 'c7c-message-read-as-authority', 'c7c-active-without-root-goal', 'c7c-db-active-without-root-goal',
+      'c7c-ready-without-briefing', 'c7c-db-ready-without-briefing', 'c7c-briefing-boundary-dropped', 'c7c-db-briefing-boundary-dropped', 'c7c-message-read-as-authority', 'c7c-active-without-root-goal', 'c7c-db-active-without-root-goal',
       'c7c-terminal-pilot-revived', 'c7c-db-terminal-pilot-revived', 'c7c-db-mode-mutable', 'c7c-founder-decision-bypass', 'c7c-repeated-step-not-idempotent',
       'c7c-duplicate-thread-linkage', 'c7c-duplicate-root-goal-linkage',
       'c7c-activity-counted-as-performance', 'c7c-universal-aggregation', 'c7c-attribution-bypass', 'c7c-unauthorized-initiative-counted', 'c7c-boundary-refusal-as-autonomy', 'c7c-review-bypass', 'c7c-training-completion-as-improvement', 'c7c-zero-qualified-efficient', 'c7c-economics-bypass-ledger',

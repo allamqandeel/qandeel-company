@@ -208,4 +208,15 @@ real results back through C7-A → C6 → C7-C (a CONTROLLED_REAL Pilot on that 
 QANDEEL name stays Founder-approved; no framework, hosting, CMS, analytics, SEO or social vendor preselected. Nothing of
 C7-D is implemented here.
 
+## 23. TL exact-head review correction (review of `2af37b6`, 1 MAJOR)
+
+Finding: binding an existing CEO thread let an exchange from before the Pilot satisfy its READY gate. Fix (D-C7C-13): a
+write-once `briefing_from_seq` boundary set entering BRIEFING (datastore-checked as the thread's next sequence); only
+qualifying Founder requests at or after it count, in TypeScript and in the READY trigger; old messages remain history.
+Proof: the TL's adversarial sequence (reused direct thread, pre-Pilot exchange refused in code and by direct SQL, including
+moving the boundary back; a new governed exchange then makes READY succeed; old history intact). Mutations 25 → 27 (code
+and datastore boundary). Focused validation: C7-C storage 16 / 16, C5 founder surface + migrations 32 / 32, runtime C7-C
+1 / 1, C7-C mutations 27 / 27, verifier 86 / 86, typecheck and lint clean. Migration 0014 (unreleased) re-pinned
+`9efb1a03…`. Nothing else reopened.
+
 C7-C is NOT CLOSED.

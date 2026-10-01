@@ -40,6 +40,8 @@ export interface PilotRecord {
   readonly requiresExternalOutcome: boolean;
   readonly state: PilotState;
   readonly briefingThreadId: Id | null;
+  /** The briefing boundary: the bound thread's next message sequence when this Pilot entered BRIEFING. */
+  readonly briefingFromSeq: number | null;
   readonly rootGoalId: Id | null;
   readonly createdByRef: string;
   readonly version: number;
@@ -81,7 +83,7 @@ const opt = (v: unknown): string | null => (v === null || v === undefined ? null
 function mapPilot(r: Row): PilotRecord {
   return {
     id: str(r.id) as Id, mode: r.mode as PilotMode, title: str(r.title), requiresExternalOutcome: r.requires_external_outcome === 1, state: r.state as PilotState,
-    briefingThreadId: opt(r.briefing_thread_id) as Id | null, rootGoalId: opt(r.root_goal_id) as Id | null, createdByRef: str(r.created_by_ref), version: Number(r.version),
+    briefingThreadId: opt(r.briefing_thread_id) as Id | null, briefingFromSeq: r.briefing_from_seq === null || r.briefing_from_seq === undefined ? null : Number(r.briefing_from_seq), rootGoalId: opt(r.root_goal_id) as Id | null, createdByRef: str(r.created_by_ref), version: Number(r.version),
     createdAt: str(r.created_at), updatedAt: str(r.updated_at), activatedAt: opt(r.activated_at), closedAt: opt(r.closed_at),
   };
 }
@@ -111,16 +113,22 @@ export interface BriefingStatus {
   readonly conversationEvidenced: boolean;
 }
 
-export function txBriefingStatus(ctx: StoreContext, threadId: Id | null): BriefingStatus {
-  if (threadId === null) return { threadId, answered: [], pending: [], conversationEvidenced: false };
+/**
+ * This Pilot's briefing evidence: only Founder requests at or after its briefing boundary count (a reused CEO thread's
+ * earlier exchanges stay ordinary history and never brief a later Pilot — TL review of `2af37b6`, MAJOR). The datastore
+ * trigger `pilots_ready_requires_briefing` enforces the same boundary.
+ */
+export function txBriefingStatus(ctx: StoreContext, p: Pick<PilotRecord, 'briefingThreadId' | 'briefingFromSeq'>): BriefingStatus {
+  const threadId = p.briefingThreadId;
+  if (threadId === null || p.briefingFromSeq === null) return { threadId, answered: [], pending: [], conversationEvidenced: false };
   const rows = ctx.db.all<{ id: string; answered: number }>(
     `SELECT m.id, EXISTS (SELECT 1 FROM communication_messages r JOIN runs x ON x.id = r.run_id
                            WHERE r.thread_id = m.thread_id AND r.seq > m.seq AND r.sender_kind = 'EMPLOYEE' AND x.work_item_id = m.reply_work_item_id) AS answered
        FROM communication_messages m
-      WHERE m.thread_id = ? AND m.sender_kind = 'FOUNDER' AND m.response_required = 1 AND m.reply_work_item_id IS NOT NULL
+      WHERE m.thread_id = ? AND m.seq >= ? AND m.sender_kind = 'FOUNDER' AND m.response_required = 1 AND m.reply_work_item_id IS NOT NULL
         AND m.purpose IN (SELECT value FROM json_each(?))
       ORDER BY m.seq`,
-    threadId, idsParam(BRIEFING_REQUEST_PURPOSES),
+    threadId, p.briefingFromSeq, idsParam(BRIEFING_REQUEST_PURPOSES),
   );
   const answered = rows.filter((r) => r.answered === 1).map((r) => r.id as Id);
   return { threadId, answered, pending: rows.filter((r) => r.answered !== 1).map((r) => r.id as Id), conversationEvidenced: answered.length > 0 };
@@ -278,7 +286,7 @@ export function txPilotBoard(ctx: StoreContext, p: PilotRecord): PilotBoard {
   const scope = txPilotScope(ctx, p);
   const ids = scope.workItemIds;
   const set = idsParam(ids);
-  const briefing = txBriefingStatus(ctx, p.briefingThreadId);
+  const briefing = txBriefingStatus(ctx, p);
   const root = scope.rootGoalId === null ? null : getGoal(ctx, scope.rootGoalId);
 
   // Outcomes (canonical Work / Review / C6 truth).
@@ -534,7 +542,7 @@ export function planPilotStep(ctx: StoreContext, pilotId: Id, input: AdvancePilo
     if (t.kind !== 'FOUNDER_CEO' || t.state !== 'OPEN') throw new QandeelError('PILOT_INVALID', 'a pilot briefing is an open Founder ↔ CEO thread', { threadId, reason: 'NOT_AN_OPEN_CEO_THREAD' });
     if (ctx.db.get('SELECT 1 AS x FROM pilots WHERE briefing_thread_id = ?', threadId)) throw new QandeelError('PILOT_INVALID', 'this thread already briefs another pilot', { threadId, reason: 'THREAD_ALREADY_BOUND' });
   }
-  if (input.to === 'READY' && !txBriefingStatus(ctx, p.briefingThreadId).conversationEvidenced) {
+  if (input.to === 'READY' && !txBriefingStatus(ctx, p).conversationEvidenced) {
     // Silence is never approval: an unanswered request (or none) never makes a Pilot READY.
     throw new QandeelError('PILOT_INVALID', 'a pilot is READY only after a governed reply to a Founder briefing request', { pilotId: p.id, reason: 'NO_GOVERNED_BRIEFING_REPLY' });
   }
@@ -563,12 +571,14 @@ export function txAdvancePilot(ctx: StoreContext, pilotId: Id, input: AdvancePil
     // Founder's general direct thread with the CEO.
     thread = plan.threadId ?? txOpenThread(ctx, { kind: 'FOUNDER_CEO', subject: `Pilot: ${p.title}`.slice(0, 160), contextKind: 'DECISION', contextRef: `pilot:${p.id}` }, founderRef).id;
   }
+  // The briefing boundary is fixed with the binding: whatever the thread already holds is history, not this briefing.
+  const fromSeq = plan.to === 'BRIEFING' && thread !== null ? Number(ctx.db.get<{ s: number }>('SELECT COALESCE(MAX(seq), 0) + 1 AS s FROM communication_messages WHERE thread_id = ?', thread)?.s ?? 1) : p.briefingFromSeq;
   const goal = plan.to === 'ACTIVE' ? plan.goalId : p.rootGoalId;
   const at = ts(ctx);
   const closing = (TERMINAL_PILOT_STATES as readonly string[]).includes(plan.to);
   const changed = ctx.db.run(
-    `UPDATE pilots SET state = ?, briefing_thread_id = ?, root_goal_id = ?, activated_at = COALESCE(activated_at, ?), closed_at = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`,
-    plan.to, thread, goal, plan.to === 'ACTIVE' ? at : null, closing ? at : null, at, p.id, p.version,
+    `UPDATE pilots SET state = ?, briefing_thread_id = ?, briefing_from_seq = ?, root_goal_id = ?, activated_at = COALESCE(activated_at, ?), closed_at = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`,
+    plan.to, thread, fromSeq, goal, plan.to === 'ACTIVE' ? at : null, closing ? at : null, at, p.id, p.version,
   ).changes;
   if (changed !== 1) throw new QandeelError('VERSION_CONFLICT', 'pilot changed concurrently', { pilotId: p.id });
   const next = getPilot(ctx, p.id);
@@ -623,7 +633,7 @@ export class PilotStore {
   }
 
   briefing(id: string): BriefingStatus {
-    return this.#read((ctx) => txBriefingStatus(ctx, getPilot(ctx, assertId(id, 'pilotId')).briefingThreadId));
+    return this.#read((ctx) => txBriefingStatus(ctx, getPilot(ctx, assertId(id, 'pilotId'))));
   }
 
   scope(id: string): PilotScope {
@@ -634,7 +644,7 @@ export class PilotStore {
   decisions(id: string): string[] {
     return this.#read((ctx) => {
       const p = getPilot(ctx, assertId(id, 'pilotId'));
-      return decisionsNeeded(ctx, p, txBriefingStatus(ctx, p.briefingThreadId), scopedAttention(ctx, p, txPilotScope(ctx, p)).length);
+      return decisionsNeeded(ctx, p, txBriefingStatus(ctx, p), scopedAttention(ctx, p, txPilotScope(ctx, p)).length);
     });
   }
 

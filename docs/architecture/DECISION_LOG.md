@@ -3312,3 +3312,13 @@ site structure → technical proposal → design / copy / code → tests → pre
 governed publication → real result evidence back through C7-A → C6 → C7-C. Initial external publication under the
 QANDEEL name stays Founder-approved. No website framework, hosting, CMS, analytics, SEO or social vendor is preselected,
 and none of this is implemented in C7-C (verifier `c7c-no-c7d-or-network`).
+
+## D-C7C-13 — A Pilot's briefing evidence starts at its own briefing boundary (TL exact-head review of `2af37b6`, MAJOR)
+
+An existing open Founder ↔ CEO thread may still be bound entering BRIEFING, but what it already holds never briefs the
+Pilot: entering BRIEFING records `briefing_from_seq` = the bound thread's next message sequence (written once with the
+binding; the datastore checks it equals `MAX(seq) + 1` at that moment). Only a response-required Founder REQUEST /
+QUESTION / DECISION_REQUEST at or after that boundary, with the governed reply of that exact message's reply Work Item,
+evidences READY — in `txBriefingStatus` (preview, store, board) and in `pilots_ready_requires_briefing` alike. Earlier
+messages stay ordinary communication history. Mutations `c7c-briefing-boundary-dropped` (code) and
+`c7c-db-briefing-boundary-dropped` (datastore); C7-C mutations 25 → 27.

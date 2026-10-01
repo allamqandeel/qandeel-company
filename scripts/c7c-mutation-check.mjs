@@ -45,13 +45,25 @@ const MUTATIONS = [
   {
     id: 'c7c-ready-without-briefing',
     gate: 'READY needs a governed reply to a Founder briefing request (code)',
-    edits: [{ file: `${STORAGE}/pilots.js`, search: "if (input.to === 'READY' && !txBriefingStatus(ctx, p.briefingThreadId).conversationEvidenced) {", replace: 'if (false) {', expectedCount: 1 }],
+    edits: [{ file: `${STORAGE}/pilots.js`, search: "if (input.to === 'READY' && !txBriefingStatus(ctx, p).conversationEvidenced) {", replace: 'if (false) {', expectedCount: 1 }],
     runs: [STORE],
   },
   {
     id: 'c7c-db-ready-without-briefing',
     gate: 'READY needs a governed reply to a Founder briefing request (datastore)',
     edits: [{ file: MIGRATION, search: "CREATE TRIGGER pilots_ready_requires_briefing BEFORE UPDATE ON pilots\nWHEN NEW.state = 'READY'", replace: "CREATE TRIGGER pilots_ready_requires_briefing BEFORE UPDATE ON pilots\nWHEN 0 AND NEW.state = 'READY'", expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7c-briefing-boundary-dropped',
+    gate: 'only Founder requests at or after the Pilot\'s own briefing boundary count (an older exchange in a reused thread never does; code)',
+    edits: [{ file: `${STORAGE}/pilots.js`, search: 'WHERE m.thread_id = ? AND m.seq >= ? AND', replace: 'WHERE m.thread_id = ? AND ? > 0 AND', expectedCount: 1 }],
+    runs: [STORE],
+  },
+  {
+    id: 'c7c-db-briefing-boundary-dropped',
+    gate: 'only Founder requests at or after the Pilot\'s own briefing boundary count (datastore READY trigger)',
+    edits: [{ file: MIGRATION, search: 'WHERE m.thread_id = NEW.briefing_thread_id AND m.seq >= NEW.briefing_from_seq AND', replace: 'WHERE m.thread_id = NEW.briefing_thread_id AND', expectedCount: 1 }],
     runs: [STORE],
   },
   {

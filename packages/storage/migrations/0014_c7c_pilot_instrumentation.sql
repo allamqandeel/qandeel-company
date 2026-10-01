@@ -28,6 +28,9 @@ CREATE TABLE pilots (
   requires_external_outcome  INTEGER NOT NULL CHECK (requires_external_outcome IN (0, 1)),
   state                      TEXT    NOT NULL CHECK (state IN ('DRAFT', 'BRIEFING', 'READY', 'ACTIVE', 'REVIEWING', 'COMPLETED', 'STOPPED')),
   briefing_thread_id         TEXT             REFERENCES communication_threads (id) ON DELETE RESTRICT,
+  -- The briefing boundary: the bound thread's next message sequence when THIS Pilot entered BRIEFING. Only Founder
+  -- requests at or after it can evidence this Pilot's briefing; earlier messages stay ordinary history (TL review, MAJOR).
+  briefing_from_seq          INTEGER          CHECK (briefing_from_seq IS NULL OR briefing_from_seq >= 1),
   root_goal_id               TEXT             REFERENCES goals (id) ON DELETE RESTRICT,
   created_by_ref             TEXT    NOT NULL CHECK (created_by_ref GLOB 'founder:*'),
   version                    INTEGER NOT NULL CHECK (version >= 1),
@@ -37,6 +40,7 @@ CREATE TABLE pilots (
   closed_at                  TEXT             CHECK (closed_at IS NULL OR closed_at GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]Z'),
   CHECK (mode = 'CONTROLLED_REAL' OR requires_external_outcome = 0),
   CHECK (state IN ('DRAFT', 'STOPPED') OR briefing_thread_id IS NOT NULL),
+  CHECK ((briefing_thread_id IS NULL) = (briefing_from_seq IS NULL)),
   CHECK (state NOT IN ('ACTIVE', 'REVIEWING', 'COMPLETED') OR (root_goal_id IS NOT NULL AND activated_at IS NOT NULL)),
   CHECK ((state IN ('COMPLETED', 'STOPPED')) = (closed_at IS NOT NULL))
 ) STRICT;
@@ -50,7 +54,7 @@ BEGIN SELECT RAISE(ABORT, 'a pilot is closed or stopped, never deleted'); END;
 
 -- A Pilot is born a DRAFT with nothing bound.
 CREATE TRIGGER pilots_born_draft BEFORE INSERT ON pilots
-WHEN NEW.state <> 'DRAFT' OR NEW.version <> 1 OR NEW.briefing_thread_id IS NOT NULL OR NEW.root_goal_id IS NOT NULL OR NEW.activated_at IS NOT NULL OR NEW.closed_at IS NOT NULL
+WHEN NEW.state <> 'DRAFT' OR NEW.version <> 1 OR NEW.briefing_thread_id IS NOT NULL OR NEW.briefing_from_seq IS NOT NULL OR NEW.root_goal_id IS NOT NULL OR NEW.activated_at IS NOT NULL OR NEW.closed_at IS NOT NULL
 BEGIN SELECT RAISE(ABORT, 'a pilot is created as a DRAFT with nothing bound'); END;
 
 -- Identity, mode and title are immutable; each binding is written once; every update is one versioned step.
@@ -58,6 +62,7 @@ CREATE TRIGGER pilots_identity_immutable BEFORE UPDATE ON pilots
 WHEN NEW.id IS NOT OLD.id OR NEW.mode IS NOT OLD.mode OR NEW.title IS NOT OLD.title OR NEW.requires_external_outcome IS NOT OLD.requires_external_outcome
   OR NEW.created_by_ref IS NOT OLD.created_by_ref OR NEW.created_at IS NOT OLD.created_at OR NEW.version <> OLD.version + 1
   OR (OLD.briefing_thread_id IS NOT NULL AND NEW.briefing_thread_id IS NOT OLD.briefing_thread_id)
+  OR (OLD.briefing_from_seq IS NOT NULL AND NEW.briefing_from_seq IS NOT OLD.briefing_from_seq)
   OR (OLD.root_goal_id IS NOT NULL AND NEW.root_goal_id IS NOT OLD.root_goal_id)
   OR (OLD.activated_at IS NOT NULL AND NEW.activated_at IS NOT OLD.activated_at)
 BEGIN SELECT RAISE(ABORT, 'a pilot keeps its identity, mode and bindings'); END;
@@ -72,19 +77,21 @@ WHEN NOT (
   OR (OLD.state = 'REVIEWING' AND NEW.state IN ('COMPLETED', 'STOPPED')))
 BEGIN SELECT RAISE(ABORT, 'pilot transition is not allowed'); END;
 
--- The briefing is a Founder <-> CEO thread that is open when it is bound.
+-- The briefing is a Founder <-> CEO thread that is open when it is bound, and its boundary is exactly the thread's next
+-- message sequence at that moment (an existing thread may be reused; what it already holds never briefs this Pilot).
 CREATE TRIGGER pilots_briefing_thread_governed BEFORE UPDATE ON pilots
-WHEN NEW.briefing_thread_id IS NOT OLD.briefing_thread_id
-  AND (NEW.state <> 'BRIEFING' OR NOT EXISTS (SELECT 1 FROM communication_threads t WHERE t.id = NEW.briefing_thread_id AND t.kind = 'FOUNDER_CEO' AND t.state = 'OPEN'))
-BEGIN SELECT RAISE(ABORT, 'a pilot briefing is bound once, entering BRIEFING, to an open Founder <-> CEO thread'); END;
+WHEN (NEW.briefing_thread_id IS NOT OLD.briefing_thread_id OR NEW.briefing_from_seq IS NOT OLD.briefing_from_seq)
+  AND (NEW.state <> 'BRIEFING' OR NOT EXISTS (SELECT 1 FROM communication_threads t WHERE t.id = NEW.briefing_thread_id AND t.kind = 'FOUNDER_CEO' AND t.state = 'OPEN')
+       OR NEW.briefing_from_seq IS NOT (SELECT COALESCE(MAX(m.seq), 0) + 1 FROM communication_messages m WHERE m.thread_id = NEW.briefing_thread_id))
+BEGIN SELECT RAISE(ABORT, 'a pilot briefing is bound once, entering BRIEFING, to an open Founder <-> CEO thread from its next message on'); END;
 
--- READY needs proof that a conversation happened (never its quality, never consent): in the briefing thread the Founder
--- sent a response-required REQUEST / QUESTION / DECISION_REQUEST, and the governed reply Work Item of THAT message has
+-- READY needs proof that a conversation happened FOR THIS PILOT (never its quality, never consent): in the briefing thread,
+-- at or after the Pilot's briefing boundary, the Founder sent a response-required REQUEST / QUESTION / DECISION_REQUEST, and the governed reply Work Item of THAT message has
 -- recorded an Employee reply from its own run. An unanswered request proves nothing (silence is never approval).
 CREATE TRIGGER pilots_ready_requires_briefing BEFORE UPDATE ON pilots
 WHEN NEW.state = 'READY' AND OLD.state <> 'READY' AND NOT EXISTS (
   SELECT 1 FROM communication_messages m
-   WHERE m.thread_id = NEW.briefing_thread_id AND m.sender_kind = 'FOUNDER' AND m.response_required = 1
+   WHERE m.thread_id = NEW.briefing_thread_id AND m.seq >= NEW.briefing_from_seq AND m.sender_kind = 'FOUNDER' AND m.response_required = 1
      AND m.purpose IN ('REQUEST', 'QUESTION', 'DECISION_REQUEST') AND m.reply_work_item_id IS NOT NULL
      AND EXISTS (SELECT 1 FROM communication_messages r JOIN runs x ON x.id = r.run_id
                   WHERE r.thread_id = m.thread_id AND r.seq > m.seq AND r.sender_kind = 'EMPLOYEE' AND x.work_item_id = m.reply_work_item_id))

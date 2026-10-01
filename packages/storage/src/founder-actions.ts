@@ -309,7 +309,7 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
       // A preview never offers a step the confirmation would refuse (lifecycle, briefing evidence, root goal, bindings).
       const plan = planPilotStep(ctx, assertId(raw.pilotId, 'pilotId'), { to: raw.to as PilotState, reasonCode: String(raw.reasonCode ?? 'pilot.advanced'), ...(raw.threadId === undefined || raw.threadId === null ? {} : { threadId: String(raw.threadId) }), ...(raw.goalId === undefined || raw.goalId === null ? {} : { goalId: String(raw.goalId) }) });
       if (plan.noop) throw new QandeelError('INVALID_TRANSITION', 'the pilot already took this step', { pilotId: plan.pilot.id, state: plan.pilot.state });
-      const briefing = txBriefingStatus(ctx, plan.pilot.briefingThreadId);
+      const briefing = txBriefingStatus(ctx, plan.pilot);
       return { pilotId: plan.pilot.id, from: plan.pilot.state, to: plan.to, mode: plan.pilot.mode, threadId: plan.threadId, goalId: plan.goalId, answeredBriefingRequests: briefing.answered.length, unansweredBriefingRequests: briefing.pending.length, reasonCode: plan.reasonCode };
     }
     default:

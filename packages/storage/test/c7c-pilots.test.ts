@@ -178,6 +178,36 @@ describe('C7-C Pilot lifecycle and the pre-execution Founder briefing', () => {
     });
   });
 
+  test('TL MAJOR (2af37b6): an exchange in a reused CEO thread from BEFORE the Pilot\'s briefing never briefs it — code and datastore; a new governed exchange does', () => {
+    withWorld((w) => {
+      // 1–2. The Founder's ordinary direct CEO thread holds a qualifying request and its governed CEO reply, before any Pilot.
+      const direct = w.comm.directThread(w.s.founder, null);
+      const oldSent = w.comm.send(w.s.founder, direct.id, { purpose: 'QUESTION', body: 'سؤال قديم لا علاقة له بالتجربة' });
+      const oldClaim = claimItem(w.h, oldSent.replyWorkItemId as Id, 'w-ceo-old');
+      assert.equal(recordMessage(w.h.store, oldClaim.fence, { purpose: 'RESULT', attentionLevel: 'INFORMATIONAL', body: 'إجابة قديمة.', brief: null, contextRefs: [] }).outcome, 'RECORDED');
+      settle(w.h.store, oldClaim.fence, { type: 'COMPLETED' }, { backoff });
+      assert.equal(w.comm.pendingReplies().length, 0, 'the old exchange is a complete governed exchange');
+      const history = w.comm.messages(direct.id).map((m) => m.id);
+      // 3. A new Pilot binds that same thread entering BRIEFING.
+      const p = w.pilots.advance(w.s.founder, w.pilots.create(w.s.founder, { mode: 'TRAINING_INTERNAL', title: TITLE }).id, { to: 'BRIEFING', threadId: direct.id, reasonCode: 'pilot.briefing' });
+      assert.deepEqual([p.briefingThreadId, p.briefingFromSeq], [direct.id, history.length + 1], 'the boundary is the thread\'s next message');
+      assert.deepEqual(w.pilots.briefing(p.id).answered, [], 'the earlier exchange is not this Pilot\'s briefing');
+      // 4. READY is refused in the code path …
+      assert.throws(() => w.pilots.advance(w.s.founder, p.id, { to: 'READY', reasonCode: 'pilot.ready' }), reason('NO_GOVERNED_BRIEFING_REPLY'));
+      // 5. … and by the datastore when TypeScript is bypassed, including by moving the boundary back to cover the old exchange.
+      aborts(() => db(w).run(`UPDATE pilots SET state = 'READY', version = version + 1 WHERE id = ?`, p.id), 'datastore READY gate honours the boundary');
+      aborts(() => db(w).run(`UPDATE pilots SET state = 'READY', briefing_from_seq = 1, version = version + 1 WHERE id = ?`, p.id), 'the boundary cannot be moved back to cover the old exchange');
+      // 6–7. A new request after BRIEFING with its own governed reply: only now READY succeeds.
+      ask(w, p);
+      assert.equal(w.pilots.briefing(p.id).answered.length, 1);
+      assert.equal(w.pilots.advance(w.s.founder, p.id, { to: 'READY', reasonCode: 'pilot.ready' }).state, 'READY');
+      // 8. The old exchange remains communication history, untouched.
+      const after = w.comm.messages(direct.id).map((m) => m.id);
+      assert.deepEqual(after.slice(0, history.length), history);
+      assert.equal(w.comm.message(oldSent.message.id).body, 'سؤال قديم لا علاقة له بالتجربة');
+    });
+  });
+
   test('(5, 7, 8, 9) a governed reply is conversation evidence only: READY stays an explicit Founder act, grants nothing and creates / approves no Goal', () => {
     withWorld((w) => {
       const p = w.pilots.advance(w.s.founder, w.pilots.create(w.s.founder, { mode: 'TRAINING_INTERNAL', title: TITLE }).id, { to: 'BRIEFING', reasonCode: 'pilot.briefing' });
