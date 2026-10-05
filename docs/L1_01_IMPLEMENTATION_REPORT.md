@@ -236,6 +236,18 @@ maintenance, no product change): `r1-09-boundary-field-read-twice` now anchors o
 alone (the recorded-message checkpoint of D-L1-09 made the old anchor ambiguous). Both mutations are still caught
 (R1 65 / 65 after the repin); no mutation id changed, so the verifier pins are untouched.
 
+VALIDATION / PROOF PORTABILITY (D-L1-11, CI run #106 on `a023a22`): the Ubuntu L1 shard let `l1-vault-plaintext` and
+`l1-vault-piped-secret-accepted` survive (2 / 27) while the Windows L1 shard caught both. Ubuntu could not observe the
+two Windows-only execution paths: on a non-Windows host `set()` and the CLI's `set` fail closed at the platform gate
+BEFORE the Protect call and before the hidden prompt. Not a product defect, not a security behaviour regression.
+Neither mutation was weakened, skipped or marked Windows-only; the parity rule stands. Two portable proofs were added
+to the secret-vault suite (no production change): a throwaway child lifts the platform gate and points the system root
+at a directory that does not exist — without the protection host `set()` stores nothing (`VAULT_UNAVAILABLE`, no blob,
+no temp file, never the plaintext or its base64 as a fallback); a child whose stdin is a pipe calls the exported
+`promptHidden` and is refused with `SECRET_INVALID` before the prompt is shown or raw mode is touched. Each proof also
+inspects the compiled contract so the order of the gate holds (Protect before the write; the guard before raw mode).
+The real Windows DPAPI round trip remains the authoritative runtime proof.
+
 ## 17. Verifier
 
 New rules: `l1-requires-c7d-closure`, `l1-not-claimed-closed`, `l1-proofs-present`, `l1-vault-protected`,
@@ -249,6 +261,9 @@ Mutation matrix: `l1-1of1` on Windows and Ubuntu; `quality-gate` counts `l1`; th
 `l1:mutation`. Windows shard runtimes of run #103 were inspected: every shard ≤ 35 minutes (slowest `r1-3of4` 34m27s on
 that run against 21–22 minutes on runs #100 / #97 — runner variance, not a repeated breach; `c3-1of2` 28m44s). No shard
 was rebalanced and the 45-minute ceiling was not raised; the L1 shard is small.
+
+Run #106 (`a023a22`): the Windows L1 shard (3m08s) caught 27 / 27; the Ubuntu L1 shard caught 25 / 27 — the two
+Windows-only vault paths of §16, closed by the portable proofs of D-L1-11 (the next exact-head run is the gate).
 
 ## 19. Focused validation (during implementation)
 

@@ -40,6 +40,9 @@ const RT = 'packages/runtime/dist/src/c2';
 
 const MUTATIONS = [
   // --- The vault ----------------------------------------------------------------------------------------------------
+  // The Protect gate and the hidden-prompt gate sit BEHIND the platform gate, so the secret-vault suite also proves them
+  // on every platform (a throwaway child lifts the platform gate; a piped stdin) — otherwise the first and the third
+  // mutation survive on non-Windows CI (D-L1-11, validation / proof portability).
   {
     id: 'l1-vault-plaintext',
     gate: 'a secret is protected (DPAPI, CurrentUser) before it is written; the file never holds the plaintext',

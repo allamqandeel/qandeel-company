@@ -3585,3 +3585,19 @@ the proofs assert the exact wire JSON for every class, two mutations (`l1-reason
 shape, and `provider-check --probe --probe-class E2` sends one bounded thinking probe (a 1,024-token ceiling that also
 bounds the thinking tokens) so the corrected contract is qualified live before any governed thinking call. No routing,
 pricing, egress or authority rule changes; E1 (the pilot's live class) is unaffected on the wire.
+
+## D-L1-11 — The two vault security gates are proven on every platform (validation / proof portability; PR #17, CI run #106)
+
+The Ubuntu L1 mutation shard of run #106 (`a023a22`) let `l1-vault-plaintext` and `l1-vault-piped-secret-accepted`
+survive while the Windows shard caught both. Not a product defect and not a security behaviour regression: on a
+non-Windows host `WindowsUserVault.set()` and the CLI's `set` fail closed at the platform gate (`VAULT_UNAVAILABLE`)
+BEFORE the DPAPI Protect call and before the hidden prompt, so a mutation of either gate changed nothing Ubuntu could
+observe. Neither mutation is weakened, skipped or marked Windows-only, and the quality-gate parity rule stands. Two
+portable proofs were added to the secret-vault L1 suite, with no production change: a throwaway child process lifts the
+platform gate and points the system root (where the signed PowerShell host lives) at a directory that does not exist,
+proving that without the protection host `set()` stores nothing (a classified `VAULT_UNAVAILABLE`, no blob, no temp
+file — the plaintext, or its base64, is never written as a fallback); a child whose stdin is a pipe calls the exported
+`promptHidden` and must be refused with `SECRET_INVALID` before the prompt is shown or raw mode is touched. Each proof
+also inspects the compiled contract so the ORDER of the gate holds (Protect before the write; the non-interactive guard
+before raw mode). The real Windows DPAPI round trip remains the authoritative runtime proof; the portable proofs exist
+only so a mutation of these two security gates is observable on every CI platform.
