@@ -8,6 +8,7 @@
  */
 import { QandeelError } from '@qandeel-company/domain';
 
+import type { ReasoningClass } from './classes.js';
 import { assertTokens } from './economics.js';
 
 export interface ProviderMessage {
@@ -20,6 +21,11 @@ export interface ProviderRequest {
   readonly providerCode: string;
   readonly modelCode: string;
   readonly deploymentCode: string;
+  /**
+   * The provider-neutral reasoning class the route decided (E1..E4). An adapter maps it to its own bounded
+   * reasoning / thinking profile (L1-01, D-L1-03); nothing the model says changes it.
+   */
+  readonly reasoningClass: ReasoningClass;
   readonly messages: readonly ProviderMessage[];
   /** Enforced output ceiling; the reservation was computed from it. */
   readonly maxOutputTokens: number;
@@ -28,6 +34,8 @@ export interface ProviderRequest {
 export interface ProviderUsage {
   readonly inputTokens: number;
   readonly outputTokens: number;
+  /** Input tokens the provider served from its prompt cache (a subset of `inputTokens`); absent = none reported. */
+  readonly cachedInputTokens?: number;
 }
 
 export interface ProviderResponse {
@@ -141,10 +149,13 @@ export function classifyProviderError(error: unknown): ProviderFailureClass {
 }
 
 /** Validates reported usage against the enforced bounds; a violation is a contract failure. */
-export function normalizeUsage(usage: unknown, bounds: { inputUpperBound: number; maxOutputTokens: number }): { usage: ProviderUsage; withinBounds: boolean } {
+export function normalizeUsage(usage: unknown, bounds: { inputUpperBound: number; maxOutputTokens: number }): { usage: Required<ProviderUsage>; withinBounds: boolean } {
   const u = usage as Partial<ProviderUsage> | null;
   if (typeof u !== 'object' || u === null) throw new QandeelError('PROVIDER_FAILURE', 'provider reported no usage', { failure: 'CONTRACT_VIOLATION' });
   const inputTokens = assertTokens(u.inputTokens, 'usage.inputTokens');
   const outputTokens = assertTokens(u.outputTokens, 'usage.outputTokens');
-  return { usage: { inputTokens, outputTokens }, withinBounds: inputTokens <= bounds.inputUpperBound && outputTokens <= bounds.maxOutputTokens };
+  // Cached input is a subset of input: a report claiming more cache hits than input tokens broke the contract.
+  const cachedInputTokens = u.cachedInputTokens === undefined || u.cachedInputTokens === null ? 0 : assertTokens(u.cachedInputTokens, 'usage.cachedInputTokens');
+  if (cachedInputTokens > inputTokens) throw new QandeelError('PROVIDER_FAILURE', 'provider reported more cached input than input', { failure: 'CONTRACT_VIOLATION' });
+  return { usage: { inputTokens, outputTokens, cachedInputTokens }, withinBounds: inputTokens <= bounds.inputUpperBound && outputTokens <= bounds.maxOutputTokens };
 }
