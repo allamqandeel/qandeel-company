@@ -1,0 +1,26 @@
+{
+  "name": "@qandeel-company/secret-vault",
+  "version": "0.1.0",
+  "private": true,
+  "description": "L1-01 Windows user-scoped secret vault: opaque `vault:<name>` references resolved to secret values only inside a governed executor's private callback. The Windows vault protects each secret with built-in DPAPI (CurrentUser scope) through the signed Windows PowerShell host — no third-party password manager, no native addon, no plaintext file, nothing in Git, SQLite, the Company workspace, backups, artifacts, logs, prompts or command-line arguments. An in-memory vault serves CI. The `qandeel-vault set <name>` command prompts without echo and never accepts the secret as an argument.",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=24.12.0 <25.0.0"
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node ../../scripts/run-node-tests.mjs"
+  },
+  "bin": {
+    "qandeel-vault": "./dist/src/cli.js"
+  }
+}
