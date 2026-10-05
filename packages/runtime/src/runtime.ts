@@ -98,7 +98,7 @@ import {
   type AttentionSyncReport,
   type CompanyUniverse,
 } from '@qandeel-company/storage';
-import type { ProviderAdapter, ToolDriver } from '@qandeel-company/governance';
+import type { ProviderAdapter, ProviderProvisioningProfile, ToolDriver } from '@qandeel-company/governance';
 
 import { GovernedModelRuntime } from './c2/model-runtime.js';
 import { ToolExecutor } from './c2/tool-executor.js';
@@ -182,6 +182,8 @@ export interface RuntimeOptions {
     readonly toolDrivers?: readonly ToolDriver[];
     readonly modelCallTimeoutMs?: number;
     readonly toolCallTimeoutMs?: number;
+    /** L1-01: release-pinned provider profiles the Founder may provision through the governed confirmation. */
+    readonly provisioningProfiles?: readonly ProviderProvisioningProfile[];
   };
 }
 
@@ -843,7 +845,7 @@ export class CompanyRuntime {
           // Reconciliation is idempotent: a stable world reports zero deltas and stays silent.
           conditional: { sync: (report) => { const r = report as AttentionSyncReport; return r.opened + r.signalled + r.resolved > 0; } },
         }),
-        actions: signalling(FounderActionStore.for(s, auth), changed, { mutating: ['preview', 'confirm', 'reject', 'expireStale'], reads: ['get', 'list', 'employeeBudgetId'] }),
+        actions: signalling(FounderActionStore.for(s, auth, { profiles: this.#opts.governance?.provisioningProfiles ?? [] }), changed, { mutating: ['preview', 'confirm', 'reject', 'expireStale'], reads: ['get', 'list', 'employeeBudgetId', 'provisioningProfiles'] }),
         // C6 (D-C6-07): reads are silent; Founder decisions announce once; the system's idempotent derivations
         // (evaluate, assess, report, plan) announce only when they recorded something new.
         improvement: signalling(ImprovementStore.for(s), changed, {

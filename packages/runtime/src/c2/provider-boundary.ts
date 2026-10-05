@@ -11,7 +11,7 @@ import { PROVIDER_FAILURE_CLASSES, ProviderError, costOf, normalizeUsage, type P
 export type SnapshotUsage =
   | { readonly state: 'NONE' }
   | { readonly state: 'UNUSABLE' }
-  | { readonly state: 'REPORTED'; readonly inputTokens: number; readonly outputTokens: number; readonly withinBounds: boolean };
+  | { readonly state: 'REPORTED'; readonly inputTokens: number; readonly outputTokens: number; readonly cachedInputTokens: number; readonly withinBounds: boolean };
 
 export interface ProviderSnapshot {
   /** A usable answer (its text was a string); otherwise a failure. */
@@ -83,10 +83,12 @@ export function errorSnapshot(error: unknown, bounds: SnapshotBounds): ProviderS
 /** Reads each field of a usage report exactly once, into a plain object (anything else as it is). */
 function captureUsage(u: unknown): unknown {
   if (typeof u !== 'object' || u === null) return u;
-  const r = u as { inputTokens?: unknown; outputTokens?: unknown };
+  const r = u as { inputTokens?: unknown; outputTokens?: unknown; cachedInputTokens?: unknown };
   const inputTokens = r.inputTokens;
   const outputTokens = r.outputTokens;
-  return { inputTokens, outputTokens };
+  // L1-01: cache-hit input (metering only; a report claiming more cached than input is UNUSABLE below).
+  const cachedInputTokens = r.cachedInputTokens;
+  return { inputTokens, outputTokens, cachedInputTokens };
 }
 
 /** Validated usage values; a missing report is UNUSABLE for an answer and NONE for a failure. */
@@ -94,7 +96,7 @@ function usageOf(captured: unknown, bounds: SnapshotBounds, answered: boolean): 
   if (captured === undefined || captured === null) return answered ? UNUSABLE : NONE;
   try {
     const n = normalizeUsage(captured, { inputUpperBound: bounds.inputUpperBound, maxOutputTokens: bounds.maxOutputTokens });
-    return Object.freeze({ state: 'REPORTED', inputTokens: n.usage.inputTokens, outputTokens: n.usage.outputTokens, withinBounds: n.withinBounds });
+    return Object.freeze({ state: 'REPORTED', inputTokens: n.usage.inputTokens, outputTokens: n.usage.outputTokens, cachedInputTokens: n.usage.cachedInputTokens, withinBounds: n.withinBounds });
   } catch {
     return UNUSABLE;
   }
