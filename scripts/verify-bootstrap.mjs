@@ -197,6 +197,8 @@ const FROZEN_MIGRATIONS = [
   { file: '0013_c7b_governed_app_controls.sql', sha256: '6eb49123e3079c1256fc95d92c2de47582245109744995f437bb07c57f2d3610' },
   // C7-C released 0014 with PR #15 (merged 2026-10-01); it joins the frozen set in the change after its release (C7-D).
   { file: '0014_c7c_pilot_instrumentation.sql', sha256: '9efb1a03cf509b241a083c62d8167939acb7f1615f99c95d873a9b1594632216' },
+  // C7-D released 0015 with PR #16 (merged 2026-10-01); it joins the frozen set in the change after its release (L1-01).
+  { file: '0015_c7d_digital_presence.sql', sha256: '1e77232f876af5bf449bd96d235476a40c4d64a58f16ecdc3ce7006a1d7dc0fa' },
 ];
 // Later-scope / non-goal subsystems never appear: APP-OPS (C7) and dashboards / analytics tables or packages (C6
 // deliberately builds reports with typed claims, never a dashboard or analytics store — its non-goals).
@@ -2194,8 +2196,11 @@ function syntheticRepo(overrides = {}) {
     [C7C_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C7C_MUTATION_CHECK].ids),
     'packages/runtime/test/c7c/proofs.test.ts': C7C_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
     'docs/C7B_CLOSURE_RECORD.md': '',
-    // C7-D: the pinned C7-D mutation check (the workshop rules apply where its modules exist).
+    // C7-D: the pinned C7-D mutation check (the workshop rules apply where its modules exist). Released 0015 is frozen
+    // (L1-01), so the base carries its real text and therefore the C7-D proofs and the C7-C closure record it requires.
     [C7D_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C7D_MUTATION_CHECK].ids),
+    'packages/runtime/test/c7d/proofs.test.ts': C7D_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
+    'docs/C7C_CLOSURE_RECORD.md': '',
     [OUTCOME_CORE]: '  txAssertExternalEvidence(ctx, w.id, input.classes, input.refs);\n',
     [EXTERNAL_CORE]: C7A_USABLE_REASONS.map((r) => `  return '${r}';`).join('\n'),
     [FOUNDER_LISTENER]: SYNTH_LISTENER,
@@ -2504,9 +2509,9 @@ const VIOLATIONS = {
     { contents: { [C7C_STORE]: 'export {};\n' }, remove: ['docs/C7B_CLOSURE_RECORD.md'] },
   ],
   'c7c-not-claimed-closed': [
-    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-C\` | Pilot | Cloud | CLOSED / MERGED |\n` } },
-    { contents: { [C7C_REPORT]: '# Report\n\nC7-C is CLOSED.\n' } },
-    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-C\` | Pilot | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n| \`C7-D\` | Digital | Cloud | IN PROGRESS |\n` } },
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-C\` | Pilot | Cloud | CLOSED / MERGED |\n` }, remove: ['docs/C7C_CLOSURE_RECORD.md'] },
+    { contents: { [C7C_REPORT]: '# Report\n\nC7-C is CLOSED.\n' }, remove: ['docs/C7C_CLOSURE_RECORD.md'] },
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-C\` | Pilot | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n| \`C7-D\` | Digital | Cloud | IN PROGRESS |\n` }, remove: ['docs/C7C_CLOSURE_RECORD.md'] },
   ],
   'c7c-proofs-present': [
     { contents: { [C7C_STORE]: 'export {};\n' }, remove: ['packages/runtime/test/c7c/proofs.test.ts'] },
@@ -2539,7 +2544,8 @@ const VIOLATIONS = {
     { contents: { [C7D_REPORT]: '# Report\n\nWe selected Vercel for hosting.\n' } },
   ],
   'c7d-proofs-present': [
-    { contents: { [C7D_STORE]: 'export {};\n' } },
+    { contents: { [C7D_STORE]: 'export {};\n' }, remove: ['packages/runtime/test/c7d/proofs.test.ts'] },
+    { contents: { [C7D_STORE]: 'export {};\n' }, remove: [C7D_MUTATION_CHECK] },
   ],
   'c7d-digital-governed': [
     { contents: { [C7D_MIGRATION]: 'CREATE TABLE digital_projects (\n  id TEXT NOT NULL\n) STRICT;\n' } },
