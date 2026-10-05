@@ -134,6 +134,7 @@ export const INTENT_LABEL: Readonly<Record<string, string>> = {
   SHOW_PERFORMANCE: 'Show a performance profile',
   SHOW_PILOT: 'Show a pilot',
   SHOW_DIGITAL: 'Show digital work',
+  SHOW_PROVIDERS: 'Show model providers',
   APPROVAL_DECIDE: 'Decide an approval',
   GOAL_APPROVE: 'Approve a goal',
   GOAL_STATE: 'Change a goal state',
@@ -153,6 +154,7 @@ export const INTENT_LABEL: Readonly<Record<string, string>> = {
   PROMOTION_DECIDE: 'Decide sharing a lesson',
   PILOT_CREATE: 'Create a pilot',
   PILOT_ADVANCE: 'Take a pilot step',
+  PROVIDER_PROVISION: 'Provision a model provider',
 };
 
 /** Decisions and outcomes in a preview, in words. */

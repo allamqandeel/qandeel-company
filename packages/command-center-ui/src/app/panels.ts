@@ -512,6 +512,7 @@ export function renderPalette(root: HTMLElement, host: PanelHost, result: Json |
     }
     if (result.pilots) root.append(renderPilots(result.pilots as Json, host));
     if (result.digital) root.append(renderDigital(result.digital as Json, host));
+    if (result.providers) root.append(renderProviders(result.providers as Json, host));
   }
   return input;
 }
@@ -567,6 +568,37 @@ const NEXT_PILOT_STEP: Readonly<Record<string, string>> = { DRAFT: 'BRIEFING', B
  * the exact decision it waits for, its briefing conversation and — when one is open — the advisory readiness checklist,
  * each criterion with its own evidence state (never a score). Every step is a structured preview the Founder confirms.
  */
+/**
+ * L1-01: the model providers the host can wire — each release-pinned profile with its qualified identity, the latest
+ * content-free identity check and whether it is provisioned. Provisioning is a structured preview (the exact deployments,
+ * reservation rates and the first bounded cap are shown before the Founder confirms). Nothing here names a key.
+ */
+function renderProviders(data: Json, host: PanelHost): HTMLElement {
+  const section = h('section', { class: 'pilots providers', 'aria-label': 'Model providers' });
+  section.append(h('h3', { class: 'section-title', text: 'Model providers' }));
+  const profiles = (data.profiles as Json[]) ?? [];
+  if (profiles.length === 0) section.append(h('p', { class: 'muted small', text: 'No live provider is wired on this host. Start the surface with --provider deepseek after storing the key in the Windows vault.' }));
+  for (const p of profiles) {
+    const check = (p.latestCheck as Json | null) ?? null;
+    const provisioned = p.provisioned === true;
+    const li = h('div', { class: 'pilot' }, h('strong', { text: `${String(p.providerCode)} · ${String(p.modelCode)}` }), ' ', h('span', { class: 'pill', text: provisioned ? 'Provisioned' : 'Not provisioned' }));
+    li.append(h('p', { class: 'muted small', text: `Qualified identity: ${String(p.expectedPublicName)}. Latest identity check: ${check ? `${String(check.result)} (${String(check.observedName ?? 'no name')}, ${fmtRelative(String(check.checkedAt))})` : 'none yet (run provider-check on the host)'}.` }));
+    if (!provisioned && check && check.result === 'MATCH') {
+      const form = h('form', { class: 'pilot-create' });
+      const cap = h('input', { type: 'number', min: '0.01', step: '0.01', value: '2', 'aria-label': `First Company cap in ${String(p.currency ?? 'USD')}`, required: true }) as HTMLInputElement;
+      form.append(h('label', { class: 'muted small', text: `First Company cap (${String(p.currency ?? 'USD')}, hard, no automatic top-up)` }), cap, h('button', { type: 'submit', class: 'btn btn-quiet', text: `Preview: provision ${String(p.code)}` }));
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const micros = Math.round(Number(cap.value) * 1_000_000);
+        if (Number.isSafeInteger(micros) && micros > 0) void host.previewAction('PROVIDER_PROVISION', { profileCode: String(p.code), profileSha256: String(p.sha256), capMoney: micros, capTokens: Math.max(1_000_000, micros * 2) });
+      });
+      li.append(form);
+    }
+    section.append(li);
+  }
+  return section;
+}
+
 function renderPilots(data: Json, host: PanelHost): HTMLElement {
   const section = h('section', { class: 'pilots', 'aria-label': 'Pilots' });
   const list = (data.list as Json[]) ?? [];
@@ -629,7 +661,7 @@ function renderPilots(data: Json, host: PanelHost): HTMLElement {
   return section;
 }
 /** Payload fields the Founder reads: identifiers are resolved to names or dropped, never shown as codes. */
-const HIDDEN_FIELDS = new Set(['pilotId', 'threadId', 'reasonCode', 'currency', 'approvalId', 'goalId', 'budgetId', 'requestId', 'conflictId', 'employeeId', 'invocationId', 'reservationId', 'jobId', 'findingId', 'attributionId', 'lessonId', 'promotionId', 'workItemId']);
+const HIDDEN_FIELDS = new Set(['pilotId', 'threadId', 'reasonCode', 'currency', 'approvalId', 'goalId', 'budgetId', 'requestId', 'conflictId', 'employeeId', 'invocationId', 'reservationId', 'jobId', 'findingId', 'attributionId', 'lessonId', 'promotionId', 'workItemId', 'profileSha256', 'identityCheckId']);
 
 export function renderPreview(root: HTMLElement, preview: Json, host: PanelHost): void {
   root.replaceChildren();
