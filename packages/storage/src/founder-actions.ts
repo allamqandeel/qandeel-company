@@ -16,7 +16,7 @@
  * `BEGIN IMMEDIATE` — the check, the effect, CONFIRMED and the audit commit together or not at all.
  */
 import { QandeelError, assertCode, assertId, boundedJson, canonicalJson, isTimestamp, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { APP_CONTROL_APPROVAL_ACTION, BINDING_ROLES, BINDING_SUBJECTS, PILOT_MODES, SOURCE_DECISIONS, assertGoalTransition, assertSourceRegistration, isGoalState, isMutatingIntent, nextSourceState, type GoalState, type MutatingIntent, type PilotMode, type PilotState, type SourceDecision, type SourceState } from '@qandeel-company/governance';
+import { APP_CONTROL_APPROVAL_ACTION, BINDING_ROLES, BINDING_SUBJECTS, PILOT_MODES, SOURCE_DECISIONS, assertGoalTransition, assertMoney, assertSourceRegistration, assertTokens, cachedInputRate, isGoalState, isMutatingIntent, nextSourceState, provisioningProfileDigest, type GoalState, type MutatingIntent, type PilotMode, type PilotState, type ProviderProvisioningProfile, type SourceDecision, type SourceState } from '@qandeel-company/governance';
 import { assertCauses, containsSecretMaterial, summarizeCauses, type AttributedCause } from '@qandeel-company/mind';
 
 import { txControlDecisionView } from './app-controls.js';
@@ -24,7 +24,8 @@ import { txDigitalDecisionView } from './digital.js';
 import { txAssertExternalEvidence } from './external-core.js';
 import { ExternalEvidenceStore, txAssertBindable } from './external-evidence.js';
 import { getBudgetRow, budgetFor } from './governance-core.js';
-import { GovernanceStore, founderConfirmInternals, isGovernedJob, resolveGovernedReconciliation } from './governance.js';
+import { GovernanceStore, IDENTITY_CHECK_MAX_AGE_MS, founderConfirmInternals, isGovernedJob, resolveGovernedReconciliation } from './governance.js';
+import { mapIdentityCheck } from './governance-records.js';
 import { getGoal, GoalStore } from './goals.js';
 import { mapActionPreview, type ActionPreviewRecord } from './founder-records.js';
 import { ImprovementStore } from './improvement.js';
@@ -79,8 +80,13 @@ const decodeCause = (v: string): unknown => {
   return { category, role, confidence, basis };
 };
 
+export interface FounderActionOptions {
+  /** L1-01: the release-pinned provider profiles the host registered (the only ones PROVIDER_PROVISION may name). */
+  readonly profiles?: readonly ProviderProvisioningProfile[];
+}
+
 /** Validates one intent's payload against durable state. Returns the canonical (re-shaped) payload. */
-function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<string, unknown>): Payload {
+function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<string, unknown>, profiles: readonly ProviderProvisioningProfile[]): Payload {
   const s = (k: string, max = 161): string => {
     const v = raw[k];
     if (typeof v !== 'string' || v.trim().length === 0 || v.length > max) throw new QandeelError('VALIDATION_FAILED', `${k} is required`, { field: k });
@@ -320,6 +326,53 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
       const briefing = txBriefingStatus(ctx, plan.pilot);
       return { pilotId: plan.pilot.id, from: plan.pilot.state, to: plan.to, mode: plan.pilot.mode, threadId: plan.threadId, goalId: plan.goalId, answeredBriefingRequests: briefing.answered.length, unansweredBriefingRequests: briefing.pending.length, reasonCode: plan.reasonCode };
     }
+    // --- L1-01: one release-pinned provider profile, provisioned through the canonical catalog APIs (D-L1-06) -------
+    case 'PROVIDER_PROVISION': {
+      const profileCode = assertCode(raw.profileCode, 'profileCode');
+      const profile = profiles.find((p) => p.code === profileCode);
+      if (!profile) throw new QandeelError('VALIDATION_FAILED', 'unknown provisioning profile (profiles are release-pinned and registered by the host, never typed)', { field: 'profileCode' });
+      const digest = provisioningProfileDigest(profile);
+      if (raw.profileSha256 !== undefined && raw.profileSha256 !== digest) throw new QandeelError('VALIDATION_FAILED', 'the profile digest does not match the registered profile', { field: 'profileSha256' });
+      if (ctx.db.get('SELECT 1 AS x FROM model_providers WHERE code = ?', profile.provider.code)) throw new QandeelError('INVALID_TRANSITION', 'this provider is already provisioned', { providerCode: profile.provider.code });
+      // Alias drift fails closed (D-L1-05): the preview exists only on a fresh MATCH identity check of the model alias.
+      const latest = ctx.db.get('SELECT * FROM model_identity_checks WHERE provider_code = ? AND model_code = ? ORDER BY checked_at DESC, id DESC LIMIT 1', profile.provider.code, profile.model.code);
+      const check = latest ? mapIdentityCheck(latest) : null;
+      if (!check || check.result !== 'MATCH' || check.expectedName !== profile.model.expectedPublicName || Date.parse(ts(ctx)) - Date.parse(check.checkedAt) > IDENTITY_CHECK_MAX_AGE_MS) {
+        throw new QandeelError('VALIDATION_FAILED', 'provisioning needs a fresh MATCH identity check of the model alias (run the provider check first)', { field: 'identityCheck', reason: 'IDENTITY_CHECK_REQUIRED' });
+      }
+      const capMoney = assertMoney(raw.capMoney, 'capMoney');
+      const capTokens = assertTokens(raw.capTokens, 'capTokens');
+      if (capMoney === 0 || capTokens === 0) throw new QandeelError('VALIDATION_FAILED', 'the first Company cap is a bounded positive amount (never zero, never unlimited)', { field: 'capMoney' });
+      const company = budgetFor(ctx, 'COMPANY', 'company');
+      if (company && company.currency !== profile.priceCard.currency) throw new QandeelError('CURRENCY_MISMATCH', 'the profile is priced in another currency than the Company budget', { currency: profile.priceCard.currency });
+      const card = profile.priceCard;
+      return {
+        profileCode,
+        profileSha256: digest,
+        providerCode: profile.provider.code,
+        modelCode: profile.model.code,
+        expectedPublicName: profile.model.expectedPublicName,
+        observedPublicName: check.observedName ?? '',
+        identityCheckId: check.id,
+        identityCheckedAt: check.checkedAt,
+        deploymentCodes: profile.deployments.map((d) => `${d.code} (${d.reasoningClass}, ctx ${d.contextWindowTokens}, out ${d.maxOutputTokens})`),
+        egressMaxDataClass: profile.egressMaxDataClass,
+        qualificationTarget: profile.qualificationTarget,
+        currency: card.currency,
+        peakInputPerMTok: card.billedInputPerMTok,
+        peakCachedInputPerMTok: cachedInputRate(card),
+        peakOutputPerMTok: card.billedOutputPerMTok,
+        offPeakInputPerMTok: card.schedule?.offPeakInputPerMTok ?? card.billedInputPerMTok,
+        offPeakOutputPerMTok: card.schedule?.offPeakOutputPerMTok ?? card.billedOutputPerMTok,
+        pricingBasisSource: card.schedule?.basisSource ?? '',
+        pricingBasisDate: card.schedule?.basisDate ?? '',
+        capMoney,
+        capTokens,
+        companyBudgetExists: company !== null,
+        existingCapMoney: company ? company.capMoney : 0,
+        reasonCode: assertCode(raw.reasonCode ?? 'provider.provisioned', 'reasonCode'),
+      };
+    }
     default:
       throw new QandeelError('VALIDATION_FAILED', 'unknown intent', { field: 'intent' });
   }
@@ -352,14 +405,21 @@ export interface ConfirmResult {
 export class FounderActionStore {
   readonly #store: CompanyStore;
   readonly #auth: FounderAuthStore;
+  readonly #profiles: readonly ProviderProvisioningProfile[];
 
-  private constructor(store: CompanyStore, auth: FounderAuthStore) {
+  private constructor(store: CompanyStore, auth: FounderAuthStore, options: FounderActionOptions) {
     this.#store = store;
     this.#auth = auth;
+    this.#profiles = options.profiles ?? [];
   }
 
-  static for(store: CompanyStore, auth: FounderAuthStore): FounderActionStore {
-    return new FounderActionStore(store, auth);
+  static for(store: CompanyStore, auth: FounderAuthStore, options: FounderActionOptions = {}): FounderActionStore {
+    return new FounderActionStore(store, auth, options);
+  }
+
+  /** The release-pinned provisioning profiles this store may offer (codes, digests, display facts; never a credential). */
+  provisioningProfiles(): readonly { code: string; sha256: string; providerCode: string; modelCode: string; expectedPublicName: string }[] {
+    return this.#profiles.map((p) => ({ code: p.code, sha256: provisioningProfileDigest(p), providerCode: p.provider.code, modelCode: p.model.code, expectedPublicName: p.model.expectedPublicName }));
   }
 
   /** One write transaction; an optional `onRefusal` runs (in its own transaction) after a typed refusal rolled back. */
@@ -389,7 +449,7 @@ export class FounderActionStore {
     return this.#write('founder action preview', (ctx) => {
       if (!isMutatingIntent(intent)) throw new QandeelError('VALIDATION_FAILED', 'unknown mutating intent', { field: 'intent' });
       if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) throw new QandeelError('VALIDATION_FAILED', 'payload must be an object', { field: 'payload' });
-      const canonical = validatePayload(ctx, intent, payload as Record<string, unknown>);
+      const canonical = validatePayload(ctx, intent, payload as Record<string, unknown>, this.#profiles);
       const id = newId();
       const at = ts(ctx);
       const fingerprint = sha256Hex(canonicalJson({ v: 1, intent, payload: canonical, session: session.id }));
@@ -569,6 +629,13 @@ export class FounderActionStore {
       case 'PILOT_ADVANCE': {
         const pilot = PilotStore.for(this.#store).advance(founderRef, str('pilotId'), { to: pl.to as PilotState, reasonCode: str('reasonCode'), ...(pl.threadId ? { threadId: str('threadId') } : {}), ...(pl.goalId ? { goalId: str('goalId') } : {}) });
         return `pilot:${pilot.id}`;
+      }
+      // --- L1-01: the whole profile through the canonical catalog APIs, inside this one confirm (D-L1-06) ---
+      case 'PROVIDER_PROVISION': {
+        const profile = this.#profiles.find((x) => x.code === str('profileCode'));
+        if (!profile || provisioningProfileDigest(profile) !== str('profileSha256')) throw new QandeelError('VALIDATION_FAILED', 'the registered profile changed since the preview', { field: 'profileSha256' });
+        const out = GovernanceStore.for(this.#store).provisionProviderProfile(founderRef, profile, { capMoney: Number(pl.capMoney), capTokens: Number(pl.capTokens), reasonCode: str('reasonCode') });
+        return `provider:${out.providerId}`;
       }
     }
   }

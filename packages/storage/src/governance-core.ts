@@ -7,9 +7,9 @@
  * stored as integers; the budget CHECK constraints are a second, independent guard.
  */
 import { QandeelError, newId, type Id, type Timestamp } from '@qandeel-company/domain';
-import { PROVIDER_FAILURE_CLASSES, addMoney, addTokens, checkReservation, costOf,failureDisposition, subMoney, subTokens, type PriceCard, type PrincipalKind } from '@qandeel-company/governance';
+import { PROVIDER_FAILURE_CLASSES, actualCost, addMoney, addTokens, checkReservation, failureDisposition, subMoney, subTokens, type PrincipalKind } from '@qandeel-company/governance';
 
-import { mapBudget, mapEmployee, mapPriceCard, mapPrincipal, mapReservation, type BudgetRecord, type EmployeeRecord, type PrincipalRecord, type ReservationRecord } from './governance-records.js';
+import { mapBudget, mapEmployee, mapPriceCard, mapPrincipal, mapReservation, type BudgetRecord, type EmployeeRecord, type PriceCardRecord, type PrincipalRecord, type ReservationRecord } from './governance-records.js';
 
 import { appendAudit, appendEvent, ts, type StoreContext } from './internal.js';
 
@@ -219,15 +219,18 @@ export function getReservationRow(ctx: StoreContext, id: Id): ReservationRecord 
   return mapReservation(row);
 }
 
-export function getPriceCard(ctx: StoreContext, id: Id): PriceCard & { deploymentId: Id } {
+/** A price card with its optional immutable schedule (L1-01): the whole billing basis of a settlement. */
+export function getPriceCard(ctx: StoreContext, id: Id): PriceCardRecord {
   const row = ctx.db.get('SELECT * FROM price_cards WHERE id = ?', id);
   if (!row) throw new QandeelError('NOT_FOUND', 'price card not found', { priceCardId: id });
-  return mapPriceCard(row);
+  return mapPriceCard(row, ctx.db.get('SELECT * FROM price_card_schedules WHERE price_card_id = ?', id) ?? null);
 }
 
 export interface SettleUsage {
   readonly inputTokens: number;
   readonly outputTokens: number;
+  /** L1-01: cache-hit input tokens the provider reported (a subset of inputTokens); absent = none. */
+  readonly cachedInputTokens?: number;
   readonly withinBounds: boolean;
   readonly sessionId: Id | null;
   readonly outcome: 'OK' | 'FAILED_CHARGED' | 'RECONCILED';
@@ -245,13 +248,19 @@ export function settleReservationTx(ctx: StoreContext, r: ReservationRecord, usa
   let providerId: string | null = null;
   let modelId: string | null = null;
   let cardVersion: number | null = null;
+  let cachedInputTokens = 0;
+  let billingBand: string | null = null;
   if (r.purpose === 'MODEL_CALL') {
     const card = getPriceCard(ctx, r.priceCardId as Id);
-    const cost = costOf(card, usage.inputTokens, usage.outputTokens);
+    // The truthful provider bill (D-L1-04): cache-hit / cache-miss input and the band the immutable card applies at
+    // the settling transaction's clock; the governed economic cost keeps the card's flat economic rates.
+    const cost = actualCost(card, { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens: usage.cachedInputTokens ?? 0 }, ts(ctx));
     billed = cost.billedMicros;
     economic = cost.economicMicros;
     tokens = cost.tokens;
     cardVersion = card.version;
+    cachedInputTokens = cost.cachedInputTokens;
+    billingBand = cost.band;
     const dep = ctx.db.get<{ provider_id: string; model_id: string }>('SELECT m.provider_id, d.model_id FROM deployments d JOIN models m ON m.id = d.model_id WHERE d.id = ?', r.deploymentId);
     providerId = dep?.provider_id ?? null;
     modelId = dep?.model_id ?? null;
@@ -267,8 +276,8 @@ export function settleReservationTx(ctx: StoreContext, r: ReservationRecord, usa
   const usageId = newId();
   ctx.db.run(
     `INSERT INTO usage_records (id, reservation_id, run_id, work_item_id, employee_id, department_id, purpose, attempt_kind, provider_id, model_id, deployment_id, price_card_id,
-       price_card_version, tool_action_id, session_id, input_tokens, output_tokens, charged_tokens, billed_micros, economic_micros, within_bounds, outcome, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       price_card_version, tool_action_id, session_id, input_tokens, output_tokens, charged_tokens, billed_micros, economic_micros, within_bounds, outcome, created_at, cached_input_tokens, billing_band)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     usageId,
     r.id,
     r.runId,
@@ -292,6 +301,8 @@ export function settleReservationTx(ctx: StoreContext, r: ReservationRecord, usa
     usage.withinBounds && !overran ? 1 : 0,
     usage.outcome,
     ts(ctx),
+    cachedInputTokens,
+    billingBand,
   );
   ctx.db.run(`UPDATE budget_reservations SET state = 'SETTLED', updated_at = ? WHERE id = ?`, ts(ctx), r.id);
   const trace = { correlationId: r.runId, actorRef };
