@@ -211,7 +211,7 @@ const MUTATIONS = [
     // exactly once. This mutation re-reads a usage field after capture (the b0ac2b7 / 8064fc9 family).
     id: 'r1-09-boundary-field-read-twice',
     finding: 'R1-09',
-    edits: [{ file: `${R}/c2/provider-boundary.js`, search: 'return { inputTokens, outputTokens };', replace: 'return { inputTokens, outputTokens: r.outputTokens };', expectedCount: 1 }],
+    edits: [{ file: `${R}/c2/provider-boundary.js`, search: 'return { inputTokens, outputTokens, cachedInputTokens };', replace: 'return { inputTokens, outputTokens: r.outputTokens, cachedInputTokens };', expectedCount: 1 }],
     runs: [RUNTIME],
   },
   {
@@ -389,7 +389,7 @@ const MUTATIONS = [
   {
     id: 'r1-final-decision-not-checkpointed',
     finding: 'B-F4',
-    edits: [{ file: `${R}/c2/employee-task.js`, search: "phase: 'FINAL', pending: null", replace: "phase: 'MODEL', pending: null", expectedCount: 1 }],
+    edits: [{ file: `${R}/c2/employee-task.js`, search: "phase: 'FINAL', pending: null, summaryCode: proposal.summaryCode", replace: "phase: 'MODEL', pending: null, summaryCode: proposal.summaryCode", expectedCount: 1 }],
     runs: [RUNTIME],
   },
   {

@@ -229,6 +229,12 @@ boundary 3, failures 3, alias drift 2, accounting 6, egress 1) — 25 / 25 caugh
 `EGRESS_NOT_APPROVED` gate and was replaced by the profile-level D3 / D4 refusal). CI: one shard per operating system
 (the suite runs in about 4 minutes locally), counted by the quality gate.
 
+Two existing R1 mutation targets in `scripts/r1-mutation-check.mjs` were re-pinned to the L1 code (validation / proof
+maintenance, no product change): `r1-09-boundary-field-read-twice` now anchors on the usage capture that carries
+`cachedInputTokens`, and `r1-final-decision-not-checkpointed` anchors on the FINAL checkpoint of the `FINAL` proposal
+alone (the recorded-message checkpoint of D-L1-09 made the old anchor ambiguous). Both mutations are still caught
+(R1 65 / 65 after the repin); no mutation id changed, so the verifier pins are untouched.
+
 ## 17. Verifier
 
 New rules: `l1-requires-c7d-closure`, `l1-not-claimed-closed`, `l1-proofs-present`, `l1-vault-protected`,
@@ -248,12 +254,16 @@ was rebalanced and the 45-minute ceiling was not raised; the L1 shard is small.
 - L1 suites 4 + 7 + 6 + 4 + 5 = 26 / 26; mutations 25 / 25; verifier 99 / 99; ESLint `--max-warnings=0` clean.
 - Full suites of the touched packages re-run after the kernel / storage / runtime changes (see the PR handoff for the
   final-gate numbers).
+- After the R1 repin: R1 65 / 65, C4 42 / 42, C5 32 / 32, C6 92 / 92 on the built tree (the broader sweep was stopped by
+  the Founder: validation proportional to change; the closure candidate gets the one full gate instead).
 
 ## 20. Final exact-head validation and the live results
 
-The one final full local `npm ci` + `npm run ci`, the GitHub exact-head CI, the Founder's vault provisioning, the live
-connectivity / identity result, the governed Model Runtime smoke and the Founder ↔ CEO live smoke are reported in the
-PR handoff. Sections 21–22 are filled in once the Founder has stored the key and the live steps ran.
+The first full local `npm ci` + `npm run ci` on `c364c58` was green through build, typecheck, lint, every workspace
+test and the C1 / C2 / C3 mutation shards, and failed only in the R1 mutation shard on the two stale textual targets
+described in §16 (2 of 65 "not caught" because the search string no longer existed in the compiled code). The targets
+were re-pinned (no product change) and the one full gate was re-run on the exact closure-candidate head; its result and
+the GitHub exact-head CI run are reported in the PR handoff. Sections 21–22 hold the live results.
 
 ## 21. Live results (filled after the Founder stored `vault:deepseek-company`)
 
