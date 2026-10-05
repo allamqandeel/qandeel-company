@@ -114,7 +114,7 @@ export function warrantsFounderAttention(purpose: MessagePurpose, level: Attenti
 // --- Founder command intents ---------------------------------------------------------------------
 
 /** Read intents change attention only; mutating intents become structured previews (explicit confirmation). */
-export const READ_INTENTS = ['OPEN_EMPLOYEE', 'SHOW_DEPARTMENT', 'SHOW_GOAL', 'WHO_WORKS_ON', 'WHAT_IS_BLOCKED', 'NEEDS_MY_APPROVAL', 'SHOW_BRIEFS', 'RETURN_TO_LIVE', 'SHOW_CEO', 'SHOW_TIMELINE', 'SHOW_REPORT', 'SHOW_PERFORMANCE', 'SHOW_PILOT', 'SHOW_DIGITAL'] as const;
+export const READ_INTENTS = ['OPEN_EMPLOYEE', 'SHOW_DEPARTMENT', 'SHOW_GOAL', 'WHO_WORKS_ON', 'WHAT_IS_BLOCKED', 'NEEDS_MY_APPROVAL', 'SHOW_BRIEFS', 'RETURN_TO_LIVE', 'SHOW_CEO', 'SHOW_TIMELINE', 'SHOW_REPORT', 'SHOW_PERFORMANCE', 'SHOW_PILOT', 'SHOW_DIGITAL', 'SHOW_PROVIDERS'] as const;
 /**
  * The Founder's exception decisions (R2-21) are STRUCTURED-ONLY intents: no natural-language pattern produces
  * them (like GOAL_PROPOSE); the surface posts them with IDs / codes / bounded numbers, and they are confirmed
@@ -130,7 +130,11 @@ export const EXCEPTION_INTENTS = ['TOOL_RECONCILE', 'RESERVATION_RECONCILE', 'JO
 export const EXTERNAL_EVIDENCE_INTENTS = ['SOURCE_REGISTER', 'SOURCE_DECIDE', 'EVIDENCE_BIND', 'EVIDENCE_UNBIND', 'OUTCOME_CONTEST_RESOLVE'] as const;
 // C7-C: the Pilot intents (`./pilot.ts`) are structured-only too — a Pilot is created and moved only by an explicit,
 // confirmed Founder act, never by text and never by a message in the briefing thread.
-export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS, ...EXTERNAL_EVIDENCE_INTENTS, ...PILOT_INTENTS] as const;
+// L1-01: provisioning a release-pinned provider profile (catalog, pricing basis, egress, route policies, the first
+// bounded budget) is a structured-only Founder act of the same boundary: no text pattern produces it, the preview shows
+// the exact deployments, peak rates and cap, and the confirm registers everything through the canonical catalog APIs.
+export const PROVISIONING_INTENTS = ['PROVIDER_PROVISION'] as const;
+export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS, ...EXTERNAL_EVIDENCE_INTENTS, ...PILOT_INTENTS, ...PROVISIONING_INTENTS] as const;
 export type ReadIntent = (typeof READ_INTENTS)[number];
 export type MutatingIntent = (typeof MUTATING_INTENTS)[number];
 
@@ -209,6 +213,9 @@ const PATTERNS: readonly Pattern[] = [
   // C7-D: the Company's digital work (projects, previews, candidates, exact external acts awaiting the Founder) — a read; nothing is
   // published, approved or changed by text.
   { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:الموقع|موقع|الحضور الرقمي|المشاريع الرقميه|المعاينه|digital|website|previews?)${W}|^(?:digital|website|الموقع|الحضور الرقمي)$`), intent: 'SHOW_DIGITAL', kind: 'READ' },
+  // L1-01: the model providers (release-pinned profiles, identity checks, what is provisioned) — a read; provisioning
+  // itself is the structured-only PROVIDER_PROVISION confirmation.
+  { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:المزودين|مزودي النماذج|مزود|النماذج|providers?|models?)${W}|^(?:providers?|models?|المزودين|النماذج)$`), intent: 'SHOW_PROVIDERS', kind: 'READ' },
   { re: /(?:افتح|اعرض|اظهر|open|show)\s+(.+)/, intent: 'OPEN_EMPLOYEE', kind: 'READ' },
 ];
 
@@ -405,7 +412,7 @@ export function classifyFounderIntent(input: string): FounderIntent {
     if (!p.re.test(text)) continue;
     const argument = argumentOf(text, p.intent);
     if (p.intent === 'OPEN_EMPLOYEE' && argument === null) return { kind: 'UNKNOWN' };
-    return { kind: 'READ', intent: p.intent, argument: p.intent === 'RETURN_TO_LIVE' || p.intent === 'WHAT_IS_BLOCKED' || p.intent === 'NEEDS_MY_APPROVAL' || p.intent === 'SHOW_BRIEFS' || p.intent === 'SHOW_CEO' || p.intent === 'SHOW_TIMELINE' ? null : argument };
+    return { kind: 'READ', intent: p.intent, argument: p.intent === 'RETURN_TO_LIVE' || p.intent === 'WHAT_IS_BLOCKED' || p.intent === 'NEEDS_MY_APPROVAL' || p.intent === 'SHOW_BRIEFS' || p.intent === 'SHOW_CEO' || p.intent === 'SHOW_TIMELINE' || p.intent === 'SHOW_PROVIDERS' ? null : argument };
   }
   return { kind: 'UNKNOWN' };
 }

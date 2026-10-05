@@ -29,7 +29,9 @@
     "@qandeel-company/mind": "0.3.0"
   },
   "devDependencies": {
-    "@qandeel-company/tool-drivers": "0.1.0"
+    "@qandeel-company/tool-drivers": "0.1.0",
+    "@qandeel-company/model-providers": "0.1.0",
+    "@qandeel-company/secret-vault": "0.1.0"
   },
   "bin": {
     "qandeel-company": "./dist/src/cli.js"

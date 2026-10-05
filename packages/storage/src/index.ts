@@ -33,17 +33,22 @@ export { DATABASE_FILE, assertLocalPathSyntax, layoutFor, openWorkspace, workspa
 // C2 governance administration and inspection (Founder authority; no execution, no claims).
 export {
   GovernanceStore,
+  IDENTITY_CHECK_MAX_AGE_MS,
   assertCredentialRef,
   workItemDataClass,
   type CreateBudgetInput,
   type CreateEmployeeInput,
   type GovernanceHealth,
   type GrantInput,
+  type ModelIdentityCheckInput,
   type PriceCardInput,
+  type ProvisionOptions,
+  type ProvisionResult,
   type ReconcileDecision,
   type RegisterDeploymentInput,
   type RegisterToolActionInput,
 } from './governance.js';
+export { MODEL_IDENTITY_CHECK_RESULTS, type ModelIdentityCheckRecord, type ModelIdentityCheckResult } from './governance-records.js';
 export type {
   ApprovalRecord,
   BudgetRecord,
@@ -107,7 +112,7 @@ export { GoalStore, type ProposeGoalInput } from './goals.js';
 export { PILOT_SCOPE_CAP, PilotStore, type AdvancePilotInput, type BriefingStatus, type CreatePilotInput, type PilotBoard, type PilotHistoryRecord, type PilotPeopleEvidence, type PilotRecord, type PilotScope, type PilotWorkInspection } from './pilots.js';
 export { CommunicationStore, FOUNDER_BRIEF_TASK_CLASS, FOUNDER_REPLY_TASK_CLASS, type FounderSendInput, type OpenThreadInput } from './communications.js';
 export { AttentionStore, ATTENTION_COOLDOWN_MS, type AttentionSyncReport } from './attention.js';
-export { FounderActionStore, PREVIEW_TTL_MS, type ConfirmResult } from './founder-actions.js';
+export { FounderActionStore, PREVIEW_TTL_MS, type ConfirmResult, type FounderActionOptions } from './founder-actions.js';
 export { CANONICAL_DEPARTMENT_ORDER, projectUniverse, type CompanyUniverse, type RelationKind, type UniverseAttention, type UniverseDepartment, type UniverseEmployee, type UniverseGoal, type UniverseRelation, type UniverseSeat, type UniverseWork } from './universe.js';
 export type { ActionPreviewRecord, AttentionItemRecord, FounderSessionRecord, GoalHistoryRecord, GoalRecord, GoalWorkLinkRecord, MessageMeta, MessageRecord, ThreadRecord } from './founder-records.js';
 export type {

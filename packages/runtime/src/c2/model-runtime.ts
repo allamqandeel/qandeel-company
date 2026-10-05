@@ -175,7 +175,8 @@ export class GovernedModelRuntime {
           // plain values; everything below decides from the snapshot only (R1-09).
           const provided = await this.#call(
             adapter,
-            { providerCode: d.deployment.providerCode, modelCode: d.deployment.modelCode, deploymentCode: d.deployment.code, messages: context.messages, maxOutputTokens: req.maxOutputTokens },
+            // The route's reasoning class travels with the request (L1-01): the adapter maps it to its bounded profile.
+            { providerCode: d.deployment.providerCode, modelCode: d.deployment.modelCode, deploymentCode: d.deployment.code, reasoningClass: d.reasoningClass, messages: context.messages, maxOutputTokens: req.maxOutputTokens },
             { inputUpperBound: routeReq.inputTokensUpperBound, maxOutputTokens: req.maxOutputTokens, priceCard: (d.deployment.priceCard as PriceCard | undefined) ?? null },
             signal,
           );
@@ -246,9 +247,9 @@ export class GovernedModelRuntime {
       }
       // A provider fault (usage outside the bounds / the accounting range) contains the deployment
       // inside this same settle transaction; only a healthy answer's health is best effort.
-      settleReservation(store, fence, reservationId, { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, withinBounds: usage.withinBounds, sessionId, outcome: 'OK' }, s.providerFault);
+      settleReservation(store, fence, reservationId, { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens: usage.cachedInputTokens, withinBounds: usage.withinBounds, sessionId, outcome: 'OK' }, s.providerFault);
       if (!s.providerFault) recordHealth(store, fence, deploymentId, null);
-      return { done: { kind: 'OK', proposal: parseProposal(s.outputText), usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }, deploymentId: d.deployment.id, reasoningClass: d.reasoningClass, attempts: attempt, manifestId } };
+      return { done: { kind: 'OK', proposal: parseProposal(s.outputText), usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens: usage.cachedInputTokens }, deploymentId: d.deployment.id, reasoningClass: d.reasoningClass, attempts: attempt, manifestId } };
     }
     const failure = s.failure ?? 'UNKNOWN';
     const disp = failureDisposition(failure);
@@ -256,7 +257,7 @@ export class GovernedModelRuntime {
       // Billed despite failing: charged truthfully, never hidden. A provider fault (usage outside the
       // bounds, or a failure it classified as a contract violation) contains the deployment inside the
       // settle transaction, never by a separate best-effort write, and the same route is not retried.
-      settleReservation(store, fence, reservationId, { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, withinBounds: usage.withinBounds, sessionId, outcome: 'FAILED_CHARGED' }, s.providerFault);
+      settleReservation(store, fence, reservationId, { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens: usage.cachedInputTokens, withinBounds: usage.withinBounds, sessionId, outcome: 'FAILED_CHARGED' }, s.providerFault);
       if (s.providerFault) return { failure: 'CONTRACT_VIOLATION', accounting: 'CHARGED' };
       recordHealth(store, fence, deploymentId, failure);
       return { failure, accounting: 'CHARGED' };

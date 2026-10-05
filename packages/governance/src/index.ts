@@ -18,6 +18,7 @@ export * from './organization.js';
 export * from './pilot.js';
 export * from './proposals.js';
 export * from './providers.js';
+export * from './provisioning.js';
 export * from './review.js';
 export * from './routing.js';
 export * from './run-failures.js';

@@ -219,8 +219,17 @@ export const employeeTaskProcessor: GovernedProcessor = {
       if (proposal.type === 'MESSAGE' || proposal.type === 'GOAL_ACTION') {
         // C5: a message into the run's own Founder thread, or a Director's goal act. Both are fenced writes,
         // idempotent per Work Item (a resumed run never posts or derives twice); the loop learns the code only.
-        if (proposal.type === 'MESSAGE') gov.sendMessage(proposal, s.turn);
-        else gov.goalAct(proposal, s.turn);
+        if (proposal.type === 'MESSAGE') {
+          const sent = gov.sendMessage(proposal, s.turn);
+          if (sent.outcome === 'RECORDED') {
+            // D-L1-09: a thread-bound item (a Founder reply or a CEO brief) exists to deliver one message. Once the
+            // fence has recorded it the work is done: the runtime ends the run here, so a second message, a wasted
+            // model call or a RUN_LIMIT failure after a delivered answer cannot happen whatever the model proposes.
+            const summaryCode = proposal.purpose === 'BRIEF' ? 'brief.sent' : 'reply.sent';
+            await save(ctx, { ...s, phase: 'FINAL', pending: null, summaryCode });
+            return { type: 'COMPLETED', evidence: { summaryCode, turns: s.turn, modelCalls: s.modelCalls, reasoningClass: out.reasoningClass, messageId: sent.messageId } };
+          }
+        } else gov.goalAct(proposal, s.turn);
         s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null };
         await save(ctx, s);
         continue;

@@ -94,7 +94,7 @@ const C1_CLOSURE = /^docs\/C1_[^/]*CLOSURE[^/]*\.md$/i;
 // The change that adds a real package extends this list in the same change. A placeholder
 // package is a verifier failure. C1 added domain, storage and runtime; C2 governance; C3 mind; C5 the
 // Founder Command Center surface (`command-center`) and its browser UI (`command-center-ui`).
-const ALLOWED_PACKAGES = ['bootstrap-contract', 'domain', 'governance', 'mind', 'tool-drivers', 'storage', 'runtime', 'command-center', 'command-center-ui'];
+const ALLOWED_PACKAGES = ['bootstrap-contract', 'domain', 'governance', 'mind', 'secret-vault', 'model-providers', 'tool-drivers', 'storage', 'runtime', 'command-center', 'command-center-ui'];
 
 // C1 persistence boundary: `node:sqlite` (a Release Candidate API) is imported by exactly one module.
 const SQLITE_ADAPTER = 'packages/storage/src/sqlite/connection.ts';
@@ -140,7 +140,8 @@ const STORAGE_EXPORTS = ['.', './runtime-authority', './testing'];
 // D-C2-13: the test-only Founder seam resolves only under the `qandeel-test` export condition, and only
 // tests (plus the acceptance harness) may import it.
 const TEST_CONDITION = 'qandeel-test';
-const TEST_SEAM_HARNESSES = ['scripts/c2-acceptance.mjs', 'scripts/c3-acceptance.mjs', 'scripts/c4-acceptance.mjs', 'scripts/c5-acceptance.mjs', 'scripts/c5-visual-proof.mjs', 'scripts/c5/seed-company.mjs', 'scripts/c6-acceptance.mjs'];
+// L1-01: the Founder-host live smoke seeds identities through the seam exactly as the acceptances do (never CI, never a product path).
+const TEST_SEAM_HARNESSES = ['scripts/c2-acceptance.mjs', 'scripts/c3-acceptance.mjs', 'scripts/c4-acceptance.mjs', 'scripts/c5-acceptance.mjs', 'scripts/c5-visual-proof.mjs', 'scripts/c5/seed-company.mjs', 'scripts/c6-acceptance.mjs', 'scripts/l1-deepseek-smoke.mjs'];
 const FOUNDER_SEAM_FILES = ['packages/storage/src/governance.ts', 'packages/storage/src/testing/founder-seam.ts'];
 const CLI_SOURCE = 'packages/runtime/src/cli.ts';
 const AUTHORITY_SUBPATH = '@qandeel-company/storage/runtime-authority';
@@ -197,6 +198,8 @@ const FROZEN_MIGRATIONS = [
   { file: '0013_c7b_governed_app_controls.sql', sha256: '6eb49123e3079c1256fc95d92c2de47582245109744995f437bb07c57f2d3610' },
   // C7-C released 0014 with PR #15 (merged 2026-10-01); it joins the frozen set in the change after its release (C7-D).
   { file: '0014_c7c_pilot_instrumentation.sql', sha256: '9efb1a03cf509b241a083c62d8167939acb7f1615f99c95d873a9b1594632216' },
+  // C7-D released 0015 with PR #16 (merged 2026-10-01); it joins the frozen set in the change after its release (L1-01).
+  { file: '0015_c7d_digital_presence.sql', sha256: '1e77232f876af5bf449bd96d235476a40c4d64a58f16ecdc3ce7006a1d7dc0fa' },
 ];
 // Later-scope / non-goal subsystems never appear: APP-OPS (C7) and dashboards / analytics tables or packages (C6
 // deliberately builds reports with typed claims, never a dashboard or analytics store — its non-goals).
@@ -333,6 +336,30 @@ const C7D_FORBIDDEN_COLUMN = /^\s*"?(\w*(?:content|body|blob|payload|html|markup
 const C7D_VENDOR = /\b(?:vercel|netlify|cloudflare|wordpress|webflow|wix|squarespace|shopify|contentful|sanity\.io|next\.?js|nuxt|gatsby|astro\.build|google[_ -]?analytics|plausible|mixpanel|semrush|ahrefs|instagram|facebook|tiktok|linkedin|twitter|youtube|snapchat)\b/i;
 // Publication is never market success; nothing in C7-D may say otherwise.
 const C7D_SUCCESS_CLAIM = /\b(?:publicationIsMarketSuccess|countsAsMarketOutcome|countsAsOutcome|marketSuccess)\s*:\s*true\b/;
+// --- L1-01 boundaries (DeepSeek V4.1 Flash live provider, the Windows secure vault, truthful pricing) -------------------
+const L1_REPORT = 'docs/L1_01_IMPLEMENTATION_REPORT.md';
+const L1_CLOSURE = /^docs\/L1_01_[^/]*CLOSURE[^/]*\.md$/i;
+const L1_PROOF_MARKERS = ['L1-PROOF: secret-vault', 'L1-PROOF: deepseek-adapter', 'L1-PROOF: economics-bands', 'L1-PROOF: storage-pricing', 'L1-PROOF: runtime-l1'];
+const L1_MUTATION_CHECK = 'scripts/l1-mutation-check.mjs';
+const L1_VAULT_SRC = 'packages/secret-vault/src/';
+const L1_VAULT = 'packages/secret-vault/src/windows-dpapi.ts';
+const L1_VAULT_CLI = 'packages/secret-vault/src/cli.ts';
+const L1_PROVIDERS_SRC = 'packages/model-providers/src/';
+const L1_TRANSPORT = 'packages/model-providers/src/deepseek/https-transport.ts';
+const L1_ADAPTER = 'packages/model-providers/src/deepseek/adapter.ts';
+const L1_DECLARATION = 'packages/model-providers/src/deepseek/declaration.ts';
+const L1_PRICING = 'packages/model-providers/src/deepseek/pricing.ts';
+const L1_MIGRATION = `${MIGRATIONS_DIR}0016_l1_provider_pricing_identity.sql`;
+const L1_FILES = [L1_VAULT, L1_ADAPTER, L1_TRANSPORT, L1_MIGRATION];
+const L1_GOVERNED_TRIGGERS = ['price_card_schedules_immutable_u', 'price_card_schedules_immutable_d', 'price_card_schedules_never_above_peak', 'usage_records_cached_within_input', 'model_identity_checks_append_only_u', 'model_identity_checks_append_only_d'];
+/** The provider's chain-of-thought field: never read, returned, logged or persisted (comments may name it). */
+const L1_THINKING_FIELD = /\breasoning_content\b/;
+/** A thinking-mode effort table: E1 none, E2 low, E3 high, E4 max (the Founder-approved pilot mapping). */
+const L1_THINKING_TABLE = /DEEPSEEK_THINKING_BY_CLASS[^=]*=\s*Object\.freeze\(\{\s*E1:\s*'none',\s*E2:\s*'low',\s*E3:\s*'high',\s*E4:\s*'max'\s*\}\)/;
+/** The top-level `reasoning_effort` request field is allowlisted (the official thinking-mode wire shape). */
+const L1_EFFORT_ALLOWLISTED = /DEEPSEEK_REQUEST_FIELDS\s*=\s*\[[^\]]*'reasoning_effort'/;
+/** The effort nested inside the `thinking` object: the wrong contract (ignored by the provider). */
+const L1_EFFORT_NESTED = /thinking:\s*\{[^}]*reasoning_effort/;
 const C7D_CLAIMED_BUILT = /QANDEEL\s+website\s+(?:is|was|has\s+been)\s+(?:built|launched|published|live|deployed)|(?:selected|chose|chosen|picked)\s+(?:vercel|netlify|cloudflare|wordpress|webflow|next\.?js|instagram|linkedin|google\s+analytics)\b/i;
 // No private App content, secret or score column on a Pilot table.
 const C7C_FORBIDDEN_COLUMN = /^\s*"?(\w*(?:transcript|audio|prompt|conversation|memory|analysis|user_?(?:id|ref)|pseudonym|secret|token|credential|password|score|rank|rating|grade)\w*)"?\s+(?:TEXT|BLOB|ANY|INTEGER|REAL)\b/im;
@@ -541,6 +568,19 @@ const MUTATION_PINS = {
     ],
   },
   // R1 Independent Core Review: one mutation per fixed finding (docs/R1_INDEPENDENT_CORE_REVIEW_REPORT.md).
+  // L1-01 live-provider foundation (docs/L1_01_IMPLEMENTATION_REPORT.md).
+  [L1_MUTATION_CHECK]: {
+    script: 'l1:mutation',
+    ids: [
+      'l1-vault-plaintext', 'l1-vault-secret-on-command-line', 'l1-vault-piped-secret-accepted',
+      'l1-provider-arbitrary-url', 'l1-provider-follows-redirect', 'l1-provider-endpoint-allowlist-removed', 'l1-thinking-e4-not-max', 'l1-request-leaks-provider-request', 'l1-reasoning-effort-nested-in-thinking', 'l1-reasoning-effort-not-allowlisted', 'l1-reasoning-class-dropped', 'l1-recorded-message-does-not-end-run',
+      'l1-other-model-answer-accepted', 'l1-cache-report-inconsistent-accepted', 'l1-non-string-content-accepted',
+      'l1-401-retried', 'l1-402-transient', 'l1-timeout-marked-not-sent',
+      'l1-alias-drift-ignored-adapter', 'l1-alias-drift-ignored-provisioning',
+      'l1-cache-hit-billed-as-miss', 'l1-off-peak-ignored', 'l1-holiday-ignored', 'l1-reservation-below-worst-case', 'l1-cached-above-input-accepted', 'l1-settlement-ignores-actual-cost',
+      'l1-profile-d3-egress-accepted',
+    ],
+  },
   [R1_MUTATION_CHECK]: {
     script: 'r1:mutation',
     ids: [
@@ -871,7 +911,7 @@ export const RULES = [
     // C7-D adds the isolated Preview host (rule `c7d-preview-isolated`) and the one fixed-host GitHub transport (`c7d-tool-boundary`).
     check: ({ files, read }) =>
       files
-        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && f !== FOUNDER_LISTENER && f !== C7D_PREVIEW && f !== C7D_TRANSPORT && !f.startsWith(UI_SRC) && NETWORK_MODULE.test(read(f) ?? ''))
+        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && f !== FOUNDER_LISTENER && f !== C7D_PREVIEW && f !== C7D_TRANSPORT && f !== L1_TRANSPORT && f !== L1_VAULT && !f.startsWith(UI_SRC) && NETWORK_MODULE.test(read(f) ?? ''))
         .map((f) => `${f} opens a network path or spawns processes (C1 runtime code has neither)`),
   },
   {
@@ -1850,6 +1890,139 @@ export const RULES = [
       return problems;
     },
   },
+  // --- L1-01 rules ---------------------------------------------------------------------------------------------------
+  {
+    id: 'l1-requires-c7d-closure',
+    // L1 starts only after C7-D is closed in repository truth: an L1 module needs docs/C7D_*CLOSURE*.md.
+    check: ({ files }) => (files.some((f) => L1_FILES.includes(f) || f.startsWith(L1_VAULT_SRC) || f.startsWith(L1_PROVIDERS_SRC)) && !files.some((f) => C7D_CLOSURE.test(f)) ? ['L1 modules exist but C7-D has no docs/C7D_*CLOSURE*.md record'] : []),
+  },
+  {
+    id: 'l1-not-claimed-closed',
+    // L1-01 is an implementation candidate until independent exact-head review and merge; nothing claims a live provider
+    // closed, or Strong v1 reached, without its record.
+    check: ({ files, read }) => {
+      if (files.some((f) => L1_CLOSURE.test(f))) return [];
+      const problems = [];
+      const st = mapState(read(IMPLEMENTATION_MAP), 'L1');
+      if (st !== undefined && /\bCLOSED\b/i.test(st.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`L1 is marked ${JSON.stringify(st)} but no docs/L1_01_*CLOSURE*.md record exists`);
+      const report = read(L1_REPORT);
+      if (report !== undefined && /\bL1-01\s*(?:—|-|:|is)?\s*CLOSED\b/i.test(report.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`${L1_REPORT} claims L1-01 is closed without a closure record`);
+      return problems;
+    },
+  },
+  {
+    id: 'l1-proofs-present',
+    // The L1 proofs CI must execute (found by marker), the mutation check, and the root ci script running it.
+    check: ({ files, read }) => {
+      if (!files.some((f) => L1_FILES.includes(f))) return [];
+      const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
+      const problems = L1_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
+      if (!files.includes(L1_MUTATION_CHECK)) problems.push(`missing ${L1_MUTATION_CHECK}`);
+      const ci = json(read('package.json'))?.scripts?.ci ?? '';
+      if (!/\bl1:mutation\b/.test(ci)) problems.push('the root "ci" script does not run l1:mutation');
+      return problems;
+    },
+  },
+  {
+    id: 'l1-vault-protected',
+    // The Windows vault (D-L1-02): DPAPI CurrentUser through the signed PowerShell host started by its absolute System32
+    // path with a fixed argument list and no shell; the payload travels on stdin only; the blob directory is the user's
+    // local application data; no network path; nothing else in the vault package starts a process; the CLI refuses a
+    // secret on the command line, prompts in raw mode and never echoes; no vault module names a real key format.
+    check: ({ files, read }) => {
+      const problems = [];
+      const vault = read(L1_VAULT);
+      if (vault !== undefined) {
+        const code = vault.replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, '');
+        if (!/ProtectedData/.test(code) || !/CurrentUser/.test(code)) problems.push(`${L1_VAULT} does not protect with Windows DPAPI in the CurrentUser scope`);
+        if (!/WindowsPowerShell['"]?,\s*['"]v1\.0['"]?,\s*['"]powershell\.exe/.test(code) || !/SystemRoot/.test(code)) problems.push(`${L1_VAULT} does not start the signed Windows PowerShell host by its absolute System32 path`);
+        if (!/execFile\(/.test(code) || /\bexec\(|spawn\(|execSync\(|shell:\s*true/.test(code)) problems.push(`${L1_VAULT} starts a process through a shell or an unbounded exec`);
+        if (!/shell:\s*false/.test(code)) problems.push(`${L1_VAULT} does not state shell: false`);
+        if (!/-EncodedCommand/.test(code) || !/stdin/.test(code)) problems.push(`${L1_VAULT} does not pass the payload through the child's stdin with an encoded fixed command`);
+        if (/--secret|--value|--key\b/.test(code)) problems.push(`${L1_VAULT} names a secret argument`);
+        if (!/LOCALAPPDATA/.test(code)) problems.push(`${L1_VAULT} does not place the vault under the user's local application data`);
+        if (/(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?(?:http|https|http2|net|tls|dgram|dns|undici|sqlite)['"]|\bfetch\s*\(/.test(code)) problems.push(`${L1_VAULT} opens a network path or reaches SQLite`);
+      }
+      for (const f of files.filter((x) => x.startsWith(L1_VAULT_SRC) && isCode(x) && x !== L1_VAULT)) {
+        if (/child_process|worker_threads/.test(read(f) ?? '')) problems.push(`${f} starts a process (only ${L1_VAULT} may, for DPAPI)`);
+      }
+      const cli = read(L1_VAULT_CLI);
+      if (cli !== undefined) {
+        if (!/FORBIDDEN_FLAGS/.test(cli) || !/secret|value|key|password|token/.test(cli)) problems.push(`${L1_VAULT_CLI} does not refuse a secret on the command line`);
+        if (!/setRawMode\(true\)/.test(cli) || !/isTTY/.test(cli)) problems.push(`${L1_VAULT_CLI} does not prompt in raw mode on an interactive terminal (no echo, no pipe)`);
+      }
+      for (const f of files.filter((x) => x.startsWith('packages/secret-vault/') && isCode(x))) {
+        if (/(?:from\s+|import\s*\(\s*)['"]@qandeel-company\/(?:storage|runtime|command-center)/.test(read(f) ?? '')) problems.push(`${f} reaches the Company store, runtime or surface (a vault holds references and values only)`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'l1-provider-boundary',
+    // The DeepSeek adapter (D-L1-03/D-L1-05): one fixed origin, no redirect, the endpoint allowlist re-checked before
+    // every fetch, no other network path in the provider package, non-streaming, no provider tools, the E1–E4 → thinking
+    // table exact, the bearer only in the transport, the chain-of-thought field never read in any src module, and the
+    // adapter never reaches the Company store, runtime or surface.
+    check: ({ files, read }) => {
+      const problems = [];
+      const transport = read(L1_TRANSPORT);
+      if (transport !== undefined) {
+        if (!/const DEEPSEEK_API_ORIGIN = 'https:\/\/api\.deepseek\.com';/.test(read(L1_DECLARATION) ?? '') || !/fetch\(`\$\{DEEPSEEK_API_ORIGIN\}\$\{request\.path\}`/.test(transport)) problems.push(`${L1_TRANSPORT} does not fetch the fixed DeepSeek origin`);
+        if (!/redirect:\s*'error'/.test(transport)) problems.push(`${L1_TRANSPORT} follows redirects`);
+        if (!/assertDeepSeekEndpoint\(request\.method, request\.path\)/.test(transport)) problems.push(`${L1_TRANSPORT} sends without the endpoint allowlist`);
+      }
+      for (const f of files.filter((x) => x.startsWith(L1_PROVIDERS_SRC) && isCode(x))) {
+        const text = read(f) ?? '';
+        const code = text.replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, '');
+        if (f !== L1_TRANSPORT && (NETWORK_MODULE.test(code) || [...code.matchAll(/https?:\/\/[a-z0-9.-]+/gi)].some((m) => !['https://api.deepseek.com', 'https://api-docs.deepseek.com'].includes(m[0])))) problems.push(`${f} opens a network path or names a host outside the one approved transport / the recorded pricing basis`);
+        if (f !== L1_TRANSPORT && /Authorization|Bearer/.test(code)) problems.push(`${f} handles the bearer outside the transport`);
+        if (/(?:from\s+|import\s*\(\s*)['"]@qandeel-company\/(?:storage|runtime|command-center|mind)/.test(code)) problems.push(`${f} reaches the Company store, runtime or surface (an adapter knows only its provider)`);
+        if (/\btools\s*:/.test(code) || /stream:\s*true/.test(code)) problems.push(`${f} uses provider tools or streaming`);
+      }
+      const decl = read(L1_DECLARATION);
+      if (decl !== undefined && !L1_THINKING_TABLE.test(decl)) problems.push(`${L1_DECLARATION}: the E1–E4 thinking table is not exactly none / low / high / max`);
+      // The official wire shape: `thinking: { type }` plus a TOP-LEVEL `reasoning_effort` (allowlisted as a request
+      // field); an effort nested inside `thinking` is silently ignored by the provider.
+      if (decl !== undefined && !L1_EFFORT_ALLOWLISTED.test(decl)) problems.push(`${L1_DECLARATION}: reasoning_effort is not an allowlisted top-level request field`);
+      const adapterCode = (read(L1_ADAPTER) ?? '').replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, '');
+      if (L1_EFFORT_NESTED.test(adapterCode)) problems.push(`${L1_ADAPTER} nests reasoning_effort inside thinking (the official contract carries it top-level)`);
+      if (decl !== undefined && !/DEEPSEEK_MODEL_CODE = 'deepseek-flash'/.test(decl)) problems.push(`${L1_DECLARATION}: the model alias is not deepseek-flash`);
+      for (const f of files.filter((x) => /^packages\/[^/]+\/src\//.test(x) && isCode(x))) {
+        const code = (read(f) ?? '').replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, '');
+        if (L1_THINKING_FIELD.test(code)) problems.push(`${f} reads, returns or persists the provider's chain-of-thought field`);
+      }
+      const pricing = read(L1_PRICING);
+      if (pricing !== undefined && !/basisSource: DEEPSEEK_PRICING_BASIS_SOURCE/.test(pricing)) problems.push(`${L1_PRICING} records no pricing basis source`);
+      return problems;
+    },
+  },
+  {
+    id: 'l1-pricing-truthful',
+    // D-L1-04: settlement records the actual provider bill (cache hits, band) while routing / reservation keep the
+    // flat peak worst case; the datastore holds the schedule and identity gates; the confirmation catalogue carries the
+    // provisioning intent.
+    check: ({ files, read }) => {
+      const problems = [];
+      const core = read('packages/storage/src/governance-core.ts');
+      if (core !== undefined && files.includes(L1_MIGRATION)) {
+        if (!/actualCost\(card,/.test(core)) problems.push('packages/storage/src/governance-core.ts settles without the actual (cache-hit, banded) cost');
+        if (!/cached_input_tokens, billing_band/.test(core)) problems.push('packages/storage/src/governance-core.ts records no cached input / billing band on the usage row');
+      }
+      const econ = read('packages/governance/src/economics.ts');
+      if (econ !== undefined && files.includes(L1_MIGRATION)) {
+        const worst = econ.split(/export function worstCase\b/)[1]?.split('\n}')[0] ?? '';
+        if (!/costOf\(card, inputTokensUpperBound, maxOutputTokens\)/.test(worst) || /schedule|OFF_PEAK|cachedInputRate/.test(worst)) problems.push('packages/governance/src/economics.ts: worstCase must stay the flat peak, cache-miss cost (never a discount)');
+        if (!/export function actualCost\b/.test(econ) || !/export function billingBandAt\b/.test(econ)) problems.push('packages/governance/src/economics.ts lacks the actual-cost / band functions');
+      }
+      const sql = read(L1_MIGRATION);
+      if (sql !== undefined) {
+        for (const tr of L1_GOVERNED_TRIGGERS) if (!new RegExp(`\\bCREATE\\s+TRIGGER\\s+${tr}\\b`).test(sql)) problems.push(`${L1_MIGRATION} lacks the datastore gate ${tr}`);
+        if (!/'PROVIDER_PROVISION'\)\)/.test(sql)) problems.push(`${L1_MIGRATION} does not add PROVIDER_PROVISION to the confirmation catalogue`);
+        if (SECRET_COLUMN.test(sql)) problems.push(`${L1_MIGRATION} declares a secret-shaped column`);
+      }
+      return problems;
+    },
+  },
   {
     id: 'ci-contract',
     // One stable required status; docs-only changes take a fast fail-closed path; every other change runs the
@@ -2129,7 +2302,7 @@ function syntheticRepo(overrides = {}) {
     [AUTHORITY_INDEX]: `## Missing\n\n**${STAGE_16_MISSING}.**\n`,
     [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT)),
     [SYNTH_SOURCE]: SYNTH_SOURCE_TEXT,
-    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation && npm run c6:mutation && npm run c7a:mutation && npm run c7b:mutation && npm run c7c:mutation && npm run c7d:mutation' } }),
+    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation && npm run c6:mutation && npm run c7a:mutation && npm run c7b:mutation && npm run c7c:mutation && npm run c7d:mutation && npm run l1:mutation' } }),
     'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'node --test dist/test' } }),
     'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'packages/bootstrap-contract': {}, 'node_modules/tar': { version: '7.0.0' } } }),
     '.gitattributes': '* text=auto eol=lf\n*.sh text eol=lf\n*.ps1 text eol=crlf\n*.png binary\n',
@@ -2194,8 +2367,14 @@ function syntheticRepo(overrides = {}) {
     [C7C_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C7C_MUTATION_CHECK].ids),
     'packages/runtime/test/c7c/proofs.test.ts': C7C_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
     'docs/C7B_CLOSURE_RECORD.md': '',
-    // C7-D: the pinned C7-D mutation check (the workshop rules apply where its modules exist).
+    // C7-D: the pinned C7-D mutation check (the workshop rules apply where its modules exist). Released 0015 is frozen
+    // (L1-01), so the base carries its real text and therefore the C7-D proofs and the C7-C closure record it requires.
     [C7D_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C7D_MUTATION_CHECK].ids),
+    // L1-01: the pinned L1 mutation check (its rules apply where the L1 modules exist) and the C7-D closure record it needs.
+    [L1_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[L1_MUTATION_CHECK].ids),
+    'docs/C7D_CLOSURE_RECORD.md': '',
+    'packages/runtime/test/c7d/proofs.test.ts': C7D_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
+    'docs/C7C_CLOSURE_RECORD.md': '',
     [OUTCOME_CORE]: '  txAssertExternalEvidence(ctx, w.id, input.classes, input.refs);\n',
     [EXTERNAL_CORE]: C7A_USABLE_REASONS.map((r) => `  return '${r}';`).join('\n'),
     [FOUNDER_LISTENER]: SYNTH_LISTENER,
@@ -2227,6 +2406,41 @@ function syntheticRepo(overrides = {}) {
 }
 
 const VIOLATIONS = {
+  // L1-01.
+  'l1-requires-c7d-closure': [{ contents: { [L1_VAULT]: 'export {};\n' }, remove: ['docs/C7D_CLOSURE_RECORD.md'] }],
+  'l1-not-claimed-closed': [
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`L1\` | Local | Local | CLOSED / MERGED |\n` } },
+    { contents: { [L1_REPORT]: '# Report\n\nL1-01 is CLOSED.\n' } },
+  ],
+  'l1-proofs-present': [
+    { contents: { [L1_VAULT]: 'export {};\n' }, remove: ['packages/secret-vault/test/proofs.test.ts'] },
+    { contents: { [L1_VAULT]: 'export {};\n' }, remove: [L1_MUTATION_CHECK] },
+  ],
+  'l1-vault-protected': [
+    { contents: { [L1_VAULT]: "import { execFile } from 'node:child_process';\nexecFile(path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-EncodedCommand', x], { shell: false }); child.stdin.end(p); const dir = process.env.LOCALAPPDATA;\nconst plain = value; writeFileSync(file, plain);\n" } },
+    { contents: { [L1_VAULT]: "import { exec } from 'node:child_process';\nexec(`powershell -Command ${cmd}`); // ProtectedData CurrentUser LOCALAPPDATA -EncodedCommand stdin shell: false\n" } },
+    { contents: { [L1_VAULT]: "import { execFile } from 'node:child_process';\nimport { fetch } from 'undici';\nexecFile(path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-EncodedCommand', x], { shell: false }); child.stdin.end(p); // ProtectedData CurrentUser LOCALAPPDATA\n" } },
+    { contents: { [L1_VAULT_CLI]: "const secret = values.secret; // no FORBIDDEN_FLAGS, no raw mode\n" } },
+    { contents: { 'packages/secret-vault/src/helper.ts': "import { spawn } from 'node:child_process';\n" } },
+  ],
+  'l1-provider-boundary': [
+    { contents: { [L1_TRANSPORT]: "const r = await fetch(`${process.env.PROVIDER_ORIGIN}${request.path}`, { redirect: 'error' });\nassertDeepSeekEndpoint(request.method, request.path);\n", [L1_DECLARATION]: "export const DEEPSEEK_API_ORIGIN = 'https://api.deepseek.com';\nexport const DEEPSEEK_MODEL_CODE = 'deepseek-flash';\nexport const DEEPSEEK_THINKING_BY_CLASS = Object.freeze({ E1: 'none', E2: 'low', E3: 'high', E4: 'max' });\n" } },
+    { contents: { [L1_TRANSPORT]: "const r = await fetch(`${DEEPSEEK_API_ORIGIN}${request.path}`, { redirect: 'follow' });\nassertDeepSeekEndpoint(request.method, request.path);\n", [L1_DECLARATION]: "export const DEEPSEEK_API_ORIGIN = 'https://api.deepseek.com';\nexport const DEEPSEEK_MODEL_CODE = 'deepseek-flash';\nexport const DEEPSEEK_THINKING_BY_CLASS = Object.freeze({ E1: 'none', E2: 'low', E3: 'high', E4: 'max' });\n" } },
+    { contents: { [L1_DECLARATION]: "export const DEEPSEEK_API_ORIGIN = 'https://api.deepseek.com';\nexport const DEEPSEEK_MODEL_CODE = 'deepseek-flash';\nexport const DEEPSEEK_THINKING_BY_CLASS = Object.freeze({ E1: 'none', E2: 'low', E3: 'high', E4: 'high' });\n" } },
+    { contents: { [L1_ADAPTER]: "const out = { outputText: m.content, reasoning_content: m.reasoning_content };\n" } },
+    { contents: { [L1_ADAPTER]: "const body = { model, messages, tools: [{ type: 'function' }] };\n" } },
+    { contents: { [L1_ADAPTER]: "return effort === 'none' ? { thinking: { type: 'disabled' } } : { thinking: { type: 'enabled', reasoning_effort: effort } };\n" } },
+    { contents: { [L1_DECLARATION]: "export const DEEPSEEK_API_ORIGIN = 'https://api.deepseek.com';\nexport const DEEPSEEK_MODEL_CODE = 'deepseek-flash';\nexport const DEEPSEEK_THINKING_BY_CLASS = Object.freeze({ E1: 'none', E2: 'low', E3: 'high', E4: 'max' });\nexport const DEEPSEEK_REQUEST_FIELDS = ['model', 'messages', 'max_tokens', 'stream', 'thinking', 'response_format'];\n" } },
+    { contents: { 'packages/model-providers/src/deepseek/extra.ts': "const r = await fetch('https://other.example/v1');\n" } },
+    { contents: { 'packages/model-providers/src/deepseek/extra.ts': "import { GovernanceStore } from '@qandeel-company/storage';\n" } },
+    { contents: { 'packages/runtime/src/c2/leak.ts': "const cot = answer.reasoning_content;\n" } },
+  ],
+  'l1-pricing-truthful': [
+    { contents: { [L1_MIGRATION]: L1_GOVERNED_TRIGGERS.map((t) => `CREATE TRIGGER ${t} BEFORE INSERT ON x BEGIN SELECT 1; END;`).join('\n') + "\nCHECK (intent_kind IN ('PILOT_ADVANCE', 'PROVIDER_PROVISION'))\n", 'packages/storage/src/governance-core.ts': "const cost = costOf(card, usage.inputTokens, usage.outputTokens); // cached_input_tokens, billing_band\n" } },
+    { contents: { [L1_MIGRATION]: L1_GOVERNED_TRIGGERS.slice(1).map((t) => `CREATE TRIGGER ${t} BEFORE INSERT ON x BEGIN SELECT 1; END;`).join('\n') + "\nCHECK (intent_kind IN ('PILOT_ADVANCE', 'PROVIDER_PROVISION'))\n" } },
+    { contents: { [L1_MIGRATION]: L1_GOVERNED_TRIGGERS.map((t) => `CREATE TRIGGER ${t} BEFORE INSERT ON x BEGIN SELECT 1; END;`).join('\n') + "\nCHECK (intent_kind IN ('PILOT_ADVANCE'))\n" } },
+    { contents: { [L1_MIGRATION]: L1_GOVERNED_TRIGGERS.map((t) => `CREATE TRIGGER ${t} BEFORE INSERT ON x BEGIN SELECT 1; END;`).join('\n') + "\nCHECK (intent_kind IN ('PILOT_ADVANCE', 'PROVIDER_PROVISION'))\n", 'packages/governance/src/economics.ts': "export function worstCase(card, inputTokensUpperBound, maxOutputTokens) {\n  return actualCost(card, { inputTokens: inputTokensUpperBound, outputTokens: maxOutputTokens }, 'OFF_PEAK');\n}\nexport function actualCost() {}\nexport function billingBandAt() {}\n" } },
+  ],
   'required-top-level-files': { remove: ['CLAUDE.md'] },
   'required-docs': { remove: ['docs/architecture/BOUNDARIES.md'] },
   'root-package-private': { contents: { 'package.json': JSON.stringify({ private: false, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'] }) } },
@@ -2504,9 +2718,9 @@ const VIOLATIONS = {
     { contents: { [C7C_STORE]: 'export {};\n' }, remove: ['docs/C7B_CLOSURE_RECORD.md'] },
   ],
   'c7c-not-claimed-closed': [
-    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-C\` | Pilot | Cloud | CLOSED / MERGED |\n` } },
-    { contents: { [C7C_REPORT]: '# Report\n\nC7-C is CLOSED.\n' } },
-    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-C\` | Pilot | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n| \`C7-D\` | Digital | Cloud | IN PROGRESS |\n` } },
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-C\` | Pilot | Cloud | CLOSED / MERGED |\n` }, remove: ['docs/C7C_CLOSURE_RECORD.md'] },
+    { contents: { [C7C_REPORT]: '# Report\n\nC7-C is CLOSED.\n' }, remove: ['docs/C7C_CLOSURE_RECORD.md'] },
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-C\` | Pilot | Cloud | IMPLEMENTATION CANDIDATE — NOT CLOSED |\n| \`C7-D\` | Digital | Cloud | IN PROGRESS |\n` }, remove: ['docs/C7C_CLOSURE_RECORD.md'] },
   ],
   'c7c-proofs-present': [
     { contents: { [C7C_STORE]: 'export {};\n' }, remove: ['packages/runtime/test/c7c/proofs.test.ts'] },
@@ -2533,13 +2747,14 @@ const VIOLATIONS = {
     { contents: { 'packages/tool-drivers/src/index.ts': 'export {};\n' }, remove: ['docs/C7C_CLOSURE_RECORD.md'] },
   ],
   'c7d-not-claimed-closed': [
-    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-D\` | Digital | Cloud | CLOSED / MERGED |\n` } },
-    { contents: { [C7D_REPORT]: '# Report\n\nC7-D is CLOSED.\n' } },
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`C7-D\` | Digital | Cloud | CLOSED / MERGED |\n` }, remove: ['docs/C7D_CLOSURE_RECORD.md'] },
+    { contents: { [C7D_REPORT]: '# Report\n\nC7-D is CLOSED.\n' }, remove: ['docs/C7D_CLOSURE_RECORD.md'] },
     { contents: { [C7D_REPORT]: '# Report\n\nThe QANDEEL website is built and live.\n' } },
     { contents: { [C7D_REPORT]: '# Report\n\nWe selected Vercel for hosting.\n' } },
   ],
   'c7d-proofs-present': [
-    { contents: { [C7D_STORE]: 'export {};\n' } },
+    { contents: { [C7D_STORE]: 'export {};\n' }, remove: ['packages/runtime/test/c7d/proofs.test.ts'] },
+    { contents: { [C7D_STORE]: 'export {};\n' }, remove: [C7D_MUTATION_CHECK] },
   ],
   'c7d-digital-governed': [
     { contents: { [C7D_MIGRATION]: 'CREATE TABLE digital_projects (\n  id TEXT NOT NULL\n) STRICT;\n' } },
@@ -2689,6 +2904,15 @@ const VIOLATIONS = {
 
 // Legitimate future states that each rule must accept (stage-awareness, not a frozen snapshot).
 const MUST_PASS = [
+  // L1-01 legitimate states: a candidate explicitly not closed; the real vault, transport, declaration, adapter and
+  // migration (comments may name the chain-of-thought field and the pricing-docs host); an adapter test calling generate.
+  { id: 'l1-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`L1\` | Local | Local | IN PROGRESS — L1-01 implementation candidate; not closed |\n`, [L1_REPORT]: '# Report\n\nL1-01 is NOT CLOSED (implementation candidate).\n' } } },
+  { id: 'l1-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`L1\` | Local | Local | CLOSED / MERGED / CANONICAL |\n`, 'docs/L1_01_CLOSURE_RECORD.md': '' } } },
+  { id: 'l1-vault-protected', scenario: { contents: { [L1_VAULT]: REAL_TEXT(L1_VAULT), [L1_VAULT_CLI]: REAL_TEXT(L1_VAULT_CLI), 'packages/secret-vault/src/vault.ts': REAL_TEXT('packages/secret-vault/src/vault.ts') } } },
+  { id: 'l1-provider-boundary', scenario: { contents: { [L1_TRANSPORT]: REAL_TEXT(L1_TRANSPORT), [L1_DECLARATION]: REAL_TEXT(L1_DECLARATION), [L1_ADAPTER]: REAL_TEXT(L1_ADAPTER), [L1_PRICING]: REAL_TEXT(L1_PRICING), 'packages/model-providers/src/deepseek/transport.ts': REAL_TEXT('packages/model-providers/src/deepseek/transport.ts'), 'packages/model-providers/test/x.test.ts': 'await adapter.generate(req, signal);\n' } } },
+  { id: 'l1-pricing-truthful', scenario: { contents: { [L1_MIGRATION]: REAL_TEXT(L1_MIGRATION), 'packages/storage/src/governance-core.ts': REAL_TEXT('packages/storage/src/governance-core.ts'), 'packages/governance/src/economics.ts': REAL_TEXT('packages/governance/src/economics.ts') } } },
+  { id: 'l1-requires-c7d-closure', scenario: { contents: { [L1_VAULT]: 'export {};\n', 'docs/C7D_CLOSURE_RECORD.md': '' } } },
+  { id: 'l1-proofs-present', scenario: { contents: { [L1_VAULT]: 'export {};\n', 'packages/secret-vault/test/proofs.test.ts': L1_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'), [L1_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[L1_MUTATION_CHECK].ids) } } },
   // The proofs may be renamed or moved: the marker is what counts.
   {
     id: 'c1-remediation-proofs-present',

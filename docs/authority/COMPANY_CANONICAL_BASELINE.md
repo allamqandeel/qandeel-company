@@ -89,7 +89,7 @@ App authority.
     C7-A (closed) adds only the Company-side governed intake contract (content-free operational facts
     and governed external outcome evidence). C7-B (closed) adds only the Company-side
     governed record of issued (desired) operational controls. C7-C (closed) adds only Company-internal
-    Pilot instrumentation; an issued control is never a Pilot outcome. C7-D (implementation candidate) builds Company-side digital
+    Pilot instrumentation; an issued control is never a Pilot outcome. C7-D (closed) builds Company-side digital
     presence capability and reads nothing from the App. **No live App ↔ Company transport or
     connector exists yet, and no Company-issued control is effective in the App until the App runtime
     itself applies it.**

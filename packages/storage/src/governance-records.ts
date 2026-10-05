@@ -1,5 +1,6 @@
 /** C2 governance record shapes and row mappers (storage-internal mapping; public shapes). */
 import type { Id, RiskLevel, SideEffectClass, Timestamp } from '@qandeel-company/domain';
+import type { BillingBand, PriceSchedule } from '@qandeel-company/governance';
 import type {
   ApprovalState,
   AttemptKind,
@@ -119,7 +120,25 @@ export interface PriceCardRecord {
   readonly economicInputPerMTok: number;
   readonly economicOutputPerMTok: number;
   readonly economicPerCall: number;
+  /** L1-01: the peak cached-input rate (the fresh input rate without a schedule) and the off-peak schedule, if any. */
+  readonly billedCachedInputPerMTok: number;
+  readonly schedule: PriceSchedule | null;
 }
+
+/** L1-01: one content-free model identity check (what the provider says an alias currently is; D-L1-05). */
+export interface ModelIdentityCheckRecord {
+  readonly id: Id;
+  readonly providerCode: string;
+  readonly modelCode: string;
+  readonly expectedName: string;
+  readonly observedName: string | null;
+  readonly observedContextWindow: number | null;
+  readonly observedMaxOutputTokens: number | null;
+  readonly result: ModelIdentityCheckResult;
+  readonly checkedAt: Timestamp;
+}
+export const MODEL_IDENTITY_CHECK_RESULTS = ['MATCH', 'DRIFT', 'MODEL_MISSING', 'UNREACHABLE', 'AUTH', 'BILLING', 'RATE_LIMITED', 'PROVIDER_ERROR', 'CONTRACT_VIOLATION', 'CREDENTIAL_UNAVAILABLE'] as const;
+export type ModelIdentityCheckResult = (typeof MODEL_IDENTITY_CHECK_RESULTS)[number];
 
 export interface ToolRecord {
   readonly id: Id;
@@ -250,6 +269,9 @@ export interface UsageRecord {
   readonly economicMicros: number;
   readonly withinBounds: boolean;
   readonly outcome: 'OK' | 'FAILED_CHARGED' | 'RECONCILED';
+  /** L1-01: cache-hit input tokens (a subset of inputTokens) and the billing band the settlement applied. */
+  readonly cachedInputTokens: number;
+  readonly billingBand: BillingBand | null;
 }
 
 export interface ToolInvocationRecord {
@@ -326,7 +348,8 @@ export const mapDeployment = (r: Row): DeploymentRecord => ({
   priceCardId: optStr(r.price_card_id) as Id | null,
 });
 
-export const mapPriceCard = (r: Row): PriceCardRecord => ({
+/** A price card row joined with its optional schedule row (`s`): without one the card is one flat band. */
+export const mapPriceCard = (r: Row, s: Row | null = null): PriceCardRecord => ({
   id: str(r.id) as Id,
   deploymentId: str(r.deployment_id) as Id,
   version: num(r.version),
@@ -338,6 +361,31 @@ export const mapPriceCard = (r: Row): PriceCardRecord => ({
   economicInputPerMTok: num(r.economic_input_per_mtok),
   economicOutputPerMTok: num(r.economic_output_per_mtok),
   economicPerCall: num(r.economic_per_call),
+  billedCachedInputPerMTok: s ? num(s.billed_cached_input_per_mtok) : num(r.billed_input_per_mtok),
+  schedule: s
+    ? {
+        offPeakInputPerMTok: num(s.off_peak_input_per_mtok),
+        offPeakCachedInputPerMTok: num(s.off_peak_cached_input_per_mtok),
+        offPeakOutputPerMTok: num(s.off_peak_output_per_mtok),
+        peakWindows: JSON.parse(str(s.peak_windows_json)) as PriceSchedule['peakWindows'],
+        peakWeekdays: JSON.parse(str(s.peak_weekdays_json)) as number[],
+        holidayDates: JSON.parse(str(s.holiday_dates_json)) as string[],
+        basisSource: str(s.basis_source),
+        basisDate: str(s.basis_date),
+      }
+    : null,
+});
+
+export const mapIdentityCheck = (r: Row): ModelIdentityCheckRecord => ({
+  id: str(r.id) as Id,
+  providerCode: str(r.provider_code),
+  modelCode: str(r.model_code),
+  expectedName: str(r.expected_name),
+  observedName: optStr(r.observed_name),
+  observedContextWindow: optNum(r.observed_context_window),
+  observedMaxOutputTokens: optNum(r.observed_max_output_tokens),
+  result: str(r.result) as ModelIdentityCheckResult,
+  checkedAt: str(r.checked_at) as Timestamp,
 });
 
 export const mapTool = (r: Row): ToolRecord => ({ id: str(r.id) as Id, code: str(r.code), driverCode: str(r.driver_code), egress: str(r.egress) as ToolEgress, status: str(r.status) as OperationalStatus, holdReason: optStr(r.hold_reason), credentialRef: optStr(r.credential_ref) });
@@ -458,6 +506,8 @@ export const mapUsage = (r: Row): UsageRecord => ({
   billedMicros: num(r.billed_micros),
   economicMicros: num(r.economic_micros),
   withinBounds: num(r.within_bounds) === 1,
+  cachedInputTokens: num(r.cached_input_tokens),
+  billingBand: optStr(r.billing_band) as BillingBand | null,
   outcome: str(r.outcome) as UsageRecord['outcome'],
 });
 

@@ -33,8 +33,10 @@ export default tseslint.config(
     // `founder-listener-loopback-only`) and the browser UI, which talks to that listener with fetch.
     files: ['packages/*/src/**/*.ts'],
     // C7-D adds two reviewed network paths: the isolated loopback Preview host and the one fixed-host GitHub transport
-    // (verifier rules `c7d-preview-isolated` / `c7d-tool-boundary`).
-    ignores: ['packages/storage/src/sqlite/**', 'packages/command-center/src/server/listener.ts', 'packages/command-center/src/server/preview-listener.ts', 'packages/tool-drivers/src/github/https-transport.ts', 'packages/command-center-ui/src/**'],
+    // (verifier rules `c7d-preview-isolated` / `c7d-tool-boundary`). L1-01 adds the one fixed-host DeepSeek transport
+    // (`l1-provider-boundary`) and the one reviewed process path: the Windows DPAPI vault through the signed PowerShell
+    // host (`l1-vault-protected`).
+    ignores: ['packages/storage/src/sqlite/**', 'packages/command-center/src/server/listener.ts', 'packages/command-center/src/server/preview-listener.ts', 'packages/tool-drivers/src/github/https-transport.ts', 'packages/model-providers/src/deepseek/https-transport.ts', 'packages/secret-vault/src/windows-dpapi.ts', 'packages/command-center-ui/src/**'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -84,6 +86,17 @@ export default tseslint.config(
       'no-restricted-syntax': [
         'error',
         { selector: ":matches(ImportDeclaration, ImportExpression, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/^@qandeel-company\\/storage/]", message: 'Driver tests never reach the Company store; they use a fake promotion source.' },
+      ],
+    },
+  },
+  {
+    // L1-01 adapter unit tests exercise `generate` directly (the contract, the boundary, the failure mapping); production
+    // code still reaches an adapter only through the governed Model Runtime (verifier `model-calls-confined` scans src).
+    files: ['packages/model-providers/test/**/*.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        { selector: ":matches(ImportDeclaration, ImportExpression, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/^@qandeel-company\\/(?:storage|runtime)/]", message: 'Adapter tests never reach the Company store or runtime; they use the fake transport and an in-memory vault.' },
       ],
     },
   },
@@ -141,7 +154,7 @@ export default tseslint.config(
   {
     // The Founder listener: the one module that may open a (loopback-only) network path; still no SQLite,
     // no child processes, no storage internals.
-    files: ['packages/command-center/src/server/listener.ts', 'packages/command-center/src/server/preview-listener.ts', 'packages/tool-drivers/src/github/https-transport.ts'],
+    files: ['packages/command-center/src/server/listener.ts', 'packages/command-center/src/server/preview-listener.ts', 'packages/tool-drivers/src/github/https-transport.ts', 'packages/model-providers/src/deepseek/https-transport.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -152,6 +165,25 @@ export default tseslint.config(
           ],
         },
       ],
+    },
+  },
+  {
+    // L1-01 (D-L1-02): the Windows vault is the ONE module that may start a process — the signed Windows PowerShell host
+    // for DPAPI — and it still opens no network path and reaches no SQLite.
+    files: ['packages/secret-vault/src/windows-dpapi.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            { name: 'node:sqlite', message: 'Only packages/storage/src/sqlite/connection.ts may import node:sqlite.' },
+            ...NETWORK_MODULES.map((name) => ({ name, message: 'The vault opens no network path.' })),
+            { name: 'worker_threads', message: 'The vault starts only the signed PowerShell host.' },
+            { name: 'node:worker_threads', message: 'The vault starts only the signed PowerShell host.' },
+          ],
+        },
+      ],
+      'no-restricted-globals': ['error', { name: 'fetch', message: 'The vault makes no network calls.' }],
     },
   },
   {

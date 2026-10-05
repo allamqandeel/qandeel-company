@@ -287,3 +287,14 @@ for the external act. Real results later arrive through governed C7-A evidence; 
 evidence beside them.
 
 C7-D is NOT CLOSED.
+
+## 31. Lifecycle note (appended at the L1-01 start, 2026-10-05)
+
+The narrative above is history and is not rewritten. The first closure candidate `427f759` drew no product finding: its
+run #102 was cancelled when the Windows `c6-1of2` mutation shard hit the 45-minute job ceiling while every mutation was
+passing (a validation-capacity defect). The permanent correction `2e30a54` rebalanced the Windows C6 mutations from 2 to
+4 shards without removing coverage or raising the ceiling. After the Technical Lead's exact-head review of `2e30a54`,
+PR #16 merged into `main` as `3d835ecc261168790c674409a355e36b7b30004f` (same tree `8a34a7ec`); exact-head run #103
+passed the full Windows + Ubuntu gate on its first attempt (47 jobs, zero failures) and post-merge run #104 passed the
+fast-integrity path. The canonical closure statement is `docs/C7D_CLOSURE_RECORD.md`: C7-D is CLOSED / MERGED /
+CANONICAL, and with it C7 as a whole.

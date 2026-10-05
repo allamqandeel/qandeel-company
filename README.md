@@ -29,7 +29,8 @@ governed and auditable.
 | `C7-A` Operational Data + External Outcome Core (C7 = C7-A … C7-D) | CLOSED / MERGED / CANONICAL (PR #13, `e7ca688`; `docs/C7A_CLOSURE_RECORD.md`) |
 | `C7-B` Governed App Operations Control Plane | CLOSED / MERGED / CANONICAL (PR #14, `c06fd2e`; `docs/C7B_CLOSURE_RECORD.md`) |
 | `C7-C` Pilot Instrumentation Pack | CLOSED / MERGED / CANONICAL (PR #15, `f450d6a`; `docs/C7C_CLOSURE_RECORD.md`) |
-| `C7-D` Digital Presence Creation & Operations | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/C7D_IMPLEMENTATION_REPORT.md`) |
+| `C7-D` Digital Presence Creation & Operations | CLOSED / MERGED / CANONICAL (PR #16, `3d835ec`; `docs/C7D_CLOSURE_RECORD.md`) — C7 complete |
+| `L1-01` DeepSeek V4.1 Flash live provider + Windows secure vault + first local bring-up | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/L1_01_IMPLEMENTATION_REPORT.md`) |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
@@ -207,7 +208,7 @@ Company, never a second engine:
 C7-C builds no website, publishing, connector or transport (that is C7-D, Digital Presence Creation & Operations).
 Details: `docs/C7C_IMPLEMENTATION_REPORT.md`, decisions D-C7C-01 onward; closure: `docs/C7C_CLOSURE_RECORD.md`.
 
-**C7-D (implementation candidate, not closed) adds Digital Presence Creation & Operations capability** — the Company can
+**C7-D (closed) adds Digital Presence Creation & Operations capability** — the Company can
 later build and operate QANDEEL's digital presence itself; C7-D does not build the website:
 - an internal **Digital Workshop**: Digital Projects, working → FINALIZED revisions (immutable, deterministic manifest hash)
   over the Artifact Store (file content never in SQLite), typed authoring actions of one closed Company-native Tool — no
@@ -221,13 +222,41 @@ later build and operate QANDEEL's digital presence itself; C7-D does not build t
   closed endpoint allowlist, exact-tree export, exact-head merge with no bypass), and provider-neutral **hosting / CMS and
   social seams** with no provider selected; publication is never market success (real outcomes come only through C7-A).
 
-Details: `docs/C7D_IMPLEMENTATION_REPORT.md`, decisions D-C7D-01 onward.
+Details: `docs/C7D_IMPLEMENTATION_REPORT.md`, decisions D-C7D-01 onward; closure: `docs/C7D_CLOSURE_RECORD.md`.
+
+**L1-01 (implementation candidate, not closed) brings up the Founder-selected live provider** — DeepSeek-V4.1-Flash
+(`deepseek-flash`) — through the EXISTING governed Model Runtime, never beside it:
+- a **Windows user-scoped secret vault** (`@qandeel-company/secret-vault`): opaque `vault:<name>` references everywhere,
+  values protected with built-in Windows DPAPI (CurrentUser) through the signed PowerShell host and stored under the
+  Founder user's local application data — never in Git, SQLite, a workspace, a backup, an artifact, a log, a prompt or a
+  command line; `qandeel-vault set <name>` prompts without echo and refuses a secret argument; CI uses an in-memory vault;
+- the **DeepSeek adapter** (`@qandeel-company/model-providers`) behind the unchanged `ProviderAdapter` contract: one
+  fixed origin, a closed endpoint allowlist, no redirects, bounded non-streaming Chat Completions in JSON mode, no provider
+  tools, E1–E4 → thinking none / low / high / max, the credential resolved privately per call, final content + normalized
+  usage only — no chain-of-thought, header, bearer or raw body ever returned, logged or persisted; failures normalized to
+  the C2 taxonomy with no retry inside the adapter;
+- **alias drift fails closed**: `deepseek-flash` is checked against the qualified public identity (DeepSeek-V4.1-Flash)
+  before the first call and after each identity TTL; a drifted alias holds the deployment (MODEL_DEPRECATED) and
+  provisioning needs a fresh MATCH check (content-free, append-only `model_identity_checks`);
+- **truthful provider billing**: an immutable price card may carry a cached-input rate and an off-peak schedule (UTC
+  windows, weekdays, published holidays, basis source + date); reservations stay the peak, all-cache-miss worst case;
+  settlement records the actual bill (cache hits, band) beside the governed economic cost; historical usage never changes;
+- **governed provisioning**: a release-pinned provider profile (provider, model identity, E1–E4 deployments with
+  conservative Company-side limits, pricing basis, D2 egress, LIMITED_PRODUCTION, pilot route policies) registered through
+  the canonical catalog APIs by the Founder's structured `PROVIDER_PROVISION` confirmation, with the exact cap visible
+  first; the stable context prefix now tells a real model how to answer the Founder (MESSAGE, then FINAL).
+
+L1-01 adds no second provider, no DeepSeek Pro fallback, no provider tools, no voice, no APP-OPS transport and no
+unlimited budget; D3 / D4 never leave the machine. Details: `docs/L1_01_IMPLEMENTATION_REPORT.md`, decisions D-L1-01
+onward.
 | Package | Role |
 |---|---|
 | `@qandeel-company/domain` | Pure contracts: IDs, UTC clock, state machines, retry policy, processor contract |
 | `@qandeel-company/governance` | C2 pure policy kernel: Employee lifecycle, R0–R4 authority, `E0..E4` / `D0..D4`, Router Policy, checked economics, provider / tool contracts, typed proposals; C4 organization, delegation and review rules; the C7-A intake kernel (closed contracts, allowlist, privacy refusal, source lifecycle); the C7-B control kernel (seven closed families, typed scopes / values, empty Remote Configuration register, negative-only Route Hold, R3 control acts) |
 | `@qandeel-company/mind` | C3 pure kernel: Memory Write Policy, deterministic retrieval and context planning, compaction, Skill pipeline / licensing / inspection, capability evaluation, Academy rules; C6 evaluation, attribution, Performance Profile, learning closure and report semantics |
 | `@qandeel-company/storage` | Workspace, SQLite/WAL adapter (the only `node:sqlite` user), migrations, repositories, Artifact Store, backup; C4 Organization and Review stores; C5 Founder stores; C6 Improvement store and resilience (portable packages, retention, drills, update safety); the C7-A External Evidence store (governed sources, intake, bindings, bounded refusal counters); the C7-B App Control store (proposals, issued revisions, the export of Company-issued desired controls); the C7-C Pilot store (lifecycle, bindings, the derived Evidence Board) |
+| `@qandeel-company/secret-vault` | L1-01 secret boundary: `vault:<name>` references resolved to values only inside a governed executor's private callback; the Windows DPAPI (CurrentUser) vault through the signed PowerShell host (the one reviewed process path), the in-memory vault for CI, the no-echo `qandeel-vault` command |
+| `@qandeel-company/model-providers` | L1-01 real provider adapters behind the C2 `ProviderAdapter` contract: the DeepSeek adapter (fixed origin, bounded, E1–E4 thinking profiles, alias identity check, no chain-of-thought), its fake transport for CI, the release-pinned DeepSeek V4.1 Flash provisioning profile and versioned pricing basis; called only by the governed Model Runtime |
 | `@qandeel-company/tool-drivers` | C7-D governed external Tool drivers: the GitHub code-host promotion adapter behind one fixed-host HTTPS transport (and a deterministic fake GitHub for CI), the provider-neutral hosting / CMS and social publication seams; reached only through the Tool Executor |
 | `@qandeel-company/runtime` | Runtime Supervisor, bounded worker pool, recovery, health, CLI; C2 governed Model Runtime, Tool Executor, `c2.employee-task` loop, deterministic fakes; C3 Context Assembler and memory-proposal path |
 | `@qandeel-company/bootstrap-contract` | C0 toolchain proof (unchanged) |
@@ -292,8 +321,10 @@ npm run ci
 | `npm run c7a:mutation` | Removes 48 C7-A intake / privacy / source-governance / usable-evidence / C6-seam / contest / datastore-contract gates from the build (a datastore gate from the migration, re-pinned for that run only); their proof tests must fail (after a build). `-- --shard i/n` runs a disjoint slice; `-- --only id,id` a local focus |
 | `npm run c7b:mutation` | Removes 33 C7-B control-plane gates (seven-family catalogue, R3 seat / grant / review / Founder approval, exact-act binding, the revision law, the datastore family / scope / value contract, ISSUED-only state, negative-only Route Hold, empty Remote Configuration register, no generic execution, content-free outbox, refusal coalescing) from the build (a datastore gate from the migration, re-pinned for that run only); their proof tests must fail (after a build). `-- --shard i/n` runs a disjoint slice; `-- --only id,id` a local focus |
 | `npm run c7c:mutation` | Removes 27 C7-C Pilot gates (READY without briefing evidence or on a briefing from before the Pilot, ACTIVE without an active root goal, a message read as authority, terminal revival, mode change, Founder bypass, repeated steps, duplicate linkage, activity as performance, aggregation, attribution / review bypass, training as improvement, zero-qualified efficiency, ledger bypass, contested or training market claims, an issued control as an outcome, audit content) from the build (a datastore gate from the migration, re-pinned for that run only); their proof tests must fail (after a build). `-- --shard i/n` / `-- --only id,id` as above |
+| `npm run l1:mutation` | Removes 27 L1-01 gates (plaintext vault, a secret on the command line, an arbitrary provider URL / redirect / endpoint, the E4 thinking mapping, the top-level reasoning_effort wire contract (nested or unlisted), the ProviderRequest leaking into the body, the recorded-message run end, 401 retried, 402 transient, a timeout marked not-sent, cache hits billed as misses, off-peak / holidays ignored, a reservation below the worst case, alias drift ignored, D3 egress…) from the build; their proof tests must fail (after a build). `-- --only id,id` a local focus |
+| `npm run l1:smoke -- --workspace <dir>` | **Founder host only, never CI:** the L1-01 live smoke through the real governed runtime and the real DeepSeek adapter (needs `vault:deepseek-company`, the network and a tiny bounded spend; see below) |
 | `npm run verify` | Repository-contract verifier (`scripts/verify-bootstrap.mjs`) |
-| `npm run ci` | build → typecheck → lint → test → C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A + C7-B + C7-C + C7-D mutation checks → verify (CI runs the same proofs, split into parallel jobs) |
+| `npm run ci` | build → typecheck → lint → test → C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A + C7-B + C7-C + C7-D + L1 mutation checks → verify (CI runs the same proofs, split into parallel jobs) |
 
 ### C1 local acceptance (Founder host)
 
@@ -445,6 +476,30 @@ npm run c6:acceptance -- --workspace "D:\QANDEEL-C6-ACCEPTANCE\run-1"
   `--discard-partial-restore`.
 - `safe-upgrade` performs a schema update with a pre-update snapshot; on failure the workspace enters
   `UPDATE_HOLD`, which every start refuses until `clear-update-hold --reason <code>`.
+### L1-01 live provider on the Founder host (DeepSeek V4.1 Flash)
+
+The key never enters Claude, the chat, a file, Git, a config, a command-line argument, SQLite, a workspace, a prompt, a
+log or an artifact. It is typed once, at a hidden prompt, into the Windows user vault:
+
+```bash
+node packages/secret-vault/dist/src/cli.js set deepseek-company
+```
+
+(`--replace` to overwrite; `has` / `list` / `remove` never show a value.) Then, on an initialized workspace:
+
+```bash
+node packages/command-center/dist/src/cli.js provider-check --workspace "D:\QANDEEL-COMPANY\workspace" --provider deepseek --probe
+```
+
+records the content-free identity check of the `deepseek-flash` alias (it must still name `DeepSeek-V4.1-Flash`) and,
+with `--probe`, one tiny bounded call's metering. `serve --provider deepseek` starts the Founder surface with the real
+adapter behind the vault and registers the release-pinned profile; `show providers` in the palette offers the governed
+`PROVIDER_PROVISION` preview (deployments, peak reservation rates, egress ceiling and the exact first cap are shown before
+you confirm). `npm run l1:smoke -- --workspace <disposable dir>` is the first-bring-up proof through the real runtime:
+identities seeded through the test-only seam (as every acceptance does), the real adapter, a Founder → CEO message in the
+canonical thread and the CEO's governed reply, with content-free usage / band / bill proof and a scan that neither the
+key nor any thinking text was persisted. No live key is ever used in CI.
+
 ### C5 Founder Command Center (Tree of Light)
 
 After `npm run build`:
@@ -600,6 +655,14 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
   Pilot writes only in its store and never from runtime / CLI / surface internals; exactly the eight readiness criteria;
   autonomy read from JUDGMENT + INDEPENDENCE only; no network path, C7-D scope or App-effect claim in a C7-C module; C7-C
   not claimed closed without its record; the C7-C proofs and mutation check present;
+- the L1-01 boundaries: L1 only after the C7-D closure record; L1-01 not claimed closed without its record; the L1 proofs and
+  mutation check present; the Windows vault protects with DPAPI (CurrentUser) through the signed PowerShell host started by
+  its absolute path with no shell and the payload on stdin, under the user's local application data, with no network path,
+  and the vault command refuses a secret argument and prompts in raw mode; the DeepSeek transport talks to one fixed origin
+  with no redirect and the endpoint allowlist, no other network path or host in the provider package, no provider tools or
+  streaming, the bearer only in the transport, the exact E1–E4 thinking table, and no src module anywhere reads the
+  provider's chain-of-thought field; settlement records the actual cache-hit / banded bill while the worst case stays flat,
+  and migration 0016 carries the schedule, cached-input and identity-check gates plus the provisioning intent;
 - the C7-D boundaries: C7-D only after the C7-C closure record; every workshop datastore gate; only the digital tables (no
   second review, approval, cost, schedule or Pilot store) and no content / blob / secret / score column; digital writes only
   in its store; drivers never reach the store, runtime, SQLite or filesystem, never force, and GitHub talks to one fixed host
@@ -628,6 +691,9 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
 
 - **Backups:** never use Windows `tar.exe` (it crashes on Arabic file names). Use a Unicode-safe
   method.
+- **Secrets (L1-01):** provider keys live only in the Windows user vault (`%LOCALAPPDATA%\QANDEEL_COMPANY\vault`,
+  DPAPI CurrentUser through the signed PowerShell host). A portable backup or a workspace copy never contains them; on a
+  new device or user account, store them again with `qandeel-vault set`.
 - **Line endings:** text is LF everywhere (`.gitattributes`); PowerShell files, if added, are CRLF
   and UTF-8 with BOM.
 

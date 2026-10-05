@@ -289,6 +289,33 @@ export async function openDigitalPreview(ctx: ApiContext, previewId: string): Pr
 }
 
 /** Outcome + trace for one in-scope Work Item (refs into the canonical lineage; blame stays with C6 attribution). */
+/**
+ * L1-01: the release-pinned provider profiles the host registered, each with its qualified identity, the latest
+ * content-free identity check and whether its provider is provisioned. No key, no reference value, no model text.
+ */
+function providersView(ctx: ApiContext): Json {
+  const gov = ctx.runtime.governance;
+  const profiles = ctx.runtime.founder.actions.provisioningProfiles().map((p) => {
+    const check = gov.modelIdentityChecks(p.providerCode, p.modelCode, 1)[0] ?? null;
+    const provider = gov.providerByCode(p.providerCode);
+    return {
+      code: p.code,
+      sha256: p.sha256,
+      providerCode: p.providerCode,
+      modelCode: p.modelCode,
+      expectedPublicName: p.expectedPublicName,
+      provisioned: provider !== null,
+      providerStatus: provider?.status ?? null,
+      latestCheck: check ? { result: check.result, observedName: check.observedName, checkedAt: check.checkedAt } : null,
+    };
+  });
+  return { profiles } as unknown as Json;
+}
+
+export function providers(ctx: ApiContext): Json {
+  return providersView(ctx);
+}
+
 export function pilotInspect(ctx: ApiContext, pilotId: string, query: { workItemId?: string | undefined }): Json {
   return { inspection: ctx.runtime.founder.pilots.inspect(str(pilotId, 'pilotId', 36), str(query.workItemId, 'workItemId', 36)) };
 }
@@ -305,6 +332,8 @@ export interface CommandResolution {
   readonly profile?: Json;
   /** C7-C read intent: the Pilots and, when exactly one matches, its Evidence Board. */
   readonly pilots?: Json;
+  /** L1-01 read intent: the model providers (release-pinned profiles, identity checks, what is provisioned). */
+  readonly providers?: Json;
   /** C7-D read intent: the digital projects, the exact external acts awaiting the Founder and (one match) the project. */
   readonly digital?: Json;
 }
@@ -370,6 +399,9 @@ export function command(ctx: ApiContext, body: Json): CommandResolution {
         const one = ms.length === 1 ? ms[0] : all.length === 1 ? all[0] : undefined;
         return { intent, focus: { lens: 'DIGITAL', targetId: one?.id ?? null, query: intent.argument }, matches: [], digital: { projects: all, decisions: d.decisions(), ...(one ? { project: d.project(one.id) } : {}) } as unknown as Json };
       }
+      case 'SHOW_PROVIDERS':
+        // L1-01: a read of the model providers; provisioning is the structured-only PROVIDER_PROVISION confirmation.
+        return { intent, focus: { lens: 'LIVE', targetId: null, query: null }, matches: [], providers: providersView(ctx) };
       case 'SHOW_PERFORMANCE': {
         const ms = matchEmployees(u, intent.argument ?? '');
         const e = ms.length === 1 ? ms[0] : undefined;
@@ -512,7 +544,8 @@ function resolveMutatingTarget(ctx: ApiContext, u: CompanyUniverse, command: Ext
     case 'OUTCOME_CONTEST_RESOLVE':
     case 'PILOT_CREATE':
     case 'PILOT_ADVANCE':
-      // Structured only (a form or a rail action posts IDs / codes), never free text (D-C5-07, R2-21, C7-A, C7-C).
+    case 'PROVIDER_PROVISION':
+      // Structured only (a form or a rail action posts IDs / codes), never free text (D-C5-07, R2-21, C7-A, C7-C, L1-01).
       return null;
   }
 }
@@ -584,6 +617,13 @@ function structuredSummary(ctx: ApiContext, preview: { intentKind: string; paylo
           : 'Retract the contested verification: the work item has no current verified outcome (history is kept)';
     case 'PILOT_CREATE':
       return `Create the ${p.mode === 'CONTROLLED_REAL' ? 'controlled real-world' : 'internal training'} pilot: ${s('title')} (a draft context; it grants no budget, tool, role or authority)`;
+    case 'PROVIDER_PROVISION': {
+      // L1-01: the exact profile, its qualified identity, the deployments, the peak reservation rates, the egress ceiling and
+      // the first bounded cap — everything the confirm registers, nothing more.
+      const deployments = Array.isArray(p.deploymentCodes) ? (p.deploymentCodes as string[]).join(', ') : '';
+      const cap = p.companyBudgetExists === true ? `the existing Company cap stays ${s('existingCapMoney')} micro-${s('currency')}` : `first Company cap ${s('capMoney')} micro-${s('currency')} / ${s('capTokens')} tokens (hard; no automatic top-up)`;
+      return `Provision the model provider ${s('providerCode')} (${s('modelCode')} = ${s('observedPublicName')}, identity checked) with deployments ${deployments} at ${s('qualificationTarget')}, egress up to ${s('egressMaxDataClass')}; reservation rates (peak, cache miss) ${s('peakInputPerMTok')} in / ${s('peakOutputPerMTok')} out micro-${s('currency')} per MTok (cached input ${s('peakCachedInputPerMTok')}; off-peak ${s('offPeakInputPerMTok')} / ${s('offPeakOutputPerMTok')}; basis ${s('pricingBasisDate')}); ${cap}`;
+    }
     case 'PILOT_ADVANCE': {
       const step: Record<string, string> = {
         BRIEFING: 'Start the pilot briefing with the CEO (a conversation; it decides nothing)',

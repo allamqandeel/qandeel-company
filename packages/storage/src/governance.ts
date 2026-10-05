@@ -76,7 +76,12 @@ import {
   type ToolEgress,
   externalEgressAvailable,
   MAX_EXTERNAL_DATA_CLASS,
+  assertPriceSchedule,
+  assertProvisioningProfile,
+  type PriceSchedule,
+  type ProviderProvisioningProfile,
 } from '@qandeel-company/governance';
+import { containsSecretMaterial } from '@qandeel-company/mind';
 
 import { txControlApprovalDecided } from './app-controls.js';
 import {
@@ -98,9 +103,15 @@ import {
   trimBudgetAdmissions,
   wakeWorkItemJob,
   writeEmployeeHistory,
+  getPriceCard,
   type Principal,
 } from './governance-core.js';
+import { SYSTEM_RUNTIME_REF } from './governed-writes.js';
 import {
+  MODEL_IDENTITY_CHECK_RESULTS,
+  mapIdentityCheck,
+  type ModelIdentityCheckRecord,
+  type ModelIdentityCheckResult,
   mapApproval,
   mapBudget,
   mapDepartment,
@@ -108,7 +119,6 @@ import {
   mapEmployee,
   mapEmployeeHistory,
   mapGrant,
-  mapPriceCard,
   mapProvider,
   mapReservation,
   mapRunAttribution,
@@ -198,6 +208,40 @@ export interface PriceCardInput {
   readonly economicInputPerMTok: number;
   readonly economicOutputPerMTok: number;
   readonly economicPerCall: number;
+  /** L1-01: a cached-input discount and an off-peak schedule, persisted together with the card (both or neither). */
+  readonly billedCachedInputPerMTok?: number;
+  readonly schedule?: PriceSchedule | null;
+}
+
+/** L1-01: the content-free outcome of one model identity check, recorded as a system fact (never Founder authority). */
+export interface ModelIdentityCheckInput {
+  readonly providerCode: string;
+  readonly modelCode: string;
+  readonly expectedName: string;
+  readonly observedName?: string | null;
+  readonly observedContextWindow?: number | null;
+  readonly observedMaxOutputTokens?: number | null;
+  readonly result: ModelIdentityCheckResult;
+}
+
+/** How long a MATCH identity check stays fresh enough to provision on (alias drift is re-checked by the runtime anyway). */
+export const IDENTITY_CHECK_MAX_AGE_MS = 7 * 86_400_000;
+
+export interface ProvisionOptions {
+  /** The first bounded Company cap (micro-units / tokens) created when no Company budget exists yet. */
+  readonly capMoney: number;
+  readonly capTokens: number;
+  readonly reasonCode: string;
+}
+
+export interface ProvisionResult {
+  readonly providerId: Id;
+  readonly modelId: Id;
+  readonly deploymentIds: readonly Id[];
+  readonly priceCardIds: readonly Id[];
+  readonly routePolicyIds: readonly Id[];
+  readonly companyBudgetId: Id;
+  readonly identityCheckId: Id;
 }
 
 export interface RegisterToolActionInput {
@@ -726,9 +770,21 @@ export class GovernanceStore {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id, d.id, version, input.currency, input.billingMode, input.billedInputPerMTok, input.billedOutputPerMTok, input.billedPerCall, input.economicInputPerMTok, input.economicOutputPerMTok, input.economicPerCall, p.ref, at(ctx),
       );
+      // L1-01 (D-L1-04): the schedule is part of the immutable card. A cached-input discount travels only with a
+      // schedule (one basis, one provenance); the datastore re-checks that nothing exceeds the peak rates.
+      const schedule = input.schedule ?? null;
+      if (input.billedCachedInputPerMTok !== undefined && schedule === null) throw new QandeelError('VALIDATION_FAILED', 'a cached-input rate is persisted only together with an off-peak schedule (one versioned basis)', { field: 'billedCachedInputPerMTok' });
+      if (schedule !== null) {
+        const s = assertPriceSchedule(schedule);
+        ctx.db.run(
+          `INSERT INTO price_card_schedules (price_card_id, billed_cached_input_per_mtok, off_peak_input_per_mtok, off_peak_cached_input_per_mtok, off_peak_output_per_mtok, peak_windows_json, peak_weekdays_json, holiday_dates_json, basis_source, basis_date, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, input.billedCachedInputPerMTok ?? input.billedInputPerMTok, s.offPeakInputPerMTok, s.offPeakCachedInputPerMTok, s.offPeakOutputPerMTok, JSON.stringify(s.peakWindows), JSON.stringify(s.peakWeekdays), JSON.stringify(s.holidayDates), s.basisSource, s.basisDate, at(ctx),
+        );
+      }
       this.#bumpDeployment(ctx, d, 'price_card_id = ?', id);
       catalogHistory(ctx, 'deployment', d.id, 'PRICE_CARD', d.priceCardId, id, 'price_card.added', p.ref);
-      return mapPriceCard(ctx.db.get('SELECT * FROM price_cards WHERE id = ?', id) ?? {});
+      return getPriceCard(ctx, id);
     });
   }
 
@@ -821,6 +877,94 @@ export class GovernanceStore {
   /** The routing inputs for one task class, read in one consistent snapshot. */
   routingSnapshot(taskClass: string): { policy: RoutePolicy | null; deployments: DeploymentView[] } {
     return this.#read((ctx) => routingSnapshotTx(ctx, taskClass));
+  }
+
+  priceCard(id: Id): PriceCardRecord {
+    return this.#read((ctx) => getPriceCard(ctx, id));
+  }
+
+  providerByCode(code: string): ProviderRecord | null {
+    return this.#read((ctx) => {
+      const r = ctx.db.get('SELECT * FROM model_providers WHERE code = ?', code);
+      return r ? mapProvider(r) : null;
+    });
+  }
+
+  // --- L1-01: model identity checks and governed provisioning --------------------------------------------------------
+
+  /**
+   * Records the content-free outcome of one model identity check (D-L1-05): a system fact the operator's check
+   * writes, like health — never Founder authority, never a secret, never provider text beyond the public model
+   * name and limits. Provisioning and requalification read these; nothing routes on them directly.
+   */
+  recordModelIdentityCheck(input: ModelIdentityCheckInput): ModelIdentityCheckRecord {
+    return this.#write('record identity check', (ctx) => {
+      if (!(MODEL_IDENTITY_CHECK_RESULTS as readonly string[]).includes(input.result)) throw new QandeelError('VALIDATION_FAILED', 'unknown identity check result', { field: 'result' });
+      const name = (v: unknown, field: string): string | null => {
+        if (v === undefined || v === null) return null;
+        if (typeof v !== 'string' || v.length === 0 || v.length > 120 || containsSecretMaterial(v)) throw new QandeelError('VALIDATION_FAILED', `${field} is a bounded public model name`, { field });
+        return v;
+      };
+      const limit = (v: unknown, field: string): number | null => (v === undefined || v === null ? null : assertTokens(v, field));
+      const id = newId();
+      ctx.db.run(
+        'INSERT INTO model_identity_checks (id, provider_code, model_code, expected_name, observed_name, observed_context_window, observed_max_output_tokens, result, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        id, assertCatalogCode(input.providerCode, 'providerCode'), assertCatalogCode(input.modelCode, 'modelCode'), name(input.expectedName, 'expectedName') ?? '', name(input.observedName, 'observedName'), limit(input.observedContextWindow, 'observedContextWindow'), limit(input.observedMaxOutputTokens, 'observedMaxOutputTokens'), input.result, at(ctx),
+      );
+      appendAudit(ctx, 'provider.identity_checked', 'model_identity_check', id, { actorRef: SYSTEM_RUNTIME_REF }, input.result === 'MATCH' ? 'OK' : 'REJECTED', input.result, { providerCode: input.providerCode, modelCode: input.modelCode });
+      return mapIdentityCheck(ctx.db.get('SELECT * FROM model_identity_checks WHERE id = ?', id) ?? {});
+    });
+  }
+
+  modelIdentityChecks(providerCode: string, modelCode: string, limit = 20): ModelIdentityCheckRecord[] {
+    return this.#read((ctx) => ctx.db.all('SELECT * FROM model_identity_checks WHERE provider_code = ? AND model_code = ? ORDER BY checked_at DESC, rowid DESC LIMIT ?', providerCode, modelCode, Math.min(Math.max(1, limit), 200)).map((r) => mapIdentityCheck(r)));
+  }
+
+  /**
+   * Provisions one release-pinned provider profile through the canonical catalog APIs (D-L1-06): provider → model →
+   * one immutable deployment profile per reasoning class, each with its versioned price card (+ schedule), advanced to
+   * the profile's qualification target and approved for the profile's egress ceiling; the route policies the pilot
+   * needs; and the first bounded Company budget when none exists. Founder authority (the armed C5 session, or the
+   * test seam) is checked by every step. Fails closed without a fresh MATCH identity check for the model alias
+   * (alias drift, D-L1-05) and never re-provisions an existing provider.
+   */
+  provisionProviderProfile(actorRef: string, input: ProviderProvisioningProfile, options: ProvisionOptions): ProvisionResult {
+    const profile = assertProvisioningProfile(input);
+    const reason = assertCode(options.reasonCode, 'reasonCode');
+    // Inside a Founder confirm the pre-check joins the open write transaction (a snapshot would nest); otherwise it
+    // is an ordinary consistent read.
+    const preCheck = (ctx: StoreContext) => {
+      if (ctx.db.get('SELECT 1 AS x FROM model_providers WHERE code = ?', profile.provider.code)) throw new QandeelError('INVALID_TRANSITION', 'this provider is already provisioned (re-provisioning is a requalification, not a repeat)', { providerCode: profile.provider.code });
+      const latest = ctx.db.get('SELECT * FROM model_identity_checks WHERE provider_code = ? AND model_code = ? ORDER BY checked_at DESC, rowid DESC LIMIT 1', profile.provider.code, profile.model.code);
+      const c = latest ? mapIdentityCheck(latest) : null;
+      if (!c || c.result !== 'MATCH' || c.expectedName !== profile.model.expectedPublicName || Date.parse(ts(ctx)) - Date.parse(c.checkedAt) > IDENTITY_CHECK_MAX_AGE_MS) {
+        throw new QandeelError('VALIDATION_FAILED', 'provisioning needs a fresh MATCH identity check of the model alias (run the provider check first)', { field: 'identityCheck', reason: 'IDENTITY_CHECK_REQUIRED', providerCode: profile.provider.code, modelCode: profile.model.code });
+      }
+      const company = budgetFor(ctx, 'COMPANY', 'company');
+      if (company && company.currency !== profile.priceCard.currency) throw new QandeelError('CURRENCY_MISMATCH', 'the profile is priced in another currency than the Company budget', { currency: profile.priceCard.currency });
+      return { id: c.id, companyBudgetId: company ? (company.id as Id) : null };
+    };
+    const live = storeContext(this.#store);
+    const check = live.db.inTransaction ? preCheck(live) : this.#read(preCheck);
+    const companyBudgetId = check.companyBudgetId ?? this.createBudget(actorRef, { scope: 'COMPANY', scopeId: 'company', capMoney: assertMoney(options.capMoney, 'capMoney'), capTokens: assertTokens(options.capTokens, 'capTokens'), currency: profile.priceCard.currency, reasonCode: reason }).id;
+    const provider = this.registerProvider(actorRef, { code: profile.provider.code, locality: profile.provider.locality, ...(profile.provider.credentialRef !== null ? { credentialRef: profile.provider.credentialRef } : {}) });
+    const model = this.registerModel(actorRef, { providerId: provider.id, code: profile.model.code });
+    const deploymentIds: Id[] = [];
+    const priceCardIds: Id[] = [];
+    for (const d of profile.deployments) {
+      const dep = this.registerDeployment(actorRef, { code: d.code, modelId: model.id, pinnedRevision: d.pinnedRevision, reasoningClass: d.reasoningClass, contextWindowTokens: d.contextWindowTokens, maxOutputTokens: d.maxOutputTokens, taskClasses: d.taskClasses });
+      priceCardIds.push(this.addPriceCard(actorRef, dep.id, profile.priceCard).id);
+      let state: QualificationState = dep.qualification;
+      while (state !== profile.qualificationTarget) {
+        const next = QUALIFICATION_NEXT[state];
+        if (next === null) break;
+        state = this.setQualification(actorRef, dep.id, next, reason).qualification;
+      }
+      this.approveEgress(actorRef, dep.id, profile.egressMaxDataClass, reason);
+      deploymentIds.push(dep.id);
+    }
+    const routePolicyIds = profile.routePolicies.map((r) => this.createRoutePolicy(actorRef, r.taskClass, r.body).id as Id);
+    return { providerId: provider.id, modelId: model.id, deploymentIds, priceCardIds, routePolicyIds, companyBudgetId: companyBudgetId as Id, identityCheckId: check.id };
   }
 
   deployment(id: Id): DeploymentRecord {
@@ -1449,7 +1593,7 @@ export function routingSnapshotTx(ctx: StoreContext, taskClass: string): { polic
   );
   const deployments: DeploymentView[] = rows.map((r) => {
     const d = mapDeployment(r);
-    const card = d.priceCardId ? mapPriceCard(ctx.db.get('SELECT * FROM price_cards WHERE id = ?', d.priceCardId) ?? {}) : null;
+    const card = d.priceCardId ? getPriceCard(ctx, d.priceCardId) : null;
     return {
       id: d.id,
       code: d.code,

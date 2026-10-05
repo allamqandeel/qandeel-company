@@ -2,6 +2,7 @@
  * FounderSurface — runtime + listener + briefing policy in one lifecycle. Starting it never arms Founder
  * authority: a session does, per request. Stopping it revokes every live session (fail closed).
  */
+import type { ProviderAdapter, ProviderProvisioningProfile } from '@qandeel-company/governance';
 import { CompanyRuntime, DeterministicFakeProvider, FakeToolDriver, employeeTaskProcessor, type RuntimeOptions } from '@qandeel-company/runtime';
 
 import { BriefingPolicy } from './briefing.js';
@@ -16,6 +17,12 @@ export interface FounderSurfaceOptions {
   readonly runtime?: Partial<RuntimeOptions>;
   /** Deterministic fake provider / drivers for local acceptance and visual proof (never a paid provider). */
   readonly fakes?: { readonly providers?: readonly string[]; readonly drivers?: readonly string[] };
+  /**
+   * L1-01: real provider adapters the host wired (the DeepSeek adapter behind the Windows vault) and the
+   * release-pinned provisioning profiles the Founder may confirm. Handed to the governed Model Runtime only.
+   */
+  readonly providers?: readonly ProviderAdapter[];
+  readonly provisioningProfiles?: readonly ProviderProvisioningProfile[];
   readonly log?: (event: string, fields: Record<string, string | number | boolean | null>) => void;
   readonly briefing?: boolean;
 }
@@ -34,7 +41,12 @@ export class FounderSurface {
     const drivers = (options.fakes?.drivers ?? []).map((code) => new FakeToolDriver(code));
     this.fakes = { providers, drivers };
     const extra = options.runtime ?? {};
-    const governance = { ...(extra.governance ?? {}), providers: [...providers, ...(extra.governance?.providers ?? [])], toolDrivers: [...drivers, ...(extra.governance?.toolDrivers ?? [])] };
+    const governance = {
+      ...(extra.governance ?? {}),
+      providers: [...providers, ...(options.providers ?? []), ...(extra.governance?.providers ?? [])],
+      toolDrivers: [...drivers, ...(extra.governance?.toolDrivers ?? [])],
+      provisioningProfiles: [...(options.provisioningProfiles ?? []), ...(extra.governance?.provisioningProfiles ?? [])],
+    };
     const runtimeOptions: RuntimeOptions = {
       ...extra,
       workspace: options.workspace,

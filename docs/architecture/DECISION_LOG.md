@@ -3447,3 +3447,157 @@ noindex needs crawlability, sitemap limits, JavaScript SEO, people-first content
 LinkedIn Posts API and Instagram content publishing (dated versions with sunsets, role-based posting, asynchronous publish,
 container expiry and publish quotas), RFC 6265 / WHATWG / MDN (cookies ignore ports, site ignores ports, CSP sandbox
 opaque origin). Consequences are D-C7D-06 … D-C7D-10. No vendor architecture imported.
+
+## D-L1-01 — DeepSeek-V4.1-Flash (`deepseek-flash`) is the initial LLM brain (Founder decision; executor-recorded)
+
+The Founder selected DeepSeek-V4.1-Flash as the Company's initial provider and model, with the API alias `deepseek-flash`
+and the initial pilot mapping E1 → thinking none, E2 → low, E3 → high, E4 → max. L1-01 adds no second provider, no
+DeepSeek Pro fallback, no DeepSeek tools, no voice, no APP-OPS transport and no unlimited budget. Official research
+refresh (2026-10-05, `https://api-docs.deepseek.com/`: pricing, create-chat-completion, error codes, thinking mode,
+list-models, JSON mode, the 2026-09-10 release note and the change log): `deepseek-flash` names DeepSeek-V4.1-Flash
+(released 2026-09-10; `deepseek-v4-flash` is retired and temporarily routed to it); base `https://api.deepseek.com`,
+Bearer auth, `/chat/completions` with `thinking: { type }` plus a top-level `reasoning_effort: low | high | max`
+(corrected by D-L1-10; the first draft nested the effort inside `thinking`) (default thinking
+on at `high`), `max_tokens` 1..393 216 (defaults 8K non-thinking / 64K thinking), usage `prompt_tokens`,
+`completion_tokens` (reasoning tokens included; `completion_tokens_details.reasoning_tokens`), `prompt_cache_hit_tokens`,
+`prompt_cache_miss_tokens`; `GET /models` returns the display `name`; error codes 400 / 401 / 402 / 422 / 429 / 500 / 503;
+pricing (per 1M tokens, USD) cache miss $0.30 peak / $0.15 off-peak, cache hit $0.006 / $0.003, output $1.20 / $0.60,
+peak = 01:00–04:00 and 06:00–10:00 UTC Monday–Friday excluding Chinese public holidays. Two facts the docs do not state
+are recorded as residuals, not assumed: whether `max_tokens` bounds thinking tokens, and whether the band is decided by
+request or completion time (L1 settles at the settling transaction's clock, seconds after completion).
+
+## D-L1-02 — Windows user-scoped secret vault: DPAPI through the signed PowerShell host (executor; Stage 14 D14-A.5 / D14-D.5)
+
+`@qandeel-company/secret-vault` is a real subsystem. A reference is `vault:<name>`; a value exists only inside `use()`'s
+callback for one call. The Windows vault protects each secret with built-in DPAPI (`ProtectedData`, `CurrentUser` scope,
+fixed application entropy for domain separation) and stores the protected blob under `%LOCALAPPDATA%\QANDEEL_COMPANY\vault`
+— outside every workspace, backup and checkout. Pure JavaScript on the signed Node runtime cannot call DPAPI, so the
+vault starts the signed Windows PowerShell 5.1 host by its absolute System32 path with a fixed argument list, no shell,
+and passes the payload on stdin only. This is the ONE reviewed process path in the repository (ESLint exception and
+verifier rule `l1-vault-protected`): it opens no network path and reaches no SQLite. `qandeel-vault set <name>` prompts
+on an interactive terminal without echo, refuses `--secret` / `--value` / `--key` / a second positional argument before
+anything else, refuses a piped stdin, overwrites only with `--replace`, and never prints a value. CI uses the in-memory
+vault. No third-party password manager, no native addon; Smart App Control stays on. Rejected: an environment variable
+(process-wide, inheritable, visible in diagnostics) and a plaintext file (no OS protection).
+
+## D-L1-03 — The DeepSeek adapter extends the existing provider boundary; the reasoning class travels with the request (executor; Stage 13 D13-A/D13-F)
+
+`@qandeel-company/model-providers` holds the adapter behind the unchanged `ProviderAdapter` contract: the governed Model
+Runtime stays the only caller of `generate`; the adapter has no Company authority, Work, budget or tool. One fixed origin,
+a closed two-endpoint allowlist, `redirect: 'error'`, bounded request / response bodies, `stream: false`, no `tools`, no
+temperature; JSON output mode because the Company's proposal contract is one JSON object. `ProviderRequest` gains
+`reasoningClass` (provider-neutral; the adapter maps E1–E4 to its bounded thinking profiles) and `ProviderUsage` gains
+`cachedInputTokens` (a metering extension validated at the boundary: a subset of input, else UNUSABLE). Company `tool`
+messages are presented as user messages (the provider's own tool protocol is never used). Only `choices[0].message.content`
+and `usage` are read: no thinking / chain-of-thought field is ever read, returned, logged or persisted (the verifier
+forbids the field name outside comments in every src module). Errors normalize to the taxonomy (400 / 422
+INVALID_REQUEST, 401 AUTH, 402 BILLING, 429 RATE_LIMITED, 500 TRANSIENT, 503 CAPACITY, abort / timeout
+TIMEOUT_AFTER_SEND, connection refused / unresolved TRANSIENT, other transport failure UNKNOWN, malformed / oversize /
+other-model / inconsistent cache usage CONTRACT_VIOLATION, `content_filter` CONTENT_POLICY, `insufficient_system_resource`
+CAPACITY) with no provider text; the adapter never retries. The documented occasional empty JSON-mode content is returned as
+the provider's (empty) answer, which the proposal layer refuses as invalid output (one evidence-based escalation), rather
+than as a contract violation that would hold the only pilot deployment.
+
+## D-L1-04 — Truthful provider billing: price schedules on the immutable card, worst-case reservation, actual settlement (executor; Stage 13 D13-G.2/.3/.5)
+
+The fixed `PriceCard` could not represent cache-hit / cache-miss and peak / off-peak billing, so the smallest
+provider-neutral extension was made: a card may carry `billedCachedInputPerMTok` and a `PriceSchedule` (off-peak rates,
+UTC peak windows, peak weekdays, published holiday dates, basis source URL and date), persisted in `price_card_schedules`
+(migration 0016) as part of the immutable, versioned card; the datastore refuses a schedule that discounts above the card's
+rates or on a non-METERED card. The card's base rates stay the PEAK, all-cache-miss rates: `worstCase` / routing /
+reservation are unchanged and never discount. Settlement computes `actualCost` (cache-hit input at the cached rate, miss at
+the fresh rate, output, each at `billingBandAt` the settling transaction's clock) and records `billed_micros`,
+`cached_input_tokens` and `billing_band` on the usage row; `economic_micros` keeps the card's flat economic rates (the
+Company's governed cost; never a provider discount), so economic ≥ billed for every METERED card. A price change is a new
+card version; historical usage never changes. The DeepSeek basis (2026-10-05) pins the 2026 PRC public holidays from the
+State Council's 2025-11-04 notice (during the UTC peak windows the UTC date equals the Beijing date). No broad C2 rewrite
+was needed: `txSettle`, reservations, budgets and routing are untouched.
+
+## D-L1-05 — Alias drift fails closed; identity checks are system facts (executor; Stage 13 D13-B.6)
+
+`deepseek-flash` is an alias, not a pinned revision. `GET /models` is the qualification check: id = `deepseek-flash`
+and `name` = `DeepSeek-V4.1-Flash` is MATCH; another name is DRIFT. The adapter checks before its first call and after
+each identity TTL (one hour) and refuses to call a drifted alias with MODEL_DEPRECATED (the existing disposition holds
+the deployment for requalification; nothing is sent to the unqualified model). The operator's `qandeel-founder
+provider-check` records the content-free verdict (public name and limits only) in `model_identity_checks` (append-only; a
+system fact, never Founder authority); provisioning needs a MATCH at most 7 days old for the expected name. Deployments
+are pinned to the revision label `v4.1-flash-alias-2026-09-10` so a requalified alias is a new immutable deployment.
+
+## D-L1-06 — Governed provisioning: release-pinned profiles confirmed by the Founder (executor; task §13)
+
+A `ProviderProvisioningProfile` is provider-neutral DATA (governance kernel): provider, one model identity, one
+immutable deployment profile per reasoning class with conservative Company-side limits (E1 64K / 4K, E2–E4 128K /
+16K–64K; never the provider's 1M / 384K), the versioned pricing basis, the egress ceiling (an external profile never
+exceeds D2) and the pilot route policies. `GovernanceStore.provisionProviderProfile` registers it through the existing
+catalog APIs (provider → model → deployments → price cards → one qualification step at a time to LIMITED_PRODUCTION →
+egress → route policies) and creates the first bounded Company cap when none exists; it never re-provisions and needs the
+fresh MATCH check. The Founder reaches it only through the structured-only `PROVIDER_PROVISION` intent of the governed
+confirmation (`founder_action_previews` is recreated with the extended intent catalogue in 0016, the 0011 / 0012 / 0014
+precedent): the preview shows the deployments, the peak reservation rates, the egress ceiling and the exact cap before
+anything exists, and the confirm executes inside its one transaction. The host registers profiles
+(`qandeel-founder serve --provider deepseek`); the UI offers them on the `SHOW_PROVIDERS` read. No direct SQL
+provisioning; no Founder authentication in a terminal. The seam-seeded L1 harness uses the same store method.
+
+## D-L1-07 — A Founder-thread reply is told the MESSAGE proposal shape; FINAL after a recorded message (executor; C3 / C5 seam)
+
+A real model could not answer the Founder: the assembler's preamble listed FINAL / TOOL_REQUEST / MEMORY_CANDIDATE
+/ OBSERVATION only (the deterministic fake was scripted). The preamble of a Founder-thread reply Work Item (the one
+whose immutable processor input binds `founderThreadId`, created by `CommunicationStore.send`) now carries one extra
+line: the MESSAGE shape, the Founder's language, that a message decides nothing, to output the one JSON object alone,
+and to propose FINAL once the message appears as recorded in the recent results. Every other Work Item keeps its exact
+pre-L1 preamble: context estimates are byte upper bounds, so a general prefix growth would tax every budget (the C3
+"long loops never fail" proof runs at 4,000 tokens and sat 79 bytes under it), and no Employee is invited to message
+the Founder from unrelated work. No routing, authority or budget rule changes.
+
+## D-L1-08 — Validation: focused proofs, one L1 mutation shard, verifier rules; the live smoke is a Founder-host harness (executor)
+
+Proof markers `L1-PROOF: secret-vault`, `deepseek-adapter`, `economics-bands`, `storage-pricing`, `runtime-l1`;
+`scripts/l1-mutation-check.mjs` (one shard per OS; the suite is small); verifier rules `l1-requires-c7d-closure`,
+`l1-proofs-present`, `l1-vault-protected`, `l1-provider-boundary`, `l1-pricing-truthful`; 0015 frozen; the two new
+packages allowlisted. `scripts/l1-deepseek-smoke.mjs` is NOT a CI step: it needs the Founder's vault entry, the
+network and a tiny bounded spend, seeds identities through the test-only seam (as every acceptance does) and drives the
+real runtime with the real adapter; the production path for the first CEO (hire → Academy → activation through the
+Founder surface) is recorded as the next L1 seam, not bypassed.
+
+## D-L1-09 — A thread-bound run ends when its message is recorded: the runtime, not the model, guarantees one answer (executor; C2 / C5 seam)
+
+The first live run (DeepSeek-V4.1-Flash at E1, thinking disabled) answered the Founder with a well-formed MESSAGE,
+saw it recorded in its next context, and still proposed a new MESSAGE on every turn until `MAX_CALLS_PER_RUN`
+(4 messages in the Founder's thread, 4 billed calls, then RUN_LIMIT and a FAILED reply item). A prompt instruction
+("propose FINAL once recorded") is advice a model may ignore; the deliverable of a Founder reply or a CEO brief is
+one message, so the executor now ends the run as COMPLETED (`reply.sent` / `brief.sent`, the message id in its
+evidence) as soon as the fence records that message. A REFUSED message (no thread binding, a malformed brief, secret
+material) keeps today's loop. The proof's fake model now never proposes FINAL and the mutation
+`l1-recorded-message-does-not-end-run` shows the gate is real. No routing, authority or budget rule changes; the
+Founder-thread guidance says "one MESSAGE is the whole answer: the run ends when it is recorded".
+
+## D-L1-10 — The official thinking wire shape: `thinking: { type }` plus a top-level `reasoning_effort` (executor; PR #17 review BLOCKER)
+
+The first adapter draft nested the effort inside the thinking object (`thinking: { type: 'enabled', reasoning_effort }`),
+and its proofs encoded that same shape, so a green gate could not see the defect. The official thinking-mode guide
+(`api-docs.deepseek.com/guides/thinking_mode`, OpenAI-compatible format) carries the switch in `thinking: { type }`
+and the effort as the TOP-LEVEL request field `reasoning_effort: low | high | max`; nested, the provider ignores it and
+E2 / E3 / E4 would silently think at the default effort while the Company reserved and billed for the class it
+believed it chose. The adapter now sends the official shape (E1: `thinking.disabled` and no effort field at all;
+E2 / E3 / E4: `thinking.enabled` + top-level low / high / max), `reasoning_effort` is an allowlisted request field,
+the proofs assert the exact wire JSON for every class, two mutations (`l1-reasoning-effort-nested-in-thinking`,
+`l1-reasoning-effort-not-allowlisted`) and the verifier rule `l1-provider-boundary` refuse the nested or unlisted
+shape, and `provider-check --probe --probe-class E2` sends one bounded thinking probe (a 1,024-token ceiling that also
+bounds the thinking tokens) so the corrected contract is qualified live before any governed thinking call. No routing,
+pricing, egress or authority rule changes; E1 (the pilot's live class) is unaffected on the wire.
+
+## D-L1-11 — The two vault security gates are proven on every platform (validation / proof portability; PR #17, CI run #106)
+
+The Ubuntu L1 mutation shard of run #106 (`a023a22`) let `l1-vault-plaintext` and `l1-vault-piped-secret-accepted`
+survive while the Windows shard caught both. Not a product defect and not a security behaviour regression: on a
+non-Windows host `WindowsUserVault.set()` and the CLI's `set` fail closed at the platform gate (`VAULT_UNAVAILABLE`)
+BEFORE the DPAPI Protect call and before the hidden prompt, so a mutation of either gate changed nothing Ubuntu could
+observe. Neither mutation is weakened, skipped or marked Windows-only, and the quality-gate parity rule stands. Two
+portable proofs were added to the secret-vault L1 suite, with no production change: a throwaway child process lifts the
+platform gate and points the system root (where the signed PowerShell host lives) at a directory that does not exist,
+proving that without the protection host `set()` stores nothing (a classified `VAULT_UNAVAILABLE`, no blob, no temp
+file — the plaintext, or its base64, is never written as a fallback); a child whose stdin is a pipe calls the exported
+`promptHidden` and must be refused with `SECRET_INVALID` before the prompt is shown or raw mode is touched. Each proof
+also inspects the compiled contract so the ORDER of the gate holds (Protect before the write; the non-interactive guard
+before raw mode). The real Windows DPAPI round trip remains the authoritative runtime proof; the portable proofs exist
+only so a mutation of these two security gates is observable on every CI platform.
