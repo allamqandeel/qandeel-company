@@ -30,7 +30,10 @@ session VM**. Cloud sessions are disposable.
 ## Secret boundary
 
 Plaintext secrets are never committed and never placed in prompts, artifacts, SQLite business data
-or agent memory. Local secret protection uses Windows user-scoped protection (proven in L0).
+or agent memory. Local secret protection uses Windows user-scoped protection (proven in L0; implemented
+in L1-01 as `@qandeel-company/secret-vault`: DPAPI CurrentUser through the signed PowerShell host, blobs
+under the Founder user's local application data, `vault:<name>` references everywhere else, a value visible
+only inside a governed executor's private callback, never on a command line).
 
 ## Tool boundary
 
