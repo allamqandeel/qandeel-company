@@ -3557,3 +3557,15 @@ packages allowlisted. `scripts/l1-deepseek-smoke.mjs` is NOT a CI step: it needs
 network and a tiny bounded spend, seeds identities through the test-only seam (as every acceptance does) and drives the
 real runtime with the real adapter; the production path for the first CEO (hire → Academy → activation through the
 Founder surface) is recorded as the next L1 seam, not bypassed.
+
+## D-L1-09 — A thread-bound run ends when its message is recorded: the runtime, not the model, guarantees one answer (executor; C2 / C5 seam)
+
+The first live run (DeepSeek-V4.1-Flash at E1, thinking disabled) answered the Founder with a well-formed MESSAGE,
+saw it recorded in its next context, and still proposed a new MESSAGE on every turn until `MAX_CALLS_PER_RUN`
+(4 messages in the Founder's thread, 4 billed calls, then RUN_LIMIT and a FAILED reply item). A prompt instruction
+("propose FINAL once recorded") is advice a model may ignore; the deliverable of a Founder reply or a CEO brief is
+one message, so the executor now ends the run as COMPLETED (`reply.sent` / `brief.sent`, the message id in its
+evidence) as soon as the fence records that message. A REFUSED message (no thread binding, a malformed brief, secret
+material) keeps today's loop. The proof's fake model now never proposes FINAL and the mutation
+`l1-recorded-message-does-not-end-run` shows the gate is real. No routing, authority or budget rule changes; the
+Founder-thread guidance says "one MESSAGE is the whole answer: the run ends when it is recorded".

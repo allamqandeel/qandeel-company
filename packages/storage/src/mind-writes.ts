@@ -591,7 +591,7 @@ function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, m
 }
 
 const FOUNDER_REPLY_GUIDANCE =
-  'This work answers the Founder in a thread. Your reply is one more proposal shape: {"type":"MESSAGE","purpose":"REQUEST|QUESTION|FYI|REVIEW|DECISION_REQUEST|BLOCKER|ESCALATION|RESULT|CORRECTION","attentionLevel":"INFORMATIONAL|NEEDS_ATTENTION|NEEDS_DECISION|URGENT","body":"...","brief":null,"contextRefs":[]}. Write the body in the Founder\'s language (Arabic when the Founder wrote Arabic), at most 4000 characters; it decides, grants and approves nothing. Once a MESSAGE of yours appears as recorded in the recent results, propose {"type":"FINAL","summaryCode":"reply.sent"} — never a second message. Output the one JSON object alone: no code fence, no text before or after it; a summaryCode is a short lower-case dotted code.';
+  'This work answers the Founder in a thread. Your reply is one more proposal shape: {"type":"MESSAGE","purpose":"REQUEST|QUESTION|FYI|REVIEW|DECISION_REQUEST|BLOCKER|ESCALATION|RESULT|CORRECTION","attentionLevel":"INFORMATIONAL|NEEDS_ATTENTION|NEEDS_DECISION|URGENT","body":"...","brief":null,"contextRefs":[]}. Write the body in the Founder\'s language (Arabic when the Founder wrote Arabic), at most 4000 characters; it decides, grants and approves nothing. One MESSAGE is the whole answer: the run ends when it is recorded. Output the one JSON object alone: no code fence, no text before or after it.';
 
 const isFounderThreadReply = (item: WorkItemRecord): boolean => typeof (item.processorInput as { founderThreadId?: unknown } | null)?.founderThreadId === 'string';
 

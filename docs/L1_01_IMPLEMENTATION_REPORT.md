@@ -194,9 +194,15 @@ confirm provisions inside the one transaction (the pre-check joins it). `SHOW_PR
 The C5 path already drives a live model step end to end (`send` → reply Work Item → `c2.employee-task` → model →
 MESSAGE → thread). The one missing seam was the prompt: the preamble never told a real model the MESSAGE shape. The
 preamble of a Founder-thread reply Work Item (processor input binds `founderThreadId`) now carries one extra line
-(purpose / attention level / body in the Founder's language / `brief: null` / `contextRefs`), and asks for FINAL once
-the message appears as recorded. Every other Work Item keeps its exact pre-L1 preamble (byte-bounded budgets; the C3
-proofs are unchanged). The runtime proof drives this with the real adapter and a fake transport.
+(purpose / attention level / body in the Founder's language / `brief: null` / `contextRefs`). Every other Work Item
+keeps its exact pre-L1 preamble (byte-bounded budgets; the C3 proofs are unchanged).
+
+The first live run showed that a prompt is advice, not a gate: the model (E1, thinking disabled) answered with a
+well-formed MESSAGE, saw it recorded, and still proposed a new MESSAGE on every turn until `MAX_CALLS_PER_RUN`. Under
+**D-L1-09** the executor ends a thread-bound run (a Founder reply, a CEO brief) as COMPLETED the moment the fence
+records its message (`reply.sent` / `brief.sent`, the message id in the evidence): one answer, one governed call, never
+a second message or a RUN_LIMIT after a delivered reply. The runtime proof's fake model now never proposes FINAL, and
+the mutation `l1-recorded-message-does-not-end-run` proves the gate is real.
 
 ## 15. Tests
 
@@ -218,8 +224,8 @@ network, retry / fallback unchanged, CoT never persisted).
 
 ## 16. Mutations
 
-`scripts/l1-mutation-check.mjs`: 24 mutations (vault 3, request boundary 6, response boundary 3, failures 3, alias drift
-2, accounting 6, egress 1) — 24 / 24 caught locally (the first egress mutation was redundant with the C2
+`scripts/l1-mutation-check.mjs`: 25 mutations (vault 3, request boundary 6, the recorded-message gate 1, response
+boundary 3, failures 3, alias drift 2, accounting 6, egress 1) — 25 / 25 caught locally (the first egress mutation was redundant with the C2
 `EGRESS_NOT_APPROVED` gate and was replaced by the profile-level D3 / D4 refusal). CI: one shard per operating system
 (the suite runs in about 4 minutes locally), counted by the quality gate.
 
@@ -239,7 +245,7 @@ was rebalanced and the 45-minute ceiling was not raised; the L1 shard is small.
 
 ## 19. Focused validation (during implementation)
 
-- L1 suites 4 + 7 + 6 + 4 + 5 = 26 / 26; mutations 24 / 24; verifier 99 / 99; ESLint `--max-warnings=0` clean.
+- L1 suites 4 + 7 + 6 + 4 + 5 = 26 / 26; mutations 25 / 25; verifier 99 / 99; ESLint `--max-warnings=0` clean.
 - Full suites of the touched packages re-run after the kernel / storage / runtime changes (see the PR handoff for the
   final-gate numbers).
 
@@ -251,12 +257,51 @@ PR handoff. Sections 21–22 are filled in once the Founder has stored the key a
 
 ## 21. Live results (filled after the Founder stored `vault:deepseek-company`)
 
-PENDING — the executor STOPPED before any live call, as the brief requires, and gave the Founder exactly one secure local
-command.
+All results are content-free (identifiers, counts, codes, amounts); the credential value was never printed, logged or
+stored anywhere but the DPAPI blob. Time: 2026-10-05, 14:18–14:30 UTC (a Monday; outside the published peak windows).
+
+**Key entry.** The executor STOPPED and gave the Founder one secure local command (`qandeel-vault set deepseek-company`).
+The first entry was refused by DeepSeek (401 → identity check result AUTH, recorded). A content-free shape check inside
+a vault callback (length and booleans only) showed a 70-character value whose two halves were identical and whose
+first half had the DeepSeek key shape: the key had been pasted twice at the hidden prompt. The Founder re-entered it
+with `--replace`; the `set` command now prints `chars` (never the value) so a doubled paste is visible at once. The
+first `provider-check` also tripped a Node handle assertion at exit (a forced exit while the vault's PowerShell child
+and the HTTPS socket were still closing); the command and the smoke harness now set the exit status instead.
+
+**Connectivity and model identity (`provider-check --provider deepseek --probe`).** Result MATCH: alias
+`deepseek-flash` → observed public name `DeepSeek-V4.1-Flash`, observed context window 1,048,576, observed max output
+393,216 (both above the Company's class ceilings, which stay the binding limits). Identity check `72050145-b330-…`
+recorded in the disposable workspace. Probe: 43 prompt tokens, 5 completion tokens, 0 cache hits, 11 output characters,
+peak worst-case reservation 59 micro-USD; the answer text was neither printed nor stored.
+
+**Bounded live qualification (smoke harness, caps visible before the call).** Identity MATCH re-checked and recorded;
+the profile provisioned through the canonical catalog APIs: four deployments E1–E4 at LIMITED_PRODUCTION, egress D2,
+pricing basis `api-docs.deepseek.com/quick_start/pricing` dated 2026-10-05; caps Company $2.00, Department $2.00, CEO
+$1.00, reply Work Item $0.50 (hard caps, no top-up).
+
+**Governed Model Runtime live smoke (canonical path, no bypass).** First run (before D-L1-09): the full path worked —
+C3 context assembled (2,509 → 3,135 bytes), `model.invoke` authorized, route E1 `deepseek-flash-e1`, worst-case
+reservations 1,994–2,059 micro-USD, four live calls settled truthfully at OFF_PEAK with 512 cached prompt tokens on calls
+2–4 (billed 440 / 483 / 569 / 386 micro-USD against economic 878 / 1,113 / 1,288 / 921) — but the model proposed a new
+MESSAGE on every turn, the fence recorded four messages, and the fifth reservation was refused `RUN_LIMIT /
+MAX_CALLS_PER_RUN`: the reply item FAILED after a delivered answer. Classification: Company integration defect (the
+executor relied on the model to propose FINAL), fixed by D-L1-09. Second run (fresh sandbox, after the fix): one live
+call — 647 prompt tokens (0 cached), 712 completion tokens, band OFF_PEAK, billed 526 micro-USD, economic 1,050,
+reservation 1,955 micro-USD SETTLED, within bounds, run SUCCEEDED, Work Item COMPLETED, provider and all four
+deployments ACTIVE, accounting invariants empty, Company budget spent 1,050 / reserved 0 of 2,000,000 micro-USD, health
+HEALTHY. Durable state and logs: no credential, no `reasoning_content`, no `Bearer`, no reply text in logs.
 
 ## 22. Founder ↔ CEO live smoke or the exact next missing seam
 
-PENDING (see §21). Independently of the live result, the exact production seam that L1-01 does NOT close is recorded:
+**PASS — the canonical path supports it without a bypass.** The Founder's Arabic message (`send` → reply Work Item
+`founder.reply`, D2, max output 1,024 → C3 Context Assembly → `model.invoke` authorization → Router Policy (E1,
+LIMITED_PRODUCTION) → worst-case reservation → GovernedModelRuntime → DeepSeek ProviderAdapter → usage settlement →
+MESSAGE proposal → the fence recorded it in the FOUNDER_CEO thread → the run ended `reply.sent`). The CEO's reply (an
+Arabic introduction and seven structured questions about the project, the launch scope, readiness gaps, decision
+rights, external commitments, success metrics and its own role, closing with the statement that it grants and approves
+nothing) reached the canonical Founder surface in 5.5 s end to end. The smoke prints that reply as `founderVisibleReply`
+(the Founder's own conversation); it is never in a log. Independently of the live result, the exact production seam
+that L1-01 does NOT close is recorded:
 **the first CEO of a real Company must be hired, trained and activated through production paths** (a Founder-created
 hire → the Academy → the activation request approved through the authenticated surface). L1-01's smoke seeds that
 identity through the test-only seam, exactly as every acceptance harness does, and adds no bypass; "the first production

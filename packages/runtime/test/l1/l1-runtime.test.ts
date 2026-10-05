@@ -26,11 +26,14 @@ import { nextName, seedWorld, type C2World } from '../c2/c2-seed.js';
 const KEY = 'vault-proof-' + 'Hs8Kd2Pq6Vw1Zb4Nx7Ct3Lm9';
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 const MESSAGE = JSON.stringify({ type: 'MESSAGE', purpose: 'RESULT', attentionLevel: 'INFORMATIONAL', body: 'أهلاً يا محمد. فهمت أننا نستعد لإطلاق قنديل، وعندي ثلاثة أسئلة قبل أن نبدأ.', brief: null, contextRefs: [] });
-const FINAL = '{"type":"FINAL","summaryCode":"reply.sent"}';
-/** A real model answers the Founder with ONE message, then — seeing it recorded in its context — proposes FINAL. */
-function replyThenFinal(request: DeepSeekRequest): string {
-  const messages = (request.body as { messages: { content: string }[] }).messages;
-  return messages.some((m) => m.content.includes('RECORDED')) ? FINAL : MESSAGE;
+/**
+ * A model that answers the Founder with a MESSAGE on every turn and never proposes FINAL (what the first live
+ * DeepSeek run did at E1): the runtime, not the model, ends a thread-bound run once its message is recorded
+ * (D-L1-09), so exactly one message and one governed call exist whatever the model would say next.
+ */
+function alwaysMessage(request: DeepSeekRequest): string {
+  void request;
+  return MESSAGE;
 }
 
 interface World {
@@ -104,7 +107,7 @@ describe('L1 runtime: the Founder ↔ CEO path thinks through DeepSeek inside th
       assert.equal(body.max_tokens, 1_024, 'the Founder reply ceiling bounds max_tokens');
       assert.ok(body.messages[0]?.content.includes('"type":"MESSAGE"'), 'the stable prefix tells a real model how to answer the Founder');
       const prompt = body.messages.reduce((n, m) => n + m.content.length, 0);
-      const answer = fakeChatAnswer(replyThenFinal(request), { prompt: Math.ceil(prompt / 4), completion: 60, hit: 16 });
+      const answer = fakeChatAnswer(alwaysMessage(request), { prompt: Math.ceil(prompt / 4), completion: 60, hit: 16 });
       const choice = (answer.body as { choices: { message: Record<string, unknown> }[] }).choices[0];
       if (!choice) throw new Error('the fake answer has no choice');
       choice.message['reasoning_' + 'content'] = 'PRIVATE-COT-MARKER';
@@ -120,10 +123,11 @@ describe('L1 runtime: the Founder ↔ CEO path thinks through DeepSeek inside th
       const reply = comm.messages(thread.id).find((m) => m.senderKind === 'EMPLOYEE');
       assert.equal(reply?.senderRef, ceo.ref);
       assert.ok(reply?.body.startsWith('أهلاً يا محمد'), 'the final content reached the canonical Founder surface');
-      assert.deepEqual(transport.requests.map((r) => r.path), [DEEPSEEK_MODELS_PATH, DEEPSEEK_CHAT_COMPLETIONS_PATH, DEEPSEEK_CHAT_COMPLETIONS_PATH], 'identity check, the reply call, then the FINAL call');
+      assert.deepEqual(transport.requests.map((r) => r.path), [DEEPSEEK_MODELS_PATH, DEEPSEEK_CHAT_COMPLETIONS_PATH], 'identity check, then exactly one reply call: the runtime ends the run once the message is recorded (D-L1-09)');
+      assert.equal(comm.messages(thread.id).filter((m) => m.senderKind === 'EMPLOYEE').length, 1, 'one message is the whole answer, whatever the model would propose next');
       assert.ok(transport.requests.every((r) => r.bearerSha256 === sha(KEY)), 'the vault credential reached only the transport');
       const usage = rt.governance.usage({ workItemId: sent.replyWorkItemId as Id });
-      assert.equal(usage.length, 2, 'two governed calls (the reply, then FINAL), each reserved and settled');
+      assert.equal(usage.length, 1, 'one governed call, reserved and settled');
       const [u] = usage;
       assert.ok(u);
       assert.equal(u.deploymentId, deployments[0], 'the E1 deployment');
@@ -194,7 +198,7 @@ describe('L1 runtime: the Founder ↔ CEO path thinks through DeepSeek inside th
     let flakyCalls = 0;
     await withWorld('l1-failures', (request) => {
       if (mode === 'auth') return { status: 401, body: { error: { message: 'Authentication Fails' } }, oversize: false, malformed: false };
-      if (mode === 'flaky') return flakyCalls++ === 0 ? { status: 500, body: null, oversize: false, malformed: false } : fakeChatAnswer(replyThenFinal(request), { prompt: 10, completion: 10 });
+      if (mode === 'flaky') return flakyCalls++ === 0 ? { status: 500, body: null, oversize: false, malformed: false } : fakeChatAnswer(alwaysMessage(request), { prompt: 10, completion: 10 });
       throw new ProviderError('TIMEOUT_AFTER_SEND');
     }, async ({ rt, w, transport, providerId }) => {
       const comm = rt.founder.communications;
@@ -207,9 +211,9 @@ describe('L1 runtime: the Founder ↔ CEO path thinks through DeepSeek inside th
       mode = 'flaky';
       const second = comm.send(w.founder, thread.id, { purpose: 'QUESTION', body: 'اثنان' });
       assert.equal(await settled(rt, second.replyWorkItemId as Id), 'COMPLETED');
-      assert.equal(chatRequests(transport).length, 4, '500, the retried reply, then FINAL: one bounded retry');
+      assert.equal(chatRequests(transport).length, 3, 'the 401 call, then 500 and the retried reply: one bounded retry, and the recorded reply ends the run');
       const kinds = rt.governance.reservations(rt.view.runsForWorkItem(second.replyWorkItemId as Id)[0]?.id as Id).map((r) => r.attemptKind).sort();
-      assert.deepEqual(kinds, ['PRIMARY', 'PRIMARY', 'RETRY'], 'the retry is a separate, attributed attempt (then the FINAL turn is its own PRIMARY)');
+      assert.deepEqual(kinds, ['PRIMARY', 'RETRY'], 'the retry is a separate, attributed attempt');
       mode = 'hang';
       const third = comm.send(w.founder, thread.id, { purpose: 'QUESTION', body: 'ثلاثة' });
       assert.notEqual(await settled(rt, third.replyWorkItemId as Id), 'COMPLETED');

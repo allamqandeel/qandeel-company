@@ -95,6 +95,12 @@ const MUTATIONS = [
     edits: [{ file: `${RT}/model-runtime.js`, search: 'reasoningClass: d.reasoningClass, messages: context.messages', replace: "reasoningClass: 'E4', messages: context.messages", expectedCount: 1 }],
     runs: [RUNTIME],
   },
+  {
+    id: 'l1-recorded-message-does-not-end-run',
+    gate: 'a thread-bound run ends once its message is recorded: one answer, one governed call, never a second message or a RUN_LIMIT after a delivered reply (D-L1-09)',
+    edits: [{ file: `${RT}/employee-task.js`, search: "if (sent.outcome === 'RECORDED') {", replace: 'if (false) {', expectedCount: 1 }],
+    runs: [RUNTIME],
+  },
   // --- The response boundary -----------------------------------------------------------------------------------------
   {
     id: 'l1-other-model-answer-accepted',

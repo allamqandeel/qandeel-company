@@ -569,7 +569,7 @@ const MUTATION_PINS = {
     script: 'l1:mutation',
     ids: [
       'l1-vault-plaintext', 'l1-vault-secret-on-command-line', 'l1-vault-piped-secret-accepted',
-      'l1-provider-arbitrary-url', 'l1-provider-follows-redirect', 'l1-provider-endpoint-allowlist-removed', 'l1-thinking-e4-not-max', 'l1-request-leaks-provider-request', 'l1-reasoning-class-dropped',
+      'l1-provider-arbitrary-url', 'l1-provider-follows-redirect', 'l1-provider-endpoint-allowlist-removed', 'l1-thinking-e4-not-max', 'l1-request-leaks-provider-request', 'l1-reasoning-class-dropped', 'l1-recorded-message-does-not-end-run',
       'l1-other-model-answer-accepted', 'l1-cache-report-inconsistent-accepted', 'l1-non-string-content-accepted',
       'l1-401-retried', 'l1-402-transient', 'l1-timeout-marked-not-sent',
       'l1-alias-drift-ignored-adapter', 'l1-alias-drift-ignored-provisioning',
