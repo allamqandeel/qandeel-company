@@ -103,6 +103,7 @@ describe('L1 runtime: the Founder ↔ CEO path thinks through DeepSeek inside th
     withWorld('l1-reply', (request) => {
       const body = request.body as { thinking: unknown; messages: { role: string; content: string }[]; max_tokens: number; model: string };
       assert.deepEqual(body.thinking, { type: 'disabled' }, 'E1 → no thinking');
+      assert.equal('reasoning_effort' in body, false, 'E1 → no reasoning_effort field');
       assert.equal(body.model, 'deepseek-flash');
       assert.equal(body.max_tokens, 1_024, 'the Founder reply ceiling bounds max_tokens');
       assert.ok(body.messages[0]?.content.includes('"type":"MESSAGE"'), 'the stable prefix tells a real model how to answer the Founder');

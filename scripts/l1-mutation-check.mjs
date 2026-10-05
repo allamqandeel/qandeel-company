@@ -86,8 +86,22 @@ const MUTATIONS = [
   {
     id: 'l1-request-leaks-provider-request',
     gate: 'the chat body carries exactly the allowlisted fields, never the ProviderRequest (deployment, codes) or anything of the Company',
-    edits: [{ file: `${PROVIDERS}/adapter.js`, search: "const body = { model: DEEPSEEK_MODEL_CODE, messages, max_tokens: request.maxOutputTokens, stream: false, thinking: thinkingFor(request.reasoningClass), response_format: { type: 'json_object' } };\n    for (const k of Object.keys(body))", replace: "const body = { ...request, model: DEEPSEEK_MODEL_CODE, messages, max_tokens: request.maxOutputTokens, stream: false, thinking: thinkingFor(request.reasoningClass), response_format: { type: 'json_object' } };\n    for (const k of [])", expectedCount: 1 }],
+    edits: [{ file: `${PROVIDERS}/adapter.js`, search: "const body = { model: DEEPSEEK_MODEL_CODE, messages, max_tokens: request.maxOutputTokens, stream: false, ...thinkingFor(request.reasoningClass), response_format: { type: 'json_object' } };\n    for (const k of Object.keys(body))", replace: "const body = { ...request, model: DEEPSEEK_MODEL_CODE, messages, max_tokens: request.maxOutputTokens, stream: false, ...thinkingFor(request.reasoningClass), response_format: { type: 'json_object' } };\n    for (const k of [])", expectedCount: 1 }],
     runs: [ADAPTER, RUNTIME],
+  },
+  {
+    // The official contract carries the effort TOP-LEVEL beside `thinking: { type }`; nested inside `thinking` the
+    // provider ignores it and E2 / E3 / E4 silently think at the default effort (the PR #17 review BLOCKER).
+    id: 'l1-reasoning-effort-nested-in-thinking',
+    gate: 'E2 / E3 / E4 send thinking.enabled plus a top-level reasoning_effort, never an effort nested inside thinking',
+    edits: [{ file: `${PROVIDERS}/adapter.js`, search: "{ thinking: { type: 'enabled' }, reasoning_effort: effort }", replace: "{ thinking: { type: 'enabled', reasoning_effort: effort } }", expectedCount: 1 }],
+    runs: [ADAPTER],
+  },
+  {
+    id: 'l1-reasoning-effort-not-allowlisted',
+    gate: 'the request field allowlist admits the top-level reasoning_effort (a thinking request is never refused as INVALID_REQUEST)',
+    edits: [{ file: `${PROVIDERS}/declaration.js`, search: "'thinking', 'reasoning_effort', 'response_format'", replace: "'thinking', 'response_format'", expectedCount: 1 }],
+    runs: [ADAPTER],
   },
   {
     id: 'l1-reasoning-class-dropped',

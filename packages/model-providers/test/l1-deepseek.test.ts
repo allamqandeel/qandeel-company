@@ -68,16 +68,22 @@ describe('L1 DeepSeek adapter: the request', () => {
     assert.throws(() => assertDeepSeekEndpoint('POST', '/v1/anything'));
     assert.throws(() => assertDeepSeekEndpoint('DELETE', DEEPSEEK_MODELS_PATH));
     const body = buildChatBody(request());
-    assert.deepEqual(Object.keys(body).sort(), [...DEEPSEEK_REQUEST_FIELDS].sort(), 'exactly the allowlisted fields');
+    assert.deepEqual(Object.keys(body).sort(), [...DEEPSEEK_REQUEST_FIELDS].filter((f) => f !== 'reasoning_effort').sort(), 'exactly the allowlisted fields; E1 carries no effort field at all');
     assert.equal(body.model, 'deepseek-flash');
     assert.equal(body.stream, false);
     assert.equal(body.max_tokens, 512);
     assert.deepEqual(body.thinking, { type: 'disabled' });
+    assert.equal('reasoning_effort' in body, false, 'E1 → thinking disabled and no reasoning_effort (top-level or nested)');
     assert.deepEqual(body.response_format, { type: 'json_object' });
     assert.deepEqual(body.messages.map((m) => m.role), ['system', 'user', 'user'], 'a Company tool result is presented as a user message; the provider tool protocol is never used');
-    assert.deepEqual(buildChatBody(request({ reasoningClass: 'E2' })).thinking, { type: 'enabled', reasoning_effort: 'low' });
-    assert.deepEqual(buildChatBody(request({ reasoningClass: 'E3' })).thinking, { type: 'enabled', reasoning_effort: 'high' });
-    assert.deepEqual(buildChatBody(request({ reasoningClass: 'E4' })).thinking, { type: 'enabled', reasoning_effort: 'max' });
+    // The official wire shape (api-docs.deepseek.com/guides/thinking_mode): `thinking: { type: 'enabled' }` plus a
+    // TOP-LEVEL `reasoning_effort`; the effort is never nested inside `thinking` (the provider would ignore it).
+    for (const [cls, effort] of [['E2', 'low'], ['E3', 'high'], ['E4', 'max']] as const) {
+      const wire = JSON.parse(JSON.stringify(buildChatBody(request({ reasoningClass: cls })))) as Record<string, unknown>;
+      assert.deepEqual(Object.keys(wire).sort(), [...DEEPSEEK_REQUEST_FIELDS].sort(), `${cls}: exactly the allowlisted fields, effort included`);
+      assert.deepEqual(wire.thinking, { type: 'enabled' }, `${cls}: thinking carries only the switch`);
+      assert.equal(wire.reasoning_effort, effort, `${cls}: top-level reasoning_effort = ${effort}`);
+    }
     assert.throws(() => buildChatBody(request({ reasoningClass: 'E0' })), (e) => e instanceof ProviderError && e.failure === 'INVALID_REQUEST');
     assert.throws(() => buildChatBody(request({ modelCode: 'deepseek-v4-flash' })), (e) => e instanceof ProviderError && e.failure === 'INVALID_REQUEST', 'the retired alias is never sent');
     assert.throws(() => buildChatBody(request({ maxOutputTokens: 0 })), (e) => e instanceof ProviderError && e.failure === 'INVALID_REQUEST');
@@ -226,7 +232,18 @@ describe('L1 DeepSeek adapter: alias drift and identity', () => {
     const r = await adapter(t).probe(signal());
     assert.deepEqual(r, { usage: { inputTokens: 20, outputTokens: 5, cachedInputTokens: 0 }, outputChars: 11 });
     assert.deepEqual((t.requests[0]?.body as { thinking: unknown; max_tokens: number }).thinking, { type: 'disabled' });
+    assert.equal('reasoning_effort' in (t.requests[0]?.body as object), false);
     assert.equal((t.requests[0]?.body as { max_tokens: number }).max_tokens, 32);
+  });
+
+  test('a thinking-class probe sends the official thinking fields (thinking.enabled + top-level reasoning_effort) under a small ceiling', async () => {
+    const t = new FakeDeepSeekTransport().answer(fakeChatAnswer('{"ok":true}', { prompt: 20, completion: 9 }));
+    const r = await adapter(t).probe(signal(), 'E2');
+    assert.deepEqual(r, { usage: { inputTokens: 20, outputTokens: 9, cachedInputTokens: 0 }, outputChars: 11 });
+    const wire = JSON.parse(JSON.stringify(t.requests[0]?.body)) as Record<string, unknown>;
+    assert.deepEqual(wire.thinking, { type: 'enabled' });
+    assert.equal(wire.reasoning_effort, 'low');
+    assert.equal(wire.max_tokens, 1024);
   });
 });
 

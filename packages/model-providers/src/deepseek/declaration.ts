@@ -44,8 +44,16 @@ export const DEEPSEEK_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 /** Bounded request body (the Company's context budget keeps real requests far below this). */
 export const DEEPSEEK_MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 
-/** The only fields a chat request ever carries (no tools, no temperature, no stream, nothing of the Company). */
-export const DEEPSEEK_REQUEST_FIELDS = ['model', 'messages', 'max_tokens', 'stream', 'thinking', 'response_format'] as const;
+/**
+ * The only fields a chat request ever carries (no tools, no temperature, no stream, nothing of the Company).
+ * `reasoning_effort` is a top-level field of the official contract (beside `thinking: { type }`), sent only for a
+ * thinking class.
+ */
+export const DEEPSEEK_REQUEST_FIELDS = ['model', 'messages', 'max_tokens', 'stream', 'thinking', 'reasoning_effort', 'response_format'] as const;
+
+/** The probe's output ceilings: non-thinking (E1) and thinking (the ceiling bounds the thinking tokens too). */
+export const PROBE_MAX_TOKENS = 32;
+export const PROBE_THINKING_MAX_TOKENS = 1_024;
 
 /** The closed endpoint allowlist of the transport (method + exact path). */
 export const DEEPSEEK_ENDPOINTS: readonly { readonly method: 'GET' | 'POST'; readonly path: string }[] = Object.freeze([

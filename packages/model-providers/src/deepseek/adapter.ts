@@ -14,7 +14,7 @@
 import { ProviderError, type ProviderAdapter, type ProviderFailureClass, type ProviderRequest, type ProviderResponse, type ReasoningClass } from '@qandeel-company/governance';
 import { VaultError, type SecretVault } from '@qandeel-company/secret-vault';
 
-import { DEEPSEEK_CHAT_COMPLETIONS_PATH, DEEPSEEK_CREDENTIAL_REF, DEEPSEEK_EXPECTED_PUBLIC_NAME, DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_PROVIDER_CODE, DEEPSEEK_REQUEST_FIELDS, DEEPSEEK_THINKING_BY_CLASS, type DeepSeekThinkingEffort } from './declaration.js';
+import { DEEPSEEK_CHAT_COMPLETIONS_PATH, DEEPSEEK_CREDENTIAL_REF, DEEPSEEK_EXPECTED_PUBLIC_NAME, DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_PROVIDER_CODE, DEEPSEEK_REQUEST_FIELDS, DEEPSEEK_THINKING_BY_CLASS, PROBE_MAX_TOKENS, PROBE_THINKING_MAX_TOKENS, type DeepSeekThinkingEffort } from './declaration.js';
 import { DeepSeekTransportFailure, type DeepSeekResponse, type DeepSeekTransport } from './transport.js';
 
 export interface DeepSeekAdapterOptions {
@@ -32,15 +32,22 @@ export interface DeepSeekChatBody {
   readonly messages: readonly { readonly role: 'system' | 'user'; readonly content: string }[];
   readonly max_tokens: number;
   readonly stream: false;
-  readonly thinking: { readonly type: 'enabled' | 'disabled'; readonly reasoning_effort?: Exclude<DeepSeekThinkingEffort, 'none'> };
+  /** Official wire shape: `thinking` carries only the switch; the effort is the TOP-LEVEL `reasoning_effort`. */
+  readonly thinking: { readonly type: 'enabled' | 'disabled' };
+  readonly reasoning_effort?: Exclude<DeepSeekThinkingEffort, 'none'>;
   readonly response_format: { readonly type: 'json_object' };
 }
 
-/** The thinking parameter for a reasoning class: E1 disabled; E2 / E3 / E4 enabled at low / high / max. */
-export function thinkingFor(reasoningClass: ReasoningClass): DeepSeekChatBody['thinking'] {
+/**
+ * The thinking fields for a reasoning class, in the official request shape (`thinking: { type }` plus a top-level
+ * `reasoning_effort`): E1 → `thinking.disabled` and no effort field at all; E2 / E3 / E4 → `thinking.enabled` with
+ * `reasoning_effort` low / high / max beside it. Nesting the effort inside `thinking` is the wrong contract (the
+ * provider ignores it and thinks at its default effort), which the proofs, a mutation and a verifier rule refuse.
+ */
+export function thinkingFor(reasoningClass: ReasoningClass): Pick<DeepSeekChatBody, 'thinking' | 'reasoning_effort'> {
   if (reasoningClass === 'E0') throw new ProviderError('INVALID_REQUEST');
   const effort = DEEPSEEK_THINKING_BY_CLASS[reasoningClass];
-  return effort === 'none' ? { type: 'disabled' } : { type: 'enabled', reasoning_effort: effort };
+  return effort === 'none' ? { thinking: { type: 'disabled' } } : { thinking: { type: 'enabled' }, reasoning_effort: effort };
 }
 
 /**
@@ -57,7 +64,7 @@ export function buildChatBody(request: ProviderRequest): DeepSeekChatBody {
     if (typeof m.content !== 'string') throw new ProviderError('INVALID_REQUEST');
     return { role: m.role === 'system' ? ('system' as const) : ('user' as const), content: m.content };
   });
-  const body: DeepSeekChatBody = { model: DEEPSEEK_MODEL_CODE, messages, max_tokens: request.maxOutputTokens, stream: false, thinking: thinkingFor(request.reasoningClass), response_format: { type: 'json_object' } };
+  const body: DeepSeekChatBody = { model: DEEPSEEK_MODEL_CODE, messages, max_tokens: request.maxOutputTokens, stream: false, ...thinkingFor(request.reasoningClass), response_format: { type: 'json_object' } };
   for (const k of Object.keys(body)) if (!(DEEPSEEK_REQUEST_FIELDS as readonly string[]).includes(k)) throw new ProviderError('INVALID_REQUEST');
   return body;
 }
@@ -239,15 +246,19 @@ export class DeepSeekProviderAdapter implements ProviderAdapter {
     return check;
   }
 
-  /** A bounded connectivity probe: one tiny non-thinking answer; returns metering only (never the text). */
-  async probe(signal: AbortSignal = new AbortController().signal): Promise<{ usage: ProviderResponse['usage']; outputChars: number }> {
+  /**
+   * A bounded connectivity probe: one tiny answer; returns metering only (never the text). E1 (the default) is
+   * non-thinking at 32 output tokens; a thinking class sends the official thinking fields with a small ceiling that
+   * also bounds the thinking tokens (`PROBE_THINKING_MAX_TOKENS`), so a wire-contract check costs a known maximum.
+   */
+  async probe(signal: AbortSignal = new AbortController().signal, reasoningClass: Exclude<ReasoningClass, 'E0'> = 'E1'): Promise<{ usage: ProviderResponse['usage']; outputChars: number }> {
     const request: ProviderRequest = {
       providerCode: DEEPSEEK_PROVIDER_CODE,
       modelCode: DEEPSEEK_MODEL_CODE,
       deploymentCode: 'probe',
-      reasoningClass: 'E1',
+      reasoningClass,
       messages: [{ role: 'user', content: 'Reply with exactly this json object and nothing else: {"ok":true}' }],
-      maxOutputTokens: 32,
+      maxOutputTokens: reasoningClass === 'E1' ? PROBE_MAX_TOKENS : PROBE_THINKING_MAX_TOKENS,
     };
     const answer = parseChatResponse(await this.#send('POST', DEEPSEEK_CHAT_COMPLETIONS_PATH, buildChatBody(request), signal));
     this.#calls++;

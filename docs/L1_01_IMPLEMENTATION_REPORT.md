@@ -44,7 +44,7 @@ changed.
 | Source (official) | Current fact | QANDEEL consequence |
 |---|---|---|
 | `api-docs.deepseek.com/quick_start/pricing` | Models `deepseek-flash` (= DeepSeek-V4.1-Flash) and `deepseek-v4-pro`; context 1M, max output 384K; legacy `deepseek-v4-flash` still accepted but retired and served by V4.1-Flash; USD per 1M tokens: cache miss $0.30 peak / $0.15 off-peak, cache hit $0.006 / $0.003, output $1.20 / $0.60; "Peak hours are 01:00–04:00 and 06:00–10:00 UTC, Monday through Friday, excluding Chinese public holidays. All other hours are off-peak, including weekends and Chinese public holidays in full." Off-peak = half of peak | Alias `deepseek-flash` only (the retired alias is refused at the adapter); conservative Company limits, never 1M / 384K; the versioned pricing basis `DEEPSEEK_FLASH_PRICE_CARD` + schedule (D-L1-04); peak + all-cache-miss reservation; actual settlement by band |
-| `api-docs.deepseek.com/api/create-chat-completion` | `POST https://api.deepseek.com/chat/completions`, `Authorization: Bearer`; roles system / user / assistant / tool; `max_tokens` 1..393 216 (default 8K non-thinking, 64K thinking, 128K at max); `thinking: { type: enabled \| disabled, reasoning_effort: none \| low \| high \| max }`; `response_format` text / json_object; response `model`, `created`, `choices[].message.content`, `choices[].message.reasoning_content`, `finish_reason` stop / length / content_filter / tool_calls / insufficient_system_resource / aborted; usage `prompt_tokens`, `completion_tokens`, `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, `prompt_tokens_details.cached_tokens`, `completion_tokens_details.reasoning_tokens` | Fixed origin + endpoint; `stream: false`; E1 → disabled, E2 / E3 / E4 → low / high / max; JSON mode for the one-JSON proposal contract; only `content` + `usage` read; finish reasons mapped (CONTENT_POLICY, CAPACITY, UNKNOWN, CONTRACT_VIOLATION); hit + miss must sum to the prompt |
+| `api-docs.deepseek.com/api/create-chat-completion` | `POST https://api.deepseek.com/chat/completions`, `Authorization: Bearer`; roles system / user / assistant / tool; `max_tokens` 1..393 216 (default 8K non-thinking, 64K thinking, 128K at max); `thinking: { type: enabled \| disabled }` plus the top-level `reasoning_effort: low \| high \| max` (guides/thinking_mode; the first draft nested the effort inside `thinking` — corrected by D-L1-10 after the PR #17 review); `response_format` text / json_object; response `model`, `created`, `choices[].message.content`, `choices[].message.reasoning_content`, `finish_reason` stop / length / content_filter / tool_calls / insufficient_system_resource / aborted; usage `prompt_tokens`, `completion_tokens`, `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, `prompt_tokens_details.cached_tokens`, `completion_tokens_details.reasoning_tokens` | Fixed origin + endpoint; `stream: false`; E1 → disabled, E2 / E3 / E4 → low / high / max; JSON mode for the one-JSON proposal contract; only `content` + `usage` read; finish reasons mapped (CONTENT_POLICY, CAPACITY, UNKNOWN, CONTRACT_VIOLATION); hit + miss must sum to the prompt |
 | `api-docs.deepseek.com/guides/thinking_mode` | Thinking on by default at `high`; effort `low` / `high` / `max`; `reasoning_content` must be passed back only when `tools` are used (the Company never sends tools) | The adapter sets thinking explicitly per class and never reads the thinking field |
 | `api-docs.deepseek.com/guides/json_mode` | `response_format: {type: json_object}`; the word "json" must appear in the prompt; set `max_tokens` reasonably; the API "may occasionally return empty content" | The stable prefix says "as JSON"; empty content is returned as the provider's answer and refused by the proposal layer (one evidence-based escalation), not a deployment hold |
 | `api-docs.deepseek.com/quick_start/error_codes` | 400 Invalid Format, 401 Authentication Fails, 402 Insufficient Balance, 422 Invalid Parameters, 429 Rate Limit Reached, 500 Server Error, 503 Server Overloaded | 400 / 422 INVALID_REQUEST, 401 AUTH, 402 BILLING, 429 RATE_LIMITED, 500 TRANSIENT, 503 CAPACITY; anything else UNKNOWN |
@@ -120,7 +120,7 @@ survives; nothing of the Company reaches the provider except the governed contex
   (`POST /chat/completions`, `GET /models` only); failures carry a phase only (BEFORE_SEND / AFTER_SEND / TIMEOUT).
 - `DeepSeekProviderAdapter.generate`: `buildChatBody` — `model: deepseek-flash`, messages (system → system, user → user,
   Company `tool` results → user; the provider's tool protocol is never used), `max_tokens` = the enforced ceiling,
-  `stream: false`, `thinking` from the reasoning class, `response_format: json_object`; exactly the six allowlisted fields
+  `stream: false`, `thinking: { type }` plus the top-level `reasoning_effort` from the reasoning class (E1: no effort field), `response_format: json_object`; exactly the seven allowlisted fields
   (a leak of the `ProviderRequest` is a mutation the proofs catch). Credential: `vault.use('vault:deepseek-company', …)`
   per call; no entry → AUTH (operational hold), nothing sent.
 - `parseChatResponse`: `oversize` / `malformed` / non-object / another `model` / unusable usage / inconsistent cache
@@ -224,8 +224,9 @@ network, retry / fallback unchanged, CoT never persisted).
 
 ## 16. Mutations
 
-`scripts/l1-mutation-check.mjs`: 25 mutations (vault 3, request boundary 6, the recorded-message gate 1, response
-boundary 3, failures 3, alias drift 2, accounting 6, egress 1) — 25 / 25 caught locally (the first egress mutation was redundant with the C2
+`scripts/l1-mutation-check.mjs`: 27 mutations (vault 3, request boundary 8 — including the nested-effort and the
+unlisted-effort wire-contract gates of D-L1-10 —, the recorded-message gate 1, response boundary 3, failures 3, alias
+drift 2, accounting 6, egress 1) — 27 / 27 caught locally (the first egress mutation was redundant with the C2
 `EGRESS_NOT_APPROVED` gate and was replaced by the profile-level D3 / D4 refusal). CI: one shard per operating system
 (the suite runs in about 4 minutes locally), counted by the quality gate.
 
@@ -251,7 +252,7 @@ was rebalanced and the 45-minute ceiling was not raised; the L1 shard is small.
 
 ## 19. Focused validation (during implementation)
 
-- L1 suites 4 + 7 + 6 + 4 + 5 = 26 / 26; mutations 25 / 25; verifier 99 / 99; ESLint `--max-warnings=0` clean.
+- L1 suites 4 + 8 + 6 + 4 + 5 = 27 / 27; mutations 27 / 27; verifier 99 / 99; ESLint `--max-warnings=0` clean.
 - Full suites of the touched packages re-run after the kernel / storage / runtime changes (see the PR handoff for the
   final-gate numbers).
 - After the R1 repin: R1 65 / 65, C4 42 / 42, C5 32 / 32, C6 92 / 92 on the built tree (the broader sweep was stopped by
@@ -283,6 +284,13 @@ and the HTTPS socket were still closing); the command and the smoke harness now 
 393,216 (both above the Company's class ceilings, which stay the binding limits). Identity check `72050145-b330-…`
 recorded in the disposable workspace. Probe: 43 prompt tokens, 5 completion tokens, 0 cache hits, 11 output characters,
 peak worst-case reservation 59 micro-USD; the answer text was neither printed nor stored.
+
+**Thinking wire contract, live (D-L1-10, after the PR #17 review).** `provider-check --provider deepseek --probe
+--probe-class E2` at 2026-10-05T20:56:34Z: identity MATCH again (check `3353fcd5-…`), then one bounded E2 probe with the
+corrected shape (`thinking: { type: "enabled" }` + top-level `reasoning_effort: "low"`, `max_tokens` 1,024): accepted by
+the provider — 67 prompt tokens, 26 completion tokens (thinking tokens are billed inside completion tokens: 26 against
+the non-thinking probe's 5 for the same 11-character answer), 0 cache hits, peak worst case 1,249 micro-USD, exit 0. No
+governed run used a thinking class yet; the pilot stays on E1.
 
 **Bounded live qualification (smoke harness, caps visible before the call).** Identity MATCH re-checked and recorded;
 the profile provisioned through the canonical catalog APIs: four deployments E1–E4 at LIMITED_PRODUCTION, egress D2,

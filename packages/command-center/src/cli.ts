@@ -12,11 +12,12 @@
  *   launch --workspace <dir>
  *         mints a fresh launch token for an already-running surface and prints its URL (same workspace,
  *         same Windows user: the file boundary is the trust anchor).
- *   provider-check --workspace <dir> --provider deepseek [--probe]
+ *   provider-check --workspace <dir> --provider deepseek [--probe] [--probe-class E1|E2|E3|E4]
  *         the operator's content-free identity check (L1-01, D-L1-05): resolves the vault reference, asks
  *         the provider what the model alias currently names, records the verdict in the workspace (a system
- *         fact, never Founder authority) and prints it. `--probe` adds one tiny bounded non-thinking call
- *         and prints its metering only. Prints no model text, no key, no provider body.
+ *         fact, never Founder authority) and prints it. `--probe` adds one tiny bounded call (non-thinking by
+ *         default; `--probe-class E2|E3|E4` sends the official thinking fields under a small ceiling, to
+ *         qualify the wire contract) and prints its metering only. Prints no model text, no key, no body.
  *
  * Output is content-free JSON. A Founder reference typed on the command line is never authentication:
  * this CLI has no approve / reject / register command.
@@ -28,14 +29,14 @@ import { parseArgs } from 'node:util';
 
 import { isQandeelError } from '@qandeel-company/domain';
 import { worstCase, type ProviderAdapter, type ProviderProvisioningProfile } from '@qandeel-company/governance';
-import { DEEPSEEK_FLASH_PRICE_CARD, DEEPSEEK_MODEL_CODE, DEEPSEEK_PROVIDER_CODE, DEEPSEEK_V41_FLASH_PROFILE, DeepSeekHttpsTransport, DeepSeekProviderAdapter } from '@qandeel-company/model-providers';
+import { DEEPSEEK_FLASH_PRICE_CARD, DEEPSEEK_MODEL_CODE, DEEPSEEK_PROVIDER_CODE, DEEPSEEK_V41_FLASH_PROFILE, DeepSeekHttpsTransport, DeepSeekProviderAdapter, PROBE_MAX_TOKENS, PROBE_THINKING_MAX_TOKENS } from '@qandeel-company/model-providers';
 import { Logger, jsonLinesSink } from '@qandeel-company/runtime';
 import { VaultError, WindowsUserVault } from '@qandeel-company/secret-vault';
 import { CompanyStore, FounderAuthStore, GovernanceStore } from '@qandeel-company/storage';
 
 import { FounderSurface } from './surface.js';
 
-const USAGE = 'usage: qandeel-founder <serve|launch|provider-check> --workspace <dir> [--port <n>] [--fake-provider <code>] [--provider deepseek] [--probe]';
+const USAGE = 'usage: qandeel-founder <serve|launch|provider-check> --workspace <dir> [--port <n>] [--fake-provider <code>] [--provider deepseek] [--probe] [--probe-class E1|E2|E3|E4]';
 
 function out(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -55,7 +56,8 @@ function liveProvider(code: string): { adapter: ProviderAdapter & DeepSeekProvid
 
 export async function main(argv: readonly string[]): Promise<void> {
   const [command, ...rest] = argv;
-  const { values } = parseArgs({ args: rest, strict: true, options: { workspace: { type: 'string' }, port: { type: 'string' }, 'fake-provider': { type: 'string', multiple: true }, 'fake-driver': { type: 'string', multiple: true }, provider: { type: 'string', multiple: true }, probe: { type: 'boolean', default: false } } });
+  const { values } = parseArgs({ args: rest, strict: true, options: { workspace: { type: 'string' }, port: { type: 'string' }, 'fake-provider': { type: 'string', multiple: true }, 'fake-driver': { type: 'string', multiple: true }, provider: { type: 'string', multiple: true }, probe: { type: 'boolean', default: false }, 'probe-class': { type: 'string', default: 'E1' } } });
+  if (!['E1', 'E2', 'E3', 'E4'].includes(values['probe-class'] as string)) fail('USAGE', '--probe-class takes E1, E2, E3 or E4', 2);
   if (command === undefined || values.workspace === undefined) fail('USAGE', USAGE, 2);
   const workspace = path.resolve(values.workspace);
   switch (command) {
@@ -108,10 +110,11 @@ export async function main(argv: readonly string[]): Promise<void> {
         const record = gov.recordModelIdentityCheck({ providerCode: profile.provider.code, modelCode: profile.model.code, expectedName: profile.model.expectedPublicName, observedName: check.observedName, observedContextWindow: check.observedContextWindow, observedMaxOutputTokens: check.observedMaxOutputTokens, result: check.result });
         const result: Record<string, unknown> = { ok: check.result === 'MATCH', command, provider: profile.provider.code, model: DEEPSEEK_MODEL_CODE, credentialRef: adapter.credentialRef, result: check.result, expectedName: check.expectedName, observedName: check.observedName, observedContextWindow: check.observedContextWindow, observedMaxOutputTokens: check.observedMaxOutputTokens, checkId: record.id, checkedAt: record.checkedAt };
         if (values.probe && check.result === 'MATCH') {
-          const probe = await adapter.probe();
+          const probeClass = values['probe-class'] as 'E1' | 'E2' | 'E3' | 'E4';
+          const probe = await adapter.probe(undefined, probeClass);
           const card = { id: 'profile', version: 0, ...DEEPSEEK_FLASH_PRICE_CARD };
-          const reserved = worstCase(card, 64, 32);
-          result.probe = { usage: probe.usage, outputChars: probe.outputChars, peakWorstCaseMicros: reserved.billedMicros, note: 'metering only; the answer text is never printed or stored' };
+          const reserved = worstCase(card, 64, probeClass === 'E1' ? PROBE_MAX_TOKENS : PROBE_THINKING_MAX_TOKENS);
+          result.probe = { reasoningClass: probeClass, usage: probe.usage, outputChars: probe.outputChars, peakWorstCaseMicros: reserved.billedMicros, note: 'metering only; the answer text is never printed or stored' };
         }
         out(result);
         // The exit status is set, never forced: the vault's PowerShell child and the HTTPS socket close on their own

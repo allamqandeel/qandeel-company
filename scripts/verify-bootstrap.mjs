@@ -356,6 +356,10 @@ const L1_GOVERNED_TRIGGERS = ['price_card_schedules_immutable_u', 'price_card_sc
 const L1_THINKING_FIELD = /\breasoning_content\b/;
 /** A thinking-mode effort table: E1 none, E2 low, E3 high, E4 max (the Founder-approved pilot mapping). */
 const L1_THINKING_TABLE = /DEEPSEEK_THINKING_BY_CLASS[^=]*=\s*Object\.freeze\(\{\s*E1:\s*'none',\s*E2:\s*'low',\s*E3:\s*'high',\s*E4:\s*'max'\s*\}\)/;
+/** The top-level `reasoning_effort` request field is allowlisted (the official thinking-mode wire shape). */
+const L1_EFFORT_ALLOWLISTED = /DEEPSEEK_REQUEST_FIELDS\s*=\s*\[[^\]]*'reasoning_effort'/;
+/** The effort nested inside the `thinking` object: the wrong contract (ignored by the provider). */
+const L1_EFFORT_NESTED = /thinking:\s*\{[^}]*reasoning_effort/;
 const C7D_CLAIMED_BUILT = /QANDEEL\s+website\s+(?:is|was|has\s+been)\s+(?:built|launched|published|live|deployed)|(?:selected|chose|chosen|picked)\s+(?:vercel|netlify|cloudflare|wordpress|webflow|next\.?js|instagram|linkedin|google\s+analytics)\b/i;
 // No private App content, secret or score column on a Pilot table.
 const C7C_FORBIDDEN_COLUMN = /^\s*"?(\w*(?:transcript|audio|prompt|conversation|memory|analysis|user_?(?:id|ref)|pseudonym|secret|token|credential|password|score|rank|rating|grade)\w*)"?\s+(?:TEXT|BLOB|ANY|INTEGER|REAL)\b/im;
@@ -569,7 +573,7 @@ const MUTATION_PINS = {
     script: 'l1:mutation',
     ids: [
       'l1-vault-plaintext', 'l1-vault-secret-on-command-line', 'l1-vault-piped-secret-accepted',
-      'l1-provider-arbitrary-url', 'l1-provider-follows-redirect', 'l1-provider-endpoint-allowlist-removed', 'l1-thinking-e4-not-max', 'l1-request-leaks-provider-request', 'l1-reasoning-class-dropped', 'l1-recorded-message-does-not-end-run',
+      'l1-provider-arbitrary-url', 'l1-provider-follows-redirect', 'l1-provider-endpoint-allowlist-removed', 'l1-thinking-e4-not-max', 'l1-request-leaks-provider-request', 'l1-reasoning-effort-nested-in-thinking', 'l1-reasoning-effort-not-allowlisted', 'l1-reasoning-class-dropped', 'l1-recorded-message-does-not-end-run',
       'l1-other-model-answer-accepted', 'l1-cache-report-inconsistent-accepted', 'l1-non-string-content-accepted',
       'l1-401-retried', 'l1-402-transient', 'l1-timeout-marked-not-sent',
       'l1-alias-drift-ignored-adapter', 'l1-alias-drift-ignored-provisioning',
@@ -1977,6 +1981,11 @@ export const RULES = [
       }
       const decl = read(L1_DECLARATION);
       if (decl !== undefined && !L1_THINKING_TABLE.test(decl)) problems.push(`${L1_DECLARATION}: the E1–E4 thinking table is not exactly none / low / high / max`);
+      // The official wire shape: `thinking: { type }` plus a TOP-LEVEL `reasoning_effort` (allowlisted as a request
+      // field); an effort nested inside `thinking` is silently ignored by the provider.
+      if (decl !== undefined && !L1_EFFORT_ALLOWLISTED.test(decl)) problems.push(`${L1_DECLARATION}: reasoning_effort is not an allowlisted top-level request field`);
+      const adapterCode = (read(L1_ADAPTER) ?? '').replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, '');
+      if (L1_EFFORT_NESTED.test(adapterCode)) problems.push(`${L1_ADAPTER} nests reasoning_effort inside thinking (the official contract carries it top-level)`);
       if (decl !== undefined && !/DEEPSEEK_MODEL_CODE = 'deepseek-flash'/.test(decl)) problems.push(`${L1_DECLARATION}: the model alias is not deepseek-flash`);
       for (const f of files.filter((x) => /^packages\/[^/]+\/src\//.test(x) && isCode(x))) {
         const code = (read(f) ?? '').replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, '');
@@ -2420,6 +2429,8 @@ const VIOLATIONS = {
     { contents: { [L1_DECLARATION]: "export const DEEPSEEK_API_ORIGIN = 'https://api.deepseek.com';\nexport const DEEPSEEK_MODEL_CODE = 'deepseek-flash';\nexport const DEEPSEEK_THINKING_BY_CLASS = Object.freeze({ E1: 'none', E2: 'low', E3: 'high', E4: 'high' });\n" } },
     { contents: { [L1_ADAPTER]: "const out = { outputText: m.content, reasoning_content: m.reasoning_content };\n" } },
     { contents: { [L1_ADAPTER]: "const body = { model, messages, tools: [{ type: 'function' }] };\n" } },
+    { contents: { [L1_ADAPTER]: "return effort === 'none' ? { thinking: { type: 'disabled' } } : { thinking: { type: 'enabled', reasoning_effort: effort } };\n" } },
+    { contents: { [L1_DECLARATION]: "export const DEEPSEEK_API_ORIGIN = 'https://api.deepseek.com';\nexport const DEEPSEEK_MODEL_CODE = 'deepseek-flash';\nexport const DEEPSEEK_THINKING_BY_CLASS = Object.freeze({ E1: 'none', E2: 'low', E3: 'high', E4: 'max' });\nexport const DEEPSEEK_REQUEST_FIELDS = ['model', 'messages', 'max_tokens', 'stream', 'thinking', 'response_format'];\n" } },
     { contents: { 'packages/model-providers/src/deepseek/extra.ts': "const r = await fetch('https://other.example/v1');\n" } },
     { contents: { 'packages/model-providers/src/deepseek/extra.ts': "import { GovernanceStore } from '@qandeel-company/storage';\n" } },
     { contents: { 'packages/runtime/src/c2/leak.ts': "const cot = answer.reasoning_content;\n" } },

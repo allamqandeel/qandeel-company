@@ -3456,7 +3456,8 @@ DeepSeek Pro fallback, no DeepSeek tools, no voice, no APP-OPS transport and no 
 refresh (2026-10-05, `https://api-docs.deepseek.com/`: pricing, create-chat-completion, error codes, thinking mode,
 list-models, JSON mode, the 2026-09-10 release note and the change log): `deepseek-flash` names DeepSeek-V4.1-Flash
 (released 2026-09-10; `deepseek-v4-flash` is retired and temporarily routed to it); base `https://api.deepseek.com`,
-Bearer auth, `/chat/completions` with `thinking: { type, reasoning_effort: none | low | high | max }` (default thinking
+Bearer auth, `/chat/completions` with `thinking: { type }` plus a top-level `reasoning_effort: low | high | max`
+(corrected by D-L1-10; the first draft nested the effort inside `thinking`) (default thinking
 on at `high`), `max_tokens` 1..393 216 (defaults 8K non-thinking / 64K thinking), usage `prompt_tokens`,
 `completion_tokens` (reasoning tokens included; `completion_tokens_details.reasoning_tokens`), `prompt_cache_hit_tokens`,
 `prompt_cache_miss_tokens`; `GET /models` returns the display `name`; error codes 400 / 401 / 402 / 422 / 429 / 500 / 503;
@@ -3569,3 +3570,18 @@ evidence) as soon as the fence records that message. A REFUSED message (no threa
 material) keeps today's loop. The proof's fake model now never proposes FINAL and the mutation
 `l1-recorded-message-does-not-end-run` shows the gate is real. No routing, authority or budget rule changes; the
 Founder-thread guidance says "one MESSAGE is the whole answer: the run ends when it is recorded".
+
+## D-L1-10 — The official thinking wire shape: `thinking: { type }` plus a top-level `reasoning_effort` (executor; PR #17 review BLOCKER)
+
+The first adapter draft nested the effort inside the thinking object (`thinking: { type: 'enabled', reasoning_effort }`),
+and its proofs encoded that same shape, so a green gate could not see the defect. The official thinking-mode guide
+(`api-docs.deepseek.com/guides/thinking_mode`, OpenAI-compatible format) carries the switch in `thinking: { type }`
+and the effort as the TOP-LEVEL request field `reasoning_effort: low | high | max`; nested, the provider ignores it and
+E2 / E3 / E4 would silently think at the default effort while the Company reserved and billed for the class it
+believed it chose. The adapter now sends the official shape (E1: `thinking.disabled` and no effort field at all;
+E2 / E3 / E4: `thinking.enabled` + top-level low / high / max), `reasoning_effort` is an allowlisted request field,
+the proofs assert the exact wire JSON for every class, two mutations (`l1-reasoning-effort-nested-in-thinking`,
+`l1-reasoning-effort-not-allowlisted`) and the verifier rule `l1-provider-boundary` refuse the nested or unlisted
+shape, and `provider-check --probe --probe-class E2` sends one bounded thinking probe (a 1,024-token ceiling that also
+bounds the thinking tokens) so the corrected contract is qualified live before any governed thinking call. No routing,
+pricing, egress or authority rule changes; E1 (the pilot's live class) is unaffected on the wire.
