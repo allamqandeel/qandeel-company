@@ -243,4 +243,7 @@ if (!values.keep && existsSync(path.join(sandbox, MARKER))) {
   if (preExisting) for (const entry of [MARKER, 'company']) rmSync(path.join(sandbox, entry), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   else rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
-process.exit(failed ? 1 : 0);
+// The status is set, not forced: the vault's PowerShell child and the HTTPS sockets close on their own (a hard exit while
+// they close trips the runtime's handle assertion on Windows). A bounded unref'd fallback still ends a stuck process.
+process.exitCode = failed ? 1 : 0;
+setTimeout(() => process.exit(failed ? 1 : 0), 10_000).unref();

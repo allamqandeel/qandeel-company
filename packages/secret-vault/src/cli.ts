@@ -87,7 +87,8 @@ export async function main(argv: readonly string[]): Promise<void> {
       const secret = await promptHidden(`Enter the secret for vault:${n} (input is hidden, Enter to finish): `);
       assertSecretValue(secret);
       const r = await vault.set(n, secret, { replace: values.replace });
-      out({ ok: true, command, ref: r.ref, kind: vault.kind, file: r.file, replaced: values.replace });
+      // `chars` is the only shape fact printed (never the value): a doubled paste or a stray character shows at once.
+      out({ ok: true, command, ref: r.ref, kind: vault.kind, file: r.file, replaced: values.replace, chars: secret.length });
       return;
     }
     case 'has': {

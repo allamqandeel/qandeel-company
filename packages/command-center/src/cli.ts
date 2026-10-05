@@ -114,7 +114,9 @@ export async function main(argv: readonly string[]): Promise<void> {
           result.probe = { usage: probe.usage, outputChars: probe.outputChars, peakWorstCaseMicros: reserved.billedMicros, note: 'metering only; the answer text is never printed or stored' };
         }
         out(result);
-        if (check.result !== 'MATCH') process.exit(1);
+        // The exit status is set, never forced: the vault's PowerShell child and the HTTPS socket close on their own
+        // (a hard exit while those handles close trips the runtime's handle assertion on Windows).
+        if (check.result !== 'MATCH') process.exitCode = 1;
       } finally {
         store.close();
       }
