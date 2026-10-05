@@ -1,0 +1,28 @@
+{
+  "name": "@qandeel-company/model-providers",
+  "version": "0.1.0",
+  "private": true,
+  "description": "L1-01 real model-provider adapters behind the existing provider-neutral ProviderAdapter contract: the DeepSeek adapter (fixed https://api.deepseek.com origin, bounded non-streaming Chat Completions, E1–E4 → bounded thinking profiles, credential resolved privately from the vault per call, final content + normalized usage only — never chain-of-thought, headers, bearer or raw bodies), its identity qualification check (alias drift fails closed), the release-pinned DeepSeek V4.1 Flash provisioning profile and versioned pricing basis, and a deterministic fake transport for CI. Called only by the governed Model Runtime.",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=24.12.0 <25.0.0"
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node ../../scripts/run-node-tests.mjs"
+  },
+  "dependencies": {
+    "@qandeel-company/domain": "0.1.0",
+    "@qandeel-company/governance": "0.2.0",
+    "@qandeel-company/secret-vault": "0.1.0"
+  }
+}
