@@ -10,6 +10,8 @@
     "packages/domain",
     "packages/governance",
     "packages/mind",
+    "packages/secret-vault",
+    "packages/model-providers",
     "packages/tool-drivers",
     "packages/storage",
     "packages/runtime",
@@ -31,7 +33,7 @@
     "c1:faults": "npm run test:faults --workspace @qandeel-company/runtime",
     "c1:acceptance": "node scripts/c1-acceptance.mjs",
     "c1:mutation": "node scripts/c1-mutation-check.mjs",
-    "ci": "npm run build && npm run typecheck && npm run lint && npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation && npm run c6:mutation && npm run c7a:mutation && npm run c7b:mutation && npm run c7c:mutation && npm run c7d:mutation && npm run verify",
+    "ci": "npm run build && npm run typecheck && npm run lint && npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation && npm run c6:mutation && npm run c7a:mutation && npm run c7b:mutation && npm run c7c:mutation && npm run c7d:mutation && npm run l1:mutation && npm run verify",
     "c2:mutation": "node scripts/c2-mutation-check.mjs",
     "c2:acceptance": "node --conditions=qandeel-test scripts/c2-acceptance.mjs",
     "c3:mutation": "node scripts/c3-mutation-check.mjs",
@@ -48,7 +50,9 @@
     "c7a:mutation": "node scripts/c7a-mutation-check.mjs",
     "c7b:mutation": "node scripts/c7b-mutation-check.mjs",
     "c7c:mutation": "node scripts/c7c-mutation-check.mjs",
-    "c7d:mutation": "node scripts/c7d-mutation-check.mjs"
+    "c7d:mutation": "node scripts/c7d-mutation-check.mjs",
+    "l1:mutation": "node scripts/l1-mutation-check.mjs",
+    "l1:smoke": "node --conditions=qandeel-test scripts/l1-deepseek-smoke.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
