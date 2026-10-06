@@ -537,3 +537,6 @@ button.chip:hover { background: var(--paper); border-color: rgba(29, 27, 38, 0.2
 .activation .act-eval label { display: flex; flex-direction: column; gap: 0.15rem; }
 .activation .act-hire input, .activation .act-hire select { margin: 0.2rem 0.3rem 0.2rem 0; }
 .activation .act-shadow { margin: 0.5rem 0; }
+/* L1-02: a tall structured preview (many facts) scrolls inside the dialog; Confirm / Cancel always stay reachable. */
+.preview { max-height: calc(100% - 24px); overflow-y: auto; }
+.preview .preview-actions { position: sticky; bottom: -22px; background: var(--surface-strong); padding: 10px 0 4px; }

@@ -14,7 +14,15 @@ const timeOnly = new Intl.DateTimeFormat(LOCALE, { timeStyle: 'short' });
 const relative = new Intl.RelativeTimeFormat(LOCALE, { numeric: 'auto' });
 
 export const fmtNumber = (n: number): string => numberFormat.format(n);
-export const fmtMoneyMicros = (micros: number, currency: string): string => new Intl.NumberFormat(LOCALE, { style: 'currency', currency, currencyDisplay: 'code', maximumFractionDigits: 0, signDisplay: 'never' }).format(Math.max(0, Number.isFinite(micros) ? micros : 0) / 1_000_000);
+/**
+ * A money amount from micro-units. Precision follows the magnitude, so a live sub-unit amount is never rounded into a
+ * different figure (L1-02: a USD 0.50 cap used to read "USD 1"; a benchmark costing USD 0.0123 read "USD 0").
+ */
+export const fmtMoneyMicros = (micros: number, currency: string): string => {
+  const units = Math.max(0, Number.isFinite(micros) ? micros : 0) / 1_000_000;
+  const digits = units >= 1_000 ? 0 : units >= 1 ? 2 : 4;
+  return new Intl.NumberFormat(LOCALE, { style: 'currency', currency, currencyDisplay: 'code', minimumFractionDigits: 0, maximumFractionDigits: digits, signDisplay: 'never' }).format(units);
+};
 
 /** "1 department", "3 departments". */
 export const plural = (n: number, one: string, other: string): string => `${fmtNumber(n)} ${n === 1 ? one : other}`;
