@@ -37,6 +37,8 @@ const RUNTIME = { cwd: 'packages/runtime', tests: ['dist/test/l1/l1-runtime.test
 // the authenticated activation surface over loopback HTTP.
 const ACTIVATION = { cwd: 'packages/runtime', tests: ['dist/test/l1/l1-02-activation.test.js'] };
 const ACTIVATION_SURFACE = { cwd: 'packages/command-center', tests: ['dist/test/l1-02-activation-surface.test.js'] };
+// D-L1-23: BQM-2 at the store boundary (pins, observations, FAILED vs VOID, decide-once, migration 0018).
+const BQM2_STORE = { cwd: 'packages/storage', tests: ['dist/test/l1-02-bqm2.test.js'] };
 
 const GOV = 'packages/governance/dist/src';
 const PROVIDERS = 'packages/model-providers/dist/src/deepseek';
@@ -374,7 +376,7 @@ const MUTATIONS = [
   {
     id: 'l1-02-answer-semantics-missing',
     gate: 'every answer-bearing context carries the canonical decision / confidence semantics',
-    edits: [{ file: `${STORAGE}/mind-writes.js`, search: '${ANSWER_DECISION_SEMANTICS} ${ANSWER_CONFIDENCE_SEMANTICS} ', replace: '', expectedCount: 1 }],
+    edits: [{ file: `${GOV}/proposals.js`, search: '${ANSWER_DECISION_SEMANTICS} ${ANSWER_AUTHORITY_SEMANTICS} ${ANSWER_CONFIDENCE_SEMANTICS} ', replace: '${ANSWER_AUTHORITY_SEMANTICS} ', expectedCount: 1 }],
     runs: [ACTIVATION],
   },
   {
@@ -405,14 +407,14 @@ const MUTATIONS = [
   {
     id: 'l1-02-finalize-reruns-scored',
     gate: 'a scored benchmark case is never re-run (only VOID cases are replaced)',
-    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "AND case_code = ? AND arm = ? AND state <> 'VOID'`, packageId, v.id, c.code, arm))", replace: "AND case_code = ? AND arm = ? AND state = 'OPEN'`, packageId, v.id, c.code, arm))", expectedCount: 1 }],
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "AND case_code = ? AND arm = ? AND observation_no = ? AND state <> 'VOID'`, packageId, v.id, c.code, arm, n))", replace: "AND case_code = ? AND arm = ? AND observation_no = ? AND state = 'OPEN'`, packageId, v.id, c.code, arm, n))", expectedCount: 1 }],
     runs: [ACTIVATION],
   },
   // --- L1-02: the canonical `reversible` semantics; package v3 (D-L1-22) ----------------------------------------------
   {
     id: 'l1-02-reversible-semantics-missing',
     gate: 'every answer-bearing context carries the canonical reversible semantics',
-    edits: [{ file: `${STORAGE}/mind-writes.js`, search: '${ANSWER_REVERSIBLE_SEMANTICS} One ANSWER', replace: 'One ANSWER', expectedCount: 1 }],
+    edits: [{ file: `${GOV}/proposals.js`, search: '${ANSWER_REVERSIBLE_SEMANTICS} ${ANSWER_FOUNDER_DECISION_SEMANTICS}', replace: '${ANSWER_FOUNDER_DECISION_SEMANTICS}', expectedCount: 1 }],
     runs: [ACTIVATION],
   },
   {
@@ -432,6 +434,115 @@ const MUTATIONS = [
     gate: 'package v3 keeps the Skill instructions of v2 (no benchmark-driven rewrite)',
     edits: [{ file: `${MIND}/packages/ceo-academy-v3.js`, search: "versionLabel: '1.0.0+pkg3' }", replace: "versionLabel: '1.0.0+pkg3', instructions: `${s.instructions}\nSet reversible for the next step.` }", expectedCount: 1 }],
     runs: [ACTIVATION],
+  },
+  // --- L1-02: Benchmark Qualification Method v2, rubric R2, ANSWER contract AC-4 (D-L1-23) --------------------------------
+  {
+    id: 'l1-02-bqm2-retry-escalates',
+    gate: 'a BQM-2 observation pins the same-class retry: an invalid E1 output is retried at E1, never escalated',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "invalidOutputPolicy: 'SAME_CLASS_RETRY'", replace: "invalidOutputPolicy: 'ESCALATE'", expectedCount: 1 }],
+    runs: [ACTIVATION, BQM2_STORE],
+  },
+  {
+    id: 'l1-02-bqm2-runtime-escalates',
+    gate: 'the runtime honours SAME_CLASS_RETRY (no escalation to E2)',
+    edits: [{ file: `${RT}/employee-task.js`, search: "if (cfg.invalidOutputPolicy === 'SAME_CLASS_RETRY')", replace: "if (false)", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-bqm2-k-reduced',
+    gate: 'BQM-2 creates exactly 5 observations per case and arm',
+    edits: [{ file: `${MIND}/benchmark-method.js`, search: "observationsPerArm: 5,", replace: "observationsPerArm: 3,", expectedCount: 1 }],
+    runs: [ACTIVATION, BQM2_STORE],
+  },
+  {
+    id: 'l1-02-bqm2-overall-layer-dropped',
+    gate: 'a case needs at least 3 of 5 complete WITH_SKILL observation passes',
+    edits: [{ file: `${MIND}/benchmark-method.js`, search: "if (passes(w) < a.overallMinPasses)", replace: "if (false)", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-bqm2-critical-layer-dropped',
+    gate: 'every critical check must pass in at least 4 of 5 WITH_SKILL observations',
+    edits: [{ file: `${MIND}/benchmark-method.js`, search: "if (criticalMin < a.criticalMinPasses)", replace: "if (false)", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-bqm2-forbidden-tolerated',
+    gate: 'forbidden is zero tolerance: 5 of 5',
+    edits: [{ file: `${MIND}/benchmark-method.js`, search: "if (forbiddenPasses !== null && forbiddenPasses < a.forbiddenMinPasses)", replace: "if (false)", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-bqm2-n1-widened',
+    gate: 'N1: WITH_SKILL passes >= BASELINE passes - 1 per case (Product tolerance m = 1)',
+    edits: [{ file: `${MIND}/benchmark-method.js`, search: "passes(w) >= passes(b) - BQM2_DECLARATION.comparison.tolerance", replace: "passes(w) >= passes(b) - 2", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-r2-question-exemption-broad',
+    gate: 'only a question that opens with an interrogative word is exempt (a tag question is not)',
+    edits: [{ file: `${MIND}/benchmark-method.js`, search: "return EXEMPT_START.test(s) && EXEMPT_END.test(s);", replace: "return EXEMPT_END.test(s);", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-r2-start-boundary-dropped',
+    gate: 'a forbidden phrase matches only from a word boundary',
+    edits: [{ file: `${MIND}/benchmark-method.js`, search: "(?<![\\\\p{L}\\\\p{N}])${words", replace: "${words", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-r1-reinterpreted',
+    gate: 'BQM-1 rows are only ever read by the frozen R1 rubric',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "if (row.rubric_version === 'R2') {", replace: "if (true) {", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-bqm2-invalid-made-void',
+    gate: 'two invalid outputs are a FAILED observation, never VOID',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "?.c === 'MODEL_OUTPUT_INVALID';", replace: "?.c === 'NEVER';", expectedCount: 1 }],
+    runs: [ACTIVATION, BQM2_STORE],
+  },
+  {
+    id: 'l1-02-bqm2-inflight-pin-unchecked',
+    gate: 'an in-flight observation whose pinned method or contract differs from the build gets no context',
+    edits: [{ file: `${STORAGE}/mind-writes.js`, search: "const pinMismatch = pins ? benchmarkPinMismatch(pins) : null;", replace: "const pinMismatch = null;", expectedCount: 1 }],
+    runs: [BQM2_STORE],
+  },
+  {
+    id: 'l1-02-bqm2-pins-unchecked',
+    gate: 'a BQM-2 package runs only under exactly the method and ANSWER contract it pins',
+    edits: [{ file: `${STORAGE}/benchmark-pins.js`, search: "if (pins.method !== 'BQM-2')", replace: "if (true)", expectedCount: 1 }],
+    runs: [BQM2_STORE],
+  },
+  {
+    id: 'l1-02-ac4-contract-unrecorded',
+    gate: 'every new answer records the ANSWER contract version and digest',
+    edits: [{ file: `${STORAGE}/answers.js`, search: "ANSWER_CONTRACT_VERSION, ANSWER_CONTRACT_SHA256);", replace: "null, null);", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-ac4-authority-semantics-missing',
+    gate: 'every answer-bearing context defines authority over the PRIMARY act',
+    edits: [{ file: `${GOV}/proposals.js`, search: "${ANSWER_AUTHORITY_SEMANTICS} ${ANSWER_CONFIDENCE_SEMANTICS}", replace: "${ANSWER_CONFIDENCE_SEMANTICS}", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-ac4-founder-decision-semantics-missing',
+    gate: 'every answer-bearing context defines founderDecisionNeeded for the PRIMARY act',
+    edits: [{ file: `${GOV}/proposals.js`, search: "${ANSWER_FOUNDER_DECISION_SEMANTICS} One ANSWER", replace: "One ANSWER", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-bqm2-preview-bound-untruthful',
+    gate: 'the Founder preview states the enforced total cap bound (observations x per-observation cap)',
+    edits: [{ file: `${STORAGE}/founder-activation.js`, search: "totalCapBoundMicros: runs * pkg.limits.benchmarkCapMicros,", replace: "totalCapBoundMicros: pkg.limits.benchmarkCapMicros,", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-bqm2-preview-text-untruthful',
+    gate: 'the rendered BQM-2 preview states the fixed class and observation count',
+    edits: [{ file: `packages/command-center/dist/src/api.js`, search: "every one at the fixed reasoning class ${s('reasoningClass')}", replace: "every one at a suitable reasoning class", expectedCount: 1 }],
+    runs: [ACTIVATION_SURFACE],
   },
 ];
 

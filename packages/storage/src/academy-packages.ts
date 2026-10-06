@@ -22,12 +22,20 @@ import { QandeelError, assertId, newId, sha256Hex, type Id } from '@qandeel-comp
 import { type AnswerFacets } from '@qandeel-company/governance';
 import {
   BENCHMARK_ARMS,
+  BQM2_DECLARATION,
+  INVALID_OUTPUT_RESULT,
   academyPackageDigest,
   assertAcademyPackage,
   benchmarkVerdict,
+  benchmarkVerdictBqm2,
   bindProgram,
+  observationsPerArm,
+  packageMethod,
   scoreAnswer,
+  scoreAnswerR2,
   staticSecurityReview,
+  type BenchmarkMethodVersion,
+  type RubricVersion,
   type AcademyPackage,
   type BenchmarkArm,
   type BenchmarkVerdict,
@@ -38,6 +46,7 @@ import {
 
 import { AcademyStore, txStartAttempt } from './academy.js';
 import { txAnswerOf, type AnswerRecord } from './answers.js';
+import { benchmarkPinMismatch, pinsOfPackage, type BenchmarkPins } from './benchmark-pins.js';
 import { txDeclareRequirements } from './capability.js';
 import { getEmployeeRow, txAllocateWorkItemBudget } from './governance-core.js';
 import { founder, founderAdminWrite } from './governance.js';
@@ -66,19 +75,33 @@ export interface PackageRecord {
   readonly blueprintId: Id | null;
   readonly createdAt: string;
   readonly installedAt: string | null;
+  /** D-L1-23: the method the package was registered under, and its pins (null for BQM-1). */
+  readonly benchmarkMethod: BenchmarkMethodVersion;
+  readonly methodSha256: string | null;
+  readonly answerContractVersion: string | null;
+  readonly answerContractSha256: string | null;
 }
 
 export interface BenchmarkRunView {
   readonly id: Id;
   readonly caseCode: string;
   readonly arm: BenchmarkArm;
+  /**
+   * D-L1-23: the observation number (BQM-1: always 1), the rubric that scores it, and — once scored — the class of the
+   * call that produced its outcome and whether it answered or ended in two invalid outputs (a FAILED observation).
+   */
+  readonly observationNo: number;
+  readonly rubricVersion: RubricVersion;
+  readonly answeredClass: string | null;
+  readonly outcome: 'ANSWERED' | 'INVALID_OUTPUT' | null;
   readonly workItemId: Id;
   readonly workItemState: string;
   readonly state: 'OPEN' | 'SCORED' | 'VOID';
   /** The recorded score, or the rubric applied read-only to an answer not yet scored (null without an answer). */
   readonly result: RubricResult | null;
   readonly voidReason: string | null;
-  readonly answer: { readonly body: string; readonly facets: AnswerFacets } | null;
+  /** The recorded answer, with the ANSWER contract it was produced under (D-L1-23; null before 0018). */
+  readonly answer: { readonly body: string; readonly facets: AnswerFacets; readonly answerContractVersion: string | null; readonly answerContractSha256: string | null } | null;
 }
 
 export interface PackageSkillView {
@@ -106,6 +129,8 @@ export interface PackageView {
   /** Benchmark runs whose Work Item is still running. */
   readonly benchmarkRunsOpen: number;
   readonly spentMicros: number;
+  /** D-L1-23: the method this definition declares (what a qualification would run) — the record holds what it ran. */
+  readonly method: { readonly version: BenchmarkMethodVersion; readonly declarationSha256: string | null; readonly answerContract: { readonly version: string; readonly sha256: string } | null; readonly observationsPerArm: number; readonly reasoningClass: string | null; readonly rubricVersion: RubricVersion };
 }
 
 function mapPackage(r: Record<string, unknown>): PackageRecord {
@@ -123,23 +148,49 @@ function mapPackage(r: Record<string, unknown>): PackageRecord {
     blueprintId: n('blueprint_id'),
     createdAt: String(r.created_at),
     installedAt: r.installed_at === null ? null : String(r.installed_at),
+    benchmarkMethod: r.benchmark_method === 'BQM-2' ? 'BQM-2' : 'BQM-1',
+    methodSha256: r.method_sha256 == null ? null : String(r.method_sha256),
+    answerContractVersion: r.answer_contract_version == null ? null : String(r.answer_contract_version),
+    answerContractSha256: r.answer_contract_sha256 == null ? null : String(r.answer_contract_sha256),
   };
 }
+
+/** D-L1-23: whether a benchmark Work Item ended in two invalid outputs (model behaviour), not an infrastructure no-answer. */
+function endedInvalid(ctx: StoreContext, workItemId: Id, workItemState: string): boolean {
+  if (workItemState !== 'FAILED') return false;
+  return ctx.db.get<{ c: string | null }>('SELECT failure_code AS c FROM runs WHERE work_item_id = ? ORDER BY run_seq DESC LIMIT 1', workItemId)?.c === 'MODEL_OUTPUT_INVALID';
+}
+
+/** The reasoning class of the last model call of a Work Item (the call that produced its answer or final invalid output). */
+function lastCallClass(ctx: StoreContext, workItemId: Id): string | null {
+  return ctx.db.get<{ c: string }>('SELECT d.reasoning_class AS c FROM usage_records u JOIN deployments d ON d.id = u.deployment_id WHERE u.work_item_id = ? ORDER BY u.created_at DESC, u.id DESC LIMIT 1', workItemId)?.c ?? null;
+}
+
+const pinsOfRecord = (r: PackageRecord): BenchmarkPins => ({ method: r.benchmarkMethod, methodSha256: r.methodSha256, answerContractVersion: r.answerContractVersion, answerContractSha256: r.answerContractSha256 });
 
 export function txPackageRecord(ctx: StoreContext, pkg: AcademyPackage): PackageRecord | null {
   const r = ctx.db.get('SELECT * FROM academy_packages WHERE code = ? AND package_version = ?', pkg.code, pkg.version);
   return r ? mapPackage(r) : null;
 }
 
-/** The live result of one benchmark run: recorded, or the rubric applied read-only to its answer. */
-function runResult(pkg: AcademyPackage, skillCode: string, caseCode: string, row: { state: string; checks_json: string | null; score_pct: number | null; passed: number | null }, answer: AnswerRecord | null): RubricResult | null {
+/**
+ * The live result of one benchmark run: recorded, or its rubric applied read-only. The rubric is the ROW's (fixed at
+ * creation): an R1 row (BQM-1: packages v1, v2, v3) is only ever read by the frozen R1 `scoreAnswer`; an R2 row by R2,
+ * where two invalid outputs are a FAILED observation (never VOID).
+ */
+function runResult(pkg: AcademyPackage, skillCode: string, caseCode: string, row: { state: string; checks_json: string | null; score_pct: number | null; passed: number | null; rubric_version: string }, answer: AnswerRecord | null, invalid: boolean): RubricResult | null {
   if (row.state === 'SCORED') {
     const checks = JSON.parse(String(row.checks_json)) as RubricResult['checks'];
-    return { checks, scorePct: Number(row.score_pct), criticalPassed: checks.every((c) => !c.critical || c.passed), passed: Number(row.passed) === 1 };
+    return { checks, scorePct: Number(row.score_pct), criticalPassed: checks.length > 0 && checks.every((c) => !c.critical || c.passed), passed: Number(row.passed) === 1 };
   }
-  if (row.state === 'VOID' || answer === null) return null;
+  if (row.state === 'VOID') return null;
   const c = pkg.skills.find((s) => s.code === skillCode)?.benchmark.find((b) => b.code === caseCode);
-  return c ? scoreAnswer(c.expect, { body: answer.body, ...answer.facets }, pkg.limits.benchmarkPassPct) : null;
+  if (!c) return null;
+  if (row.rubric_version === 'R2') {
+    if (answer !== null) return scoreAnswerR2(c, { body: answer.body, ...answer.facets }, pkg.limits.benchmarkPassPct);
+    return invalid ? INVALID_OUTPUT_RESULT : null;
+  }
+  return answer === null ? null : scoreAnswer(c.expect, { body: answer.body, ...answer.facets }, pkg.limits.benchmarkPassPct);
 }
 
 /** The whole package as the Founder inspects it before deciding (read-only; usable inside any transaction). */
@@ -154,8 +205,8 @@ export function txPackageView(ctx: StoreContext, pkg: AcademyPackage): PackageVi
       const v = getSkillVersionRow(ctx, ps.skill_version_id as Id);
       const sec = ctx.db.get<{ reviewer_ref: string; checks_json: string; passed: number }>('SELECT reviewer_ref, checks_json, passed FROM skill_security_reviews WHERE skill_version_id = ?', v.id);
       const runs: BenchmarkRunView[] = ctx.db
-        .all<{ id: string; case_code: string; arm: string; work_item_id: string; state: string; checks_json: string | null; score_pct: number | null; passed: number | null; void_reason: string | null }>(
-          `SELECT * FROM skill_benchmark_runs WHERE package_id = ? AND skill_version_id = ? AND state <> 'VOID' ORDER BY case_code, arm`,
+        .all<{ id: string; case_code: string; arm: string; work_item_id: string; state: string; checks_json: string | null; score_pct: number | null; passed: number | null; void_reason: string | null; observation_no: number; rubric_version: string; answered_class: string | null; observation_outcome: string | null }>(
+          `SELECT * FROM skill_benchmark_runs WHERE package_id = ? AND skill_version_id = ? AND state <> 'VOID' ORDER BY case_code, arm, observation_no`,
           record.id,
           v.id,
         )
@@ -164,19 +215,27 @@ export function txPackageView(ctx: StoreContext, pkg: AcademyPackage): PackageVi
           const workItemState = getWorkItemRow(ctx, r.work_item_id as Id).state;
           // Running = its Work Item has not finished yet (a finished run stays OPEN until the install scores it).
           if (r.state === 'OPEN' && !TERMINAL_WORK.includes(workItemState)) open++;
+          const invalid = r.rubric_version === 'R2' && answer === null && endedInvalid(ctx, r.work_item_id as Id, workItemState);
           return {
             id: r.id as Id,
             caseCode: r.case_code,
             arm: r.arm as BenchmarkArm,
+            observationNo: Number(r.observation_no),
+            rubricVersion: (r.rubric_version === 'R2' ? 'R2' : 'R1') as RubricVersion,
+            answeredClass: r.answered_class,
+            outcome: (r.observation_outcome as BenchmarkRunView['outcome']) ?? null,
             workItemId: r.work_item_id as Id,
             workItemState,
             state: r.state as BenchmarkRunView['state'],
-            result: runResult(pkg, ps.skill_code, r.case_code, r, answer),
+            result: runResult(pkg, ps.skill_code, r.case_code, r, answer, invalid),
             voidReason: r.void_reason,
-            answer: answer === null ? null : { body: answer.body, facets: answer.facets },
+            answer: answer === null ? null : { body: answer.body, facets: answer.facets, answerContractVersion: answer.answerContractVersion, answerContractSha256: answer.answerContractSha256 },
           };
         });
-      const verdict = benchmarkVerdict(def?.benchmark.map((b) => b.code) ?? [], runs.map((r) => ({ caseCode: r.caseCode, arm: r.arm, result: r.result })));
+      // The verdict follows the method the package was REGISTERED under (its record), never the running build's default.
+      const verdict = record.benchmarkMethod === 'BQM-2'
+        ? benchmarkVerdictBqm2(def?.benchmark ?? [], runs.map((r) => ({ caseCode: r.caseCode, arm: r.arm, observationNo: r.observationNo, result: r.result })))
+        : benchmarkVerdict(def?.benchmark.map((b) => b.code) ?? [], runs.map((r) => ({ caseCode: r.caseCode, arm: r.arm, result: r.result })));
       skills.push({
         code: ps.skill_code,
         name: def?.name ?? ps.skill_code,
@@ -194,35 +253,62 @@ export function txPackageView(ctx: StoreContext, pkg: AcademyPackage): PackageVi
     ? Number(ctx.db.get<{ s: number }>('SELECT COALESCE(SUM(u.economic_micros), 0) AS s FROM usage_records u JOIN skill_benchmark_runs b ON b.work_item_id = u.work_item_id WHERE b.package_id = ?', record.id)?.s ?? 0)
     : 0;
   const installable = record !== null && record.sha256 === sha && record.state === 'QUALIFYING' && skills.length === pkg.skills.length && skills.every((s) => s.pipelineState === 'SANDBOXED' && s.security?.passed === true && s.verdict.benchmarkPassed && s.verdict.comparePassed);
-  return { code: pkg.code, version: pkg.version, sha256: sha, title: pkg.title, roleRef: pkg.roleRef, record, skills, installable, benchmarkRunsOpen: open, spentMicros: spent };
+  const m = packageMethod(pkg);
+  const method: PackageView['method'] = { version: m, declarationSha256: pkg.benchmarkMethod?.declarationSha256 ?? null, answerContract: pkg.benchmarkMethod?.answerContract ?? null, observationsPerArm: observationsPerArm(pkg), reasoningClass: m === 'BQM-2' ? BQM2_DECLARATION.reasoningClass : null, rubricVersion: m === 'BQM-2' ? 'R2' : 'R1' };
+  return { code: pkg.code, version: pkg.version, sha256: sha, title: pkg.title, roleRef: pkg.roleRef, record, skills, installable, benchmarkRunsOpen: open, spentMicros: spent, method };
 }
 
-/** One benchmark case run as a bounded, budgeted, released Work Item owned by the trainee subject. */
-function txCreateBenchmarkRun(ctx: StoreContext, pkg: AcademyPackage, packageId: Id, versionId: Id, caseCode: string, content: string, arm: BenchmarkArm, subject: { id: Id; ref: string }, actorRef: string): Id {
+/**
+ * One benchmark observation as a bounded, budgeted, released Work Item owned by the trainee subject. BQM-2 (D-L1-23) pins
+ * the class (E1, both arms) and the same-class retry policy in the Work Item itself, so no run can escalate it.
+ */
+function txCreateBenchmarkRun(ctx: StoreContext, pkg: AcademyPackage, packageId: Id, versionId: Id, caseCode: string, content: string, arm: BenchmarkArm, subject: { id: Id; ref: string }, actorRef: string, observationNo = 1): Id {
+  const bqm2 = packageMethod(pkg) === 'BQM-2';
   const { workItem } = txCreateWorkItem(ctx, {
     objective: 'Skill benchmark case (Skill Version qualification)',
     ownerRef: subject.ref,
     riskLevel: 'R0',
     processorKind: EMPLOYEE_TASK,
-    // The case is the Work Item's own instructions; the run never learns which arm it is in.
-    processorInput: { taskClass: pkg.taskClasses.benchmark, dataClass: 'D1', maxOutputTokens: pkg.limits.benchmarkMaxOutputTokens, instructions: `Benchmark case. Answer the case below as the Company role you hold.\n\n${content}` },
+    // The case is the Work Item's own instructions; the run never learns which arm (or observation) it is.
+    processorInput: {
+      taskClass: pkg.taskClasses.benchmark, dataClass: 'D1', maxOutputTokens: pkg.limits.benchmarkMaxOutputTokens, instructions: `Benchmark case. Answer the case below as the Company role you hold.\n\n${content}`,
+      ...(bqm2 ? { reasoningClass: BQM2_DECLARATION.reasoningClass, invalidOutputPolicy: 'SAME_CLASS_RETRY' } : {}),
+    },
   }, { actorRef });
   const id = newId();
-  ctx.db.run(`INSERT INTO skill_benchmark_runs (id, package_id, skill_version_id, case_code, arm, work_item_id, employee_id, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)`, id, packageId, versionId, caseCode, arm, workItem.id, subject.id, ts(ctx));
+  ctx.db.run(`INSERT INTO skill_benchmark_runs (id, package_id, skill_version_id, case_code, arm, work_item_id, employee_id, state, created_at, observation_no, rubric_version) VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?)`, id, packageId, versionId, caseCode, arm, workItem.id, subject.id, ts(ctx), observationNo, bqm2 ? 'R2' : 'R1');
   txAllocateWorkItemBudget(ctx, workItem.id, subject.id, { money: pkg.limits.benchmarkCapMicros, tokens: 60_000 }, actorRef, 'skill.benchmark');
   txTransition(ctx, workItem.id, { to: 'READY', reasonCode: 'skill.benchmark.released', actorRef });
-  appendAudit(ctx, 'skill.benchmark_run_created', 'skill_benchmark_run', id, { actorRef }, 'OK', arm, { skillVersionId: versionId, workItemId: workItem.id });
+  appendAudit(ctx, 'skill.benchmark_run_created', 'skill_benchmark_run', id, { actorRef }, 'OK', arm, { skillVersionId: versionId, workItemId: workItem.id, observationNo });
   return id as Id;
 }
 
-/** Scores every finished benchmark run of a package (deterministic rubric; an unanswered run is VOID). */
+/**
+ * Scores every finished benchmark run of a package. Each row is scored by ITS rubric, fixed at creation: R1 (frozen; an
+ * unanswered run is VOID) or R2 (D-L1-23: two invalid outputs are a FAILED observation; only an infrastructure no-answer
+ * is VOID). A row is decided exactly once (the 0017 / 0018 decide-once trigger).
+ */
 export function txScoreBenchmarks(ctx: StoreContext, pkg: AcademyPackage, packageId: Id): number {
   let changed = 0;
-  for (const r of ctx.db.all<{ id: string; work_item_id: string; case_code: string; skill_version_id: string }>(`SELECT id, work_item_id, case_code, skill_version_id FROM skill_benchmark_runs WHERE package_id = ? AND state = 'OPEN'`, packageId)) {
+  for (const r of ctx.db.all<{ id: string; work_item_id: string; case_code: string; skill_version_id: string; rubric_version: string }>(`SELECT id, work_item_id, case_code, skill_version_id, rubric_version FROM skill_benchmark_runs WHERE package_id = ? AND state = 'OPEN'`, packageId)) {
     const item = getWorkItemRow(ctx, r.work_item_id as Id);
     const answer = txAnswerOf(ctx, item.id);
     const code = ctx.db.get<{ c: string }>('SELECT skill_code AS c FROM academy_package_skills WHERE package_id = ? AND skill_version_id = ?', packageId, r.skill_version_id)?.c ?? '';
     const c = pkg.skills.find((s) => s.code === code)?.benchmark.find((b) => b.code === r.case_code);
+    if (r.rubric_version === 'R2') {
+      if (!c || !TERMINAL_WORK.includes(item.state)) continue;
+      const invalid = answer === null && endedInvalid(ctx, item.id, item.state);
+      if (answer !== null || invalid) {
+        const res = answer !== null ? scoreAnswerR2(c, { body: answer.body, ...answer.facets }, pkg.limits.benchmarkPassPct) : INVALID_OUTPUT_RESULT;
+        ctx.db.run(`UPDATE skill_benchmark_runs SET state = 'SCORED', checks_json = ?, score_pct = ?, passed = ?, scored_at = ?, answered_class = ?, observation_outcome = ? WHERE id = ? AND state = 'OPEN'`, JSON.stringify(res.checks), res.scorePct, res.passed ? 1 : 0, ts(ctx), lastCallClass(ctx, item.id), answer !== null ? 'ANSWERED' : 'INVALID_OUTPUT', r.id);
+        appendAudit(ctx, 'skill.benchmark_scored', 'skill_benchmark_run', r.id, { actorRef: 'system:skill-benchmark-rubric/r2' }, 'OK', res.passed ? 'PASSED' : answer === null ? 'INVALID_OUTPUT' : 'FAILED', { scorePct: res.scorePct });
+      } else {
+        ctx.db.run(`UPDATE skill_benchmark_runs SET state = 'VOID', void_reason = ? WHERE id = ? AND state = 'OPEN'`, `WORK_${item.state}_NO_ANSWER`.slice(0, 64), r.id);
+        appendAudit(ctx, 'skill.benchmark_voided', 'skill_benchmark_run', r.id, { actorRef: 'system:skill-benchmark-rubric/r2' }, 'OK', 'NO_ANSWER', { workItemState: item.state });
+      }
+      changed++;
+      continue;
+    }
     if (answer !== null && c) {
       const res = scoreAnswer(c.expect, { body: answer.body, ...answer.facets }, pkg.limits.benchmarkPassPct);
       ctx.db.run(`UPDATE skill_benchmark_runs SET state = 'SCORED', checks_json = ?, score_pct = ?, passed = ?, scored_at = ? WHERE id = ? AND state = 'OPEN'`, JSON.stringify(res.checks), res.scorePct, res.passed ? 1 : 0, ts(ctx), r.id);
@@ -274,6 +360,9 @@ export class AcademyPackageStore {
       if (subject.state !== 'TRAINING') throw new QandeelError('INVALID_TRANSITION', 'the benchmark subject is a TRAINING Employee', { state: subject.state });
       const existing = txPackageRecord(ctx, pkg);
       if (existing && existing.state !== 'QUALIFYING') throw new QandeelError('INVALID_TRANSITION', 'this package is already installed', { reason: 'PACKAGE_INSTALLED' });
+      // D-L1-23: a BQM-2 package runs only under exactly the method and ANSWER contract it pinned (new or in flight).
+      const mismatch = benchmarkPinMismatch(existing ? pinsOfRecord(existing) : pinsOfPackage(pkg));
+      if (mismatch !== null) throw new QandeelError('VALIDATION_FAILED', 'the package pins a benchmark method or ANSWER contract this build does not run', { reason: mismatch });
       if (existing && existing.sha256 !== input.expectedSha256) throw new QandeelError('VALIDATION_FAILED', 'a different package with this code and version exists', { reason: 'PACKAGE_DIGEST_MISMATCH' });
       if (existing && existing.subjectEmployeeId !== subject.id) throw new QandeelError('VALIDATION_FAILED', 'the benchmark subject of a package does not change', { reason: 'SUBJECT_MISMATCH' });
       const at = ts(ctx);
@@ -286,8 +375,9 @@ export class AcademyPackageStore {
         const newest = ctx.db.get<{ v: number | null }>('SELECT MAX(package_version) AS v FROM academy_packages WHERE code = ?', pkg.code)?.v ?? null;
         if (newest !== null && newest >= pkg.version) throw new QandeelError('INVALID_TRANSITION', 'a new package version is newer than every recorded version of its code', { reason: 'PACKAGE_VERSION_NOT_NEWER', newest });
         packageId = newId() as Id;
-        ctx.db.run(`INSERT INTO academy_packages (id, code, package_version, package_sha256, role_ref, subject_employee_id, state, qualified_by_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, 'QUALIFYING', ?, ?)`, packageId, pkg.code, pkg.version, input.expectedSha256, pkg.roleRef, subject.id, p.ref, at);
-        appendAudit(ctx, 'academy.package_qualifying', 'academy_package', packageId, { actorRef: p.ref }, 'OK', null, { code: pkg.code, version: pkg.version });
+        const pins = pinsOfPackage(pkg);
+        ctx.db.run(`INSERT INTO academy_packages (id, code, package_version, package_sha256, role_ref, subject_employee_id, state, qualified_by_ref, created_at, benchmark_method, method_sha256, answer_contract_version, answer_contract_sha256) VALUES (?, ?, ?, ?, ?, ?, 'QUALIFYING', ?, ?, ?, ?, ?, ?)`, packageId, pkg.code, pkg.version, input.expectedSha256, pkg.roleRef, subject.id, p.ref, at, pins.method, pins.methodSha256, pins.answerContractVersion, pins.answerContractSha256);
+        appendAudit(ctx, 'academy.package_qualifying', 'academy_package', packageId, { actorRef: p.ref }, 'OK', pins.method, { code: pkg.code, version: pkg.version });
         for (const s of pkg.skills) {
           const { skillId, version } = this.#packageSkillVersion(ctx, skills, p.ref, pkg, s, input.expectedSha256);
           let v = version;
@@ -302,8 +392,9 @@ export class AcademyPackageStore {
           // The static review's verdict decides — the Founder's confirmation is never security evidence.
           v = skills.advanceSkillVersion(p.ref, v.id, 'SANDBOXED', { reasonCode: report.passed ? 'security.static_review_passed' : 'security.static_review_failed', evidenceRef: `skill_security_review:${v.id}`, securityPassed: report.passed });
           if (v.pipelineState !== 'SANDBOXED') continue;
-          for (const c of s.benchmark) for (const arm of BENCHMARK_ARMS) {
-            txCreateBenchmarkRun(ctx, pkg, packageId, v.id, c.code, c.content, arm, { id: subject.id, ref: subject.ref }, p.ref);
+          // Every observation of every case and arm exists from the start (BQM-2: k = 5; no early stop, no later choice).
+          for (const c of s.benchmark) for (const arm of BENCHMARK_ARMS) for (let n = 1; n <= observationsPerArm(pkg); n++) {
+            txCreateBenchmarkRun(ctx, pkg, packageId, v.id, c.code, c.content, arm, { id: subject.id, ref: subject.ref }, p.ref, n);
             runs++;
           }
         }
@@ -317,10 +408,12 @@ export class AcademyPackageStore {
         const v = getSkillVersionRow(ctx, ps.skill_version_id as Id);
         if (v.pipelineState !== 'SANDBOXED') continue;
         const s = pkg.skills.find((x) => x.code === ps.skill_code);
-        for (const c of s?.benchmark ?? []) for (const arm of BENCHMARK_ARMS) {
-          if (ctx.db.get(`SELECT 1 AS x FROM skill_benchmark_runs WHERE package_id = ? AND skill_version_id = ? AND case_code = ? AND arm = ? AND state <> 'VOID'`, packageId, v.id, c.code, arm)) continue;
+        // The deterministic VOID rule: an observation slot with no live (open or scored) run — its run ended without an
+        // answer for an infrastructure reason — gets one new run of the SAME observation number. A scored one never does.
+        for (const c of s?.benchmark ?? []) for (const arm of BENCHMARK_ARMS) for (let n = 1; n <= observationsPerArm(pkg); n++) {
+          if (ctx.db.get(`SELECT 1 AS x FROM skill_benchmark_runs WHERE package_id = ? AND skill_version_id = ? AND case_code = ? AND arm = ? AND observation_no = ? AND state <> 'VOID'`, packageId, v.id, c.code, arm, n)) continue;
           if (input.finalizeOnly === true) throw new QandeelError('INVALID_TRANSITION', 'a benchmark case needs a re-run: preview the re-run of its void cases', { reason: 'REQUALIFY_REQUIRED' });
-          txCreateBenchmarkRun(ctx, pkg, packageId, v.id, c.code, c.content, arm, { id: subject.id, ref: subject.ref }, p.ref);
+          txCreateBenchmarkRun(ctx, pkg, packageId, v.id, c.code, c.content, arm, { id: subject.id, ref: subject.ref }, p.ref, n);
           runs++;
         }
       }

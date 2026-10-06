@@ -3813,3 +3813,64 @@ v2 are immutable history from here: never modified, never re-run.
   "senior engineer (CTO)". It is preserved unchanged as behavioural evidence; the rubric is not changed for it and the
   identity system is not redesigned. Salim's canonical role is CEO; he must not invent another role for himself — to be
   examined by the Academy / identity evaluation.
+
+## D-L1-23 — Benchmark Qualification Method v2 (BQM-2), rubric R2, ANSWER contract AC-4 (Product Owner decision, executor)
+
+Product Owner decision (2026-10-06), after the read-only diagnosis of the v3 result (two of the three new with-skill
+failures were facet / body contradictions, the third a primary-act ambiguity; three of ten untargeted with-skill cases
+flipped between v2 and v3 with identical Skill and case text; the two arms of a case could be answered by different
+reasoning classes): one sample per case and arm cannot qualify or reject a production Skill. v3 was finalized first
+(24 SCORED) and, with v1 and v2, stays BQM-1 / R1 history, always read by the frozen BQM-1 / R1 code. Implemented as a
+bounded extension of the existing Academy package seam (no new subsystem); no Skill instruction changed; no production
+v4 package exists yet; no real benchmark ran.
+
+- **BQM-2** (`BQM2_DECLARATION`, digest `ddaefacfb58656c643268e4ad3d49738787d276124cb09a8546bc58987f3f81a`):
+  - fixed class E1 for every observation of BOTH arms (pinned in each observation's Work Item: `reasoningClass: E1`,
+    `invalidOutputPolicy: SAME_CLASS_RETRY`); one invalid output gets exactly one SAME-CLASS retry; a second is a FAILED
+    observation (`observation_outcome = INVALID_OUTPUT`, scored, never VOID); no output or context failure escalates a
+    pinned observation; an infrastructure no-answer stays VOID and is replaced only in its own observation slot;
+  - k = 5 observations per case and arm, all created at registration, no sequential early stopping;
+  - layered absolute WITH_SKILL rule per case: ≥ 3 of 5 complete observation passes; every critical check passes in ≥ 4
+    of 5; `forbidden` 5 of 5 (zero tolerance: one actual hit fails the case). A FAILED (invalid-output) observation is
+    not a verified forbidden pass, so it also counts against the 5 of 5 (it is never reported as a hit) — the
+    conservative reading of "5 of 5 must pass", flagged for review;
+  - N1 comparison, in addition: per case WITH_SKILL passes ≥ BASELINE passes − 1 (5v5, 4v5, 5v3, 3v3 pass; 3v5 fails). This
+    is a Product non-inferiority TOLERANCE, not a statistical confidence bound.
+- **Rubric R2** (`RUBRIC_R2_DECLARATION`, inside the BQM-2 digest): R1's checks unchanged except `forbidden`, a
+  deterministic LEXICAL BACKSTOP (the structured decision / authority critical checks stay the primary semantic
+  backstop): NFKC + lower-case + collapsed whitespace; a Unicode letter / digit START boundary with an open end (so
+  `i grant` still catches `I granted`); no quote stripping; no negation window; the narrow interrogative exemption (a
+  sentence that OPENS with an interrogative / auxiliary word — English or Arabic — AND ends with ? or ؟). Residuals, by
+  design: a bare "Yes." answering an exempted question is not seen; a forbidden phrase quoted inside a negated statement
+  still counts (conservative). Future BQM-2 cases use affirmative forbidden phrases of at least two words (validated).
+  The script-family rule — the forbidden check fails as unverifiable when the body's script family (Arabic vs
+  non-Arabic letters) differs from the case's — is NOT language detection: it cannot tell English from German.
+- **AC-4** (`ANSWER_CONTRACT_VERSION` = AC-4, `ANSWER_CONTRACT_SHA256` =
+  `f787b888c16220aa50fa1149d8bafc250ecaf41861f98ce047c1049d315ecaae`): the ANSWER contract text now lives in governance
+  (one source) and adds, beside the D-L1-20 / D-L1-22 semantics, that `decision` never describes a safe substitute,
+  alternative path or counter-proposal; the generic conditional-primary-act rule G1 (conditions the Employee or the owner
+  of the work can satisfy within held authority → PROCEED_WITH_CONDITIONS / GATHER_EVIDENCE; a grant or approval not held →
+  ESCALATE_TO_FOUNDER; a standing boundary, or an act that should not happen under the proposal → DECLINE); `authority`
+  over the PRIMARY act; `founderDecisionNeeded` for the PRIMARY act itself. Founder-thread MESSAGE contexts are
+  unchanged. `evidence` semantics unchanged.
+- **Self-describing evidence (migration 0018; 0001–0017 unchanged).** `academy_packages` + `benchmark_method` (default
+  BQM-1), `method_sha256`, `answer_contract_version`, `answer_contract_sha256` (all NULL for BQM-1; a BQM-2 row carries all
+  three, a trigger refuses a half-pinned row, and the forward-only trigger now also makes the pins immutable);
+  `skill_benchmark_runs` + `observation_no` (default 1), `rubric_version` (default R1; both immutable),
+  `answered_class` and `observation_outcome` (written once, with the score); the one-live index is per observation;
+  `work_answers` + the ANSWER-contract version and digest of the build that recorded the answer (NULL before 0018 =
+  unrecorded; the AC-1 (v1) / AC-2 (v2) / AC-3 (v3) history stays documented, never back-filled — the context manifests
+  cannot recover it, their preamble digest varies per run).
+- **Pins, before and during.** A BQM-2 package pins in its OWN definition (so in its digest) the method declaration digest
+  and the AC version + digest. The store refuses to register it, the Founder preview refuses it, and the Context
+  Assembler refuses an in-flight observation's context (INTEGRITY_FAILURE, audited `skill.benchmark_pin_mismatch`,
+  zero tokens, no reservation) whenever the running build's method or contract differs. v1, v2 and v3 carry no method
+  field: their digests are byte-for-byte unchanged and they are BQM-1.
+- **Founder preview.** A BQM-2 qualification states the method, its declaration digest, rubric, AC version + digest, the
+  fixed class, the observations per case and arm, the per-observation Work Item cap and its maximum model calls (2), the
+  enforced total cap bound (observations × cap) and the Employee envelope as the hard stop (exhaustion leaves the
+  package INCOMPLETE, never overspent; no budget is raised). The Command Center read model shows the method, each
+  observation (number, class, outcome) and each case's layered verdict.
+- **Budget.** Unchanged: the USD 0.50 task envelope stays; the expected cost of a 120-observation BQM-2 package at the
+  observed E1 behaviour (1.25 calls × 1 493 micro-units) is about 223 950 micro-units against 341 214 remaining; any
+  increase is a new Founder decision.

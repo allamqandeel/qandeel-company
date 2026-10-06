@@ -20,6 +20,7 @@ export * from './seo.js';
 export * from './skills.js';
 export * from './text.js';
 export * from './academy-package.js';
+export * from './benchmark-method.js';
 export * from './packages/ceo-academy-v1.js';
 export * from './packages/ceo-academy-v2.js';
 export * from './packages/ceo-academy-v3.js';

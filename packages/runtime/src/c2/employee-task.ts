@@ -24,6 +24,11 @@ export interface EmployeeTaskInput {
   readonly instructions: string;
   readonly maxTurns?: number;
   readonly maxOutputTokens?: number;
+  /**
+   * D-L1-23 (BQM-2 qualification observations): SAME_CLASS_RETRY pins the class — one invalid output is retried once at
+   * the SAME class, a second ends the run (MODEL_OUTPUT_INVALID), and no output or context failure ever escalates it.
+   */
+  readonly invalidOutputPolicy?: 'ESCALATE' | 'SAME_CLASS_RETRY';
 }
 
 interface LoopState {
@@ -44,6 +49,9 @@ function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasonin
   // An invalid data class is refused outright (classification never fails open).
   if (o.dataClass !== undefined && !isDataClass(o.dataClass)) throw new Error('invalid dataClass');
   if (o.reasoningClass !== undefined && !isReasoningClass(o.reasoningClass)) throw new Error('invalid reasoningClass');
+  if (o.invalidOutputPolicy !== undefined && o.invalidOutputPolicy !== 'ESCALATE' && o.invalidOutputPolicy !== 'SAME_CLASS_RETRY') throw new Error('invalid invalidOutputPolicy');
+  // A pinned class is the point of SAME_CLASS_RETRY: without one the policy is refused (never an unpinned default).
+  if (o.invalidOutputPolicy === 'SAME_CLASS_RETRY' && o.reasoningClass === undefined) throw new Error('SAME_CLASS_RETRY needs a pinned reasoningClass');
   // C3 context controls are validated up front (a typed refusal, never a failure inside assembly).
   if (o.contextDataClassCeiling !== undefined && !isDataClass(o.contextDataClassCeiling)) throw new Error('invalid contextDataClassCeiling');
   if (o.contextBudgetTokens !== undefined) assertIntInRange(o.contextBudgetTokens, 'contextBudgetTokens', 1_024, 64_000);
@@ -56,6 +64,7 @@ function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasonin
     maxTurns: o.maxTurns === undefined ? 8 : assertIntInRange(o.maxTurns, 'maxTurns', 1, 32),
     maxOutputTokens: o.maxOutputTokens === undefined ? 512 : assertIntInRange(o.maxOutputTokens, 'maxOutputTokens', 1, 32_768),
     reasoningClass: isReasoningClass(o.reasoningClass) ? o.reasoningClass : null,
+    invalidOutputPolicy: o.invalidOutputPolicy === 'SAME_CLASS_RETRY' ? 'SAME_CLASS_RETRY' : 'ESCALATE',
   };
 }
 
@@ -170,7 +179,7 @@ export const employeeTaskProcessor: GovernedProcessor = {
           return { type: 'RETRYABLE_FAILURE', code: 'PROVIDER_FAILURE' };
         case 'FAILED':
           // One evidence-based escalation per run step; never re-escalate from the class that just failed.
-          if (out.failure === 'CONTEXT_OVERFLOW' && !escalated && cfg.reasoningClass !== 'E4') {
+          if (out.failure === 'CONTEXT_OVERFLOW' && !escalated && cfg.reasoningClass !== 'E4' && cfg.invalidOutputPolicy !== 'SAME_CLASS_RETRY') {
             escalateFrom = { fromClass: cfg.reasoningClass ?? gov.context.cognitiveProfile.defaultClass, evidence: 'CONTEXT_OVERFLOW' };
             continue;
           }
@@ -254,6 +263,9 @@ export const employeeTaskProcessor: GovernedProcessor = {
         gov.noteInvalidOutput(s.turn, proposal.code, out.reasoningClass);
         s = { ...s, invalid: s.invalid + 1 };
         if (s.invalid >= 2 || escalated) return { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_INVALID' };
+        // D-L1-23: a pinned qualification observation retries once at the SAME class (the pinned class is requested
+        // again); it never escalates, so both arms of a comparison are always answered by the same class.
+        if (cfg.invalidOutputPolicy === 'SAME_CLASS_RETRY') continue;
         escalateFrom = { fromClass: out.reasoningClass, evidence: 'OUTPUT_FAILED_VALIDATION' };
         continue;
       }

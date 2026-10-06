@@ -10,11 +10,12 @@
  */
 import { QandeelError, assertCode, assertId, sha256Hex, type Id } from '@qandeel-company/domain';
 import { assertTaskClass, isReasoningClass } from '@qandeel-company/governance';
-import { ASSESSMENT_DIMENSIONS, BENCHMARK_ARMS, DETERMINISTIC_DIMENSIONS, academyPackageDigest, containsSecretMaterial, type AcademyPackage, type AssessmentDimension, type EmployeeIdentityProfile } from '@qandeel-company/mind';
+import { ASSESSMENT_DIMENSIONS, BENCHMARK_ARMS, BQM2_DECLARATION, DETERMINISTIC_DIMENSIONS, academyPackageDigest, containsSecretMaterial, observationsPerArm, packageMethod, type AcademyPackage, type AssessmentDimension, type EmployeeIdentityProfile } from '@qandeel-company/mind';
 
 import { AcademyStore, txAdvance, txCollectShadowEvidence, txEvaluateDeterministic } from './academy.js';
 import { AcademyPackageStore, txPackageRecord, txPackageView } from './academy-packages.js';
 import { txAnswerOf } from './answers.js';
+import { benchmarkPinMismatch, pinsOfPackage } from './benchmark-pins.js';
 import { budgetFor, getEmployeeRow } from './governance-core.js';
 import { GovernanceStore } from './governance.js';
 import { getWorkItemRow, type StoreContext } from './internal.js';
@@ -124,21 +125,40 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
       if (subject.state !== 'TRAINING') transition('the benchmark subject is a TRAINING Employee', 'SUBJECT_NOT_TRAINING', { state: subject.state });
       const rec = txPackageRecord(ctx, pkg);
       if (rec?.state === 'INSTALLED') transition('this package is already installed', 'PACKAGE_INSTALLED');
+      // D-L1-23: a BQM-2 package is previewed only when this build runs exactly the method and ANSWER contract it pins.
+      const pinMismatch = benchmarkPinMismatch(rec ? { method: rec.benchmarkMethod, methodSha256: rec.methodSha256, answerContractVersion: rec.answerContractVersion, answerContractSha256: rec.answerContractSha256 } : pinsOfPackage(pkg));
+      if (pinMismatch !== null) refuse(pinMismatch, 'the package pins a benchmark method or ANSWER contract this build does not run');
       const view = txPackageView(ctx, pkg);
-      // D-L1-21: a sandboxed version's case / arm needs a run when its live run finished without an answer (it becomes
-      // VOID) or it has no live run; a finished, answered OPEN run is finalized to SCORED (never re-run).
+      const k = observationsPerArm(pkg);
+      // D-L1-21 / D-L1-23: a sandboxed version's observation slot (case, arm, observation) needs a run when its live run
+      // finished without an answer for an infrastructure reason (it becomes VOID) or it has no live run; a finished OPEN
+      // run with a result (an answer, or under R2 two invalid outputs) is finalized to SCORED (never re-run).
       const voidCases = rec === null ? 0 : view.skills.filter((s) => s.pipelineState === 'SANDBOXED').reduce((n, s) => {
         const cases = pkg.skills.find((d) => d.code === s.code)?.benchmark ?? [];
-        return n + cases.reduce((m, c) => m + BENCHMARK_ARMS.filter((arm) => { const r = s.runs.find((x) => x.caseCode === c.code && x.arm === arm); return r === undefined || (r.result === null && WORK_DONE.includes(r.workItemState)); }).length, 0);
+        let slots = 0;
+        for (const c of cases) for (const arm of BENCHMARK_ARMS) for (let o = 1; o <= k; o++) {
+          const r = s.runs.find((x) => x.caseCode === c.code && x.arm === arm && x.observationNo === o);
+          if (r === undefined || (r.result === null && WORK_DONE.includes(r.workItemState))) slots++;
+        }
+        return n + slots;
       }, 0);
       const toFinalize = rec === null ? 0 : view.skills.reduce((n, s) => n + s.runs.filter((r) => r.state === 'OPEN' && r.result !== null && WORK_DONE.includes(r.workItemState)).length, 0);
       if (rec !== null && view.benchmarkRunsOpen > 0) transition('the benchmark is still running', 'BENCHMARK_RUNNING', { open: view.benchmarkRunsOpen });
       if (rec !== null && voidCases === 0 && toFinalize === 0) transition('nothing to finalize or re-run: every benchmark case is scored', 'NOTHING_TO_REQUALIFY');
-      const runs = rec === null ? pkg.skills.reduce((n, s) => n + s.benchmark.length * 2, 0) : voidCases;
+      const runs = rec === null ? pkg.skills.reduce((n, s) => n + s.benchmark.length * 2 * k, 0) : voidCases;
       const qualification = rec === null ? 'QUALIFY' : voidCases === 0 ? 'FINALIZE_SCORES' : 'REQUALIFY_VOID_RUNS';
       for (const c of [pkg.taskClasses.benchmark]) if (!ctx.db.get(`SELECT 1 AS x FROM permission_grants WHERE employee_id = ? AND capability = 'model.invoke' AND status = 'ACTIVE' AND resource_scope IN (?, '*')`, subject.id, c)) transition('the subject has no model access for the benchmark task class', 'NO_MODEL_ACCESS', { taskClass: c });
       if (!budgetFor(ctx, 'EMPLOYEE', subject.id)) transition('the subject has no Employee envelope', 'NO_ENVELOPE');
-      return { packageCode: pkg.code, packageVersion: pkg.version, packageSha256: sha, packageTitle: pkg.title.slice(0, 160), subjectEmployeeId: subject.id, qualification, skills: pkg.skills.map((s) => `${s.code} (${s.benchmark.length} cases)`), benchmarkRuns: runs, scoresToFinalize: toFinalize, paidProviderCalls: runs === 0 ? 'NONE' : 'BOUNDED_BY_CAPS', benchmarkTaskClass: pkg.taskClasses.benchmark, perRunCapMicros: pkg.limits.benchmarkCapMicros, envelopeRemainingMicros: (() => { const b = budgetFor(ctx, 'EMPLOYEE', subject.id); return b ? Math.max(0, b.capMoney - b.spentMoney - b.reservedMoney) : 0; })(), securityReview: 'STATIC_DETERMINISTIC (text-only native skills; not a human review)', reasonCode: assertCode(raw.reasonCode ?? 'package.qualify', 'reasonCode') };
+      // D-L1-23: a BQM-2 preview states its method, observation count and its ENFORCED cost bounds — the per-observation
+      // Work Item cap (at most two model calls each), their product, and the Employee envelope, which is the hard stop
+      // (exhausting it leaves the package incomplete, never overspent; no budget is ever raised here).
+      const bqm2 = packageMethod(pkg) === 'BQM-2' ? {
+        benchmarkMethod: 'BQM-2', methodSha256: pkg.benchmarkMethod?.declarationSha256 ?? '', rubricVersion: 'R2',
+        answerContractVersion: pkg.benchmarkMethod?.answerContract.version ?? '', answerContractSha256: pkg.benchmarkMethod?.answerContract.sha256 ?? '',
+        reasoningClass: BQM2_DECLARATION.reasoningClass, observationsPerArm: k, maxModelCallsPerObservation: 1 + BQM2_DECLARATION.invalidOutput.sameClassRetries,
+        totalCapBoundMicros: runs * pkg.limits.benchmarkCapMicros,
+      } : {};
+      return { packageCode: pkg.code, packageVersion: pkg.version, packageSha256: sha, packageTitle: pkg.title.slice(0, 160), subjectEmployeeId: subject.id, qualification, skills: pkg.skills.map((s) => `${s.code} (${s.benchmark.length} cases)`), benchmarkRuns: runs, scoresToFinalize: toFinalize, paidProviderCalls: runs === 0 ? 'NONE' : 'BOUNDED_BY_CAPS', benchmarkTaskClass: pkg.taskClasses.benchmark, perRunCapMicros: pkg.limits.benchmarkCapMicros, envelopeRemainingMicros: (() => { const b = budgetFor(ctx, 'EMPLOYEE', subject.id); return b ? Math.max(0, b.capMoney - b.spentMoney - b.reservedMoney) : 0; })(), securityReview: 'STATIC_DETERMINISTIC (text-only native skills; not a human review)', ...bqm2, reasonCode: assertCode(raw.reasonCode ?? 'package.qualify', 'reasonCode') };
     }
     case 'ACADEMY_PACKAGE_INSTALL': {
       const { pkg, sha } = packageOf(raw, env);

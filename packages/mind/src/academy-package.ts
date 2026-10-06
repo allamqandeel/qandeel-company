@@ -103,6 +103,12 @@ export interface AcademyPackage {
     /** Minimum rubric score of the with-skill arm (percent) for a Skill to pass its benchmark. */
     readonly benchmarkPassPct: number;
   };
+  /**
+   * D-L1-23: the benchmark qualification method this package pins (absent = BQM-1, the frozen method of v1, v2, v3 — so
+   * their digests are byte-for-byte unchanged). A BQM-2 package pins the exact method declaration digest and the ANSWER
+   * contract version + digest its observations run under; the store refuses observations under any other build.
+   */
+  readonly benchmarkMethod?: { readonly version: 'BQM-2'; readonly declarationSha256: string; readonly answerContract: { readonly version: string; readonly sha256: string } };
 }
 
 const CODE = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+){0,9}$/;
@@ -194,6 +200,15 @@ export function assertAcademyPackage(p: unknown): AcademyPackage {
   intIn(o.limits?.benchmarkCapMicros, 'limits.benchmarkCapMicros', 1, 1_000_000_000);
   intIn(o.limits?.attemptCapMicros, 'limits.attemptCapMicros', 1, 1_000_000_000);
   intIn(o.limits?.benchmarkPassPct, 'limits.benchmarkPassPct', 1, 100);
+  if (o.benchmarkMethod !== undefined) {
+    const m = o.benchmarkMethod as unknown as Record<string, unknown>;
+    const ac = m.answerContract as Record<string, unknown> | undefined;
+    const hex = (v: unknown): boolean => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
+    if (typeof m !== 'object' || m === null || Object.keys(m).sort().join() !== 'answerContract,declarationSha256,version' || m.version !== 'BQM-2' || !hex(m.declarationSha256)) bad('benchmarkMethod', 'benchmarkMethod pins BQM-2 by its declaration digest');
+    if (typeof ac !== 'object' || ac === null || Object.keys(ac).sort().join() !== 'sha256,version' || typeof ac.version !== 'string' || !/^AC-[1-9][0-9]{0,3}$/.test(ac.version) || !hex(ac.sha256)) bad('benchmarkMethod.answerContract', 'benchmarkMethod pins the ANSWER contract version and digest');
+    // R2 (D-L1-23): a forbidden phrase of a BQM-2 case is an affirmative commitment form of at least two words.
+    for (const [i, s] of o.skills.entries()) for (const [j, c] of s.benchmark.entries()) if ((c.expect.forbidden ?? []).some((f) => f.trim().split(/\s+/).length < 2)) bad(`skills[${i}].benchmark[${j}].expect.forbidden`, 'a BQM-2 forbidden phrase has at least two words');
+  }
   // The program, with placeholder UUIDs for the skill targets (the real IDs are bound at install).
   for (const t of o.program?.skillTargets ?? []) if (!codes.has(t.skillCode)) bad('program.skillTargets', `skill target ${t.skillCode} is not a package skill`);
   assertProgramDefinition({ ...o.program, skillTargets: (o.program?.skillTargets ?? []).map((t, i) => ({ skillId: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, proficiency: t.proficiency })) });
@@ -216,6 +231,8 @@ export interface RubricCheck {
   readonly key: ExpectationKey;
   readonly passed: boolean;
   readonly critical: boolean;
+  /** R2 only: why the forbidden check failed (an actual lexical hit, or a body in the other script family). */
+  readonly code?: 'FORBIDDEN_HIT' | 'SCRIPT_FAMILY_MISMATCH';
 }
 
 export interface RubricResult {

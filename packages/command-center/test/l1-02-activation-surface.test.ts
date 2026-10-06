@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, academyPackageDigest } from '@qandeel-company/mind';
 import { DEEPSEEK_V41_FLASH_ACADEMY_PROFILE } from '@qandeel-company/model-providers';
 
+import { structuredSummary } from '../src/api.js';
 import { CSRF_COOKIE, CSRF_HEADER, FounderSurface } from '../src/index.js';
 
 const uiRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'command-center-ui');
@@ -99,5 +100,13 @@ describe('L1-02: the Company activation flow on the authenticated surface', () =
       await surface.stop().catch(() => undefined);
       rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     }
+  });
+  // D-L1-23 / L1-02-PROOF: bqm2-preview — the Founder reads exactly the method, the observation count and the enforced bounds.
+  test('a BQM-2 qualification preview states its method, fixed class, observations and enforced cost bounds (never an estimate posing as a bound)', () => {
+    const payload = { qualification: 'QUALIFY', packageCode: 'ceo.company-ceo', packageVersion: 4, packageSha256: 'b'.repeat(64), benchmarkMethod: 'BQM-2', methodSha256: 'ddaefacfb58656c643268e4ad3d49738787d276124cb09a8546bc58987f3f81a', rubricVersion: 'R2', answerContractVersion: 'AC-4', answerContractSha256: 'f787b888c16220aa50fa1149d8bafc250ecaf41861f98ce047c1049d315ecaae', reasoningClass: 'E1', observationsPerArm: 5, maxModelCallsPerObservation: 2, benchmarkRuns: 120, perRunCapMicros: 40000, totalCapBoundMicros: 4800000, envelopeRemainingMicros: 341214, scoresToFinalize: 0 };
+    const text = structuredSummary({} as Parameters<typeof structuredSummary>[0], { intentKind: 'SKILL_PACKAGE_QUALIFY', payload });
+    for (const part of ['under benchmark method BQM-2 (declaration ddaefacfb586…, rubric R2, ANSWER contract AC-4 f787b888c162…)', '120 bounded benchmark observations', '5 per case and arm, every one at the fixed reasoning class E1', 'one same-class retry after an invalid output; two invalid outputs fail the observation', 'each capped at 40000 micro-units for at most 2 model calls', 'the enforced cap bound on the total is 4800000 micro-units', 'the hard stop is the Employee envelope (341214 micro-units remaining)', 'exhausting it leaves the package incomplete, never overspent, and no budget is raised', 'Nothing is approved here']) assert.ok(text.includes(part), part);
+    const bqm1 = structuredSummary({} as Parameters<typeof structuredSummary>[0], { intentKind: 'SKILL_PACKAGE_QUALIFY', payload: { ...payload, benchmarkMethod: undefined, benchmarkRuns: 24 } });
+    assert.ok(!bqm1.includes('BQM-2') && bqm1.includes('24 bounded benchmark runs (with / without each skill)'), 'a BQM-1 preview text is unchanged');
   });
 });

@@ -14,7 +14,7 @@
  * holds its answer learns ALREADY_ANSWERED (with the stored answer's ID) and stops: never a second answer.
  */
 import { newId, sha256Hex, type Id } from '@qandeel-company/domain';
-import { ANSWER_BODY_MAX, answerFacetsOf, type AnswerFacets } from '@qandeel-company/governance';
+import { ANSWER_BODY_MAX, ANSWER_CONTRACT_SHA256, ANSWER_CONTRACT_VERSION, answerFacetsOf, type AnswerFacets } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
 import { employeeIdFromRef } from './governance-core.js';
@@ -42,6 +42,9 @@ export interface AnswerRecord {
   readonly body: string;
   readonly facets: AnswerFacets;
   readonly createdAt: string;
+  /** D-L1-23: the ANSWER contract (version + exact digest) of the build that recorded it; null before 0018 (unrecorded). */
+  readonly answerContractVersion: string | null;
+  readonly answerContractSha256: string | null;
 }
 
 /** What makes a Work Item answer-bearing, and whether it still takes an answer. */
@@ -80,7 +83,8 @@ export function txRecordAnswer(ctx: StoreContext, fence: Fence, attributedEmploy
   if (prior) return prior.body_sha256 === sha ? { outcome: 'RECORDED', code: 'REPLAYED', answerId: prior.id as Id } : refuse('ALREADY_ANSWERED', prior.id as Id);
   if (!task.open) return refuse('ANSWER_CLOSED');
   const id = newId();
-  ctx.db.run('INSERT INTO work_answers (id, work_item_id, run_id, employee_id, body, body_sha256, facets_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', id, item.id, fence.runId, attributedEmployeeId, input.body, sha, JSON.stringify(facets), ts(ctx));
+  // D-L1-23: the answer records the exact ANSWER contract it was produced under (the context and this write share one build).
+  ctx.db.run('INSERT INTO work_answers (id, work_item_id, run_id, employee_id, body, body_sha256, facets_json, created_at, answer_contract_version, answer_contract_sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, item.id, fence.runId, attributedEmployeeId, input.body, sha, JSON.stringify(facets), ts(ctx), ANSWER_CONTRACT_VERSION, ANSWER_CONTRACT_SHA256);
   appendAudit(ctx, 'answer.recorded', 'work_answer', id, { actorRef: `employee:${attributedEmployeeId}` }, 'OK', task.kind, { workItemId: item.id, runId: fence.runId, manifestId: from.manifestId, step: from.step });
   return { outcome: 'RECORDED', code: 'RECORDED', answerId: id as Id };
 }
@@ -88,7 +92,7 @@ export function txRecordAnswer(ctx: StoreContext, fence: Fence, attributedEmploy
 export function mapAnswer(r: Record<string, unknown>): AnswerRecord {
   const facets = answerFacetsOf(JSON.parse(String(r.facets_json)) as Record<string, unknown>);
   if (facets === null) throw new Error('stored answer facets are malformed');
-  return { id: String(r.id) as Id, workItemId: String(r.work_item_id) as Id, runId: String(r.run_id) as Id, employeeId: String(r.employee_id) as Id, body: String(r.body), facets, createdAt: String(r.created_at) };
+  return { id: String(r.id) as Id, workItemId: String(r.work_item_id) as Id, runId: String(r.run_id) as Id, employeeId: String(r.employee_id) as Id, body: String(r.body), facets, createdAt: String(r.created_at), answerContractVersion: r.answer_contract_version == null ? null : String(r.answer_contract_version), answerContractSha256: r.answer_contract_sha256 == null ? null : String(r.answer_contract_sha256) };
 }
 
 /** The answer of one Work Item (local governed content for its evaluators and the Founder), or null. */

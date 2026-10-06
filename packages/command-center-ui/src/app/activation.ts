@@ -215,12 +215,19 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
       box.append(h('p', { class: 'muted small', text: `Earlier version v${str(old.version)} (digest ${str(old.sha256).slice(0, 12)}…): ${humanize(str((old.record as Json).state))}, ${old.installable ? 'installable' : 'not installable'} — kept unchanged as history; its benchmark evidence never counts for another version.` }));
     }
     box.append(h('p', { class: 'muted small', text: `Digest ${str(pkgReg.sha256).slice(0, 16)}… · ${arr(pkgReg.skills).length} skills · ${arr(pkgReg.scenarios).length} scenarios · calibration ${pkgReg.founderCalibrationRequired ? 'required' : 'not required'} · benchmark spent ${fmtMoneyMicros(Number(pkg?.spentMicros ?? 0), 'USD')}` }));
+    // D-L1-23: the benchmark method the evidence is (or would be) produced under — never inferred, always the declared one.
+    const method = (pkg?.method as Json | undefined) ?? {};
+    const k = Number(method.observationsPerArm ?? 1);
+    const ac = (method.answerContract as Json | null) ?? null;
+    box.append(h('p', { class: 'muted small', text: method.version === 'BQM-2' ? `Benchmark method BQM-2 (declaration ${str(method.declarationSha256).slice(0, 12)}…): ${k} observations per case and arm, all at ${str(method.reasoningClass)}, rubric ${str(method.rubricVersion)}, ANSWER contract ${str(ac?.version)} (${str(ac?.sha256).slice(0, 12)}…)` : 'Benchmark method BQM-1 (one observation per case and arm, rubric R1) — frozen history' }));
     for (const s of arr(pkg?.skills)) {
       const verdict = (s.verdict as Json) ?? {};
       const sec = s.security as Json | null;
       const sb = h('details', { class: 'act-skill' }, h('summary', {}, h('strong', { text: str(s.name) }), ' ', pill(humanize(str(s.pipelineState))), ' ', h('span', { class: 'muted small', text: `security ${sec ? (sec.passed ? 'passed (static, deterministic)' : 'FAILED') : '—'} · benchmark ${str(verdict.withPct)}% with vs ${str(verdict.baselinePct)}% baseline → ${humanize(str(verdict.reason))}` })));
+      // BQM-2: each case's layered verdict (passes of 5 per arm; failed layers; forbidden hits) and its N1 comparison.
+      for (const c of arr(verdict.cases)) sb.append(h('p', { class: 'small', text: `${str(c.caseCode)}: with skill ${str(c.withPasses)}/${k} vs baseline ${str(c.baselinePasses)}/${k} · ${c.absolutePassed ? 'absolute rule met' : `failed: ${arr(c.failedLayers as unknown as Json[]).map((l) => humanize(String(l))).join(', ')}`}${Number(c.forbiddenHits ?? 0) > 0 ? ` · ${str(c.forbiddenHits)} forbidden hit(s)` : ''} · comparison ${c.comparePassed ? 'within tolerance' : 'WORSE than baseline'}` }));
       for (const r of arr(s.runs)) {
-        sb.append(h('p', { class: 'muted small', text: `${str(r.caseCode)} · ${r.arm === 'WITH_SKILL' ? 'with skill' : 'baseline'} · ${humanize(str(r.workItemState))} · ${checks((r.result as Json | null) ?? null)}` }));
+        sb.append(h('p', { class: 'muted small', text: `${str(r.caseCode)} · ${r.arm === 'WITH_SKILL' ? 'with skill' : 'baseline'}${k > 1 ? ` · observation ${str(r.observationNo)}` : ''} · ${humanize(str(r.workItemState))}${r.outcome === 'INVALID_OUTPUT' ? ' · two invalid outputs (failed observation)' : ''}${r.answeredClass ? ` · ${str(r.answeredClass)}` : ''} · ${checks((r.result as Json | null) ?? null)}` }));
         if (r.answer) sb.append(answerBlock(r.answer as Json, 'Read the answer'));
       }
       box.append(sb);
@@ -229,7 +236,7 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
     if (!rec) actions.append(btn('Preview: qualify (security review + bounded benchmark)', () => void host.previewAction('SKILL_PACKAGE_QUALIFY', { ...pkgArgs, subjectEmployeeId: str(ceo.employeeId) }), true));
     if (rec?.state === 'QUALIFYING' && pkg?.installable === true) actions.append(btn('Preview: install (one decision)', () => void host.previewAction('ACADEMY_PACKAGE_INSTALL', pkgArgs), true));
     // D-L1-21: finished answered runs to finalize (OPEN) or cases without a live run (VOID) — never a scored case.
-    const pending = arr(pkg?.skills).some((s) => arr(s.runs).some((r) => r.state === 'OPEN') || (s.pipelineState === 'SANDBOXED' && arr(s.runs).length < 2 * Number(arr(pkgReg.skills).find((d) => d.code === s.code)?.cases ?? 0)));
+    const pending = arr(pkg?.skills).some((s) => arr(s.runs).some((r) => r.state === 'OPEN') || (s.pipelineState === 'SANDBOXED' && arr(s.runs).length < 2 * k * Number(arr(pkgReg.skills).find((d) => d.code === s.code)?.cases ?? 0)));
     if (rec?.state === 'QUALIFYING' && Number(pkg?.benchmarkRunsOpen ?? 0) === 0 && pkg?.installable !== true && pending) actions.append(btn('Preview: finalize benchmark scores / re-run void cases', () => void host.previewAction('SKILL_PACKAGE_QUALIFY', { ...pkgArgs, subjectEmployeeId: str(ceo.employeeId) })));
     if (rec?.state === 'INSTALLED' && !v.enrollment) actions.append(btn('Preview: enroll in the Academy', () => void host.previewAction('ACADEMY_ENROLL', { ...pkgArgs, employeeId: str(ceo.employeeId) }), true));
     box.append(actions);
