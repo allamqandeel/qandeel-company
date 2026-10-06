@@ -3978,3 +3978,59 @@ version with its method (BQM-1). No migration: 0018 already carries the BQM-2 co
 change: v4 has no durable record until a Founder qualifies it. LIVE read-only precheck (2026-10-06): schema at migration
 17 (0018 applies at the next start of this build), Salim TRAINING, v1/v2/v3 QUALIFYING with 24 rows each (v2, v3 SCORED),
 no pkg4 Skill Version, no open benchmark Work Item, 91 provider calls, all reservations SETTLED.
+
+## D-L1-27 — reusable Skill qualification: a Skill Version is qualified once, on its own evidence, and a later package may consume it (migration 0019)
+
+**Problem (repo truth before this change).** Skill qualification was coupled to package installation. `academy_package_skills`
+(0017) allows one package per Skill Version (unique `skill_version_id`), and `install()` moved versions SANDBOXED →
+BENCHMARKED → COMPARED → APPROVED only when the WHOLE package was installable. Package v4 (LIVE: 120/120 SCORED; three Skills
+passed, three failed) therefore left even its three passing versions SANDBOXED and with no way to be used by a later
+package — the next package would have had to pay to benchmark the same immutable versions again under new labels.
+
+**Model chosen — qualification OWNER vs package CONSUMPTION (the smallest unambiguous provenance).**
+
+- `academy_package_skills` keeps exactly its meaning: the one package that OWNS a version's qualification (its static
+  review and its benchmark rows). The 0017 one-version-one-owner index is unchanged.
+- Migration 0019 adds `academy_package_skill_reuses`, an append-only relation for a package that CONSUMES an already
+  qualified version: `(package_id, skill_code)` → `skill_version_id`, the `source_package_id` (its owner), the
+  qualification fingerprint and the digest of the owner's scored evidence at binding time. Triggers enforce that the source
+  is the version's one owner, registered under BQM-2; that a package binds each Skill code / identity once, by exactly one of
+  the two relations; and that bindings are never updated or deleted. Many packages may consume one version
+  (many-to-one); it still has exactly one owner (one-to-one). Migrations 0001–0018 are unchanged.
+- A package declares the mode per Skill: absent `binding` = QUALIFY_NEW (every package up to v4 — their digests are
+  byte-for-byte unchanged); `binding: 'REUSE_QUALIFIED'` = `versionLabel` names the EXISTING version of the same Skill
+  identity. Instructions and cases stay stated in full (the fingerprint binds them; the blueprint and program install them).
+  A reusing package pins BQM-2.
+
+**Qualification is per Skill Version, derived from its own immutable evidence** (`txSkillQualification`, read-only), never
+from the package outcome. QUALIFIED requires: the owner package registered under BQM-2 (BQM-1 evidence is never reusable);
+the owner's release-pinned definition (digest equal to the recorded one); the exact payload; static review passed and
+security CLEARED; pipeline never REJECTED; freshness not SECURITY_HOLD / RETIRED / DEPRECATED; integrity OK; every declared
+observation slot (case × arm × k) holding exactly one SCORED R2 row (an OPEN, VOID or unclassified slot = EVIDENCE_INCOMPLETE);
+and the layered BQM-2 verdict plus N1 PASSED. Otherwise NOT_QUALIFIED with the first reason found (fail closed).
+
+**Qualification fingerprint SQF-1** (`skillQualificationFingerprint`, mind): SHA-256 of the canonical JSON of the Skill code,
+the instruction payload digest, every benchmark case (code, content, expectation, in order), the pass threshold, the method
+(version + declaration digest — which pins E1, k, the answer-only prompt and fence, the retry and call bounds, the layered
+rule, N1 and the VOID allowlist), the rubric (R2), the ANSWER contract (version + digest), observations per arm, the benchmark
+task class (route, hence model) and the benchmark output ceiling. It does NOT bind the package digest, version, title, the
+program, scenarios, holdouts, shadow work, money caps or other Skills — those do not change how this Skill was judged. BQM-1
+has no fingerprint. Different method / contract / fingerprint = no reuse; no compatibility policy is assumed.
+
+**State model — qualified evidence ≠ production approval.** Deriving a qualification changes no state (v4's passing versions
+stay SANDBOXED in LIVE). Binding a reuse advances the version to COMPARED at most (evidence references point to the owner
+package); only the governed install of a COMPLETE role package approves it. Install now requires every package Skill bound
+exactly once (owned or reused), no duplicate Skill identity, every owned Skill's own verdict passed, every reused binding
+still matching a QUALIFIED version (same fingerprint and evidence digest); then it approves all of them and publishes the
+complete blueprint, program, targets and scenarios; enrollment opens passports from both relations. A partial role never
+installs. The QUALIFY preview resolves every reuse up front (refused when not reusable), counts observations of new versions
+only, and states the reused versions; the install preview names them.
+
+**v4 truthfully, without rewriting it.** v1–v4 digests, rows, answers, scores, membership and labels are unchanged. Read
+through this model, v4 is QUALIFYING / not installable / 120 SCORED, and its three passing versions (executive-judgment,
+organization-leadership, evidence-and-economics) are QUALIFIED reusable evidence owned by v4; the three failing versions are
+NOT_QUALIFIED (QUALIFICATION_FAILED). Nothing was written to LIVE; 0019 is not applied to LIVE by this change.
+
+**Out of scope (deliberately).** No v5; no provider behaviour change. v4 diagnosis and the NOT_JSON analysis are reported to
+the Founder; the stored evidence cannot distinguish a JSON parse failure from a control-character rejection (`parseProposal`
+reports both as NOT_JSON; raw output is never persisted by design) — a content-free sub-code would be a separate decision.

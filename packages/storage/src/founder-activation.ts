@@ -13,7 +13,7 @@ import { assertTaskClass, isReasoningClass } from '@qandeel-company/governance';
 import { ASSESSMENT_DIMENSIONS, BENCHMARK_ARMS, BQM2_DECLARATION, DETERMINISTIC_DIMENSIONS, academyPackageDigest, containsSecretMaterial, observationsPerArm, packageMethod, type AcademyPackage, type AssessmentDimension, type EmployeeIdentityProfile } from '@qandeel-company/mind';
 
 import { AcademyStore, txAdvance, txCollectShadowEvidence, txEvaluateDeterministic } from './academy.js';
-import { AcademyPackageStore, txPackageRecord, txPackageView } from './academy-packages.js';
+import { AcademyPackageStore, txPackageRecord, txPackageView, txResolveReuse } from './academy-packages.js';
 import { txAnswerOf } from './answers.js';
 import { benchmarkPinMismatch, pinsOfPackage } from './benchmark-pins.js';
 import { budgetFor, getEmployeeRow } from './governance-core.js';
@@ -128,7 +128,7 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
       // D-L1-23: a BQM-2 package is previewed only when this build runs exactly the method and ANSWER contract it pins.
       const pinMismatch = benchmarkPinMismatch(rec ? { method: rec.benchmarkMethod, methodSha256: rec.methodSha256, answerContractVersion: rec.answerContractVersion, answerContractSha256: rec.answerContractSha256 } : pinsOfPackage(pkg));
       if (pinMismatch !== null) refuse(pinMismatch, 'the package pins a benchmark method or ANSWER contract this build does not run');
-      const view = txPackageView(ctx, pkg);
+      const view = txPackageView(ctx, pkg, env.packages);
       const k = observationsPerArm(pkg);
       // D-L1-21 / D-L1-23: a sandboxed version's observation slot (case, arm, observation) needs a run when its live run
       // finished without an answer for an infrastructure reason (it becomes VOID) or it has no live run; a finished OPEN
@@ -148,7 +148,12 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
       // re-run; nothing about the package proceeds until it is explained.
       if (rec !== null && view.benchmarkRunsUnclassified > 0) transition('an observation ended without an answer for an unclassified cause (never treated as infrastructure)', 'BENCHMARK_UNCLASSIFIED_NO_ANSWER', { unclassified: view.benchmarkRunsUnclassified });
       if (rec !== null && voidCases === 0 && toFinalize === 0) transition('nothing to finalize or re-run: every benchmark case is scored', 'NOTHING_TO_REQUALIFY');
-      const runs = rec === null ? pkg.skills.reduce((n, s) => n + s.benchmark.length * 2 * k, 0) : voidCases;
+      // D-L1-27: a reused Skill is resolved now (refused when not reusable) and runs nothing; only new versions benchmark.
+      const reused = rec === null ? pkg.skills.filter((s) => s.binding === 'REUSE_QUALIFIED').map((s) => {
+        const r = txResolveReuse(ctx, pkg, s, env.packages);
+        return `${s.code}@${s.versionLabel} (qualified in ${r.q.sourcePackage?.code ?? ''} v${r.q.sourcePackage?.version ?? 0}; fingerprint ${r.fingerprint.slice(0, 12)}…)`;
+      }) : [];
+      const runs = rec === null ? pkg.skills.filter((s) => s.binding !== 'REUSE_QUALIFIED').reduce((n, s) => n + s.benchmark.length * 2 * k, 0) : voidCases;
       const qualification = rec === null ? 'QUALIFY' : voidCases === 0 ? 'FINALIZE_SCORES' : 'REQUALIFY_VOID_RUNS';
       for (const c of [pkg.taskClasses.benchmark]) if (!ctx.db.get(`SELECT 1 AS x FROM permission_grants WHERE employee_id = ? AND capability = 'model.invoke' AND status = 'ACTIVE' AND resource_scope IN (?, '*')`, subject.id, c)) transition('the subject has no model access for the benchmark task class', 'NO_MODEL_ACCESS', { taskClass: c });
       if (!budgetFor(ctx, 'EMPLOYEE', subject.id)) transition('the subject has no Employee envelope', 'NO_ENVELOPE');
@@ -161,11 +166,11 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
         reasoningClass: BQM2_DECLARATION.reasoningClass, observationsPerArm: k, maxModelCallsPerObservation: BQM2_DECLARATION.deliverable.maxModelCallsPerObservation, answerOnly: true,
         totalCapBoundMicros: runs * pkg.limits.benchmarkCapMicros,
       } : {};
-      return { packageCode: pkg.code, packageVersion: pkg.version, packageSha256: sha, packageTitle: pkg.title.slice(0, 160), subjectEmployeeId: subject.id, qualification, skills: pkg.skills.map((s) => `${s.code} (${s.benchmark.length} cases)`), benchmarkRuns: runs, scoresToFinalize: toFinalize, paidProviderCalls: runs === 0 ? 'NONE' : 'BOUNDED_BY_CAPS', benchmarkTaskClass: pkg.taskClasses.benchmark, perRunCapMicros: pkg.limits.benchmarkCapMicros, envelopeRemainingMicros: (() => { const b = budgetFor(ctx, 'EMPLOYEE', subject.id); return b ? Math.max(0, b.capMoney - b.spentMoney - b.reservedMoney) : 0; })(), securityReview: 'STATIC_DETERMINISTIC (text-only native skills; not a human review)', ...bqm2, reasonCode: assertCode(raw.reasonCode ?? 'package.qualify', 'reasonCode') };
+      return { packageCode: pkg.code, packageVersion: pkg.version, packageSha256: sha, packageTitle: pkg.title.slice(0, 160), subjectEmployeeId: subject.id, qualification, skills: pkg.skills.map((s) => `${s.code} (${s.benchmark.length} cases)`), ...(reused.length > 0 ? { reusedSkills: reused, newlyQualifiedSkills: pkg.skills.filter((s) => s.binding !== 'REUSE_QUALIFIED').map((s) => s.code) } : {}), benchmarkRuns: runs, scoresToFinalize: toFinalize, paidProviderCalls: runs === 0 ? 'NONE' : 'BOUNDED_BY_CAPS', benchmarkTaskClass: pkg.taskClasses.benchmark, perRunCapMicros: pkg.limits.benchmarkCapMicros, envelopeRemainingMicros: (() => { const b = budgetFor(ctx, 'EMPLOYEE', subject.id); return b ? Math.max(0, b.capMoney - b.spentMoney - b.reservedMoney) : 0; })(), securityReview: 'STATIC_DETERMINISTIC (text-only native skills; not a human review)', ...bqm2, reasonCode: assertCode(raw.reasonCode ?? 'package.qualify', 'reasonCode') };
     }
     case 'ACADEMY_PACKAGE_INSTALL': {
       const { pkg, sha } = packageOf(raw, env);
-      const view = txPackageView(ctx, pkg);
+      const view = txPackageView(ctx, pkg, env.packages);
       if (!view.record) transition('the package has not been qualified', 'PACKAGE_NOT_QUALIFIED');
       if (view.record?.state === 'INSTALLED') transition('this package is already installed', 'PACKAGE_INSTALLED');
       if (view.benchmarkRunsOpen > 0 && view.skills.some((s) => s.verdict.reason === 'INCOMPLETE')) transition('the benchmark is still running', 'BENCHMARK_RUNNING', { open: view.benchmarkRunsOpen });
@@ -173,7 +178,7 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
       const kinds = (k: string): number => pkg.scenarios.filter((s) => s.kind === k).length;
       return {
         packageCode: pkg.code, packageVersion: pkg.version, packageSha256: sha, packageTitle: pkg.title.slice(0, 160), roleRef: pkg.roleRef,
-        skills: view.skills.map((s) => `${s.code}: security ${s.security?.passed ? 'PASSED' : 'FAILED'}, benchmark ${s.verdict.withPct}% vs baseline ${s.verdict.baselinePct}% → ${s.verdict.reason}`),
+        skills: view.skills.map((s) => `${s.code}: ${s.binding === 'REUSE_QUALIFIED' ? `reused qualified version (qualified in ${s.qualification.sourcePackage?.code ?? ''} v${s.qualification.sourcePackage?.version ?? 0})` : `security ${s.security?.passed ? 'PASSED' : 'FAILED'}`}, benchmark ${s.verdict.withPct}% vs baseline ${s.verdict.baselinePct}% → ${s.verdict.reason}`),
         benchmarkSpentMicros: view.spentMicros,
         founderCalibrationRequired: pkg.program.founderCalibrationRequired, assessmentTrials: pkg.program.assessmentTrials, holdoutRequired: pkg.program.holdoutRequired,
         scenarios: `${kinds('PRACTICE')} practice, ${kinds('ASSESSMENT')} assessment, ${kinds('HOLDOUT')} holdout`,
@@ -337,15 +342,15 @@ export function executeActivation(store: CompanyStore, ctx: StoreContext, founde
     }
     case 'SKILL_PACKAGE_QUALIFY': {
       // A confirmed finalize-scores preview promised zero runs and zero provider calls: the store holds it to that.
-      const out = AcademyPackageStore.for(store).qualify(founderRef, pkgOf(), { subjectEmployeeId: str('subjectEmployeeId'), expectedSha256: str('packageSha256'), finalizeOnly: pl.qualification === 'FINALIZE_SCORES' });
+      const out = AcademyPackageStore.for(store, env.packages).qualify(founderRef, pkgOf(), { subjectEmployeeId: str('subjectEmployeeId'), expectedSha256: str('packageSha256'), finalizeOnly: pl.qualification === 'FINALIZE_SCORES' });
       return `academy_package:${out.packageId}`;
     }
     case 'ACADEMY_PACKAGE_INSTALL': {
-      const out = AcademyPackageStore.for(store).install(founderRef, pkgOf(), { expectedSha256: str('packageSha256') });
+      const out = AcademyPackageStore.for(store, env.packages).install(founderRef, pkgOf(), { expectedSha256: str('packageSha256') });
       return `academy_package:${out.packageId}`;
     }
     case 'ACADEMY_ENROLL': {
-      const out = AcademyPackageStore.for(store).enroll(founderRef, pkgOf(), str('employeeId'));
+      const out = AcademyPackageStore.for(store, env.packages).enroll(founderRef, pkgOf(), str('employeeId'));
       return `academy_enrollment:${out.enrollmentId}`;
     }
     case 'ACADEMY_MODULES_COMPLETE': {
@@ -355,7 +360,7 @@ export function executeActivation(store: CompanyStore, ctx: StoreContext, founde
       return `academy_enrollment:${str('enrollmentId')}`;
     }
     case 'ACADEMY_ATTEMPT_START': {
-      const out = AcademyPackageStore.for(store).startAttempt(founderRef, pkgOf(), str('enrollmentId'), str('scenarioCode'));
+      const out = AcademyPackageStore.for(store, env.packages).startAttempt(founderRef, pkgOf(), str('enrollmentId'), str('scenarioCode'));
       return `academy_attempt:${out.attemptId}`;
     }
     case 'ACADEMY_EVALUATE': {
@@ -381,7 +386,7 @@ export function executeActivation(store: CompanyStore, ctx: StoreContext, founde
       return `academy_remediation:${r.id}`;
     }
     case 'ACADEMY_SHADOW_ASSIGN': {
-      const out = AcademyPackageStore.for(store).assignShadow(founderRef, pkgOf(), str('enrollmentId'), str('assignmentCode'));
+      const out = AcademyPackageStore.for(store, env.packages).assignShadow(founderRef, pkgOf(), str('enrollmentId'), str('assignmentCode'));
       return `work_item:${out.workItemId}`;
     }
     case 'ACADEMY_PROBATION_EVIDENCE': {

@@ -225,6 +225,10 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
       const verdict = (s.verdict as Json) ?? {};
       const sec = s.security as Json | null;
       const sb = h('details', { class: 'act-skill' }, h('summary', {}, h('strong', { text: str(s.name) }), ' ', pill(humanize(str(s.pipelineState))), ' ', h('span', { class: 'muted small', text: `security ${sec ? (sec.passed ? 'passed (static, deterministic)' : 'FAILED') : '—'} · benchmark ${str(verdict.withPct)}% with vs ${str(verdict.baselinePct)}% baseline → ${humanize(str(verdict.reason))}` })));
+      // D-L1-27: how the package binds the Skill, and the Skill Version's own qualification (never the package's outcome).
+      const q = (s.qualification as Json | undefined) ?? {};
+      const src = (q.sourcePackage as Json | null) ?? null;
+      sb.append(h('p', { class: 'muted small', text: s.binding === 'REUSE_QUALIFIED' ? `Reused qualified Skill Version (no new version, review or benchmark) — qualified in ${str(src?.code)} v${str(src?.version)}; fingerprint ${str(q.fingerprint).slice(0, 12)}… · ${s.bindingValid ? 'binding valid' : 'binding NO LONGER VALID'}` : `Skill Version qualification: ${q.status === 'QUALIFIED' ? 'QUALIFIED on its own evidence (reusable by a later package)' : `not qualified (${humanize(str(q.reason))})`}` }));
       // BQM-2: each case's layered verdict (passes of 5 per arm; failed layers; forbidden hits) and its N1 comparison.
       for (const c of arr(verdict.cases)) sb.append(h('p', { class: 'small', text: `${str(c.caseCode)}: with skill ${str(c.withPasses)}/${k} vs baseline ${str(c.baselinePasses)}/${k} · ${c.absolutePassed ? 'absolute rule met' : `failed: ${arr(c.failedLayers as unknown as Json[]).map((l) => humanize(String(l))).join(', ')}`}${Number(c.forbiddenHits ?? 0) > 0 ? ` · ${str(c.forbiddenHits)} forbidden hit(s)` : ''} · comparison ${c.comparePassed ? 'within tolerance' : 'WORSE than baseline'}` }));
       for (const r of arr(s.runs)) {

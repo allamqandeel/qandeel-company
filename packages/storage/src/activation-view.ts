@@ -105,7 +105,7 @@ export function activationView(store: CompanyStore, packages: readonly AcademyPa
     const money = (b: ReturnType<typeof budgetFor>): ActivationView['envelope'] => (b ? { capMoney: b.capMoney, spentMoney: b.spentMoney, reservedMoney: b.reservedMoney, currency: b.currency } : null);
     const envelope = ceo ? money(budgetFor(ctx, 'EMPLOYEE', ceo.employeeId)) : null;
     const modelAccess = ceo ? ctx.db.all<{ s: string }>(`SELECT resource_scope AS s FROM permission_grants WHERE employee_id = ? AND capability = 'model.invoke' AND status = 'ACTIVE' ORDER BY resource_scope`, ceo.employeeId).map((r) => r.s) : [];
-    const views = packages.filter((p) => seat === null || p.roleRef === seat.roleRef).map((p) => txPackageView(ctx, p));
+    const views = packages.filter((p) => seat === null || p.roleRef === seat.roleRef).map((p) => txPackageView(ctx, p, packages));
     const pkg = packages.find((p) => txPackageRecord(ctx, p)?.state === 'INSTALLED') ?? null;
     let enrollment: ActivationView['enrollment'] = null;
     if (ceo) {

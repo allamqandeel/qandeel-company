@@ -75,7 +75,7 @@ export { SkillStore, type RegisterSkillVersionInput, type SkillHealth } from './
 export { CapabilityStore, type DeclareRequirementsInput } from './capability.js';
 export { AcademyStore, type AcademyHealth } from './academy.js';
 // L1-02: the release-pinned Academy package lifecycle, typed answers and the Company activation view.
-export { AcademyPackageStore, type BenchmarkRunView, type PackageRecord, type PackageSkillView, type PackageView } from './academy-packages.js';
+export { AcademyPackageStore, type BenchmarkRunView, type PackageRecord, type PackageSkillView, type PackageView, type SkillQualification } from './academy-packages.js';
 export { activationView, type ActivationView, type AttemptView, type EmployeeIdentityView } from './activation-view.js';
 export type { AnswerRecord } from './answers.js';
 export type { ActivationEnv } from './founder-activation.js';

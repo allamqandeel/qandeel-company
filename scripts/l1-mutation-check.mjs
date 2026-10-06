@@ -41,6 +41,8 @@ const ACTIVATION_SURFACE = { cwd: 'packages/command-center', tests: ['dist/test/
 const BQM2_STORE = { cwd: 'packages/storage', tests: ['dist/test/l1-02-bqm2.test.js'] };
 // D-L1-24: the answer-only fence on the real employee loop (scripted governed services).
 const ANSWER_ONLY = { cwd: 'packages/runtime', tests: ['dist/test/l1/l1-02-answer-only.test.js'] };
+// D-L1-27: reusable Skill qualification at the store boundary (0019: owner vs reuse binding, fail-closed reuse, install).
+const REUSE_STORE = { cwd: 'packages/storage', tests: ['dist/test/l1-02-skill-reuse.test.js'] };
 
 const GOV = 'packages/governance/dist/src';
 const PROVIDERS = 'packages/model-providers/dist/src/deepseek';
@@ -644,6 +646,85 @@ const MUTATIONS = [
     gate: 'the production surface registers v4 beside the v3, v2 and v1 history',
     edits: [{ file: 'packages/command-center/dist/src/surface.js', search: "[CEO_ACADEMY_PACKAGE_V4, CEO_ACADEMY_PACKAGE_V3, ", replace: "[CEO_ACADEMY_PACKAGE_V3, ", expectedCount: 1 }],
     runs: [ACTIVATION_SURFACE],
+  },
+  // --- L1-02: reusable Skill qualification (D-L1-27) ------------------------------------------------------------------
+  {
+    id: 'l1-02-reuse-failed-version',
+    gate: 'a Skill Version whose own verdict failed is never qualified evidence (never reusable)',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "if (!(verdict.benchmarkPassed && verdict.comparePassed))", replace: "if (false)", expectedCount: 1 }],
+    runs: [REUSE_STORE],
+  },
+  {
+    id: 'l1-02-reuse-incomplete-evidence',
+    gate: 'open, VOID or unclassified observation slots are not qualified evidence',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "if (!complete)", replace: "if (false)", expectedCount: 1 }],
+    runs: [REUSE_STORE],
+  },
+  {
+    id: 'l1-02-reuse-bqm1-evidence',
+    gate: 'BQM-1 evidence is never reusable',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "if (rec.benchmarkMethod !== 'BQM-2')", replace: "if (false)", expectedCount: 1 }],
+    runs: [REUSE_STORE],
+  },
+  {
+    id: 'l1-02-reuse-fingerprint-unchecked',
+    gate: 'a reuse requires the exact qualification fingerprint (cases, expectations, pass mark, method, contract)',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "if (fingerprint !== q.fingerprint)", replace: "if (false)", expectedCount: 1 }],
+    runs: [REUSE_STORE],
+  },
+  {
+    id: 'l1-02-reuse-payload-unchecked',
+    gate: 'a reused version keeps its exact instruction payload',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "if (row.instructions_sha256 !== sha256Hex(s.instructions))", replace: "if (false)", expectedCount: 1 }],
+    runs: [REUSE_STORE],
+  },
+  {
+    id: 'l1-02-reuse-held-retired',
+    gate: 'a security-held, retired or deprecated version is never reusable',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "if (BLOCKING_FRESHNESS.includes(v.freshness))", replace: "if (false)", expectedCount: 1 }],
+    runs: [REUSE_STORE],
+  },
+  {
+    id: 'l1-02-reuse-integrity-ignored',
+    gate: 'an integrity-failed version is never reusable',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "if (v.integrity !== 'OK')", replace: "if (false)", expectedCount: 1 }],
+    runs: [REUSE_STORE],
+  },
+  {
+    id: 'l1-02-reuse-requalified',
+    gate: 'a reused Skill creates no new version, review or benchmark',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "if (s.binding === 'REUSE_QUALIFIED') {", replace: "if (false) {", expectedCount: 1 }],
+    runs: [REUSE_STORE, ACTIVATION],
+  },
+  {
+    id: 'l1-02-reuse-preview-overcounts',
+    gate: 'the qualification preview counts observations of new versions only',
+    edits: [{ file: `${STORAGE}/founder-activation.js`, search: "pkg.skills.filter((s) => s.binding !== 'REUSE_QUALIFIED').reduce", replace: "pkg.skills.reduce", expectedCount: 1 }],
+    runs: [REUSE_STORE, ACTIVATION],
+  },
+  {
+    id: 'l1-02-reuse-approves-early',
+    gate: 'a reuse records qualified evidence (COMPARED), never production approval',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "this.#stepTo(ctx, skills, actorRef, versionId, 'COMPARED'", replace: "this.#stepTo(ctx, skills, actorRef, versionId, 'APPROVED'", expectedCount: 1 }],
+    runs: [REUSE_STORE],
+  },
+  {
+    id: 'l1-02-install-failed-new-skill',
+    gate: 'a complete role installs only when every newly qualified Skill passed',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "return s.verdict.benchmarkPassed && s.verdict.comparePassed;", replace: "return true;", expectedCount: 1 }],
+    runs: [REUSE_STORE],
+  },
+  {
+    id: 'l1-02-fingerprint-ignores-cases',
+    gate: 'the qualification fingerprint binds every benchmark case and expectation',
+    edits: [{ file: `${MIND}/benchmark-method.js`, search: "cases: s.benchmark.map((c) => ({ code: c.code, content: c.content, expect: c.expect })),", replace: "cases: [],", expectedCount: 1 }],
+    runs: [REUSE_STORE, ACTIVATION],
+  },
+  {
+    id: 'l1-02-fingerprint-ignores-method',
+    gate: 'the qualification fingerprint binds the method and ANSWER contract',
+    edits: [{ file: `${MIND}/benchmark-method.js`, search: "method: { version: pkg.benchmarkMethod.version, declarationSha256: pkg.benchmarkMethod.declarationSha256 },", replace: "method: null,", expectedCount: 1 }],
+    runs: [ACTIVATION],
   },
 ];
 

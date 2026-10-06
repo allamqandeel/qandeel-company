@@ -53,6 +53,15 @@ export interface PackageSkill {
   readonly code: string;
   readonly name: string;
   readonly versionLabel: string;
+  /**
+   * D-L1-27: how the package binds this Skill. Absent = QUALIFY_NEW (every package up to v4, whose digests are therefore
+   * unchanged): `versionLabel` names a NEW immutable Skill Version, qualified on this package's own evidence (static
+   * review + benchmark). REUSE_QUALIFIED = `versionLabel` names an EXISTING Skill Version of this Skill identity,
+   * consumed as it is — no new version, no review, no benchmark — only when that version's own immutable BQM-2 evidence
+   * passed under exactly this Skill's qualification fingerprint (`skillQualificationFingerprint`). The instructions and
+   * cases stay stated in full: they are what the fingerprint binds, and what the role blueprint and program install.
+   */
+  readonly binding?: 'REUSE_QUALIFIED';
   readonly instructions: string;
   readonly blueprintCategory: BlueprintCategory;
   readonly critical: boolean;
@@ -158,6 +167,9 @@ export function assertAcademyPackage(p: unknown): AcademyPackage {
     codes.add(s.code);
     text(s.name, `${f}.name`, 120);
     text(s.versionLabel, `${f}.versionLabel`, 32);
+    if (s.binding !== undefined && s.binding !== 'REUSE_QUALIFIED') bad(`${f}.binding`, 'a skill binding is REUSE_QUALIFIED or absent (QUALIFY_NEW)');
+    // Only BQM-2 evidence is reusable (D-L1-27): a package that reuses a qualified version runs under BQM-2 itself.
+    if (s.binding === 'REUSE_QUALIFIED' && o.benchmarkMethod === undefined) bad(`${f}.binding`, 'a package that reuses a qualified Skill Version pins BQM-2');
     text(s.instructions, `${f}.instructions`, SKILL_INSTRUCTIONS_MAX);
     if (!(BLUEPRINT_CATEGORIES as readonly string[]).includes(s.blueprintCategory)) bad(f, 'blueprint category');
     if (!(PROFICIENCY as readonly string[]).includes(s.minProficiency) || !(PROFICIENCY as readonly string[]).includes(s.targetProficiency)) bad(f, 'proficiency');

@@ -27,6 +27,39 @@ import { ANSWER_ONLY_OUTPUT_INSTRUCTION_SHA256, type AnswerFacets } from '@qande
 
 import { isArabicBody, scoreAnswer, type AcademyPackage, type BenchmarkArm, type BenchmarkCase, type BenchmarkVerdict, type RubricCheck, type RubricResult } from './academy-package.js';
 
+/**
+ * D-L1-27 — the per-Skill qualification fingerprint (SQF-1): everything that decided whether ONE Skill Version passed its
+ * BQM-2 qualification, and nothing else. Two packages may share a qualified Skill Version only when the fingerprint of
+ * the Skill in the consuming package equals the fingerprint of the Skill in the package that owns its evidence.
+ *
+ * It binds: the instruction payload digest; every benchmark case of the Skill (code, content, expectation, in order); the
+ * pass threshold; the method (version + declaration digest — which itself pins E1, k, the answer-only prompt, the retry
+ * and call bounds, the layered rule and N1); the rubric (R2); the ANSWER contract (version + digest); the observations
+ * per arm; the benchmark task class (the route, hence the model) and the benchmark output ceiling. It deliberately does
+ * NOT bind the package digest, title, version, program, scenarios, holdouts, shadow work, money caps or the other
+ * Skills: those do not change how this Skill was judged. A BQM-1 package has no fingerprint (null): BQM-1 evidence is
+ * never reusable, and no compatibility is assumed across methods or contracts.
+ */
+export const SKILL_QUALIFICATION_FINGERPRINT_VERSION = 'SQF-1';
+export function skillQualificationFingerprint(pkg: AcademyPackage, skillCode: string): string | null {
+  if (packageMethod(pkg) !== 'BQM-2' || pkg.benchmarkMethod === undefined) return null;
+  const s = pkg.skills.find((x) => x.code === skillCode);
+  if (s === undefined) return null;
+  return sha256Hex(canonicalJson({
+    fingerprint: SKILL_QUALIFICATION_FINGERPRINT_VERSION,
+    skillCode: s.code,
+    instructionsSha256: sha256Hex(s.instructions),
+    cases: s.benchmark.map((c) => ({ code: c.code, content: c.content, expect: c.expect })),
+    passPct: pkg.limits.benchmarkPassPct,
+    method: { version: pkg.benchmarkMethod.version, declarationSha256: pkg.benchmarkMethod.declarationSha256 },
+    rubricVersion: 'R2',
+    answerContract: { version: pkg.benchmarkMethod.answerContract.version, sha256: pkg.benchmarkMethod.answerContract.sha256 },
+    observationsPerArm: observationsPerArm(pkg),
+    benchmarkTaskClass: pkg.taskClasses.benchmark,
+    benchmarkMaxOutputTokens: pkg.limits.benchmarkMaxOutputTokens,
+  } as unknown as Parameters<typeof canonicalJson>[0]));
+}
+
 /** The interrogative / auxiliary words that may open an exempted question sentence (English, Arabic). */
 const INTERROGATIVE_STARTS = ['can', 'could', 'may', 'should', 'shall', 'will', 'would', 'do', 'does', 'did', 'is', 'are', 'why', 'how', 'what', 'هل', 'لماذا', 'كيف', 'ماذا'] as const;
 

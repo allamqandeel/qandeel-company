@@ -12,7 +12,7 @@ import path from 'node:path';
 import { describe, test } from 'node:test';
 
 import { sha256Hex, type Id } from '@qandeel-company/domain';
-import { BQM2_DECLARATION, BQM2_DECLARATION_SHA256, CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, CEO_ACADEMY_PACKAGE_V4, CEO_IDENTITY_PROFILE_V1, INVALID_OUTPUT_RESULT, RUBRIC_R2_DECLARATION, academyPackageDigest, benchmarkVerdictBqm2, forbiddenHitsR2, observationsPerArm, packageMethod, scoreAnswer, scoreAnswerR2, scriptFamily, type AcademyPackage, type AnswerExpectation, type BenchmarkCase, type RubricResult } from '@qandeel-company/mind';
+import { BQM2_DECLARATION, BQM2_DECLARATION_SHA256, CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, CEO_ACADEMY_PACKAGE_V4, CEO_IDENTITY_PROFILE_V1, INVALID_OUTPUT_RESULT, RUBRIC_R2_DECLARATION, academyPackageDigest, benchmarkVerdictBqm2, forbiddenHitsR2, observationsPerArm, packageMethod, scoreAnswer, scoreAnswerR2, scriptFamily, skillQualificationFingerprint, type AcademyPackage, type AnswerExpectation, type BenchmarkCase, type RubricResult } from '@qandeel-company/mind';
 import { DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DeepSeekProviderAdapter, FakeDeepSeekTransport, fakeChatAnswer, fakeModelsAnswer, type DeepSeekRequest, type DeepSeekResponse } from '@qandeel-company/model-providers';
 import { InMemorySecretVault } from '@qandeel-company/secret-vault';
 import type { FounderSession } from '@qandeel-company/storage';
@@ -1222,5 +1222,118 @@ describe('D-L1-26: package v4 is the first production CEO package under BQM-2 an
       assert.equal(v4Ctx.length, 120, 'one E1 call per observation (truthful fake)');
       assert.ok(v4Ctx.every((r) => !r.thinking && r.maxTokens === 4_096 && r.text.includes(ANSWER_ONLY_OUTPUT_INSTRUCTION) && r.text.includes(ANSWER_CONTRACT_TEXT)));
     }, { packages: [V3] });
+  });
+});
+
+// --- D-L1-27: reusable Skill qualification — qualified once per Skill Version, reused by a later package ----------------
+// L1-02-PROOF: skill-reuse
+
+/** The three cases the real v4 run failed (founder-partnership, cross-functional-synthesis, governance-discipline). */
+const V4_FAILED_CASES = ['founder-idea-challenge', 'feature-vs-technical-risk', 'founder-asks-private-conversations'];
+/** A synthetic later package (test only — never a production package): reuse what qualified, qualify the rest anew. */
+const mixedOf = (version: number, reuse: readonly string[]): AcademyPackage => ({
+  ...V4,
+  version,
+  title: `Synthetic mixed package v${version} (test only)`,
+  skills: V4.skills.map((s) => (reuse.includes(s.code) ? { ...s, binding: 'REUSE_QUALIFIED' as const } : { ...s, versionLabel: `1.0.0+mix${version}` })),
+});
+
+describe('D-L1-27: a Skill Version is qualified once on its own evidence; a later package reuses it and benchmarks only the new versions', () => {
+  test('the qualification fingerprint binds what judged the Skill (payload, cases, expectations, pass mark, method, rubric, ANSWER contract) and nothing else; BQM-1 has none; a reuse needs BQM-2', () => {
+    const code = V4.skills[0]?.code as string;
+    const fp = (p: AcademyPackage): string | null => skillQualificationFingerprint(p, code);
+    const base = fp(V4);
+    assert.match(String(base), /^[0-9a-f]{64}$/);
+    for (const p of [V1, V2, V3]) assert.equal(fp(p), null, `v${p.version}: BQM-1 evidence has no reusable fingerprint`);
+    const skill = (f: (s: AcademyPackage['skills'][number]) => AcademyPackage['skills'][number]): AcademyPackage => ({ ...V4, skills: V4.skills.map((s) => (s.code === code ? f(s) : s)) });
+    const differs: [string, AcademyPackage][] = [
+      ['instructions', skill((s) => ({ ...s, instructions: `${s.instructions} ` }))],
+      ['case content', skill((s) => ({ ...s, benchmark: s.benchmark.map((b, i) => (i === 0 ? { ...b, content: `${b.content}.` } : b)) }))],
+      ['expectation', skill((s) => ({ ...s, benchmark: s.benchmark.map((b, i) => (i === 0 ? { ...b, expect: { ...b.expect, critical: [...(b.expect.critical ?? [])].reverse() } } : b)) }))],
+      ['pass mark', { ...V4, limits: { ...V4.limits, benchmarkPassPct: 74 } }],
+      ['BQM method digest', { ...V4, benchmarkMethod: { ...(V4.benchmarkMethod as NonNullable<AcademyPackage['benchmarkMethod']>), declarationSha256: 'c'.repeat(64) } }],
+      ['ANSWER contract', { ...V4, benchmarkMethod: { ...(V4.benchmarkMethod as NonNullable<AcademyPackage['benchmarkMethod']>), answerContract: { version: 'AC-5', sha256: 'd'.repeat(64) } } }],
+      ['benchmark task class', { ...V4, taskClasses: { ...V4.taskClasses, benchmark: 'founder.brief' } }],
+      ['output ceiling', { ...V4, limits: { ...V4.limits, benchmarkMaxOutputTokens: 2_048 } }],
+    ];
+    for (const [what, p] of differs) assert.notEqual(fp(p), base, `${what} changes the qualification`);
+    const same: [string, AcademyPackage][] = [
+      ['version and title', { ...V4, version: 9, title: 'Another title' }],
+      ['version label', skill((s) => ({ ...s, versionLabel: '9.9.9' }))],
+      ['program and scenarios', { ...V4, scenarios: V4.scenarios.slice(1), program: { ...V4.program, assessmentTrials: V4.program.assessmentTrials + 1 } }],
+      ['money caps', { ...V4, limits: { ...V4.limits, benchmarkCapMicros: 1, attemptCapMicros: 1 } }],
+      ['another Skill', { ...V4, skills: V4.skills.map((s) => (s.code === code ? s : { ...s, instructions: `${s.instructions} ` })) }],
+    ];
+    for (const [what, p] of same) assert.equal(fp(p), base, `${what} does not change how this Skill was judged`);
+    assert.throws(() => academyPackageDigest({ ...V3, skills: V3.skills.map((s, i) => (i === 0 ? { ...s, binding: 'REUSE_QUALIFIED' as const } : s)) }), /reuses a qualified Skill Version pins BQM-2/);
+    for (const p of [V1, V2, V3, V4]) assert.ok(p.skills.every((s) => s.binding === undefined), `v${p.version}: every Skill is QUALIFY_NEW (digests unchanged)`);
+  });
+
+  test('a failed v4-shaped package keeps its 3 passing versions qualified; a mixed package reuses them (same IDs, no review, no Work Item, no model call, no spend), benchmarks only 3 new versions — 60 observations, 60 calls — and installs the complete six-Skill role', () => {
+    let phase: 'V4' | 'MIX' = 'V4';
+    const wrong = (c: ReturnType<typeof caseOf>): boolean => phase === 'V4' && c.kind === 'BENCHMARK' && c.withSkill && V4_FAILED_CASES.includes(caseCodeOf(c.expect));
+    return withCompany('l1-02-reuse', (c) => (wrong(c) ? 'OVERCONFIDENT' : 'TRUTHFUL'), async (x) => {
+      const ceo = hireCeo(x);
+      await qualifyPkg(x, V4, ceo);
+      act(x, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V4), subjectEmployeeId: ceo }); // FINALIZE_SCORES
+      const v4 = viewOf(x, V4);
+      assert.ok(v4?.record);
+      assert.equal(v4.installable, false, 'the package failed');
+      const passing = v4.skills.filter((s) => s.qualification.status === 'QUALIFIED').map((s) => s.code);
+      const failing = v4.skills.filter((s) => s.qualification.status !== 'QUALIFIED');
+      assert.equal(passing.length, 3, 'three Skill Versions qualified on their own evidence although the package failed');
+      assert.deepEqual(failing.map((s) => s.qualification.reason), ['QUALIFICATION_FAILED', 'QUALIFICATION_FAILED', 'QUALIFICATION_FAILED']);
+      assert.ok(v4.skills.every((s) => s.pipelineState === 'SANDBOXED'), 'nothing was approved by deriving the evidence');
+      const v4Before = JSON.stringify(v4.skills.map((s) => s.runs));
+      const MIX = mixedOf(5, passing);
+
+      // Register the mixed package (a release adds it): no record, no call.
+      const calls = (): number => x.seen.filter((r) => r.kind === 'BENCHMARK').length;
+      const atRegister = calls();
+      await x.rt.stop();
+      x.rt = makeRuntime(x.root, x.transport, x.logs, [MIX, V4]);
+      await x.rt.start();
+      const pl = x.rt.founder.actions.preview(x.session, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(MIX), subjectEmployeeId: ceo }).payload as Record<string, unknown>;
+      assert.deepEqual([pl.qualification, pl.benchmarkRuns, pl.totalCapBoundMicros, (pl.reusedSkills as string[]).length, pl.newlyQualifiedSkills], ['QUALIFY', 60, 60 * V4.limits.benchmarkCapMicros, 3, failing.map((s) => s.code).sort((a, b) => V4.skills.findIndex((d) => d.code === a) - V4.skills.findIndex((d) => d.code === b))], 'the preview states 60 observations and the reused Skills');
+      const spentBefore = viewOf(x, V4)?.spentMicros;
+
+      phase = 'MIX';
+      await qualifyPkg(x, MIX, ceo);
+      const mix = viewOf(x, MIX);
+      assert.ok(mix?.record);
+      assert.equal(mix.skills.length, 6, 'the complete six-Skill role');
+      assert.equal(mix.skills.flatMap((s) => s.runs).length, 60, '3 new versions × 2 cases × 2 arms × 5 observations');
+      assert.equal(calls() - atRegister, 60, 'one model call per new observation; none for a reused Skill');
+      const ctx = x.seen.slice(atRegister).filter((r) => r.kind === 'BENCHMARK');
+      for (const code of passing) {
+        const before: PackageViewOf['skills'][number] | undefined = v4.skills.find((s) => s.code === code);
+        const now: PackageViewOf['skills'][number] | undefined = mix.skills.find((s) => s.code === code);
+        assert.ok(before && now);
+        assert.deepEqual([now.binding, now.skillId, now.skillVersionId, now.bindingValid, now.runs.length], ['REUSE_QUALIFIED', before.skillId, before.skillVersionId, true, 0], `${code}: reused as it is`);
+        assert.equal(now.qualification.sourcePackage?.id, v4.record.id, `${code}: its evidence stays v4's`);
+        assert.equal(x.rt.mind.skills.versions(now.skillId).length, 1, `${code}: no new version`);
+        const instructions = V4.skills.find((s) => s.code === code)?.instructions ?? '';
+        assert.ok(ctx.every((r) => !r.text.includes(instructions)), `${code}: no benchmark context carried the reused Skill`);
+      }
+      for (const s of failing) {
+        const now: PackageViewOf['skills'][number] | undefined = mix.skills.find((m) => m.code === s.code);
+        assert.ok(now);
+        assert.equal(now.binding, 'QUALIFY_NEW');
+        assert.equal(x.rt.mind.skills.version(now.skillVersionId).previousVersionId, s.skillVersionId, `${s.code}: the new version chains from pkg4`);
+      }
+      assert.equal(viewOf(x, V4)?.spentMicros, spentBefore, 'no spend was attributed to the reused evidence');
+      assert.equal(JSON.stringify(viewOf(x, V4)?.skills.map((s) => s.runs)), v4Before, 'v4 evidence is untouched');
+
+      // Finalize and install: all six bound Skills qualified → one complete blueprint and program.
+      act(x, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(MIX), subjectEmployeeId: ceo });
+      assert.equal(viewOf(x, MIX)?.installable, true);
+      act(x, 'ACADEMY_PACKAGE_INSTALL', argsOf(MIX));
+      const installed = viewOf(x, MIX);
+      assert.equal(installed?.record?.state, 'INSTALLED');
+      assert.ok(installed?.skills.every((s) => s.pipelineState === 'APPROVED'), 'the install approves reused and new versions alike');
+      const bp = x.rt.mind.skills.blueprint(V4.roleRef);
+      assert.equal(bp?.entries.length, 6, 'a complete six-Skill blueprint, never a partial role');
+      assert.equal(viewOf(x, V4)?.record?.state, 'QUALIFYING', 'v4 stays QUALIFYING and failed');
+    }, { pkg: V4, packages: [V4] });
   });
 });

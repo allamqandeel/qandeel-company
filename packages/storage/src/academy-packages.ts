@@ -14,11 +14,20 @@
  *   the program and its version → the scenarios. The confirmation authorizes installing an inspected package; it never
  *   asserts that a test passed.
  *
+ * D-L1-27 — reusable Skill qualification. A Skill Version is qualified ONCE, inside the one package that owns its
+ * qualification (`academy_package_skills`); its verdict is derived per Skill Version from its own immutable scored rows
+ * (`txSkillQualification`), never from the enclosing package's outcome. A later package may bind a Skill as
+ * REUSE_QUALIFIED: it consumes that existing version (`academy_package_skill_reuses`, 0019) with no new version, no
+ * static re-review and no benchmark — only when the version's BQM-2 evidence is complete and PASSED, it is still
+ * cleared, current and intact, and its qualification fingerprint (SQF-1) equals the consuming Skill's. Qualified
+ * evidence is not production approval: a reused version advances at most to COMPARED; only the complete role package's
+ * install approves it.
+ *
  * Employee qualification then runs through the existing Academy engine; Academy success is never benchmark evidence.
  * Every write here is a Founder-authority write (`founderAdminWrite`: armed only by a verified Founder session, a savepoint
  * of the governed confirm). Answers and case texts are local governed content; audit rows carry IDs and codes only.
  */
-import { QandeelError, assertId, newId, sha256Hex, type Id } from '@qandeel-company/domain';
+import { QandeelError, assertId, canonicalJson, newId, sha256Hex, type Id } from '@qandeel-company/domain';
 import { type AnswerFacets } from '@qandeel-company/governance';
 import {
   BENCHMARK_ARMS,
@@ -33,12 +42,14 @@ import {
   packageMethod,
   scoreAnswer,
   scoreAnswerR2,
+  skillQualificationFingerprint,
   staticSecurityReview,
   type BenchmarkMethodVersion,
   type RubricVersion,
   type AcademyPackage,
   type BenchmarkArm,
   type BenchmarkVerdict,
+  type PipelineState,
   type PackageScenario,
   type RubricResult,
   type StaticSecurityReport,
@@ -109,11 +120,36 @@ export interface BenchmarkRunView {
   readonly answer: { readonly body: string; readonly facets: AnswerFacets; readonly answerContractVersion: string | null; readonly answerContractSha256: string | null } | null;
 }
 
+/**
+ * D-L1-27 — one Skill Version's qualification, derived from its own immutable evidence in the package that owns it.
+ * QUALIFIED = BQM-2, static review passed and still cleared, current and intact, every observation slot SCORED, and the
+ * layered verdict + N1 PASSED. Anything else is NOT_QUALIFIED with the first reason found (fail closed).
+ */
+export interface SkillQualification {
+  readonly skillVersionId: Id;
+  readonly status: 'QUALIFIED' | 'NOT_QUALIFIED';
+  readonly reason: string | null;
+  /** The one package that owns this version's qualification (null when no package does). */
+  readonly sourcePackage: { readonly id: Id; readonly code: string; readonly version: number; readonly sha256: string } | null;
+  /** SQF-1 of the Skill in its owner package (null for BQM-1 or an unavailable definition). */
+  readonly fingerprint: string | null;
+  /** The digest of the owner's scored evidence rows for this version (null until every slot is scored). */
+  readonly evidenceSha256: string | null;
+  readonly verdict: BenchmarkVerdict | null;
+  readonly observations: number;
+}
+
 export interface PackageSkillView {
   readonly code: string;
   readonly name: string;
   readonly skillId: Id;
   readonly skillVersionId: Id;
+  /** D-L1-27: QUALIFY_NEW = this package owns the version's qualification; REUSE_QUALIFIED = it consumes one. */
+  readonly binding: 'QUALIFY_NEW' | 'REUSE_QUALIFIED';
+  /** D-L1-27: the version's own qualification (owner package, fingerprint, evidence digest, status). */
+  readonly qualification: SkillQualification;
+  /** D-L1-27: for a reused Skill, whether its binding still matches the version's qualification (always true for owned). */
+  readonly bindingValid: boolean;
   readonly pipelineState: string;
   readonly failureReason: string | null;
   readonly security: { readonly passed: boolean; readonly reviewer: string; readonly checks: readonly { check: string; passed: boolean }[] } | null;
@@ -210,9 +246,60 @@ function runResult(pkg: AcademyPackage, skillCode: string, caseCode: string, row
   return answer === null ? null : scoreAnswer(c.expect, { body: answer.body, ...answer.facets }, pkg.limits.benchmarkPassPct);
 }
 
+/** Pipeline states in which a version's qualification evidence may stand (security cleared, never rejected). */
+const QUALIFIABLE_STATES: readonly PipelineState[] = ['SANDBOXED', 'BENCHMARKED', 'COMPARED', 'APPROVED', 'TARGETED_LEARNING', 'ROLLED_OUT'];
+const APPROVED_PIPELINE: readonly PipelineState[] = ['APPROVED', 'TARGETED_LEARNING', 'ROLLED_OUT'];
+const BLOCKING_FRESHNESS = ['SECURITY_HOLD', 'RETIRED', 'DEPRECATED'];
+
+/**
+ * D-L1-27 — the qualification of ONE Skill Version, derived read-only from its own immutable evidence in the one package
+ * that owns it. `registry` holds the release-pinned package definitions (the owner's cases and expectations are part of
+ * its definition, and its digest must equal the recorded one). Never inferred from a package-level pass or failure.
+ */
+export function txSkillQualification(ctx: StoreContext, versionId: Id, registry: readonly AcademyPackage[]): SkillQualification {
+  const no = (reason: string, extra: Partial<SkillQualification> = {}): SkillQualification => ({ skillVersionId: versionId, status: 'NOT_QUALIFIED', reason, sourcePackage: null, fingerprint: null, evidenceSha256: null, verdict: null, observations: 0, ...extra });
+  const owner = ctx.db.get<{ package_id: string; skill_code: string; skill_id: string }>('SELECT package_id, skill_code, skill_id FROM academy_package_skills WHERE skill_version_id = ?', versionId);
+  if (!owner) return no('NO_QUALIFICATION_OWNER');
+  const rec = mapPackage(ctx.db.get('SELECT * FROM academy_packages WHERE id = ?', owner.package_id) as Record<string, unknown>);
+  const sourcePackage = { id: rec.id, code: rec.code, version: rec.version, sha256: rec.sha256 };
+  if (rec.benchmarkMethod !== 'BQM-2') return no('METHOD_NOT_REUSABLE', { sourcePackage });
+  const def = registry.find((p) => p.code === rec.code && p.version === rec.version && academyPackageDigest(p) === rec.sha256);
+  const skill = def?.skills.find((s) => s.code === owner.skill_code);
+  if (!def || !skill) return no('SOURCE_DEFINITION_UNAVAILABLE', { sourcePackage });
+  const fingerprint = skillQualificationFingerprint(def, skill.code);
+  const v = getSkillVersionRow(ctx, versionId);
+  if (v.skillId !== owner.skill_id || v.instructionsSha256 !== sha256Hex(skill.instructions)) return no('PAYLOAD_MISMATCH', { sourcePackage, fingerprint });
+  const sec = ctx.db.get<{ passed: number }>('SELECT passed FROM skill_security_reviews WHERE skill_version_id = ?', versionId);
+  if (sec?.passed !== 1 || v.securityStatus !== 'CLEARED') return no('SECURITY_NOT_CLEARED', { sourcePackage, fingerprint });
+  if (!QUALIFIABLE_STATES.includes(v.pipelineState)) return no(`PIPELINE_${v.pipelineState}`, { sourcePackage, fingerprint });
+  if (BLOCKING_FRESHNESS.includes(v.freshness)) return no(`FRESHNESS_${v.freshness}`, { sourcePackage, fingerprint });
+  if (v.integrity !== 'OK') return no('INTEGRITY_FAILED', { sourcePackage, fingerprint });
+  const rows = ctx.db.all<{ id: string; work_item_id: string; case_code: string; arm: string; observation_no: number; state: string; rubric_version: string; checks_json: string | null; score_pct: number | null; passed: number | null; observation_outcome: string | null; answered_class: string | null }>(
+    `SELECT id, work_item_id, case_code, arm, observation_no, state, rubric_version, checks_json, score_pct, passed, observation_outcome, answered_class FROM skill_benchmark_runs WHERE package_id = ? AND skill_version_id = ? AND state <> 'VOID' ORDER BY case_code, arm, observation_no`,
+    rec.id,
+    versionId,
+  );
+  // Complete evidence: every declared observation slot (case × arm × k) holds exactly one SCORED R2 row.
+  const k = observationsPerArm(def);
+  const slots = skill.benchmark.length * BENCHMARK_ARMS.length * k;
+  const scored = rows.filter((r) => r.state === 'SCORED' && r.rubric_version === 'R2');
+  const complete = rows.length === slots && scored.length === slots && skill.benchmark.every((c) => BENCHMARK_ARMS.every((arm) => Array.from({ length: k }, (_, i) => i + 1).every((n) => scored.filter((r) => r.case_code === c.code && r.arm === arm && Number(r.observation_no) === n).length === 1)));
+  if (!complete) return no('EVIDENCE_INCOMPLETE', { sourcePackage, fingerprint, observations: scored.length });
+  const results = scored.map((r) => {
+    const checks = JSON.parse(String(r.checks_json)) as RubricResult['checks'];
+    return { caseCode: r.case_code, arm: r.arm as BenchmarkArm, observationNo: Number(r.observation_no), result: { checks, scorePct: Number(r.score_pct), criticalPassed: checks.length > 0 && checks.every((c) => !c.critical || c.passed), passed: Number(r.passed) === 1 } };
+  });
+  const verdict = benchmarkVerdictBqm2(skill.benchmark, results);
+  const evidenceSha256 = sha256Hex(canonicalJson(scored.map((r) => [r.id, r.work_item_id, r.case_code, r.arm, Number(r.observation_no), r.rubric_version, r.checks_json, r.score_pct, r.passed, r.observation_outcome, r.answered_class]) as unknown as Parameters<typeof canonicalJson>[0]));
+  const base = { skillVersionId: versionId, sourcePackage, fingerprint, evidenceSha256, verdict, observations: scored.length };
+  if (!(verdict.benchmarkPassed && verdict.comparePassed)) return { ...base, status: 'NOT_QUALIFIED', reason: 'QUALIFICATION_FAILED' };
+  return { ...base, status: 'QUALIFIED', reason: null };
+}
+
 /** The whole package as the Founder inspects it before deciding (read-only; usable inside any transaction). */
-export function txPackageView(ctx: StoreContext, pkg: AcademyPackage): PackageView {
+export function txPackageView(ctx: StoreContext, pkg: AcademyPackage, registry: readonly AcademyPackage[] = []): PackageView {
   const sha = academyPackageDigest(pkg);
+  const defs = [pkg, ...registry];
   const record = txPackageRecord(ctx, pkg);
   const skills: PackageSkillView[] = [];
   let open = 0;
@@ -261,6 +348,9 @@ export function txPackageView(ctx: StoreContext, pkg: AcademyPackage): PackageVi
         name: def?.name ?? ps.skill_code,
         skillId: ps.skill_id as Id,
         skillVersionId: v.id,
+        binding: 'QUALIFY_NEW',
+        qualification: txSkillQualification(ctx, v.id, defs),
+        bindingValid: true,
         pipelineState: v.pipelineState,
         failureReason: v.failureReason,
         security: sec ? { passed: sec.passed === 1, reviewer: sec.reviewer_ref, checks: JSON.parse(sec.checks_json) as { check: string; passed: boolean }[] } : null,
@@ -268,14 +358,70 @@ export function txPackageView(ctx: StoreContext, pkg: AcademyPackage): PackageVi
         verdict,
       });
     }
+    // D-L1-27: the Skills this package consumes by reuse — no runs of its own; the verdict is the owner's evidence.
+    for (const r of ctx.db.all<{ skill_code: string; skill_id: string; skill_version_id: string; qualification_fingerprint: string; evidence_sha256: string }>('SELECT * FROM academy_package_skill_reuses WHERE package_id = ? ORDER BY skill_code', record.id)) {
+      const def = pkg.skills.find((s) => s.code === r.skill_code);
+      const v = getSkillVersionRow(ctx, r.skill_version_id as Id);
+      const q = txSkillQualification(ctx, v.id, defs);
+      const sec = ctx.db.get<{ reviewer_ref: string; checks_json: string; passed: number }>('SELECT reviewer_ref, checks_json, passed FROM skill_security_reviews WHERE skill_version_id = ?', v.id);
+      const bindingValid = q.status === 'QUALIFIED' && q.fingerprint === r.qualification_fingerprint && q.evidenceSha256 === r.evidence_sha256 && skillQualificationFingerprint(pkg, r.skill_code) === r.qualification_fingerprint;
+      skills.push({
+        code: r.skill_code,
+        name: def?.name ?? r.skill_code,
+        skillId: r.skill_id as Id,
+        skillVersionId: v.id,
+        binding: 'REUSE_QUALIFIED',
+        qualification: q,
+        bindingValid,
+        pipelineState: v.pipelineState,
+        failureReason: v.failureReason,
+        security: sec ? { passed: sec.passed === 1, reviewer: sec.reviewer_ref, checks: JSON.parse(sec.checks_json) as { check: string; passed: boolean }[] } : null,
+        runs: [],
+        verdict: q.verdict ?? benchmarkVerdictBqm2(def?.benchmark ?? [], []),
+      });
+    }
+    skills.sort((a, b) => (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
   }
   const spent = record
     ? Number(ctx.db.get<{ s: number }>('SELECT COALESCE(SUM(u.economic_micros), 0) AS s FROM usage_records u JOIN skill_benchmark_runs b ON b.work_item_id = u.work_item_id WHERE b.package_id = ?', record.id)?.s ?? 0)
     : 0;
-  const installable = record !== null && record.sha256 === sha && record.state === 'QUALIFYING' && skills.length === pkg.skills.length && skills.every((s) => s.pipelineState === 'SANDBOXED' && s.security?.passed === true && s.verdict.benchmarkPassed && s.verdict.comparePassed);
+  const installable = record !== null && record.sha256 === sha && record.state === 'QUALIFYING' && skills.length === pkg.skills.length && pkg.skills.every((d) => skills.some((s) => s.code === d.code)) && skills.every(skillQualifiesForInstall);
   const m = packageMethod(pkg);
   const method: PackageView['method'] = { version: m, declarationSha256: pkg.benchmarkMethod?.declarationSha256 ?? null, answerContract: pkg.benchmarkMethod?.answerContract ?? null, observationsPerArm: observationsPerArm(pkg), reasoningClass: m === 'BQM-2' ? BQM2_DECLARATION.reasoningClass : null, rubricVersion: m === 'BQM-2' ? 'R2' : 'R1' };
   return { code: pkg.code, version: pkg.version, sha256: sha, title: pkg.title, roleRef: pkg.roleRef, record, skills, installable, benchmarkRunsOpen: open, benchmarkRunsUnclassified: unclassified, spentMicros: spent, method };
+}
+
+/**
+ * D-L1-27 — resolves a REUSE_QUALIFIED Skill of `pkg` to the existing version it names, or refuses (fail closed): the
+ * same active QANDEEL-native Skill identity of the role, the exact version label, the exact instruction payload, a
+ * QUALIFIED own evidence (`txSkillQualification`), and an equal qualification fingerprint. Read-only (preview and act).
+ */
+export function txResolveReuse(ctx: StoreContext, pkg: AcademyPackage, s: AcademyPackage['skills'][number], registry: readonly AcademyPackage[]): { skillId: Id; versionId: Id; q: SkillQualification; fingerprint: string } {
+  const refuse = (reason: string, message: string, extra: Record<string, string> = {}): never => {
+    throw new QandeelError('VALIDATION_FAILED', message, { reason, skillCode: s.code, ...extra });
+  };
+  const known = ctx.db.get<{ id: string; skill_type: string; owner_ref: string; status: string }>('SELECT id, skill_type, owner_ref, status FROM skills WHERE code = ?', s.code);
+  if (!known) return refuse('REUSE_SOURCE_NOT_FOUND', 'a reused Skill names an existing Skill identity');
+  if (known.skill_type !== 'QANDEEL_NATIVE' || known.owner_ref !== pkg.roleRef || known.status !== 'ACTIVE') return refuse('PACKAGE_SKILL_IDENTITY_MISMATCH', 'a package Skill reuses only an active QANDEEL-native Skill identity of its own role');
+  const row = ctx.db.get<{ id: string; instructions_sha256: string }>('SELECT id, instructions_sha256 FROM skill_versions WHERE skill_id = ? AND version_label = ?', known.id, s.versionLabel);
+  if (!row) return refuse('REUSE_SOURCE_NOT_FOUND', 'a reused Skill names an existing Skill Version of its identity');
+  if (row.instructions_sha256 !== sha256Hex(s.instructions)) return refuse('REUSE_PAYLOAD_MISMATCH', 'a reused Skill Version is used exactly as qualified: its instructions are unchanged');
+  const q = txSkillQualification(ctx, row.id as Id, registry);
+  if (q.status !== 'QUALIFIED' || q.sourcePackage === null || q.fingerprint === null || q.evidenceSha256 === null) return refuse('REUSE_NOT_QUALIFIED', 'only a Skill Version whose own evidence qualified may be reused', { cause: String(q.reason) });
+  const fingerprint = skillQualificationFingerprint(pkg, s.code);
+  if (fingerprint !== q.fingerprint) return refuse('REUSE_FINGERPRINT_MISMATCH', 'the Skill was qualified under different qualification semantics: it qualifies a new version instead');
+  return { skillId: known.id as Id, versionId: row.id as Id, q, fingerprint };
+}
+
+/**
+ * D-L1-27: whether one bound Skill may enter a complete role install. An owned Skill: security cleared, its own verdict
+ * PASSED (layered rule + N1), never rejected. A reused Skill: its binding still matches a QUALIFIED version (same
+ * fingerprint, same evidence digest). A failed, incomplete, stale, held or retired version never qualifies.
+ */
+function skillQualifiesForInstall(s: PackageSkillView): boolean {
+  if (!QUALIFIABLE_STATES.includes(s.pipelineState as PipelineState) || s.security?.passed !== true) return false;
+  if (s.binding === 'REUSE_QUALIFIED') return s.bindingValid && s.qualification.status === 'QUALIFIED';
+  return s.verdict.benchmarkPassed && s.verdict.comparePassed;
 }
 
 /**
@@ -350,13 +496,21 @@ export function txScoreBenchmarks(ctx: StoreContext, pkg: AcademyPackage, packag
 
 export class AcademyPackageStore {
   readonly #store: CompanyStore;
+  /** D-L1-27: the release-pinned package definitions (a reused Skill's owner definition is resolved here). */
+  readonly #registry: readonly AcademyPackage[];
 
-  private constructor(store: CompanyStore) {
+  private constructor(store: CompanyStore, registry: readonly AcademyPackage[]) {
     this.#store = store;
+    this.#registry = registry;
   }
 
-  static for(store: CompanyStore): AcademyPackageStore {
-    return new AcademyPackageStore(store);
+  static for(store: CompanyStore, registry: readonly AcademyPackage[] = []): AcademyPackageStore {
+    return new AcademyPackageStore(store, registry);
+  }
+
+  /** D-L1-27: one Skill Version's qualification, derived from its own immutable evidence (read-only). */
+  qualificationOf(versionId: string): SkillQualification {
+    return this.#read((ctx) => txSkillQualification(ctx, assertId(versionId, 'versionId'), this.#registry));
   }
 
   #read<T>(fn: (ctx: StoreContext) => T): T {
@@ -365,7 +519,7 @@ export class AcademyPackageStore {
   }
 
   view(pkg: AcademyPackage): PackageView {
-    return this.#read((ctx) => txPackageView(ctx, pkg));
+    return this.#read((ctx) => txPackageView(ctx, pkg, this.#registry));
   }
 
   /**
@@ -404,6 +558,11 @@ export class AcademyPackageStore {
         ctx.db.run(`INSERT INTO academy_packages (id, code, package_version, package_sha256, role_ref, subject_employee_id, state, qualified_by_ref, created_at, benchmark_method, method_sha256, answer_contract_version, answer_contract_sha256) VALUES (?, ?, ?, ?, ?, ?, 'QUALIFYING', ?, ?, ?, ?, ?, ?)`, packageId, pkg.code, pkg.version, input.expectedSha256, pkg.roleRef, subject.id, p.ref, at, pins.method, pins.methodSha256, pins.answerContractVersion, pins.answerContractSha256);
         appendAudit(ctx, 'academy.package_qualifying', 'academy_package', packageId, { actorRef: p.ref }, 'OK', pins.method, { code: pkg.code, version: pkg.version });
         for (const s of pkg.skills) {
+          // D-L1-27: a reused Skill consumes its already-qualified version — no new version, review or benchmark.
+          if (s.binding === 'REUSE_QUALIFIED') {
+            this.#reuse(ctx, skills, p.ref, pkg, packageId, s);
+            continue;
+          }
           const { skillId, version } = this.#packageSkillVersion(ctx, skills, p.ref, pkg, s, input.expectedSha256);
           let v = version;
           ctx.db.run('INSERT INTO academy_package_skills (package_id, skill_code, skill_id, skill_version_id) VALUES (?, ?, ?, ?)', packageId, s.code, skillId, v.id);
@@ -481,6 +640,40 @@ export class AcademyPackageStore {
     return { skillId, version };
   }
 
+  /**
+   * D-L1-27 — binds a REUSE_QUALIFIED Skill: the EXISTING version `versionLabel` of the same Skill identity, consumed only
+   * when its own evidence is QUALIFIED and its qualification fingerprint equals this package's (same payload, cases,
+   * expectations, pass mark, method, rubric, ANSWER contract, k, task class and ceiling). The binding pins the owner, the
+   * fingerprint and the evidence digest; the version advances to COMPARED (qualified evidence), never further here.
+   */
+  #reuse(ctx: StoreContext, skills: SkillStore, actorRef: string, pkg: AcademyPackage, packageId: Id, s: AcademyPackage['skills'][number]): void {
+    const { skillId, versionId, q, fingerprint } = txResolveReuse(ctx, pkg, s, this.#registry);
+    if (q.sourcePackage === null || q.evidenceSha256 === null) throw new QandeelError('STORAGE_INVARIANT', 'a resolved reuse has an owner and evidence', { skillCode: s.code });
+    ctx.db.run('INSERT INTO academy_package_skill_reuses (package_id, skill_code, skill_id, skill_version_id, source_package_id, qualification_fingerprint, evidence_sha256, bound_by_ref, bound_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', packageId, s.code, skillId, versionId, q.sourcePackage.id, fingerprint, q.evidenceSha256, actorRef, ts(ctx));
+    appendAudit(ctx, 'skill.qualification_reused', 'skill_version', versionId, { actorRef }, 'OK', null, { packageId, sourcePackageId: q.sourcePackage.id });
+    // Qualified evidence, not production approval: BENCHMARKED → COMPARED at most (the install approves).
+    this.#stepTo(ctx, skills, actorRef, versionId, 'COMPARED', q.sourcePackage.id);
+  }
+
+  /** Steps a version forward along SANDBOXED → BENCHMARKED → COMPARED → APPROVED up to `target` (never backwards). */
+  #stepTo(ctx: StoreContext, skills: SkillStore, actorRef: string, versionId: Id, target: 'COMPARED' | 'APPROVED', evidencePackageId: Id): void {
+    const order: PipelineState[] = ['SANDBOXED', 'BENCHMARKED', 'COMPARED', 'APPROVED'];
+    const evidence: Record<string, [string, string]> = {
+      BENCHMARKED: ['benchmark.passed', `skill_benchmark:${versionId}`],
+      COMPARED: ['benchmark.not_worse_than_baseline', `skill_benchmark_compare:${versionId}`],
+      APPROVED: ['package.installed', `academy_package:${evidencePackageId}`],
+    };
+    for (;;) {
+      const state = getSkillVersionRow(ctx, versionId).pipelineState;
+      if (APPROVED_PIPELINE.includes(state) || state === target) return;
+      const at = order.indexOf(state);
+      const next = at < 0 ? undefined : order[at + 1];
+      if (next === undefined || order.indexOf(next) > order.indexOf(target)) return;
+      const [reasonCode, evidenceRef] = evidence[next] ?? ['', ''];
+      skills.advanceSkillVersion(actorRef, versionId, next, { reasonCode, evidenceRef });
+    }
+  }
+
   #review(ctx: StoreContext, s: AcademyPackage['skills'][number], versionId: Id): StaticSecurityReport {
     const v = getSkillVersionRow(ctx, versionId);
     const meta = ctx.db.get<{ dependencies_json: string; skill_type: string }>('SELECT v.dependencies_json, k.skill_type FROM skill_versions v JOIN skills k ON k.id = v.skill_id WHERE v.id = ?', versionId);
@@ -504,17 +697,14 @@ export class AcademyPackageStore {
       if (rec.state === 'INSTALLED') throw new QandeelError('INVALID_TRANSITION', 'this package is already installed', { reason: 'PACKAGE_INSTALLED' });
       if (rec.sha256 !== input.expectedSha256) throw new QandeelError('VALIDATION_FAILED', 'a different package with this code and version exists', { reason: 'PACKAGE_DIGEST_MISMATCH' });
       txScoreBenchmarks(ctx, pkg, rec.id);
-      const view = txPackageView(ctx, pkg);
-      const unqualified = view.skills.filter((s) => !(s.pipelineState === 'SANDBOXED' && s.security?.passed === true && s.verdict.benchmarkPassed && s.verdict.comparePassed));
-      if (view.skills.length !== pkg.skills.length || unqualified.length > 0) {
+      const view = txPackageView(ctx, pkg, this.#registry);
+      // D-L1-27: the COMPLETE role — every package Skill bound exactly once (owned or reused) and every one qualified.
+      const unqualified = view.skills.filter((s) => !skillQualifiesForInstall(s));
+      if (view.skills.length !== pkg.skills.length || pkg.skills.some((d) => !view.skills.some((s) => s.code === d.code)) || new Set(view.skills.map((s) => s.skillId)).size !== view.skills.length || unqualified.length > 0) {
         throw new QandeelError('VALIDATION_FAILED', 'every package Skill version must qualify on its own security and benchmark evidence', { reason: 'PACKAGE_SKILLS_NOT_QUALIFIED', skills: unqualified.map((s) => `${s.code}:${s.verdict.reason}`).join(',').slice(0, 160) });
       }
       const skills = SkillStore.for(this.#store);
-      for (const s of view.skills) {
-        skills.advanceSkillVersion(p.ref, s.skillVersionId, 'BENCHMARKED', { reasonCode: 'benchmark.passed', evidenceRef: `skill_benchmark:${s.skillVersionId}` });
-        skills.advanceSkillVersion(p.ref, s.skillVersionId, 'COMPARED', { reasonCode: 'benchmark.not_worse_than_baseline', evidenceRef: `skill_benchmark_compare:${s.skillVersionId}` });
-        skills.advanceSkillVersion(p.ref, s.skillVersionId, 'APPROVED', { reasonCode: 'package.installed', evidenceRef: `academy_package:${rec.id}` });
-      }
+      for (const s of view.skills) this.#stepTo(ctx, skills, p.ref, s.skillVersionId, 'APPROVED', rec.id);
       const idOf = (code: string): Id => {
         const s = view.skills.find((x) => x.code === code);
         if (!s) throw new QandeelError('STORAGE_INVARIANT', 'package skill missing', { code });
@@ -540,7 +730,7 @@ export class AcademyPackageStore {
       const e = AcademyStore.for(this.#store).enroll(p.ref, employeeId, rec.programVersionId);
       const skills = SkillStore.for(this.#store);
       let passports = 0;
-      for (const ps of ctx.db.all<{ skill_id: string; skill_version_id: string }>('SELECT skill_id, skill_version_id FROM academy_package_skills WHERE package_id = ? ORDER BY skill_code', rec.id)) {
+      for (const ps of ctx.db.all<{ skill_id: string; skill_version_id: string }>('SELECT skill_id, skill_version_id FROM academy_package_skills WHERE package_id = ? UNION ALL SELECT skill_id, skill_version_id FROM academy_package_skill_reuses WHERE package_id = ? ORDER BY 1', rec.id, rec.id)) {
         if (ctx.db.get('SELECT 1 AS x FROM passport_entries WHERE employee_id = ? AND skill_id = ?', e.employeeId, ps.skill_id)) continue;
         skills.openPassportEntry(p.ref, e.employeeId, ps.skill_version_id);
         passports++;
