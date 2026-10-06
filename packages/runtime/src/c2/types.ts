@@ -56,6 +56,7 @@ export type ToolOutcome =
 
 /** A model-proposed memory candidate or observation: submitted to the Memory Write Policy, never written directly. */
 export type MemoryProposal = Extract<ModelProposal, { type: 'MEMORY_CANDIDATE' | 'OBSERVATION' }>;
+export type AcademyAnswerProposal = Extract<ModelProposal, { type: 'ACADEMY_ANSWER' }>;
 
 export type MemoryProposalOutcome =
   | { readonly kind: 'DECIDED'; readonly state: string; readonly reasonCode: string | null }
@@ -65,6 +66,13 @@ export type MemoryProposalOutcome =
 export type OrgActProposal = Extract<ModelProposal, { type: 'ORG_ACTION' }>;
 /** A reviewer's decision proposed from inside its own review Work Item (C4). */
 export type ReviewDecisionProposal = Extract<ModelProposal, { type: 'REVIEW_DECISION' }>;
+
+export interface AcademyAnswerOutcome {
+  readonly outcome: 'RECORDED' | 'REPLAYED' | 'REFUSED';
+  readonly code: string;
+  readonly attemptId: string | null;
+  readonly summaryCode: string | null;
+}
 
 export interface OrgActOutcome {
   readonly outcome: 'DONE' | 'REFUSED';
@@ -100,6 +108,8 @@ export interface GovernedRunServices {
   invokeModel(request: ModelCallRequest): Promise<ModelCallOutcome>;
   /** Submits a model proposal as a memory candidate; the runtime's Memory Write Policy decides it. */
   proposeMemory(proposal: MemoryProposal, step: number): MemoryProposalOutcome;
+  /** Stores this run's actual Academy answer as evidence; it never evaluates or changes lifecycle state. */
+  recordAcademyAnswer(proposal: AcademyAnswerProposal, step: number, manifestId: string): AcademyAnswerOutcome;
   /** `step` is a durable, checkpointed step number: it derives the tool call's idempotency key. */
   executeTool(request: ToolRequest, step: number): Promise<ToolOutcome>;
   /** C4: one organizational act of this run's Employee (grant + seat + limits enforced by the runtime). */
