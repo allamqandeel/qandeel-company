@@ -3601,3 +3601,23 @@ file — the plaintext, or its base64, is never written as a fallback); a child 
 also inspects the compiled contract so the ORDER of the gate holds (Protect before the write; the non-interactive guard
 before raw mode). The real Windows DPAPI round trip remains the authoritative runtime proof; the portable proofs exist
 only so a mutation of these two security gates is observable on every CI platform.
+
+## D-L1-12 — CEO Constitution v1 is Product Authority for the first real CEO (Founder decision, L1-02)
+
+**Direct Founder / Product Owner decision, 2026-10-06.** `docs/authority/CEO_CONSTITUTION_v1.md` records the approved
+CEO Constitution v1: the first real CEO is **Salim Nasser — سليم ناصر**, Chief Executive Officer, `role:company.ceo`;
+his mission, personality, constructed (never claimed) executive experience profile, relationships, healthy skepticism
+("quality complete, validation proportional to change"), the Academy scenario requirements (including a hidden holdout
+built to fail sycophancy, authority overreach, fake certainty, excessive spending and evidence laundering), the
+capability set of the CEO blueprint and the explicit non-goals. No biography is fabricated (no university, employers,
+awards, family, nationality, age or named past jobs). It grants no authority: title ≠ authority (D-R1-04) and every act
+still needs an explicit grant; the Founder remains sovereign and initial Product Authority.
+
+**Skill-pipeline evidence.** The Founder approved ONE install confirmation for the release-pinned CEO Academy package
+only if security-review and benchmark evidence is real and independently produced, failures still reject / hold, and the
+confirmation never asserts a test passed. Repo-truth finding recorded with it (L1-02 seam analysis): in the current
+architecture the pipeline's `SANDBOXED` step accepts a caller-asserted `securityPassed` boolean plus a free-form evidence
+reference, and `BENCHMARKED` accepts a free-form evidence reference (`SkillStore.advanceSkillVersion`); no security
+reviewer, sandbox or benchmark engine exists in the repository. Only `INSPECTED` (deterministic payload inspection) and
+`LICENSE_DEPENDENCY_CHECKED` are produced independently. Per the Founder's condition the L1-02 work STOPS at this seam
+for a Founder decision instead of recording a Founder confirmation as security / benchmark evidence.
