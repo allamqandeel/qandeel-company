@@ -4153,3 +4153,24 @@ Existing seams (context only; no design decided here): the Employee cognitive pr
 ceiling reasoning class (e.g. Salim: default E1, ceiling E2), reasoning classes E1–E4 map to provider profiles, and routing
 and budget reservations are already class-aware. The scope, data model, Founder surface and AUTO policy are a separate,
 future task.
+
+## D-L1-39 — Founder gap: ACADEMY FOUNDER FEEDBACK LOOP (recorded only, not implemented)
+
+**Decision (Founder, 2026-10-06).** A gap in the Academy is recorded so it is not lost from the project map. It is **not
+implemented** by L1-02 at this point (no migration, no code change); it must be closed **before the real Production
+Activation of Employees**, and before any claim that `LEARNING_FROM_FEEDBACK` has actually been demonstrated.
+
+**Current behaviour.** `ACADEMY_EVALUATE` durably stores the evaluator's dimension scores and binds them to the candidate's
+actual answer (`work_answer:<id>`, its SHA-256 pinned in the confirmation), plus the deterministic rubric
+(`AUTHORITY_COMPLIANCE`, `COST_DISCIPLINE`) from run facts. It stores **no Founder textual feedback** for an attempt — in
+particular for a passed attempt, which opens no remediation. A Founder training note (e.g. on Salim's Assessment 1: the
+structured `decision` facet must reflect the operational decision the body actually takes) therefore exists only as the
+scores it lowered, and never reaches a later attempt. `LEARNING_FROM_FEEDBACK` cannot yet be evidenced from Founder
+feedback between passed attempts.
+
+**Required later:**
+
+- Founder textual feedback is durable and bound to one attempt and its answer.
+- It reaches the training context of the trainee's later attempts.
+- Whether the Employee learned from it can later be evidenced.
+- Earlier history is never changed (append-only; scores, answers and attempts already recorded stand as they are).
