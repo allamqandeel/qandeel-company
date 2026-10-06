@@ -81,4 +81,17 @@ describe('L1-02: the Company activation flow on the authenticated surface', () =
       rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     }
   });
+
+  test('the production default (CEO briefing on, as `qandeel-founder serve` runs it) constructs and starts (D-L1-17)', async () => {
+    const base = mkdtempSync(path.join(tmpdir(), 'qc-l1-02-serve-'));
+    const surface = new FounderSurface({ workspace: path.join(base, 'company'), roots: { app: path.join(uiRoot, 'dist', 'src'), public: path.join(uiRoot, 'public') }, runtime: { supervisorTtlMs: 3_000 } });
+    try {
+      await surface.start();
+      assert.notEqual(surface.briefing, null, 'the briefing policy exists once the runtime is open');
+      assert.equal(surface.runtime.state, 'READY');
+    } finally {
+      await surface.stop().catch(() => undefined);
+      rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    }
+  });
 });
