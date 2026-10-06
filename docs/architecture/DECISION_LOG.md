@@ -4034,3 +4034,34 @@ NOT_QUALIFIED (QUALIFICATION_FAILED). Nothing was written to LIVE; 0019 is not a
 **Out of scope (deliberately).** No v5; no provider behaviour change. v4 diagnosis and the NOT_JSON analysis are reported to
 the Founder; the stored evidence cannot distinguish a JSON parse failure from a control-character rejection (`parseProposal`
 reports both as NOT_JSON; raw output is never persisted by design) — a content-free sub-code would be a separate decision.
+
+## D-L1-28 — production CEO package v5: three qualified v4 Skill Versions reused, three revised (60 observations)
+
+**Decision.** `ceo.company-ceo` v5 (`packages/mind/src/packages/ceo-academy-v5.ts`, digest
+`6f67c8632b702c7f011589d52fb74255987fa3611381f84394de1eef52c612c9`) is the complete six-Skill CEO role and the first
+production package that consumes D-L1-27. It is v4 in everything except three Skill instruction payloads.
+
+- **REUSE_QUALIFIED** (label `1.0.0+pkg4`, v4's exact Skill plus the binding): `ceo.executive-judgment`,
+  `ceo.organization-leadership`, `ceo.evidence-and-economics` — the three v4 Skill Versions whose own BQM-2 evidence
+  qualified in LIVE. Their SQF-1 fingerprints equal v4's, so the qualification resolves to the v4 versions: no new version,
+  no static review, no Work Item, no call, no spend.
+- **QUALIFY_NEW** (label `1.0.0+pkg5`, chained from the pkg4 version): `ceo.founder-partnership`,
+  `ceo.cross-functional-synthesis`, `ceo.governance-discipline`. Each instruction payload gains one appended general
+  principle (exported as `CEO_V5_INSTRUCTION_ADDITIONS`) that the v4 evidence showed was applied inconsistently:
+  - founder-partnership: authority over the next evidence-gathering step is not authority over the primary product decision;
+    while the Founder is Product Authority for the primary act, say plainly that the Founder decision is still required.
+  - cross-functional-synthesis: reversibility is judged on the primary act and its material consequences; a rollback does not
+    make a release reversible when user data may already be lost; a risk that engineering can resolve means pause, resolve
+    and gather evidence — DECLINE is for an act that should not happen, not a launch that is temporarily unsafe.
+  - governance-discipline: answer, and refuse, in the language of the request unless the requester asks for another.
+  No addition names a case or a structured field value. Their fingerprints differ from v4's only through the instructions,
+  so v4's failed evidence is never reused.
+- Unchanged from v4: all twelve cases and expectations, pass mark 75, the 4096 ceiling, the 40 000 per-run cap, program,
+  curriculum, scenarios, holdouts, shadow work, task classes, limits, roleRef, sourceRefs and the BQM-2 / AC-4 pins
+  (canonical constants). v1–v4 digests unchanged. Registry order v5, v4, v3, v2, v1. Migration 0019 suffices (no 0020).
+- Expected real run: 3 Skills × 2 cases × 2 arms × 5 = 60 observations (≈72–75 calls, ≈99k–105k governed micro-USD,
+  ≈170k–179k tokens) against 142 933 micro-USD money and 432 498 Salim token headroom. The Founder decides the budget after
+  the real v5 LIVE preview; nothing was written to LIVE here.
+
+**NOT_JSON (recorded, not changed).** v4 produced 29 NOT_JSON outputs; none was a known truncation or empty response; raw
+invalid text is not persisted, so the exact cause cannot be reconstructed. BQM-2 retry and failure semantics are unchanged.

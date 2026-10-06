@@ -644,7 +644,7 @@ const MUTATIONS = [
   {
     id: 'l1-02-v4-unregistered',
     gate: 'the production surface registers v4 beside the v3, v2 and v1 history',
-    edits: [{ file: 'packages/command-center/dist/src/surface.js', search: "[CEO_ACADEMY_PACKAGE_V4, CEO_ACADEMY_PACKAGE_V3, ", replace: "[CEO_ACADEMY_PACKAGE_V3, ", expectedCount: 1 }],
+    edits: [{ file: 'packages/command-center/dist/src/surface.js', search: "CEO_ACADEMY_PACKAGE_V4, CEO_ACADEMY_PACKAGE_V3, ", replace: "CEO_ACADEMY_PACKAGE_V3, ", expectedCount: 1 }],
     runs: [ACTIVATION_SURFACE],
   },
   // --- L1-02: reusable Skill qualification (D-L1-27) ------------------------------------------------------------------
@@ -724,6 +724,37 @@ const MUTATIONS = [
     id: 'l1-02-fingerprint-ignores-method',
     gate: 'the qualification fingerprint binds the method and ANSWER contract',
     edits: [{ file: `${MIND}/benchmark-method.js`, search: "method: { version: pkg.benchmarkMethod.version, declarationSha256: pkg.benchmarkMethod.declarationSha256 },", replace: "method: null,", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  // --- L1-02: production package v5 (D-L1-28) ------------------------------------------------------------------------
+  {
+    id: 'l1-02-v5-unregistered',
+    gate: 'package v5 is registered (newest first) for the Founder',
+    edits: [{ file: 'packages/command-center/dist/src/surface.js', search: "[CEO_ACADEMY_PACKAGE_V5, ", replace: "[", expectedCount: 1 }],
+    runs: [ACTIVATION, ACTIVATION_SURFACE],
+  },
+  {
+    id: 'l1-02-v5-reuse-dropped',
+    gate: 'v5 consumes the qualified v4 Skill Versions instead of re-benchmarking them',
+    edits: [{ file: 'packages/mind/dist/src/packages/ceo-academy-v5.js', search: "return { ...s, binding: 'REUSE_QUALIFIED' };", replace: "return { ...s, versionLabel: '1.0.0+pkg5' };", expectedCount: 1 }],
+    runs: [ACTIVATION, REUSE_STORE],
+  },
+  {
+    id: 'l1-02-v5-reuses-failed',
+    gate: 'a failed v4 Skill Version is never reused by v5',
+    edits: [{ file: 'packages/mind/dist/src/packages/ceo-academy-v5.js', search: "export const CEO_V5_REUSED_SKILLS = ['ceo.executive-judgment',", replace: "export const CEO_V5_REUSED_SKILLS = ['ceo.founder-partnership', 'ceo.executive-judgment',", expectedCount: 1 }],
+    runs: [ACTIVATION, REUSE_STORE],
+  },
+  {
+    id: 'l1-02-v5-revision-dropped',
+    gate: 'the three failed Skills carry the revised instructions (a new, differently fingerprinted version)',
+    edits: [{ file: 'packages/mind/dist/src/packages/ceo-academy-v5.js', search: "instructions: `${s.instructions}\\n${addition}`", replace: "instructions: s.instructions", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-v5-label-reused',
+    gate: 'the three new versions carry their own pkg5 label',
+    edits: [{ file: 'packages/mind/dist/src/packages/ceo-academy-v5.js', search: "versionLabel: '1.0.0+pkg5', instructions", replace: "versionLabel: '1.0.0+pkg4', instructions", expectedCount: 1 }],
     runs: [ACTIVATION],
   },
 ];

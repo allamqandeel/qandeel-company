@@ -349,7 +349,7 @@ const L1_02_CLOSURE = /^docs\/L1_02_[^/]*CLOSURE[^/]*\.md$/i;
 const L1_02_ACTIVATION = 'packages/storage/src/founder-activation.ts';
 const L1_02_PACKAGES = 'packages/storage/src/academy-packages.ts';
 const L1_02_FILES = [L1_02_ACTIVATION, L1_02_PACKAGES, 'packages/storage/src/answers.ts', 'packages/storage/src/activation-view.ts'];
-const L1_02_PROOF_MARKERS = ['L1-02-PROOF: activation-runtime', 'L1-02-PROOF: activation-surface', 'L1-02-PROOF: academy-answer', 'L1-02-PROOF: package-revision', 'L1-02-PROOF: answer-semantics', 'L1-02-PROOF: score-finalization', 'L1-02-PROOF: package-v3', 'L1-02-PROOF: bqm2', 'L1-02-PROOF: bqm2-store', 'L1-02-PROOF: bqm2-preview', 'L1-02-PROOF: answer-only', 'L1-02-PROOF: package-v4', 'L1-02-PROOF: skill-reuse', 'L1-02-PROOF: skill-reuse-store'];
+const L1_02_PROOF_MARKERS = ['L1-02-PROOF: activation-runtime', 'L1-02-PROOF: activation-surface', 'L1-02-PROOF: academy-answer', 'L1-02-PROOF: package-revision', 'L1-02-PROOF: answer-semantics', 'L1-02-PROOF: score-finalization', 'L1-02-PROOF: package-v3', 'L1-02-PROOF: bqm2', 'L1-02-PROOF: bqm2-store', 'L1-02-PROOF: bqm2-preview', 'L1-02-PROOF: answer-only', 'L1-02-PROOF: package-v4', 'L1-02-PROOF: skill-reuse', 'L1-02-PROOF: skill-reuse-store', 'L1-02-PROOF: package-v5', 'L1-02-PROOF: package-v5-store'];
 const L1_02_BENCH_LOADER = /\bloadBenchmarkSkillInstructions\b/;
 const L1_02_BENCH_LOADER_FILES = ['packages/storage/src/mind-core.ts', 'packages/storage/src/mind-writes.ts'];
 const L1_VAULT_SRC = 'packages/secret-vault/src/';
@@ -665,6 +665,11 @@ const MUTATION_PINS = {
       'l1-02-install-failed-new-skill',
       'l1-02-fingerprint-ignores-cases',
       'l1-02-fingerprint-ignores-method',
+      'l1-02-v5-unregistered',
+      'l1-02-v5-reuse-dropped',
+      'l1-02-v5-reuses-failed',
+      'l1-02-v5-revision-dropped',
+      'l1-02-v5-label-reused',
       'l1-02-answer-manifest-unbound',
       'l1-02-answer-unspent-manifest',
       'l1-02-answer-scenario-unchecked',

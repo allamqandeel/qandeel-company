@@ -12,7 +12,7 @@ import path from 'node:path';
 import { describe, test } from 'node:test';
 
 import { sha256Hex, type Id } from '@qandeel-company/domain';
-import { BQM2_DECLARATION, BQM2_DECLARATION_SHA256, CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, CEO_ACADEMY_PACKAGE_V4, CEO_IDENTITY_PROFILE_V1, INVALID_OUTPUT_RESULT, RUBRIC_R2_DECLARATION, academyPackageDigest, benchmarkVerdictBqm2, forbiddenHitsR2, observationsPerArm, packageMethod, scoreAnswer, scoreAnswerR2, scriptFamily, skillQualificationFingerprint, type AcademyPackage, type AnswerExpectation, type BenchmarkCase, type RubricResult } from '@qandeel-company/mind';
+import { BQM2_DECLARATION, BQM2_DECLARATION_SHA256, CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, CEO_ACADEMY_PACKAGE_V4, CEO_ACADEMY_PACKAGE_V5, CEO_IDENTITY_PROFILE_V1, CEO_V5_INSTRUCTION_ADDITIONS, CEO_V5_REUSED_SKILLS, INVALID_OUTPUT_RESULT, RUBRIC_R2_DECLARATION, academyPackageDigest, benchmarkVerdictBqm2, forbiddenHitsR2, observationsPerArm, packageMethod, scoreAnswer, scoreAnswerR2, scriptFamily, skillQualificationFingerprint, type AcademyPackage, type AnswerExpectation, type BenchmarkCase, type RubricResult } from '@qandeel-company/mind';
 import { DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DeepSeekProviderAdapter, FakeDeepSeekTransport, fakeChatAnswer, fakeModelsAnswer, type DeepSeekRequest, type DeepSeekResponse } from '@qandeel-company/model-providers';
 import { InMemorySecretVault } from '@qandeel-company/secret-vault';
 import type { FounderSession } from '@qandeel-company/storage';
@@ -1334,6 +1334,114 @@ describe('D-L1-27: a Skill Version is qualified once on its own evidence; a late
       const bp = x.rt.mind.skills.blueprint(V4.roleRef);
       assert.equal(bp?.entries.length, 6, 'a complete six-Skill blueprint, never a partial role');
       assert.equal(viewOf(x, V4)?.record?.state, 'QUALIFYING', 'v4 stays QUALIFYING and failed');
+    }, { pkg: V4, packages: [V4] });
+  });
+});
+
+// --- D-L1-28: the production CEO package v5 — three qualified v4 Skill Versions reused, three revised -------------------
+// L1-02-PROOF: package-v5
+
+const V5 = CEO_ACADEMY_PACKAGE_V5;
+/** The digest of package v5 as prepared for review (before any benchmark): a change to v5 changes this. */
+const V5_PREPARED_SHA = '6f67c8632b702c7f011589d52fb74255987fa3611381f84394de1eef52c612c9';
+const V5_NEW = ['ceo.founder-partnership', 'ceo.cross-functional-synthesis', 'ceo.governance-discipline'];
+
+describe('D-L1-28: package v5 is the complete six-Skill CEO role: the three v4 Skill Versions that qualified are reused, the three that failed get one general principle each', () => {
+  test('v1-v4 are unchanged; v5 has its own digest; three REUSE_QUALIFIED pkg4 Skills are v4\'s byte for byte; three QUALIFY_NEW pkg5 Skills differ only by the appended principle; every case, expectation and package input is v4\'s', () => {
+    assert.deepEqual([V1, V2, V3, V4].map((p) => academyPackageDigest(p)), [V1_RELEASED_SHA, V2_RELEASED_SHA, V3_PREPARED_SHA, V4_PREPARED_SHA], 'v1-v4 are unchanged');
+    assert.equal(academyPackageDigest(V5), V5_PREPARED_SHA, 'v5 has its own pinned digest');
+    assert.deepEqual([V5.code, V5.version, V5.title, V5.skills.length], [V4.code, 5, 'QANDEEL COMPANY CEO — Academy package v5', 6]);
+    assert.deepEqual(V5.skills.map((s) => s.code), V4.skills.map((s) => s.code), 'the same six semantic Skills, in order');
+    assert.deepEqual(V5.skills.filter((s) => s.binding === 'REUSE_QUALIFIED').map((s) => s.code), [...CEO_V5_REUSED_SKILLS]);
+    assert.deepEqual(CEO_V5_REUSED_SKILLS, ['ceo.executive-judgment', 'ceo.organization-leadership', 'ceo.evidence-and-economics']);
+    assert.deepEqual(V5.skills.filter((s) => s.binding === undefined).map((s) => s.code), V5_NEW);
+    V5.skills.forEach((s, i) => {
+      const s4 = V4.skills[i];
+      assert.ok(s4);
+      assert.deepEqual(s.benchmark, s4.benchmark, `${s.code}: both cases and every expectation are v4's`);
+      const fp4 = skillQualificationFingerprint(V4, s.code);
+      const fp5 = skillQualificationFingerprint(V5, s.code);
+      if (s.binding === 'REUSE_QUALIFIED') {
+        assert.deepEqual(s, { ...s4, binding: 'REUSE_QUALIFIED' }, `${s.code}: v4's exact Skill (label 1.0.0+pkg4, instructions, cases, sources, name, blueprint metadata) plus the reuse binding`);
+        assert.equal(s.versionLabel, '1.0.0+pkg4');
+        assert.equal(fp5, fp4, `${s.code}: the v5 fingerprint equals v4's, so the qualified v4 version is reusable`);
+      } else {
+        const addition = CEO_V5_INSTRUCTION_ADDITIONS[s.code];
+        assert.ok(addition);
+        assert.deepEqual(s, { ...s4, versionLabel: '1.0.0+pkg5', instructions: `${s4.instructions}\n${addition}` }, `${s.code}: v4 plus one appended principle, under a new pkg5 label`);
+        assert.notEqual(fp5, fp4, `${s.code}: the changed instructions change the fingerprint: v4's failed evidence is never reused`);
+        assert.equal(skillQualificationFingerprint({ ...V5, skills: V5.skills.map((x) => (x.code === s.code ? { ...x, instructions: s4.instructions } : x)) }, s.code), fp4, `${s.code}: only the instruction change makes the difference`);
+        assert.ok(!/founder-idea-challenge|feature-vs-technical-risk|founder-asks-private-conversations|founderDecisionNeeded|reversible:|ESCALATE_TO_FOUNDER|GATHER_EVIDENCE|PROCEED_WITH_CONDITIONS/.test(addition), `${s.code}: a general principle, no case code and no structured field value`);
+      }
+    });
+    const strip = (p: AcademyPackage): Record<string, unknown> => Object.fromEntries(Object.entries(p).filter(([k]) => !['skills', 'version', 'title'].includes(k)));
+    assert.deepEqual(strip(V5), strip(V4), 'program, curriculum, scenarios, holdouts, shadow work, task classes, limits, roleRef, sourceRefs and the BQM-2 + AC-4 pin are v4\'s');
+    assert.deepEqual([V5.limits.benchmarkMaxOutputTokens, V5.limits.benchmarkCapMicros, V5.limits.benchmarkPassPct], [4_096, 40_000, 75]);
+    assert.deepEqual(V5.benchmarkMethod, { version: BQM2_DECLARATION.version, declarationSha256: BQM2_DECLARATION_SHA256, answerContract: { version: ANSWER_CONTRACT_VERSION, sha256: ANSWER_CONTRACT_SHA256 } });
+    assert.deepEqual([BQM2_DECLARATION_SHA256, ANSWER_CONTRACT_SHA256], ['387f44ad8cbab6388e09a4373a808c21b5fa868fa5df3153a790a9233cddff12', 'f787b888c16220aa50fa1149d8bafc250ecaf41861f98ce047c1049d315ecaae']);
+  });
+
+  test('after the v4-shaped outcome, v5 previews and creates exactly 60 observations for the three pkg5 versions; the reused v4 versions make no call, no version, no review and no Work Item; a truthful fake qualifies v5, which installs the complete role; v4 stays QUALIFYING and unchanged', () => {
+    let phase: 'V4' | 'V5' = 'V4';
+    const wrong = (c: ReturnType<typeof caseOf>): boolean => phase === 'V4' && c.kind === 'BENCHMARK' && c.withSkill && V4_FAILED_CASES.includes(caseCodeOf(c.expect));
+    return withCompany('l1-02-v5', (c) => (wrong(c) ? 'OVERCONFIDENT' : 'TRUTHFUL'), async (x) => {
+      const ceo = hireCeo(x);
+      await qualifyPkg(x, V4, ceo);
+      act(x, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V4), subjectEmployeeId: ceo }); // FINALIZE_SCORES
+      const v4 = viewOf(x, V4);
+      assert.ok(v4?.record);
+      assert.deepEqual(v4.skills.filter((s) => s.qualification.status === 'QUALIFIED').map((s) => s.code).sort(), [...CEO_V5_REUSED_SKILLS].sort(), 'the live v4 shape: these three qualified');
+      const v4Runs = JSON.stringify(v4.skills.map((s) => s.runs));
+      const calls = (): number => x.seen.filter((r) => r.kind === 'BENCHMARK').length;
+      const audits = (a: string): number => x.rt.view.auditByAction(a).length;
+
+      await x.rt.stop();
+      x.rt = makeRuntime(x.root, x.transport, x.logs, [V5, V4]);
+      await x.rt.start();
+      const atRegister = { calls: calls(), created: audits('skill.benchmark_run_created'), reviews: audits('skill.static_security_reviewed'), programs: audits('academy.program_published') };
+      assert.equal(viewOf(x, V5)?.record ?? null, null, 'a registered v5 has no durable record');
+      const pl = x.rt.founder.actions.preview(x.session, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V5), subjectEmployeeId: ceo }).payload as Record<string, unknown>;
+      assert.deepEqual([pl.qualification, pl.benchmarkMethod, pl.rubricVersion, pl.answerContractVersion, pl.reasoningClass, pl.observationsPerArm, pl.maxModelCallsPerObservation, pl.benchmarkRuns, (pl.reusedSkills as string[]).length, pl.newlyQualifiedSkills],
+        ['QUALIFY', 'BQM-2', 'R2', 'AC-4', 'E1', 5, 2, 60, 3, V5_NEW]);
+      assert.equal(BQM2_DECLARATION.deliverable.only, 'ANSWER', 'answer-only');
+      assert.equal(calls(), atRegister.calls, 'the preview made no call');
+
+      phase = 'V5';
+      await qualifyPkg(x, V5, ceo);
+      const v5 = viewOf(x, V5);
+      assert.ok(v5?.record);
+      assert.equal(audits('skill.benchmark_run_created') - atRegister.created, 60, 'exactly 60 observation Work Items: 3 × 2 × 2 × 5');
+      assert.equal(calls() - atRegister.calls, 60, 'one call per new observation; none for a reused Skill');
+      assert.equal(audits('skill.static_security_reviewed') - atRegister.reviews, 3, 'a static review for each new pkg5 version only');
+      const ctx = x.seen.filter((r) => r.kind === 'BENCHMARK').slice(atRegister.calls);
+      for (const code of CEO_V5_REUSED_SKILLS) {
+        const a: PackageViewOf['skills'][number] | undefined = v4.skills.find((s) => s.code === code);
+        const b: PackageViewOf['skills'][number] | undefined = v5.skills.find((s) => s.code === code);
+        assert.ok(a && b);
+        assert.deepEqual([b.binding, b.skillId, b.skillVersionId, b.runs.length, b.bindingValid, b.qualification.sourcePackage?.id], ['REUSE_QUALIFIED', a.skillId, a.skillVersionId, 0, true, v4.record.id], `${code}: the same v4 Skill Version`);
+        assert.equal(x.rt.mind.skills.versions(b.skillId).length, 1, `${code}: no pkg5 version`);
+        const instructions = V5.skills.find((s) => s.code === code)?.instructions ?? '';
+        assert.ok(ctx.every((r) => !r.text.includes(instructions)), `${code}: no benchmark context carried the reused Skill`);
+      }
+      for (const code of V5_NEW) {
+        const a: PackageViewOf['skills'][number] | undefined = v4.skills.find((s) => s.code === code);
+        const b: PackageViewOf['skills'][number] | undefined = v5.skills.find((s) => s.code === code);
+        assert.ok(a && b);
+        const ver = x.rt.mind.skills.version(b.skillVersionId);
+        assert.deepEqual([b.binding, ver.versionLabel, ver.previousVersionId, b.security?.passed, b.runs.length], ['QUALIFY_NEW', '1.0.0+pkg5', a.skillVersionId, true, 20], `${code}: a new reviewed pkg5 version chained from pkg4, with 20 observations`);
+      }
+
+      act(x, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V5), subjectEmployeeId: ceo }); // FINALIZE_SCORES
+      assert.equal(viewOf(x, V5)?.installable, true, 'the truthful fake qualifies the three new versions');
+      act(x, 'ACADEMY_PACKAGE_INSTALL', argsOf(V5));
+      const installed = viewOf(x, V5);
+      assert.equal(installed?.record?.state, 'INSTALLED');
+      assert.ok(installed?.skills.every((s) => s.pipelineState === 'APPROVED'), 'the install approves reused and new versions alike');
+      assert.equal(x.rt.mind.skills.blueprint(V5.roleRef)?.entries.length, 6, 'the complete six-Skill blueprint');
+      assert.equal(audits('academy.program_published') - atRegister.programs, 1, 'the complete CEO Academy program is published');
+      const after4 = viewOf(x, V4);
+      assert.equal(after4?.record?.state, 'QUALIFYING', 'v4 stays QUALIFYING, never installed');
+      assert.equal(JSON.stringify(after4?.skills.map((s) => s.runs)), v4Runs, 'v4 evidence is unchanged');
     }, { pkg: V4, packages: [V4] });
   });
 });

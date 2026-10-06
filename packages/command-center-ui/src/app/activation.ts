@@ -213,7 +213,7 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
     const rec = (pkg?.record as Json | null) ?? null;
     const box = h('div', { class: 'pilot' }, h('strong', { text: `Academy package ${str(pkgReg.code)} v${str(pkgReg.version)}` }), ' ', pill(rec ? humanize(str(rec.state)) : 'not qualified'));
     for (const old of arr(v.packages).filter((p) => p !== pkg && p.record)) {
-      box.append(h('p', { class: 'muted small', text: `Earlier version v${str(old.version)} (digest ${str(old.sha256).slice(0, 12)}…): ${humanize(str((old.record as Json).state))}, ${old.installable ? 'installable' : 'not installable'}, benchmark method ${str((old.method as Json | undefined)?.version ?? 'BQM-1')} — kept unchanged as history; its benchmark evidence never counts for another version.` }));
+      box.append(h('p', { class: 'muted small', text: `Earlier version v${str(old.version)} (digest ${str(old.sha256).slice(0, 12)}…): ${humanize(str((old.record as Json).state))}, ${old.installable ? 'installable' : 'not installable'}, benchmark method ${str((old.method as Json | undefined)?.version ?? 'BQM-1')} — kept unchanged as history; its package result never counts for another version (a Skill Version it qualified on its own evidence may be reused, shown per Skill).` }));
     }
     box.append(h('p', { class: 'muted small', text: `Digest ${str(pkgReg.sha256).slice(0, 16)}… · ${arr(pkgReg.skills).length} skills · ${arr(pkgReg.scenarios).length} scenarios · calibration ${pkgReg.founderCalibrationRequired ? 'required' : 'not required'} · benchmark spent ${fmtMoneyMicros(Number(pkg?.spentMicros ?? 0), 'USD')}` }));
     // D-L1-23: the benchmark method the evidence is (or would be) produced under — never inferred, always the declared one.
