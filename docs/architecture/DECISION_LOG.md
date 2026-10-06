@@ -4134,3 +4134,22 @@ instructions.
 - **Expected real run (not started; Founder decision).** 20 observations (1 Skill × 2 cases × 2 arms × 5), ≈24 calls; at
   v6's mean (≈1 445 governed micro-USD per call) ≈35 000 governed micro-USD against 31 021 money headroom (Company and Salim):
   the real run needs a Founder budget decision first.
+
+## D-L1-36 — Founder requirement: EMPLOYEE REASONING CONTROL (recorded only, not implemented)
+
+**Decision (Founder, 2026-10-06).** A company-wide Product requirement is recorded so it is not lost from the project map.
+It is **not implemented** by L1-02 at this point; it must be closed **before the real Production Activation of Employees**.
+
+Every QANDEEL COMPANY Employee — current and future, not only the CEO — has a general reasoning control:
+
+- **Default:** each Employee runs at the lowest reasoning level appropriate to its work.
+- **Per-task override:** the Founder can set the reasoning level of one task.
+- **Persistent default:** the Founder can change an Employee's standing (default) reasoning level.
+- **Ceiling:** the Founder can raise an Employee up to the highest reasoning level available.
+- **Later — AUTO escalation:** automatic escalation by task difficulty and risk may be supported later; a Founder override
+  always takes precedence over AUTO, and any automatic escalation stays inside authority and budget policy.
+
+Existing seams (context only; no design decided here): the Employee cognitive profile already records a default and a
+ceiling reasoning class (e.g. Salim: default E1, ceiling E2), reasoning classes E1–E4 map to provider profiles, and routing
+and budget reservations are already class-aware. The scope, data model, Founder surface and AUTO policy are a separate,
+future task.
