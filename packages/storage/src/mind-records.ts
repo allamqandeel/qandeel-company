@@ -602,6 +602,34 @@ export function mapAttempt(r: Row): AttemptRecord {
   };
 }
 
+export interface AttemptAnswerRecord {
+  readonly attemptId: Id;
+  readonly workItemId: Id;
+  readonly runId: Id;
+  readonly manifestId: Id;
+  readonly step: number;
+  readonly answer: string;
+  readonly answerSha256: string;
+  readonly summaryCode: string;
+  readonly dataClass: DataClass;
+  readonly recordedAt: Timestamp;
+}
+
+export function mapAttemptAnswer(r: Row): AttemptAnswerRecord {
+  return {
+    attemptId: str(r.attempt_id) as Id,
+    workItemId: str(r.work_item_id) as Id,
+    runId: str(r.run_id) as Id,
+    manifestId: str(r.manifest_id) as Id,
+    step: num(r.step),
+    answer: str(r.answer),
+    answerSha256: str(r.answer_sha256),
+    summaryCode: str(r.summary_code),
+    dataClass: str(r.data_class) as DataClass,
+    recordedAt: str(r.recorded_at) as Timestamp,
+  };
+}
+
 export interface RemediationRecord {
   readonly id: Id;
   readonly enrollmentId: Id;
