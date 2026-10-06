@@ -23,7 +23,7 @@
  * NOT language detection and cannot tell English from German.
  */
 import { canonicalJson, sha256Hex } from '@qandeel-company/domain';
-import type { AnswerFacets } from '@qandeel-company/governance';
+import { ANSWER_ONLY_OUTPUT_INSTRUCTION_SHA256, type AnswerFacets } from '@qandeel-company/governance';
 
 import { isArabicBody, scoreAnswer, type AcademyPackage, type BenchmarkArm, type BenchmarkCase, type BenchmarkVerdict, type RubricCheck, type RubricResult } from './academy-package.js';
 
@@ -60,7 +60,9 @@ export const BQM2_DECLARATION = Object.freeze({
   // D-L1-24: an observation delivers exactly ONE ANSWER. Any other valid proposal is never executed and is an output failure
   // (WRONG_PROPOSAL_TYPE), counted with parser-invalid outputs and model-content answer refusals under the one same-class
   // retry; the Work Item carries a hard bound of two model calls, which the store enforces at every reservation.
-  deliverable: Object.freeze({ only: 'ANSWER', otherValidProposal: 'OUTPUT_FAILURE_NEVER_EXECUTED', maxModelCallsPerObservation: 2 }),
+  // D-L1-25: the prompt matches the fence — the observation's context renders the answer-only output instruction (pinned
+  // here by digest) instead of the generic proposal menu, then the AC-4 ANSWER contract.
+  deliverable: Object.freeze({ only: 'ANSWER', otherValidProposal: 'OUTPUT_FAILURE_NEVER_EXECUTED', maxModelCallsPerObservation: 2, genericProposalMenu: 'NOT_RENDERED', outputInstructionSha256: ANSWER_ONLY_OUTPUT_INSTRUCTION_SHA256 }),
   invalidOutput: Object.freeze({ sameClassRetries: 1, secondInvalid: 'FAILED_OBSERVATION', escalation: 'NONE', counts: Object.freeze(['NOT_JSON', 'UNKNOWN_TYPE', 'MALFORMED', 'WRONG_PROPOSAL_TYPE', 'ANSWER_REFUSED']) }),
   // D-L1-24: VOID only for an explicitly allowlisted infrastructure / runtime run failure; any other no-answer outcome is
   // never VOID (never retryable) and blocks the qualification until it is explained.

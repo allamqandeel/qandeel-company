@@ -13,8 +13,8 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { ManualClock, isQandeelError, newId, type Id } from '@qandeel-company/domain';
-import { ANSWER_CONTRACT_SHA256, ANSWER_CONTRACT_TEXT, ANSWER_CONTRACT_VERSION } from '@qandeel-company/governance';
-import { BQM2_DECLARATION_SHA256, CEO_ACADEMY_PACKAGE_V3, academyPackageDigest, type AcademyPackage } from '@qandeel-company/mind';
+import { ANSWER_CONTRACT_SHA256, ANSWER_CONTRACT_TEXT, ANSWER_CONTRACT_VERSION, ANSWER_ONLY_OUTPUT_INSTRUCTION, ANSWER_ONLY_OUTPUT_INSTRUCTION_SHA256 } from '@qandeel-company/governance';
+import { BQM2_DECLARATION, BQM2_DECLARATION_SHA256, CEO_ACADEMY_PACKAGE_V3, academyPackageDigest, type AcademyPackage } from '@qandeel-company/mind';
 
 import { FounderActionStore, FounderAuthStore, loadReleasedMigrations } from '../src/index.js';
 import { interruptClaim, recordInvalidOutput, reserveBudget, settle } from '../src/runtime-authority.js';
@@ -149,6 +149,21 @@ describe('D-L1-23: BQM-2 at the store boundary (0018)', () => {
   });
 
   // --- D-L1-24 ------------------------------------------------------------------------------------------------------
+  test('D-L1-25: an answer-only observation context renders the answer-only instruction and the AC-4 contract — never the generic proposal menu or any other proposal shape; the declaration pins the instruction', () => {
+    withBqm2((w) => {
+      assert.equal(BQM2_DECLARATION.deliverable.outputInstructionSha256, ANSWER_ONLY_OUTPUT_INSTRUCTION_SHA256);
+      assert.equal(BQM2_DECLARATION.deliverable.genericProposalMenu, 'NOT_RENDERED');
+      for (const r of rows(w).slice(0, 2)) {
+        const c = assemble(w.h, claimFor(w.h, r.work_item_id as Id).claim);
+        assert.ok(c.outcome === 'OK');
+        const preamble = c.messages.map((m) => m.content).join('\n');
+        assert.ok(preamble.includes(ANSWER_ONLY_OUTPUT_INSTRUCTION) && preamble.includes(ANSWER_CONTRACT_TEXT));
+        assert.ok(!preamble.includes('Propose exactly one next action'));
+        for (const t of ['FINAL', 'TOOL_REQUEST', 'MEMORY_CANDIDATE', 'OBSERVATION', 'ORG_ACTION', 'REVIEW_DECISION', 'MESSAGE', 'GOAL_ACTION']) assert.ok(!preamble.includes(`"type":"${t}"`), `${t} not advertised`);
+      }
+    });
+  });
+
   test('D-L1-24: VOID is never inferred — a finished observation without an answer whose cause is not an allowlisted infrastructure failure (a completion without an answer, a run limit, the turn limit) is never VOID or re-run; the qualification fails closed', () => {
     for (const end of [{ type: 'COMPLETED' }, { type: 'PERMANENT_FAILURE', code: 'RUN_LIMIT' }, { type: 'PERMANENT_FAILURE', code: 'MAX_TURNS' }] as const) {
       withBqm2((w) => {

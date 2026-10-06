@@ -3924,3 +3924,28 @@ paid call):
   package ever pinned). AC-4 (`f787b888…`) and v1 / v2 / v3 digests are unchanged.
 - **Accepted (review C note):** a FAILED observation has `forbiddenHits = 0` (no lexical hit was observed) but is not a
   verified forbidden pass, so it counts against the 5 of 5 forbidden layer. Kept.
+
+## D-L1-25 — the BQM-2 observation prompt offers only the deliverable its fence accepts (independent review correction, executor)
+
+The independent exact-head review of `86d633d` (D-L1-24) found that the assembled preamble of a BQM-2 observation still
+rendered the generic proposal menu (FINAL, TOOL_REQUEST, MEMORY_CANDIDATE, OBSERVATION) before the ANSWER contract, while
+the answer-only fence counts every one of those shapes as an output failure: a production benchmark must never penalize
+the model for following an advertised output contract. Corrected for the BQM-2 answer-only benchmark path only (no
+migration; no other context changed):
+
+- **Rendered output instruction.** When the run is a `SKILL_BENCHMARK` and its Work Item declares `answerOnly: true`
+  (every BQM-2 observation; no BQM-1 run does), the generic menu line is replaced by `ANSWER_ONLY_OUTPUT_INSTRUCTION`
+  (governance): "Output contract of this Work Item: its only allowed output is one ANSWER proposal, in the shape stated
+  next. No other proposal type is available in this Work Item, and any other output fails it." The AC-4 ANSWER contract
+  follows it verbatim (`f787b888…`, unchanged). No other proposal shape (FINAL, TOOL_REQUEST, MEMORY_CANDIDATE,
+  OBSERVATION, ORG_ACTION, REVIEW_DECISION, MESSAGE, GOAL_ACTION) appears in the context. Residual, by design (AC-4 is kept
+  byte-identical): the AC-4 text opens with "This work is answered by one more proposal shape"; in this context the
+  preceding instruction states that it is the only one.
+- **Unchanged.** BQM-1 benchmark contexts, Academy attempts, shadow work, ordinary employee tasks and Founder MESSAGE
+  contexts keep the generic menu byte for byte (and the reply its MESSAGE shape). The runtime answer-only fence (D-L1-24)
+  stays as defence in depth, with the two-call bound, the same-class E1 retry and every BQM-2 scoring rule.
+- **Declaration.** The prompt is part of the method: `BQM2_DECLARATION.deliverable` gains `genericProposalMenu:
+  NOT_RENDERED` and `outputInstructionSha256` (`b7cb5c7b2df42d405ca3aa9e35659f22dbfeef47a6e4febdb28dbef706fdc395`), so the
+  in-flight pin check also refuses an observation whose build renders a different instruction. The BQM-2 digest is now
+  `387f44ad8cbab6388e09a4373a808c21b5fa868fa5df3153a790a9233cddff12` (superseding D-L1-24's `c67bc300…`; no package ever
+  pinned either).

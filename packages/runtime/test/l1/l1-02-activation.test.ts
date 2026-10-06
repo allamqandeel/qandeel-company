@@ -11,17 +11,22 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { describe, test } from 'node:test';
 
-import type { Id } from '@qandeel-company/domain';
+import { sha256Hex, type Id } from '@qandeel-company/domain';
 import { BQM2_DECLARATION, BQM2_DECLARATION_SHA256, CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, CEO_IDENTITY_PROFILE_V1, INVALID_OUTPUT_RESULT, RUBRIC_R2_DECLARATION, academyPackageDigest, benchmarkVerdictBqm2, forbiddenHitsR2, scoreAnswer, scoreAnswerR2, scriptFamily, type AcademyPackage, type AnswerExpectation, type BenchmarkCase, type RubricResult } from '@qandeel-company/mind';
 import { DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DeepSeekProviderAdapter, FakeDeepSeekTransport, fakeChatAnswer, fakeModelsAnswer, type DeepSeekRequest, type DeepSeekResponse } from '@qandeel-company/model-providers';
 import { InMemorySecretVault } from '@qandeel-company/secret-vault';
 import type { FounderSession } from '@qandeel-company/storage';
-import { ANSWER_AUTHORITY_SEMANTICS, ANSWER_CONFIDENCE_SEMANTICS, ANSWER_CONTRACT_SHA256, ANSWER_CONTRACT_TEXT, ANSWER_CONTRACT_VERSION, ANSWER_DECISION_SEMANTICS, ANSWER_FOUNDER_DECISION_SEMANTICS, ANSWER_REVERSIBLE_SEMANTICS, provisioningProfileDigest } from '@qandeel-company/governance';
+import { ANSWER_ONLY_OUTPUT_INSTRUCTION, ANSWER_AUTHORITY_SEMANTICS, ANSWER_CONFIDENCE_SEMANTICS, ANSWER_CONTRACT_SHA256, ANSWER_CONTRACT_TEXT, ANSWER_CONTRACT_VERSION, ANSWER_DECISION_SEMANTICS, ANSWER_FOUNDER_DECISION_SEMANTICS, ANSWER_REVERSIBLE_SEMANTICS, provisioningProfileDigest } from '@qandeel-company/governance';
 
 import { CompanyRuntime, Logger, employeeTaskProcessor, type LogRecord } from '../../src/index.js';
 import { eventually, removeRoot, runtimeFor, tempRoot } from '../helpers.js';
 
 const KEY = 'vault-proof-' + 'Lq3Zr8Tm2Wy5Kp9Bn4Vd7Hx1';
+
+/** D-L1-25: the generic proposal menu of every ordinary context, byte for byte (unchanged by the answer-only path). */
+const GENERIC_MENU = 'Propose exactly one next action as JSON: {"type":"FINAL","summaryCode":"..."} | {"type":"TOOL_REQUEST","tool":"...","action":"...","args":{...}} | {"type":"MEMORY_CANDIDATE","memoryClass":"PROFESSIONAL|EXPERIENCE|RELATIONSHIP_COLLABORATION|CURRENT_WORK|PERSONAL_LESSON","topic":"...","claimKey":"optional.claim.key","claimValue":"optional-value","content":"...","confidencePct":0} | {"type":"OBSERVATION","topic":"...","content":"..."}. A memory candidate is only a proposal: the runtime decides whether anything is remembered.';
+/** Every non-ANSWER proposal shape a context could advertise (an answer-only observation advertises none of them). */
+const OTHER_SHAPES = ['FINAL', 'TOOL_REQUEST', 'MEMORY_CANDIDATE', 'OBSERVATION', 'ORG_ACTION', 'REVIEW_DECISION', 'MESSAGE', 'GOAL_ACTION'].map((t) => `"type":"${t}"`);
 const PKG = CEO_ACADEMY_PACKAGE_V1;
 const SHA = academyPackageDigest(PKG);
 const REPLY = 'أهلاً يا محمد. أنا جاهز. أولوياتي الأولى: جاهزية الإطلاق، وضوح المسؤوليات، وضبط التكلفة. ما الذي تريد أن نبدأ به؟';
@@ -310,6 +315,10 @@ describe('L1-02: the first production CEO is hired, trained, qualified and activ
         // D-L1-23: and the whole AC-4 contract, verbatim (decision, authority, confidence, reversible, founderDecisionNeeded).
         assert.ok(ctxs.every((r) => r.text.includes(ANSWER_CONTRACT_TEXT) && r.text.includes(ANSWER_AUTHORITY_SEMANTICS) && r.text.includes(ANSWER_FOUNDER_DECISION_SEMANTICS)), `every ${kind} context carries the AC-4 contract`);
       }
+      // D-L1-25: every context of this (BQM-1) world keeps the generic proposal menu byte for byte; none is answer-only;
+      // a Founder reply context still carries its MESSAGE shape.
+      assert.ok(x.seen.every((r) => r.text.includes(GENERIC_MENU) && !r.text.includes(ANSWER_ONLY_OUTPUT_INSTRUCTION)), 'ordinary, BQM-1, attempt, shadow and reply contexts are unchanged');
+      assert.ok(x.seen.filter((r) => r.kind === 'REPLY').every((r) => r.text.includes('"type":"MESSAGE"')));
       assert.ok(x.seen.filter((r) => r.kind === 'REPLY').every((r) => !r.text.includes(ANSWER_DECISION_SEMANTICS) && !r.text.includes(ANSWER_REVERSIBLE_SEMANTICS) && !r.text.includes(ANSWER_AUTHORITY_SEMANTICS) && !r.text.includes(ANSWER_FOUNDER_DECISION_SEMANTICS) && !r.text.includes('"type":"ANSWER"')), 'a Founder reply (MESSAGE) context is unchanged: no ANSWER contract');
 
       // Restart on the same workspace: same Company, same CEO, still ACTIVE, history intact.
@@ -843,7 +852,7 @@ describe('D-L1-23: BQM-2 — fixed E1, k = 5, the layered absolute rule, N1, rub
     assert.equal(BQM2_DECLARATION.reasoningClass, 'E1');
     assert.deepEqual(BQM2_DECLARATION.invalidOutput, { sameClassRetries: 1, secondInvalid: 'FAILED_OBSERVATION', escalation: 'NONE', counts: ['NOT_JSON', 'UNKNOWN_TYPE', 'MALFORMED', 'WRONG_PROPOSAL_TYPE', 'ANSWER_REFUSED'] });
     // D-L1-24: answer-only, a hard two-call bound, and VOID only for an allowlisted infrastructure failure.
-    assert.deepEqual(BQM2_DECLARATION.deliverable, { only: 'ANSWER', otherValidProposal: 'OUTPUT_FAILURE_NEVER_EXECUTED', maxModelCallsPerObservation: 2 });
+    assert.deepEqual(BQM2_DECLARATION.deliverable, { only: 'ANSWER', otherValidProposal: 'OUTPUT_FAILURE_NEVER_EXECUTED', maxModelCallsPerObservation: 2, genericProposalMenu: 'NOT_RENDERED', outputInstructionSha256: sha256Hex(ANSWER_ONLY_OUTPUT_INSTRUCTION) });
     assert.equal(BQM2_DECLARATION.infrastructureNoAnswer.outcome, 'VOID_REPLACED_BY_DETERMINISTIC_RULE');
     assert.equal(BQM2_DECLARATION.infrastructureNoAnswer.otherwise, 'UNCLASSIFIED_BLOCKS_QUALIFICATION');
     assert.ok(!(BQM2_DECLARATION.infrastructureNoAnswer.runFailureCodes as readonly string[]).some((c) => ['MODEL_OUTPUT_INVALID', 'RUN_LIMIT', 'MAX_TURNS', 'INVALID_TASK_INPUT', 'PROCESSOR_ERROR', 'PROVIDER_CONTEXT_OVERFLOW'].includes(c)), 'no model-attributable or unexplained code is infrastructure');
@@ -854,7 +863,7 @@ describe('D-L1-23: BQM-2 — fixed E1, k = 5, the layered absolute rule, N1, rub
     assert.equal(RUBRIC_R2_DECLARATION.forbidden.quoteStripping, false);
     assert.equal(RUBRIC_R2_DECLARATION.forbidden.negationWindow, false);
     assert.equal(RUBRIC_R2_DECLARATION.forbidden.role, 'DETERMINISTIC_LEXICAL_BACKSTOP');
-    assert.equal(BQM2_DECLARATION_SHA256, 'c67bc3005069fc4207ade0237cc688928eee3fa9e75a1fb8231247ae7cabe97f', 'the method a BQM-2 package pins');
+    assert.equal(BQM2_DECLARATION_SHA256, '387f44ad8cbab6388e09a4373a808c21b5fa868fa5df3153a790a9233cddff12', 'the method a BQM-2 package pins');
     assert.equal(ANSWER_CONTRACT_VERSION, 'AC-4');
     assert.equal(ANSWER_CONTRACT_SHA256, 'f787b888c16220aa50fa1149d8bafc250ecaf41861f98ce047c1049d315ecaae', 'the exact ANSWER contract a BQM-2 package pins');
     // v1, v2 and v3 stay BQM-1 with byte-for-byte unchanged digests (no method field).
@@ -962,6 +971,14 @@ describe('D-L1-23: BQM-2 — fixed E1, k = 5, the layered absolute rule, N1, rub
         assert.ok(s.runs.every((r) => r.rubricVersion === 'R2'));
       }
       const bench = x.seen.filter((r) => r.kind === 'BENCHMARK');
+      // D-L1-25: every observation context (both arms, retries included) offers exactly the ANSWER deliverable: the
+      // answer-only instruction and the AC-4 contract verbatim, and no other proposal shape.
+      for (const r of bench) {
+        assert.ok(r.text.includes(ANSWER_ONLY_OUTPUT_INSTRUCTION) && r.text.includes(ANSWER_CONTRACT_TEXT), 'the answer-only output contract and AC-4');
+        assert.ok(r.text.indexOf(ANSWER_ONLY_OUTPUT_INSTRUCTION) < r.text.indexOf(ANSWER_CONTRACT_TEXT), 'the instruction introduces the ANSWER shape');
+        assert.ok(!r.text.includes(GENERIC_MENU) && !r.text.includes('Propose exactly one next action'), 'the generic menu is not rendered');
+        for (const shape of OTHER_SHAPES) assert.ok(!r.text.includes(shape), `${shape} is never advertised`);
+      }
       assert.equal(bench.length, 120 + 1 + 2, 'one call per observation, one same-class retry, two invalid-output observations with two calls each');
       assert.ok(bench.every((r) => !r.thinking), 'every call of both arms is E1 (thinking disabled): no escalation to E2');
       assert.ok(bench.every((r) => r.maxTokens === BQ.limits.benchmarkMaxOutputTokens));
@@ -1043,6 +1060,7 @@ describe('D-L1-23: BQM-2 — fixed E1, k = 5, the layered absolute rule, N1, rub
       }
       const bench = x.seen.filter((r) => r.kind === 'BENCHMARK');
       assert.equal(bench.length, 120 + 8, 'eight observations used their one retry; no other call');
+      assert.ok(bench.every((r) => r.text.includes(ANSWER_ONLY_OUTPUT_INSTRUCTION) && OTHER_SHAPES.every((sh) => !r.text.includes(sh))), 'D-L1-25: no shape was advertised — the fence still catches what the model emits anyway');
       assert.ok(bench.every((r) => !r.thinking), 'every call E1: no escalation');
       const perItem = new Map<string, number>();
       for (const r of bench) perItem.set(r.workItemId, (perItem.get(r.workItemId) ?? 0) + 1);
@@ -1086,6 +1104,8 @@ describe('D-L1-23: BQM-2 — fixed E1, k = 5, the layered absolute rule, N1, rub
       assert.deepEqual([v?.record?.benchmarkMethod, v?.record?.methodSha256, v?.record?.answerContractVersion], ['BQM-1', null, null]);
       const runs = v?.skills.flatMap((s) => s.runs) ?? [];
       assert.ok(runs.length === 24 && runs.every((r) => r.observationNo === 1 && r.rubricVersion === 'R1'));
+      // D-L1-25: a BQM-1 benchmark context is unchanged: the generic menu, the AC-4 contract, no answer-only instruction.
+      assert.ok(x.seen.filter((r) => r.kind === 'BENCHMARK').every((r) => r.text.includes(GENERIC_MENU) && r.text.includes(ANSWER_CONTRACT_TEXT) && !r.text.includes(ANSWER_ONLY_OUTPUT_INSTRUCTION)));
       const escalated = x.seen.filter((r) => r.kind === 'BENCHMARK' && r.thinking);
       assert.equal(escalated.length, 1, 'BQM-1 keeps its asymmetric E1 → E2 escalation');
       const ar = runs.find((r) => r.caseCode === AR && r.arm === 'BASELINE');

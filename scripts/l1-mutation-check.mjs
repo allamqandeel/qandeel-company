@@ -607,6 +607,25 @@ const MUTATIONS = [
     edits: [{ file: `${STORAGE}/founder-activation.js`, search: "maxModelCallsPerObservation: BQM2_DECLARATION.deliverable.maxModelCallsPerObservation, answerOnly: true,", replace: "maxModelCallsPerObservation: BQM2_DECLARATION.deliverable.maxModelCallsPerObservation,", expectedCount: 1 }],
     runs: [ACTIVATION],
   },
+  // --- L1-02: the answer-only prompt matches the answer-only fence (D-L1-25) ----------------------------------------------
+  {
+    id: 'l1-02-answer-only-prompt-generic',
+    gate: 'an answer-only observation context never offers the generic proposal menu',
+    edits: [{ file: `${STORAGE}/mind-writes.js`, search: "answerOnly ? ANSWER_ONLY_OUTPUT_INSTRUCTION : ", replace: "false ? ANSWER_ONLY_OUTPUT_INSTRUCTION : ", expectedCount: 1 }],
+    runs: [BQM2_STORE, ACTIVATION],
+  },
+  {
+    id: 'l1-02-answer-only-prompt-everywhere',
+    gate: 'only an answer-only BQM-2 observation renders the answer-only instruction (BQM-1, attempts, shadow, replies unchanged)',
+    edits: [{ file: `${STORAGE}/mind-writes.js`, search: "const answerOnly = mode === 'SKILL_BENCHMARK' && ", replace: "const answerOnly = true || ", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-output-instruction-unpinned',
+    gate: 'the BQM-2 declaration pins the exact answer-only output instruction',
+    edits: [{ file: `${MIND}/benchmark-method.js`, search: "outputInstructionSha256: ANSWER_ONLY_OUTPUT_INSTRUCTION_SHA256", replace: "outputInstructionSha256: 'unpinned'", expectedCount: 1 }],
+    runs: [BQM2_STORE, ANSWER_ONLY],
+  },
 ];
 
 const args = process.argv.slice(2);

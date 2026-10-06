@@ -111,6 +111,15 @@ export const ANSWER_CONTRACT_TEXT =
 /** The exact digest of the ANSWER contract text this build sends. */
 export const ANSWER_CONTRACT_SHA256: string = sha256Hex(ANSWER_CONTRACT_TEXT);
 
+/**
+ * D-L1-25 — the output instruction of an answer-only Work Item (a BQM-2 benchmark observation). It is rendered INSTEAD of
+ * the generic proposal menu, so the model is never offered a shape the answer-only fence would then count as an output
+ * failure; the AC-4 ANSWER contract follows it unchanged. Every other context keeps the generic menu.
+ */
+export const ANSWER_ONLY_OUTPUT_INSTRUCTION =
+  'Output contract of this Work Item: its only allowed output is one ANSWER proposal, in the shape stated next. No other proposal type is available in this Work Item, and any other output fails it.';
+export const ANSWER_ONLY_OUTPUT_INSTRUCTION_SHA256: string = sha256Hex(ANSWER_ONLY_OUTPUT_INSTRUCTION);
+
 export const ANSWER_DECISIONS = ['PROCEED', 'PROCEED_WITH_CONDITIONS', 'GATHER_EVIDENCE', 'ESCALATE_TO_FOUNDER', 'DECLINE'] as const;
 export type AnswerDecision = (typeof ANSWER_DECISIONS)[number];
 /** Whether the PRIMARY act is within authority the Employee actually holds (never a claim of new authority; AC-4). */

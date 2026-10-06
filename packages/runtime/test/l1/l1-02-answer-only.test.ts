@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import type { Id, JsonValue, ProcessorContext, ProcessorResult } from '@qandeel-company/domain';
-import { OUTPUT_CONTRACT_CODES, PROPOSAL_TYPES, parseProposal, type ModelProposal } from '@qandeel-company/governance';
+import { ANSWER_ONLY_OUTPUT_INSTRUCTION_SHA256, OUTPUT_CONTRACT_CODES, PROPOSAL_TYPES, parseProposal, type ModelProposal } from '@qandeel-company/governance';
 import { BQM2_DECLARATION } from '@qandeel-company/mind';
 
 import { employeeTaskProcessor, type GovernedRunServices, type ModelCallOutcome } from '../../src/index.js';
@@ -105,7 +105,7 @@ const failedCode = (r: ProcessorResult | null): string | null => (r !== null && 
 
 describe('D-L1-24: a BQM-2 observation is answer-only — a wrong valid proposal is never executed, the bound is two calls', () => {
   test('the declaration states the answer-only fence, the shared failure count and the two-call bound; the diagnostic codes are closed and distinct from the parser codes', () => {
-    assert.deepEqual(BQM2_DECLARATION.deliverable, { only: 'ANSWER', otherValidProposal: 'OUTPUT_FAILURE_NEVER_EXECUTED', maxModelCallsPerObservation: 2 });
+    assert.deepEqual(BQM2_DECLARATION.deliverable, { only: 'ANSWER', otherValidProposal: 'OUTPUT_FAILURE_NEVER_EXECUTED', maxModelCallsPerObservation: 2, genericProposalMenu: 'NOT_RENDERED', outputInstructionSha256: ANSWER_ONLY_OUTPUT_INSTRUCTION_SHA256 });
     assert.deepEqual(BQM2_DECLARATION.invalidOutput.counts, ['NOT_JSON', 'UNKNOWN_TYPE', 'MALFORMED', 'WRONG_PROPOSAL_TYPE', 'ANSWER_REFUSED']);
     assert.deepEqual(OUTPUT_CONTRACT_CODES, ['WRONG_PROPOSAL_TYPE', 'ANSWER_REFUSED']);
     assert.deepEqual(Object.keys(WRONG).sort(), PROPOSAL_TYPES.filter((p) => p !== 'ANSWER').sort(), 'every non-ANSWER proposal type is proven');
