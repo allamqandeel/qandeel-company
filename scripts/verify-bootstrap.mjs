@@ -200,6 +200,8 @@ const FROZEN_MIGRATIONS = [
   { file: '0014_c7c_pilot_instrumentation.sql', sha256: '9efb1a03cf509b241a083c62d8167939acb7f1615f99c95d873a9b1594632216' },
   // C7-D released 0015 with PR #16 (merged 2026-10-01); it joins the frozen set in the change after its release (L1-01).
   { file: '0015_c7d_digital_presence.sql', sha256: '1e77232f876af5bf449bd96d235476a40c4d64a58f16ecdc3ce7006a1d7dc0fa' },
+  // L1-01 released 0016 with PR #17 (merged 2026-10-05); it joins the frozen set in the change after its release (L1-02).
+  { file: '0016_l1_provider_pricing_identity.sql', sha256: '2fc84ac5ec261c6c5423e5f517c740a7c16f1cd3d40112baf4507e19f3769685' },
 ];
 // Later-scope / non-goal subsystems never appear: APP-OPS (C7) and dashboards / analytics tables or packages (C6
 // deliberately builds reports with typed claims, never a dashboard or analytics store — its non-goals).
@@ -2372,6 +2374,8 @@ function syntheticRepo(overrides = {}) {
     [C7D_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[C7D_MUTATION_CHECK].ids),
     // L1-01: the pinned L1 mutation check (its rules apply where the L1 modules exist) and the C7-D closure record it needs.
     [L1_MUTATION_CHECK]: synthMutationScript(MUTATION_PINS[L1_MUTATION_CHECK].ids),
+    // Released 0016 is frozen (L1-02), so the base carries its real text and therefore the L1 proofs it requires.
+    'packages/secret-vault/test/proofs.test.ts': L1_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
     'docs/C7D_CLOSURE_RECORD.md': '',
     'packages/runtime/test/c7d/proofs.test.ts': C7D_PROOF_MARKERS.map((m) => `// ${m}`).join('\n'),
     'docs/C7C_CLOSURE_RECORD.md': '',
