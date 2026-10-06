@@ -293,7 +293,7 @@ const MUTATIONS = [
   {
     id: 'l1-02-answer-run-not-ended',
     gate: 'an answer-bearing run ends when its answer is recorded (no second answer, no wasted call)',
-    edits: [{ file: `${RT}/employee-task.js`, search: "if (rec.outcome === 'RECORDED') {", replace: 'if (false) {', expectedCount: 1 }],
+    edits: [{ file: `${RT}/employee-task.js`, search: "if (rec.outcome === 'RECORDED' || rec.code === 'ALREADY_ANSWERED') {", replace: 'if (false) {', expectedCount: 1 }],
     runs: [ACTIVATION],
   },
   // --- L1-02: the answer as provenance-bound evidence; evaluation of the actual answer (D-L1-18) ---------------------
