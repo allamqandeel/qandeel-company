@@ -12,7 +12,7 @@ import path from 'node:path';
 import { describe, test } from 'node:test';
 
 import { sha256Hex, type Id } from '@qandeel-company/domain';
-import { BQM2_DECLARATION, BQM2_DECLARATION_SHA256, CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, CEO_IDENTITY_PROFILE_V1, INVALID_OUTPUT_RESULT, RUBRIC_R2_DECLARATION, academyPackageDigest, benchmarkVerdictBqm2, forbiddenHitsR2, scoreAnswer, scoreAnswerR2, scriptFamily, type AcademyPackage, type AnswerExpectation, type BenchmarkCase, type RubricResult } from '@qandeel-company/mind';
+import { BQM2_DECLARATION, BQM2_DECLARATION_SHA256, CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, CEO_ACADEMY_PACKAGE_V4, CEO_IDENTITY_PROFILE_V1, INVALID_OUTPUT_RESULT, RUBRIC_R2_DECLARATION, academyPackageDigest, benchmarkVerdictBqm2, forbiddenHitsR2, observationsPerArm, packageMethod, scoreAnswer, scoreAnswerR2, scriptFamily, type AcademyPackage, type AnswerExpectation, type BenchmarkCase, type RubricResult } from '@qandeel-company/mind';
 import { DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DeepSeekProviderAdapter, FakeDeepSeekTransport, fakeChatAnswer, fakeModelsAnswer, type DeepSeekRequest, type DeepSeekResponse } from '@qandeel-company/model-providers';
 import { InMemorySecretVault } from '@qandeel-company/secret-vault';
 import type { FounderSession } from '@qandeel-company/storage';
@@ -1114,5 +1114,113 @@ describe('D-L1-23: BQM-2 — fixed E1, k = 5, the layered absolute rule, N1, rub
       const scored = viewOf(x, V2)?.skills.flatMap((s) => s.runs) ?? [];
       assert.ok(scored.every((r) => r.state === 'SCORED' && r.answeredClass === null && r.outcome === null), 'BQM-1 rows record no BQM-2 evidence fields');
     }, { packages: [V2], perCall });
+  });
+});
+
+// --- D-L1-26: the production CEO package v4 is v3 under BQM-2 ----------------------------------------------------------
+// L1-02-PROOF: package-v4
+
+const V4 = CEO_ACADEMY_PACKAGE_V4;
+/** The digest of package v4 as prepared for review (before any benchmark): a change to v4 changes this. */
+const V4_PREPARED_SHA = 'bb3d8dfb27ca72fd4f96688b1a39de1f3ac83fb01ca98fc3e20cb5ca4ed52265';
+
+describe('D-L1-26: package v4 is the first production CEO package under BQM-2 and differs from v3 only by its identity and its method pin', () => {
+  test('v1, v2 and v3 are unchanged; v4 differs from v3 only by version, title, six new Skill Version labels and the BQM-2 + AC-4 pin', () => {
+    assert.equal(academyPackageDigest(V1), V1_RELEASED_SHA, 'v1 is unchanged');
+    assert.equal(academyPackageDigest(V2), V2_RELEASED_SHA, 'v2 is unchanged');
+    assert.equal(academyPackageDigest(V3), V3_PREPARED_SHA, 'v3 is unchanged');
+    assert.equal(academyPackageDigest(V4), V4_PREPARED_SHA, 'v4 has its own pinned digest');
+    for (const p of [V1, V2, V3]) assert.equal(p.benchmarkMethod, undefined, `v${p.version} stays BQM-1`);
+    assert.deepEqual([V4.code, V4.version, V4.title], [V3.code, 4, 'QANDEEL COMPANY CEO — Academy package v4']);
+    assert.deepEqual(V4.skills.map((s) => s.versionLabel), Array<string>(6).fill('1.0.0+pkg4'));
+    assert.deepEqual(V4.skills.map((s) => s.code), V3.skills.map((s) => s.code), 'the same six semantic Skill identities');
+    V4.skills.forEach((s, i) => {
+      const s3 = V3.skills[i];
+      assert.ok(s3);
+      assert.equal(s.instructions, s3.instructions, `${s.code}: the instruction payload is byte-identical`);
+      assert.deepEqual(s.benchmark, s3.benchmark, `${s.code}: cases, expectations, critical flags and forbidden phrases are v3's`);
+    });
+    assert.deepEqual(V4.benchmarkMethod, { version: 'BQM-2', declarationSha256: '387f44ad8cbab6388e09a4373a808c21b5fa868fa5df3153a790a9233cddff12', answerContract: { version: 'AC-4', sha256: 'f787b888c16220aa50fa1149d8bafc250ecaf41861f98ce047c1049d315ecaae' } });
+    assert.deepEqual(V4.benchmarkMethod, { version: BQM2_DECLARATION.version, declarationSha256: BQM2_DECLARATION_SHA256, answerContract: { version: ANSWER_CONTRACT_VERSION, sha256: ANSWER_CONTRACT_SHA256 } }, 'the pin is the canonical constants');
+    // Everything else (program, curriculum, scenarios, holdouts, shadow work, limits, task classes) is v3's.
+    assert.deepEqual({ ...V4, benchmarkMethod: undefined, version: V3.version, title: V3.title, skills: V4.skills.map((s) => ({ ...s, versionLabel: '1.0.0+pkg3' })) }, { ...V3, benchmarkMethod: undefined }, 'v4 is v3 except its identity and its method pin');
+    for (const k of ['program', 'scenarios', 'limits', 'taskClasses', 'roleRef'] as const) assert.deepEqual(V4[k], V3[k], `${k} is v3's`);
+    assert.deepEqual([V4.limits.benchmarkMaxOutputTokens, V4.limits.benchmarkCapMicros, V4.limits.benchmarkPassPct], [4_096, 40_000, 75]);
+    // The talented-but-wasteful expectation is kept as is (G1 / AC-4 resolve the primary-act ambiguity).
+    const tbw = (p: AcademyPackage) => p.skills.flatMap((s) => s.benchmark).find((b) => b.code === 'talented-but-wasteful');
+    assert.ok(tbw(V4));
+    assert.deepEqual(tbw(V4), tbw(V3));
+  });
+
+  test('v4 resolves to BQM-2: 6 Skills × 2 cases × 2 arms × 5 observations = 120, each E1, answer-only, at most 2 calls, rubric R2', () => {
+    assert.equal(packageMethod(V4), 'BQM-2');
+    assert.equal(observationsPerArm(V4), 5);
+    assert.deepEqual(V4.skills.map((s) => s.benchmark.length), [2, 2, 2, 2, 2, 2]);
+    assert.equal(V4.skills.reduce((n, s) => n + s.benchmark.length, 0) * 2 * observationsPerArm(V4), 120);
+    assert.equal(BQM2_DECLARATION.reasoningClass, 'E1');
+    assert.equal(BQM2_DECLARATION.deliverable.only, 'ANSWER');
+    assert.equal(BQM2_DECLARATION.deliverable.maxModelCallsPerObservation, 2);
+    assert.deepEqual([BQM2_DECLARATION.invalidOutput.sameClassRetries, BQM2_DECLARATION.invalidOutput.escalation], [1, 'NONE']);
+    for (const p of [V1, V2, V3]) assert.deepEqual([packageMethod(p), observationsPerArm(p)], ['BQM-1', 1]);
+  });
+
+  test('qualifying v4 after a failed, finalized v3 reuses the six Skill identities, chains six pkg4 Skill Versions from pkg3, creates exactly 120 observation Work Items and never touches the v3 evidence (fake transport, no network)', () => {
+    let phase: 'V3' | 'V4' = 'V3';
+    return withCompany('l1-02-v4', (c) => (phase === 'V3' && isEeWithSkill(c) ? 'OVERCONFIDENT' : 'TRUTHFUL'), async (x) => {
+      const ceo = hireCeo(x);
+      await qualifyPkg(x, V3, ceo);
+      act(x, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V3), subjectEmployeeId: ceo }); // FINALIZE_SCORES
+      const v3 = viewOf(x, V3);
+      assert.ok(v3?.record);
+      const v3Rows = v3.skills.flatMap((s) => s.runs);
+      assert.deepEqual([v3Rows.length, v3Rows.filter((r) => r.state === 'SCORED').length], [24, 24]);
+      assert.equal(v3.installable, false, 'v3 failed, as in the live Company');
+      const v3Before = JSON.stringify(v3);
+      const benchCalls = (): number => x.seen.filter((r) => r.kind === 'BENCHMARK').length;
+      const created = (): number => x.rt.view.auditByAction('skill.benchmark_run_created').length;
+
+      // Registering v4 creates nothing and calls nothing.
+      const atRegister = benchCalls();
+      const createdBefore = created();
+      await x.rt.stop();
+      x.rt = makeRuntime(x.root, x.transport, x.logs, [V4, V3]);
+      await x.rt.start();
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(viewOf(x, V4)?.record ?? null, null, 'a registered v4 has no durable record');
+      assert.equal(viewOf(x, V4)?.method.version, 'BQM-2');
+      assert.equal(viewOf(x, V3)?.method.version, 'BQM-1');
+      assert.equal(benchCalls(), atRegister, 'registering v4 made zero provider calls');
+      assert.equal(JSON.stringify(viewOf(x, V3)), v3Before, 'v3 is unchanged by the v4 registration');
+
+      const pl = x.rt.founder.actions.preview(x.session, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V4), subjectEmployeeId: ceo }).payload as Record<string, unknown>;
+      assert.deepEqual([pl.qualification, pl.benchmarkRuns, pl.benchmarkMethod, pl.methodSha256, pl.rubricVersion, pl.answerContractVersion, pl.answerContractSha256, pl.reasoningClass, pl.observationsPerArm, pl.maxModelCallsPerObservation, pl.perRunCapMicros],
+        ['QUALIFY', 120, 'BQM-2', BQM2_DECLARATION_SHA256, 'R2', 'AC-4', ANSWER_CONTRACT_SHA256, 'E1', 5, 2, 40_000]);
+
+      phase = 'V4';
+      await qualifyPkg(x, V4, ceo);
+      const v4 = viewOf(x, V4);
+      assert.ok(v4?.record);
+      assert.equal(created() - createdBefore, 120, 'exactly 120 observation Work Items were created');
+      const v4Rows = v4.skills.flatMap((s) => s.runs);
+      assert.equal(new Set(v4Rows.map((r) => r.workItemId)).size, 120);
+      assert.ok(v4Rows.every((r) => r.rubricVersion === 'R2'));
+      assert.equal(JSON.stringify(viewOf(x, V3)), v3Before, 'v3 and its 24 SCORED rows are unchanged after v4 is qualified');
+      const v3RunIds = new Set(v3Rows.map((r) => r.id));
+      for (const s4 of v4.skills) {
+        const s3: PackageViewOf['skills'][number] | undefined = v3.skills.find((s) => s.code === s4.code);
+        assert.ok(s3);
+        assert.equal(s4.skillId, s3.skillId, `${s4.code}: v4 reuses the semantic Skill identity`);
+        assert.notEqual(s4.skillVersionId, s3.skillVersionId, `${s4.code}: v4 qualifies its own new Skill Version`);
+        const ver = x.rt.mind.skills.version(s4.skillVersionId);
+        assert.equal(ver.versionLabel, '1.0.0+pkg4');
+        assert.equal(ver.previousVersionId, s3.skillVersionId, `${s4.code}: chained from the pkg3 version`);
+        assert.equal(x.rt.mind.skills.version(s3.skillVersionId).versionLabel, '1.0.0+pkg3');
+        assert.equal(x.rt.mind.skills.versions(s4.skillId).length, 2, `${s4.code}: one identity, no duplicate`);
+        assert.ok(s4.runs.every((r) => !v3RunIds.has(r.id)), `${s4.code}: the v4 view never sees a v3 run`);
+      }
+      const v4Ctx = x.seen.slice(atRegister).filter((r) => r.kind === 'BENCHMARK');
+      assert.equal(v4Ctx.length, 120, 'one E1 call per observation (truthful fake)');
+      assert.ok(v4Ctx.every((r) => !r.thinking && r.maxTokens === 4_096 && r.text.includes(ANSWER_ONLY_OUTPUT_INSTRUCTION) && r.text.includes(ANSWER_CONTRACT_TEXT)));
+    }, { packages: [V3] });
   });
 });

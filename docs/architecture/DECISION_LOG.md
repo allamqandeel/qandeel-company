@@ -3949,3 +3949,32 @@ migration; no other context changed):
   in-flight pin check also refuses an observation whose build renders a different instruction. The BQM-2 digest is now
   `387f44ad8cbab6388e09a4373a808c21b5fa868fa5df3153a790a9233cddff12` (superseding D-L1-24's `c67bc300…`; no package ever
   pinned either).
+
+## D-L1-26 — the production CEO package v4: v3 under BQM-2 (prepared, not registered in LIVE, not qualified)
+
+`ceo.company-ceo` v4 (`packages/mind/src/packages/ceo-academy-v4.ts`, title "QANDEEL COMPANY CEO — Academy package v4") is
+the first production CEO package that opts into the Benchmark Qualification Method v2. It differs from v3 only by:
+
+- `version` 3 → 4 and its title;
+- the six Skill Version labels `1.0.0+pkg3` → `1.0.0+pkg4` (the same six semantic Skill identities; when v4 is qualified
+  each new Skill Version chains from its pkg3 version, as v3's chained from pkg2);
+- the `benchmarkMethod` pin, built from the canonical exported constants — `BQM2_DECLARATION.version`,
+  `BQM2_DECLARATION_SHA256` (`387f44ad8cbab6388e09a4373a808c21b5fa868fa5df3153a790a9233cddff12`) and the ANSWER contract
+  `ANSWER_CONTRACT_VERSION` / `ANSWER_CONTRACT_SHA256` (AC-4, `f787b888c16220aa50fa1149d8bafc250ecaf41861f98ce047c1049d315ecaae`).
+  No method behaviour is restated in the package: fixed E1, k = 5, the answer-only prompt and fence, one same-class
+  retry, at most two model calls, R2, the layered absolute rule, N1 (m = 1) and the infrastructure-only VOID all come from
+  the BQM-2 foundation the digest pins.
+
+The instruction payloads, benchmark cases, expectations (`talented-but-wasteful` included — G1 / AC-4 resolve its
+primary-act ambiguity), critical flags, forbidden phrases, program, curriculum, scenarios, holdouts, shadow work, pass mark
+(75), money caps (benchmark cap 40000 micro-units), task classes and the 4096 output ceiling are v3's. Initial
+qualification is 6 Skills × 2 cases × 2 arms × 5 observations = 120 observations. v4's digest is
+`bb3d8dfb27ca72fd4f96688b1a39de1f3ac83fb01ca98fc3e20cb5ca4ed52265`; v1, v2 and v3 keep their digests (v3
+`01607736…`) and stay BQM-1 history.
+
+The production surface registers v4, v3, v2, v1 (newest first). The Founder activation view already states each
+version's method; the UI now labels the newest as "Current candidate under benchmark method BQM-2" and each earlier
+version with its method (BQM-1). No migration: 0018 already carries the BQM-2 columns. Nothing is written to LIVE by this
+change: v4 has no durable record until a Founder qualifies it. LIVE read-only precheck (2026-10-06): schema at migration
+17 (0018 applies at the next start of this build), Salim TRAINING, v1/v2/v3 QUALIFYING with 24 rows each (v2, v3 SCORED),
+no pkg4 Skill Version, no open benchmark Work Item, 91 provider calls, all reservations SETTLED.

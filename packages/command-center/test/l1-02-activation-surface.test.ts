@@ -11,7 +11,7 @@ import path from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, academyPackageDigest } from '@qandeel-company/mind';
+import { CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, CEO_ACADEMY_PACKAGE_V4, academyPackageDigest } from '@qandeel-company/mind';
 import { DEEPSEEK_V41_FLASH_ACADEMY_PROFILE } from '@qandeel-company/model-providers';
 
 import { structuredSummary } from '../src/api.js';
@@ -62,9 +62,11 @@ describe('L1-02: the Company activation flow on the authenticated surface', () =
       assert.equal(view.ceo, null, 'the canonical CEO seat starts vacant');
       assert.equal((view.seat as Body).code, 'company.ceo');
       assert.equal((view.seat as Body).roleRef, 'role:company.ceo');
-      // D-L1-19 / D-L1-22: the current package version (v3) and the failed v2 and v1 (history) are all registered, each with its exact digest.
+      // D-L1-19 / D-L1-22 / D-L1-26: the current BQM-2 candidate (v4) and the BQM-1 history (v3, v2, v1) are all registered, newest first, each with its exact digest.
       const listed = registry.packages as Body[];
-      assert.deepEqual(listed.map((p) => `${String(p.code)}@${String(p.version)}:${String(p.sha256)}`), [CEO_ACADEMY_PACKAGE_V3, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V1].map((p) => `${p.code}@${p.version}:${academyPackageDigest(p)}`), 'the exact digests the Founder qualifies / installs are visible');
+      assert.deepEqual(listed.map((p) => `${String(p.code)}@${String(p.version)}:${String(p.sha256)}`), [CEO_ACADEMY_PACKAGE_V4, CEO_ACADEMY_PACKAGE_V3, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V1].map((p) => `${p.code}@${p.version}:${academyPackageDigest(p)}`), 'the exact digests the Founder qualifies / installs are visible');
+      // The activation view states each version's benchmark method: v4 is the BQM-2 candidate, v1-v3 are BQM-1 history; none has a record yet.
+      assert.deepEqual((view.packages as Body[]).map((p) => `v${String(p.version)}:${String((p.method as Body).version)}:${p.record === null ? 'no-record' : 'record'}`), ['v4:BQM-2:no-record', 'v3:BQM-1:no-record', 'v2:BQM-1:no-record', 'v1:BQM-1:no-record']);
       const pkg = listed[0];
       assert.ok((pkg?.scenarios as Body[]).filter((s) => s.kind === 'HOLDOUT').every((s) => s.content === null), 'holdout scenarios are never shown in advance');
       const profile = ((registry.providers as Body).profiles as Body[])[0];

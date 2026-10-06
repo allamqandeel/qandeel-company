@@ -626,6 +626,25 @@ const MUTATIONS = [
     edits: [{ file: `${MIND}/benchmark-method.js`, search: "outputInstructionSha256: ANSWER_ONLY_OUTPUT_INSTRUCTION_SHA256", replace: "outputInstructionSha256: 'unpinned'", expectedCount: 1 }],
     runs: [BQM2_STORE, ANSWER_ONLY],
   },
+  // --- L1-02: the production CEO package v4 (D-L1-26) ------------------------------------------------------------------
+  {
+    id: 'l1-02-v4-method-unpinned',
+    gate: 'package v4 pins BQM-2 and AC-4 by the canonical constants (never BQM-1 by omission)',
+    edits: [{ file: `${MIND}/packages/ceo-academy-v4.js`, search: "    benchmarkMethod: { version: BQM2_DECLARATION.version, declarationSha256: BQM2_DECLARATION_SHA256, answerContract: { version: ANSWER_CONTRACT_VERSION, sha256: ANSWER_CONTRACT_SHA256 } },\n", replace: "", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-v4-label-reused',
+    gate: 'package v4 qualifies six NEW Skill Versions (1.0.0+pkg4), never the pkg3 ones',
+    edits: [{ file: `${MIND}/packages/ceo-academy-v4.js`, search: "versionLabel: '1.0.0+pkg4'", replace: "versionLabel: '1.0.0+pkg3'", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-v4-unregistered',
+    gate: 'the production surface registers v4 beside the v3, v2 and v1 history',
+    edits: [{ file: 'packages/command-center/dist/src/surface.js', search: "[CEO_ACADEMY_PACKAGE_V4, CEO_ACADEMY_PACKAGE_V3, ", replace: "[CEO_ACADEMY_PACKAGE_V3, ", expectedCount: 1 }],
+    runs: [ACTIVATION_SURFACE],
+  },
 ];
 
 const args = process.argv.slice(2);

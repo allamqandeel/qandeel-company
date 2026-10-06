@@ -213,14 +213,14 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
     const rec = (pkg?.record as Json | null) ?? null;
     const box = h('div', { class: 'pilot' }, h('strong', { text: `Academy package ${str(pkgReg.code)} v${str(pkgReg.version)}` }), ' ', pill(rec ? humanize(str(rec.state)) : 'not qualified'));
     for (const old of arr(v.packages).filter((p) => p !== pkg && p.record)) {
-      box.append(h('p', { class: 'muted small', text: `Earlier version v${str(old.version)} (digest ${str(old.sha256).slice(0, 12)}…): ${humanize(str((old.record as Json).state))}, ${old.installable ? 'installable' : 'not installable'} — kept unchanged as history; its benchmark evidence never counts for another version.` }));
+      box.append(h('p', { class: 'muted small', text: `Earlier version v${str(old.version)} (digest ${str(old.sha256).slice(0, 12)}…): ${humanize(str((old.record as Json).state))}, ${old.installable ? 'installable' : 'not installable'}, benchmark method ${str((old.method as Json | undefined)?.version ?? 'BQM-1')} — kept unchanged as history; its benchmark evidence never counts for another version.` }));
     }
     box.append(h('p', { class: 'muted small', text: `Digest ${str(pkgReg.sha256).slice(0, 16)}… · ${arr(pkgReg.skills).length} skills · ${arr(pkgReg.scenarios).length} scenarios · calibration ${pkgReg.founderCalibrationRequired ? 'required' : 'not required'} · benchmark spent ${fmtMoneyMicros(Number(pkg?.spentMicros ?? 0), 'USD')}` }));
     // D-L1-23: the benchmark method the evidence is (or would be) produced under — never inferred, always the declared one.
     const method = (pkg?.method as Json | undefined) ?? {};
     const k = Number(method.observationsPerArm ?? 1);
     const ac = (method.answerContract as Json | null) ?? null;
-    box.append(h('p', { class: 'muted small', text: method.version === 'BQM-2' ? `Benchmark method BQM-2 (declaration ${str(method.declarationSha256).slice(0, 12)}…): ${k} observations per case and arm, all at ${str(method.reasoningClass)}, rubric ${str(method.rubricVersion)}, ANSWER contract ${str(ac?.version)} (${str(ac?.sha256).slice(0, 12)}…)` : 'Benchmark method BQM-1 (one observation per case and arm, rubric R1) — frozen history' }));
+    box.append(h('p', { class: 'muted small', text: method.version === 'BQM-2' ? `Current candidate under benchmark method BQM-2 (declaration ${str(method.declarationSha256).slice(0, 12)}…): ${k} observations per case and arm, all at ${str(method.reasoningClass)}, rubric ${str(method.rubricVersion)}, ANSWER contract ${str(ac?.version)} (${str(ac?.sha256).slice(0, 12)}…)` : 'Benchmark method BQM-1 (one observation per case and arm, rubric R1) — frozen history' }));
     for (const s of arr(pkg?.skills)) {
       const verdict = (s.verdict as Json) ?? {};
       const sec = s.security as Json | null;
