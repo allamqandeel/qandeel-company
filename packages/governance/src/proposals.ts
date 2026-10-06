@@ -13,6 +13,11 @@ import { isOutcomeVerdict, isReviewOutcome, type OutcomeJudgment, type ReviewOut
 export type ModelProposal =
   | { readonly type: 'FINAL'; readonly summaryCode: string }
   /**
+   * L1-02: the durable answer to one Academy scenario. It is evidence only: the runtime binds it to
+   * the open attempt and its exact Context Manifest. It carries no score, pass/fail or authority.
+   */
+  | { readonly type: 'ACADEMY_ANSWER'; readonly answer: string; readonly summaryCode: string }
+  /**
    * C3: a structured memory CANDIDATE. It is only a proposal: the runtime-owned Memory Write Policy
    * decides whether and how it is stored. Provenance, data class, scope and status are never taken
    * from the model.
@@ -77,6 +82,10 @@ export function parseProposal(outputText: string): ModelProposal {
   if (o.type === 'FINAL') {
     if (keys !== 'summaryCode,type' || typeof o.summaryCode !== 'string' || !CODE.test(o.summaryCode)) return { type: 'INVALID', code: 'MALFORMED' };
     return { type: 'FINAL', summaryCode: o.summaryCode };
+  }
+  if (o.type === 'ACADEMY_ANSWER') {
+    if (keys !== 'answer,summaryCode,type' || typeof o.answer !== 'string' || o.answer.trim().length === 0 || o.answer.length > 16_000 || typeof o.summaryCode !== 'string' || !CODE.test(o.summaryCode)) return { type: 'INVALID', code: 'MALFORMED' };
+    return { type: 'ACADEMY_ANSWER', answer: o.answer, summaryCode: o.summaryCode };
   }
   if (o.type === 'TOOL_REQUEST') {
     if (keys !== 'action,args,tool,type' || typeof o.tool !== 'string' || !CODE.test(o.tool) || typeof o.action !== 'string' || !CODE.test(o.action)) return { type: 'INVALID', code: 'MALFORMED' };
