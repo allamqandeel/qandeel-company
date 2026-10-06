@@ -773,6 +773,7 @@ describe('R2-12: one run-failure vocabulary — the runtime records the real cau
       openHandoffs: () => 0,
       clarificationsRequested: () => 0,
       refuseFinal: () => undefined,
+      noteInvalidOutput: () => undefined,
       sendMessage: () => ({ outcome: 'RECORDED', code: 'OK', messageId: null }),
       goalAct: () => ({ outcome: 'DONE', code: 'OK', resultRef: null }),
       recordAnswer: () => ({ outcome: 'RECORDED', code: 'OK', answerId: null }),

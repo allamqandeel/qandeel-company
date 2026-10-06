@@ -14,7 +14,7 @@
  * from a worker also present the supervisor fence.
  */
 import { QandeelError, isQandeelError, type Id, type JsonObject, type JsonValue, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
-import type { DataClass, OutcomeJudgment, ProviderFailureClass } from '@qandeel-company/governance';
+import { INVALID_OUTPUT_CODES, type DataClass, type InvalidOutputCode, type OutcomeJudgment, type ProviderFailureClass } from '@qandeel-company/governance';
 
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import {
@@ -399,6 +399,20 @@ export function decideMemoryCandidate(store: CompanyStore, fence: Fence, candida
     const a = ctx.db.get<{ work_item_id: string }>('SELECT work_item_id FROM run_attributions WHERE run_id = ?', fence.runId);
     if (!c || !a || c.work_item_id !== a.work_item_id) throw new QandeelError('AUTHORITY_DENIED', 'this candidate belongs to another Work Item', { candidateId, reason: 'CANDIDATE_NOT_THIS_WORK' });
     return txDecideMemoryCandidate(ctx, candidateId);
+  });
+}
+
+/**
+ * D-L1-20 — the durable, content-free diagnosis of a model output that failed proposal validation: the parser's closed
+ * classification, the run step and the reasoning class, as one audit row of the run (job fence mandatory). The output
+ * text is never stored; nothing reads this back into a context, so retry / escalation behaviour is unchanged.
+ */
+export function recordInvalidOutput(store: CompanyStore, fence: Fence, input: { step: number; code: InvalidOutputCode; reasoningClass: string }): void {
+  fenced(store, 'record invalid model output', fence, (ctx) => {
+    verifyFence(ctx, fence);
+    if (!(INVALID_OUTPUT_CODES as readonly string[]).includes(input.code)) throw new QandeelError('VALIDATION_FAILED', 'an invalid-output code is a closed parser classification', { field: 'code' });
+    if (!['E1', 'E2', 'E3', 'E4'].includes(input.reasoningClass)) throw new QandeelError('VALIDATION_FAILED', 'unknown reasoning class', { field: 'reasoningClass' });
+    appendAudit(ctx, 'run.model_output_invalid', 'run', fence.runId, {}, 'REJECTED', input.code, { step: Math.max(0, Math.trunc(input.step)), reasoningClass: input.reasoningClass });
   });
 }
 

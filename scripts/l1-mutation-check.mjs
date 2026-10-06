@@ -370,6 +370,25 @@ const MUTATIONS = [
     edits: [{ file: `${STORAGE}/academy-packages.js`, search: 'if (newest !== null && newest >= pkg.version)', replace: 'if (newest !== null && false)', expectedCount: 1 }],
     runs: [ACTIVATION],
   },
+  // --- L1-02: pre-run corrections for package v2 (D-L1-20) ------------------------------------------------------------
+  {
+    id: 'l1-02-answer-semantics-missing',
+    gate: 'every answer-bearing context carries the canonical decision / confidence semantics',
+    edits: [{ file: `${STORAGE}/mind-writes.js`, search: '${ANSWER_DECISION_SEMANTICS} ${ANSWER_CONFIDENCE_SEMANTICS} ', replace: '', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-invalid-output-unrecorded',
+    gate: 'an invalid model output leaves its content-free parser classification as durable run evidence',
+    edits: [{ file: 'packages/runtime/dist/src/c2/employee-task.js', search: 'gov.noteInvalidOutput(s.turn, proposal.code, out.reasoningClass);', replace: '', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-v2-ceiling-tight',
+    gate: 'package v2 runs its benchmark under the 4096 ceiling (thinking + a full legal answer)',
+    edits: [{ file: `${MIND}/packages/ceo-academy-v2.js`, search: 'benchmarkMaxOutputTokens: 4_096', replace: 'benchmarkMaxOutputTokens: 2_816', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
 ];
 
 const args = process.argv.slice(2);

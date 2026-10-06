@@ -249,7 +249,9 @@ export const employeeTaskProcessor: GovernedProcessor = {
         continue;
       }
       if (proposal.type === 'INVALID') {
-        // Observable evidence (the output failed validation) may justify one escalation.
+        // Observable evidence (the output failed validation) may justify one escalation. D-L1-20: its content-free
+        // classification is recorded first (never the output), so a run that ends without an answer is diagnosable.
+        gov.noteInvalidOutput(s.turn, proposal.code, out.reasoningClass);
         s = { ...s, invalid: s.invalid + 1 };
         if (s.invalid >= 2 || escalated) return { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_INVALID' };
         escalateFrom = { fromClass: out.reasoningClass, evidence: 'OUTPUT_FAILED_VALIDATION' };

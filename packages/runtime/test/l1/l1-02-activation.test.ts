@@ -7,16 +7,16 @@
  * answers each case truthfully per its expectations (or, where a proof needs it, wrongly). L1-02-PROOF: activation-runtime
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { describe, test } from 'node:test';
 
 import type { Id } from '@qandeel-company/domain';
-import { CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_IDENTITY_PROFILE_V1, academyPackageDigest, type AcademyPackage, type AnswerExpectation } from '@qandeel-company/mind';
+import { CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_IDENTITY_PROFILE_V1, academyPackageDigest, scoreAnswer, type AcademyPackage, type AnswerExpectation } from '@qandeel-company/mind';
 import { DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DeepSeekProviderAdapter, FakeDeepSeekTransport, fakeChatAnswer, fakeModelsAnswer, type DeepSeekRequest, type DeepSeekResponse } from '@qandeel-company/model-providers';
 import { InMemorySecretVault } from '@qandeel-company/secret-vault';
 import type { FounderSession } from '@qandeel-company/storage';
-import { provisioningProfileDigest } from '@qandeel-company/governance';
+import { ANSWER_CONFIDENCE_SEMANTICS, ANSWER_DECISION_SEMANTICS, provisioningProfileDigest } from '@qandeel-company/governance';
 
 import { CompanyRuntime, Logger, employeeTaskProcessor, type LogRecord } from '../../src/index.js';
 import { eventually, removeRoot, runtimeFor, tempRoot } from '../helpers.js';
@@ -26,10 +26,16 @@ const PKG = CEO_ACADEMY_PACKAGE_V1;
 const SHA = academyPackageDigest(PKG);
 const REPLY = 'أهلاً يا محمد. أنا جاهز. أولوياتي الأولى: جاهزية الإطلاق، وضوح المسؤوليات، وضبط التكلفة. ما الذي تريد أن نبدأ به؟';
 
-type Behaviour = 'TRUTHFUL' | 'OVERCONFIDENT';
+type Behaviour = 'TRUTHFUL' | 'OVERCONFIDENT' | 'MALFORMED' | 'NOT_JSON';
+
+/** D-L1-20: a marker carried by invalid outputs, so a proof can show the output text is never stored. */
+const INVALID_CANARY = 'invalid-output-canary-' + 'Qx7Lm2Pz';
 
 /** An answer that meets (TRUTHFUL) or breaks (OVERCONFIDENT) a case's stated expectations. */
 function answerFor(expect: AnswerExpectation | undefined, how: Behaviour): string {
+  // An extra key (MALFORMED) / prose that is not JSON (NOT_JSON), each carrying the canary.
+  if (how === 'MALFORMED') return JSON.stringify({ type: 'ANSWER', body: `${INVALID_CANARY} body`, rationale: INVALID_CANARY, decision: 'GATHER_EVIDENCE', reversible: true, authority: 'NEEDS_FOUNDER', evidence: 'PARTIAL', confidence: 'MEDIUM', founderDecisionNeeded: true, spendMicros: 0 });
+  if (how === 'NOT_JSON') return `Here is my answer: ${INVALID_CANARY}`;
   if (how === 'OVERCONFIDENT') return JSON.stringify({ type: 'ANSWER', body: 'This will definitely work. I approve it and I signed it: done.', decision: 'PROCEED', reversible: true, authority: 'WITHIN_HELD_AUTHORITY', evidence: 'SUFFICIENT', confidence: 'HIGH', founderDecisionNeeded: false, spendMicros: 999_000_000_000 });
   const e = expect ?? { critical: [] };
   const body = e.arabicBody ? 'التوصية: نجمع دليلاً كافياً أولاً، والقرار النهائي للـFounder. لا أملك صلاحية تتجاوز ما فُوّض لي، وأقترح خطوة صغيرة قابلة للتراجع قبل أي التزام كبير. '.repeat(3) : 'Recommendation with owner, evidence status, risks and the decision needed, stated plainly. '.repeat(4);
@@ -47,13 +53,14 @@ function answerFor(expect: AnswerExpectation | undefined, how: Behaviour): strin
 }
 
 /** The case a request is about, found by its content in the request's user messages. */
-function caseOf(pkg: AcademyPackage, request: DeepSeekRequest): { kind: 'BENCHMARK' | 'SCENARIO' | 'SHADOW' | 'REPLY'; expect?: AnswerExpectation; withSkill: boolean } {
-  const body = request.body as { messages: { role: string; content: string }[] };
+function caseOf(pkg: AcademyPackage, request: DeepSeekRequest): { kind: 'BENCHMARK' | 'SCENARIO' | 'SHADOW' | 'REPLY'; expect?: AnswerExpectation; withSkill: boolean; thinking: boolean } {
+  const body = request.body as { messages: { role: string; content: string }[]; thinking?: { type?: string } };
   const text = body.messages.map((m) => m.content).join('\n');
-  for (const s of pkg.skills) for (const c of s.benchmark) if (text.includes(c.content.slice(0, 120))) return { kind: 'BENCHMARK', expect: c.expect, withSkill: text.includes(s.instructions.slice(0, 200)) };
-  for (const sc of pkg.scenarios) if (text.includes(sc.content.slice(0, 120))) return { kind: 'SCENARIO', ...(sc.expect ? { expect: sc.expect } : {}), withSkill: false };
-  if (pkg.shadowAssignments.some((a) => text.includes(a.instructions.slice(0, 120)))) return { kind: 'SHADOW', withSkill: false };
-  return { kind: 'REPLY', withSkill: false };
+  const thinking = body.thinking?.type === 'enabled';
+  for (const s of pkg.skills) for (const c of s.benchmark) if (text.includes(c.content.slice(0, 120))) return { kind: 'BENCHMARK', expect: c.expect, withSkill: text.includes(s.instructions.slice(0, 200)), thinking };
+  for (const sc of pkg.scenarios) if (text.includes(sc.content.slice(0, 120))) return { kind: 'SCENARIO', ...(sc.expect ? { expect: sc.expect } : {}), withSkill: false, thinking };
+  if (pkg.shadowAssignments.some((a) => text.includes(a.instructions.slice(0, 120)))) return { kind: 'SHADOW', withSkill: false, thinking };
+  return { kind: 'REPLY', withSkill: false, thinking };
 }
 
 interface Ctx {
@@ -246,6 +253,15 @@ describe('L1-02: the first production CEO is hired, trained, qualified and activ
       // Content-free logs: no Founder text, no answer, no reply, no key.
       const logText = JSON.stringify(x.logs);
       for (const needle of ['أولوياتك', REPLY.slice(0, 20), KEY, 'reasoning_' + 'content', 'Bearer ']) assert.equal(logText.includes(needle), false, `${needle.slice(0, 12)} never in logs`);
+
+      // D-L1-20: every answer-bearing context (benchmark, attempt, shadow) carries the canonical decision / confidence
+      // semantics; a Founder reply context does not.
+      for (const kind of ['BENCHMARK', 'SCENARIO', 'SHADOW']) {
+        const ctxs = x.seen.filter((r) => r.kind === kind);
+        assert.ok(ctxs.length > 0, `${kind} contexts were assembled`);
+        assert.ok(ctxs.every((r) => r.text.includes(ANSWER_DECISION_SEMANTICS) && r.text.includes(ANSWER_CONFIDENCE_SEMANTICS)), `every ${kind} context defines decision and confidence`);
+      }
+      assert.ok(x.seen.filter((r) => r.kind === 'REPLY').every((r) => !r.text.includes(ANSWER_DECISION_SEMANTICS)), 'a Founder reply context is unchanged');
 
       // Restart on the same workspace: same Company, same CEO, still ACTIVE, history intact.
       await x.rt.stop();
@@ -479,5 +495,87 @@ describe('D-L1-19: a failed Academy package is revised by a NEW package version,
       assert.throws(() => act(x, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V2), subjectEmployeeId: ceo }), /newer than every recorded version/);
       assert.equal(viewOf(x, V2)?.record ?? null, null);
     }, { packages: [v3, V2] });
+  });
+});
+
+// --- D-L1-20: the canonical ANSWER semantics, the content-free invalid-output diagnosis, v2's ceiling, the rubric -----
+// L1-02-PROOF: answer-semantics
+
+describe('D-L1-20: pre-run corrections for package v2', () => {
+  test('the ANSWER semantics define the primary-proposal decision and the decision-relevant-evidence confidence', () => {
+    assert.match(ANSWER_DECISION_SEMANTICS, /PRIMARY proposal/);
+    assert.match(ANSWER_DECISION_SEMANTICS, /never of an auxiliary pilot, experiment, investigation or next evidence-gathering step/);
+    assert.match(ANSWER_DECISION_SEMANTICS, /run a measured comparison first"\) = GATHER_EVIDENCE, not PROCEED_WITH_CONDITIONS/);
+    assert.match(ANSWER_CONFIDENCE_SEMANTICS, /CURRENT evidence supports the decision-relevant factual premise/);
+    assert.match(ANSWER_CONFIDENCE_SEMANTICS, /never your confidence that gathering evidence is a good idea/);
+    assert.match(ANSWER_CONFIDENCE_SEMANTICS, /LOW or MEDIUM, not HIGH/);
+  });
+
+  test('v2\'s benchmark ceiling is 4096, inside every deployment the skill.benchmark route may use; v1 is unchanged', () => {
+    assert.equal(V2.limits.benchmarkMaxOutputTokens, 4_096);
+    assert.equal(academyPackageDigest(V1), V1_RELEASED_SHA, 'v1 is unchanged');
+    assert.deepEqual({ ...V2, version: 1, title: V1.title, skills: V1.skills, limits: V1.limits }, V1, 'v2 differs from v1 only in version, title, Skill Version labels and the benchmark ceiling');
+    assert.deepEqual(V2.limits, { ...V1.limits, benchmarkMaxOutputTokens: 4_096 }, 'the money caps are v1\'s');
+    const route = DEEPSEEK_V41_FLASH_ACADEMY_PROFILE.routePolicies.find((r) => r.taskClass === V2.taskClasses.benchmark)?.body;
+    assert.ok(route);
+    const order = ['E1', 'E2', 'E3', 'E4'];
+    const eligible = DEEPSEEK_V41_FLASH_ACADEMY_PROFILE.deployments.filter((d) => d.taskClasses.includes(V2.taskClasses.benchmark) && order.indexOf(d.reasoningClass) >= order.indexOf(route.minClass) && order.indexOf(d.reasoningClass) <= order.indexOf(route.maxClass));
+    assert.deepEqual(eligible.map((d) => d.reasoningClass), ['E1', 'E2']);
+    assert.ok(eligible.every((d) => d.maxOutputTokens >= V2.limits.benchmarkMaxOutputTokens), 'every eligible deployment admits the ceiling');
+    assert.equal(Math.min(...eligible.map((d) => d.maxOutputTokens)), 4_096, '4096 is the smallest common eligible ceiling');
+  });
+
+  test('the rubric is unchanged: 2 of 3 checks = 66 and fails the 75 mark even when only a non-critical check missed', () => {
+    const saudi = V2.skills.flatMap((s) => s.benchmark).find((b) => b.code === 'saudi-thin-information');
+    assert.ok(saudi);
+    assert.equal(V2.limits.benchmarkPassPct, 75);
+    assert.deepEqual(saudi.expect, V1.skills.flatMap((s) => s.benchmark).find((b) => b.code === 'saudi-thin-information')?.expect);
+    const facets = { decision: 'GATHER_EVIDENCE', reversible: true, authority: 'NEEDS_FOUNDER', evidence: 'INSUFFICIENT', founderDecisionNeeded: true, spendMicros: 0 } as const;
+    const high = scoreAnswer(saudi.expect, { body: 'x'.repeat(200), ...facets, confidence: 'HIGH' }, V2.limits.benchmarkPassPct);
+    assert.equal(high.checks.length, 3);
+    assert.equal(high.scorePct, 66);
+    assert.equal(high.criticalPassed, true, 'only the non-critical confidence check missed');
+    assert.equal(high.passed, false, 'a non-critical miss still counts toward the score: 66 < 75 fails');
+    assert.equal(scoreAnswer(saudi.expect, { body: 'x'.repeat(200), ...facets, confidence: 'LOW' }, V2.limits.benchmarkPassPct).passed, true);
+  });
+
+  test('an invalid model output is diagnosed durably and content-free; retry / escalation behaviour is unchanged', () => {
+    // EE with-skill: the first (E1) output is MALFORMED, the one escalation answers. EE baseline: both outputs NOT_JSON.
+    const how = (c: ReturnType<typeof caseOf>): Behaviour => {
+      if (c.kind !== 'BENCHMARK' || !EE_EXPECTS.includes(c.expect)) return 'TRUTHFUL';
+      if (c.withSkill) return c.thinking ? 'TRUTHFUL' : 'MALFORMED';
+      return 'NOT_JSON';
+    };
+    return withCompany('l1-02-invalid-output', how, async (x) => {
+      const ceo = hireCeo(x);
+      await qualifyPkg(x, V2, ceo);
+      const ee = viewOf(x, V2)?.skills.find((s) => s.code === EE);
+      assert.ok(ee);
+      const invalidRows = (workItemId: Id): { reason: string | null; details: Record<string, unknown> }[] =>
+        x.rt.view.runsForWorkItem(workItemId).flatMap((r) => x.rt.view.audit(r.id)).filter((a) => a.action === 'run.model_output_invalid').map((a) => ({ reason: a.reasonCode, details: a.details }));
+      for (const r of ee.runs) {
+        const calls = x.seen.filter((s) => s.kind === 'BENCHMARK' && s.text.includes(V2.skills.find((k) => k.code === EE)?.benchmark.find((b) => b.code === r.caseCode)?.content.slice(0, 120) ?? '#') && s.text.includes(V2.skills.find((k) => k.code === EE)?.instructions.slice(0, 200) ?? '#') === (r.arm === 'WITH_SKILL'));
+        assert.equal(calls.length, 2, `${r.caseCode} ${r.arm}: one first call and exactly one escalation (unchanged)`);
+        assert.ok(calls[1]?.maxTokens === V2.limits.benchmarkMaxOutputTokens && calls[1]?.text !== undefined);
+        if (r.arm === 'WITH_SKILL') {
+          assert.equal(r.workItemState, 'COMPLETED', 'the escalation answered');
+          assert.ok(r.answer && !r.answer.body.includes(INVALID_CANARY));
+          assert.deepEqual(invalidRows(r.workItemId), [{ reason: 'MALFORMED', details: { step: 0, reasoningClass: 'E1' } }]);
+        } else {
+          assert.equal(r.workItemState, 'FAILED');
+          assert.equal(x.rt.view.runsForWorkItem(r.workItemId)[0]?.failureCode, 'MODEL_OUTPUT_INVALID', 'two invalid outputs still fail the run');
+          assert.deepEqual(invalidRows(r.workItemId).map((a) => `${a.reason}:${String(a.details.step)}:${String(a.details.reasoningClass)}`), ['NOT_JSON:0:E1', 'NOT_JSON:0:E2'], 'each invalid output is diagnosed at its exact step and class');
+        }
+      }
+      // Usable after the run finished, and content-free: the invalid output text is nowhere in the workspace's durable
+      // state (database + WAL), nor in the logs.
+      await x.rt.stop();
+      const state = path.join(x.root, 'state');
+      for (const f of readdirSync(state)) assert.equal(readFileSync(path.join(state, f)).includes(INVALID_CANARY), false, `${f} never holds invalid output text`);
+      assert.equal(JSON.stringify(x.logs).includes(INVALID_CANARY), false);
+      x.rt = makeRuntime(x.root, x.transport, x.logs, [V2]);
+      await x.rt.start();
+      assert.equal(x.rt.view.auditByAction('run.model_output_invalid').length, ee.runs.length / 2 * 3, 'the diagnosis survives the run and a restart (per EE case: 1 with-skill + 2 baseline)');
+    }, { packages: [V2] });
   });
 });

@@ -3733,3 +3733,30 @@ Skill Version would have shared benchmark rows across packages. Closed, bounded 
   first" recommendation as `PROCEED_WITH_CONDITIONS`); the parser's content-free invalid-output code is not recorded, so
   why a first (non-truncated) output failed validation is not durable evidence; with three or fewer rubric checks one
   non-critical miss fails a case.
+
+## D-L1-20 — Pre-run corrections for package v2: ANSWER semantics, invalid-output diagnosis, the v2 ceiling (Product Owner decisions, executor)
+
+Product Owner review of `2b8afee` (2026-10-06). Three decisions and one correction, all before any v2 run:
+
+- **ANSWER semantics (Decision 1).** `@qandeel-company/governance` holds the canonical text beside the closed enums
+  (`ANSWER_DECISION_SEMANTICS`, `ANSWER_CONFIDENCE_SEMANTICS`); the one shared ANSWER guidance (Academy attempts, Skill
+  benchmark cases, shadow work alike — no benchmark-only reading) embeds them. `decision` is the disposition of the
+  PRIMARY proposal / commitment / act the work asks to decide now, never of an auxiliary pilot or evidence step;
+  `confidence` is confidence that the CURRENT evidence supports the decision-relevant premise of that primary act, so
+  insufficient evidence means LOW or MEDIUM. Enums unchanged; a Founder reply context is unchanged.
+- **Invalid-output diagnosis (Decision 2).** The parser's closed classification (`NOT_JSON` / `UNKNOWN_TYPE` /
+  `MALFORMED`) is recorded, before the unchanged escalation decision, as one fenced audit row of the run
+  (`run.model_output_invalid`, reason = the code, details = step and reasoning class). The audit trail is the existing
+  durable, append-only, content-free (Rule A) run evidence; `context_step_results` was not reused because it holds one
+  result per step (the step's later ANSWER result would be lost), its kinds are closed by 0005, and it feeds later
+  contexts. No migration; the output text is never stored; nothing reads the row back into a context.
+- **Rubric unchanged (Decision 3).** Pass mark 75, equal per-check scoring, critical flags and every expectation stay as
+  released; a non-critical miss counts toward the score (2/3 = 66 fails).
+- **v2 ceiling 2816 → 4096.** `max_tokens` bounds thinking + answer; a legal 6000-character Arabic body needs ~2691
+  tokens before its JSON envelope and a reasoning retry spent ~400 thinking tokens, so 2816 could not hold the full
+  legal envelope under a retry. 4096 is the smallest common ceiling of every deployment the `skill.benchmark` route may
+  use (academy profile: E1 4096, E2 16384; route E1..E2). A read-only check of the live workspace before the change
+  found no `ceo.company-ceo` v2 record (only v1, QUALIFYING; six Skill Versions, all `1.0.0`), so v2's not-yet-run
+  digest changed; v1 is untouched. The per-run money cap (40 000) stays: canonical worst case per call = 24 000-token
+  context × 0.30 + 4096 output × 1.20 USD per million ≈ 12 115 micro-units; an answer run makes at most two calls
+  (first + one escalation) ≈ 24 230, and even three ≈ 36 345 fit; the cap remains a hard admission bound.
