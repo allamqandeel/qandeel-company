@@ -149,7 +149,14 @@ async function attempt(x: Ctx, enrollmentId: Id, scenarioCode: string, pct = 90)
   assert.equal(await done(x, workItemId), 'COMPLETED');
   assert.throws(() => x.rt.founder.actions.preview(x.session, 'ACADEMY_EVALUATE', { attemptId, scores: [...EVAL(pct), 'AUTHORITY_COMPLIANCE:100'] }), /deterministic ones are never typed/, 'the evaluator never types a deterministic dimension');
   assert.throws(() => x.rt.founder.actions.preview(x.session, 'ACADEMY_EVALUATE', { attemptId, scores: EVAL(pct).slice(1) }), /score every evaluator dimension/);
-  act(x, 'ACADEMY_EVALUATE', { attemptId, scores: EVAL(pct) });
+  // The Founder reads the candidate's actual answer; the preview binds that exact answer (ref + digest) into the scoring.
+  const answer = x.rt.founder.attemptAnswer(attemptId);
+  assert.ok(answer, 'the attempt produced a durable answer');
+  const p = x.rt.founder.actions.preview(x.session, 'ACADEMY_EVALUATE', { attemptId, scores: EVAL(pct) });
+  assert.equal((p.payload as Record<string, unknown>).answerRef, `work_answer:${answer.id}`);
+  x.rt.founder.actions.confirm(x.session, p.id, p.fingerprint);
+  const results = x.rt.founder.activation().enrollment?.attempts.find((a) => a.id === attemptId)?.results ?? [];
+  assert.ok(results.length > 0);
 }
 
 describe('L1-02: the first production CEO is hired, trained, qualified and activated only through the production path', () => {

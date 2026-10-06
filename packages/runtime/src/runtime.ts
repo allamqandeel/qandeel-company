@@ -87,6 +87,7 @@ import {
   SkillStore,
   createPortableBackup,
   activationView,
+  type AnswerRecord,
   projectUniverse,
   type ActivationView,
   pruneLocalBackups,
@@ -226,6 +227,8 @@ export interface FounderAdmin {
   universe(options?: { at?: string }): CompanyUniverse;
   /** L1-02: the Company activation flow, read from durable state only (silent; never a write). */
   activation(): ActivationView;
+  /** L1-02: the candidate's durable answer to one Academy attempt (Founder-scoped content; silent read), or null. */
+  attemptAnswer(attemptId: string): AnswerRecord | null;
 }
 
 const recoverGovernedOrphansCount = (g: { reservationsHeld: number; reservationsReleased: number; invocationsRetryable: number; invocationsHeld: number }): number =>
@@ -891,6 +894,7 @@ export class CompanyRuntime {
           return projectUniverse(s, options.at === undefined ? {} : { at: options.at });
         },
         activation: (): ActivationView => activationView(s, this.#opts.governance?.academyPackages ?? []),
+        attemptAnswer: (attemptId: string): AnswerRecord | null => AcademyStore.for(s).attemptAnswer(attemptId),
       });
     }
     return this.#founderAdmin;
@@ -1339,9 +1343,9 @@ export class CompanyRuntime {
         return { outcome: out.outcome, code: out.code, messageId: out.messageId };
       },
       // L1-02: the answer of an answer-bearing Work Item (codes only as the step result; the body is company content).
-      recordAnswer: (proposal: AnswerProposal, step: number) => {
+      recordAnswer: (proposal: AnswerProposal, step: number, manifestId: string) => {
         const g = globalStep(step);
-        const out = recordAnswer(store, claim.fence, { body: proposal.body, decision: proposal.decision, reversible: proposal.reversible, authority: proposal.authority, evidence: proposal.evidence, confidence: proposal.confidence, founderDecisionNeeded: proposal.founderDecisionNeeded, spendMicros: proposal.spendMicros });
+        const out = recordAnswer(store, claim.fence, { body: proposal.body, decision: proposal.decision, reversible: proposal.reversible, authority: proposal.authority, evidence: proposal.evidence, confidence: proposal.confidence, founderDecisionNeeded: proposal.founderDecisionNeeded, spendMicros: proposal.spendMicros }, { manifestId: manifestId as Id, step: g });
         recordStepResult(store, claim.fence, g, out.outcome === 'RECORDED' ? 'TOOL_RESULT' : 'TOOL_REFUSED', JSON.stringify({ answer: out.outcome, code: out.code }));
         this.#founderChanged();
         return { outcome: out.outcome, code: out.code, answerId: out.answerId };

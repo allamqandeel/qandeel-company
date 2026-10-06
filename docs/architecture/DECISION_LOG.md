@@ -3621,3 +3621,81 @@ reference, and `BENCHMARKED` accepts a free-form evidence reference (`SkillStore
 reviewer, sandbox or benchmark engine exists in the repository. Only `INSPECTED` (deterministic payload inspection) and
 `LICENSE_DEPENDENCY_CHECKED` are produced independently. Per the Founder's condition the L1-02 work STOPS at this seam
 for a Founder decision instead of recording a Founder confirmation as security / benchmark evidence.
+
+## D-L1-13 — Skill qualification by static security review + a bounded behavioural benchmark; structured activation intents (Founder decision + executor, L1-02)
+
+**Founder decision, 2026-10-06 ("STATIC SECURITY + BOUNDED BEHAVIORAL BENCHMARK MODE").** Skill Version qualification
+stays separate from Employee qualification. A release-pinned Academy package (`ceo.company-ceo` v1, digest-bound) is
+qualified by evidence the system produces itself: the deterministic inspection and licence check (existing), a static
+security review (`system:static-security-review/v1`: content matches the package, no inspection findings, no directives,
+QANDEEL-owned licence, no dependencies or tools, native text only, no external links, bounded size) that alone decides
+`SANDBOXED` vs `REJECTED`, and a bounded benchmark: per skill and case a WITH_SKILL run and a BASELINE run of the
+candidate Employee in the fenced `SKILL_BENCHMARK` execution mode, scored by the deterministic facet rubric. A
+`SANDBOXED` version loads only through `loadBenchmarkSkillInstructions`, only into its own OPEN WITH_SKILL run (verifier
+rule `l1-02-benchmark-load-confined`); production eligibility (`APPROVED` + pinned) is unchanged. A version advances to
+`BENCHMARKED → COMPARED → APPROVED` only when every WITH_SKILL case passed and WITH_SKILL ≥ BASELINE; an unanswered run
+is VOID, never a pass. The Founder's ONE install confirmation (`ACADEMY_PACKAGE_INSTALL`) is offered only when that
+evidence exists (`PACKAGE_SKILLS_NOT_QUALIFIED` otherwise) and asserts nothing itself. Academy success is never Skill
+benchmark evidence.
+
+The production activation path is 15 structured, preview → fingerprint → confirm intents of the existing
+`FounderActionStore` (hire into the canonical seat as CANDIDATE, lifecycle to TRAINING / SHADOW / PROBATION only, model
+access D1/D2 with a route policy, package qualify / install, enroll, module completion, attempt start, evaluate, retrain
+complete, shadow assign, probation evidence / review, calibration, activation decision). No text produces one
+(verifier rule `l1-02-activation-structured-only`); none reaches a test seam (`l1-02-activation-no-seam`); system-owned
+transitions (deterministic rubric, evidence collection, stage advance, activation request) stay system-owned.
+
+## D-L1-14 — A versioned Academy provider profile beside the L1-01 profile (executor)
+
+`deepseek-v4-1-flash-academy` adds the task classes `skill.benchmark`, `academy.attempt`, `academy.shadow` to the
+Founder classes, E1/E2 only, the same price card, D2, `LIMITED_PRODUCTION`, the pilot route policy. The L1-01 profile is
+unchanged; the Founder provisions the new profile through the existing `PROVIDER_PROVISION` confirmation.
+
+## D-L1-15 — The typed ANSWER and append-only `work_answers` (migration 0017; executor)
+
+An answer-bearing Work Item (Academy attempt, benchmark case, shadow work) is answered by one `ANSWER` proposal: a
+bounded body (≤ 6000) plus closed facets (decision, reversible, authority, evidence, confidence, founderDecisionNeeded,
+spendMicros) that the deterministic rubric can check. The run ends when the answer is recorded (the D-L1-09 discipline).
+Migration `0017_l1_02_production_activation.sql` (append-only; 0001–0016 unchanged) adds `academy_packages`,
+`academy_package_skills`, `skill_security_reviews`, `skill_benchmark_runs`, `run_benchmark_modes`, `work_answers`
+(one per item, append-only) and rebuilds the preview intent CHECK.
+
+## D-L1-16 — Employee visual identity on the existing profile; a read-only content-free proof script (Founder decision + executor)
+
+Founder decision: display name (Latin + Arabic), job title (from the seat) and a nullable `portraitAssetRef` live in the
+existing Employee `profile_json` — presentation only, zero authority, never authentication; Salim's portrait stays
+null (no generated face). No parallel profile store. `scripts/l1-02-activation-proof.mjs` reads a STOPPED workspace in
+verify mode and prints IDs, states, codes, counts and amounts only (`--secret-scan` asks the vault inside its callback
+whether the key appears in durable state; only a boolean leaves it).
+
+## D-L1-17 — `serve` builds the CEO briefing policy at start; activation UI fixes (executor; C5 defect)
+
+`qandeel-founder serve` always failed with `RUNTIME_NOT_READY`: the default BriefingPolicy was constructed before the
+runtime opened. It is now built in `start()` (regression test in the surface suite). The activation panel shows money
+with the precision of its magnitude (USD 0.5 is no longer "USD 1"), a scrollable preview with sticky actions, and the
+qualify preview states per-run caps and the remaining Employee envelope as the hard bound.
+
+## D-L1-18 — The answer is provenance-bound evidence; evaluation scores the actual answer (Product Owner review, executor)
+
+Product Owner review of the L1-02 line (2026-10-06): a parallel WIP branch `l1/l1-02-first-production-ceo-activation`
+(`90faae4`, an `ACADEMY_ANSWER` proposal and its own migration 0017) duplicated this line's answer seam with a
+conflicting 0017. The Product Owner chose this line as canonical (its 0017 is applied in the live workspace and carries
+the real benchmark evidence) and folded that branch's review requirements in:
+
+- **Provenance.** `recordAnswer` takes the manifest of the model call that produced the proposal and the governed step;
+  the answer is refused (`MANIFEST_MISMATCH`) unless that manifest belongs to this run and this Work Item, is `OK`, was
+  assembled at this step and was spent on a `MODEL_CALL` reservation, and (`SCENARIO_NOT_EXPOSED`) an attempt's
+  manifest must be the one that exposed its scenario. The audit row carries IDs only (manifest, step), never the body.
+- **Resume.** A resumed run whose item already holds its answer learns `ALREADY_ANSWERED` with the stored answer's ID
+  and completes: the stored answer stands; no further model call can replace it.
+- **Evaluation.** `AcademyStore.recordEvaluation` (the canonical boundary, every caller) refuses an attempt without a
+  durable answer (`ANSWER_REQUIRED`) after validating the dimensions, and binds `work_answer:<id>` first into every
+  evaluator result's evidence. The Founder's `ACADEMY_EVALUATE` preview carries the answer ref and its SHA-256; the
+  confirmation re-reads the stored answer and refuses a mismatch. The candidate never scores itself; deterministic
+  dimensions stay the rubric's.
+- **Founder read.** `AcademyStore.attemptAnswer(attemptId)`, `runtime.founder.attemptAnswer`, and the explicit route
+  `GET /api/academy/attempts/:id/answer` (session-gated like every `/api` route; a read; logs carry the route name only).
+- **Test truth.** Storage helpers now run attempts as the runtime does (OK manifest → reservation → typed answer); the
+  deterministic fake answers an answer-bearing item by default. Making the context real exposed that the old helpers
+  never assembled an attempt's context, so holdouts were never actually exposed: a recertification now takes a fresh
+  holdout, as the product rule requires.

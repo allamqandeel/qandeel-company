@@ -7,7 +7,7 @@ import type { Id, ProcessorResult } from '@qandeel-company/domain';
 import { ASSESSMENT_DIMENSIONS, DEFAULT_CRITICAL_DIMENSIONS, DETERMINISTIC_DIMENSIONS, type AssessmentDimension, type Proficiency } from '@qandeel-company/mind';
 
 import { AcademyStore, CapabilityStore, MemoryStore, SkillStore, type EmployeeRecord, type SkillRecord, type SkillVersionRecord } from '../src/index.js';
-import { assembleContext, beginGovernedRun, claimJob, decideMemoryCandidate, settle, submitMemoryCandidate, type AssembleResult, type CandidateProposal, type Claim } from '../src/runtime-authority.js';
+import { assembleContext, beginGovernedRun, claimJob, decideMemoryCandidate, recordAnswer, reserveBudget, settle, submitMemoryCandidate, type AnswerInput, type AssembleResult, type CandidateProposal, type Claim } from '../src/runtime-authority.js';
 import { C2_KINDS, GOVERNED_KIND, type Seed } from './c2-helpers.js';
 import { backoff, type Harness } from './helpers.js';
 
@@ -53,6 +53,38 @@ export function finish(h: Harness, workItemId: Id): Claim {
   if (!begun.ok) throw new Error(`run refused: ${begun.code}`);
   complete(h, claim);
   return claim;
+}
+
+export const ANSWER: AnswerInput = { body: 'Gather the missing evidence first; the act is reversible and within held authority.', decision: 'GATHER_EVIDENCE', reversible: true, authority: 'WITHIN_HELD_AUTHORITY', evidence: 'PARTIAL', confidence: 'MEDIUM', founderDecisionNeeded: false, spendMicros: 0 };
+
+/**
+ * Runs an answer-bearing Work Item the way the governed runtime does (L1-02): an OK manifest at step 0 (which exposes an
+ * attempt's scenario), a model-call reservation against it, then the typed answer bound to that manifest.
+ */
+export function answerWork(h: Harness, s: Seed, workItemId: Id, input: AnswerInput = ANSWER): Claim {
+  if (h.store.getWorkItem(workItemId).state === 'PROPOSED') h.store.transitionWorkItem(workItemId, { to: 'READY', reasonCode: 'release' });
+  const { claim, begun } = claimFor(h, workItemId);
+  if (!begun.ok) throw new Error(`run refused: ${begun.code}`);
+  const ctx = assemble(h, claim, 0);
+  if (ctx.outcome !== 'OK') throw new Error(`context refused: ${ctx.outcome}`);
+  answerIn(h, s, claim, ctx.manifestId, 0, input);
+  complete(h, claim);
+  return claim;
+}
+
+/** Inside a claimed run: a model-call reservation against `manifestId` (the call), then the answer bound to it. */
+export function answerIn(h: Harness, s: Seed, claim: Claim, manifestId: Id, step: number, input: AnswerInput = ANSWER): ReturnType<typeof recordAnswer> {
+  const workItemId = claim.workItem.id;
+  const owner = h.store.getWorkItem(workItemId).ownerRef.replace(/^employee:/, '') as Id;
+  if (!s.gov.budgetFor('EMPLOYEE', owner)) s.gov.createBudget(s.founder, { scope: 'EMPLOYEE', scopeId: owner, capMoney: 10_000_000, capTokens: 10_000_000, reasonCode: 'seed' });
+  // The Work Item budget fits inside the Employee's (a child cap never exceeds its parent).
+  const parent = s.gov.budgetFor('EMPLOYEE', owner);
+  if (!s.gov.budgetFor('WORK_ITEM', workItemId)) s.gov.createBudget(s.founder, { scope: 'WORK_ITEM', scopeId: workItemId, capMoney: Math.min(1_000_000, parent?.capMoney ?? 1_000_000), capTokens: Math.min(1_000_000, parent?.capTokens ?? 1_000_000), reasonCode: 'seed' });
+  const res = reserveBudget(h.store, claim.fence, { purpose: 'MODEL_CALL', attemptKind: 'PRIMARY', deploymentId: s.deploymentId, priceCardId: s.priceCardId, routePolicyId: s.policyId, money: 1_000, tokens: 10_000, contextManifestId: manifestId });
+  if (!res.ok) throw new Error(`reservation refused: ${res.code}`);
+  const rec = recordAnswer(h.store, claim.fence, input, { manifestId, step });
+  if (rec.outcome !== 'RECORDED') throw new Error(`answer refused: ${rec.code}`);
+  return rec;
 }
 
 /** Registers a skill and walks one version through the whole governed pipeline to APPROVED. */
@@ -122,7 +154,7 @@ export const scores = (score: number, override: Partial<Record<AssessmentDimensi
 export function attempt(h: Harness, s: Seed, enrollmentId: Id, scenarioId: Id, kind: 'SIMULATION' | 'ASSESSMENT', score = 90, override: Partial<Record<AssessmentDimension, number>> = {}) {
   const a = AcademyStore.for(h.store);
   const started = a.startAttempt(enrollmentId, { scenarioId, kind, taskClass: 'draft.memo' });
-  finish(h, started.workItemId);
+  answerWork(h, s, started.workItemId);
   a.evaluateDeterministic(started.attempt.id);
   return a.recordEvaluation(s.founder, started.attempt.id, scores(score, override));
 }

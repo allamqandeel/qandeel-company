@@ -356,6 +356,16 @@ export function activation(ctx: ApiContext): Json {
   return activationPayload(ctx);
 }
 
+/**
+ * L1-02: the candidate's actual answer to one Academy attempt — what the Founder reads before scoring it. A read of
+ * Founder-scoped Company content (the session is the authority; nothing is mutated, and no log line carries the body).
+ */
+export function attemptAnswer(ctx: ApiContext, attemptId: string): Json {
+  const id = str(attemptId, 'attemptId', 36);
+  const a = ctx.runtime.founder.attemptAnswer(id);
+  return { attemptId: id, answer: a === null ? null : { ref: `work_answer:${a.id}`, runId: a.runId, body: a.body, facets: a.facets, recordedAt: a.createdAt } };
+}
+
 export function pilotInspect(ctx: ApiContext, pilotId: string, query: { workItemId?: string | undefined }): Json {
   return { inspection: ctx.runtime.founder.pilots.inspect(str(pilotId, 'pilotId', 36), str(query.workItemId, 'workItemId', 36)) };
 }
@@ -692,7 +702,7 @@ function structuredSummary(ctx: ApiContext, preview: { intentKind: string; paylo
     case 'EMPLOYEE_MODEL_ACCESS':
       return `${p.envelopeExists === true ? 'Keep' : 'Open'} ${s('name')}'s hard envelope of ${s('capMoney')} micro-${s('currency')} and grant model access (R0, up to ${s('dataClassCeiling')}) for: ${Array.isArray(p.taskClasses) ? (p.taskClasses as string[]).join(', ') : ''}. No tools, no external effect`;
     case 'SKILL_PACKAGE_QUALIFY':
-      return `${p.mode === 'QUALIFY' ? 'Register and qualify' : 'Re-run the void benchmark cases of'} the Academy package ${s('packageCode')} v${s('packageVersion')} (digest ${s('packageSha256').slice(0, 12)}…): inspection, licence check, the deterministic static security review, then ${s('benchmarkRuns')} bounded benchmark runs (with / without each skill) at most ${s('maxSpendMicros')} micro-units. Nothing is approved here`;
+      return `${p.qualification === 'QUALIFY' ? 'Register and qualify' : 'Re-run the void benchmark cases of'} the Academy package ${s('packageCode')} v${s('packageVersion')} (digest ${s('packageSha256').slice(0, 12)}…): inspection, licence check, the deterministic static security review, then ${s('benchmarkRuns')} bounded benchmark runs (with / without each skill), each capped at ${s('perRunCapMicros')} micro-units; the hard bound on the total is the Employee envelope (${s('envelopeRemainingMicros')} micro-units remaining). Nothing is approved here`;
     case 'ACADEMY_PACKAGE_INSTALL':
       return `Install the qualified Academy package ${s('packageCode')} v${s('packageVersion')} (digest ${s('packageSha256').slice(0, 12)}…): approve its Skill versions on their own evidence, publish the ${s('roleRef')} blueprint and program (${s('scenarios')}; calibration ${p.founderCalibrationRequired === true ? 'required' : 'not required'}). This authorizes the install; it asserts no test result`;
     case 'ACADEMY_ENROLL':

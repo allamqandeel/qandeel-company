@@ -237,8 +237,10 @@ export const employeeTaskProcessor: GovernedProcessor = {
       if (proposal.type === 'ANSWER') {
         // L1-02: an answer-bearing item (an Academy attempt, a benchmark case, shadow work) exists to deliver one typed
         // answer. Once the fence records it the work is done (the D-L1-09 discipline): no second answer, no wasted call.
-        const rec = gov.recordAnswer(proposal, s.turn);
-        if (rec.outcome === 'RECORDED') {
+        const rec = gov.recordAnswer(proposal, s.turn, out.manifestId);
+        // ALREADY_ANSWERED: a resumed run whose item already holds its one answer (recorded before a crash) is done —
+        // the stored answer stands, and no further model call can replace it.
+        if (rec.outcome === 'RECORDED' || rec.code === 'ALREADY_ANSWERED') {
           await save(ctx, { ...s, phase: 'FINAL', pending: null, summaryCode: 'answer.recorded' });
           return { type: 'COMPLETED', evidence: { summaryCode: 'answer.recorded', turns: s.turn, modelCalls: s.modelCalls, reasoningClass: out.reasoningClass, answerId: rec.answerId } };
         }

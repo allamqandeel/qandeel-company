@@ -8,7 +8,7 @@
  * ACTIVE (only `decideActivation` does), deterministic Academy steps stay system steps, and the model never scores itself.
  * Payloads carry IDs, codes and bounded numbers only (no prose, no answer text).
  */
-import { QandeelError, assertCode, assertId, type Id } from '@qandeel-company/domain';
+import { QandeelError, assertCode, assertId, sha256Hex, type Id } from '@qandeel-company/domain';
 import { assertTaskClass, isReasoningClass } from '@qandeel-company/governance';
 import { ASSESSMENT_DIMENSIONS, DETERMINISTIC_DIMENSIONS, academyPackageDigest, containsSecretMaterial, type AcademyPackage, type AssessmentDimension, type EmployeeIdentityProfile } from '@qandeel-company/mind';
 
@@ -131,7 +131,7 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
       const runs = rec === null ? pkg.skills.reduce((n, s) => n + s.benchmark.length * 2, 0) : voidCases;
       for (const c of [pkg.taskClasses.benchmark]) if (!ctx.db.get(`SELECT 1 AS x FROM permission_grants WHERE employee_id = ? AND capability = 'model.invoke' AND status = 'ACTIVE' AND resource_scope IN (?, '*')`, subject.id, c)) transition('the subject has no model access for the benchmark task class', 'NO_MODEL_ACCESS', { taskClass: c });
       if (!budgetFor(ctx, 'EMPLOYEE', subject.id)) transition('the subject has no Employee envelope', 'NO_ENVELOPE');
-      return { packageCode: pkg.code, packageVersion: pkg.version, packageSha256: sha, title: pkg.title.slice(0, 160), subjectEmployeeId: subject.id, mode: rec === null ? 'QUALIFY' : 'REQUALIFY_VOID_RUNS', skills: pkg.skills.map((s) => `${s.code} (${s.benchmark.length} cases)`), benchmarkRuns: runs, benchmarkTaskClass: pkg.taskClasses.benchmark, maxSpendMicros: runs * pkg.limits.benchmarkCapMicros, securityReview: 'STATIC_DETERMINISTIC (text-only native skills; not a human review)', reasonCode: assertCode(raw.reasonCode ?? 'package.qualify', 'reasonCode') };
+      return { packageCode: pkg.code, packageVersion: pkg.version, packageSha256: sha, packageTitle: pkg.title.slice(0, 160), subjectEmployeeId: subject.id, qualification: rec === null ? 'QUALIFY' : 'REQUALIFY_VOID_RUNS', skills: pkg.skills.map((s) => `${s.code} (${s.benchmark.length} cases)`), benchmarkRuns: runs, benchmarkTaskClass: pkg.taskClasses.benchmark, perRunCapMicros: pkg.limits.benchmarkCapMicros, envelopeRemainingMicros: (() => { const b = budgetFor(ctx, 'EMPLOYEE', subject.id); return b ? Math.max(0, b.capMoney - b.spentMoney - b.reservedMoney) : 0; })(), securityReview: 'STATIC_DETERMINISTIC (text-only native skills; not a human review)', reasonCode: assertCode(raw.reasonCode ?? 'package.qualify', 'reasonCode') };
     }
     case 'ACADEMY_PACKAGE_INSTALL': {
       const { pkg, sha } = packageOf(raw, env);
@@ -142,7 +142,7 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
       if (!view.installable) refuse('PACKAGE_SKILLS_NOT_QUALIFIED', 'every package Skill version must qualify on its own security and benchmark evidence', { skills: view.skills.filter((s) => !(s.security?.passed && s.verdict.benchmarkPassed && s.verdict.comparePassed)).map((s) => `${s.code}:${s.verdict.reason}`).join(',').slice(0, 160) });
       const kinds = (k: string): number => pkg.scenarios.filter((s) => s.kind === k).length;
       return {
-        packageCode: pkg.code, packageVersion: pkg.version, packageSha256: sha, title: pkg.title.slice(0, 160), roleRef: pkg.roleRef,
+        packageCode: pkg.code, packageVersion: pkg.version, packageSha256: sha, packageTitle: pkg.title.slice(0, 160), roleRef: pkg.roleRef,
         skills: view.skills.map((s) => `${s.code}: security ${s.security?.passed ? 'PASSED' : 'FAILED'}, benchmark ${s.verdict.withPct}% vs baseline ${s.verdict.baselinePct}% → ${s.verdict.reason}`),
         benchmarkSpentMicros: view.spentMicros,
         founderCalibrationRequired: pkg.program.founderCalibrationRequired, assessmentTrials: pkg.program.assessmentTrials, holdoutRequired: pkg.program.holdoutRequired,
@@ -190,9 +190,10 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
       if (a.state !== 'OPEN') transition('this attempt already has its outcome', 'ATTEMPT_DECIDED');
       const item = getWorkItemRow(ctx, a.work_item_id as Id);
       if (!WORK_DONE.includes(item.state)) transition('the attempt has not finished running', 'ATTEMPT_RUNNING', { state: item.state });
-      const answered = txAnswerOf(ctx, item.id) !== null;
+      const answer = txAnswerOf(ctx, item.id);
+      const answered = answer !== null;
       const scores = strList(raw, 'scores', 10);
-      if (!answered) {
+      if (!answer) {
         // No answer: nothing to score; the deterministic rubric closes the attempt (void, or failed on a refusal).
         if (scores.length > 0) refuse('NO_ANSWER', 'an attempt without an answer is not scored by an evaluator');
         return { attemptId, kind: a.kind, answered: false, scores: [], reasonCode: 'academy.void' };
@@ -205,7 +206,7 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
         parsed.set(String(d), pct);
       }
       if (EVALUATOR_DIMENSIONS.some((d) => !parsed.has(d))) refuse('SCORES_INCOMPLETE', 'score every evaluator dimension', { field: 'scores' });
-      return { attemptId, kind: a.kind, answered: true, scores: EVALUATOR_DIMENSIONS.map((d) => `${d}:${parsed.get(d)}`), deterministic: 'AUTHORITY_COMPLIANCE, COST_DISCIPLINE from run facts', reasonCode: assertCode(raw.reasonCode ?? 'academy.evaluated', 'reasonCode') };
+      return { attemptId, kind: a.kind, answered, answerRef: `work_answer:${answer.id}`, answerSha256: sha256Hex(answer.body), scores: EVALUATOR_DIMENSIONS.map((d) => `${d}:${parsed.get(d)}`), deterministic: 'AUTHORITY_COMPLIANCE, COST_DISCIPLINE from run facts', reasonCode: assertCode(raw.reasonCode ?? 'academy.evaluated', 'reasonCode') };
     }
     case 'ACADEMY_RETRAIN_COMPLETE': {
       const id = assertId(raw.remediationId, 'remediationId');
@@ -331,6 +332,9 @@ export function executeActivation(store: CompanyStore, ctx: StoreContext, founde
       // The deterministic rubric first (system, from run facts) — then the evaluator's own dimensions.
       let a = txEvaluateDeterministic(ctx, attemptId);
       if (pl.answered === true && a.state === 'OPEN') {
+        // The answer the Founder scored is the one stored now (append-only; re-checked inside the confirmation).
+        const answer = txAnswerOf(ctx, a.workItemId);
+        if (!answer || pl.answerRef !== `work_answer:${answer.id}` || pl.answerSha256 !== sha256Hex(answer.body)) throw new QandeelError('INVALID_TRANSITION', 'the scored answer is not the recorded one', { reason: 'ANSWER_CHANGED' });
         const results = list('scores').map((s) => {
           const [d, v] = s.split(':');
           return { dimension: d as AssessmentDimension, scorePct: Number(v), evidenceRefs: [`academy_attempt:${attemptId}`] };

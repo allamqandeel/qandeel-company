@@ -47,7 +47,12 @@ describe('L1-02: the Company activation flow on the authenticated surface', () =
       await surface.start();
       const c = client(surface.origin);
       assert.equal((await c.get('/api/activation')).status, 401, 'no session, no activation view');
+      assert.equal((await c.get('/api/academy/attempts/00000000-0000-4000-8000-000000000001/answer')).status, 401, 'no session, no answer read');
       assert.equal((await c.post('/api/session/launch', { token: surface.launchUrl().split('#')[1] }, true)).status, 200);
+      // The answer read is explicit and Founder-scoped: an unknown attempt is NOT_FOUND, never a generic inspection.
+      const none = await c.get('/api/academy/attempts/00000000-0000-4000-8000-000000000001/answer');
+      assert.equal(none.status, 404);
+      assert.equal((await c.get('/api/academy/attempts/not-an-id/answer')).status, 404, 'only an attempt ID matches the route');
       const a = await c.get('/api/activation');
       assert.equal(a.status, 200);
       const view = a.body.view as Body;

@@ -30,6 +30,8 @@ const VAULT = { cwd: 'packages/secret-vault', tests: ['dist/test/l1-vault.test.j
 const ADAPTER = { cwd: 'packages/model-providers', tests: ['dist/test/l1-deepseek.test.js'] };
 const ECON = { cwd: 'packages/governance', tests: ['dist/test/l1-economics.test.js'] };
 const STORE = { cwd: 'packages/storage', tests: ['dist/test/l1-provider-pricing.test.js'] };
+// L1-02 (D-L1-18): the answer's provenance binding and the answer-bound evaluation.
+const ANSWERS = { cwd: 'packages/storage', tests: ['dist/test/l1-02-answers.test.js'] };
 const RUNTIME = { cwd: 'packages/runtime', tests: ['dist/test/l1/l1-runtime.test.js'] };
 // L1-02: the production activation path (real runtime, real Founder session, real adapter over a fake transport) and
 // the authenticated activation surface over loopback HTTP.
@@ -292,6 +294,43 @@ const MUTATIONS = [
     id: 'l1-02-answer-run-not-ended',
     gate: 'an answer-bearing run ends when its answer is recorded (no second answer, no wasted call)',
     edits: [{ file: `${RT}/employee-task.js`, search: "if (rec.outcome === 'RECORDED') {", replace: 'if (false) {', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  // --- L1-02: the answer as provenance-bound evidence; evaluation of the actual answer (D-L1-18) ---------------------
+  {
+    id: 'l1-02-answer-manifest-unbound',
+    gate: 'an answer binds to the exact manifest of its own run, item and step (another run\'s / step\'s manifest is refused)',
+    edits: [{ file: `${STORAGE}/answers.js`, search: "if (!m || m.run_id !== fence.runId || m.work_item_id !== item.id || Number(m.step) !== from.step || m.outcome !== 'OK')", replace: 'if (!m)', expectedCount: 1 }],
+    runs: [ANSWERS],
+  },
+  {
+    id: 'l1-02-answer-unspent-manifest',
+    gate: 'an answer comes from a model call actually made with its manifest (a reservation), never from a bare assembly',
+    edits: [{ file: `${STORAGE}/answers.js`, search: "purpose = 'MODEL_CALL'`, from.manifestId, fence.runId))", replace: "purpose = 'MODEL_CALL'`, from.manifestId, fence.runId) && false)", expectedCount: 1 }],
+    runs: [ANSWERS],
+  },
+  {
+    id: 'l1-02-answer-scenario-unchecked',
+    gate: 'an attempt\'s answer binds to the manifest that exposed its scenario',
+    edits: [{ file: `${STORAGE}/answers.js`, search: "if (task.kind === 'ATTEMPT' && !ctx.db.get(", replace: "if (task.kind === 'NEVER' && !ctx.db.get(", expectedCount: 1 }],
+    runs: [ANSWERS],
+  },
+  {
+    id: 'l1-02-evaluation-without-answer',
+    gate: 'an evaluator scores only an attempt that has its durable answer',
+    edits: [{ file: `${STORAGE}/academy.js`, search: 'if (answer === null)', replace: 'if (answer === undefined)', expectedCount: 1 }],
+    runs: [ANSWERS],
+  },
+  {
+    id: 'l1-02-evaluation-answer-unbound',
+    gate: 'the scored answer\'s reference is bound into every evaluator result automatically',
+    edits: [{ file: `${STORAGE}/academy.js`, search: 'JSON.stringify([answerRef, ...(r.evidenceRefs ?? [])', replace: 'JSON.stringify([...(r.evidenceRefs ?? [])', expectedCount: 1 }],
+    runs: [ANSWERS],
+  },
+  {
+    id: 'l1-02-evaluate-answer-not-rechecked',
+    gate: 'the Founder\'s evaluate preview binds the exact answer read (ref + digest) and confirmation re-reads it',
+    edits: [{ file: `${STORAGE}/founder-activation.js`, search: 'answerRef: `work_answer:${answer.id}`, answerSha256', replace: 'answerRef: null, answerSha256', expectedCount: 1 }],
     runs: [ACTIVATION],
   },
   {

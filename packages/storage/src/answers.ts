@@ -7,6 +7,11 @@
  * Employee (never a value in the output), and the item must be answer-bearing and still open for an answer. The body is
  * local governed business content (D1): it never enters telemetry, events or audit (Rule A); audit rows carry IDs only.
  * An answer decides, approves, scores and grants nothing — evaluators and the deterministic rubric do.
+ *
+ * Provenance (D-L1-18): the answer is bound to the exact Context Manifest of the model call that produced it — this run's,
+ * this Work Item's, assembled OK at this governed step, and actually spent on a model call (its reservation) — and, for an
+ * Academy attempt, the manifest must be the one that exposed the attempt's scenario. A resumed run whose item already
+ * holds its answer learns ALREADY_ANSWERED (with the stored answer's ID) and stops: never a second answer.
  */
 import { newId, sha256Hex, type Id } from '@qandeel-company/domain';
 import { ANSWER_BODY_MAX, answerFacetsOf, type AnswerFacets } from '@qandeel-company/governance';
@@ -17,10 +22,15 @@ import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.j
 import type { Fence } from './records.js';
 
 export type AnswerInput = { readonly body: string } & AnswerFacets;
+/** The model call an answer came from: the runtime passes the manifest of that call and the governed step. */
+export interface AnswerProvenance {
+  readonly manifestId: Id;
+  readonly step: number;
+}
 
 export interface RecordAnswerResult {
   readonly outcome: 'RECORDED' | 'REFUSED';
-  readonly code: 'RECORDED' | 'REPLAYED' | 'NOT_AN_ANSWER_TASK' | 'NOT_THE_OWNER' | 'ANSWER_CLOSED' | 'ALREADY_ANSWERED' | 'INVALID_ARGS' | 'SECRET_MATERIAL';
+  readonly code: 'RECORDED' | 'REPLAYED' | 'NOT_AN_ANSWER_TASK' | 'NOT_THE_OWNER' | 'ANSWER_CLOSED' | 'ALREADY_ANSWERED' | 'INVALID_ARGS' | 'SECRET_MATERIAL' | 'MANIFEST_MISMATCH' | 'SCENARIO_NOT_EXPOSED';
   readonly answerId: Id | null;
 }
 
@@ -46,26 +56,32 @@ function answerTask(ctx: StoreContext, workItemId: Id): { kind: 'ATTEMPT' | 'BEN
 }
 
 /** The fenced answer write (the caller verified the fence and resolved the attributed Employee). */
-export function txRecordAnswer(ctx: StoreContext, fence: Fence, attributedEmployeeId: Id, workItemId: Id, input: AnswerInput): RecordAnswerResult {
+export function txRecordAnswer(ctx: StoreContext, fence: Fence, attributedEmployeeId: Id, workItemId: Id, input: AnswerInput, from: AnswerProvenance): RecordAnswerResult {
   const item = getWorkItemRow(ctx, workItemId);
   const task = answerTask(ctx, item.id);
-  const refuse = (code: RecordAnswerResult['code']): RecordAnswerResult => {
+  const refuse = (code: RecordAnswerResult['code'], answerId: Id | null = null): RecordAnswerResult => {
     appendAudit(ctx, 'answer.refused', 'work_item', item.id, { actorRef: `employee:${attributedEmployeeId}` }, 'REJECTED', code, { runId: fence.runId });
-    return { outcome: 'REFUSED', code, answerId: null };
+    return { outcome: 'REFUSED', code, answerId };
   };
   if (task === null) return refuse('NOT_AN_ANSWER_TASK');
   if (employeeIdFromRef(item.ownerRef) !== attributedEmployeeId) return refuse('NOT_THE_OWNER');
+  // The answer came from a model call of THIS run on THIS item at THIS step, made with an OK manifest that was spent.
+  const m = ctx.db.get<{ run_id: string; work_item_id: string; step: number; outcome: string }>('SELECT run_id, work_item_id, step, outcome FROM context_manifests WHERE id = ?', from.manifestId);
+  if (!m || m.run_id !== fence.runId || m.work_item_id !== item.id || Number(m.step) !== from.step || m.outcome !== 'OK') return refuse('MANIFEST_MISMATCH');
+  if (!ctx.db.get(`SELECT 1 AS x FROM budget_reservations WHERE context_manifest_id = ? AND run_id = ? AND purpose = 'MODEL_CALL'`, from.manifestId, fence.runId)) return refuse('MANIFEST_MISMATCH');
+  // An attempt answers the scenario its manifest exposed (the exposure is recorded by the assembler, never by the run).
+  if (task.kind === 'ATTEMPT' && !ctx.db.get('SELECT 1 AS x FROM academy_scenario_exposures x JOIN academy_attempts a ON a.id = x.attempt_id WHERE a.work_item_id = ? AND x.manifest_id = ?', item.id, from.manifestId)) return refuse('SCENARIO_NOT_EXPOSED');
   const facets = answerFacetsOf(input as unknown as Record<string, unknown>);
   if (facets === null || typeof input.body !== 'string' || input.body.trim().length === 0 || input.body.length > ANSWER_BODY_MAX) return refuse('INVALID_ARGS');
   if (containsSecretMaterial(input.body)) return refuse('SECRET_MATERIAL');
   const sha = sha256Hex(input.body);
   // One answer per Work Item: a resumed run replays the same answer; a different second answer is refused.
   const prior = ctx.db.get<{ id: string; body_sha256: string }>('SELECT id, body_sha256 FROM work_answers WHERE work_item_id = ?', item.id);
-  if (prior) return prior.body_sha256 === sha ? { outcome: 'RECORDED', code: 'REPLAYED', answerId: prior.id as Id } : refuse('ALREADY_ANSWERED');
+  if (prior) return prior.body_sha256 === sha ? { outcome: 'RECORDED', code: 'REPLAYED', answerId: prior.id as Id } : refuse('ALREADY_ANSWERED', prior.id as Id);
   if (!task.open) return refuse('ANSWER_CLOSED');
   const id = newId();
   ctx.db.run('INSERT INTO work_answers (id, work_item_id, run_id, employee_id, body, body_sha256, facets_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', id, item.id, fence.runId, attributedEmployeeId, input.body, sha, JSON.stringify(facets), ts(ctx));
-  appendAudit(ctx, 'answer.recorded', 'work_answer', id, { actorRef: `employee:${attributedEmployeeId}` }, 'OK', task.kind, { workItemId: item.id, runId: fence.runId });
+  appendAudit(ctx, 'answer.recorded', 'work_answer', id, { actorRef: `employee:${attributedEmployeeId}` }, 'OK', task.kind, { workItemId: item.id, runId: fence.runId, manifestId: from.manifestId, step: from.step });
   return { outcome: 'RECORDED', code: 'RECORDED', answerId: id as Id };
 }
 

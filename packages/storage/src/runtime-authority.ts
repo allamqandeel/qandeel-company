@@ -92,7 +92,7 @@ import { digitalRefusalCode, prepareDigitalAct, txDigitalAct, type DigitalActOut
 import { txGoalAct } from './goals.js';
 import { getEmployeeRow, recoverBudgetAdmissions } from './governance-core.js';
 import { attributed } from './governed-writes.js';
-import { txRecordAnswer, type AnswerInput, type RecordAnswerResult } from './answers.js';
+import { txRecordAnswer, type AnswerInput, type AnswerProvenance, type RecordAnswerResult } from './answers.js';
 import { materializeExpiredActing } from './org-core.js';
 import { txOrgAct, txReviewDecision, type OrgActResult, type ReviewDecisionResult } from './org-writes.js';
 import { sweepReviews } from './review-core.js';
@@ -471,18 +471,18 @@ export function recordMessage(store: CompanyStore, fence: Fence, input: MessageP
   });
 }
 
-export type { AnswerInput, RecordAnswerResult } from './answers.js';
+export type { AnswerInput, AnswerProvenance, RecordAnswerResult } from './answers.js';
 
 /**
  * L1-02: the run's Employee records the one typed answer of its own answer-bearing Work Item (an Academy attempt, a Skill
  * benchmark case, shadow work). The binding is the run's own Work Item; the writer is the attributed Employee; the answer
  * never scores, approves or grants anything.
  */
-export function recordAnswer(store: CompanyStore, fence: Fence, input: AnswerInput): RecordAnswerResult {
+export function recordAnswer(store: CompanyStore, fence: Fence, input: AnswerInput, from: AnswerProvenance): RecordAnswerResult {
   return fenced(store, 'work answer', fence, (ctx) => {
     verifyFence(ctx, fence);
     const a = attributed(ctx, fence);
-    return txRecordAnswer(ctx, fence, a.employeeId, a.workItemId, input);
+    return txRecordAnswer(ctx, fence, a.employeeId, a.workItemId, input, from);
   });
 }
 

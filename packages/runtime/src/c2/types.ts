@@ -129,7 +129,7 @@ export interface GovernedRunServices {
   /** C5: a Director's goal derivation / link from inside its run (fenced). */
   goalAct(proposal: GoalActProposal, step: number): GoalActOutcome;
   /** L1-02: the one answer of this run's answer-bearing Work Item (fenced; never authority, never a score). */
-  recordAnswer(proposal: AnswerProposal, step: number): AnswerOutcome;
+  recordAnswer(proposal: AnswerProposal, step: number, manifestId: string): AnswerOutcome;
 }
 
 /**

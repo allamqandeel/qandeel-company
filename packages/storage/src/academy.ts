@@ -39,6 +39,7 @@ import {
   type ScenarioKind,
 } from '@qandeel-company/mind';
 
+import { txAnswerOf, type AnswerRecord } from './answers.js';
 import { getEmployeeRow, setEmployeeState } from './governance-core.js';
 import { founder, founderAdminWrite } from './governance.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
@@ -263,6 +264,11 @@ export class AcademyStore {
    * Starts one attempt: exactly one canonical row per (enrollment, kind, trial) and its Work Item,
    * created together. A holdout is valid only if the trainee was never exposed to it before.
    */
+  /** The candidate's durable answer to one attempt (Founder-scoped governed content; never telemetry), or null. */
+  attemptAnswer(attemptId: string): AnswerRecord | null {
+    return this.#read((ctx) => txAnswerOf(ctx, getAttempt(ctx, assertId(attemptId, 'attemptId')).workItemId));
+  }
+
   startAttempt(enrollmentId: string, input: { scenarioId: string; kind: 'SIMULATION' | 'ASSESSMENT'; taskClass: string }): { attempt: AttemptRecord; workItemId: Id } {
     return this.#write('start attempt', (ctx) => txStartAttempt(ctx, enrollmentId, input));
   }
@@ -284,6 +290,9 @@ export class AcademyStore {
   /**
    * Records evaluator scores (Founder authority in Strong v1; the Review Pool is C4). The evaluator is
    * never the trainee, and deterministic dimensions come only from the runtime's rubric.
+   * L1-02 (D-L1-18): an evaluator scores the candidate's ACTUAL durable answer — an attempt without one is refused
+   * (ANSWER_REQUIRED) — and the answer's reference (`work_answer:<id>`) is bound into every result automatically,
+   * whatever evidence refs the evaluator supplied.
    */
   recordEvaluation(actorRef: string, attemptId: string, results: readonly { dimension: AssessmentDimension; scorePct: number; evidenceRefs?: readonly string[] }[]): AttemptRecord {
     return founderAdminWrite(this.#store, 'record evaluation', actorRef, (ctx) => {
@@ -295,12 +304,17 @@ export class AcademyStore {
         if (!(ASSESSMENT_DIMENSIONS as readonly string[]).includes(r.dimension)) throw new QandeelError('VALIDATION_FAILED', 'unknown dimension', { field: 'dimension' });
         if (DETERMINISTIC_DIMENSIONS.includes(r.dimension)) throw new QandeelError('VALIDATION_FAILED', 'this dimension is evaluated deterministically from run facts', { reason: 'DETERMINISTIC_DIMENSION', dimension: r.dimension });
         if (!Number.isInteger(r.scorePct) || r.scorePct < 0 || r.scorePct > 100) throw new QandeelError('VALIDATION_FAILED', 'scorePct is 0..100', { field: 'scorePct' });
+      }
+      const answer = txAnswerOf(ctx, a.workItemId);
+      if (answer === null) throw new QandeelError('VALIDATION_FAILED', 'an evaluator scores the candidate\'s recorded answer; this attempt has none', { reason: 'ANSWER_REQUIRED', attemptId: a.id });
+      const answerRef = `work_answer:${answer.id}`;
+      for (const r of results) {
         ctx.db.run(
           `INSERT INTO academy_dimension_results (attempt_id, dimension, score_pct, evaluator_kind, evaluator_ref, evidence_refs_json, recorded_at) VALUES (?, ?, ?, 'EVALUATOR', ?, ?, ?)`,
-          a.id, r.dimension, r.scorePct, p.ref, JSON.stringify((r.evidenceRefs ?? []).map((x) => assertOpaqueRef(x, 'evidenceRefs'))), ts(ctx),
+          a.id, r.dimension, r.scorePct, p.ref, JSON.stringify([answerRef, ...(r.evidenceRefs ?? []).map((x) => assertOpaqueRef(x, 'evidenceRefs')).filter((x) => x !== answerRef)]), ts(ctx),
         );
       }
-      appendAudit(ctx, 'academy.evaluated', 'academy_attempt', a.id, { actorRef: p.ref }, 'OK', null, { dimensions: results.length });
+      appendAudit(ctx, 'academy.evaluated', 'academy_attempt', a.id, { actorRef: p.ref }, 'OK', null, { dimensions: results.length, answerId: answer.id });
       return finalizeAttempt(ctx, a.id);
     });
   }
