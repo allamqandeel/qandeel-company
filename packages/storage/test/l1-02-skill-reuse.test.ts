@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { ManualClock, isQandeelError, newId, type Id } from '@qandeel-company/domain';
-import { CEO_ACADEMY_PACKAGE_V4, CEO_ACADEMY_PACKAGE_V5, CEO_ACADEMY_PACKAGE_V6, CEO_V5_REUSED_SKILLS, CEO_V6_REUSED_SKILLS, CEO_V6_REVISED_SKILL, academyPackageDigest, skillQualificationFingerprint, type AcademyPackage, type AnswerExpectation } from '@qandeel-company/mind';
+import { CEO_ACADEMY_PACKAGE_V4, CEO_ACADEMY_PACKAGE_V5, CEO_ACADEMY_PACKAGE_V6, CEO_ACADEMY_PACKAGE_V7, CEO_V5_REUSED_SKILLS, CEO_V6_REUSED_SKILLS, CEO_V6_REVISED_SKILL, CEO_V7_REUSED_SKILLS, CEO_V7_REVISED_SKILL, academyPackageDigest, skillQualificationFingerprint, type AcademyPackage, type AnswerExpectation } from '@qandeel-company/mind';
 
 import { AcademyPackageStore, FounderActionStore, FounderAuthStore, SkillStore, loadReleasedMigrations } from '../src/index.js';
 import { recordAnswer, reserveBudget, settle, settleReservation } from '../src/runtime-authority.js';
@@ -461,6 +461,82 @@ describe('D-L1-31: production package v6 reuses five qualified Skill Versions (t
       assert.ok(w.store.view(V6).skills.every((s) => s.pipelineState === 'APPROVED'));
       assert.deepEqual([w.store.view(V4).record?.state, w.store.view(V5).record?.state], ['QUALIFYING', 'QUALIFYING'], 'v4 and v5 are never installed');
       assert.deepEqual([history(V4), history(V5)], [before.v4, before.v5], 'v4 and v5 history is unchanged');
+      assert.equal(loadReleasedMigrations().map((m) => m.version).at(-1), 19, 'migration 0019 is sufficient: no 0020');
+    });
+  });
+});
+
+// --- D-L1-35A: the production package v7 consumes the same five qualified Skill Versions; governance pkg7 chains from pkg6 --
+// L1-02-PROOF: package-v7-store
+
+describe('D-L1-35A: production package v7 reuses the same five qualified Skill Versions and qualifies one new pkg7 governance version (20 observations)', () => {
+  test('after the v4-, v5- and v6-shaped outcomes, v7 binds the exact qualified versions of both owners (no version, review, Work Item or spend), creates one pkg7 governance version chained from pkg6 with one static review and exactly 20 Work Items, and installs the complete six-Skill role; v4, v5 and v6 stay QUALIFYING and unchanged', () => {
+    const V5 = CEO_ACADEMY_PACKAGE_V5;
+    const V6 = CEO_ACADEMY_PACKAGE_V6;
+    const V7 = CEO_ACADEMY_PACKAGE_V7;
+    const V5_NEW = V5.skills.filter((s) => s.binding === undefined).map((s) => s.code);
+    withWorld([V7, V6, V5, V4], (w) => {
+      const db = storeContext(w.h.store).db;
+      const count = (sql: string, ...a: string[]): number => Number(db.get<{ n: number }>(sql, ...a)?.n);
+      const history = (p: AcademyPackage): string => JSON.stringify({ rec: db.get('SELECT * FROM academy_packages WHERE id = ?', w.packageId(p)), runs: db.all('SELECT * FROM skill_benchmark_runs WHERE package_id = ? ORDER BY id', w.packageId(p)), owned: db.all('SELECT * FROM academy_package_skills WHERE package_id = ? ORDER BY skill_code', w.packageId(p)), reused: db.all('SELECT * FROM academy_package_skill_reuses WHERE package_id = ? ORDER BY skill_code', w.packageId(p)) });
+      // The live history: v4 fails the three Skills v5 revises; v5 and v6 fail governance-discipline only.
+      w.qualify(V4);
+      w.answerAll(V4, (skill, _c, arm) => (V5_NEW.includes(skill) && arm === 'WITH_SKILL' ? 'WRONG' : 'TRUE'));
+      w.qualify(V4);
+      w.qualify(V5);
+      w.answerAll(V5, (skill, _c, arm) => (skill === CEO_V6_REVISED_SKILL && arm === 'WITH_SKILL' ? 'WRONG' : 'TRUE'));
+      w.qualify(V5);
+      w.qualify(V6);
+      w.answerAll(V6, (skill, _c, arm) => (skill === CEO_V7_REVISED_SKILL && arm === 'WITH_SKILL' ? 'WRONG' : 'TRUE'));
+      w.qualify(V6);
+      const v4 = w.store.view(V4);
+      const v5 = w.store.view(V5);
+      const v6 = w.store.view(V6);
+      const owner = (code: string): AcademyPackage => (V5_NEW.includes(code) ? V5 : V4);
+      for (const code of CEO_V7_REUSED_SKILLS) {
+        const s = (owner(code) === V5 ? v5 : v4).skills.find((x) => x.code === code);
+        assert.equal(s?.qualification.status, 'QUALIFIED', `${code}: qualified in v${owner(code).version}`);
+      }
+      assert.equal(v6.skills.find((s) => s.code === CEO_V7_REVISED_SKILL)?.qualification.reason, 'QUALIFICATION_FAILED');
+      const before = { v4: history(V4), v5: history(V5), v6: history(V6), versions: count('SELECT COUNT(*) AS n FROM skill_versions'), reviews: count('SELECT COUNT(*) AS n FROM skill_security_reviews'), items: count('SELECT COUNT(*) AS n FROM work_items'), spent: count('SELECT COALESCE(SUM(economic_micros), 0) AS n FROM usage_records') };
+
+      const p = w.preview('SKILL_PACKAGE_QUALIFY', V7);
+      assert.deepEqual([p.qualification, p.benchmarkMethod, p.rubricVersion, p.answerContractVersion, p.reasoningClass, p.observationsPerArm, p.answerOnly, p.maxModelCallsPerObservation, p.benchmarkRuns, p.newlyQualifiedSkills], ['QUALIFY', 'BQM-2', 'R2', 'AC-4', 'E1', 5, true, 2, 20, [CEO_V7_REVISED_SKILL]]);
+      assert.equal((p.reusedSkills as string[]).length, 5);
+      w.qualify(V7);
+      const v7Id = w.packageId(V7);
+      assert.equal(count('SELECT COUNT(*) AS n FROM skill_benchmark_runs WHERE package_id = ?', v7Id), 20, '1 × 2 × 2 × 5');
+      assert.equal(count('SELECT COUNT(*) AS n FROM work_items'), before.items + 20, 'exactly 20 benchmark Work Items');
+      assert.equal(count('SELECT COUNT(*) AS n FROM skill_versions'), before.versions + 1, 'one pkg7 version; none for a reused Skill');
+      assert.equal(count('SELECT COUNT(*) AS n FROM skill_security_reviews'), before.reviews + 1, 'one static review, for the new version only');
+      assert.equal(count('SELECT COALESCE(SUM(economic_micros), 0) AS n FROM usage_records'), before.spent, 'binding the reuses spent nothing');
+      const v7 = w.store.view(V7);
+      for (const code of CEO_V7_REUSED_SKILLS) {
+        const src = owner(code) === V5 ? v5 : v4;
+        const a = src.skills.find((s) => s.code === code);
+        const b = v7.skills.find((s) => s.code === code);
+        assert.ok(a && b);
+        assert.deepEqual([b.binding, b.skillId, b.skillVersionId, b.bindingValid, b.runs.length, b.qualification.sourcePackage?.id, b.qualification.fingerprint], ['REUSE_QUALIFIED', a.skillId, a.skillVersionId, true, 0, w.packageId(owner(code)), skillQualificationFingerprint(owner(code), code)], `${code}: the exact version qualified in v${owner(code).version}`);
+        assert.equal(SkillStore.for(w.h.store).version(b.skillVersionId).versionLabel, owner(code) === V5 ? '1.0.0+pkg5' : '1.0.0+pkg4');
+      }
+      const g = v7.skills.find((s) => s.code === CEO_V7_REVISED_SKILL);
+      assert.ok(g);
+      const gv = SkillStore.for(w.h.store).version(g.skillVersionId);
+      assert.deepEqual([g.binding, gv.versionLabel, gv.previousVersionId, g.security?.passed, g.runs.length], ['QUALIFY_NEW', '1.0.0+pkg7', v6.skills.find((s) => s.code === CEO_V7_REVISED_SKILL)?.skillVersionId, true, 20], 'a new reviewed pkg7 version chained from the failed pkg6 version');
+
+      w.answerAll(V7);
+      w.qualify(V7);
+      assert.equal(w.store.view(V7).installable, true);
+      w.confirm('ACADEMY_PACKAGE_INSTALL', V7);
+      assert.equal(SkillStore.for(w.h.store).blueprint(V7.roleRef)?.entries.length, 6, 'the complete six-Skill blueprint');
+      const prog = db.get<{ d: string }>('SELECT v.definition_json AS d FROM academy_program_versions v JOIN academy_packages p ON p.program_version_id = v.id WHERE p.id = ?', v7Id);
+      const def = JSON.parse(String(prog?.d)) as { skillTargets: { skillId: string }[]; curriculum: unknown[] };
+      assert.deepEqual(new Set(def.skillTargets.map((t) => t.skillId)), new Set(w.store.view(V7).skills.map((s) => s.skillId)), 'six Skill targets');
+      assert.equal(def.skillTargets.length, 6);
+      assert.equal(def.curriculum.length, V4.program.curriculum.length, 'the complete CEO Academy program');
+      assert.ok(w.store.view(V7).skills.every((s) => s.pipelineState === 'APPROVED'));
+      assert.deepEqual([w.store.view(V4).record?.state, w.store.view(V5).record?.state, w.store.view(V6).record?.state], ['QUALIFYING', 'QUALIFYING', 'QUALIFYING'], 'v4, v5 and v6 are never installed');
+      assert.deepEqual([history(V4), history(V5), history(V6)], [before.v4, before.v5, before.v6], 'v4, v5 and v6 history is unchanged');
       assert.equal(loadReleasedMigrations().map((m) => m.version).at(-1), 19, 'migration 0019 is sufficient: no 0020');
     });
   });

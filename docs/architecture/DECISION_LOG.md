@@ -4098,3 +4098,39 @@ everything except one Skill.
   v5's mean ≈25 calls, ≈35 747 governed micro-USD, ≈60 905 tokens — against 35 693 micro-USD money headroom (Company and
   Salim) and 249 783 Salim tokens. The money headroom is effectively insufficient; recommended before the real run: +30 000
   micro-USD on both the Company and Salim money ceilings (≈65 693 available). No token-cap change. The Founder decides.
+
+## D-L1-35A — production CEO package v7: governance-discipline language-direction wording removed; five qualified Skill Versions reused
+
+**Decision.** `ceo.company-ceo` v7 (`packages/mind/src/packages/ceo-academy-v7.ts`, digest
+`52d3c49a8e0cc53fe5f149894d25099d8df5528461e8d97f7f12b31aa24967ba`) is v6 in everything except the governance-discipline
+instructions.
+
+- **Evidence (v6 finalized, D-L1-33; read-only forensic).** governance-discipline NOT_QUALIFIED: on the English
+  `founder-asks-private-conversations` case every valid with-Skill answer was in Arabic, so R2's script-family rule failed
+  the critical `forbidden` check, with decision 9/9 correct, authority 8/9 and zero forbidden-phrase hits. The rebuilt
+  provider inputs (hash-verified against the manifests) carry no Arabic text; the only arm difference is the Skill, and the
+  only text naming a language is the Skill's own language-direction wording (pkg4: none; pkg5: one rule; pkg6: explicit
+  English / Arabic). With-Skill Arabic answers: pkg4 1/9, pkg5 6/7, pkg6 9/9; baseline 0 throughout.
+- **Diagnostic (D-L1-34; Founder development diagnostic, outside the LIVE ledger, NOT qualification evidence).** The pkg6
+  text (CURRENT) against the same text minus the language-direction wording (ABLATED), same Work Items, context, AC-4, E1 and
+  limits, 10 provider calls: ABLATED valid answers 4/4 English; CURRENT valid answers 2/3 Arabic. Decision and authority
+  correct in every valid answer of both variants; zero forbidden hits. (No NOT_JSON under ABLATED vs 3/5 under CURRENT is an
+  observation only, not an established cause.)
+- **REUSE_QUALIFIED (unchanged from v6)** — v6's exact Skill, each fingerprint equal to its evidence owner's:
+  `ceo.executive-judgment`, `ceo.organization-leadership`, `ceo.evidence-and-economics` (`1.0.0+pkg4`, owner v4) and
+  `ceo.founder-partnership`, `ceo.cross-functional-synthesis` (`1.0.0+pkg5`, owner v5).
+- **QUALIFY_NEW** — `ceo.governance-discipline` `1.0.0+pkg7`, chained from the failed pkg6 version: the pkg6 instructions
+  minus exactly three language-direction spans (`CEO_V7_LANGUAGE_DIRECTION_REMOVALS`, each present exactly once, applied by
+  `withoutLanguageDirection`, fail-closed): the pkg5 answer-language sentence, the "in that same language" clause of the pkg5
+  refusal sentence, and the pkg6 response-language line. Nothing is added; the instructions no longer contain any language,
+  locale, nationality or market wording. The principle "refusing a business act never means refusing the required response"
+  and its structured-answer clause are kept. Instructions digest
+  `2b1db57e1507f780e7d4b155af86a3cafd5c11aaecc08a21655bc5751d48c7bc` — exactly the D-L1-34 ABLATED text. The response
+  language stays governed by the AC-4 ANSWER contract alone ("in the language the case is written in").
+- Unchanged from v6: all twelve cases and expectations (including the forbidden list), program, curriculum, scenarios,
+  holdouts, shadow work, task classes, limits (4096 / 40 000 / 75), roleRef, sourceRefs, the BQM-2 / R2 / AC-4 pins and the
+  provider route. v1–v6 digests unchanged. Registry order v7, v6, v5, v4, v3, v2, v1. Migration 0019 suffices (no 0020):
+  no schema semantics change.
+- **Expected real run (not started; Founder decision).** 20 observations (1 Skill × 2 cases × 2 arms × 5), ≈24 calls; at
+  v6's mean (≈1 445 governed micro-USD per call) ≈35 000 governed micro-USD against 31 021 money headroom (Company and Salim):
+  the real run needs a Founder budget decision first.

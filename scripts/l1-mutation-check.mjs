@@ -761,7 +761,7 @@ const MUTATIONS = [
   {
     id: 'l1-02-v6-unregistered',
     gate: 'package v6 is registered (newest first) for the Founder',
-    edits: [{ file: 'packages/command-center/dist/src/surface.js', search: "[CEO_ACADEMY_PACKAGE_V6, ", replace: "[", expectedCount: 1 }],
+    edits: [{ file: 'packages/command-center/dist/src/surface.js', search: "CEO_ACADEMY_PACKAGE_V6, CEO_ACADEMY_PACKAGE_V5, ", replace: "CEO_ACADEMY_PACKAGE_V5, ", expectedCount: 1 }],
     runs: [ACTIVATION, ACTIVATION_SURFACE],
   },
   {
@@ -786,6 +786,43 @@ const MUTATIONS = [
     id: 'l1-02-v6-label-reused',
     gate: 'the new governance version carries its own pkg6 label',
     edits: [{ file: 'packages/mind/dist/src/packages/ceo-academy-v6.js', search: "versionLabel: '1.0.0+pkg6', instructions", replace: "versionLabel: '1.0.0+pkg5', instructions", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  // --- L1-02: production package v7 (D-L1-35A) -----------------------------------------------------------------------
+  {
+    id: 'l1-02-v7-unregistered',
+    gate: 'package v7 is registered (newest first) for the Founder',
+    edits: [{ file: 'packages/command-center/dist/src/surface.js', search: "[CEO_ACADEMY_PACKAGE_V7, ", replace: "[", expectedCount: 1 }],
+    runs: [ACTIVATION, ACTIVATION_SURFACE],
+  },
+  {
+    id: 'l1-02-v7-reuse-dropped',
+    gate: 'v7 consumes the five qualified Skill Versions instead of re-benchmarking them',
+    edits: [{ file: 'packages/mind/dist/src/packages/ceo-academy-v7.js', search: "return { ...s, binding: 'REUSE_QUALIFIED' };", replace: "{ const { binding: _b, ...own } = s; return { ...own, versionLabel: '1.0.0+pkg7' }; }", expectedCount: 1 }],
+    runs: [ACTIVATION, REUSE_STORE],
+  },
+  {
+    id: 'l1-02-v7-reuses-failed',
+    gate: 'the failed pkg6 governance version is never reused by v7',
+    edits: [{ file: 'packages/mind/dist/src/packages/ceo-academy-v7.js', search: "'ceo.founder-partnership', 'ceo.cross-functional-synthesis'];", replace: "'ceo.founder-partnership', 'ceo.cross-functional-synthesis', 'ceo.governance-discipline'];", expectedCount: 1 }],
+    runs: [ACTIVATION, REUSE_STORE],
+  },
+  {
+    id: 'l1-02-v7-revision-dropped',
+    gate: 'governance-discipline carries the cleaned instructions (a new, differently fingerprinted version)',
+    edits: [{ file: 'packages/mind/dist/src/packages/ceo-academy-v7.js', search: "instructions: withoutLanguageDirection(s.instructions)", replace: "instructions: s.instructions", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-v7-label-reused',
+    gate: 'the new governance version carries its own pkg7 label',
+    edits: [{ file: 'packages/mind/dist/src/packages/ceo-academy-v7.js', search: "versionLabel: '1.0.0+pkg7', instructions", replace: "versionLabel: '1.0.0+pkg6', instructions", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-v7-language-kept',
+    gate: 'every language-direction span is removed from the pkg7 governance instructions',
+    edits: [{ file: 'packages/mind/dist/src/packages/ceo-academy-v7.js', search: "for (const r of CEO_V7_LANGUAGE_DIRECTION_REMOVALS) {", replace: "for (const r of CEO_V7_LANGUAGE_DIRECTION_REMOVALS.slice(0, 2)) {", expectedCount: 1 }],
     runs: [ACTIVATION],
   },
 ];
