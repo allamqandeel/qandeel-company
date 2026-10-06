@@ -730,7 +730,7 @@ const MUTATIONS = [
   {
     id: 'l1-02-v5-unregistered',
     gate: 'package v5 is registered (newest first) for the Founder',
-    edits: [{ file: 'packages/command-center/dist/src/surface.js', search: "[CEO_ACADEMY_PACKAGE_V5, ", replace: "[", expectedCount: 1 }],
+    edits: [{ file: 'packages/command-center/dist/src/surface.js', search: "CEO_ACADEMY_PACKAGE_V5, CEO_ACADEMY_PACKAGE_V4, ", replace: "CEO_ACADEMY_PACKAGE_V4, ", expectedCount: 1 }],
     runs: [ACTIVATION, ACTIVATION_SURFACE],
   },
   {
@@ -755,6 +755,37 @@ const MUTATIONS = [
     id: 'l1-02-v5-label-reused',
     gate: 'the three new versions carry their own pkg5 label',
     edits: [{ file: 'packages/mind/dist/src/packages/ceo-academy-v5.js', search: "versionLabel: '1.0.0+pkg5', instructions", replace: "versionLabel: '1.0.0+pkg4', instructions", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  // --- L1-02: production package v6 (D-L1-31) ------------------------------------------------------------------------
+  {
+    id: 'l1-02-v6-unregistered',
+    gate: 'package v6 is registered (newest first) for the Founder',
+    edits: [{ file: 'packages/command-center/dist/src/surface.js', search: "[CEO_ACADEMY_PACKAGE_V6, ", replace: "[", expectedCount: 1 }],
+    runs: [ACTIVATION, ACTIVATION_SURFACE],
+  },
+  {
+    id: 'l1-02-v6-reuse-dropped',
+    gate: 'v6 consumes the five qualified Skill Versions instead of re-benchmarking them',
+    edits: [{ file: 'packages/mind/dist/src/packages/ceo-academy-v6.js', search: "return { ...s, binding: 'REUSE_QUALIFIED' };", replace: "return { ...s, versionLabel: '1.0.0+pkg6' };", expectedCount: 1 }],
+    runs: [ACTIVATION, REUSE_STORE],
+  },
+  {
+    id: 'l1-02-v6-reuses-failed',
+    gate: 'the failed pkg5 governance version is never reused by v6',
+    edits: [{ file: 'packages/mind/dist/src/packages/ceo-academy-v6.js', search: "'ceo.founder-partnership', 'ceo.cross-functional-synthesis'];", replace: "'ceo.founder-partnership', 'ceo.cross-functional-synthesis', 'ceo.governance-discipline'];", expectedCount: 1 }],
+    runs: [ACTIVATION, REUSE_STORE],
+  },
+  {
+    id: 'l1-02-v6-revision-dropped',
+    gate: 'governance-discipline carries the revised instructions (a new, differently fingerprinted version)',
+    edits: [{ file: 'packages/mind/dist/src/packages/ceo-academy-v6.js', search: "instructions: `${s.instructions}\\n${CEO_V6_INSTRUCTION_ADDITION}`", replace: "instructions: s.instructions", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-v6-label-reused',
+    gate: 'the new governance version carries its own pkg6 label',
+    edits: [{ file: 'packages/mind/dist/src/packages/ceo-academy-v6.js', search: "versionLabel: '1.0.0+pkg6', instructions", replace: "versionLabel: '1.0.0+pkg5', instructions", expectedCount: 1 }],
     runs: [ACTIVATION],
   },
 ];

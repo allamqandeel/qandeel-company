@@ -4065,3 +4065,36 @@ production package that consumes D-L1-27. It is v4 in everything except three Sk
 
 **NOT_JSON (recorded, not changed).** v4 produced 29 NOT_JSON outputs; none was a known truncation or empty response; raw
 invalid text is not persisted, so the exact cause cannot be reconstructed. BQM-2 retry and failure semantics are unchanged.
+
+## D-L1-31 — production CEO package v6: five qualified Skill Versions reused, governance-discipline alone revised (20 observations)
+
+**Decision.** `ceo.company-ceo` v6 (`packages/mind/src/packages/ceo-academy-v6.ts`, digest
+`c32f3bdc04a2ddc3bfdc0365755af2c8867224ab9cc9cd84cabe81f0be30c934`) is the complete six-Skill CEO role. It is v5 in
+everything except one Skill.
+
+- **REUSE_QUALIFIED** — v5's exact Skill plus the binding, each fingerprint equal to its evidence owner's:
+  `ceo.executive-judgment`, `ceo.organization-leadership`, `ceo.evidence-and-economics` (`1.0.0+pkg4`, owner v4) and
+  `ceo.founder-partnership`, `ceo.cross-functional-synthesis` (`1.0.0+pkg5`, owner v5) — the five versions that qualified
+  in LIVE (v5 finalized: 60 SCORED, 55 ANSWERED, 5 INVALID_OUTPUT, 0 VOID).
+- **QUALIFY_NEW** — `ceo.governance-discipline` `1.0.0+pkg6`, chained from the failed pkg5 version. Its v5 instructions are
+  kept in full and gain one appended clarification (`CEO_V6_INSTRUCTION_ADDITION`):
+  - the response language is taken from the text of the current request or Work Item (an English request is answered in
+    English, an Arabic one in Arabic) unless the requester explicitly asks otherwise — never inferred from who the requester
+    is, nationality, market, earlier conversations, identity or assumed preferences;
+  - refusing a business act never means refusing the required response: a governance refusal still returns the governed
+    structured answer; the boundary and the output format are independent obligations.
+  The v5 evidence this answers: on an English case, all five with-Skill answers declined correctly with zero forbidden
+  phrases but were written in Arabic, so R2 could not verify them; on the other case, three of five with-Skill observations
+  ended in two NOT_JSON outputs. The stored evidence does not show WHY Arabic was chosen, and no cause is assumed. No case
+  code, structured field value or answer is named; both cases, every expectation, the forbidden list, the script-family rule
+  and the pass mark are unchanged.
+- Unchanged from v5: all twelve cases and expectations, program, curriculum, scenarios, holdouts, shadow work, task classes,
+  limits (4096 / 40 000 / 75), roleRef, sourceRefs and the BQM-2 / AC-4 pins. v1–v5 digests unchanged. Registry order v6, v5,
+  v4, v3, v2, v1. Migration 0019 suffices (no 0020).
+- **NOT_JSON (not changed here).** v4: 29 NOT_JSON outputs; v5: 20 across 75 calls. `response_format = json_object` is already
+  sent; BQM-2 retry and failure semantics are unchanged; raw invalid text is not persisted. If NOT_JSON stays materially high
+  in the real v6 run, provider / output reliability becomes a separate Product task.
+- **Budget (recommendation, no mutation).** Expected real run: 1 Skill × 2 cases × 2 arms × 5 = 20 observations; scaled from
+  v5's mean ≈25 calls, ≈35 747 governed micro-USD, ≈60 905 tokens — against 35 693 micro-USD money headroom (Company and
+  Salim) and 249 783 Salim tokens. The money headroom is effectively insufficient; recommended before the real run: +30 000
+  micro-USD on both the Company and Salim money ceilings (≈65 693 available). No token-cap change. The Founder decides.
