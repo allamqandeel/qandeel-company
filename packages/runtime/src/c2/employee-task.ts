@@ -186,6 +186,17 @@ export const employeeTaskProcessor: GovernedProcessor = {
       }
       s = { ...s, modelCalls: s.modelCalls + 1 };
       const proposal: ModelProposal = out.proposal;
+      if (proposal.type === 'ACADEMY_ANSWER') {
+        const saved = gov.recordAcademyAnswer(proposal, s.turn, out.manifestId);
+        if (saved.outcome !== 'REFUSED') {
+          const summaryCode = saved.summaryCode ?? proposal.summaryCode;
+          await save(ctx, { ...s, phase: 'FINAL', pending: null, summaryCode });
+          return { type: 'COMPLETED', evidence: { summaryCode, attemptId: saved.attemptId, turns: s.turn, modelCalls: s.modelCalls, reasoningClass: out.reasoningClass } };
+        }
+        s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null };
+        await save(ctx, s);
+        continue;
+      }
       if (proposal.type === 'FINAL') {
         // Accountability stays with the delegator (Stage 8 §23): work with open handoffs does not finish; it
         // waits (zero tokens) and resumes when a delegate answers or its work ends.
