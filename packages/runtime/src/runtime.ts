@@ -102,7 +102,7 @@ import type { ProviderAdapter, ProviderProvisioningProfile, ToolDriver } from '@
 
 import { GovernedModelRuntime } from './c2/model-runtime.js';
 import { ToolExecutor } from './c2/tool-executor.js';
-import { isGovernedProcessor, type GoalActProposal, type GovernedRunServices, type MemoryProposal, type MessageProposal, type ModelCallOutcome, type ModelCallRequest, type OrgActProposal, type ReviewDecisionProposal, type ToolRequest } from './c2/types.js';
+import { isGovernedProcessor, type AcademyAnswerProposal, type GoalActProposal, type GovernedRunServices, type MemoryProposal, type MessageProposal, type ModelCallOutcome, type ModelCallRequest, type OrgActProposal, type ReviewDecisionProposal, type ToolRequest } from './c2/types.js';
 import { assembleGovernedContext } from './c3/context-assembler.js';
 import { c3HealthOf, type C3Health } from './c3/health.js';
 import { proposeMemory } from './c3/memory-proposals.js';
@@ -120,6 +120,7 @@ import {
   releaseSupervisor,
   renewLease,
   renewSupervisor,
+  recordAcademyAnswer,
   recordGoalAct,
   recordMessage,
   recordOrgAct,
@@ -1288,6 +1289,12 @@ export class CompanyRuntime {
         const out = proposeMemory(store, claim.fence, proposal, g);
         recordStepResult(store, claim.fence, g, 'MEMORY_DECISION', JSON.stringify(out.kind === 'DECIDED' ? { memory: out.state, reason: out.reasonCode } : { memory: out.kind, reason: out.code }));
         return out;
+      },
+      recordAcademyAnswer: (proposal: AcademyAnswerProposal, step: number, manifestId: string) => {
+        const g = globalStep(step);
+        const out = recordAcademyAnswer(store, claim.fence, g, { answer: proposal.answer, summaryCode: proposal.summaryCode, manifestId: manifestId as Id });
+        recordStepResult(store, claim.fence, g, out.kind === 'REFUSED' ? 'TOOL_REFUSED' : 'TOOL_RESULT', JSON.stringify({ academyAnswer: out.kind, code: out.code, attemptId: out.attemptId }));
+        return { outcome: out.kind, code: out.code, attemptId: out.attemptId, summaryCode: out.summaryCode };
       },
       executeTool: async (request: ToolRequest, step: number) => {
         const g = globalStep(step);
