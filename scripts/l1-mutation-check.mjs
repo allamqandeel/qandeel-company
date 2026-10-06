@@ -31,12 +31,17 @@ const ADAPTER = { cwd: 'packages/model-providers', tests: ['dist/test/l1-deepsee
 const ECON = { cwd: 'packages/governance', tests: ['dist/test/l1-economics.test.js'] };
 const STORE = { cwd: 'packages/storage', tests: ['dist/test/l1-provider-pricing.test.js'] };
 const RUNTIME = { cwd: 'packages/runtime', tests: ['dist/test/l1/l1-runtime.test.js'] };
+// L1-02: the production activation path (real runtime, real Founder session, real adapter over a fake transport) and
+// the authenticated activation surface over loopback HTTP.
+const ACTIVATION = { cwd: 'packages/runtime', tests: ['dist/test/l1/l1-02-activation.test.js'] };
+const ACTIVATION_SURFACE = { cwd: 'packages/command-center', tests: ['dist/test/l1-02-activation-surface.test.js'] };
 
 const GOV = 'packages/governance/dist/src';
 const PROVIDERS = 'packages/model-providers/dist/src/deepseek';
 const SV = 'packages/secret-vault/dist/src';
 const STORAGE = 'packages/storage/dist/src';
 const RT = 'packages/runtime/dist/src/c2';
+const MIND = 'packages/mind/dist/src';
 
 const MUTATIONS = [
   // --- The vault ----------------------------------------------------------------------------------------------------
@@ -215,6 +220,85 @@ const MUTATIONS = [
     gate: 'an external provider profile never asks for D3 / D4 egress (D3 external egress stays closed; D4 never leaves)',
     edits: [{ file: `${GOV}/provisioning.js`, search: "if (prov.locality === 'EXTERNAL' && (egress === 'D3' || egress === 'D4'))", replace: 'if (false)', expectedCount: 1 }],
     runs: [ECON],
+  },
+  // --- L1-02: the production activation path (D-L1-13) ------------------------------------------------------------
+  {
+    id: 'l1-02-lifecycle-active-offered',
+    gate: 'the Founder\'s lifecycle step never reaches ACTIVE: activation is the Academy\'s decision alone',
+    edits: [{ file: `${STORAGE}/founder-activation.js`, search: "const TRAINEE_TARGETS = ['TRAINING', 'SHADOW', 'PROBATION'];", replace: "const TRAINEE_TARGETS = ['TRAINING', 'SHADOW', 'PROBATION', 'ACTIVE'];", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-occupied-seat-hireable',
+    gate: 'an occupied canonical seat is never offered for a hire',
+    edits: [{ file: `${STORAGE}/founder-activation.js`, search: 'if (seatHolder(ctx, pos.id, ts(ctx)).ofRecord !== null)', replace: 'if (false)', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-name-unshaped',
+    gate: 'a display name is presentation only: letters, never an instruction-shaped string',
+    edits: [{ file: `${STORAGE}/founder-activation.js`, search: 'if (!LATIN_NAME.test(given) || !LATIN_NAME.test(family))', replace: 'if (false)', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-package-digest-unchecked',
+    gate: 'an Academy package is release-pinned: a different digest fails closed',
+    edits: [{ file: `${STORAGE}/founder-activation.js`, search: 'if (raw.packageSha256 !== sha)', replace: 'if (false)', expectedCount: 1 }],
+    runs: [ACTIVATION, ACTIVATION_SURFACE],
+  },
+  {
+    id: 'l1-02-model-access-d3',
+    gate: 'model access is D1 / D2 at most: D3 external egress stays closed, D4 never leaves',
+    edits: [{ file: `${STORAGE}/founder-activation.js`, search: "if (dataClass !== 'D1' && dataClass !== 'D2')", replace: 'if (false)', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-install-preview-unqualified',
+    gate: 'the one install decision is offered only when every Skill version qualified on its own evidence',
+    edits: [{ file: `${STORAGE}/founder-activation.js`, search: 'if (!view.installable)', replace: 'if (false)', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-activation-without-calibration',
+    gate: 'activation of a calibrated role is not offered before the Founder Calibration is approved',
+    edits: [{ file: `${STORAGE}/founder-activation.js`, search: "if (decision === 'APPROVE' && cal && cal.state !== 'APPROVED')", replace: 'if (false)', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-evaluator-types-deterministic',
+    gate: 'the evaluator never types a deterministic dimension (authority compliance, cost discipline come from run facts)',
+    edits: [{ file: `${STORAGE}/founder-activation.js`, search: 'const EVALUATOR_DIMENSIONS = ASSESSMENT_DIMENSIONS.filter((d) => !DETERMINISTIC_DIMENSIONS.includes(d));', replace: 'const EVALUATOR_DIMENSIONS = ASSESSMENT_DIMENSIONS;', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-static-review-ignored',
+    gate: 'the static security review\'s verdict — never the Founder\'s confirmation — decides SANDBOXED vs REJECTED',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: 'securityPassed: report.passed });', replace: 'securityPassed: true });', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-baseline-sees-skill',
+    gate: 'a sandboxed version enters only its own WITH_SKILL benchmark context (never a baseline)',
+    edits: [{ file: `${STORAGE}/mind-core.js`, search: "if (!r || r.arm !== 'WITH_SKILL' || r.state !== 'OPEN')", replace: "if (!r || r.state !== 'OPEN')", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-answer-any-task',
+    gate: 'an ANSWER binds only to an answer-bearing Work Item (an attempt, a benchmark case, shadow work)',
+    edits: [{ file: `${STORAGE}/answers.js`, search: 'const task = answerTask(ctx, item.id);', replace: "const task = answerTask(ctx, item.id) ?? { kind: 'SHADOW', open: true };", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-answer-run-not-ended',
+    gate: 'an answer-bearing run ends when its answer is recorded (no second answer, no wasted call)',
+    edits: [{ file: `${RT}/employee-task.js`, search: "if (rec.outcome === 'RECORDED') {", replace: 'if (false) {', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-benchmark-failing-case-passes',
+    gate: 'a Skill version whose with-skill benchmark case fails never qualifies (no auto-pass)',
+    edits: [{ file: `${MIND}/academy-package.js`, search: 'const benchmarkPassed = withR.every((r) => r?.passed === true);', replace: 'const benchmarkPassed = true;', expectedCount: 1 }],
+    runs: [ACTIVATION],
   },
 ];
 

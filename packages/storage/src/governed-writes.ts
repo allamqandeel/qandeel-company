@@ -84,7 +84,7 @@ export interface GovernedRunContext {
   /** Highest data class of this run's context (declared on the Work Item; the model cannot lower it). */
   readonly dataClass: DataClass;
   /** ACTIVE duty, or constrained Academy / shadow execution by a non-ACTIVE Employee (C3, Stage 6 §11). */
-  readonly executionMode: 'ACTIVE' | 'ACADEMY_ATTEMPT' | 'SHADOW_WORK';
+  readonly executionMode: 'ACTIVE' | 'ACADEMY_ATTEMPT' | 'SHADOW_WORK' | 'SKILL_BENCHMARK';
   /**
    * R1-03: the first Work-Item-global step of this job. A processor's loop step counts per job (its
    * checkpoints are per job), but idempotency keys, step results and memory candidates are keyed per

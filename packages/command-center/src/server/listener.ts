@@ -76,6 +76,7 @@ const ROUTES: readonly Route[] = [
   route('GET', '/api/pilots/:id', 'pilot', (ctx, p) => api.pilotBoard(ctx, p[0] as string)),
   route('GET', '/api/pilots/:id/inspect', 'pilotInspect', (ctx, p, _b, q) => api.pilotInspect(ctx, p[0] as string, { workItemId: q.get('workItemId') ?? undefined })),
   // L1-01 model providers: a read (profiles, identity checks, what is provisioned); provisioning goes through /api/previews.
+  route('GET', '/api/activation', 'activation', (ctx) => api.activation(ctx)),
   route('GET', '/api/providers', 'providers', (ctx) => api.providers(ctx)),
   // C7-D Digital Workshop: reads, and opening an internal Preview on the isolated preview host (session + CSRF). A promotion
   // is decided through the existing governed APPROVAL_DECIDE confirmation, never here.

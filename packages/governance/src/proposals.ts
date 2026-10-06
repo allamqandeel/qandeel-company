@@ -49,7 +49,50 @@ export type ModelProposal =
   | { readonly type: 'MESSAGE'; readonly purpose: MessagePurpose; readonly attentionLevel: AttentionLevel; readonly body: string; readonly brief: FounderBrief | null; readonly contextRefs: readonly string[] }
   /** C5: a Director derives a Department goal or links its own work to a goal (fenced; seat and Department re-checked by the runtime). */
   | { readonly type: 'GOAL_ACTION'; readonly action: GoalAction; readonly args: JsonObject }
+  /**
+   * L1-02: the typed deliverable of an answer-bearing Work Item (an Academy attempt, a skill benchmark case, shadow
+   * work): a bounded prose body plus a closed set of decision facets a deterministic rubric can check. Only data: the
+   * runtime binds it to the run's own Work Item through the fence; it never decides, approves, scores or grants
+   * anything (the model never evaluates itself — evaluators and the rubric do).
+   */
+  | ({ readonly type: 'ANSWER'; readonly body: string } & AnswerFacets)
   | { readonly type: 'INVALID'; readonly code: 'NOT_JSON' | 'UNKNOWN_TYPE' | 'MALFORMED' };
+
+export const ANSWER_DECISIONS = ['PROCEED', 'PROCEED_WITH_CONDITIONS', 'GATHER_EVIDENCE', 'ESCALATE_TO_FOUNDER', 'DECLINE'] as const;
+export type AnswerDecision = (typeof ANSWER_DECISIONS)[number];
+/** Whether the recommended act is within authority the Employee actually holds (never a claim of new authority). */
+export const ANSWER_AUTHORITY = ['WITHIN_HELD_AUTHORITY', 'NEEDS_FOUNDER', 'NOT_HELD'] as const;
+export type AnswerAuthority = (typeof ANSWER_AUTHORITY)[number];
+export const ANSWER_EVIDENCE = ['SUFFICIENT', 'PARTIAL', 'INSUFFICIENT'] as const;
+export type AnswerEvidence = (typeof ANSWER_EVIDENCE)[number];
+export const ANSWER_CONFIDENCE = ['LOW', 'MEDIUM', 'HIGH'] as const;
+export type AnswerConfidence = (typeof ANSWER_CONFIDENCE)[number];
+/** Bound of an answer's prose (company content; never telemetry). */
+export const ANSWER_BODY_MAX = 6_000;
+/** Bound of the spend an answer may propose (micro-units). */
+export const ANSWER_SPEND_MAX = 1_000_000_000_000;
+
+/** The closed decision facets of an ANSWER (L1-02): what a deterministic rubric checks, never free text. */
+export interface AnswerFacets {
+  readonly decision: AnswerDecision;
+  readonly reversible: boolean;
+  readonly authority: AnswerAuthority;
+  readonly evidence: AnswerEvidence;
+  readonly confidence: AnswerConfidence;
+  readonly founderDecisionNeeded: boolean;
+  /** The spend the recommendation proposes now (micro-units, 0 when none). */
+  readonly spendMicros: number;
+}
+
+const oneOf = <T extends string>(v: unknown, set: readonly T[]): v is T => typeof v === 'string' && (set as readonly string[]).includes(v);
+
+/** The facets of a parsed / stored answer, or null when any is missing or malformed (closed shape). */
+export function answerFacetsOf(o: Record<string, unknown>): AnswerFacets | null {
+  if (!oneOf(o.decision, ANSWER_DECISIONS) || !oneOf(o.authority, ANSWER_AUTHORITY) || !oneOf(o.evidence, ANSWER_EVIDENCE) || !oneOf(o.confidence, ANSWER_CONFIDENCE)) return null;
+  if (typeof o.reversible !== 'boolean' || typeof o.founderDecisionNeeded !== 'boolean') return null;
+  if (typeof o.spendMicros !== 'number' || !Number.isSafeInteger(o.spendMicros) || o.spendMicros < 0 || o.spendMicros > ANSWER_SPEND_MAX) return null;
+  return { decision: o.decision, reversible: o.reversible, authority: o.authority, evidence: o.evidence, confidence: o.confidence, founderDecisionNeeded: o.founderDecisionNeeded, spendMicros: o.spendMicros };
+}
 
 export const GOAL_ACTIONS = ['goal.derive', 'goal.link'] as const;
 export type GoalAction = (typeof GOAL_ACTIONS)[number];
@@ -136,6 +179,13 @@ export function parseProposal(outputText: string): ModelProposal {
     if (keys !== 'action,args,type' || !isGoalAction(o.action)) return { type: 'INVALID', code: 'MALFORMED' };
     if (typeof o.args !== 'object' || o.args === null || Array.isArray(o.args)) return { type: 'INVALID', code: 'MALFORMED' };
     return { type: 'GOAL_ACTION', action: o.action, args: o.args as JsonObject };
+  }
+  if (o.type === 'ANSWER') {
+    if (keys !== 'authority,body,confidence,decision,evidence,founderDecisionNeeded,reversible,spendMicros,type') return { type: 'INVALID', code: 'MALFORMED' };
+    if (typeof o.body !== 'string' || o.body.trim().length === 0 || o.body.length > ANSWER_BODY_MAX) return { type: 'INVALID', code: 'MALFORMED' };
+    const facets = answerFacetsOf(o);
+    if (facets === null) return { type: 'INVALID', code: 'MALFORMED' };
+    return { type: 'ANSWER', body: o.body, ...facets };
   }
   return { type: 'INVALID', code: 'UNKNOWN_TYPE' };
 }

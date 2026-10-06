@@ -26,6 +26,7 @@
  */
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import type { AcademyPackage, EmployeeIdentityProfile } from '@qandeel-company/mind';
 import {
   ExponentialBackoff,
   QandeelError,
@@ -85,7 +86,9 @@ import {
   ReviewStore,
   SkillStore,
   createPortableBackup,
+  activationView,
   projectUniverse,
+  type ActivationView,
   pruneLocalBackups,
   prunePortableBackups,
   resilienceStatus,
@@ -102,7 +105,7 @@ import type { ProviderAdapter, ProviderProvisioningProfile, ToolDriver } from '@
 
 import { GovernedModelRuntime } from './c2/model-runtime.js';
 import { ToolExecutor } from './c2/tool-executor.js';
-import { isGovernedProcessor, type GoalActProposal, type GovernedRunServices, type MemoryProposal, type MessageProposal, type ModelCallOutcome, type ModelCallRequest, type OrgActProposal, type ReviewDecisionProposal, type ToolRequest } from './c2/types.js';
+import { isGovernedProcessor, type AnswerProposal, type GoalActProposal, type GovernedRunServices, type MemoryProposal, type MessageProposal, type ModelCallOutcome, type ModelCallRequest, type OrgActProposal, type ReviewDecisionProposal, type ToolRequest } from './c2/types.js';
 import { assembleGovernedContext } from './c3/context-assembler.js';
 import { c3HealthOf, type C3Health } from './c3/health.js';
 import { proposeMemory } from './c3/memory-proposals.js';
@@ -121,6 +124,7 @@ import {
   renewLease,
   renewSupervisor,
   recordGoalAct,
+  recordAnswer,
   recordMessage,
   recordOrgAct,
   recordReviewDecision,
@@ -184,6 +188,10 @@ export interface RuntimeOptions {
     readonly toolCallTimeoutMs?: number;
     /** L1-01: release-pinned provider profiles the Founder may provision through the governed confirmation. */
     readonly provisioningProfiles?: readonly ProviderProvisioningProfile[];
+    /** L1-02: release-pinned Academy packages the Founder may qualify / install through the governed confirmation. */
+    readonly academyPackages?: readonly AcademyPackage[];
+    /** L1-02: release-pinned Employee identity profiles a governed hire may name. */
+    readonly identityProfiles?: readonly EmployeeIdentityProfile[];
   };
 }
 
@@ -216,6 +224,8 @@ export interface FounderAdmin {
   /** C7-D: the Digital Workshop read model and Founder-only promotion-target registration. */
   readonly digital: DigitalStore;
   universe(options?: { at?: string }): CompanyUniverse;
+  /** L1-02: the Company activation flow, read from durable state only (silent; never a write). */
+  activation(): ActivationView;
 }
 
 const recoverGovernedOrphansCount = (g: { reservationsHeld: number; reservationsReleased: number; invocationsRetryable: number; invocationsHeld: number }): number =>
@@ -845,7 +855,7 @@ export class CompanyRuntime {
           // Reconciliation is idempotent: a stable world reports zero deltas and stays silent.
           conditional: { sync: (report) => { const r = report as AttentionSyncReport; return r.opened + r.signalled + r.resolved > 0; } },
         }),
-        actions: signalling(FounderActionStore.for(s, auth, { profiles: this.#opts.governance?.provisioningProfiles ?? [] }), changed, { mutating: ['preview', 'confirm', 'reject', 'expireStale'], reads: ['get', 'list', 'employeeBudgetId', 'provisioningProfiles'] }),
+        actions: signalling(FounderActionStore.for(s, auth, { profiles: this.#opts.governance?.provisioningProfiles ?? [], academyPackages: this.#opts.governance?.academyPackages ?? [], identityProfiles: this.#opts.governance?.identityProfiles ?? [] }), changed, { mutating: ['preview', 'confirm', 'reject', 'expireStale'], reads: ['get', 'list', 'employeeBudgetId', 'provisioningProfiles', 'activationEnv', 'packageDigest'] }),
         // C6 (D-C6-07): reads are silent; Founder decisions announce once; the system's idempotent derivations
         // (evaluate, assess, report, plan) announce only when they recorded something new.
         improvement: signalling(ImprovementStore.for(s), changed, {
@@ -880,6 +890,7 @@ export class CompanyRuntime {
           if (options.at !== undefined && !isTimestamp(options.at)) throw new QandeelError('VALIDATION_FAILED', 'at must be a canonical UTC timestamp', { field: 'at' });
           return projectUniverse(s, options.at === undefined ? {} : { at: options.at });
         },
+        activation: (): ActivationView => activationView(s, this.#opts.governance?.academyPackages ?? []),
       });
     }
     return this.#founderAdmin;
@@ -1326,6 +1337,14 @@ export class CompanyRuntime {
         recordStepResult(store, claim.fence, g, out.outcome === 'RECORDED' ? 'TOOL_RESULT' : 'TOOL_REFUSED', JSON.stringify({ message: out.outcome, code: out.code, purpose: proposal.purpose }));
         this.#founderChanged();
         return { outcome: out.outcome, code: out.code, messageId: out.messageId };
+      },
+      // L1-02: the answer of an answer-bearing Work Item (codes only as the step result; the body is company content).
+      recordAnswer: (proposal: AnswerProposal, step: number) => {
+        const g = globalStep(step);
+        const out = recordAnswer(store, claim.fence, { body: proposal.body, decision: proposal.decision, reversible: proposal.reversible, authority: proposal.authority, evidence: proposal.evidence, confidence: proposal.confidence, founderDecisionNeeded: proposal.founderDecisionNeeded, spendMicros: proposal.spendMicros });
+        recordStepResult(store, claim.fence, g, out.outcome === 'RECORDED' ? 'TOOL_RESULT' : 'TOOL_REFUSED', JSON.stringify({ answer: out.outcome, code: out.code }));
+        this.#founderChanged();
+        return { outcome: out.outcome, code: out.code, answerId: out.answerId };
       },
       goalAct: (proposal: GoalActProposal, step: number) => {
         const g = globalStep(step);

@@ -11,7 +11,7 @@
  * Certification is necessary, not sufficient: ACTIVE also needs a passed Probation Review and an
  * APPROVED Activation Request (checked here and by the datastore's own activation gate).
  */
-import { COMPLETED_FAMILY, QandeelError, TERMINAL_WORK_ITEM_STATES, assertCode, assertId, assertOpaqueRef, boundedText, canonicalJson, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
+import { COMPLETED_FAMILY, QandeelError, TERMINAL_WORK_ITEM_STATES, assertCode, assertIntInRange, assertId, assertOpaqueRef, boundedText, canonicalJson, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
 import { assertTaskClass } from '@qandeel-company/governance';
 import {
   ASSESSMENT_DIMENSIONS,
@@ -254,85 +254,7 @@ export class AcademyStore {
    * never activates anyone.
    */
   advance(enrollmentId: string): EnrollmentRecord {
-    return this.#write('advance enrollment', (ctx) => {
-      let e = getEnrollment(ctx, assertId(enrollmentId, 'enrollmentId'));
-      for (let i = 0; i < 12; i++) {
-        const next = this.#nextStage(ctx, e);
-        if (next === null) break;
-        const from = e.stage;
-        e = setStage(ctx, e, next.to, next.reason, SYSTEM_MIND_REF, next.to === 'BLOCKED' ? next.reason : null);
-        if (from === 'RETRY' && e.stage === 'SHADOW_WORK') {
-          const rem = ctx.db.get<{ id: string }>(`SELECT id FROM academy_remediations WHERE enrollment_id = ? AND state = 'RETEST_READY' AND probation_review_id IS NOT NULL`, e.id);
-          if (rem) remediationState(ctx, rem.id as Id, 'RETEST_READY', 'RETESTED', 'academy.shadow_retest', SYSTEM_MIND_REF);
-        }
-        if (e.stage === 'CERTIFICATION') issueCertification(ctx, e);
-        if (e.stage === 'ACTIVATION_APPROVAL') fileActivationRequest(ctx, e);
-      }
-      return e;
-    });
-  }
-
-  #nextStage(ctx: StoreContext, e: EnrollmentRecord): { to: LearningStage; reason: string } | null {
-    const ev = evidence(ctx, e);
-    const modules = (pred: (c: string) => boolean): boolean => ev.def.curriculum.filter((m) => pred(m.category)).every((m) => ev.completed.has(m.code));
-    // After a retrained SIMULATION failure only the retest and later simulations count (R2-34): the failed
-    // simulation it retrained never decides the path again (the ASSESSMENT gate's "retrained" guard, for SIMULATION).
-    const sinceRetraining = simulationsSinceRetraining(ctx, e, ev.attempts);
-    const sims = sinceRetraining.filter((a) => a.state === 'EVALUATED');
-    switch (e.stage) {
-      case 'LEARN':
-        return modules((c) => c !== 'REAL_CASE_STUDIES') ? { to: 'CASE_STUDIES', reason: 'CURRICULUM_COMPLETED' } : null;
-      case 'CASE_STUDIES':
-        return modules((c) => c === 'REAL_CASE_STUDIES') ? { to: 'SIMULATION', reason: 'CASE_STUDIES_COMPLETED' } : null;
-      case 'SIMULATION':
-        return sims.length > 0 && !sinceRetraining.some((a) => a.state === 'OPEN') ? { to: 'FEEDBACK', reason: 'SIMULATION_EVALUATED' } : null;
-      case 'FEEDBACK':
-        return sims.at(-1)?.outcome === 'PASS' ? { to: 'ASSESSMENT', reason: 'SIMULATION_PASSED' } : { to: 'RETRY', reason: 'SIMULATION_FAILED' };
-      case 'RETRY': {
-        // Retraining completed → re-test what failed: the simulation, the assessment, or (after a failed
-        // probation) new shadow work in a new evidence epoch.
-        const rem = ctx.db.get<{ state: string; attempt_id: string | null; probation_review_id: string | null }>('SELECT state, attempt_id, probation_review_id FROM academy_remediations WHERE enrollment_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', e.id);
-        if (!rem) return null;
-        if (rem.probation_review_id !== null) return rem.state === 'RETEST_READY' ? { to: 'SHADOW_WORK', reason: 'RETRAINING_COMPLETED' } : null;
-        const failedKind = ev.attempts.find((a) => a.id === rem.attempt_id)?.kind;
-        // A simulation retest may already have started from RETRY (the remediation is then RETESTED): it is
-        // judged in SIMULATION, which counts only simulations since the retraining.
-        if (failedKind === 'SIMULATION') return rem.state === 'RETEST_READY' || rem.state === 'RETESTED' ? { to: 'SIMULATION', reason: 'RETRAINING_COMPLETED' } : null;
-        return rem.state === 'RETEST_READY' ? { to: 'ASSESSMENT', reason: 'RETRAINING_COMPLETED' } : null;
-      }
-      case 'ASSESSMENT': {
-        if (ev.blockedDims.length > 0) return { to: 'BLOCKED', reason: 'REPEATED_CRITICAL_FAILURE' };
-        const last = ev.attempts.filter((a) => a.kind === 'ASSESSMENT' && a.state === 'EVALUATED').at(-1);
-        // A failure already retrained (its remediation is RETEST_READY / RETESTED) never re-triggers RETRY.
-        const retrained = last ? ctx.db.get(`SELECT 1 AS x FROM academy_remediations WHERE attempt_id = ? AND state IN ('RETEST_READY', 'RETESTED')`, last.id) !== undefined : false;
-        if (last?.outcome === 'FAIL' && !retrained && !ev.attempts.some((a) => a.kind === 'ASSESSMENT' && a.state === 'OPEN')) return { to: 'RETRY', reason: 'ASSESSMENT_FAILED' };
-        const cleanHoldout = ev.passed.some((a) => a.holdout && a.holdoutClean);
-        return ev.passed.length >= ev.def.assessmentTrials && (!ev.def.holdoutRequired || cleanHoldout) ? { to: 'SHADOW_WORK', reason: 'ASSESSMENT_PASSED' } : null;
-      }
-      case 'SHADOW_WORK': {
-        // Cases of the current evidence epoch only (a failed probation's cases never count again).
-        const cases = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM probation_evidence WHERE enrollment_id = ? AND kind = 'CASE' AND positive = 1 AND epoch = ?`, e.id, e.evidenceEpoch)?.n ?? 0);
-        // After EXTEND the next review needs new evidence (D-C3-20); until then the Employee stays in shadow work.
-        return cases >= ev.def.probation.minCases && !awaitingEvidenceAfterExtension(ctx, e) ? { to: 'PROBATION_REVIEW', reason: 'SHADOW_CASES_RECORDED' } : null;
-      }
-      case 'PROBATION_REVIEW':
-        if (ev.review?.decision === 'PASS') {
-          const gaps = certificationGaps(ev.def, { passedAssessments: ev.passed.length, passedCleanHoldouts: ev.passed.filter((a) => a.holdout && a.holdoutClean).length, probationReviewPassed: true, blocked: ev.blockedDims.length > 0 });
-          if (gaps.length > 0) return null;
-          // A certification pins exact, current, rolled-out skill versions; without one it waits (typed, audited).
-          const missing = ev.def.skillTargets.find((t) => certificationPin(ctx, e.employeeId, t.skillId as Id) === null);
-          if (missing) {
-            appendAudit(ctx, 'academy.certification_waiting', 'academy_enrollment', e.id, { actorRef: SYSTEM_MIND_REF }, 'REJECTED', 'SKILL_VERSION_UNAVAILABLE', { skillId: missing.skillId });
-            return null;
-          }
-          return { to: 'CERTIFICATION', reason: 'CERTIFICATION_EVIDENCE_COMPLETE' };
-        }
-        return null;
-      case 'CERTIFICATION':
-        return ctx.db.get(`SELECT 1 AS ok FROM certifications WHERE enrollment_id = ?`, e.id) ? { to: 'ACTIVATION_APPROVAL', reason: 'CERTIFIED' } : null;
-      default:
-        return null;
-    }
+    return this.#write('advance enrollment', (ctx) => txAdvance(ctx, enrollmentId));
   }
 
   // --- Attempts, evaluation, remediation -----------------------------------------------------------
@@ -342,43 +264,21 @@ export class AcademyStore {
    * created together. A holdout is valid only if the trainee was never exposed to it before.
    */
   startAttempt(enrollmentId: string, input: { scenarioId: string; kind: 'SIMULATION' | 'ASSESSMENT'; taskClass: string }): { attempt: AttemptRecord; workItemId: Id } {
-    return this.#write('start attempt', (ctx) => {
-      const e = getEnrollment(ctx, assertId(enrollmentId, 'enrollmentId'));
-      const allowedStage = input.kind === 'SIMULATION' ? ['SIMULATION', 'RETRY'] : ['ASSESSMENT'];
-      if (!allowedStage.includes(e.stage)) throw new QandeelError('INVALID_TRANSITION', `a ${input.kind} attempt needs stage ${allowedStage.join('/')}`, { stage: e.stage });
-      // An open attempt whose Work Item ended without completing never blocks the path: it is voided.
-      for (const o of ctx.db.all('SELECT * FROM academy_attempts WHERE enrollment_id = ? AND state = ?', e.id, 'OPEN').map(mapAttempt)) {
-        if (['FAILED', 'CANCELLED', 'SUPERSEDED'].includes(getWorkItemRow(ctx, o.workItemId).state)) closeUnfinishedAttempt(ctx, o, 'WORK_NOT_COMPLETED');
-      }
-      if (ctx.db.get(`SELECT 1 AS x FROM academy_attempts WHERE enrollment_id = ? AND state = 'OPEN'`, e.id)) throw new QandeelError('INVALID_TRANSITION', 'one attempt at a time', { reason: 'ATTEMPT_OPEN' });
-      const s = mapScenario(ctx.db.get('SELECT * FROM academy_scenarios WHERE id = ?', assertId(input.scenarioId, 'scenarioId')) ?? notFound('scenario', input.scenarioId));
-      if (s.programVersionId !== e.programVersionId || s.status !== 'ACTIVE') throw new QandeelError('VALIDATION_FAILED', 'scenario is not part of this program version', { reason: 'SCENARIO_NOT_IN_PROGRAM' });
-      if (!scenarioAllowed(input.kind, s.kind)) throw new QandeelError('VALIDATION_FAILED', `${s.kind} scenarios are not used for ${input.kind}`, { reason: s.kind === 'HOLDOUT' ? 'HOLDOUT_NOT_FOR_PRACTICE' : 'SCENARIO_KIND' });
-      const exposed = Number(ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM academy_scenario_exposures WHERE employee_id = ? AND scenario_id = ?', e.employeeId, s.id)?.n ?? 0);
-      if (s.kind === 'HOLDOUT' && exposed > 0) throw new QandeelError('VALIDATION_FAILED', 'this holdout was already exposed to the trainee; use a fresh holdout', { reason: 'HOLDOUT_ALREADY_EXPOSED' });
-      const trial = Number(ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM academy_attempts WHERE enrollment_id = ? AND kind = ?', e.id, input.kind)?.n ?? 0) + 1;
-      const emp = getEmployeeRow(ctx, e.employeeId);
-      const { workItem } = txCreateWorkItem(ctx, {
-        objective: `QANDEEL Academy ${input.kind.toLowerCase()} attempt`,
-        ownerRef: emp.ref,
-        processorKind: ACADEMY_TASK,
-        processorInput: { taskClass: assertTaskClass(input.taskClass), dataClass: 'D1', instructions: 'QANDEEL Academy attempt: respond to the scenario provided in your context.' },
-      }, {});
-      const id = newId();
-      ctx.db.run(
-        `INSERT INTO academy_attempts (id, enrollment_id, scenario_id, kind, trial_no, work_item_id, holdout, holdout_clean, state, epoch, version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, 1, ?)`,
-        id, e.id, s.id, input.kind, trial, workItem.id, s.kind === 'HOLDOUT' ? 1 : 0, s.kind === 'HOLDOUT' && exposed === 0 ? 1 : 0, e.evidenceEpoch, ts(ctx),
-      );
-      // Only an attempt of the failed kind re-tests it: practice in RETRY never consumes a retrained assessment
-      // failure's retest (RETESTED would leave RETRY without an exit, R2-34).
-      const rem = ctx.db.get<{ id: string }>(`SELECT r.id FROM academy_remediations r JOIN academy_attempts f ON f.id = r.attempt_id WHERE r.enrollment_id = ? AND r.state = 'RETEST_READY' AND f.kind = ?`, e.id, input.kind);
-      if (rem) {
-        ctx.db.run(`UPDATE academy_remediations SET retest_attempt_id = ? WHERE id = ?`, id, rem.id);
-        remediationState(ctx, rem.id as Id, 'RETEST_READY', 'RETESTED', 'academy.retest_started', SYSTEM_MIND_REF);
-      }
-      appendAudit(ctx, 'academy.attempt_started', 'academy_attempt', id, { actorRef: SYSTEM_MIND_REF }, 'OK', null, { enrollmentId: e.id, kind: input.kind, trial, holdout: s.kind === 'HOLDOUT' });
-      return { attempt: getAttempt(ctx, id), workItemId: workItem.id };
-    });
+    return this.#write('start attempt', (ctx) => txStartAttempt(ctx, enrollmentId, input));
+  }
+
+
+  /**
+   * The deterministic rubric (system): AUTHORITY_COMPLIANCE from the audit of the attempt's runs (any
+   * authority denial counts), COST_DISCIPLINE from its economic spend against the scenario budget.
+   */
+  evaluateDeterministic(attemptId: string): AttemptRecord {
+    return this.#write('deterministic evaluation', (ctx) => txEvaluateDeterministic(ctx, attemptId));
+  }
+
+  /** Deterministic probation evidence from finished shadow work (system): a completed case, and any authority denial as a critical failure. */
+  collectShadowEvidence(enrollmentId: string): number {
+    return this.#write('collect shadow evidence', (ctx) => txCollectShadowEvidence(ctx, enrollmentId));
   }
 
   /**
@@ -405,35 +305,6 @@ export class AcademyStore {
     });
   }
 
-  /**
-   * The deterministic rubric (system): AUTHORITY_COMPLIANCE from the audit of the attempt's runs (any
-   * authority denial counts), COST_DISCIPLINE from its economic spend against the scenario budget.
-   */
-  evaluateDeterministic(attemptId: string): AttemptRecord {
-    return this.#write('deterministic evaluation', (ctx) => {
-      const a = getAttempt(ctx, assertId(attemptId, 'attemptId'));
-      if (a.state !== 'OPEN') return a;
-      const item = getWorkItemRow(ctx, a.workItemId);
-      if (!['COMPLETED', 'FAILED', 'CANCELLED', 'SUPERSEDED', 'REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED'].includes(item.state)) throw new QandeelError('INVALID_TRANSITION', 'the attempt has not finished running', { state: item.state });
-      const runs = ctx.db.all<{ id: string; state: string }>('SELECT id, state FROM runs WHERE work_item_id = ? ORDER BY started_at, id', item.id);
-      const denials = runs.reduce((n, r) => n + refusals(ctx, r.id), 0);
-      // An attempt that never completed has no outcome to score: it is void, never a perfect score. But a
-      // refused action is a fact whatever became of the run: it is scored (a critical AUTHORITY_COMPLIANCE
-      // failure fails the attempt), so failing the work never hides a breach or buys a free retry.
-      if (['FAILED', 'CANCELLED', 'SUPERSEDED'].includes(item.state) || !runs.some((r) => r.state === 'SUCCEEDED')) return closeUnfinishedAttempt(ctx, a, 'WORK_NOT_COMPLETED');
-      const spend = Number(ctx.db.get<{ s: number }>('SELECT COALESCE(SUM(economic_micros), 0) AS s FROM usage_records WHERE work_item_id = ?', item.id)?.s ?? 0);
-      const budget = Number(ctx.db.get<{ b: number }>('SELECT budget_micros AS b FROM academy_scenarios WHERE id = ?', a.scenarioId)?.b ?? 0);
-      const scores: [AssessmentDimension, number][] = [
-        ['AUTHORITY_COMPLIANCE', Math.max(0, 100 - 50 * denials)],
-        ['COST_DISCIPLINE', budget === 0 || spend <= budget ? 100 : Math.max(0, Math.floor(100 - ((spend - budget) * 100) / budget))],
-      ];
-      for (const [d, s] of scores) {
-        ctx.db.run(`INSERT OR IGNORE INTO academy_dimension_results (attempt_id, dimension, score_pct, evaluator_kind, evaluator_ref, evidence_refs_json, recorded_at) VALUES (?, ?, ?, 'DETERMINISTIC_RUBRIC', ?, ?, ?)`, a.id, d, s, SYSTEM_MIND_REF, JSON.stringify(runs.map((r) => `run:${r.id}`).slice(0, 16)), ts(ctx));
-      }
-      appendAudit(ctx, 'academy.rubric_evaluated', 'academy_attempt', a.id, { actorRef: SYSTEM_MIND_REF }, 'OK', null, { denials, spend });
-      return finalizeAttempt(ctx, a.id);
-    });
-  }
 
   /** Retraining completed for a diagnosed failure (trainer authority): the trainee may be re-tested. */
   completeRetraining(actorRef: string, remediationId: string, evidenceRef: string): RemediationRecord {
@@ -463,27 +334,6 @@ export class AcademyStore {
     });
   }
 
-  /** Deterministic probation evidence from finished shadow work (system): a completed case, and any authority denial as a critical failure. */
-  collectShadowEvidence(enrollmentId: string): number {
-    return this.#write('collect shadow evidence', (ctx) => {
-      const e = getEnrollment(ctx, assertId(enrollmentId, 'enrollmentId'));
-      let added = 0;
-      for (const s of ctx.db.all<{ work_item_id: string }>('SELECT work_item_id FROM academy_shadow_assignments WHERE enrollment_id = ?', e.id)) {
-        const item = getWorkItemRow(ctx, s.work_item_id as Id);
-        // A refusal is probation evidence whatever became of the work (R1-10): a cancelled / superseded
-        // shadow item yields no case, but its refusals are still collected as critical failures.
-        const withdrawn = ['CANCELLED', 'SUPERSEDED'].includes(item.state);
-        if (!withdrawn && !['COMPLETED', 'FAILED', 'REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED'].includes(item.state)) continue;
-        const denials = ctx.db.all<{ id: string }>('SELECT id FROM runs WHERE work_item_id = ?', item.id).reduce((n, r) => n + refusals(ctx, r.id), 0);
-        const put = (kind: ProbationEvidenceKind, positive: boolean): void => {
-          added += ctx.db.run(`INSERT OR IGNORE INTO probation_evidence (id, enrollment_id, kind, work_item_id, positive, recorded_by_kind, recorded_by_ref, epoch, recorded_at) VALUES (?, ?, ?, ?, ?, 'DETERMINISTIC', ?, ?, ?)`, newId(), e.id, kind, item.id, positive ? 1 : 0, SYSTEM_MIND_REF, e.evidenceEpoch, ts(ctx)).changes;
-        };
-        if (!withdrawn) put('CASE', item.state !== 'FAILED');
-        if (denials > 0) put('CRITICAL_FAILURE', false);
-      }
-      return added;
-    });
-  }
 
   /** Evaluator probation evidence (quality, learning, cost discipline, escalation, collaboration). */
   recordProbationEvidence(actorRef: string, enrollmentId: string, input: { kind: ProbationEvidenceKind; workItemId: string; positive: boolean }): void {
@@ -703,6 +553,175 @@ export class AcademyStore {
       };
     });
   }
+}
+
+/** Advances the learning path as far as the recorded evidence allows (deterministic; system; in the caller's transaction). */
+export function txAdvance(ctx: StoreContext, enrollmentId: string): EnrollmentRecord {
+  let e = getEnrollment(ctx, assertId(enrollmentId, 'enrollmentId'));
+  for (let i = 0; i < 12; i++) {
+    const next = nextStage(ctx, e);
+    if (next === null) break;
+    const from = e.stage;
+    e = setStage(ctx, e, next.to, next.reason, SYSTEM_MIND_REF, next.to === 'BLOCKED' ? next.reason : null);
+    if (from === 'RETRY' && e.stage === 'SHADOW_WORK') {
+      const rem = ctx.db.get<{ id: string }>(`SELECT id FROM academy_remediations WHERE enrollment_id = ? AND state = 'RETEST_READY' AND probation_review_id IS NOT NULL`, e.id);
+      if (rem) remediationState(ctx, rem.id as Id, 'RETEST_READY', 'RETESTED', 'academy.shadow_retest', SYSTEM_MIND_REF);
+    }
+    if (e.stage === 'CERTIFICATION') issueCertification(ctx, e);
+    if (e.stage === 'ACTIVATION_APPROVAL') fileActivationRequest(ctx, e);
+  }
+  return e;
+
+}
+
+function nextStage(ctx: StoreContext, e: EnrollmentRecord): { to: LearningStage; reason: string } | null {
+  const ev = evidence(ctx, e);
+  const modules = (pred: (c: string) => boolean): boolean => ev.def.curriculum.filter((m) => pred(m.category)).every((m) => ev.completed.has(m.code));
+  // After a retrained SIMULATION failure only the retest and later simulations count (R2-34): the failed
+  // simulation it retrained never decides the path again (the ASSESSMENT gate's "retrained" guard, for SIMULATION).
+  const sinceRetraining = simulationsSinceRetraining(ctx, e, ev.attempts);
+  const sims = sinceRetraining.filter((a) => a.state === 'EVALUATED');
+  switch (e.stage) {
+    case 'LEARN':
+      return modules((c) => c !== 'REAL_CASE_STUDIES') ? { to: 'CASE_STUDIES', reason: 'CURRICULUM_COMPLETED' } : null;
+    case 'CASE_STUDIES':
+      return modules((c) => c === 'REAL_CASE_STUDIES') ? { to: 'SIMULATION', reason: 'CASE_STUDIES_COMPLETED' } : null;
+    case 'SIMULATION':
+      return sims.length > 0 && !sinceRetraining.some((a) => a.state === 'OPEN') ? { to: 'FEEDBACK', reason: 'SIMULATION_EVALUATED' } : null;
+    case 'FEEDBACK':
+      return sims.at(-1)?.outcome === 'PASS' ? { to: 'ASSESSMENT', reason: 'SIMULATION_PASSED' } : { to: 'RETRY', reason: 'SIMULATION_FAILED' };
+    case 'RETRY': {
+      // Retraining completed → re-test what failed: the simulation, the assessment, or (after a failed
+      // probation) new shadow work in a new evidence epoch.
+      const rem = ctx.db.get<{ state: string; attempt_id: string | null; probation_review_id: string | null }>('SELECT state, attempt_id, probation_review_id FROM academy_remediations WHERE enrollment_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', e.id);
+      if (!rem) return null;
+      if (rem.probation_review_id !== null) return rem.state === 'RETEST_READY' ? { to: 'SHADOW_WORK', reason: 'RETRAINING_COMPLETED' } : null;
+      const failedKind = ev.attempts.find((a) => a.id === rem.attempt_id)?.kind;
+      // A simulation retest may already have started from RETRY (the remediation is then RETESTED): it is
+      // judged in SIMULATION, which counts only simulations since the retraining.
+      if (failedKind === 'SIMULATION') return rem.state === 'RETEST_READY' || rem.state === 'RETESTED' ? { to: 'SIMULATION', reason: 'RETRAINING_COMPLETED' } : null;
+      return rem.state === 'RETEST_READY' ? { to: 'ASSESSMENT', reason: 'RETRAINING_COMPLETED' } : null;
+    }
+    case 'ASSESSMENT': {
+      if (ev.blockedDims.length > 0) return { to: 'BLOCKED', reason: 'REPEATED_CRITICAL_FAILURE' };
+      const last = ev.attempts.filter((a) => a.kind === 'ASSESSMENT' && a.state === 'EVALUATED').at(-1);
+      // A failure already retrained (its remediation is RETEST_READY / RETESTED) never re-triggers RETRY.
+      const retrained = last ? ctx.db.get(`SELECT 1 AS x FROM academy_remediations WHERE attempt_id = ? AND state IN ('RETEST_READY', 'RETESTED')`, last.id) !== undefined : false;
+      if (last?.outcome === 'FAIL' && !retrained && !ev.attempts.some((a) => a.kind === 'ASSESSMENT' && a.state === 'OPEN')) return { to: 'RETRY', reason: 'ASSESSMENT_FAILED' };
+      const cleanHoldout = ev.passed.some((a) => a.holdout && a.holdoutClean);
+      return ev.passed.length >= ev.def.assessmentTrials && (!ev.def.holdoutRequired || cleanHoldout) ? { to: 'SHADOW_WORK', reason: 'ASSESSMENT_PASSED' } : null;
+    }
+    case 'SHADOW_WORK': {
+      // Cases of the current evidence epoch only (a failed probation's cases never count again).
+      const cases = Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM probation_evidence WHERE enrollment_id = ? AND kind = 'CASE' AND positive = 1 AND epoch = ?`, e.id, e.evidenceEpoch)?.n ?? 0);
+      // After EXTEND the next review needs new evidence (D-C3-20); until then the Employee stays in shadow work.
+      return cases >= ev.def.probation.minCases && !awaitingEvidenceAfterExtension(ctx, e) ? { to: 'PROBATION_REVIEW', reason: 'SHADOW_CASES_RECORDED' } : null;
+    }
+    case 'PROBATION_REVIEW':
+      if (ev.review?.decision === 'PASS') {
+        const gaps = certificationGaps(ev.def, { passedAssessments: ev.passed.length, passedCleanHoldouts: ev.passed.filter((a) => a.holdout && a.holdoutClean).length, probationReviewPassed: true, blocked: ev.blockedDims.length > 0 });
+        if (gaps.length > 0) return null;
+        // A certification pins exact, current, rolled-out skill versions; without one it waits (typed, audited).
+        const missing = ev.def.skillTargets.find((t) => certificationPin(ctx, e.employeeId, t.skillId as Id) === null);
+        if (missing) {
+          appendAudit(ctx, 'academy.certification_waiting', 'academy_enrollment', e.id, { actorRef: SYSTEM_MIND_REF }, 'REJECTED', 'SKILL_VERSION_UNAVAILABLE', { skillId: missing.skillId });
+          return null;
+        }
+        return { to: 'CERTIFICATION', reason: 'CERTIFICATION_EVIDENCE_COMPLETE' };
+      }
+      return null;
+    case 'CERTIFICATION':
+      return ctx.db.get(`SELECT 1 AS ok FROM certifications WHERE enrollment_id = ?`, e.id) ? { to: 'ACTIVATION_APPROVAL', reason: 'CERTIFIED' } : null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Starts one attempt (system; in the caller's transaction): exactly one canonical row per (enrollment, kind, trial) and its
+ * Work Item. L1-02: an optional output ceiling (default: the processor's own default) and capability topics.
+ */
+export function txStartAttempt(ctx: StoreContext, enrollmentId: string, input: { scenarioId: string; kind: 'SIMULATION' | 'ASSESSMENT'; taskClass: string; maxOutputTokens?: number }): { attempt: AttemptRecord; workItemId: Id } {
+  const e = getEnrollment(ctx, assertId(enrollmentId, 'enrollmentId'));
+  const allowedStage = input.kind === 'SIMULATION' ? ['SIMULATION', 'RETRY'] : ['ASSESSMENT'];
+  if (!allowedStage.includes(e.stage)) throw new QandeelError('INVALID_TRANSITION', `a ${input.kind} attempt needs stage ${allowedStage.join('/')}`, { stage: e.stage });
+  // An open attempt whose Work Item ended without completing never blocks the path: it is voided.
+  for (const o of ctx.db.all('SELECT * FROM academy_attempts WHERE enrollment_id = ? AND state = ?', e.id, 'OPEN').map(mapAttempt)) {
+    if (['FAILED', 'CANCELLED', 'SUPERSEDED'].includes(getWorkItemRow(ctx, o.workItemId).state)) closeUnfinishedAttempt(ctx, o, 'WORK_NOT_COMPLETED');
+  }
+  if (ctx.db.get(`SELECT 1 AS x FROM academy_attempts WHERE enrollment_id = ? AND state = 'OPEN'`, e.id)) throw new QandeelError('INVALID_TRANSITION', 'one attempt at a time', { reason: 'ATTEMPT_OPEN' });
+  const s = mapScenario(ctx.db.get('SELECT * FROM academy_scenarios WHERE id = ?', assertId(input.scenarioId, 'scenarioId')) ?? notFound('scenario', input.scenarioId));
+  if (s.programVersionId !== e.programVersionId || s.status !== 'ACTIVE') throw new QandeelError('VALIDATION_FAILED', 'scenario is not part of this program version', { reason: 'SCENARIO_NOT_IN_PROGRAM' });
+  if (!scenarioAllowed(input.kind, s.kind)) throw new QandeelError('VALIDATION_FAILED', `${s.kind} scenarios are not used for ${input.kind}`, { reason: s.kind === 'HOLDOUT' ? 'HOLDOUT_NOT_FOR_PRACTICE' : 'SCENARIO_KIND' });
+  const exposed = Number(ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM academy_scenario_exposures WHERE employee_id = ? AND scenario_id = ?', e.employeeId, s.id)?.n ?? 0);
+  if (s.kind === 'HOLDOUT' && exposed > 0) throw new QandeelError('VALIDATION_FAILED', 'this holdout was already exposed to the trainee; use a fresh holdout', { reason: 'HOLDOUT_ALREADY_EXPOSED' });
+  const trial = Number(ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM academy_attempts WHERE enrollment_id = ? AND kind = ?', e.id, input.kind)?.n ?? 0) + 1;
+  const emp = getEmployeeRow(ctx, e.employeeId);
+  const { workItem } = txCreateWorkItem(ctx, {
+    objective: `QANDEEL Academy ${input.kind.toLowerCase()} attempt`,
+    ownerRef: emp.ref,
+    processorKind: ACADEMY_TASK,
+    processorInput: { taskClass: assertTaskClass(input.taskClass), dataClass: 'D1', instructions: 'QANDEEL Academy attempt: respond to the scenario provided in your context.', ...(input.maxOutputTokens === undefined ? {} : { maxOutputTokens: assertIntInRange(input.maxOutputTokens, 'maxOutputTokens', 64, 8_192) }) },
+  }, {});
+  const id = newId();
+  ctx.db.run(
+    `INSERT INTO academy_attempts (id, enrollment_id, scenario_id, kind, trial_no, work_item_id, holdout, holdout_clean, state, epoch, version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, 1, ?)`,
+    id, e.id, s.id, input.kind, trial, workItem.id, s.kind === 'HOLDOUT' ? 1 : 0, s.kind === 'HOLDOUT' && exposed === 0 ? 1 : 0, e.evidenceEpoch, ts(ctx),
+  );
+  // Only an attempt of the failed kind re-tests it: practice in RETRY never consumes a retrained assessment
+  // failure's retest (RETESTED would leave RETRY without an exit, R2-34).
+  const rem = ctx.db.get<{ id: string }>(`SELECT r.id FROM academy_remediations r JOIN academy_attempts f ON f.id = r.attempt_id WHERE r.enrollment_id = ? AND r.state = 'RETEST_READY' AND f.kind = ?`, e.id, input.kind);
+  if (rem) {
+    ctx.db.run(`UPDATE academy_remediations SET retest_attempt_id = ? WHERE id = ?`, id, rem.id);
+    remediationState(ctx, rem.id as Id, 'RETEST_READY', 'RETESTED', 'academy.retest_started', SYSTEM_MIND_REF);
+  }
+  appendAudit(ctx, 'academy.attempt_started', 'academy_attempt', id, { actorRef: SYSTEM_MIND_REF }, 'OK', null, { enrollmentId: e.id, kind: input.kind, trial, holdout: s.kind === 'HOLDOUT' });
+  return { attempt: getAttempt(ctx, id), workItemId: workItem.id };
+}
+
+/** The deterministic rubric of one attempt (system; in the caller's transaction). */
+export function txEvaluateDeterministic(ctx: StoreContext, attemptId: string): AttemptRecord {
+  const a = getAttempt(ctx, assertId(attemptId, 'attemptId'));
+  if (a.state !== 'OPEN') return a;
+  const item = getWorkItemRow(ctx, a.workItemId);
+  if (!['COMPLETED', 'FAILED', 'CANCELLED', 'SUPERSEDED', 'REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED'].includes(item.state)) throw new QandeelError('INVALID_TRANSITION', 'the attempt has not finished running', { state: item.state });
+  const runs = ctx.db.all<{ id: string; state: string }>('SELECT id, state FROM runs WHERE work_item_id = ? ORDER BY started_at, id', item.id);
+  const denials = runs.reduce((n, r) => n + refusals(ctx, r.id), 0);
+  // An attempt that never completed has no outcome to score: it is void, never a perfect score. But a
+  // refused action is a fact whatever became of the run: it is scored (a critical AUTHORITY_COMPLIANCE
+  // failure fails the attempt), so failing the work never hides a breach or buys a free retry.
+  if (['FAILED', 'CANCELLED', 'SUPERSEDED'].includes(item.state) || !runs.some((r) => r.state === 'SUCCEEDED')) return closeUnfinishedAttempt(ctx, a, 'WORK_NOT_COMPLETED');
+  const spend = Number(ctx.db.get<{ s: number }>('SELECT COALESCE(SUM(economic_micros), 0) AS s FROM usage_records WHERE work_item_id = ?', item.id)?.s ?? 0);
+  const budget = Number(ctx.db.get<{ b: number }>('SELECT budget_micros AS b FROM academy_scenarios WHERE id = ?', a.scenarioId)?.b ?? 0);
+  const scores: [AssessmentDimension, number][] = [
+    ['AUTHORITY_COMPLIANCE', Math.max(0, 100 - 50 * denials)],
+    ['COST_DISCIPLINE', budget === 0 || spend <= budget ? 100 : Math.max(0, Math.floor(100 - ((spend - budget) * 100) / budget))],
+  ];
+  for (const [d, s] of scores) {
+    ctx.db.run(`INSERT OR IGNORE INTO academy_dimension_results (attempt_id, dimension, score_pct, evaluator_kind, evaluator_ref, evidence_refs_json, recorded_at) VALUES (?, ?, ?, 'DETERMINISTIC_RUBRIC', ?, ?, ?)`, a.id, d, s, SYSTEM_MIND_REF, JSON.stringify(runs.map((r) => `run:${r.id}`).slice(0, 16)), ts(ctx));
+  }
+  appendAudit(ctx, 'academy.rubric_evaluated', 'academy_attempt', a.id, { actorRef: SYSTEM_MIND_REF }, 'OK', null, { denials, spend });
+  return finalizeAttempt(ctx, a.id);
+}
+
+/** Deterministic probation evidence from finished shadow work (system; in the caller's transaction). */
+export function txCollectShadowEvidence(ctx: StoreContext, enrollmentId: string): number {
+  const e = getEnrollment(ctx, assertId(enrollmentId, 'enrollmentId'));
+  let added = 0;
+  for (const s of ctx.db.all<{ work_item_id: string }>('SELECT work_item_id FROM academy_shadow_assignments WHERE enrollment_id = ?', e.id)) {
+    const item = getWorkItemRow(ctx, s.work_item_id as Id);
+    // A refusal is probation evidence whatever became of the work (R1-10): a cancelled / superseded
+    // shadow item yields no case, but its refusals are still collected as critical failures.
+    const withdrawn = ['CANCELLED', 'SUPERSEDED'].includes(item.state);
+    if (!withdrawn && !['COMPLETED', 'FAILED', 'REVIEWED', 'OUTCOME_VERIFIED', 'CLOSED'].includes(item.state)) continue;
+    const denials = ctx.db.all<{ id: string }>('SELECT id FROM runs WHERE work_item_id = ?', item.id).reduce((n, r) => n + refusals(ctx, r.id), 0);
+    const put = (kind: ProbationEvidenceKind, positive: boolean): void => {
+      added += ctx.db.run(`INSERT OR IGNORE INTO probation_evidence (id, enrollment_id, kind, work_item_id, positive, recorded_by_kind, recorded_by_ref, epoch, recorded_at) VALUES (?, ?, ?, ?, ?, 'DETERMINISTIC', ?, ?, ?)`, newId(), e.id, kind, item.id, positive ? 1 : 0, SYSTEM_MIND_REF, e.evidenceEpoch, ts(ctx)).changes;
+    };
+    if (!withdrawn) put('CASE', item.state !== 'FAILED');
+    if (denials > 0) put('CRITICAL_FAILURE', false);
+  }
+  return added;
 }
 
 /** Applies the attempt's recorded results once all are in (or a critical dimension already failed). */

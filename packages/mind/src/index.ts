@@ -19,3 +19,6 @@ export * from './reporting.js';
 export * from './seo.js';
 export * from './skills.js';
 export * from './text.js';
+export * from './academy-package.js';
+export * from './packages/ceo-academy-v1.js';
+export * from './packages/ceo-identity-v1.js';

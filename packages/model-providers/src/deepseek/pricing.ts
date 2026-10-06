@@ -100,3 +100,33 @@ export const DEEPSEEK_V41_FLASH_PROFILE: ProviderProvisioningProfile = Object.fr
   qualificationTarget: 'LIMITED_PRODUCTION',
   routePolicies: Object.freeze(DEEPSEEK_PILOT_TASK_CLASSES.map((taskClass) => Object.freeze({ taskClass, body: PILOT_ROUTE_POLICY }))),
 });
+
+/**
+ * L1-02 (D-L1-14): the task classes the first production CEO activation needs — the two L1-01 Founder classes plus
+ * the CEO Academy package's three (a Skill benchmark case, an Academy attempt, probation shadow work). Nothing else.
+ */
+export const DEEPSEEK_ACADEMY_TASK_CLASSES: readonly string[] = Object.freeze([...DEEPSEEK_PILOT_TASK_CLASSES, 'skill.benchmark', 'academy.attempt', 'academy.shadow']);
+
+/**
+ * L1-02 (D-L1-14): a NEW versioned profile for the first production activation, never a silent widening of
+ * `DEEPSEEK_V41_FLASH_PROFILE` (which is unchanged). Same provider, model identity, pricing basis, D2 egress ceiling,
+ * LIMITED_PRODUCTION qualification and bounded route policy (E1..E2, one retry, four calls per run), and only the two
+ * conservative deployments E1 / E2: the thinking-heavy E3 / E4 profiles are not registered for this first activation.
+ */
+export const DEEPSEEK_V41_FLASH_ACADEMY_PROFILE: ProviderProvisioningProfile = Object.freeze({
+  code: 'deepseek-v4-1-flash-academy',
+  provider: Object.freeze({ code: DEEPSEEK_PROVIDER_CODE, locality: 'EXTERNAL', credentialRef: DEEPSEEK_CREDENTIAL_REF }),
+  model: Object.freeze({ code: DEEPSEEK_MODEL_CODE, expectedPublicName: DEEPSEEK_EXPECTED_PUBLIC_NAME }),
+  deployments: Object.freeze((['E1', 'E2'] as const).map((cls) => Object.freeze({
+    code: `deepseek-flash-${cls.toLowerCase()}`,
+    reasoningClass: cls,
+    pinnedRevision: DEEPSEEK_PINNED_REVISION,
+    contextWindowTokens: DEEPSEEK_CLASS_LIMITS[cls].contextWindowTokens,
+    maxOutputTokens: DEEPSEEK_CLASS_LIMITS[cls].maxOutputTokens,
+    taskClasses: DEEPSEEK_ACADEMY_TASK_CLASSES,
+  }))),
+  priceCard: DEEPSEEK_FLASH_PRICE_CARD,
+  egressMaxDataClass: 'D2',
+  qualificationTarget: 'LIMITED_PRODUCTION',
+  routePolicies: Object.freeze(DEEPSEEK_ACADEMY_TASK_CLASSES.map((taskClass) => Object.freeze({ taskClass, body: PILOT_ROUTE_POLICY }))),
+});

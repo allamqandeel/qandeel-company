@@ -2,6 +2,7 @@
  * FounderSurface — runtime + listener + briefing policy in one lifecycle. Starting it never arms Founder
  * authority: a session does, per request. Stopping it revokes every live session (fail closed).
  */
+import { CEO_ACADEMY_PACKAGE_V1, CEO_IDENTITY_PROFILE_V1, type AcademyPackage, type EmployeeIdentityProfile } from '@qandeel-company/mind';
 import type { ProviderAdapter, ProviderProvisioningProfile } from '@qandeel-company/governance';
 import { CompanyRuntime, DeterministicFakeProvider, FakeToolDriver, employeeTaskProcessor, type RuntimeOptions } from '@qandeel-company/runtime';
 
@@ -23,6 +24,12 @@ export interface FounderSurfaceOptions {
    */
   readonly providers?: readonly ProviderAdapter[];
   readonly provisioningProfiles?: readonly ProviderProvisioningProfile[];
+  /**
+   * L1-02: the release-pinned Academy packages and Employee identity profiles the Founder may install / name through the
+   * governed confirmation (default: the first CEO package and identity profile). Content, never authority.
+   */
+  readonly academyPackages?: readonly AcademyPackage[];
+  readonly identityProfiles?: readonly EmployeeIdentityProfile[];
   readonly log?: (event: string, fields: Record<string, string | number | boolean | null>) => void;
   readonly briefing?: boolean;
 }
@@ -46,6 +53,8 @@ export class FounderSurface {
       providers: [...providers, ...(options.providers ?? []), ...(extra.governance?.providers ?? [])],
       toolDrivers: [...drivers, ...(extra.governance?.toolDrivers ?? [])],
       provisioningProfiles: [...(options.provisioningProfiles ?? []), ...(extra.governance?.provisioningProfiles ?? [])],
+      academyPackages: [...(options.academyPackages ?? [CEO_ACADEMY_PACKAGE_V1]), ...(extra.governance?.academyPackages ?? [])],
+      identityProfiles: [...(options.identityProfiles ?? [CEO_IDENTITY_PROFILE_V1]), ...(extra.governance?.identityProfiles ?? [])],
     };
     const runtimeOptions: RuntimeOptions = {
       ...extra,

@@ -23,6 +23,7 @@
   "dependencies": {
     "@qandeel-company/domain": "0.1.0",
     "@qandeel-company/governance": "0.2.0",
+    "@qandeel-company/mind": "0.3.0",
     "@qandeel-company/storage": "0.1.0",
     "@qandeel-company/runtime": "0.1.0",
     "@qandeel-company/command-center-ui": "0.1.0",

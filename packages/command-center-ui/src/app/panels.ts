@@ -9,6 +9,7 @@
  */
 import { ACTION_LABEL, CALENDAR_LABEL, CAPABILITY_LABEL, DECISION_LABEL, dirOf, EVIDENCE_LABEL, FIELD_LABEL, fmtDate, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, fmtTime, hasArabic, humanize, INTENT_LABEL, KIND_LABEL, LANE_LABEL, MARKET_CLAIM_LABEL, PILOT_DECISION_LABEL, PILOT_MODE_LABEL, plural, PROMOTION_KIND_LABEL, PROMOTION_STATE_LABEL, PURPOSE_LABEL, READINESS_LABEL, RELATION_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATE_LABEL, t } from '../model/format.js';
 import type { CompanyUniverse } from '../model/types.js';
+import { renderActivation } from './activation.js';
 
 type Json = Record<string, unknown>;
 
@@ -513,6 +514,7 @@ export function renderPalette(root: HTMLElement, host: PanelHost, result: Json |
     if (result.pilots) root.append(renderPilots(result.pilots as Json, host));
     if (result.digital) root.append(renderDigital(result.digital as Json, host));
     if (result.providers) root.append(renderProviders(result.providers as Json, host));
+    if (result.activation) root.append(renderActivation(result.activation as Json, host));
   }
   return input;
 }
@@ -661,7 +663,9 @@ function renderPilots(data: Json, host: PanelHost): HTMLElement {
   return section;
 }
 /** Payload fields the Founder reads: identifiers are resolved to names or dropped, never shown as codes. */
-const HIDDEN_FIELDS = new Set(['pilotId', 'threadId', 'reasonCode', 'currency', 'approvalId', 'goalId', 'budgetId', 'requestId', 'conflictId', 'employeeId', 'invocationId', 'reservationId', 'jobId', 'findingId', 'attributionId', 'lessonId', 'promotionId', 'workItemId', 'profileSha256', 'identityCheckId']);
+const HIDDEN_FIELDS = new Set(['pilotId', 'threadId', 'reasonCode', 'currency', 'approvalId', 'goalId', 'budgetId', 'requestId', 'conflictId', 'employeeId', 'invocationId', 'reservationId', 'jobId', 'findingId', 'attributionId', 'lessonId', 'promotionId', 'workItemId', 'profileSha256', 'identityCheckId',
+  // L1-02: identifiers of the activation acts (the summary says what happens; IDs are never shown as codes).
+  'positionId', 'subjectEmployeeId', 'enrollmentId', 'attemptId', 'remediationId', 'certificationId', 'packageSha256']);
 
 export function renderPreview(root: HTMLElement, preview: Json, host: PanelHost): void {
   root.replaceChildren();

@@ -16,11 +16,12 @@
  * `BEGIN IMMEDIATE` — the check, the effect, CONFIRMED and the audit commit together or not at all.
  */
 import { QandeelError, assertCode, assertId, boundedJson, canonicalJson, isTimestamp, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { APP_CONTROL_APPROVAL_ACTION, BINDING_ROLES, BINDING_SUBJECTS, PILOT_MODES, SOURCE_DECISIONS, assertGoalTransition, assertMoney, assertSourceRegistration, assertTokens, cachedInputRate, isGoalState, isMutatingIntent, nextSourceState, provisioningProfileDigest, type GoalState, type MutatingIntent, type PilotMode, type PilotState, type ProviderProvisioningProfile, type SourceDecision, type SourceState } from '@qandeel-company/governance';
-import { assertCauses, containsSecretMaterial, summarizeCauses, type AttributedCause } from '@qandeel-company/mind';
+import { ACTIVATION_INTENTS, APP_CONTROL_APPROVAL_ACTION, BINDING_ROLES, BINDING_SUBJECTS, PILOT_MODES, SOURCE_DECISIONS, assertGoalTransition, assertMoney, assertSourceRegistration, assertTokens, cachedInputRate, isGoalState, isMutatingIntent, nextSourceState, provisioningProfileDigest, type GoalState, type MutatingIntent, type PilotMode, type PilotState, type ProviderProvisioningProfile, type SourceDecision, type SourceState } from '@qandeel-company/governance';
+import { academyPackageDigest, assertCauses, containsSecretMaterial, summarizeCauses, type AcademyPackage, type AttributedCause, type EmployeeIdentityProfile } from '@qandeel-company/mind';
 
 import { txControlDecisionView } from './app-controls.js';
 import { txDigitalDecisionView } from './digital.js';
+import { executeActivation, validateActivationPayload, type ActivationEnv } from './founder-activation.js';
 import { txAssertExternalEvidence } from './external-core.js';
 import { ExternalEvidenceStore, txAssertBindable } from './external-evidence.js';
 import { getBudgetRow, budgetFor } from './governance-core.js';
@@ -83,10 +84,18 @@ const decodeCause = (v: string): unknown => {
 export interface FounderActionOptions {
   /** L1-01: the release-pinned provider profiles the host registered (the only ones PROVIDER_PROVISION may name). */
   readonly profiles?: readonly ProviderProvisioningProfile[];
+  /** L1-02: the release-pinned Academy packages the host registered (the only ones the activation intents may name). */
+  readonly academyPackages?: readonly AcademyPackage[];
+  /** L1-02: the release-pinned Employee identity profiles the host registered (the only ones a hire may name). */
+  readonly identityProfiles?: readonly EmployeeIdentityProfile[];
 }
 
+const isActivationIntent = (v: string): boolean => (ACTIVATION_INTENTS as readonly string[]).includes(v);
+
 /** Validates one intent's payload against durable state. Returns the canonical (re-shaped) payload. */
-function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<string, unknown>, profiles: readonly ProviderProvisioningProfile[]): Payload {
+function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<string, unknown>, profiles: readonly ProviderProvisioningProfile[], env: ActivationEnv): Payload {
+  // L1-02: the activation intents live in their own module (same boundary, same preview → fingerprint → confirm).
+  if (isActivationIntent(intent)) return validateActivationPayload(ctx, intent, raw, env);
   const s = (k: string, max = 161): string => {
     const v = raw[k];
     if (typeof v !== 'string' || v.trim().length === 0 || v.length > max) throw new QandeelError('VALIDATION_FAILED', `${k} is required`, { field: k });
@@ -406,11 +415,24 @@ export class FounderActionStore {
   readonly #store: CompanyStore;
   readonly #auth: FounderAuthStore;
   readonly #profiles: readonly ProviderProvisioningProfile[];
+  readonly #activation: ActivationEnv;
 
   private constructor(store: CompanyStore, auth: FounderAuthStore, options: FounderActionOptions) {
     this.#store = store;
     this.#auth = auth;
     this.#profiles = options.profiles ?? [];
+    this.#activation = { packages: options.academyPackages ?? [], identities: options.identityProfiles ?? [] };
+  }
+
+  /** L1-02: the exact digest of one registered Academy package (what a form posts back; never typed by the Founder). */
+  packageDigest(code: string, version: number): string | null {
+    const p = this.#activation.packages.find((x) => x.code === code && x.version === version);
+    return p ? academyPackageDigest(p) : null;
+  }
+
+  /** L1-02: the registered Academy packages and identity profiles (read by the activation view; never typed). */
+  activationEnv(): ActivationEnv {
+    return this.#activation;
   }
 
   static for(store: CompanyStore, auth: FounderAuthStore, options: FounderActionOptions = {}): FounderActionStore {
@@ -418,8 +440,8 @@ export class FounderActionStore {
   }
 
   /** The release-pinned provisioning profiles this store may offer (codes, digests, display facts; never a credential). */
-  provisioningProfiles(): readonly { code: string; sha256: string; providerCode: string; modelCode: string; expectedPublicName: string }[] {
-    return this.#profiles.map((p) => ({ code: p.code, sha256: provisioningProfileDigest(p), providerCode: p.provider.code, modelCode: p.model.code, expectedPublicName: p.model.expectedPublicName }));
+  provisioningProfiles(): readonly { code: string; sha256: string; providerCode: string; modelCode: string; expectedPublicName: string; currency: string; deployments: number; taskClasses: readonly string[] }[] {
+    return this.#profiles.map((p) => ({ code: p.code, sha256: provisioningProfileDigest(p), providerCode: p.provider.code, modelCode: p.model.code, expectedPublicName: p.model.expectedPublicName, currency: p.priceCard.currency, deployments: p.deployments.length, taskClasses: p.routePolicies.map((r) => r.taskClass) }));
   }
 
   /** One write transaction; an optional `onRefusal` runs (in its own transaction) after a typed refusal rolled back. */
@@ -449,7 +471,7 @@ export class FounderActionStore {
     return this.#write('founder action preview', (ctx) => {
       if (!isMutatingIntent(intent)) throw new QandeelError('VALIDATION_FAILED', 'unknown mutating intent', { field: 'intent' });
       if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) throw new QandeelError('VALIDATION_FAILED', 'payload must be an object', { field: 'payload' });
-      const canonical = validatePayload(ctx, intent, payload as Record<string, unknown>, this.#profiles);
+      const canonical = validatePayload(ctx, intent, payload as Record<string, unknown>, this.#profiles, this.#activation);
       const id = newId();
       const at = ts(ctx);
       const fingerprint = sha256Hex(canonicalJson({ v: 1, intent, payload: canonical, session: session.id }));
@@ -511,6 +533,7 @@ export class FounderActionStore {
    */
   #execute(ctx: StoreContext, founderRef: string, p: ActionPreviewRecord): string {
     const pl = p.payload;
+    if (isActivationIntent(p.intentKind)) return executeActivation(this.#store, ctx, founderRef, p.intentKind, pl as Record<string, unknown>, this.#activation);
     const str = (k: string): string => String(pl[k]);
     const strings = (k: string): string[] => (Array.isArray(pl[k]) ? (pl[k] as readonly string[]).map(String) : []);
     switch (p.intentKind) {
@@ -637,6 +660,8 @@ export class FounderActionStore {
         const out = GovernanceStore.for(this.#store).provisionProviderProfile(founderRef, profile, { capMoney: Number(pl.capMoney), capTokens: Number(pl.capTokens), reasonCode: str('reasonCode') });
         return `provider:${out.providerId}`;
       }
+      default:
+        throw new QandeelError('VALIDATION_FAILED', 'unknown intent', { field: 'intent' });
     }
   }
 

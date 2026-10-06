@@ -234,6 +234,18 @@ export const employeeTaskProcessor: GovernedProcessor = {
         await save(ctx, s);
         continue;
       }
+      if (proposal.type === 'ANSWER') {
+        // L1-02: an answer-bearing item (an Academy attempt, a benchmark case, shadow work) exists to deliver one typed
+        // answer. Once the fence records it the work is done (the D-L1-09 discipline): no second answer, no wasted call.
+        const rec = gov.recordAnswer(proposal, s.turn);
+        if (rec.outcome === 'RECORDED') {
+          await save(ctx, { ...s, phase: 'FINAL', pending: null, summaryCode: 'answer.recorded' });
+          return { type: 'COMPLETED', evidence: { summaryCode: 'answer.recorded', turns: s.turn, modelCalls: s.modelCalls, reasoningClass: out.reasoningClass, answerId: rec.answerId } };
+        }
+        s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null };
+        await save(ctx, s);
+        continue;
+      }
       if (proposal.type === 'INVALID') {
         // Observable evidence (the output failed validation) may justify one escalation.
         s = { ...s, invalid: s.invalid + 1 };

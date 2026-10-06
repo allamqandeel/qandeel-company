@@ -304,6 +304,10 @@ function providersView(ctx: ApiContext): Json {
       providerCode: p.providerCode,
       modelCode: p.modelCode,
       expectedPublicName: p.expectedPublicName,
+      // L1-02: the cap is labelled in the profile's own currency (was always shown as USD).
+      currency: p.currency,
+      deployments: p.deployments,
+      taskClasses: p.taskClasses,
       provisioned: provider !== null,
       providerStatus: provider?.status ?? null,
       latestCheck: check ? { result: check.result, observedName: check.observedName, checkedAt: check.checkedAt } : null,
@@ -314,6 +318,42 @@ function providersView(ctx: ApiContext): Json {
 
 export function providers(ctx: ApiContext): Json {
   return providersView(ctx);
+}
+
+/**
+ * L1-02: the Company activation flow — the durable activation view plus the release-pinned registry the forms post
+ * (package codes / versions / digests, scenario and assignment codes, identity profile codes, provider profiles). IDs,
+ * codes and the Founder's own Company content only; never a key or a reference value.
+ */
+function activationPayload(ctx: ApiContext): Json {
+  const env = ctx.runtime.founder.actions.activationEnv();
+  return {
+    view: ctx.runtime.founder.activation(),
+    registry: {
+      packages: env.packages.map((p) => ({
+        code: p.code,
+        version: p.version,
+        sha256: ctx.runtime.founder.actions.packageDigest(p.code, p.version),
+        title: p.title,
+        roleRef: p.roleRef,
+        skills: p.skills.map((s) => ({ code: s.code, name: s.name, bytes: s.instructions.length, cases: s.benchmark.length, sourceRefs: s.sourceRefs })),
+        curriculum: p.program.curriculum.map((m) => ({ code: m.code, category: m.category })),
+        scenarios: p.scenarios.map((s) => ({ code: s.code, kind: s.kind, content: s.kind === 'HOLDOUT' ? null : s.content })),
+        shadowAssignments: p.shadowAssignments.map((a) => ({ code: a.code, objective: a.objective })),
+        taskClasses: p.taskClasses,
+        limits: p.limits,
+        founderCalibrationRequired: p.program.founderCalibrationRequired,
+        assessmentTrials: p.program.assessmentTrials,
+      })),
+      identities: env.identities.map((i) => ({ code: i.code, roleRef: i.roleRef, sourceRef: i.sourceRef })),
+      providers: providersView(ctx),
+      evaluatorDimensions: ['REASONING_QUALITY', 'CORRECTNESS', 'EVIDENCE_USE', 'QANDEEL_UNDERSTANDING', 'ROLE_MASTERY', 'COLLABORATION', 'FOUNDER_COMMUNICATION', 'LEARNING_FROM_FEEDBACK'],
+    },
+  };
+}
+
+export function activation(ctx: ApiContext): Json {
+  return activationPayload(ctx);
 }
 
 export function pilotInspect(ctx: ApiContext, pilotId: string, query: { workItemId?: string | undefined }): Json {
@@ -336,6 +376,8 @@ export interface CommandResolution {
   readonly providers?: Json;
   /** C7-D read intent: the digital projects, the exact external acts awaiting the Founder and (one match) the project. */
   readonly digital?: Json;
+  /** L1-02 read intent: the Company activation flow (every step is a structured-only confirmation). */
+  readonly activation?: Json;
 }
 
 /** Resolves a read intent to a focus change, or a mutating one to a preview (never to a mutation). */
@@ -402,6 +444,9 @@ export function command(ctx: ApiContext, body: Json): CommandResolution {
       case 'SHOW_PROVIDERS':
         // L1-01: a read of the model providers; provisioning is the structured-only PROVIDER_PROVISION confirmation.
         return { intent, focus: { lens: 'LIVE', targetId: null, query: null }, matches: [], providers: providersView(ctx) };
+      case 'SHOW_ACTIVATION':
+        // L1-02: a read of the activation flow; every activation act is a structured-only confirmation.
+        return { intent, focus: { lens: 'LIVE', targetId: null, query: null }, matches: [], activation: activationPayload(ctx) };
       case 'SHOW_PERFORMANCE': {
         const ms = matchEmployees(u, intent.argument ?? '');
         const e = ms.length === 1 ? ms[0] : undefined;
@@ -545,7 +590,22 @@ function resolveMutatingTarget(ctx: ApiContext, u: CompanyUniverse, command: Ext
     case 'PILOT_CREATE':
     case 'PILOT_ADVANCE':
     case 'PROVIDER_PROVISION':
-      // Structured only (a form or a rail action posts IDs / codes), never free text (D-C5-07, R2-21, C7-A, C7-C, L1-01).
+    case 'EMPLOYEE_HIRE':
+    case 'EMPLOYEE_LIFECYCLE':
+    case 'EMPLOYEE_MODEL_ACCESS':
+    case 'SKILL_PACKAGE_QUALIFY':
+    case 'ACADEMY_PACKAGE_INSTALL':
+    case 'ACADEMY_ENROLL':
+    case 'ACADEMY_MODULES_COMPLETE':
+    case 'ACADEMY_ATTEMPT_START':
+    case 'ACADEMY_EVALUATE':
+    case 'ACADEMY_RETRAIN_COMPLETE':
+    case 'ACADEMY_SHADOW_ASSIGN':
+    case 'ACADEMY_PROBATION_EVIDENCE':
+    case 'ACADEMY_PROBATION_REVIEW':
+    case 'ACADEMY_CALIBRATION':
+    case 'ACTIVATION_DECIDE':
+      // Structured only (a form or a rail action posts IDs / codes), never free text (D-C5-07, R2-21, C7-A, C7-C, L1-01, L1-02).
       return null;
   }
 }
@@ -624,6 +684,37 @@ function structuredSummary(ctx: ApiContext, preview: { intentKind: string; paylo
       const cap = p.companyBudgetExists === true ? `the existing Company cap stays ${s('existingCapMoney')} micro-${s('currency')}` : `first Company cap ${s('capMoney')} micro-${s('currency')} / ${s('capTokens')} tokens (hard; no automatic top-up)`;
       return `Provision the model provider ${s('providerCode')} (${s('modelCode')} = ${s('observedPublicName')}, identity checked) with deployments ${deployments} at ${s('qualificationTarget')}, egress up to ${s('egressMaxDataClass')}; reservation rates (peak, cache miss) ${s('peakInputPerMTok')} in / ${s('peakOutputPerMTok')} out micro-${s('currency')} per MTok (cached input ${s('peakCachedInputPerMTok')}; off-peak ${s('offPeakInputPerMTok')} / ${s('offPeakOutputPerMTok')}; basis ${s('pricingBasisDate')}); ${cap}`;
     }
+    // --- L1-02: the activation acts, stated as exactly what the canonical store will do (nothing more) ---
+    case 'EMPLOYEE_HIRE':
+      return `Hire ${s('givenName')} ${s('familyName')}${p.displayNameAr ? ` (${s('displayNameAr')})` : ''} into the seat ${s('positionTitle')} (${s('roleRef')}) as a CANDIDATE — not active, no authority, no budget; cognitive profile ${s('defaultClass')}..${s('ceilingClass')}; portrait pending. The Academy alone decides activation`;
+    case 'EMPLOYEE_LIFECYCLE':
+      return `Move ${s('name')} from ${s('from')} to ${s('to')} (a trainee step; ACTIVE comes only from the Academy's activation decision)`;
+    case 'EMPLOYEE_MODEL_ACCESS':
+      return `${p.envelopeExists === true ? 'Keep' : 'Open'} ${s('name')}'s hard envelope of ${s('capMoney')} micro-${s('currency')} and grant model access (R0, up to ${s('dataClassCeiling')}) for: ${Array.isArray(p.taskClasses) ? (p.taskClasses as string[]).join(', ') : ''}. No tools, no external effect`;
+    case 'SKILL_PACKAGE_QUALIFY':
+      return `${p.mode === 'QUALIFY' ? 'Register and qualify' : 'Re-run the void benchmark cases of'} the Academy package ${s('packageCode')} v${s('packageVersion')} (digest ${s('packageSha256').slice(0, 12)}…): inspection, licence check, the deterministic static security review, then ${s('benchmarkRuns')} bounded benchmark runs (with / without each skill) at most ${s('maxSpendMicros')} micro-units. Nothing is approved here`;
+    case 'ACADEMY_PACKAGE_INSTALL':
+      return `Install the qualified Academy package ${s('packageCode')} v${s('packageVersion')} (digest ${s('packageSha256').slice(0, 12)}…): approve its Skill versions on their own evidence, publish the ${s('roleRef')} blueprint and program (${s('scenarios')}; calibration ${p.founderCalibrationRequired === true ? 'required' : 'not required'}). This authorizes the install; it asserts no test result`;
+    case 'ACADEMY_ENROLL':
+      return `Enroll ${s('name')} in the ${s('roleRef')} program and open ${s('passports')} LEARNING skill passports (training, not authority)`;
+    case 'ACADEMY_MODULES_COMPLETE':
+      return `Record the trainer acknowledgement of ${Array.isArray(p.moduleCodes) ? (p.moduleCodes as string[]).length : 0} curriculum module(s); the learning path advances only as far as the evidence allows`;
+    case 'ACADEMY_ATTEMPT_START':
+      return `Start the ${s('attemptKind').toLowerCase()} attempt on ${s('scenarioKind').toLowerCase()} scenario ${s('scenarioCode')}: one bounded run (cap ${s('capMicros')} micro-units, output ${s('maxOutputTokens')} tokens, task class ${s('taskClass')}), constrained authority, no external effect`;
+    case 'ACADEMY_EVALUATE':
+      return p.answered === true ? `Record your evaluator scores (${Array.isArray(p.scores) ? (p.scores as string[]).join(', ') : ''}); authority compliance and cost discipline come from run facts, never from you or the model` : 'Close the unanswered attempt through the deterministic rubric (void, or failed on a refusal) — nothing to score';
+    case 'ACADEMY_RETRAIN_COMPLETE':
+      return `Record that the targeted retraining is done (${Array.isArray(p.categories) ? (p.categories as string[]).join(', ') : ''}); the trainee is re-tested next`;
+    case 'ACADEMY_SHADOW_ASSIGN':
+      return `Assign the shadow work "${s('objective')}" (internal, no external effect, cap ${s('capMicros')} micro-units)`;
+    case 'ACADEMY_PROBATION_EVIDENCE':
+      return `Record probation evidence on the shadow work — positive: ${Array.isArray(p.positive) ? (p.positive as string[]).join(', ') || 'none' : 'none'}; negative: ${Array.isArray(p.negative) ? (p.negative as string[]).join(', ') || 'none' : 'none'}`;
+    case 'ACADEMY_PROBATION_REVIEW':
+      return `Decide the probation review: ${s('decision')} (PASS needs the program's evidence; certification follows only from complete evidence and is not activation)`;
+    case 'ACADEMY_CALIBRATION':
+      return `${p.decision === 'APPROVE' ? 'Approve' : 'Reject'} the Founder Calibration (evidence: ${Array.isArray(p.evidenceRefs) ? (p.evidenceRefs as string[]).length : 0} item(s))`;
+    case 'ACTIVATION_DECIDE':
+      return p.decision === 'APPROVE' ? `Activate ${s('name')} (${s('roleRef')}): the Academy activation gate re-checks the valid certification, the passed probation and the approved calibration. Activation grants no authority beyond explicit grants` : `Reject the activation of ${s('name')} (the enrollment closes; its evidence stays)`;
     case 'PILOT_ADVANCE': {
       const step: Record<string, string> = {
         BRIEFING: 'Start the pilot briefing with the CEO (a conversation; it decides nothing)',

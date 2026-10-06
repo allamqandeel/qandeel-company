@@ -22,6 +22,7 @@ import { ceoSeat, seatHolder } from './org-core.js';
 import type { Fence } from './records.js';
 import { storeContext, type CompanyStore } from './store.js';
 import { applyTransition, enqueueJob } from './work-core.js';
+import { txDeclareRequirements } from './capability.js';
 import { txCreateWorkItem } from './work-items.js';
 
 const EMPLOYEE_TASK = 'c2.employee-task';
@@ -162,6 +163,7 @@ export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSen
       { actorRef: founderRef },
     );
     const replyWorkItemId = created.workItem.id;
+    declareRoleTopics(ctx, replyWorkItemId, e.id, e.roleRef);
     txAllocateWorkItemBudget(ctx, replyWorkItemId, e.id, cap, founderRef, 'founder.reply');
     const ready = applyTransition(ctx, getWorkItemRow(ctx, replyWorkItemId), 'READY', { reasonCode: 'founder.reply', trace: { correlationId: created.workItem.correlationId, actorRef: founderRef } });
     enqueueJob(ctx, ready, { correlationId: ready.correlationId, actorRef: founderRef });
@@ -219,6 +221,7 @@ export function txRequestCeoBrief(ctx: StoreContext, input: { subject: string; c
     { actorRef },
   );
   if (created.replayed) return { thread, workItemId: created.workItem.id, replayed: true };
+  declareRoleTopics(ctx, created.workItem.id, ceo.id, ceo.roleRef);
   txAllocateWorkItemBudget(ctx, created.workItem.id, ceo.id, input.cap ?? DEFAULT_REPLY_CAP, actorRef, assertCode(input.reasonCode, 'reasonCode'));
   const ready = applyTransition(ctx, getWorkItemRow(ctx, created.workItem.id), 'READY', { reasonCode: input.reasonCode, trace: { correlationId: created.workItem.correlationId, actorRef } });
   enqueueJob(ctx, ready, { correlationId: ready.correlationId, actorRef });
@@ -379,4 +382,15 @@ export class CommunicationStore {
       };
     });
   }
+}
+
+/**
+ * L1-02: a Founder-facing reply or brief of an Employee that holds certified / trained Skills declares its role's retrieval
+ * topics (never a requirement, never a gate), so the Employee's own pinned role Skills are relevant to its conversation with
+ * the Founder whatever words the Founder used. An Employee without passport Skills is unchanged.
+ */
+function declareRoleTopics(ctx: StoreContext, workItemId: Id, employeeId: Id, roleRef: string): void {
+  if (!ctx.db.get(`SELECT 1 AS x FROM passport_entries WHERE employee_id = ? AND status = 'ACTIVE'`, employeeId)) return;
+  const tail = roleRef.slice(5).split('.').at(-1) ?? 'role';
+  txDeclareRequirements(ctx, workItemId, { requirements: [], topics: [tail, 'founder'] });
 }

@@ -775,6 +775,7 @@ describe('R2-12: one run-failure vocabulary — the runtime records the real cau
       refuseFinal: () => undefined,
       sendMessage: () => ({ outcome: 'RECORDED', code: 'OK', messageId: null }),
       goalAct: () => ({ outcome: 'DONE', code: 'OK', resultRef: null }),
+      recordAnswer: () => ({ outcome: 'RECORDED', code: 'OK', answerId: null }),
       ...over,
     };
     const r = await employeeTaskProcessor.runGoverned(ctxFor(input), services);

@@ -343,6 +343,15 @@ const L1_REPORT = 'docs/L1_01_IMPLEMENTATION_REPORT.md';
 const L1_CLOSURE = /^docs\/L1_01_[^/]*CLOSURE[^/]*\.md$/i;
 const L1_PROOF_MARKERS = ['L1-PROOF: secret-vault', 'L1-PROOF: deepseek-adapter', 'L1-PROOF: economics-bands', 'L1-PROOF: storage-pricing', 'L1-PROOF: runtime-l1'];
 const L1_MUTATION_CHECK = 'scripts/l1-mutation-check.mjs';
+// L1-02: the first production Company activation (docs/L1_02_IMPLEMENTATION_REPORT.md, D-L1-12 … D-L1-16).
+const L1_02_REPORT = 'docs/L1_02_IMPLEMENTATION_REPORT.md';
+const L1_02_CLOSURE = /^docs\/L1_02_[^/]*CLOSURE[^/]*\.md$/i;
+const L1_02_ACTIVATION = 'packages/storage/src/founder-activation.ts';
+const L1_02_PACKAGES = 'packages/storage/src/academy-packages.ts';
+const L1_02_FILES = [L1_02_ACTIVATION, L1_02_PACKAGES, 'packages/storage/src/answers.ts', 'packages/storage/src/activation-view.ts'];
+const L1_02_PROOF_MARKERS = ['L1-02-PROOF: activation-runtime', 'L1-02-PROOF: activation-surface'];
+const L1_02_BENCH_LOADER = /\bloadBenchmarkSkillInstructions\b/;
+const L1_02_BENCH_LOADER_FILES = ['packages/storage/src/mind-core.ts', 'packages/storage/src/mind-writes.ts'];
 const L1_VAULT_SRC = 'packages/secret-vault/src/';
 const L1_VAULT = 'packages/secret-vault/src/windows-dpapi.ts';
 const L1_VAULT_CLI = 'packages/secret-vault/src/cli.ts';
@@ -581,6 +590,19 @@ const MUTATION_PINS = {
       'l1-alias-drift-ignored-adapter', 'l1-alias-drift-ignored-provisioning',
       'l1-cache-hit-billed-as-miss', 'l1-off-peak-ignored', 'l1-holiday-ignored', 'l1-reservation-below-worst-case', 'l1-cached-above-input-accepted', 'l1-settlement-ignores-actual-cost',
       'l1-profile-d3-egress-accepted',
+      'l1-02-lifecycle-active-offered',
+      'l1-02-occupied-seat-hireable',
+      'l1-02-name-unshaped',
+      'l1-02-package-digest-unchecked',
+      'l1-02-model-access-d3',
+      'l1-02-install-preview-unqualified',
+      'l1-02-activation-without-calibration',
+      'l1-02-evaluator-types-deterministic',
+      'l1-02-static-review-ignored',
+      'l1-02-baseline-sees-skill',
+      'l1-02-answer-any-task',
+      'l1-02-answer-run-not-ended',
+      'l1-02-benchmark-failing-case-passes',
     ],
   },
   [R1_MUTATION_CHECK]: {
@@ -614,7 +636,9 @@ const MEMORY_PROPOSALS = 'packages/runtime/src/c3/memory-proposals.ts';
 const RUNTIME_SERVICES = 'packages/runtime/src/runtime.ts';
 // Durable Memory / Knowledge / Canonical Truth / Skill / Academy / certification state changes only in
 // the C3 storage modules (never in the runtime, the governance kernel or the ordinary CompanyStore).
-const MIND_WRITERS = ['mind-core', 'mind-writes', 'memory', 'skill-registry', 'academy', 'capability'].map((m) => `packages/storage/src/${m}.ts`);
+// L1-02: `academy-packages` is the Academy package lifecycle (qualify → benchmark → install), a C3 storage module behind
+// the Founder-authority write path (D-L1-13); it joins the C3 writers.
+const MIND_WRITERS = ['mind-core', 'mind-writes', 'memory', 'skill-registry', 'academy', 'capability', 'academy-packages'].map((m) => `packages/storage/src/${m}.ts`);
 const MIND_WRITE = /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO|DELETE\s+FROM|REPLACE\s+INTO)\s+(?:canonical_truth|memory_\w+|lesson\w*|knowledge_\w+|context_\w+|skill\w*|role_blueprint\w*|passport_\w+|academy_\w+|certification\w*|founder_calibrations|probation_\w+|activation_requests|capability_gaps|work_item_capabilities|run_execution_modes)\b/i;
 // Founder / evaluator acts that model output must never reach: the runtime and CLI never call them.
 const MIND_AUTHORITY_CALL = /\.(?:recordCanonicalTruth|correctMemory|recordKnowledge|validateLesson|decidePromotion|advanceSkillVersion|acknowledgePaidDependency|publishBlueprint|openPassportEntry|rolloutUpdate|rollbackUpdate|recordEvaluation|decideProbationReview|decideFounderCalibration|decideActivation|revokeCertification|requireRecertification|cancelGap)\s*\(/;
@@ -1912,6 +1936,72 @@ export const RULES = [
       return problems;
     },
   },
+  // --- L1-02 rules -------------------------------------------------------------------------------------------------
+  {
+    id: 'l1-02-requires-l1-01-closure',
+    // L1-02 builds on a CLOSED L1-01: its modules need docs/L1_01_*CLOSURE*.md.
+    check: ({ files }) => (files.some((f) => L1_02_FILES.includes(f)) && !files.some((f) => L1_CLOSURE.test(f)) ? ['L1-02 modules exist but L1-01 has no docs/L1_01_*CLOSURE*.md record'] : []),
+  },
+  {
+    id: 'l1-02-not-claimed-closed',
+    // L1-02 is an implementation candidate until independent exact-head review and merge; L1 as a whole is not closed by it.
+    check: ({ files, read }) => {
+      if (files.some((f) => L1_02_CLOSURE.test(f))) return [];
+      const problems = [];
+      const st = mapState(read(IMPLEMENTATION_MAP), 'L1');
+      if (st !== undefined && /^\s*CLOSED\b/i.test(st)) problems.push(`L1 is marked ${JSON.stringify(st)} but no docs/L1_02_*CLOSURE*.md record exists`);
+      const report = read(L1_02_REPORT);
+      if (report !== undefined && /\bL1-02\s*(?:—|-|:|is)?\s*CLOSED\b/i.test(report.replace(/\bNOT\s+CLOSED\b/gi, ''))) problems.push(`${L1_02_REPORT} claims L1-02 is closed without a closure record`);
+      return problems;
+    },
+  },
+  {
+    id: 'l1-02-proofs-present',
+    // The production activation proofs CI must execute (found by marker) whenever the L1-02 modules exist.
+    check: ({ files, read }) => {
+      if (!files.some((f) => L1_02_FILES.includes(f))) return [];
+      const tests = files.filter((f) => isTestPath(f) && isCode(f));
+      return L1_02_PROOF_MARKERS.filter((m) => !tests.some((f) => (read(f) ?? '').includes(m))).map((m) => `no test carries the proof marker "${m}"`);
+    },
+  },
+  {
+    id: 'l1-02-benchmark-load-confined',
+    // A SANDBOXED (unapproved) Skill version loads only through the one benchmark loader beside the pinned loader, and only
+    // the context assembler calls it (inside the fenced SKILL_BENCHMARK mode). Production eligibility is never relaxed.
+    check: ({ files, read }) =>
+      files
+        .filter((f) => isCode(f) && !isTestPath(f) && !L1_02_BENCH_LOADER_FILES.includes(f))
+        .filter((f) => L1_02_BENCH_LOADER.test(read(f) ?? ''))
+        .map((f) => `${f} reaches the benchmark skill loader; only the context assembler may (fenced SKILL_BENCHMARK mode)`),
+  },
+  {
+    id: 'l1-02-activation-no-seam',
+    // The production activation path never uses the test-only Founder seam or a raw Founder reference as authority.
+    check: ({ files, read }) =>
+      files
+        .filter((f) => L1_02_FILES.includes(f) || f === 'packages/command-center/src/surface.ts' || /^scripts\/l1-02-[^/]*\.mjs$/.test(f))
+        .filter((f) => /founderSurfaceInternals|testing\/founder-seam|activateEmployeeForTest|armFounderTestSurface|@qandeel-company\/storage\/testing|founder:unauthenticated/.test(read(f) ?? ''))
+        .map((f) => `${f} reaches the test-only Founder seam: the production activation path is the authenticated Founder surface only`),
+  },
+  {
+    id: 'l1-02-activation-structured-only',
+    // No text produces an activation act: the classifier's verb grammar never names one, and the surface's text path
+    // resolves each to no target (they are posted only as structured previews).
+    check: ({ files, read }) => {
+      if (!files.includes(L1_02_ACTIVATION)) return [];
+      const intents = ['EMPLOYEE_HIRE', 'EMPLOYEE_LIFECYCLE', 'EMPLOYEE_MODEL_ACCESS', 'SKILL_PACKAGE_QUALIFY', 'ACADEMY_PACKAGE_INSTALL', 'ACADEMY_ENROLL', 'ACADEMY_MODULES_COMPLETE', 'ACADEMY_ATTEMPT_START', 'ACADEMY_EVALUATE', 'ACADEMY_RETRAIN_COMPLETE', 'ACADEMY_SHADOW_ASSIGN', 'ACADEMY_PROBATION_EVIDENCE', 'ACADEMY_PROBATION_REVIEW', 'ACADEMY_CALIBRATION', 'ACTIVATION_DECIDE'];
+      const problems = [];
+      const gov = read('packages/governance/src/founder.ts') ?? '';
+      const actOf = /function actOf\([\s\S]*?\n\}/.exec(gov)?.[0] ?? '';
+      for (const i of intents) if (actOf.includes(`'${i}'`)) problems.push(`the Founder verb grammar produces ${i} from text`);
+      const api = read('packages/command-center/src/api.ts');
+      if (api !== undefined) {
+        const resolver = /function resolveMutatingTarget\([\s\S]*?\n\}/.exec(api)?.[0] ?? '';
+        for (const i of intents) if (!new RegExp(`case '${i}':[\\s\\S]*?return null;`).test(resolver)) problems.push(`the surface's text path does not resolve ${i} to no target`);
+      }
+      return problems;
+    },
+  },
   {
     id: 'l1-proofs-present',
     // The L1 proofs CI must execute (found by marker), the mutation check, and the root ci script running it.
@@ -2410,6 +2500,21 @@ function syntheticRepo(overrides = {}) {
 }
 
 const VIOLATIONS = {
+  // L1-02.
+  'l1-02-requires-l1-01-closure': [{ contents: { [L1_02_ACTIVATION]: 'export {};\n' }, remove: ['docs/L1_01_CLOSURE_RECORD.md'] }],
+  'l1-02-not-claimed-closed': [
+    { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`L1\` | Local | Local | CLOSED / MERGED |\n` } },
+    { contents: { [L1_02_REPORT]: '# Report\n\nL1-02 is CLOSED.\n' } },
+  ],
+  'l1-02-proofs-present': [{ contents: { [L1_02_ACTIVATION]: 'export {};\n' } }],
+  'l1-02-benchmark-load-confined': [{ contents: { 'packages/storage/src/academy-packages.ts': 'const b = loadBenchmarkSkillInstructions(ctx, runId);\n' } }],
+  'l1-02-activation-no-seam': [
+    { contents: { [L1_02_ACTIVATION]: "import { activateEmployeeForTest } from '@qandeel-company/storage/testing';\n" } },
+    { contents: { 'scripts/l1-02-activation-proof.mjs': "const { armFounderTestSurface } = await import('@qandeel-company/storage/testing');\n" } },
+  ],
+  'l1-02-activation-structured-only': [
+    { contents: { [L1_02_ACTIVATION]: 'export {};\n', 'packages/governance/src/founder.ts': "function actOf(family, verb, obj) {\n  return { intent: 'EMPLOYEE_HIRE', decision: null };\n}\n" } },
+  ],
   // L1-01.
   'l1-requires-c7d-closure': [{ contents: { [L1_VAULT]: 'export {};\n' }, remove: ['docs/C7D_CLOSURE_RECORD.md'] }],
   'l1-not-claimed-closed': [
@@ -2908,6 +3013,11 @@ const VIOLATIONS = {
 
 // Legitimate future states that each rule must accept (stage-awareness, not a frozen snapshot).
 const MUST_PASS = [
+  // L1-02 legitimate states: a candidate explicitly not closed with L1-01 closed; the loader in its two modules; proofs present.
+  { id: 'l1-02-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`L1\` | Local | Local | IN PROGRESS — L1-01 CLOSED / MERGED / CANONICAL; L1-02 implementation candidate; not closed |\n`, [L1_02_REPORT]: '# Report\n\nL1-02 is NOT CLOSED (implementation candidate).\n' } } },
+  { id: 'l1-02-benchmark-load-confined', scenario: { contents: { 'packages/storage/src/mind-writes.ts': 'const b = loadBenchmarkSkillInstructions(ctx, fence.runId);\n', 'packages/storage/src/mind-core.ts': 'export function loadBenchmarkSkillInstructions() { return null; }\n' } } },
+  { id: 'l1-02-proofs-present', scenario: { contents: { [L1_02_ACTIVATION]: 'export {};\n', 'packages/runtime/test/l1/l1-02.test.ts': L1_02_PROOF_MARKERS.map((m) => `// ${m}`).join('\n') } } },
+  { id: 'l1-02-requires-l1-01-closure', scenario: { contents: { [L1_02_ACTIVATION]: 'export {};\n', 'docs/L1_01_CLOSURE_RECORD.md': '' } } },
   // L1-01 legitimate states: a candidate explicitly not closed; the real vault, transport, declaration, adapter and
   // migration (comments may name the chain-of-thought field and the pricing-docs host); an adapter test calling generate.
   { id: 'l1-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`L1\` | Local | Local | IN PROGRESS — L1-01 implementation candidate; not closed |\n`, [L1_REPORT]: '# Report\n\nL1-01 is NOT CLOSED (implementation candidate).\n' } } },

@@ -52,6 +52,7 @@ import {
   insertMemory,
   knowledgeAccess,
   knowledgeReadable,
+  loadBenchmarkSkillInstructions,
   loadPinnedSkillInstructions,
   loadVerified,
   getMemoryRow,
@@ -82,10 +83,18 @@ const TRAINEE_STATES: readonly string[] = ['TRAINING', 'SHADOW', 'PROBATION', 'R
  * An Academy attempt or shadow assignment lets a trainee's run execute with constrained authority.
  * The mode is recorded for the run (once) so every later action boundary re-checks it.
  */
-export function academyExecutionMode(ctx: StoreContext, runId: Id, item: WorkItemRecord, e: EmployeeRecord): 'ACADEMY_ATTEMPT' | 'SHADOW_WORK' | null {
+export function academyExecutionMode(ctx: StoreContext, runId: Id, item: WorkItemRecord, e: EmployeeRecord): 'ACADEMY_ATTEMPT' | 'SHADOW_WORK' | 'SKILL_BENCHMARK' | null {
   // An Academy attempt is always an attempt (also when an ACTIVE Employee recertifies): its scenario is
   // served and its authority constrained. Shadow work is a trainee-only mode.
   const trainee = TRAINEE_STATES.includes(e.state);
+  // L1-02 (D-L1-13): a Skill benchmark case is executed by its trainee subject in the fenced SKILL_BENCHMARK mode — the
+  // only mode in which a SANDBOXED version may enter a context (its WITH_SKILL arm). Same constrained authority.
+  const bench = ctx.db.get<{ id: string; employee_id: string; state: string }>('SELECT id, employee_id, state FROM skill_benchmark_runs WHERE work_item_id = ?', item.id);
+  if (bench) {
+    if (bench.employee_id !== e.id || !trainee || bench.state !== 'OPEN') return null;
+    if (!ctx.db.get('SELECT 1 AS ok FROM run_benchmark_modes WHERE run_id = ?', runId)) ctx.db.run('INSERT INTO run_benchmark_modes (run_id, benchmark_run_id, created_at) VALUES (?, ?, ?)', runId, bench.id, ts(ctx));
+    return 'SKILL_BENCHMARK';
+  }
   const attempt = ctx.db.get<{ enrollment_id: string; stage: string; employee_id: string; state: string }>(
     `SELECT a.enrollment_id, n.stage, n.employee_id, a.state FROM academy_attempts a JOIN academy_enrollments n ON n.id = a.enrollment_id WHERE a.work_item_id = ?`,
     item.id,
@@ -106,7 +115,13 @@ export function academyExecutionMode(ctx: StoreContext, runId: Id, item: WorkIte
 
 /** Whether this run executes in a constrained Academy mode (attempt or shadow work), whatever the Employee's state. */
 export function academyRun(ctx: StoreContext, runId: Id): boolean {
-  return ctx.db.get('SELECT 1 AS ok FROM run_execution_modes WHERE run_id = ?', runId) !== undefined;
+  return ctx.db.get('SELECT 1 AS ok FROM run_execution_modes WHERE run_id = ?', runId) !== undefined || benchmarkRunOf(ctx, runId) !== null;
+}
+
+/** L1-02: the benchmark run a run executes in the fenced SKILL_BENCHMARK mode, or null. */
+export function benchmarkRunOf(ctx: StoreContext, runId: Id): { readonly id: Id; readonly state: string; readonly employeeId: Id } | null {
+  const r = ctx.db.get<{ id: string; state: string; employee_id: string }>('SELECT b.id, b.state, b.employee_id FROM run_benchmark_modes m JOIN skill_benchmark_runs b ON b.id = m.benchmark_run_id WHERE m.run_id = ?', runId);
+  return r ? { id: r.id as Id, state: r.state, employeeId: r.employee_id as Id } : null;
 }
 
 /**
@@ -115,6 +130,9 @@ export function academyRun(ctx: StoreContext, runId: Id): boolean {
  */
 export function constrainedRun(ctx: StoreContext, runId: Id, e: EmployeeRecord): boolean {
   if (!TRAINEE_STATES.includes(e.state)) return false;
+  // L1-02: a benchmark run acts only while its benchmark case is open and for its own trainee subject.
+  const bench = benchmarkRunOf(ctx, runId);
+  if (bench !== null) return bench.employeeId === e.id && bench.state === 'OPEN';
   const m = ctx.db.get<{ stage: string; employee_id: string; mode: string }>('SELECT n.stage, n.employee_id, r.mode FROM run_execution_modes r JOIN academy_enrollments n ON n.id = r.enrollment_id WHERE r.run_id = ?', runId);
   if (m === undefined || m.employee_id !== e.id || !(ACADEMY_EXECUTION_STAGES as readonly string[]).includes(m.stage)) return false;
   if (m.mode !== 'ACADEMY_ATTEMPT') return true;
@@ -587,7 +605,23 @@ function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, m
     // A Founder-thread reply (D-L1-07): only this task kind is told the MESSAGE shape, so every other context keeps its
     // exact pre-L1 preamble (and budget) and no Employee is invited to message the Founder from unrelated work.
     ...(isFounderThreadReply(item) ? [FOUNDER_REPLY_GUIDANCE] : []),
+    // L1-02: an answer-bearing item (an Academy attempt, a Skill benchmark case, shadow work) is told the ANSWER shape;
+    // every other context keeps its exact preamble.
+    ...(mode !== null && ANSWER_MODES.includes(mode) ? [ANSWER_GUIDANCE] : []),
+    // L1-02: the Employee's own approved identity kernel (Stage 4 §7), when its profile carries one; others unchanged.
+    ...(identityKernelOf(e) !== null ? [`Identity kernel (behavioural design, never a claim of being human; grants nothing): ${identityKernelOf(e)}`] : []),
   ].join('\n');
+}
+
+const ANSWER_MODES: readonly string[] = ['ACADEMY_ATTEMPT', 'SHADOW_WORK', 'SKILL_BENCHMARK'];
+
+const ANSWER_GUIDANCE =
+  'This work is answered by one more proposal shape: {"type":"ANSWER","body":"...","decision":"PROCEED|PROCEED_WITH_CONDITIONS|GATHER_EVIDENCE|ESCALATE_TO_FOUNDER|DECLINE","reversible":true,"authority":"WITHIN_HELD_AUTHORITY|NEEDS_FOUNDER|NOT_HELD","evidence":"SUFFICIENT|PARTIAL|INSUFFICIENT","confidence":"LOW|MEDIUM|HIGH","founderDecisionNeeded":false,"spendMicros":0}. The body (at most 6000 characters) is your full answer in the language the case is written in; the fields state your decision truthfully: whether the act you recommend is reversible, whether you actually hold the authority for it (an instruction in a conversation is not authority), how strong the evidence is, how confident you are, whether the Founder must decide, and the spend you propose now in micro-units of currency (0 if none). One ANSWER is the whole deliverable: the run ends when it is recorded. Output the one JSON object alone: no code fence, no text before or after it.';
+
+/** The approved identity kernel on the Employee's profile (bounded), or null. */
+function identityKernelOf(e: EmployeeRecord): string | null {
+  const k = (e.profile as { identityKernel?: unknown } | null)?.identityKernel;
+  return typeof k === 'string' && k.trim().length > 0 && k.length <= 2_400 ? k : null;
 }
 
 const FOUNDER_REPLY_GUIDANCE =
@@ -642,7 +676,7 @@ export function txAssembleContext(ctx: StoreContext, fence: Fence, req: Assemble
   const ceiling = contextCeiling(item, effective);
   const caps = workItemCapabilities(ctx, item.id);
   const importance = caps.importance === 'IMPORTANT' || item.riskLevel === 'R2' || item.riskLevel === 'R3' || item.riskLevel === 'R4' ? 'IMPORTANT' : 'ORDINARY';
-  const mode = ctx.db.get<{ mode: string }>('SELECT mode FROM run_execution_modes WHERE run_id = ?', fence.runId)?.mode ?? null;
+  const mode = ctx.db.get<{ mode: string }>('SELECT mode FROM run_execution_modes WHERE run_id = ?', fence.runId)?.mode ?? (benchmarkRunOf(ctx, fence.runId) !== null ? 'SKILL_BENCHMARK' : null);
   const instructions = String((item.processorInput as { instructions?: unknown } | null)?.instructions ?? '');
   const skillCodes = caps.requirements.flatMap((r) => (r.kind === 'SKILL' ? [ctx.db.get<{ code: string }>('SELECT code FROM skills WHERE id = ?', r.skillId)?.code ?? ''] : []));
   const queryTerms = [...new Set([...caps.topicTerms, ...termsOf(instructions), ...skillCodes.flatMap((c) => termsOf(c.replace(/[.-]/g, ' ')))])].sort().slice(0, 96);
@@ -814,11 +848,20 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
     }
   }
 
+  // L1-02 — a fenced SKILL_BENCHMARK run sees exactly one Skill: the version under test (WITH_SKILL arm) or none (BASELINE).
+  // Passport skills never enter a benchmark, so the two arms differ only by the version under test.
+  if (p.mode === 'SKILL_BENCHMARK') {
+    const b = loadBenchmarkSkillInstructions(ctx, fence.runId);
+    if (b !== null) {
+      const v = getSkillVersionRow(ctx, b.skillVersionId);
+      add(baseCandidate({ key: `skill:${v.id}`, kind: 'SKILL', layer: 'SKILL', required: true, itemId: v.id, version: v.version, sha256: v.instructionsSha256, provenanceRef: v.sourceRef, authorityWeight: 20, dataClass: 'D1', createdAt: v.createdAt, estTokens: Buffer.byteLength(b.text, 'utf8') + itemEstimate('') }, at), () => b.text);
+    }
+  }
   // L3 — progressive Skill disclosure: passport metadata → task-relevant pinned versions → payload.
   const requiredSkills = new Set(p.caps.requirements.flatMap((r) => (r.kind === 'SKILL' ? [r.skillId] : [])));
   const skillPool: { c: ContextCandidate; directives: Readonly<Record<string, string>>; required: boolean }[] = [];
   for (const pe of ctx.db.all('SELECT * FROM passport_entries WHERE employee_id = ? ORDER BY skill_id', e.id).map(mapPassport)) {
-    if (pe.status !== 'ACTIVE') continue;
+    if (pe.status !== 'ACTIVE' || p.mode === 'SKILL_BENCHMARK') continue;
     const v = getSkillVersionRow(ctx, pe.skillVersionId);
     const skill = ctx.db.get<{ code: string; status: string }>('SELECT code, status FROM skills WHERE id = ?', pe.skillId);
     const vTerms = [...new Set([...(JSON.parse(String(ctx.db.get<{ t: string }>('SELECT terms_json AS t FROM skill_versions WHERE id = ?', v.id)?.t ?? '[]')) as string[]), ...termsOf(String(skill?.code ?? '').replace(/[.-]/g, ' '))])];

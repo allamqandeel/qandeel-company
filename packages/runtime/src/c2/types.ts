@@ -83,6 +83,15 @@ export type MessageProposal = Extract<ModelProposal, { type: 'MESSAGE' }>;
 /** C5: a Director's goal act proposed from inside its run (seat and Department re-checked by the fenced write). */
 export type GoalActProposal = Extract<ModelProposal, { type: 'GOAL_ACTION' }>;
 
+/** L1-02: the typed deliverable of an answer-bearing Work Item (bound to the run's own Work Item by the runtime). */
+export type AnswerProposal = Extract<ModelProposal, { type: 'ANSWER' }>;
+
+export interface AnswerOutcome {
+  readonly outcome: 'RECORDED' | 'REFUSED';
+  readonly code: string;
+  readonly answerId: string | null;
+}
+
 export interface MessageOutcome {
   readonly outcome: 'RECORDED' | 'REFUSED';
   readonly code: string;
@@ -119,6 +128,8 @@ export interface GovernedRunServices {
   sendMessage(proposal: MessageProposal, step: number): MessageOutcome;
   /** C5: a Director's goal derivation / link from inside its run (fenced). */
   goalAct(proposal: GoalActProposal, step: number): GoalActOutcome;
+  /** L1-02: the one answer of this run's answer-bearing Work Item (fenced; never authority, never a score). */
+  recordAnswer(proposal: AnswerProposal, step: number): AnswerOutcome;
 }
 
 /**
