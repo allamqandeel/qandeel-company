@@ -78,12 +78,14 @@ import {
   txDecideMemoryCandidate,
   txRecheckCapabilityWait,
   txRecheckContextHold,
+  txRecordAcademyAnswer,
   txRecordStepResult,
   txRefuseCandidate,
   txSubmitMemoryCandidate,
   type AssembleRequest,
   type AssembleResult,
   type CandidateProposal,
+  type RecordAcademyAnswerResult,
   type StepResultKind,
   type SubmitResult,
 } from './mind-writes.js';
@@ -399,6 +401,16 @@ export function decideMemoryCandidate(store: CompanyStore, fence: Fence, candida
     if (!c || !a || c.work_item_id !== a.work_item_id) throw new QandeelError('AUTHORITY_DENIED', 'this candidate belongs to another Work Item', { candidateId, reason: 'CANDIDATE_NOT_THIS_WORK' });
     return txDecideMemoryCandidate(ctx, candidateId);
   });
+}
+
+/** L1-02: records one Academy answer under the same live job fence as every other governed runtime write. */
+export function recordAcademyAnswer(
+  store: CompanyStore,
+  fence: Fence,
+  step: number,
+  input: { readonly answer: string; readonly summaryCode: string; readonly manifestId: Id },
+): RecordAcademyAnswerResult {
+  return fenced(store, 'record academy answer', fence, (ctx) => txRecordAcademyAnswer(ctx, fence, step, input));
 }
 
 /** Records one step's result for context layer L6 (the runtime's governed services only; job fence mandatory). */
