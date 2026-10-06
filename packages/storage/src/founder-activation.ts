@@ -144,6 +144,9 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
       }, 0);
       const toFinalize = rec === null ? 0 : view.skills.reduce((n, s) => n + s.runs.filter((r) => r.state === 'OPEN' && r.result !== null && WORK_DONE.includes(r.workItemState)).length, 0);
       if (rec !== null && view.benchmarkRunsOpen > 0) transition('the benchmark is still running', 'BENCHMARK_RUNNING', { open: view.benchmarkRunsOpen });
+      // D-L1-24: fail closed — an observation that ended without an answer for an unclassified cause is neither scored nor
+      // re-run; nothing about the package proceeds until it is explained.
+      if (rec !== null && view.benchmarkRunsUnclassified > 0) transition('an observation ended without an answer for an unclassified cause (never treated as infrastructure)', 'BENCHMARK_UNCLASSIFIED_NO_ANSWER', { unclassified: view.benchmarkRunsUnclassified });
       if (rec !== null && voidCases === 0 && toFinalize === 0) transition('nothing to finalize or re-run: every benchmark case is scored', 'NOTHING_TO_REQUALIFY');
       const runs = rec === null ? pkg.skills.reduce((n, s) => n + s.benchmark.length * 2 * k, 0) : voidCases;
       const qualification = rec === null ? 'QUALIFY' : voidCases === 0 ? 'FINALIZE_SCORES' : 'REQUALIFY_VOID_RUNS';
@@ -155,7 +158,7 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
       const bqm2 = packageMethod(pkg) === 'BQM-2' ? {
         benchmarkMethod: 'BQM-2', methodSha256: pkg.benchmarkMethod?.declarationSha256 ?? '', rubricVersion: 'R2',
         answerContractVersion: pkg.benchmarkMethod?.answerContract.version ?? '', answerContractSha256: pkg.benchmarkMethod?.answerContract.sha256 ?? '',
-        reasoningClass: BQM2_DECLARATION.reasoningClass, observationsPerArm: k, maxModelCallsPerObservation: 1 + BQM2_DECLARATION.invalidOutput.sameClassRetries,
+        reasoningClass: BQM2_DECLARATION.reasoningClass, observationsPerArm: k, maxModelCallsPerObservation: BQM2_DECLARATION.deliverable.maxModelCallsPerObservation, answerOnly: true,
         totalCapBoundMicros: runs * pkg.limits.benchmarkCapMicros,
       } : {};
       return { packageCode: pkg.code, packageVersion: pkg.version, packageSha256: sha, packageTitle: pkg.title.slice(0, 160), subjectEmployeeId: subject.id, qualification, skills: pkg.skills.map((s) => `${s.code} (${s.benchmark.length} cases)`), benchmarkRuns: runs, scoresToFinalize: toFinalize, paidProviderCalls: runs === 0 ? 'NONE' : 'BOUNDED_BY_CAPS', benchmarkTaskClass: pkg.taskClasses.benchmark, perRunCapMicros: pkg.limits.benchmarkCapMicros, envelopeRemainingMicros: (() => { const b = budgetFor(ctx, 'EMPLOYEE', subject.id); return b ? Math.max(0, b.capMoney - b.spentMoney - b.reservedMoney) : 0; })(), securityReview: 'STATIC_DETERMINISTIC (text-only native skills; not a human review)', ...bqm2, reasonCode: assertCode(raw.reasonCode ?? 'package.qualify', 'reasonCode') };

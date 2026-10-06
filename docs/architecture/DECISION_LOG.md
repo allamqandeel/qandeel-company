@@ -3874,3 +3874,53 @@ v4 package exists yet; no real benchmark ran.
 - **Budget.** Unchanged: the USD 0.50 task envelope stays; the expected cost of a 120-observation BQM-2 package at the
   observed E1 behaviour (1.25 calls × 1 493 micro-units) is about 223 950 micro-units against 341 214 remaining; any
   increase is a new Founder decision.
+
+## D-L1-24 — the BQM-2 observation is answer-only; a hard two-call bound; VOID only by an infrastructure allowlist (independent review correction, executor)
+
+The independent exact-head review of `26ff469` (D-L1-23) found one benchmark-integrity blocker: a BQM-2 observation ran the
+shared employee loop, which still executed every OTHER syntactically valid proposal type. A valid FINAL ended the Work
+Item without an answer, which R2 scoring then read as an infrastructure VOID (retryable); a MEMORY_CANDIDATE or
+OBSERVATION was submitted to the Memory Write Policy (so a benchmark could teach the Employee something a later
+observation would retrieve) and the loop continued past the advertised two model calls; tool, organizational, review,
+message and goal proposals were likewise reachable. Corrected as a bounded extension of the same seam (no Academy /
+Authority redesign; no migration — 0018 unchanged, 0001–0017 unchanged; no Skill instruction change; no package; no
+paid call):
+
+- **The answer-only fence (runtime-enforced).** A BQM-2 observation's Work Item now carries `answerOnly: true` and
+  `maxModelCalls: 2` beside the pinned class (E1) and `SAME_CLASS_RETRY`. In the employee loop, a valid proposal of any
+  type other than ANSWER is checked BEFORE any proposal branch: it is never executed (no completion, memory candidate,
+  observation, tool request, organizational act, review decision, Founder message or goal act) and is an output failure,
+  diagnosed durably and content-free as `WRONG_PROPOSAL_TYPE` with the recognized proposal type (a closed name; never a
+  parser code). An ANSWER the answer fence refuses for the model's own content (`INVALID_ARGS`, `SECRET_MATERIAL`) is
+  `ANSWER_REFUSED` (with the refusal code); any other refusal ends the item (`INVALID_TASK_INPUT`, never infrastructure).
+  All of these share the parser-invalid path: the first takes the one same-class E1 retry, the second ends the run
+  `MODEL_OUTPUT_INVALID` (a FAILED observation); never E2. An answer-only item checkpoints its failure count, so a
+  resumed run never gets a fresh retry. Ordinary Work Items (and therefore BQM-1 history and every other employee task)
+  are unchanged: the fence applies only when the Work Item declares it.
+- **The hard bound (defence in depth, durable).** The loop never calls past `maxModelCalls`, and the store's reservation
+  (`txReserve`) refuses a model-call reservation past the Work Item's declared bound (`RUN_LIMIT` /
+  `MAX_CALLS_PER_WORK_ITEM`), counted from the Work Item's durable reservations across ALL its runs (a never-sent,
+  RELEASED reservation does not count). The preview's `maxModelCallsPerObservation = 2` is therefore an enforced
+  invariant; the preview also states `answerOnly: true` and its text says that an observation delivers only one ANSWER.
+- **VOID by allowlist only.** R2 scoring classifies a finished observation without an answer from its last run's recorded
+  failure code: `MODEL_OUTPUT_INVALID` → a FAILED observation (scored `INVALID_OUTPUT`); an explicitly allowlisted
+  infrastructure / runtime code (`PROVIDER_UNAVAILABLE`, `PROVIDER_FAILURE`, `FALLBACK_REFUSED`, `NO_ELIGIBLE_ROUTE`,
+  `NO_ROUTE_POLICY`, `ROUTE_NO_LONGER_ELIGIBLE`, `SETTLEMENT_FAILED`, `RUN_ABORTED`, `RUN_TIMEOUT`, `INTEGRITY_FAILURE`) →
+  VOID, `void_reason = INFRASTRUCTURE_<code>`, replaced only in its own slot; ANYTHING else (a completion without an
+  answer, a cancellation, `RUN_LIMIT`, `MAX_TURNS`, an unlisted code) is UNCLASSIFIED and fails closed: the row stays
+  OPEN (never VOID, never scored as a pass, never re-run), the read model shows `UNCLASSIFIED_NO_ANSWER`, the next step
+  is `BENCHMARK_UNCLASSIFIED_NO_ANSWER`, and the qualification preview is refused with that code. BQM-1 / R1 scoring is
+  byte-for-byte unchanged.
+- **Isolation.** A BQM-2 observation's durable outputs are only its governed runtime / budget / audit evidence, its
+  context manifests and step results, and its ANSWER or invalid-output evidence. The observation now produces no memory
+  candidate (so no memory, lesson or learning that a later observation could retrieve), no tool invocation, no
+  organizational act, no review decision, no Founder message and no goal act, whatever the model proposes.
+- **BQM-2 declaration (unreleased; no BQM-2 package exists) changed accordingly:** `deliverable` {only ANSWER,
+  otherValidProposal OUTPUT_FAILURE_NEVER_EXECUTED, maxModelCallsPerObservation 2}; `invalidOutput.counts` [NOT_JSON,
+  UNKNOWN_TYPE, MALFORMED, WRONG_PROPOSAL_TYPE, ANSWER_REFUSED]; `infrastructureNoAnswer` {outcome
+  VOID_REPLACED_BY_DETERMINISTIC_RULE, runFailureCodes (the list above), otherwise UNCLASSIFIED_BLOCKS_QUALIFICATION}.
+  The k = 5, layered absolute rule (3/5, critical 4/5, forbidden 5/5), N1 (m = 1), R2 and AC-4 are unchanged. Its digest
+  is now `c67bc3005069fc4207ade0237cc688928eee3fa9e75a1fb8231247ae7cabe97f` (superseding D-L1-23's `ddaefacf…`, which no
+  package ever pinned). AC-4 (`f787b888…`) and v1 / v2 / v3 digests are unchanged.
+- **Accepted (review C note):** a FAILED observation has `forbiddenHits = 0` (no lexical hit was observed) but is not a
+  verified forbidden pass, so it counts against the 5 of 5 forbidden layer. Kept.

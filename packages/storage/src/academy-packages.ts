@@ -93,7 +93,12 @@ export interface BenchmarkRunView {
   readonly observationNo: number;
   readonly rubricVersion: RubricVersion;
   readonly answeredClass: string | null;
-  readonly outcome: 'ANSWERED' | 'INVALID_OUTPUT' | null;
+  /**
+   * D-L1-24: UNCLASSIFIED_NO_ANSWER (read model only, never stored) = an R2 observation that finished with no answer for a
+   * cause that is neither an output failure nor an allowlisted infrastructure failure: it stays OPEN, is never VOID or
+   * re-run, and blocks the qualification (fail closed).
+   */
+  readonly outcome: 'ANSWERED' | 'INVALID_OUTPUT' | 'UNCLASSIFIED_NO_ANSWER' | null;
   readonly workItemId: Id;
   readonly workItemState: string;
   readonly state: 'OPEN' | 'SCORED' | 'VOID';
@@ -128,6 +133,8 @@ export interface PackageView {
   readonly installable: boolean;
   /** Benchmark runs whose Work Item is still running. */
   readonly benchmarkRunsOpen: number;
+  /** D-L1-24: finished R2 observations with an unclassified no-answer outcome (each blocks the qualification). */
+  readonly benchmarkRunsUnclassified: number;
   readonly spentMicros: number;
   /** D-L1-23: the method this definition declares (what a qualification would run) — the record holds what it ran. */
   readonly method: { readonly version: BenchmarkMethodVersion; readonly declarationSha256: string | null; readonly answerContract: { readonly version: string; readonly sha256: string } | null; readonly observationsPerArm: number; readonly reasoningClass: string | null; readonly rubricVersion: RubricVersion };
@@ -155,10 +162,20 @@ function mapPackage(r: Record<string, unknown>): PackageRecord {
   };
 }
 
-/** D-L1-23: whether a benchmark Work Item ended in two invalid outputs (model behaviour), not an infrastructure no-answer. */
-function endedInvalid(ctx: StoreContext, workItemId: Id, workItemState: string): boolean {
-  if (workItemState !== 'FAILED') return false;
-  return ctx.db.get<{ c: string | null }>('SELECT failure_code AS c FROM runs WHERE work_item_id = ? ORDER BY run_seq DESC LIMIT 1', workItemId)?.c === 'MODEL_OUTPUT_INVALID';
+/**
+ * D-L1-23 / D-L1-24: how a FINISHED R2 benchmark Work Item without an answer ended, from its last run's recorded failure
+ * code. INVALID_OUTPUT = two outputs failed the observation's contract (parser-invalid, a wrong proposal type or a refused
+ * answer — model behaviour, a FAILED observation); INFRASTRUCTURE = an explicitly allowlisted infrastructure / runtime
+ * failure (VOID, replaceable); anything else — a completion without an answer, a cancellation, an unlisted code — is
+ * UNCLASSIFIED: never inferred to be infrastructure, never VOID.
+ */
+type NoAnswerOutcome = { readonly kind: 'INVALID_OUTPUT' } | { readonly kind: 'INFRASTRUCTURE'; readonly code: string } | { readonly kind: 'UNCLASSIFIED' };
+function noAnswerOutcome(ctx: StoreContext, workItemId: Id, workItemState: string): NoAnswerOutcome {
+  if (workItemState !== 'FAILED') return { kind: 'UNCLASSIFIED' };
+  const code = ctx.db.get<{ c: string | null }>('SELECT failure_code AS c FROM runs WHERE work_item_id = ? ORDER BY run_seq DESC LIMIT 1', workItemId)?.c ?? null;
+  if (code === 'MODEL_OUTPUT_INVALID') return { kind: 'INVALID_OUTPUT' };
+  if (code !== null && (BQM2_DECLARATION.infrastructureNoAnswer.runFailureCodes as readonly string[]).includes(code)) return { kind: 'INFRASTRUCTURE', code };
+  return { kind: 'UNCLASSIFIED' };
 }
 
 /** The reasoning class of the last model call of a Work Item (the call that produced its answer or final invalid output). */
@@ -199,6 +216,7 @@ export function txPackageView(ctx: StoreContext, pkg: AcademyPackage): PackageVi
   const record = txPackageRecord(ctx, pkg);
   const skills: PackageSkillView[] = [];
   let open = 0;
+  let unclassified = 0;
   if (record) {
     for (const ps of ctx.db.all<{ skill_code: string; skill_id: string; skill_version_id: string }>('SELECT * FROM academy_package_skills WHERE package_id = ? ORDER BY skill_code', record.id)) {
       const def = pkg.skills.find((s) => s.code === ps.skill_code);
@@ -215,7 +233,9 @@ export function txPackageView(ctx: StoreContext, pkg: AcademyPackage): PackageVi
           const workItemState = getWorkItemRow(ctx, r.work_item_id as Id).state;
           // Running = its Work Item has not finished yet (a finished run stays OPEN until the install scores it).
           if (r.state === 'OPEN' && !TERMINAL_WORK.includes(workItemState)) open++;
-          const invalid = r.rubric_version === 'R2' && answer === null && endedInvalid(ctx, r.work_item_id as Id, workItemState);
+          const noAnswer = r.rubric_version === 'R2' && answer === null && r.state === 'OPEN' && TERMINAL_WORK.includes(workItemState) ? noAnswerOutcome(ctx, r.work_item_id as Id, workItemState) : null;
+          const invalid = noAnswer?.kind === 'INVALID_OUTPUT';
+          if (noAnswer?.kind === 'UNCLASSIFIED') unclassified++;
           return {
             id: r.id as Id,
             caseCode: r.case_code,
@@ -223,7 +243,7 @@ export function txPackageView(ctx: StoreContext, pkg: AcademyPackage): PackageVi
             observationNo: Number(r.observation_no),
             rubricVersion: (r.rubric_version === 'R2' ? 'R2' : 'R1') as RubricVersion,
             answeredClass: r.answered_class,
-            outcome: (r.observation_outcome as BenchmarkRunView['outcome']) ?? null,
+            outcome: noAnswer?.kind === 'UNCLASSIFIED' ? 'UNCLASSIFIED_NO_ANSWER' : ((r.observation_outcome as BenchmarkRunView['outcome']) ?? null),
             workItemId: r.work_item_id as Id,
             workItemState,
             state: r.state as BenchmarkRunView['state'],
@@ -255,7 +275,7 @@ export function txPackageView(ctx: StoreContext, pkg: AcademyPackage): PackageVi
   const installable = record !== null && record.sha256 === sha && record.state === 'QUALIFYING' && skills.length === pkg.skills.length && skills.every((s) => s.pipelineState === 'SANDBOXED' && s.security?.passed === true && s.verdict.benchmarkPassed && s.verdict.comparePassed);
   const m = packageMethod(pkg);
   const method: PackageView['method'] = { version: m, declarationSha256: pkg.benchmarkMethod?.declarationSha256 ?? null, answerContract: pkg.benchmarkMethod?.answerContract ?? null, observationsPerArm: observationsPerArm(pkg), reasoningClass: m === 'BQM-2' ? BQM2_DECLARATION.reasoningClass : null, rubricVersion: m === 'BQM-2' ? 'R2' : 'R1' };
-  return { code: pkg.code, version: pkg.version, sha256: sha, title: pkg.title, roleRef: pkg.roleRef, record, skills, installable, benchmarkRunsOpen: open, spentMicros: spent, method };
+  return { code: pkg.code, version: pkg.version, sha256: sha, title: pkg.title, roleRef: pkg.roleRef, record, skills, installable, benchmarkRunsOpen: open, benchmarkRunsUnclassified: unclassified, spentMicros: spent, method };
 }
 
 /**
@@ -272,7 +292,8 @@ function txCreateBenchmarkRun(ctx: StoreContext, pkg: AcademyPackage, packageId:
     // The case is the Work Item's own instructions; the run never learns which arm (or observation) it is.
     processorInput: {
       taskClass: pkg.taskClasses.benchmark, dataClass: 'D1', maxOutputTokens: pkg.limits.benchmarkMaxOutputTokens, instructions: `Benchmark case. Answer the case below as the Company role you hold.\n\n${content}`,
-      ...(bqm2 ? { reasoningClass: BQM2_DECLARATION.reasoningClass, invalidOutputPolicy: 'SAME_CLASS_RETRY' } : {}),
+      // D-L1-24: and the answer-only fence with its hard model-call bound (the store refuses a reservation past it).
+      ...(bqm2 ? { reasoningClass: BQM2_DECLARATION.reasoningClass, invalidOutputPolicy: 'SAME_CLASS_RETRY', answerOnly: true, maxModelCalls: BQM2_DECLARATION.deliverable.maxModelCallsPerObservation } : {}),
     },
   }, { actorRef });
   const id = newId();
@@ -297,15 +318,19 @@ export function txScoreBenchmarks(ctx: StoreContext, pkg: AcademyPackage, packag
     const c = pkg.skills.find((s) => s.code === code)?.benchmark.find((b) => b.code === r.case_code);
     if (r.rubric_version === 'R2') {
       if (!c || !TERMINAL_WORK.includes(item.state)) continue;
-      const invalid = answer === null && endedInvalid(ctx, item.id, item.state);
+      const noAnswer = answer === null ? noAnswerOutcome(ctx, item.id, item.state) : null;
+      // D-L1-24: fail closed — an unclassified no-answer is never scored or voided here (never retryable); it stays OPEN
+      // and the qualification is blocked until it is explained.
+      if (noAnswer?.kind === 'UNCLASSIFIED') continue;
+      const invalid = noAnswer?.kind === 'INVALID_OUTPUT';
       if (answer !== null || invalid) {
         const res = answer !== null ? scoreAnswerR2(c, { body: answer.body, ...answer.facets }, pkg.limits.benchmarkPassPct) : INVALID_OUTPUT_RESULT;
         ctx.db.run(`UPDATE skill_benchmark_runs SET state = 'SCORED', checks_json = ?, score_pct = ?, passed = ?, scored_at = ?, answered_class = ?, observation_outcome = ? WHERE id = ? AND state = 'OPEN'`, JSON.stringify(res.checks), res.scorePct, res.passed ? 1 : 0, ts(ctx), lastCallClass(ctx, item.id), answer !== null ? 'ANSWERED' : 'INVALID_OUTPUT', r.id);
         appendAudit(ctx, 'skill.benchmark_scored', 'skill_benchmark_run', r.id, { actorRef: 'system:skill-benchmark-rubric/r2' }, 'OK', res.passed ? 'PASSED' : answer === null ? 'INVALID_OUTPUT' : 'FAILED', { scorePct: res.scorePct });
-      } else {
-        ctx.db.run(`UPDATE skill_benchmark_runs SET state = 'VOID', void_reason = ? WHERE id = ? AND state = 'OPEN'`, `WORK_${item.state}_NO_ANSWER`.slice(0, 64), r.id);
-        appendAudit(ctx, 'skill.benchmark_voided', 'skill_benchmark_run', r.id, { actorRef: 'system:skill-benchmark-rubric/r2' }, 'OK', 'NO_ANSWER', { workItemState: item.state });
-      }
+      } else if (noAnswer?.kind === 'INFRASTRUCTURE') {
+        ctx.db.run(`UPDATE skill_benchmark_runs SET state = 'VOID', void_reason = ? WHERE id = ? AND state = 'OPEN'`, `INFRASTRUCTURE_${noAnswer.code}`.slice(0, 64), r.id);
+        appendAudit(ctx, 'skill.benchmark_voided', 'skill_benchmark_run', r.id, { actorRef: 'system:skill-benchmark-rubric/r2' }, 'OK', 'INFRASTRUCTURE_NO_ANSWER', { workItemState: item.state, runFailureCode: noAnswer.code });
+      } else continue;
       changed++;
       continue;
     }

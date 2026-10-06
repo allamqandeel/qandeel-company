@@ -39,6 +39,8 @@ const ACTIVATION = { cwd: 'packages/runtime', tests: ['dist/test/l1/l1-02-activa
 const ACTIVATION_SURFACE = { cwd: 'packages/command-center', tests: ['dist/test/l1-02-activation-surface.test.js'] };
 // D-L1-23: BQM-2 at the store boundary (pins, observations, FAILED vs VOID, decide-once, migration 0018).
 const BQM2_STORE = { cwd: 'packages/storage', tests: ['dist/test/l1-02-bqm2.test.js'] };
+// D-L1-24: the answer-only fence on the real employee loop (scripted governed services).
+const ANSWER_ONLY = { cwd: 'packages/runtime', tests: ['dist/test/l1/l1-02-answer-only.test.js'] };
 
 const GOV = 'packages/governance/dist/src';
 const PROVIDERS = 'packages/model-providers/dist/src/deepseek';
@@ -499,7 +501,7 @@ const MUTATIONS = [
   {
     id: 'l1-02-bqm2-invalid-made-void',
     gate: 'two invalid outputs are a FAILED observation, never VOID',
-    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "?.c === 'MODEL_OUTPUT_INVALID';", replace: "?.c === 'NEVER';", expectedCount: 1 }],
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "if (code === 'MODEL_OUTPUT_INVALID')", replace: "if (code === 'NEVER')", expectedCount: 1 }],
     runs: [ACTIVATION, BQM2_STORE],
   },
   {
@@ -543,6 +545,67 @@ const MUTATIONS = [
     gate: 'the rendered BQM-2 preview states the fixed class and observation count',
     edits: [{ file: `packages/command-center/dist/src/api.js`, search: "every one at the fixed reasoning class ${s('reasoningClass')}", replace: "every one at a suitable reasoning class", expectedCount: 1 }],
     runs: [ACTIVATION_SURFACE],
+  },
+  // --- L1-02: the BQM-2 answer-only execution fence, the hard two-call bound, VOID by allowlist only (D-L1-24) -------------
+  {
+    id: 'l1-02-answer-only-fence-dropped',
+    gate: 'a BQM-2 observation never executes a valid non-ANSWER proposal (FINAL, memory, tool, org, review, message, goal)',
+    edits: [{ file: `${RT}/employee-task.js`, search: "if (cfg.answerOnly && proposal.type !== 'ANSWER' && proposal.type !== 'INVALID')", replace: "if (false)", expectedCount: 1 }],
+    runs: [ANSWER_ONLY, ACTIVATION],
+  },
+  {
+    id: 'l1-02-answer-only-not-pinned',
+    gate: 'every BQM-2 observation Work Item carries the answer-only fence',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "answerOnly: true, maxModelCalls:", replace: "answerOnly: false, maxModelCalls:", expectedCount: 1 }],
+    runs: [BQM2_STORE, ACTIVATION],
+  },
+  {
+    id: 'l1-02-wrong-type-mislabelled',
+    gate: 'a recognized wrong proposal is diagnosed WRONG_PROPOSAL_TYPE (never a parser code)',
+    edits: [{ file: `${RT}/employee-task.js`, search: "'WRONG_PROPOSAL_TYPE', out.reasoningClass, { proposalType: proposal.type }", replace: "'UNKNOWN_TYPE', out.reasoningClass, {}", expectedCount: 1 }],
+    runs: [ANSWER_ONLY, ACTIVATION],
+  },
+  {
+    id: 'l1-02-answer-refusal-not-output-failure',
+    gate: 'an ANSWER refused for its own content takes the one same-class retry',
+    edits: [{ file: `${RT}/employee-task.js`, search: "if (rec.code !== 'INVALID_ARGS' && rec.code !== 'SECRET_MATERIAL')", replace: "if (true)", expectedCount: 1 }],
+    runs: [ANSWER_ONLY],
+  },
+  {
+    id: 'l1-02-call-bound-unenforced-processor',
+    gate: 'the employee loop never makes a call past the declared bound of its Work Item',
+    edits: [{ file: `${RT}/employee-task.js`, search: "if (cfg.maxModelCalls !== null && s.modelCalls >= cfg.maxModelCalls)", replace: "if (false)", expectedCount: 1 }],
+    runs: [ANSWER_ONLY],
+  },
+  {
+    id: 'l1-02-call-bound-unenforced-store',
+    gate: 'the store refuses a model-call reservation past the declared bound of its Work Item, across runs',
+    edits: [{ file: `${STORAGE}/governed-writes.js`, search: "if (maxModelCalls !== null && Number(", replace: "if (false && Number(", expectedCount: 1 }],
+    runs: [BQM2_STORE],
+  },
+  {
+    id: 'l1-02-void-inferred-from-completion',
+    gate: 'a finished observation without an answer is never inferred to be infrastructure (never VOID)',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "if (workItemState !== 'FAILED')\n        return { kind: 'UNCLASSIFIED' };", replace: "if (workItemState !== 'FAILED')\n        return { kind: 'INFRASTRUCTURE', code: 'INFERRED' };", expectedCount: 1 }],
+    runs: [BQM2_STORE],
+  },
+  {
+    id: 'l1-02-void-inferred-from-unlisted-code',
+    gate: 'only an allowlisted infrastructure failure code makes an observation VOID',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "return { kind: 'INFRASTRUCTURE', code };\n    return { kind: 'UNCLASSIFIED' };", replace: "return { kind: 'INFRASTRUCTURE', code };\n    return { kind: 'INFRASTRUCTURE', code: String(code) };", expectedCount: 1 }],
+    runs: [BQM2_STORE],
+  },
+  {
+    id: 'l1-02-unclassified-preview-unchecked',
+    gate: 'an unclassified no-answer blocks the qualification preview (fail closed)',
+    edits: [{ file: `${STORAGE}/founder-activation.js`, search: "if (rec !== null && view.benchmarkRunsUnclassified > 0)", replace: "if (false)", expectedCount: 1 }],
+    runs: [BQM2_STORE],
+  },
+  {
+    id: 'l1-02-preview-answer-only-unstated',
+    gate: 'the BQM-2 preview states the answer-only fence',
+    edits: [{ file: `${STORAGE}/founder-activation.js`, search: "maxModelCallsPerObservation: BQM2_DECLARATION.deliverable.maxModelCallsPerObservation, answerOnly: true,", replace: "maxModelCallsPerObservation: BQM2_DECLARATION.deliverable.maxModelCallsPerObservation,", expectedCount: 1 }],
+    runs: [ACTIVATION],
   },
 ];
 

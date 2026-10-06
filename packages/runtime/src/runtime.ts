@@ -102,7 +102,7 @@ import {
   type AttentionSyncReport,
   type CompanyUniverse,
 } from '@qandeel-company/storage';
-import type { InvalidOutputCode, ProviderAdapter, ProviderProvisioningProfile, ToolDriver } from '@qandeel-company/governance';
+import type { OutputDiagnosticCode, ProviderAdapter, ProviderProvisioningProfile, ToolDriver } from '@qandeel-company/governance';
 
 import { GovernedModelRuntime } from './c2/model-runtime.js';
 import { ToolExecutor } from './c2/tool-executor.js';
@@ -1330,7 +1330,7 @@ export class CompanyRuntime {
       openHandoffs: () => OrganizationStore.for(store).workDelegations({ parentWorkItemId: run.workItemId }).filter((d) => (OPEN_HANDOFF_STATES as readonly string[]).includes(d.state)).length,
       clarificationsRequested: () => OrganizationStore.for(store).workDelegations({ parentWorkItemId: run.workItemId }).filter((d) => d.state === 'CLARIFICATION_REQUESTED').length,
       // RR2-2: a refused FINAL is this step's result — the model learns why it cannot finish and which handoff asked.
-      noteInvalidOutput: (step: number, code: InvalidOutputCode, reasoningClass: string) => recordInvalidOutput(store, claim.fence, { step: globalStep(step), code, reasoningClass }),
+      noteInvalidOutput: (step: number, code: OutputDiagnosticCode, reasoningClass: string, detail?: { readonly proposalType?: string; readonly refusalCode?: string }) => recordInvalidOutput(store, claim.fence, { step: globalStep(step), code, reasoningClass, ...(detail?.proposalType !== undefined ? { proposalType: detail.proposalType } : {}), ...(detail?.refusalCode !== undefined ? { refusalCode: detail.refusalCode } : {}) }),
       refuseFinal: (step: number, code: 'FINAL_REFUSED_CLARIFICATION_PENDING') => {
         const asked = OrganizationStore.for(store).workDelegations({ parentWorkItemId: run.workItemId }).filter((d) => d.state === 'CLARIFICATION_REQUESTED').map((d) => d.id);
         recordStepResult(store, claim.fence, globalStep(step), 'TOOL_REFUSED', JSON.stringify({ final: 'REFUSED', code, answerWith: 'handoff.clarify', delegationIds: asked }));

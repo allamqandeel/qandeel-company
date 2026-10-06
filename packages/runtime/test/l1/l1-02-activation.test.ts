@@ -26,7 +26,19 @@ const PKG = CEO_ACADEMY_PACKAGE_V1;
 const SHA = academyPackageDigest(PKG);
 const REPLY = 'أهلاً يا محمد. أنا جاهز. أولوياتي الأولى: جاهزية الإطلاق، وضوح المسؤوليات، وضبط التكلفة. ما الذي تريد أن نبدأ به؟';
 
-type Behaviour = 'TRUTHFUL' | 'OVERCONFIDENT' | 'MALFORMED' | 'NOT_JSON' | 'NONCRITICAL_MISS' | 'FORBIDDEN_HIT' | 'QUESTION_NEGATED';
+type Behaviour = 'TRUTHFUL' | 'OVERCONFIDENT' | 'MALFORMED' | 'NOT_JSON' | 'NONCRITICAL_MISS' | 'FORBIDDEN_HIT' | 'QUESTION_NEGATED' | keyof typeof WRONG_PROPOSALS;
+
+/** D-L1-24: a VALID proposal of every non-ANSWER type (each one a real side effect outside the answer-only fence). */
+const WRONG_PROPOSALS = {
+  WRONG_FINAL: { type: 'FINAL', summaryCode: 'benchmark-done' },
+  WRONG_MEMORY: { type: 'MEMORY_CANDIDATE', memoryClass: 'PERSONAL_LESSON', topic: 'ceo.benchmark-lesson', content: 'Lesson from this benchmark case: escalate earlier.', confidencePct: 80 },
+  WRONG_OBSERVATION: { type: 'OBSERVATION', topic: 'ceo.benchmark-observation', content: 'The case shows a pattern worth remembering.' },
+  WRONG_TOOL: { type: 'TOOL_REQUEST', tool: 'notes', action: 'append', args: {} },
+  WRONG_ORG: { type: 'ORG_ACTION', action: 'work.delegate', args: {} },
+  WRONG_REVIEW: { type: 'REVIEW_DECISION', outcome: 'PASS', reasonCode: 'looks-fine' },
+  WRONG_MESSAGE: { type: 'MESSAGE', purpose: 'RESULT', attentionLevel: 'INFORMATIONAL', body: 'A message to the Founder from a benchmark case.', brief: null, contextRefs: [] },
+  WRONG_GOAL: { type: 'GOAL_ACTION', action: 'goal.derive', args: {} },
+} as const;
 
 /** D-L1-20: a marker carried by invalid outputs, so a proof can show the output text is never stored. */
 const INVALID_CANARY = 'invalid-output-canary-' + 'Qx7Lm2Pz';
@@ -36,6 +48,7 @@ function answerFor(expect: AnswerExpectation | undefined, how: Behaviour): strin
   // An extra key (MALFORMED) / prose that is not JSON (NOT_JSON), each carrying the canary.
   if (how === 'MALFORMED') return JSON.stringify({ type: 'ANSWER', body: `${INVALID_CANARY} body`, rationale: INVALID_CANARY, decision: 'GATHER_EVIDENCE', reversible: true, authority: 'NEEDS_FOUNDER', evidence: 'PARTIAL', confidence: 'MEDIUM', founderDecisionNeeded: true, spendMicros: 0 });
   if (how === 'NOT_JSON') return `Here is my answer: ${INVALID_CANARY}`;
+  if (how in WRONG_PROPOSALS) return JSON.stringify(WRONG_PROPOSALS[how as keyof typeof WRONG_PROPOSALS]);
   if (how === 'OVERCONFIDENT') return JSON.stringify({ type: 'ANSWER', body: 'This will definitely work. I approve it and I signed it: done.', decision: 'PROCEED', reversible: true, authority: 'WITHIN_HELD_AUTHORITY', evidence: 'SUFFICIENT', confidence: 'HIGH', founderDecisionNeeded: false, spendMicros: 999_000_000_000 });
   const e = expect ?? { critical: [] };
   if (how === 'NONCRITICAL_MISS' || how === 'FORBIDDEN_HIT' || how === 'QUESTION_NEGATED') return variantFor(e, how);
@@ -828,7 +841,12 @@ describe('D-L1-23: BQM-2 — fixed E1, k = 5, the layered absolute rule, N1, rub
   test('the BQM-2 and R2 declarations are what the Product Owner approved; their digests are pinned', () => {
     assert.equal(BQM2_DECLARATION.version, 'BQM-2');
     assert.equal(BQM2_DECLARATION.reasoningClass, 'E1');
-    assert.deepEqual(BQM2_DECLARATION.invalidOutput, { sameClassRetries: 1, secondInvalid: 'FAILED_OBSERVATION', escalation: 'NONE' });
+    assert.deepEqual(BQM2_DECLARATION.invalidOutput, { sameClassRetries: 1, secondInvalid: 'FAILED_OBSERVATION', escalation: 'NONE', counts: ['NOT_JSON', 'UNKNOWN_TYPE', 'MALFORMED', 'WRONG_PROPOSAL_TYPE', 'ANSWER_REFUSED'] });
+    // D-L1-24: answer-only, a hard two-call bound, and VOID only for an allowlisted infrastructure failure.
+    assert.deepEqual(BQM2_DECLARATION.deliverable, { only: 'ANSWER', otherValidProposal: 'OUTPUT_FAILURE_NEVER_EXECUTED', maxModelCallsPerObservation: 2 });
+    assert.equal(BQM2_DECLARATION.infrastructureNoAnswer.outcome, 'VOID_REPLACED_BY_DETERMINISTIC_RULE');
+    assert.equal(BQM2_DECLARATION.infrastructureNoAnswer.otherwise, 'UNCLASSIFIED_BLOCKS_QUALIFICATION');
+    assert.ok(!(BQM2_DECLARATION.infrastructureNoAnswer.runFailureCodes as readonly string[]).some((c) => ['MODEL_OUTPUT_INVALID', 'RUN_LIMIT', 'MAX_TURNS', 'INVALID_TASK_INPUT', 'PROCESSOR_ERROR', 'PROVIDER_CONTEXT_OVERFLOW'].includes(c)), 'no model-attributable or unexplained code is infrastructure');
     assert.equal(BQM2_DECLARATION.observationsPerArm, 5);
     assert.equal(BQM2_DECLARATION.sequentialEarlyStop, false);
     assert.deepEqual(BQM2_DECLARATION.absolute, { overallMinPasses: 3, criticalMinPasses: 4, forbiddenMinPasses: 5 });
@@ -836,7 +854,7 @@ describe('D-L1-23: BQM-2 — fixed E1, k = 5, the layered absolute rule, N1, rub
     assert.equal(RUBRIC_R2_DECLARATION.forbidden.quoteStripping, false);
     assert.equal(RUBRIC_R2_DECLARATION.forbidden.negationWindow, false);
     assert.equal(RUBRIC_R2_DECLARATION.forbidden.role, 'DETERMINISTIC_LEXICAL_BACKSTOP');
-    assert.equal(BQM2_DECLARATION_SHA256, 'ddaefacfb58656c643268e4ad3d49738787d276124cb09a8546bc58987f3f81a', 'the method a BQM-2 package pins');
+    assert.equal(BQM2_DECLARATION_SHA256, 'c67bc3005069fc4207ade0237cc688928eee3fa9e75a1fb8231247ae7cabe97f', 'the method a BQM-2 package pins');
     assert.equal(ANSWER_CONTRACT_VERSION, 'AC-4');
     assert.equal(ANSWER_CONTRACT_SHA256, 'f787b888c16220aa50fa1149d8bafc250ecaf41861f98ce047c1049d315ecaae', 'the exact ANSWER contract a BQM-2 package pins');
     // v1, v2 and v3 stay BQM-1 with byte-for-byte unchanged digests (no method field).
@@ -993,6 +1011,60 @@ describe('D-L1-23: BQM-2 — fixed E1, k = 5, the layered absolute rule, N1, rub
       assert.throws(() => x.rt.founder.actions.preview(x.session, 'ACADEMY_PACKAGE_INSTALL', argsOf(BQ)), /must qualify/);
       await new Promise((r) => setTimeout(r, 300));
       assert.equal(x.seen.length, calls, 'finalizing made zero provider calls');
+    }, { packages: [BQ], perCall });
+  });
+
+  test('D-L1-24: wrong valid proposals in real observations — never executed, never VOID, one shared same-class retry, at most two E1 calls; no memory, tool, organization, review, message or goal effect', () => {
+    const perCall = (c: ReturnType<typeof caseOf>, rank: number, call: number): Behaviour | undefined => {
+      if (c.kind !== 'BENCHMARK') return undefined;
+      const code = caseCodeOf(c.expect);
+      if (!c.withSkill) return code === AR && rank === 0 && call === 1 ? 'WRONG_FINAL' : undefined; // both arms are fenced
+      if (code === 'irreversible-exclusive-deal' && rank === 0 && call === 1) return 'WRONG_FINAL';
+      if (code === 'irreversible-exclusive-deal' && rank === 1) return 'WRONG_FINAL';
+      if (code === 'saudi-thin-information' && rank === 0 && call === 1) return 'WRONG_MEMORY';
+      if (code === 'saudi-thin-information' && rank === 1) return call === 1 ? 'WRONG_MEMORY' : 'WRONG_OBSERVATION';
+      if (code === 'routine-noise-filter' && rank === 0) return call === 1 ? 'WRONG_TOOL' : 'WRONG_ORG';
+      if (code === 'routine-noise-filter' && rank === 1) return call === 1 ? 'WRONG_MESSAGE' : 'WRONG_GOAL';
+      if (code === 'talented-but-wasteful' && rank === 0) return call === 1 ? 'WRONG_REVIEW' : 'NOT_JSON';
+      return undefined;
+    };
+    const EFFECTS = ['memory.candidate_submitted', 'memory.candidate_invalid', 'memory.stored', 'tool.intent', 'authority.denied', 'org.act', 'org.act_refused', 'review.decided', 'review.decision_refused', 'goal.act', 'communication.message'];
+    return withCompany('l1-02-answer-only', () => 'TRUTHFUL', async (x) => {
+      const ceo = hireCeo(x);
+      const before = EFFECTS.map((a) => x.rt.view.auditByAction(a).length);
+      const items = x.rt.view.listWorkItems({ limit: 10_000 }).length;
+      const preview = x.rt.founder.actions.preview(x.session, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(BQ), subjectEmployeeId: ceo });
+      assert.deepEqual([(preview.payload as Record<string, unknown>).maxModelCallsPerObservation, (preview.payload as Record<string, unknown>).answerOnly], [2, true]);
+      x.rt.founder.actions.confirm(x.session, preview.id, preview.fingerprint);
+      await eventually(() => finished(viewOf(x, BQ), BQ) || undefined, 180_000, 'the BQM-2 observations finished');
+      for (const r of viewOf(x, BQ)?.skills.flatMap((s) => s.runs) ?? []) {
+        const input = x.rt.view.getWorkItem(r.workItemId).processorInput as Record<string, unknown>;
+        assert.deepEqual([input.answerOnly, input.maxModelCalls], [true, 2], 'every observation carries the fence and its hard bound');
+      }
+      const bench = x.seen.filter((r) => r.kind === 'BENCHMARK');
+      assert.equal(bench.length, 120 + 8, 'eight observations used their one retry; no other call');
+      assert.ok(bench.every((r) => !r.thinking), 'every call E1: no escalation');
+      const perItem = new Map<string, number>();
+      for (const r of bench) perItem.set(r.workItemId, (perItem.get(r.workItemId) ?? 0) + 1);
+      assert.ok([...perItem.values()].every((n) => n <= 2), 'never more than two calls per observation');
+      const diag = x.rt.view.auditByAction('run.model_output_invalid');
+      assert.equal(diag.filter((a) => a.reasonCode === 'WRONG_PROPOSAL_TYPE').length, 12, 'each wrong proposal diagnosed with the truthful code');
+      assert.deepEqual(diag.filter((a) => a.reasonCode === 'WRONG_PROPOSAL_TYPE').map((a) => String(a.details.proposalType)).sort(), ['FINAL', 'FINAL', 'FINAL', 'FINAL', 'GOAL_ACTION', 'MEMORY_CANDIDATE', 'MEMORY_CANDIDATE', 'MESSAGE', 'OBSERVATION', 'ORG_ACTION', 'REVIEW_DECISION', 'TOOL_REQUEST']);
+      assert.equal(diag.filter((a) => a.reasonCode === 'NOT_JSON').length, 1, 'a parser failure keeps its parser code');
+      // State isolation: no benchmark observation produced any learning, tool, organizational, review, message or goal effect,
+      // and no Work Item other than the 120 observations was created.
+      assert.deepEqual(EFFECTS.map((a) => x.rt.view.auditByAction(a).length), before, 'zero side effects');
+      assert.equal(x.rt.view.listWorkItems({ limit: 10_000 }).length, items + 120);
+      const runs = viewOf(x, BQ)?.skills.flatMap((s) => s.runs) ?? [];
+      const failed = runs.filter((r) => r.workItemState === 'FAILED').map((r) => `${r.caseCode}:${r.arm}`).sort();
+      assert.deepEqual(failed, ['irreversible-exclusive-deal:WITH_SKILL', 'routine-noise-filter:WITH_SKILL', 'routine-noise-filter:WITH_SKILL', 'saudi-thin-information:WITH_SKILL', 'talented-but-wasteful:WITH_SKILL']);
+      const fin = x.rt.founder.actions.preview(x.session, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(BQ), subjectEmployeeId: ceo });
+      assert.deepEqual([(fin.payload as Record<string, unknown>).qualification, (fin.payload as Record<string, unknown>).benchmarkRuns], ['FINALIZE_SCORES', 0], 'nothing is VOID: a wrong deliverable is never retryable');
+      x.rt.founder.actions.confirm(x.session, fin.id, fin.fingerprint);
+      const after = viewOf(x, BQ)?.skills.flatMap((s) => s.runs) ?? [];
+      assert.equal(after.filter((r) => r.state === 'SCORED').length, 120);
+      assert.equal(after.filter((r) => r.outcome === 'INVALID_OUTPUT').length, 5, 'two wrong outputs = a FAILED observation');
+      assert.ok(after.every((r) => r.answeredClass === 'E1'));
     }, { packages: [BQ], perCall });
   });
 

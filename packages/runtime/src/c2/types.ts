@@ -4,7 +4,7 @@
  * routing, budgets and fencing on every call (Stage 12 §11, Stage 13 D13-D).
  */
 import type { JsonObject, Processor, ProcessorContext, ProcessorResult } from '@qandeel-company/domain';
-import type { EscalationEvidence, InvalidOutputCode, ModelProposal, ProviderFailureClass, ProviderUsage, ReasoningClass } from '@qandeel-company/governance';
+import type { EscalationEvidence, OutputDiagnosticCode, ModelProposal, ProviderFailureClass, ProviderUsage, ReasoningClass } from '@qandeel-company/governance';
 import type { GovernedRunContext } from '@qandeel-company/storage/runtime-authority';
 
 /**
@@ -126,9 +126,10 @@ export interface GovernedRunServices {
   refuseFinal(step: number, code: 'FINAL_REFUSED_CLARIFICATION_PENDING'): void;
   /**
    * D-L1-20: durably records the parser's content-free classification of an output that failed validation at this step
-   * (the output text is never stored, and nothing reads it back into a context).
+   * (the output text is never stored, and nothing reads it back into a context). D-L1-24: or the output-contract code of a
+   * valid proposal an answer-only Work Item refuses, with the recognized proposal type or the answer refusal code.
    */
-  noteInvalidOutput(step: number, code: InvalidOutputCode, reasoningClass: string): void;
+  noteInvalidOutput(step: number, code: OutputDiagnosticCode, reasoningClass: string, detail?: { readonly proposalType?: string; readonly refusalCode?: string }): void;
   /** C5: the Employee's message into the Founder thread its Work Item answers (fenced; never authority). */
   sendMessage(proposal: MessageProposal, step: number): MessageOutcome;
   /** C5: a Director's goal derivation / link from inside its run (fenced). */

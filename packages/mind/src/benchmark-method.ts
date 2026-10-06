@@ -57,8 +57,18 @@ export const BQM2_DECLARATION = Object.freeze({
   version: 'BQM-2',
   reasoningClass: 'E1',
   sameClassForBothArms: true,
-  invalidOutput: Object.freeze({ sameClassRetries: 1, secondInvalid: 'FAILED_OBSERVATION', escalation: 'NONE' }),
-  infrastructureNoAnswer: 'VOID_REPLACED_BY_DETERMINISTIC_RULE',
+  // D-L1-24: an observation delivers exactly ONE ANSWER. Any other valid proposal is never executed and is an output failure
+  // (WRONG_PROPOSAL_TYPE), counted with parser-invalid outputs and model-content answer refusals under the one same-class
+  // retry; the Work Item carries a hard bound of two model calls, which the store enforces at every reservation.
+  deliverable: Object.freeze({ only: 'ANSWER', otherValidProposal: 'OUTPUT_FAILURE_NEVER_EXECUTED', maxModelCallsPerObservation: 2 }),
+  invalidOutput: Object.freeze({ sameClassRetries: 1, secondInvalid: 'FAILED_OBSERVATION', escalation: 'NONE', counts: Object.freeze(['NOT_JSON', 'UNKNOWN_TYPE', 'MALFORMED', 'WRONG_PROPOSAL_TYPE', 'ANSWER_REFUSED']) }),
+  // D-L1-24: VOID only for an explicitly allowlisted infrastructure / runtime run failure; any other no-answer outcome is
+  // never VOID (never retryable) and blocks the qualification until it is explained.
+  infrastructureNoAnswer: Object.freeze({
+    outcome: 'VOID_REPLACED_BY_DETERMINISTIC_RULE',
+    runFailureCodes: Object.freeze(['PROVIDER_UNAVAILABLE', 'PROVIDER_FAILURE', 'FALLBACK_REFUSED', 'NO_ELIGIBLE_ROUTE', 'NO_ROUTE_POLICY', 'ROUTE_NO_LONGER_ELIGIBLE', 'SETTLEMENT_FAILED', 'RUN_ABORTED', 'RUN_TIMEOUT', 'INTEGRITY_FAILURE']),
+    otherwise: 'UNCLASSIFIED_BLOCKS_QUALIFICATION',
+  }),
   observationsPerArm: 5,
   sequentialEarlyStop: false,
   absolute: Object.freeze({ overallMinPasses: 3, criticalMinPasses: 4, forbiddenMinPasses: 5 }),

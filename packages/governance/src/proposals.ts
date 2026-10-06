@@ -63,6 +63,19 @@ export const INVALID_OUTPUT_CODES = ['NOT_JSON', 'UNKNOWN_TYPE', 'MALFORMED'] as
 export type InvalidOutputCode = (typeof INVALID_OUTPUT_CODES)[number];
 
 /**
+ * D-L1-24 — the content-free classification of a VALID proposal that breaks an answer-only Work Item's output contract
+ * (a BQM-2 benchmark observation delivers exactly one ANSWER): the parser recognized it, so it is never labelled a
+ * parser code. WRONG_PROPOSAL_TYPE = any proposal type other than ANSWER (it is never executed); ANSWER_REFUSED = an
+ * ANSWER the answer fence refused for the model's own content (its arguments or secret material).
+ */
+export const OUTPUT_CONTRACT_CODES = ['WRONG_PROPOSAL_TYPE', 'ANSWER_REFUSED'] as const;
+export type OutputContractCode = (typeof OUTPUT_CONTRACT_CODES)[number];
+/** Every code a run may record for an output that did not satisfy its Work Item (parser or output contract). */
+export type OutputDiagnosticCode = InvalidOutputCode | OutputContractCode;
+/** The proposal types a model can return (the closed set an answer-only diagnosis may name). */
+export const PROPOSAL_TYPES = ['FINAL', 'TOOL_REQUEST', 'MEMORY_CANDIDATE', 'OBSERVATION', 'ORG_ACTION', 'REVIEW_DECISION', 'MESSAGE', 'GOAL_ACTION', 'ANSWER'] as const;
+
+/**
  * D-L1-20 — the canonical meaning of the ANSWER facets `decision` and `confidence`, shared by every answer-bearing
  * Work Item (Academy attempts, Skill benchmark cases, shadow work). The closed enums are unchanged. D-L1-23 (AC-4): the
  * decision never describes a safe substitute or counter-proposal, and a primary act not committed to now is classified by

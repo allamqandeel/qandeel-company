@@ -38,6 +38,7 @@ const NEXT: Readonly<Record<string, readonly [string, string]>> = {
   QUALIFY_PACKAGE: ['Qualify the CEO Academy package (security review + bounded benchmark)', 'تأهيل حزمة الأكاديمية'],
   BENCHMARK_RUNNING: ['The skill benchmark is running', 'اختبار المهارات قيد التشغيل'],
   INSTALL_PACKAGE: ['Install the qualified package (one decision)', 'تثبيت الحزمة المؤهلة'],
+  BENCHMARK_UNCLASSIFIED_NO_ANSWER: ['A benchmark observation ended without an answer for an unexplained cause — qualification is blocked (never re-run as infrastructure)', 'ملاحظة اختبار انتهت دون إجابة لسبب غير مصنَّف — التأهيل متوقف (لا تُعاد كعطل بنية)'],
   PACKAGE_NOT_QUALIFIED: ['A skill did not qualify — the package cannot be installed', 'مهارة لم تتأهل — لا يمكن التثبيت'],
   ENROLL: ['Enroll the CEO in the Academy', 'التسجيل في الأكاديمية'],
   COMPLETE_MODULES: ['Acknowledge the curriculum modules', 'إقرار وحدات المنهج'],
@@ -227,7 +228,7 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
       // BQM-2: each case's layered verdict (passes of 5 per arm; failed layers; forbidden hits) and its N1 comparison.
       for (const c of arr(verdict.cases)) sb.append(h('p', { class: 'small', text: `${str(c.caseCode)}: with skill ${str(c.withPasses)}/${k} vs baseline ${str(c.baselinePasses)}/${k} · ${c.absolutePassed ? 'absolute rule met' : `failed: ${arr(c.failedLayers as unknown as Json[]).map((l) => humanize(String(l))).join(', ')}`}${Number(c.forbiddenHits ?? 0) > 0 ? ` · ${str(c.forbiddenHits)} forbidden hit(s)` : ''} · comparison ${c.comparePassed ? 'within tolerance' : 'WORSE than baseline'}` }));
       for (const r of arr(s.runs)) {
-        sb.append(h('p', { class: 'muted small', text: `${str(r.caseCode)} · ${r.arm === 'WITH_SKILL' ? 'with skill' : 'baseline'}${k > 1 ? ` · observation ${str(r.observationNo)}` : ''} · ${humanize(str(r.workItemState))}${r.outcome === 'INVALID_OUTPUT' ? ' · two invalid outputs (failed observation)' : ''}${r.answeredClass ? ` · ${str(r.answeredClass)}` : ''} · ${checks((r.result as Json | null) ?? null)}` }));
+        sb.append(h('p', { class: 'muted small', text: `${str(r.caseCode)} · ${r.arm === 'WITH_SKILL' ? 'with skill' : 'baseline'}${k > 1 ? ` · observation ${str(r.observationNo)}` : ''} · ${humanize(str(r.workItemState))}${r.outcome === 'INVALID_OUTPUT' ? ' · two invalid outputs (failed observation)' : r.outcome === 'UNCLASSIFIED_NO_ANSWER' ? ' · no answer, unclassified cause (blocks qualification)' : ''}${r.answeredClass ? ` · ${str(r.answeredClass)}` : ''} · ${checks((r.result as Json | null) ?? null)}` }));
         if (r.answer) sb.append(answerBlock(r.answer as Json, 'Read the answer'));
       }
       box.append(sb);

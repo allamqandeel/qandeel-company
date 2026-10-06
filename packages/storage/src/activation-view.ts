@@ -179,7 +179,7 @@ function nextStep(v: Omit<ActivationView, 'next'>): string {
   if (v.envelope === null || v.modelAccess.length === 0) return 'GRANT_MODEL_ACCESS';
   const p = v.packages[0];
   if (!p?.record) return 'QUALIFY_PACKAGE';
-  if (p.record.state === 'QUALIFYING') return p.benchmarkRunsOpen > 0 ? 'BENCHMARK_RUNNING' : p.installable ? 'INSTALL_PACKAGE' : 'PACKAGE_NOT_QUALIFIED';
+  if (p.record.state === 'QUALIFYING') return p.benchmarkRunsOpen > 0 ? 'BENCHMARK_RUNNING' : p.benchmarkRunsUnclassified > 0 ? 'BENCHMARK_UNCLASSIFIED_NO_ANSWER' : p.installable ? 'INSTALL_PACKAGE' : 'PACKAGE_NOT_QUALIFIED';
   const en = v.enrollment;
   if (en === null) return 'ENROLL';
   const open = en.attempts.find((a) => a.state === 'OPEN');

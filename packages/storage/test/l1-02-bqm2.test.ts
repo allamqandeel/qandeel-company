@@ -17,7 +17,7 @@ import { ANSWER_CONTRACT_SHA256, ANSWER_CONTRACT_TEXT, ANSWER_CONTRACT_VERSION }
 import { BQM2_DECLARATION_SHA256, CEO_ACADEMY_PACKAGE_V3, academyPackageDigest, type AcademyPackage } from '@qandeel-company/mind';
 
 import { FounderActionStore, FounderAuthStore, loadReleasedMigrations } from '../src/index.js';
-import { settle } from '../src/runtime-authority.js';
+import { interruptClaim, recordInvalidOutput, reserveBudget, settle } from '../src/runtime-authority.js';
 import { openStoreForTests, storeContext } from '../src/store.js';
 import { hire, seed, type Seed } from './c2-helpers.js';
 import { assemble, claimFor } from './c3-helpers.js';
@@ -88,6 +88,7 @@ describe('D-L1-23: BQM-2 at the store boundary (0018)', () => {
         assert.equal(r.rubric_version, 'R2');
         const input = w.h.store.getWorkItem(r.work_item_id as Id).processorInput as Record<string, unknown>;
         assert.deepEqual([input.reasoningClass, input.invalidOutputPolicy], ['E1', 'SAME_CLASS_RETRY'], `${r.case_code} ${r.arm}: the class is fixed in the Work Item itself, both arms alike`);
+        assert.deepEqual([input.answerOnly, input.maxModelCalls], [true, 2], 'D-L1-24: the answer-only fence and its hard two-call bound are in the Work Item itself');
       }
     });
   });
@@ -130,19 +131,85 @@ describe('D-L1-23: BQM-2 at the store boundary (0018)', () => {
         settle(w.h.store, claim.fence, { type: 'PERMANENT_FAILURE', code }, { backoff });
         assert.equal(w.h.store.getWorkItem(r.work_item_id as Id).state, 'FAILED');
       }
-      // Every other observation ends without an answer (no model in a store test): infrastructure-like, so VOID.
-      for (const r of rows(w).filter((o) => o.id !== x.id && o.id !== y.id)) settle(w.h.store, claimFor(w.h, r.work_item_id as Id).claim.fence, { type: 'COMPLETED' }, { backoff });
+      // Every other observation ends without an answer for an allowlisted infrastructure cause (the provider), so VOID.
+      for (const r of rows(w).filter((o) => o.id !== x.id && o.id !== y.id)) settle(w.h.store, claimFor(w.h, r.work_item_id as Id).claim.fence, { type: 'PERMANENT_FAILURE', code: 'PROVIDER_UNAVAILABLE' }, { backoff });
       const out = w.qualify();
       assert.deepEqual([out.qualification, out.scoresToFinalize, out.benchmarkRuns], ['REQUALIFY_VOID_RUNS', 1, 119], 'the preview is truthful: one FAILED observation to finalize, exactly the 119 VOID slots to re-run');
       const after = (id: string) => db.get<Row>('SELECT * FROM skill_benchmark_runs WHERE id = ?', id);
       assert.deepEqual([after(x.id)?.state, after(x.id)?.observation_outcome], ['SCORED', 'INVALID_OUTPUT'], 'model behaviour: a FAILED observation');
       assert.equal(after(y.id)?.state, 'VOID', 'infrastructure: VOID');
+      assert.equal(db.get<{ v: string }>('SELECT void_reason AS v FROM skill_benchmark_runs WHERE id = ?', y.id)?.v, 'INFRASTRUCTURE_INTEGRITY_FAILURE', 'the VOID names its allowlisted cause');
       const slot = db.all<Row>('SELECT * FROM skill_benchmark_runs WHERE skill_version_id = ? AND case_code = ? AND arm = ? AND observation_no = ?', y.skill_version_id, y.case_code, y.arm, y.observation_no);
       assert.deepEqual(slot.map((r) => r.state).sort(), ['OPEN', 'VOID'], 'the replacement takes the same observation number');
       assert.equal(db.all<Row>('SELECT * FROM skill_benchmark_runs WHERE skill_version_id = ? AND case_code = ? AND arm = ? AND observation_no = ?', x.skill_version_id, x.case_code, x.arm, x.observation_no).length, 1, 'the FAILED observation is never re-run');
       assert.throws(() => db.run('UPDATE skill_benchmark_runs SET passed = 1 WHERE id = ?', x.id), rejected(/scored or voided exactly once/));
       assert.throws(() => db.run('UPDATE skill_benchmark_runs SET observation_no = 5 WHERE id = ?', slot.find((r) => r.state === 'OPEN')?.id ?? ''), rejected(/scored or voided exactly once/), 'an observation number never changes');
       assert.throws(() => db.run("INSERT INTO skill_benchmark_runs (id, package_id, skill_version_id, case_code, arm, work_item_id, employee_id, state, created_at, observation_no, rubric_version) VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, 'R2')", newId(), w.packageId, x.skill_version_id, x.case_code, x.arm, y.work_item_id, w.trainee, '2026-10-06T00:00:00.000Z', x.observation_no), rejected(/UNIQUE/), 'a second live run of a decided observation is impossible');
+    });
+  });
+
+  // --- D-L1-24 ------------------------------------------------------------------------------------------------------
+  test('D-L1-24: VOID is never inferred — a finished observation without an answer whose cause is not an allowlisted infrastructure failure (a completion without an answer, a run limit, the turn limit) is never VOID or re-run; the qualification fails closed', () => {
+    for (const end of [{ type: 'COMPLETED' }, { type: 'PERMANENT_FAILURE', code: 'RUN_LIMIT' }, { type: 'PERMANENT_FAILURE', code: 'MAX_TURNS' }] as const) {
+      withBqm2((w) => {
+        const db = storeContext(w.h.store).db;
+        const [u] = rows(w);
+        assert.ok(u);
+        settle(w.h.store, claimFor(w.h, u.work_item_id as Id).claim.fence, end, { backoff });
+        // Every other observation: an allowlisted infrastructure failure (VOID, replaceable).
+        for (const r of rows(w).filter((o) => o.id !== u.id)) settle(w.h.store, claimFor(w.h, r.work_item_id as Id).claim.fence, { type: 'PERMANENT_FAILURE', code: 'PROVIDER_FAILURE' }, { backoff });
+        assert.throws(() => w.preview(), reason('BENCHMARK_UNCLASSIFIED_NO_ANSWER'), `${end.type}: neither finalized nor re-run`);
+        assert.equal(db.get<Row>('SELECT * FROM skill_benchmark_runs WHERE id = ?', u.id)?.state, 'OPEN', 'never VOID, never scored as a pass');
+        assert.equal(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM skill_benchmark_runs WHERE state = 'VOID'")?.n, 0, 'nothing was voided or re-run');
+        assert.equal(rows(w).length, 120);
+      });
+    }
+  });
+
+  test('D-L1-24: the two-call bound is enforced by the store at every reservation, across runs of the observation (a resume included)', () => {
+    withBqm2((w) => {
+      const db = storeContext(w.h.store).db;
+      const [o] = rows(w);
+      assert.ok(o);
+      const reserve = (fence: Parameters<typeof reserveBudget>[1], manifestId: Id) => reserveBudget(w.h.store, fence, { purpose: 'MODEL_CALL', attemptKind: 'PRIMARY', deploymentId: w.s.deploymentId, priceCardId: w.s.priceCardId, routePolicyId: w.s.policyId, money: 1_000, tokens: 10_000, contextManifestId: manifestId });
+      const first = claimFor(w.h, o.work_item_id as Id, 'w-first').claim;
+      for (const step of [0, 1]) {
+        const m = assemble(w.h, first, step);
+        assert.ok(m.outcome === 'OK');
+        assert.ok(reserve(first.fence, m.manifestId).ok, `call ${step + 1} of 2`);
+      }
+      const third = assemble(w.h, first, 2);
+      assert.ok(third.outcome === 'OK');
+      const refused = reserve(first.fence, third.manifestId);
+      assert.deepEqual(refused.ok ? null : [refused.code, refused.detail], ['RUN_LIMIT', 'MAX_CALLS_PER_WORK_ITEM']);
+      // The run dies; its possibly-sent calls stay counted: a resumed run of the same observation gets no third call.
+      interruptClaim(w.h.store, w.h.supervisor, first.fence.jobId, 'PROCESS_DIED');
+      w.h.clock.advance(60 * 60_000);
+      const resumed = claimFor(w.h, o.work_item_id as Id, 'w-resumed').claim;
+      const rm = assemble(w.h, resumed, 3);
+      assert.ok(rm.outcome === 'OK');
+      const again = reserve(resumed.fence, rm.manifestId);
+      assert.deepEqual(again.ok ? null : [again.code, again.detail], ['RUN_LIMIT', 'MAX_CALLS_PER_WORK_ITEM'], 'the bound is durable, not per run');
+      assert.equal(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM budget_reservations WHERE work_item_id = ? AND purpose = 'MODEL_CALL'", o.work_item_id)?.n, 2);
+      // Both refusals are audited with the run-limit code (content-free).
+      assert.equal(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM audit_events WHERE action = 'budget.refused' AND reason_code = 'RUN_LIMIT'")?.n, 2);
+    });
+  });
+
+  test('D-L1-24: the wrong-proposal diagnosis is a closed, content-free code distinct from the parser codes', () => {
+    withBqm2((w) => {
+      const [o] = rows(w);
+      assert.ok(o);
+      const run = claimFor(w.h, o.work_item_id as Id).claim;
+      recordInvalidOutput(w.h.store, run.fence, { step: 0, code: 'WRONG_PROPOSAL_TYPE', reasoningClass: 'E1', proposalType: 'MEMORY_CANDIDATE' });
+      recordInvalidOutput(w.h.store, run.fence, { step: 1, code: 'ANSWER_REFUSED', reasoningClass: 'E1', refusalCode: 'SECRET_MATERIAL' });
+      const audit = w.h.store.auditByAction('run.model_output_invalid');
+      assert.deepEqual(audit.map((a) => [a.reasonCode, a.details.proposalType ?? a.details.refusalCode]), [['WRONG_PROPOSAL_TYPE', 'MEMORY_CANDIDATE'], ['ANSWER_REFUSED', 'SECRET_MATERIAL']]);
+      const bad = (input: Parameters<typeof recordInvalidOutput>[2]) => assert.throws(() => recordInvalidOutput(w.h.store, run.fence, input), (e: unknown) => isQandeelError(e, 'VALIDATION_FAILED'));
+      bad({ step: 2, code: 'WRONG_PROPOSAL_TYPE', reasoningClass: 'E1', proposalType: 'free text from the model' });
+      bad({ step: 2, code: 'NOT_JSON', reasoningClass: 'E1', proposalType: 'FINAL' });
+      bad({ step: 2, code: 'ANSWER_REFUSED', reasoningClass: 'E1', refusalCode: 'not a code' });
+      bad({ step: 2, code: 'SOMETHING_ELSE' as 'NOT_JSON', reasoningClass: 'E1' });
     });
   });
 
