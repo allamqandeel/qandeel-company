@@ -389,6 +389,25 @@ const MUTATIONS = [
     edits: [{ file: `${MIND}/packages/ceo-academy-v2.js`, search: 'benchmarkMaxOutputTokens: 4_096', replace: 'benchmarkMaxOutputTokens: 2_816', expectedCount: 1 }],
     runs: [ACTIVATION],
   },
+  // --- L1-02: benchmark score finalization (D-L1-21) -------------------------------------------------------------------
+  {
+    id: 'l1-02-finalize-rolled-back',
+    gate: 'finalizing a package with nothing to re-run commits its SCORED evidence (no refusal rolls it back)',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: 'return { packageId, created: false, benchmarkRuns: runs, scored };', replace: "if (runs === 0) throw new QandeelError('INVALID_TRANSITION', 'nothing to re-run', { reason: 'NOTHING_TO_REQUALIFY' }); return { packageId, created: false, benchmarkRuns: runs, scored };", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-finalize-preview-untruthful',
+    gate: 'the Founder preview of a finalization says so: zero benchmark runs, zero paid provider calls',
+    edits: [{ file: `${STORAGE}/founder-activation.js`, search: "const qualification = rec === null ? 'QUALIFY' : voidCases === 0 ? 'FINALIZE_SCORES' : 'REQUALIFY_VOID_RUNS';", replace: "const qualification = rec === null ? 'QUALIFY' : 'REQUALIFY_VOID_RUNS';", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-finalize-reruns-scored',
+    gate: 'a scored benchmark case is never re-run (only VOID cases are replaced)',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: "AND case_code = ? AND arm = ? AND state <> 'VOID'`, packageId, v.id, c.code, arm))", replace: "AND case_code = ? AND arm = ? AND state = 'OPEN'`, packageId, v.id, c.code, arm))", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
 ];
 
 const args = process.argv.slice(2);

@@ -259,10 +259,12 @@ export class AcademyPackageStore {
 
   /**
    * QUALIFY: registers the package's Skill versions and runs their Skill Version qualification up to the bounded
-   * benchmark. Re-confirming a QUALIFYING package only replaces VOID benchmark runs (a run whose work ended without an
-   * answer); a scored run is never re-run, so no result can be cherry-picked.
+   * benchmark. Re-confirming a QUALIFYING package first FINALIZES every finished run (D-L1-21: an answered run becomes
+   * durable SCORED evidence, pass or fail; an unanswered one VOID), then replaces only the VOID runs; a scored run is
+   * never re-run, so no result can be cherry-picked. Finalizing with nothing to replace is a successful, idempotent act
+   * that creates no work; `finalizeOnly` (a confirmed finalize-scores preview) guarantees it creates no run at all.
    */
-  qualify(actorRef: string, pkg: AcademyPackage, input: { subjectEmployeeId: string; expectedSha256: string }): { packageId: Id; created: boolean; benchmarkRuns: number } {
+  qualify(actorRef: string, pkg: AcademyPackage, input: { subjectEmployeeId: string; expectedSha256: string; finalizeOnly?: boolean }): { packageId: Id; created: boolean; benchmarkRuns: number; scored: number } {
     return founderAdminWrite(this.#store, 'qualify academy package', actorRef, (ctx) => {
       const p = founder(ctx, actorRef, null, 'academy package');
       assertAcademyPackage(pkg);
@@ -305,22 +307,25 @@ export class AcademyPackageStore {
             runs++;
           }
         }
-        return { packageId, created: true, benchmarkRuns: runs };
+        return { packageId, created: true, benchmarkRuns: runs, scored: 0 };
       }
-      // Re-qualification of a QUALIFYING package: score what finished, then replace only the VOID runs.
-      txScoreBenchmarks(ctx, pkg, packageId);
+      if (input.finalizeOnly === true && existing === null) throw new QandeelError('INVALID_TRANSITION', 'only a qualifying package has benchmark scores to finalize', { reason: 'PACKAGE_NOT_QUALIFIED' });
+      // Re-qualification of a QUALIFYING package: finalize what finished (durably — this transaction no longer ends in a
+      // refusal when nothing needs re-running), then replace only the VOID runs.
+      const scored = txScoreBenchmarks(ctx, pkg, packageId);
       for (const ps of ctx.db.all<{ skill_code: string; skill_version_id: string }>('SELECT skill_code, skill_version_id FROM academy_package_skills WHERE package_id = ?', packageId)) {
         const v = getSkillVersionRow(ctx, ps.skill_version_id as Id);
         if (v.pipelineState !== 'SANDBOXED') continue;
         const s = pkg.skills.find((x) => x.code === ps.skill_code);
         for (const c of s?.benchmark ?? []) for (const arm of BENCHMARK_ARMS) {
           if (ctx.db.get(`SELECT 1 AS x FROM skill_benchmark_runs WHERE package_id = ? AND skill_version_id = ? AND case_code = ? AND arm = ? AND state <> 'VOID'`, packageId, v.id, c.code, arm)) continue;
+          if (input.finalizeOnly === true) throw new QandeelError('INVALID_TRANSITION', 'a benchmark case needs a re-run: preview the re-run of its void cases', { reason: 'REQUALIFY_REQUIRED' });
           txCreateBenchmarkRun(ctx, pkg, packageId, v.id, c.code, c.content, arm, { id: subject.id, ref: subject.ref }, p.ref);
           runs++;
         }
       }
-      if (runs === 0) throw new QandeelError('INVALID_TRANSITION', 'nothing to re-run: every benchmark case is open or scored', { reason: 'NOTHING_TO_REQUALIFY' });
-      return { packageId, created: false, benchmarkRuns: runs };
+      if (scored > 0 || runs > 0) appendAudit(ctx, 'academy.package_benchmarks_finalized', 'academy_package', packageId, { actorRef: p.ref }, 'OK', null, { scored, replaced: runs });
+      return { packageId, created: false, benchmarkRuns: runs, scored };
     });
   }
 

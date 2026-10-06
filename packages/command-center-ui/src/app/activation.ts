@@ -228,7 +228,9 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
     const actions = h('div', { class: 'pilot-actions' });
     if (!rec) actions.append(btn('Preview: qualify (security review + bounded benchmark)', () => void host.previewAction('SKILL_PACKAGE_QUALIFY', { ...pkgArgs, subjectEmployeeId: str(ceo.employeeId) }), true));
     if (rec?.state === 'QUALIFYING' && pkg?.installable === true) actions.append(btn('Preview: install (one decision)', () => void host.previewAction('ACADEMY_PACKAGE_INSTALL', pkgArgs), true));
-    if (rec?.state === 'QUALIFYING' && Number(pkg?.benchmarkRunsOpen ?? 0) === 0 && pkg?.installable !== true) actions.append(btn('Preview: re-run void benchmark cases', () => void host.previewAction('SKILL_PACKAGE_QUALIFY', { ...pkgArgs, subjectEmployeeId: str(ceo.employeeId) })));
+    // D-L1-21: finished answered runs to finalize (OPEN) or cases without a live run (VOID) — never a scored case.
+    const pending = arr(pkg?.skills).some((s) => arr(s.runs).some((r) => r.state === 'OPEN') || (s.pipelineState === 'SANDBOXED' && arr(s.runs).length < 2 * Number(arr(pkgReg.skills).find((d) => d.code === s.code)?.cases ?? 0)));
+    if (rec?.state === 'QUALIFYING' && Number(pkg?.benchmarkRunsOpen ?? 0) === 0 && pkg?.installable !== true && pending) actions.append(btn('Preview: finalize benchmark scores / re-run void cases', () => void host.previewAction('SKILL_PACKAGE_QUALIFY', { ...pkgArgs, subjectEmployeeId: str(ceo.employeeId) })));
     if (rec?.state === 'INSTALLED' && !v.enrollment) actions.append(btn('Preview: enroll in the Academy', () => void host.previewAction('ACADEMY_ENROLL', { ...pkgArgs, employeeId: str(ceo.employeeId) }), true));
     box.append(actions);
     section.append(box);

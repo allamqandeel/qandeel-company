@@ -3760,3 +3760,24 @@ Product Owner review of `2b8afee` (2026-10-06). Three decisions and one correcti
   digest changed; v1 is untouched. The per-run money cap (40 000) stays: canonical worst case per call = 24 000-token
   context × 0.30 + 4096 output × 1.20 USD per million ≈ 12 115 micro-units; an answer run makes at most two calls
   (first + one escalation) ≈ 24 230, and even three ≈ 36 345 fit; the cap remains a hard admission bound.
+
+## D-L1-21 — Benchmark scores are finalized as durable evidence; a failed package keeps it (Product Owner review, executor)
+
+Product Owner review of the real package-v2 result (2026-10-06, class A): the scoring of finished benchmark runs only
+ever happened inside a confirmation that then refused — `qualify` on a package with nothing to re-run threw
+`NOTHING_TO_REQUALIFY`, and `install` of a failed package refused — so both rolled the `SCORED` writes back. v2's 24
+answered runs therefore stayed `OPEN` (their verdicts were only the rubric applied live). Closed inside the existing
+`SKILL_PACKAGE_QUALIFY` lifecycle, no new subsystem, no migration:
+
+- Re-qualifying a QUALIFYING package finalizes every finished run first (answered → `SCORED`, pass or fail; unanswered
+  → `VOID`), then replaces only cases without a live run. With nothing to replace it succeeds — the scores commit — and
+  creates no work; repeating it is an idempotent no-op. A `SCORED` run is never re-run; scoring never advances a Skill
+  Version (failed versions stay `SANDBOXED`) and never installs. The audit row `academy.package_benchmarks_finalized`
+  carries counts only.
+- The Founder preview is truthful: `qualification` is `FINALIZE_SCORES` when no case needs a run (with
+  `scoresToFinalize`, `benchmarkRuns: 0`, `paidProviderCalls: NONE`, and its own text: 0 benchmark runs, 0 paid provider
+  calls, nothing approved or installed), `REQUALIFY_VOID_RUNS` when some do (and it says how many scores it finalizes),
+  and refused (`NOTHING_TO_REQUALIFY`) only when every case is already scored; a running benchmark is refused as before.
+  A confirmed finalize-only preview passes `finalizeOnly`, so its execution can never create a run even if state moved.
+- `install` is no longer the mechanism that preserves evidence: it still scores and still refuses a failed package; a
+  refusal rolls back only its own writes, never evidence a finalization already committed.

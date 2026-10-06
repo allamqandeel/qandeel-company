@@ -447,8 +447,10 @@ describe('D-L1-19: a failed Academy package is revised by a NEW package version,
       const ceilings = [...new Set(x.seen.filter((r) => r.kind === 'BENCHMARK').map((r) => r.maxTokens))].sort();
       assert.deepEqual(ceilings, [V1.limits.benchmarkMaxOutputTokens, V2.limits.benchmarkMaxOutputTokens].sort(), 'each package ran under its own pinned output ceiling');
 
-      // v1's failure cannot be turned into a pass: nothing to re-run (no VOID run), install still refused.
-      assert.throws(() => x.rt.founder.actions.preview(x.session, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V1), subjectEmployeeId: ceo }), /nothing to re-run/);
+      // v1's failure cannot be turned into a pass: no case can be re-run (no VOID run) — its only act is finalizing its
+      // scores (D-L1-21: zero runs, zero provider calls) — and its install is still refused.
+      const v1Again = x.rt.founder.actions.preview(x.session, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V1), subjectEmployeeId: ceo }).payload as Record<string, unknown>;
+      assert.deepEqual([v1Again.qualification, v1Again.benchmarkRuns, v1Again.paidProviderCalls], ['FINALIZE_SCORES', 0, 'NONE']);
       assert.throws(() => x.rt.founder.actions.preview(x.session, 'ACADEMY_PACKAGE_INSTALL', argsOf(V1)), /must qualify/);
 
       act(x, 'ACADEMY_PACKAGE_INSTALL', argsOf(V2));
@@ -576,6 +578,90 @@ describe('D-L1-20: pre-run corrections for package v2', () => {
       x.rt = makeRuntime(x.root, x.transport, x.logs, [V2]);
       await x.rt.start();
       assert.equal(x.rt.view.auditByAction('run.model_output_invalid').length, ee.runs.length / 2 * 3, 'the diagnosis survives the run and a restart (per EE case: 1 with-skill + 2 baseline)');
+    }, { packages: [V2] });
+  });
+});
+
+// --- D-L1-21: benchmark scores are finalized as durable evidence, without the install and without paid calls ------------
+// L1-02-PROOF: score-finalization
+
+const GOV = 'ceo.governance-discipline';
+const GOV_VOID_EXPECT = V2.skills.find((s) => s.code === GOV)?.benchmark.find((b) => b.code === 'restricted-data-external-vendor')?.expect;
+
+describe('D-L1-21: finished benchmark answers are finalized to durable SCORED evidence; a failed package keeps it', () => {
+  test('VOID cases are the only re-runs; finalization scores every answered run durably with zero runs and zero calls, idempotently; install still refuses and erases nothing', () => {
+    let phase: 'FIRST' | 'AFTER' = 'FIRST';
+    // EE with-skill fails (scored); one baseline case answers nothing in the first pass (VOID), then answers.
+    const how = (c: ReturnType<typeof caseOf>): Behaviour => {
+      if (isEeWithSkill(c)) return 'OVERCONFIDENT';
+      if (phase === 'FIRST' && c.kind === 'BENCHMARK' && !c.withSkill && c.expect === GOV_VOID_EXPECT) return 'NOT_JSON';
+      return 'TRUTHFUL';
+    };
+    return withCompany('l1-02-finalize', how, async (x) => {
+      const ceo = hireCeo(x);
+      await qualifyPkg(x, V2, ceo);
+      const pkgView = (): PackageViewOf => {
+        const v = viewOf(x, V2);
+        assert.ok(v);
+        return v;
+      };
+      const rows = (): PackageViewOf['skills'][number]['runs'][number][] => pkgView().skills.flatMap((s) => s.runs);
+      const calls = (): number => x.seen.filter((r) => r.kind === 'BENCHMARK').length;
+      const eeFailed = (): PackageViewOf['skills'][number]['runs'][number] | undefined => pkgView().skills.find((s) => s.code === EE)?.runs.find((r) => r.arm === 'WITH_SKILL' && r.result?.passed === false);
+      assert.equal(rows().length, 24);
+      assert.equal(rows().filter((r) => r.workItemState === 'FAILED').length, 1, 'one run ended without an answer');
+      assert.ok(rows().every((r) => r.state === 'OPEN'), 'nothing is durably scored by the benchmark itself');
+
+      // 1. One VOID case: the preview re-runs exactly it and finalizes the 23 answered runs.
+      const re = x.rt.founder.actions.preview(x.session, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V2), subjectEmployeeId: ceo });
+      const rp = re.payload as Record<string, unknown>;
+      assert.deepEqual([rp.qualification, rp.benchmarkRuns, rp.scoresToFinalize, rp.paidProviderCalls], ['REQUALIFY_VOID_RUNS', 1, 23, 'BOUNDED_BY_CAPS']);
+      const failedRunId = eeFailed()?.id;
+      assert.ok(failedRunId);
+      phase = 'AFTER';
+      const before = calls();
+      x.rt.founder.actions.confirm(x.session, re.id, re.fingerprint);
+      assert.equal(rows().filter((r) => r.state === 'SCORED').length, 23, 'the 23 answered runs are durably SCORED in the same confirmation');
+      assert.equal(eeFailed()?.state, 'SCORED');
+      assert.equal(eeFailed()?.id, failedRunId, 'the scored failure is never re-run');
+      await eventually(() => finished(viewOf(x, V2), V2) || undefined, 60_000, 'the replacement run finished');
+      assert.equal(calls() - before, 1, 'exactly the VOID case was re-run (one call)');
+      const replaced = rows().filter((r) => r.state === 'OPEN');
+      assert.deepEqual(replaced.map((r) => `${r.caseCode}:${r.arm}`), ['restricted-data-external-vendor:BASELINE']);
+
+      // 2. Finalization: zero runs, zero provider calls, every row durable; a failed case stays FAILED.
+      const fin = x.rt.founder.actions.preview(x.session, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V2), subjectEmployeeId: ceo });
+      const twin = x.rt.founder.actions.preview(x.session, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V2), subjectEmployeeId: ceo });
+      const fp = fin.payload as Record<string, unknown>;
+      assert.deepEqual([fp.qualification, fp.benchmarkRuns, fp.scoresToFinalize, fp.paidProviderCalls], ['FINALIZE_SCORES', 0, 1, 'NONE']);
+      const ids = rows().map((r) => `${r.id}:${r.workItemId}`).sort();
+      const atFinalize = calls();
+      x.rt.founder.actions.confirm(x.session, fin.id, fin.fingerprint);
+      assert.ok(rows().every((r) => r.state === 'SCORED'), 'all 24 runs are durable SCORED evidence');
+      assert.deepEqual(rows().map((r) => `${r.id}:${r.workItemId}`).sort(), ids, 'no benchmark run or Work Item was created');
+      assert.equal(eeFailed()?.result?.passed, false, 'the failed with-skill case is durably FAILED');
+      assert.equal(pkgView().skills.find((s) => s.code === EE)?.verdict.reason, 'WITH_SKILL_CASE_FAILED');
+
+      // 3. Idempotent: a second confirmation creates nothing and changes nothing; a new preview has nothing to do.
+      const snapshot = JSON.stringify(pkgView());
+      x.rt.founder.actions.confirm(x.session, twin.id, twin.fingerprint);
+      assert.equal(JSON.stringify(pkgView()), snapshot, 'a repeated finalization is a no-op');
+      assert.throws(() => x.rt.founder.actions.preview(x.session, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V2), subjectEmployeeId: ceo }), /nothing to finalize or re-run/);
+      // Give a wrongly-woken runtime the chance to call: nothing does.
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(calls(), atFinalize, 'finalization made zero provider calls');
+
+      // 4. The failed package: install refused, its SCORED evidence untouched, every version still SANDBOXED.
+      assert.equal(pkgView().installable, false);
+      assert.throws(() => x.rt.founder.actions.preview(x.session, 'ACADEMY_PACKAGE_INSTALL', argsOf(V2)), /must qualify/);
+      assert.equal(JSON.stringify(pkgView()), snapshot, 'the refused install erased nothing');
+      for (const s of pkgView().skills) assert.equal(x.rt.mind.skills.version(s.skillVersionId).pipelineState, 'SANDBOXED', `${s.code}: scoring never approves`);
+
+      // 5. Durable across a restart.
+      await x.rt.stop();
+      x.rt = makeRuntime(x.root, x.transport, x.logs, [V2]);
+      await x.rt.start();
+      assert.equal(JSON.stringify(pkgView()), snapshot, 'SCORED evidence survives a restart');
     }, { packages: [V2] });
   });
 });
