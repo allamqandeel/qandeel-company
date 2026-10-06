@@ -12,11 +12,11 @@ import path from 'node:path';
 import { describe, test } from 'node:test';
 
 import type { Id } from '@qandeel-company/domain';
-import { CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_IDENTITY_PROFILE_V1, academyPackageDigest, scoreAnswer, type AcademyPackage, type AnswerExpectation } from '@qandeel-company/mind';
+import { CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, CEO_IDENTITY_PROFILE_V1, academyPackageDigest, scoreAnswer, type AcademyPackage, type AnswerExpectation } from '@qandeel-company/mind';
 import { DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DeepSeekProviderAdapter, FakeDeepSeekTransport, fakeChatAnswer, fakeModelsAnswer, type DeepSeekRequest, type DeepSeekResponse } from '@qandeel-company/model-providers';
 import { InMemorySecretVault } from '@qandeel-company/secret-vault';
 import type { FounderSession } from '@qandeel-company/storage';
-import { ANSWER_CONFIDENCE_SEMANTICS, ANSWER_DECISION_SEMANTICS, provisioningProfileDigest } from '@qandeel-company/governance';
+import { ANSWER_CONFIDENCE_SEMANTICS, ANSWER_DECISION_SEMANTICS, ANSWER_REVERSIBLE_SEMANTICS, provisioningProfileDigest } from '@qandeel-company/governance';
 
 import { CompanyRuntime, Logger, employeeTaskProcessor, type LogRecord } from '../../src/index.js';
 import { eventually, removeRoot, runtimeFor, tempRoot } from '../helpers.js';
@@ -254,14 +254,14 @@ describe('L1-02: the first production CEO is hired, trained, qualified and activ
       const logText = JSON.stringify(x.logs);
       for (const needle of ['أولوياتك', REPLY.slice(0, 20), KEY, 'reasoning_' + 'content', 'Bearer ']) assert.equal(logText.includes(needle), false, `${needle.slice(0, 12)} never in logs`);
 
-      // D-L1-20: every answer-bearing context (benchmark, attempt, shadow) carries the canonical decision / confidence
-      // semantics; a Founder reply context does not.
+      // D-L1-20 / D-L1-22: every answer-bearing context (benchmark, attempt, shadow) carries the canonical decision /
+      // confidence / reversible semantics; a Founder reply context (MESSAGE) does not.
       for (const kind of ['BENCHMARK', 'SCENARIO', 'SHADOW']) {
         const ctxs = x.seen.filter((r) => r.kind === kind);
         assert.ok(ctxs.length > 0, `${kind} contexts were assembled`);
-        assert.ok(ctxs.every((r) => r.text.includes(ANSWER_DECISION_SEMANTICS) && r.text.includes(ANSWER_CONFIDENCE_SEMANTICS)), `every ${kind} context defines decision and confidence`);
+        assert.ok(ctxs.every((r) => r.text.includes(ANSWER_DECISION_SEMANTICS) && r.text.includes(ANSWER_CONFIDENCE_SEMANTICS) && r.text.includes(ANSWER_REVERSIBLE_SEMANTICS)), `every ${kind} context defines decision, confidence and reversible`);
       }
-      assert.ok(x.seen.filter((r) => r.kind === 'REPLY').every((r) => !r.text.includes(ANSWER_DECISION_SEMANTICS)), 'a Founder reply context is unchanged');
+      assert.ok(x.seen.filter((r) => r.kind === 'REPLY').every((r) => !r.text.includes(ANSWER_DECISION_SEMANTICS) && !r.text.includes(ANSWER_REVERSIBLE_SEMANTICS) && !r.text.includes('"type":"ANSWER"')), 'a Founder reply (MESSAGE) context is unchanged: no ANSWER contract');
 
       // Restart on the same workspace: same Company, same CEO, still ACTIVE, history intact.
       await x.rt.stop();
@@ -663,5 +663,93 @@ describe('D-L1-21: finished benchmark answers are finalized to durable SCORED ev
       await x.rt.start();
       assert.equal(JSON.stringify(pkgView()), snapshot, 'SCORED evidence survives a restart');
     }, { packages: [V2] });
+  });
+});
+
+// --- D-L1-22: the canonical `reversible` semantics; package v3 -------------------------------------------------------
+// L1-02-PROOF: package-v3
+
+const V3 = CEO_ACADEMY_PACKAGE_V3;
+/** The digest package v2 was released, benchmarked and finalized (24 SCORED) in the live Company with: never rewritten. */
+const V2_RELEASED_SHA = 'a1017a70a0866590746fbb74c7f2eba7f29a6948f0968ee9f090050da3539f63';
+/** The digest of package v3 as prepared for review (before any benchmark): a change to v3 changes this. */
+const V3_PREPARED_SHA = '01607736fc7f5340605e323761bf83437c9e22fd21005f42414651fe78d80fc6';
+
+describe('D-L1-22: `reversible` describes the primary act; package v3 differs from v2 only by its identity', () => {
+  test('the canonical `reversible` semantics bind to the PRIMARY act, never to an auxiliary next step, with the three canonical examples', () => {
+    assert.match(ANSWER_REVERSIBLE_SEMANTICS, /^"reversible" states whether the PRIMARY proposal, commitment or act being decided now could be materially undone after it is executed/);
+    assert.match(ANSWER_REVERSIBLE_SEMANTICS, /without irreversible loss, a non-refundable commitment, permanent data loss or an equivalent one-way consequence/);
+    assert.match(ANSWER_REVERSIBLE_SEMANTICS, /never whether an auxiliary pilot, investigation, evidence-gathering step, pause, canary, rollback preparation or other recommended next step is reversible/);
+    assert.match(ANSWER_REVERSIBLE_SEMANTICS, /12-month non-refundable exclusive commitment = false/);
+    assert.match(ANSWER_REVERSIBLE_SEMANTICS, /production launch whose migration can permanently lose user data = false/);
+    assert.match(ANSWER_REVERSIBLE_SEMANTICS, /small bounded experiment that can be stopped with no material lasting harm = true/);
+    assert.ok(!/benchmark|exclusive-deal|feature-vs-technical-risk/i.test(ANSWER_REVERSIBLE_SEMANTICS), 'generic ANSWER semantics, never benchmark-specific');
+    // The semantics clarify; the rubric is unchanged: an answer that sets `reversible` for its next step still fails.
+    const deal = V2.skills.flatMap((s) => s.benchmark).find((b) => b.code === 'irreversible-exclusive-deal');
+    assert.ok(deal?.expect);
+    assert.equal(deal.expect.reversible, false);
+    assert.ok(deal.expect.critical?.includes('reversible'), 'the failed expectation is kept, still critical');
+  });
+
+  test('v1 and v2 are unchanged; v3 differs from v2 only by version, title and its six new Skill Version labels', () => {
+    assert.equal(academyPackageDigest(V1), V1_RELEASED_SHA, 'v1 is unchanged');
+    assert.equal(academyPackageDigest(V2), V2_RELEASED_SHA, 'v2 is unchanged');
+    assert.equal(academyPackageDigest(V3), V3_PREPARED_SHA);
+    assert.equal(V3.code, V2.code);
+    assert.equal(V3.version, 3);
+    assert.equal(V3.skills.length, 6);
+    assert.ok(V3.skills.every((s) => s.versionLabel === '1.0.0+pkg3'));
+    assert.deepEqual(V3.skills.map((s) => s.code), V2.skills.map((s) => s.code), 'the same six semantic Skill identities');
+    assert.deepEqual({ ...V3, version: V2.version, title: V2.title, skills: V3.skills.map((s) => ({ ...s, versionLabel: '1.0.0+pkg2' })) }, V2, 'cases, rubric, instructions, program, scenarios, caps and ceiling are v2\'s');
+    assert.deepEqual(V3.limits, V2.limits);
+    assert.equal(V3.limits.benchmarkPassPct, 75);
+    assert.equal(V3.limits.benchmarkMaxOutputTokens, 4_096);
+  });
+
+  test('v3 reuses the six Skill identities with new Skill Versions chained from v2; v2\'s 24 SCORED rows are untouched; registering v3 calls nothing', () => {
+    let phase: 'V2' | 'V3' = 'V2';
+    return withCompany('l1-02-v3', (c) => (phase === 'V2' && isEeWithSkill(c) ? 'OVERCONFIDENT' : 'TRUTHFUL'), async (x) => {
+      const ceo = hireCeo(x);
+      await qualifyPkg(x, V2, ceo);
+      act(x, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V2), subjectEmployeeId: ceo }); // FINALIZE_SCORES
+      const v2 = viewOf(x, V2);
+      assert.ok(v2?.record);
+      const v2Rows = v2.skills.flatMap((s) => s.runs);
+      assert.deepEqual([v2Rows.length, v2Rows.filter((r) => r.state === 'SCORED').length], [24, 24]);
+      assert.equal(v2.installable, false);
+      const v2Before = JSON.stringify(v2);
+      const benchCalls = (): number => x.seen.filter((r) => r.kind === 'BENCHMARK').length;
+
+      // Preparing v3 is defining and registering it: no record, no run, no provider call until a Founder qualifies it.
+      const atRegister = benchCalls();
+      await x.rt.stop();
+      x.rt = makeRuntime(x.root, x.transport, x.logs, [V3, V2]);
+      await x.rt.start();
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(viewOf(x, V3)?.record ?? null, null, 'a registered v3 has no durable record');
+      assert.equal(benchCalls(), atRegister, 'registering v3 made zero provider calls');
+      assert.equal(JSON.stringify(viewOf(x, V2)), v2Before, 'v2 is unchanged by v3\'s registration');
+
+      phase = 'V3';
+      await qualifyPkg(x, V3, ceo);
+      const v3 = viewOf(x, V3);
+      assert.ok(v3?.record);
+      assert.equal(JSON.stringify(viewOf(x, V2)), v2Before, 'v2 and its 24 SCORED rows are unchanged after v3 is registered and benchmarked');
+      const v2RunIds = new Set(v2Rows.map((r) => r.id));
+      for (const s3 of v3.skills) {
+        const s2: PackageViewOf['skills'][number] | undefined = v2.skills.find((s) => s.code === s3.code);
+        assert.ok(s2);
+        assert.equal(s3.skillId, s2.skillId, `${s3.code}: v3 reuses the semantic Skill identity`);
+        assert.notEqual(s3.skillVersionId, s2.skillVersionId, `${s3.code}: v3 qualifies its own new Skill Version`);
+        const ver = x.rt.mind.skills.version(s3.skillVersionId);
+        assert.equal(ver.versionLabel, '1.0.0+pkg3');
+        assert.equal(ver.previousVersionId, s2.skillVersionId, `${s3.code}: chained from the v2 version`);
+        assert.equal(x.rt.mind.skills.version(s2.skillVersionId).pipelineState, 'SANDBOXED', `${s3.code}: the failed v2 version stays sandboxed`);
+        assert.equal(x.rt.mind.skills.versions(s3.skillId).length, 2, `${s3.code}: one identity, no duplicate`);
+        assert.ok(s3.runs.every((r) => !v2RunIds.has(r.id)), `${s3.code}: v3's view never sees a v2 run`);
+      }
+      const v3Ctx = x.seen.slice(atRegister).filter((r) => r.kind === 'BENCHMARK');
+      assert.ok(v3Ctx.length >= 24 && v3Ctx.every((r) => r.maxTokens === 4_096 && r.text.includes(ANSWER_REVERSIBLE_SEMANTICS)), 'v3 runs under v2\'s ceiling with the shared reversible semantics');
+    }, { packages: [V3, V2] });
   });
 });

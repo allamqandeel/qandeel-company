@@ -408,6 +408,31 @@ const MUTATIONS = [
     edits: [{ file: `${STORAGE}/academy-packages.js`, search: "AND case_code = ? AND arm = ? AND state <> 'VOID'`, packageId, v.id, c.code, arm))", replace: "AND case_code = ? AND arm = ? AND state = 'OPEN'`, packageId, v.id, c.code, arm))", expectedCount: 1 }],
     runs: [ACTIVATION],
   },
+  // --- L1-02: the canonical `reversible` semantics; package v3 (D-L1-22) ----------------------------------------------
+  {
+    id: 'l1-02-reversible-semantics-missing',
+    gate: 'every answer-bearing context carries the canonical reversible semantics',
+    edits: [{ file: `${STORAGE}/mind-writes.js`, search: '${ANSWER_REVERSIBLE_SEMANTICS} One ANSWER', replace: 'One ANSWER', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-reversible-semantics-auxiliary',
+    gate: 'the reversible facet describes the primary act, never an auxiliary next step',
+    edits: [{ file: `${GOV}/proposals.js`, search: ' — never whether an auxiliary pilot, investigation, evidence-gathering step, pause, canary, rollback preparation or other recommended next step is reversible', replace: '', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-v3-label-reused',
+    gate: 'package v3 qualifies six NEW Skill Versions, never a label of v2',
+    edits: [{ file: `${MIND}/packages/ceo-academy-v3.js`, search: "versionLabel: '1.0.0+pkg3'", replace: "versionLabel: '1.0.0+pkg2'", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-v3-payload-drift',
+    gate: 'package v3 keeps the Skill instructions of v2 (no benchmark-driven rewrite)',
+    edits: [{ file: `${MIND}/packages/ceo-academy-v3.js`, search: "versionLabel: '1.0.0+pkg3' }", replace: "versionLabel: '1.0.0+pkg3', instructions: `${s.instructions}\nSet reversible for the next step.` }", expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
 ];
 
 const args = process.argv.slice(2);

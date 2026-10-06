@@ -3781,3 +3781,35 @@ answered runs therefore stayed `OPEN` (their verdicts were only the rubric appli
   A confirmed finalize-only preview passes `finalizeOnly`, so its execution can never create a run even if state moved.
 - `install` is no longer the mechanism that preserves evidence: it still scores and still refuses a failed package; a
   refusal rolls back only its own writes, never evidence a finalization already committed.
+
+## D-L1-22 — The ANSWER facet `reversible` describes the primary act; package v3 (Product Owner review, executor)
+
+Product Owner review of the finalized package-v2 result (2026-10-06): v2 (`d732f445…`, digest `a1017a70…`) is canonical
+evidence — 24 `SCORED`, 0 `OPEN`, 0 `VOID`; four Skills qualified by benchmark; `ceo.executive-judgment`
+(irreversible-exclusive-deal, with skill, 80, critical `reversible` miss) and `ceo.cross-functional-synthesis`
+(feature-vs-technical-risk, with skill, 50, `reversible` miss) failed. In both, the answer body reasoned correctly that
+the primary act is irreversible, but the structured `reversible` facet described the recommended next step (gather
+evidence / delay the launch). This is the contract-clarity class D-L1-20 closed for `decision` and `confidence`. v1 and
+v2 are immutable history from here: never modified, never re-run.
+
+- **Shared ANSWER contract.** `ANSWER_REVERSIBLE_SEMANTICS` (governance, beside the decision / confidence semantics) is
+  embedded in the one shared ANSWER guidance, so every answer-bearing Work Item — Academy attempts, Skill benchmark
+  cases, shadow work — receives it: `reversible` states whether the PRIMARY proposal / commitment / act being decided now
+  could be materially undone after execution without irreversible loss, a non-refundable commitment, permanent data
+  loss or an equivalent one-way consequence; never whether an auxiliary pilot, investigation, evidence-gathering step,
+  pause, canary, rollback preparation or other recommended next step is. Examples: a 12-month non-refundable exclusive
+  commitment = false; a production launch whose migration can permanently lose user data = false; a small bounded
+  experiment that can be stopped with no material lasting harm = true. Generic, never benchmark-specific. Founder-thread
+  MESSAGE contexts are unchanged. The enums, the decision / confidence semantics, the rubric, the 75 pass mark and every
+  case expectation are unchanged — no failed expectation is weakened.
+- **Package v3** (`ceo.company-ceo` v3, `CEO_ACADEMY_PACKAGE_V3`, digest
+  `01607736fc7f5340605e323761bf83437c9e22fd21005f42414651fe78d80fc6`): differs from v2 only by version, title and its six
+  Skill Version labels (`1.0.0+pkg3`); the same six semantic Skill identities, each new version chained
+  (`previousVersionId`) from its v2 version through the D-L1-19 seam. Instructions, cases, rubric, program, scenarios,
+  money caps and the 4096 ceiling are v2's. A read-only check of the live workspace before defining it found no v3 record
+  (v1 and v2 only, both QUALIFYING; twelve Skill Versions, all SANDBOXED). Preparing v3 made no provider call; it is
+  registered, not qualified — its benchmark needs its own Founder preview and confirmation.
+- **Observation for later Academy / identity evaluation (no change now).** A stored v2 answer described Salim as a
+  "senior engineer (CTO)". It is preserved unchanged as behavioural evidence; the rubric is not changed for it and the
+  identity system is not redesigned. Salim's canonical role is CEO; he must not invent another role for himself — to be
+  examined by the Academy / identity evaluation.

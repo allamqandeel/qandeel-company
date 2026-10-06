@@ -11,7 +11,7 @@ import path from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, academyPackageDigest } from '@qandeel-company/mind';
+import { CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, academyPackageDigest } from '@qandeel-company/mind';
 import { DEEPSEEK_V41_FLASH_ACADEMY_PROFILE } from '@qandeel-company/model-providers';
 
 import { CSRF_COOKIE, CSRF_HEADER, FounderSurface } from '../src/index.js';
@@ -61,9 +61,9 @@ describe('L1-02: the Company activation flow on the authenticated surface', () =
       assert.equal(view.ceo, null, 'the canonical CEO seat starts vacant');
       assert.equal((view.seat as Body).code, 'company.ceo');
       assert.equal((view.seat as Body).roleRef, 'role:company.ceo');
-      // D-L1-19: the current package version (v2) and the failed v1 (history) are both registered, each with its exact digest.
+      // D-L1-19 / D-L1-22: the current package version (v3) and the failed v2 and v1 (history) are all registered, each with its exact digest.
       const listed = registry.packages as Body[];
-      assert.deepEqual(listed.map((p) => `${String(p.code)}@${String(p.version)}:${String(p.sha256)}`), [CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V1].map((p) => `${p.code}@${p.version}:${academyPackageDigest(p)}`), 'the exact digests the Founder qualifies / installs are visible');
+      assert.deepEqual(listed.map((p) => `${String(p.code)}@${String(p.version)}:${String(p.sha256)}`), [CEO_ACADEMY_PACKAGE_V3, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V1].map((p) => `${p.code}@${p.version}:${academyPackageDigest(p)}`), 'the exact digests the Founder qualifies / installs are visible');
       const pkg = listed[0];
       assert.ok((pkg?.scenarios as Body[]).filter((s) => s.kind === 'HOLDOUT').every((s) => s.content === null), 'holdout scenarios are never shown in advance');
       const profile = ((registry.providers as Body).profiles as Body[])[0];

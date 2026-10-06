@@ -22,4 +22,5 @@ export * from './text.js';
 export * from './academy-package.js';
 export * from './packages/ceo-academy-v1.js';
 export * from './packages/ceo-academy-v2.js';
+export * from './packages/ceo-academy-v3.js';
 export * from './packages/ceo-identity-v1.js';

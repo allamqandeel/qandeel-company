@@ -70,6 +70,12 @@ export const ANSWER_DECISION_SEMANTICS =
   '"decision" is the disposition of the PRIMARY proposal, commitment or act the work asks you to decide now — never of an auxiliary pilot, experiment, investigation or next evidence-gathering step. Do not commit to the primary act until evidence is obtained (for example: "do not move everyone to the expensive model; run a measured comparison first") = GATHER_EVIDENCE, not PROCEED_WITH_CONDITIONS. The primary act may go ahead only with explicit safeguards or conditions = PROCEED_WITH_CONDITIONS.';
 export const ANSWER_CONFIDENCE_SEMANTICS =
   '"confidence" is your confidence that the CURRENT evidence supports the decision-relevant factual premise or expected outcome needed to justify the primary act now — never your confidence that gathering evidence is a good idea. Weak or insufficient evidence about the primary proposition means LOW or MEDIUM, not HIGH.';
+/**
+ * D-L1-22 — the canonical meaning of the ANSWER facet `reversible`, beside `decision` and `confidence` and shared by the
+ * same answer-bearing Work Items. It describes the primary act, never the recommended next step.
+ */
+export const ANSWER_REVERSIBLE_SEMANTICS =
+  '"reversible" states whether the PRIMARY proposal, commitment or act being decided now could be materially undone after it is executed without irreversible loss, a non-refundable commitment, permanent data loss or an equivalent one-way consequence — never whether an auxiliary pilot, investigation, evidence-gathering step, pause, canary, rollback preparation or other recommended next step is reversible. For example: a 12-month non-refundable exclusive commitment = false; a production launch whose migration can permanently lose user data = false; a small bounded experiment that can be stopped with no material lasting harm = true.';
 
 export const ANSWER_DECISIONS = ['PROCEED', 'PROCEED_WITH_CONDITIONS', 'GATHER_EVIDENCE', 'ESCALATE_TO_FOUNDER', 'DECLINE'] as const;
 export type AnswerDecision = (typeof ANSWER_DECISIONS)[number];

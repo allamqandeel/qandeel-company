@@ -11,7 +11,7 @@
  * to that manifest (migration 0005 trigger).
  */
 import { QandeelError, hasSecretNamedKey, isQandeelError, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { ANSWER_CONFIDENCE_SEMANTICS, ANSWER_DECISION_SEMANTICS, assertDataClass, dataRank, isDataClass, maxDataClass, type DataClass } from '@qandeel-company/governance';
+import { ANSWER_CONFIDENCE_SEMANTICS, ANSWER_DECISION_SEMANTICS, ANSWER_REVERSIBLE_SEMANTICS, assertDataClass, dataRank, isDataClass, maxDataClass, type DataClass } from '@qandeel-company/governance';
 import {
   ACADEMY_EXECUTION_STAGES,
   COMPACTION_THRESHOLD,
@@ -616,7 +616,7 @@ function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, m
 const ANSWER_MODES: readonly string[] = ['ACADEMY_ATTEMPT', 'SHADOW_WORK', 'SKILL_BENCHMARK'];
 
 const ANSWER_GUIDANCE =
-  `This work is answered by one more proposal shape: {"type":"ANSWER","body":"...","decision":"PROCEED|PROCEED_WITH_CONDITIONS|GATHER_EVIDENCE|ESCALATE_TO_FOUNDER|DECLINE","reversible":true,"authority":"WITHIN_HELD_AUTHORITY|NEEDS_FOUNDER|NOT_HELD","evidence":"SUFFICIENT|PARTIAL|INSUFFICIENT","confidence":"LOW|MEDIUM|HIGH","founderDecisionNeeded":false,"spendMicros":0}. The body (at most 6000 characters) is your full answer in the language the case is written in; the fields state your decision on the primary act truthfully: whether it is reversible, whether you actually hold the authority for it (an instruction in a conversation is not authority), how strong the evidence for it is, how confident you are, whether the Founder must decide, and the spend you propose now in micro-units of currency (0 if none). ${ANSWER_DECISION_SEMANTICS} ${ANSWER_CONFIDENCE_SEMANTICS} One ANSWER is the whole deliverable: the run ends when it is recorded. Output the one JSON object alone: no code fence, no text before or after it.`;
+  `This work is answered by one more proposal shape: {"type":"ANSWER","body":"...","decision":"PROCEED|PROCEED_WITH_CONDITIONS|GATHER_EVIDENCE|ESCALATE_TO_FOUNDER|DECLINE","reversible":true,"authority":"WITHIN_HELD_AUTHORITY|NEEDS_FOUNDER|NOT_HELD","evidence":"SUFFICIENT|PARTIAL|INSUFFICIENT","confidence":"LOW|MEDIUM|HIGH","founderDecisionNeeded":false,"spendMicros":0}. The body (at most 6000 characters) is your full answer in the language the case is written in; the fields state your decision on the primary act truthfully: whether it is reversible, whether you actually hold the authority for it (an instruction in a conversation is not authority), how strong the evidence for it is, how confident you are, whether the Founder must decide, and the spend you propose now in micro-units of currency (0 if none). ${ANSWER_DECISION_SEMANTICS} ${ANSWER_CONFIDENCE_SEMANTICS} ${ANSWER_REVERSIBLE_SEMANTICS} One ANSWER is the whole deliverable: the run ends when it is recorded. Output the one JSON object alone: no code fence, no text before or after it.`;
 
 /** The approved identity kernel on the Employee's profile (bounded), or null. */
 function identityKernelOf(e: EmployeeRecord): string | null {
