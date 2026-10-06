@@ -3699,3 +3699,37 @@ the real benchmark evidence) and folded that branch's review requirements in:
   deterministic fake answers an answer-bearing item by default. Making the context real exposed that the old helpers
   never assembled an attempt's context, so holdouts were never actually exposed: a recertification now takes a fresh
   holdout, as the product rule requires.
+
+## D-L1-19 — The package-revision seam: a failed Academy package is revised by a new package version (Product Owner review, executor)
+
+Product Owner review of `85412c4` (2026-10-06, class A): package v1 truthfully failed qualification, and the store had no
+truthful path to a revision — `qualify` registered every package Skill afresh (`skills.code` is unique), and a reused
+Skill Version would have shared benchmark rows across packages. Closed, bounded to `AcademyPackageStore`:
+
+- **One identity, one version per package.** A package Skill reuses its existing Skill identity by code (an active
+  QANDEEL-native Skill of the package's own role, else `PACKAGE_SKILL_IDENTITY_MISMATCH`). Every package version registers
+  its OWN new Skill Version, chained (`previousVersionId`) to the Skill's latest earlier version. All six v2 Skills get
+  new versions, including unchanged payloads: the 0017 index `academy_package_skills_version` already makes a version
+  belong to exactly one package (released, applied in the live workspace), v2 changes the benchmark conditions (output
+  ceiling) for every Skill, and a benchmark verdict is evidence about one version under one package's conditions — so
+  no evidence is ever shared. A label already used for the Skill is refused before any write: a different payload is
+  `SKILL_VERSION_LABEL_CONFLICT` (never a silent rewrite), the same payload `SKILL_VERSION_LABEL_TAKEN` (a new package
+  version takes a new label). Unchanged payloads take build-metadata labels (`1.0.0+pkg2`).
+- **Evidence bound to package AND version.** The package view and the VOID-replacement check read benchmark runs by
+  `package_id` and `skill_version_id`; scoring and spend were already package-bound. A host definition whose digest
+  differs from the recorded package is never installable (a rewritten v1 can never present as a pass); install already
+  re-checks the recorded digest.
+- **Forward-only history.** A new package version must be newer than every recorded version of its code
+  (`PACKAGE_VERSION_NOT_NEWER`). v1 stays QUALIFYING (failed) history: its scored/answered runs are immutable, it can
+  only replace VOID runs, and its install stays refused. No schema change (no migration 0018).
+- **Package v2** (`ceo.company-ceo` v2, `CEO_ACADEMY_PACKAGE_V2`): v1's cases, rubric, pass mark, program, scenarios and
+  caps unchanged; Skill payloads unchanged (new labels only); `benchmarkMaxOutputTokens` 1536 → 2816, derived from v1's
+  durable evidence: the ANSWER contract admits a 6000-character body, the densest observed language (Arabic) runs
+  ~2.23 characters per output token (≈2691 tokens) plus the JSON envelope; 1536 could not hold a legal Arabic answer,
+  and 5 of v1's 6 VOID runs died on a thinking-class retry truncated at exactly 1536 output tokens. The surface
+  registers v2 beside v1 and presents the newest version; earlier versions are shown read-only as history.
+- **Not changed here (proposed, awaiting the Product Owner):** the shared ANSWER contract does not define what the
+  `decision` and `confidence` facets refer to (v1's one scored failure coded a correct "decline, run a bounded comparison
+  first" recommendation as `PROCEED_WITH_CONDITIONS`); the parser's content-free invalid-output code is not recorded, so
+  why a first (non-truncated) output failed validation is not durable evidence; with three or fewer rubric checks one
+  non-critical miss fails a case.

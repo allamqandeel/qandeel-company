@@ -18,7 +18,7 @@
  * Every write here is a Founder-authority write (`founderAdminWrite`: armed only by a verified Founder session, a savepoint
  * of the governed confirm). Answers and case texts are local governed content; audit rows carry IDs and codes only.
  */
-import { QandeelError, assertId, newId, type Id } from '@qandeel-company/domain';
+import { QandeelError, assertId, newId, sha256Hex, type Id } from '@qandeel-company/domain';
 import { type AnswerFacets } from '@qandeel-company/governance';
 import {
   BENCHMARK_ARMS,
@@ -43,6 +43,7 @@ import { getEmployeeRow, txAllocateWorkItemBudget } from './governance-core.js';
 import { founder, founderAdminWrite } from './governance.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { getSkillVersionRow, loadSkillPayloadForInspection } from './mind-core.js';
+import type { SkillVersionRecord } from './mind-records.js';
 import { SkillStore, txCheckSkillLicense, txInspectSkillVersion } from './skill-registry.js';
 import { storeContext, type CompanyStore } from './store.js';
 import { txCreateWorkItem, txTransition } from './work-items.js';
@@ -154,7 +155,8 @@ export function txPackageView(ctx: StoreContext, pkg: AcademyPackage): PackageVi
       const sec = ctx.db.get<{ reviewer_ref: string; checks_json: string; passed: number }>('SELECT reviewer_ref, checks_json, passed FROM skill_security_reviews WHERE skill_version_id = ?', v.id);
       const runs: BenchmarkRunView[] = ctx.db
         .all<{ id: string; case_code: string; arm: string; work_item_id: string; state: string; checks_json: string | null; score_pct: number | null; passed: number | null; void_reason: string | null }>(
-          `SELECT * FROM skill_benchmark_runs WHERE skill_version_id = ? AND state <> 'VOID' ORDER BY case_code, arm`,
+          `SELECT * FROM skill_benchmark_runs WHERE package_id = ? AND skill_version_id = ? AND state <> 'VOID' ORDER BY case_code, arm`,
+          record.id,
           v.id,
         )
         .map((r) => {
@@ -191,7 +193,7 @@ export function txPackageView(ctx: StoreContext, pkg: AcademyPackage): PackageVi
   const spent = record
     ? Number(ctx.db.get<{ s: number }>('SELECT COALESCE(SUM(u.economic_micros), 0) AS s FROM usage_records u JOIN skill_benchmark_runs b ON b.work_item_id = u.work_item_id WHERE b.package_id = ?', record.id)?.s ?? 0)
     : 0;
-  const installable = record !== null && record.state === 'QUALIFYING' && skills.length === pkg.skills.length && skills.every((s) => s.pipelineState === 'SANDBOXED' && s.security?.passed === true && s.verdict.benchmarkPassed && s.verdict.comparePassed);
+  const installable = record !== null && record.sha256 === sha && record.state === 'QUALIFYING' && skills.length === pkg.skills.length && skills.every((s) => s.pipelineState === 'SANDBOXED' && s.security?.passed === true && s.verdict.benchmarkPassed && s.verdict.comparePassed);
   return { code: pkg.code, version: pkg.version, sha256: sha, title: pkg.title, roleRef: pkg.roleRef, record, skills, installable, benchmarkRunsOpen: open, spentMicros: spent };
 }
 
@@ -277,13 +279,17 @@ export class AcademyPackageStore {
       let runs = 0;
       const skills = SkillStore.for(this.#store);
       if (packageId === null) {
+        // D-L1-19: a package's history only moves forward — a new version of a code is newer than every recorded one, so
+        // an earlier (e.g. failed) version is never re-created under a lower number beside its successor.
+        const newest = ctx.db.get<{ v: number | null }>('SELECT MAX(package_version) AS v FROM academy_packages WHERE code = ?', pkg.code)?.v ?? null;
+        if (newest !== null && newest >= pkg.version) throw new QandeelError('INVALID_TRANSITION', 'a new package version is newer than every recorded version of its code', { reason: 'PACKAGE_VERSION_NOT_NEWER', newest });
         packageId = newId() as Id;
         ctx.db.run(`INSERT INTO academy_packages (id, code, package_version, package_sha256, role_ref, subject_employee_id, state, qualified_by_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, 'QUALIFYING', ?, ?)`, packageId, pkg.code, pkg.version, input.expectedSha256, pkg.roleRef, subject.id, p.ref, at);
         appendAudit(ctx, 'academy.package_qualifying', 'academy_package', packageId, { actorRef: p.ref }, 'OK', null, { code: pkg.code, version: pkg.version });
         for (const s of pkg.skills) {
-          const skill = skills.registerSkill(p.ref, { code: s.code, name: s.name, skillType: 'QANDEEL_NATIVE', ownerRef: pkg.roleRef });
-          let v = skills.registerSkillVersion(p.ref, { skillId: skill.id, versionLabel: s.versionLabel, sourceRef: `academy-package:${pkg.code}.v${pkg.version}`, sourceRevision: `sha-${input.expectedSha256.slice(0, 16)}`, authorRef: 'org:qandeel-company', licenseSpdx: null, dependencies: [], instructions: s.instructions });
-          ctx.db.run('INSERT INTO academy_package_skills (package_id, skill_code, skill_id, skill_version_id) VALUES (?, ?, ?, ?)', packageId, s.code, skill.id, v.id);
+          const { skillId, version } = this.#packageSkillVersion(ctx, skills, p.ref, pkg, s, input.expectedSha256);
+          let v = version;
+          ctx.db.run('INSERT INTO academy_package_skills (package_id, skill_code, skill_id, skill_version_id) VALUES (?, ?, ?, ?)', packageId, s.code, skillId, v.id);
           // Deterministic, independent of the Founder: inspection, then the licence / dependency check.
           v = txInspectSkillVersion(ctx, v.id);
           if (v.pipelineState === 'REJECTED') continue;
@@ -308,7 +314,7 @@ export class AcademyPackageStore {
         if (v.pipelineState !== 'SANDBOXED') continue;
         const s = pkg.skills.find((x) => x.code === ps.skill_code);
         for (const c of s?.benchmark ?? []) for (const arm of BENCHMARK_ARMS) {
-          if (ctx.db.get(`SELECT 1 AS x FROM skill_benchmark_runs WHERE skill_version_id = ? AND case_code = ? AND arm = ? AND state <> 'VOID'`, v.id, c.code, arm)) continue;
+          if (ctx.db.get(`SELECT 1 AS x FROM skill_benchmark_runs WHERE package_id = ? AND skill_version_id = ? AND case_code = ? AND arm = ? AND state <> 'VOID'`, packageId, v.id, c.code, arm)) continue;
           txCreateBenchmarkRun(ctx, pkg, packageId, v.id, c.code, c.content, arm, { id: subject.id, ref: subject.ref }, p.ref);
           runs++;
         }
@@ -316,6 +322,40 @@ export class AcademyPackageStore {
       if (runs === 0) throw new QandeelError('INVALID_TRANSITION', 'nothing to re-run: every benchmark case is open or scored', { reason: 'NOTHING_TO_REQUALIFY' });
       return { packageId, created: false, benchmarkRuns: runs };
     });
+  }
+
+  /**
+   * D-L1-19 — the package-revision seam. A package Skill keeps ONE semantic identity across package versions (its code);
+   * each package version qualifies its OWN new Skill Version of it, chained to the skill's latest earlier version. A
+   * Skill Version is therefore qualified inside exactly one package (the 0017 one-version-one-package index), so no
+   * benchmark evidence can be shared, inherited or confused between package versions. A label already used for this
+   * Skill is refused: with a different payload it would be a silent rewrite, with the same payload it would re-enter an
+   * earlier package's evidence — either way the new package version takes a new label.
+   */
+  #packageSkillVersion(ctx: StoreContext, skills: SkillStore, actorRef: string, pkg: AcademyPackage, s: AcademyPackage['skills'][number], sha: string): { skillId: Id; version: SkillVersionRecord } {
+    const known = ctx.db.get<{ id: string; skill_type: string; owner_ref: string; status: string }>('SELECT id, skill_type, owner_ref, status FROM skills WHERE code = ?', s.code);
+    if (known && (known.skill_type !== 'QANDEEL_NATIVE' || known.owner_ref !== pkg.roleRef || known.status !== 'ACTIVE')) {
+      throw new QandeelError('VALIDATION_FAILED', 'a package Skill reuses only an active QANDEEL-native Skill identity of its own role', { reason: 'PACKAGE_SKILL_IDENTITY_MISMATCH', skillCode: s.code });
+    }
+    const skillId = (known?.id ?? skills.registerSkill(actorRef, { code: s.code, name: s.name, skillType: 'QANDEEL_NATIVE', ownerRef: pkg.roleRef }).id) as Id;
+    const taken = ctx.db.get<{ instructions_sha256: string }>('SELECT instructions_sha256 FROM skill_versions WHERE skill_id = ? AND version_label = ?', skillId, s.versionLabel);
+    if (taken) {
+      const same = taken.instructions_sha256 === sha256Hex(s.instructions);
+      throw new QandeelError('VALIDATION_FAILED', same ? 'this Skill version label is already qualified in an earlier package: a new package version takes a new label' : 'this Skill version label already names a different payload', { reason: same ? 'SKILL_VERSION_LABEL_TAKEN' : 'SKILL_VERSION_LABEL_CONFLICT', skillCode: s.code });
+    }
+    const previous = ctx.db.get<{ id: string }>('SELECT id FROM skill_versions WHERE skill_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', skillId);
+    const version = skills.registerSkillVersion(actorRef, {
+      skillId,
+      versionLabel: s.versionLabel,
+      sourceRef: `academy-package:${pkg.code}.v${pkg.version}`,
+      sourceRevision: `sha-${sha.slice(0, 16)}`,
+      authorRef: 'org:qandeel-company',
+      licenseSpdx: null,
+      dependencies: [],
+      instructions: s.instructions,
+      ...(previous ? { previousVersionId: previous.id } : {}),
+    });
+    return { skillId, version };
   }
 
   #review(ctx: StoreContext, s: AcademyPackage['skills'][number], versionId: Id): StaticSecurityReport {

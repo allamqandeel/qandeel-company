@@ -339,6 +339,37 @@ const MUTATIONS = [
     edits: [{ file: `${MIND}/academy-package.js`, search: 'const benchmarkPassed = withR.every((r) => r?.passed === true);', replace: 'const benchmarkPassed = true;', expectedCount: 1 }],
     runs: [ACTIVATION],
   },
+  // --- L1-02: the package-revision seam (D-L1-19) -------------------------------------------------------------------
+  {
+    id: 'l1-02-package-skill-identity-duplicated',
+    gate: 'a new package version reuses each Skill identity by code (never a duplicate identity)',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: 'const skillId = (known?.id ?? skills.registerSkill(', replace: 'const skillId = (skills.registerSkill(', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-package-version-unchained',
+    gate: 'a revised package Skill Version is chained to the Skill\'s previous version',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: '...(previous ? { previousVersionId: previous.id } : {}),', replace: '', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-package-label-rewritable',
+    gate: 'a Skill Version label already used is refused as a governed refusal (same label, different payload never rewrites)',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: '    if (taken) {', replace: '    if (taken && false) {', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-package-view-digest-unbound',
+    gate: 'a package definition whose digest differs from the recorded one is never installable (v1 cannot be rewritten into a pass)',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: 'record.sha256 === sha && ', replace: '', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
+  {
+    id: 'l1-02-package-version-not-forward',
+    gate: 'a new package version is newer than every recorded version of its code',
+    edits: [{ file: `${STORAGE}/academy-packages.js`, search: 'if (newest !== null && newest >= pkg.version)', replace: 'if (newest !== null && false)', expectedCount: 1 }],
+    runs: [ACTIVATION],
+  },
 ];
 
 const args = process.argv.slice(2);

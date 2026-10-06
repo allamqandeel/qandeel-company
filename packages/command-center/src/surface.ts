@@ -2,7 +2,7 @@
  * FounderSurface — runtime + listener + briefing policy in one lifecycle. Starting it never arms Founder
  * authority: a session does, per request. Stopping it revokes every live session (fail closed).
  */
-import { CEO_ACADEMY_PACKAGE_V1, CEO_IDENTITY_PROFILE_V1, type AcademyPackage, type EmployeeIdentityProfile } from '@qandeel-company/mind';
+import { CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_IDENTITY_PROFILE_V1, type AcademyPackage, type EmployeeIdentityProfile } from '@qandeel-company/mind';
 import type { ProviderAdapter, ProviderProvisioningProfile } from '@qandeel-company/governance';
 import { CompanyRuntime, DeterministicFakeProvider, FakeToolDriver, employeeTaskProcessor, type RuntimeOptions } from '@qandeel-company/runtime';
 
@@ -56,7 +56,7 @@ export class FounderSurface {
       providers: [...providers, ...(options.providers ?? []), ...(extra.governance?.providers ?? [])],
       toolDrivers: [...drivers, ...(extra.governance?.toolDrivers ?? [])],
       provisioningProfiles: [...(options.provisioningProfiles ?? []), ...(extra.governance?.provisioningProfiles ?? [])],
-      academyPackages: [...(options.academyPackages ?? [CEO_ACADEMY_PACKAGE_V1]), ...(extra.governance?.academyPackages ?? [])],
+      academyPackages: [...(options.academyPackages ?? [CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V1]), ...(extra.governance?.academyPackages ?? [])],
       identityProfiles: [...(options.identityProfiles ?? [CEO_IDENTITY_PROFILE_V1]), ...(extra.governance?.identityProfiles ?? [])],
     };
     const runtimeOptions: RuntimeOptions = {

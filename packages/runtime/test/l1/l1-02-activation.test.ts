@@ -12,7 +12,7 @@ import path from 'node:path';
 import { describe, test } from 'node:test';
 
 import type { Id } from '@qandeel-company/domain';
-import { CEO_ACADEMY_PACKAGE_V1, CEO_IDENTITY_PROFILE_V1, academyPackageDigest, type AcademyPackage, type AnswerExpectation } from '@qandeel-company/mind';
+import { CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_IDENTITY_PROFILE_V1, academyPackageDigest, type AcademyPackage, type AnswerExpectation } from '@qandeel-company/mind';
 import { DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DeepSeekProviderAdapter, FakeDeepSeekTransport, fakeChatAnswer, fakeModelsAnswer, type DeepSeekRequest, type DeepSeekResponse } from '@qandeel-company/model-providers';
 import { InMemorySecretVault } from '@qandeel-company/secret-vault';
 import type { FounderSession } from '@qandeel-company/storage';
@@ -62,18 +62,20 @@ interface Ctx {
   readonly session: FounderSession;
   readonly transport: FakeDeepSeekTransport;
   readonly logs: LogRecord[];
-  readonly seen: { kind: string; withSkill: boolean; text: string }[];
+  readonly seen: { kind: string; withSkill: boolean; text: string; maxTokens: number }[];
 }
 
-function makeRuntime(root: string, transport: FakeDeepSeekTransport, logs: LogRecord[], pkg: AcademyPackage = PKG): CompanyRuntime {
+function makeRuntime(root: string, transport: FakeDeepSeekTransport, logs: LogRecord[], pkg: AcademyPackage | readonly AcademyPackage[] = PKG): CompanyRuntime {
   const adapter = new DeepSeekProviderAdapter({ vault: new InMemorySecretVault().set('deepseek-company', KEY), transport });
-  return runtimeFor(root, { processors: [employeeTaskProcessor], governance: { providers: [adapter], provisioningProfiles: [DEEPSEEK_V41_FLASH_ACADEMY_PROFILE], academyPackages: [pkg], identityProfiles: [CEO_IDENTITY_PROFILE_V1], modelCallTimeoutMs: 5_000 }, logger: new Logger((r) => logs.push(r)) });
+  return runtimeFor(root, { processors: [employeeTaskProcessor], governance: { providers: [adapter], provisioningProfiles: [DEEPSEEK_V41_FLASH_ACADEMY_PROFILE], academyPackages: Array.isArray(pkg) ? pkg : [pkg], identityProfiles: [CEO_IDENTITY_PROFILE_V1], modelCallTimeoutMs: 5_000 }, logger: new Logger((r) => logs.push(r)) });
 }
 
 /** Options of one proof world: another registered package, or a Founder reply the model first answers as an ANSWER. */
 interface WorldOptions {
   readonly pkg?: AcademyPackage;
   readonly replyAnswerFirst?: boolean;
+  /** D-L1-19: several registered versions of a package (the case texts are read from `pkg`). */
+  readonly packages?: readonly AcademyPackage[];
 }
 
 async function withCompany(label: string, behave: (c: ReturnType<typeof caseOf>) => Behaviour, fn: (x: Ctx) => Promise<void>, opts: WorldOptions = {}): Promise<void> {
@@ -84,8 +86,8 @@ async function withCompany(label: string, behave: (c: ReturnType<typeof caseOf>)
   const transport = new FakeDeepSeekTransport().respondWith((request): DeepSeekResponse => {
     if (request.path === DEEPSEEK_MODELS_PATH) return fakeModelsAnswer([{ id: DEEPSEEK_MODEL_CODE, name: 'DeepSeek-V4.1-Flash' }]);
     const c = caseOf(pkg, request);
-    const body = request.body as { messages: { content: string }[] };
-    seen.push({ kind: c.kind, withSkill: c.withSkill, text: body.messages.map((m) => m.content).join('\n') });
+    const body = request.body as { messages: { content: string }[]; max_tokens: number };
+    seen.push({ kind: c.kind, withSkill: c.withSkill, text: body.messages.map((m) => m.content).join('\n'), maxTokens: body.max_tokens });
     if (c.kind === 'REPLY' && replyAnswers > 0) {
       replyAnswers--;
       return fakeChatAnswer(answerFor(undefined, 'TRUTHFUL'), { prompt: 3_000, completion: 300 });
@@ -94,7 +96,7 @@ async function withCompany(label: string, behave: (c: ReturnType<typeof caseOf>)
     return fakeChatAnswer(answerFor(c.expect, behave(c)), { prompt: 3_000, completion: 400 });
   });
   const logs: LogRecord[] = [];
-  const holder: { rt: CompanyRuntime } = { rt: makeRuntime(root, transport, logs, pkg) };
+  const holder: { rt: CompanyRuntime } = { rt: makeRuntime(root, transport, logs, opts.packages ?? pkg) };
   try {
     await holder.rt.start();
     const auth = holder.rt.founder.auth;
@@ -359,4 +361,123 @@ describe('L1-02: the first production CEO is hired, trained, qualified and activ
       // The evaluator never types a deterministic dimension.
       assert.throws(() => x.rt.founder.actions.preview(x.session, 'ACADEMY_EVALUATE', { attemptId: v.enrollment?.attempts.at(-1)?.id, scores: ['AUTHORITY_COMPLIANCE:100'] }), /decided|outcome|DIMENSION/);
     }));
+});
+
+// --- D-L1-19: the package-revision seam ------------------------------------------------------------------------------
+// L1-02-PROOF: package-revision
+
+const V1 = CEO_ACADEMY_PACKAGE_V1;
+const V2 = CEO_ACADEMY_PACKAGE_V2;
+/** The digest package v1 was released (and qualified in the live Company) with: v1 is never rewritten. */
+const V1_RELEASED_SHA = '546f5bbe279f2a3b1d969242e5381ffef891cee055ed662ac28c7053e2b7bf4b';
+const EE = 'ceo.evidence-and-economics';
+const EE_EXPECTS: readonly (AnswerExpectation | undefined)[] = V1.skills.find((s) => s.code === EE)?.benchmark.map((b) => b.expect) ?? [];
+const argsOf = (p: AcademyPackage): Record<string, unknown> => ({ packageCode: p.code, packageVersion: p.version, packageSha256: academyPackageDigest(p) });
+type PackageViewOf = ReturnType<CompanyRuntime['founder']['activation']>['packages'][number];
+const viewOf = (x: Ctx, p: AcademyPackage): PackageViewOf | undefined => x.rt.founder.activation().packages.find((v) => v.code === p.code && v.version === p.version && v.sha256 === academyPackageDigest(p));
+const isEeWithSkill = (c: ReturnType<typeof caseOf>): boolean => c.kind === 'BENCHMARK' && c.withSkill && EE_EXPECTS.includes(c.expect);
+const finished = (v: PackageViewOf | undefined, p: AcademyPackage): boolean => v !== undefined && v.benchmarkRunsOpen === 0 && v.skills.length === p.skills.length && v.skills.every((s) => s.runs.every((r) => ['COMPLETED', 'FAILED'].includes(r.workItemState)));
+
+async function qualifyPkg(x: Ctx, p: AcademyPackage, ceo: Id): Promise<void> {
+  act(x, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(p), subjectEmployeeId: ceo });
+  await eventually(() => finished(viewOf(x, p), p) || undefined, 60_000, `package v${p.version} benchmark runs finished`);
+}
+
+describe('D-L1-19: a failed Academy package is revised by a NEW package version, never rewritten or re-run into a pass', () => {
+  test('v1 fails and stays failed history; v2 reuses each Skill identity with a new chained Skill Version, qualifies on its own evidence only, and installs', () => {
+    let phase: 'V1' | 'V2' = 'V1';
+    const weakV1: AcademyPackage = { ...V1, skills: V1.skills.map((s) => (s.code === EE ? { ...s, benchmark: s.benchmark.map((b) => ({ ...b, expect: { decision: ['PROCEED', 'PROCEED_WITH_CONDITIONS', 'GATHER_EVIDENCE', 'ESCALATE_TO_FOUNDER', 'DECLINE'], critical: ['decision'] } })) } : s)) };
+    // Same label as v1 with a different payload; same label as v1 with the same payload.
+    const conflict: AcademyPackage = { ...V2, version: 3, skills: V2.skills.map((s, i) => (i === 0 ? { ...s, versionLabel: '1.0.0', instructions: `${s.instructions}\nRevised wording.` } : s)) };
+    const taken: AcademyPackage = { ...V2, version: 4, skills: V2.skills.map((s) => ({ ...s, versionLabel: '1.0.0' })) };
+    return withCompany('l1-02-revision', (c) => (phase === 'V1' && isEeWithSkill(c) ? 'OVERCONFIDENT' : 'TRUTHFUL'), async (x) => {
+      assert.equal(academyPackageDigest(V1), V1_RELEASED_SHA, 'package v1 is exactly the released definition');
+      assert.notEqual(academyPackageDigest(V2), V1_RELEASED_SHA, 'v2 is a new immutable package digest');
+      const ceo = hireCeo(x);
+      await qualifyPkg(x, V1, ceo);
+      const v1 = viewOf(x, V1);
+      assert.ok(v1?.record);
+      assert.equal(v1.installable, false);
+      assert.equal(v1.skills.find((s) => s.code === EE)?.verdict.reason, 'WITH_SKILL_CASE_FAILED', 'v1 truthfully failed a scored with-skill case');
+      assert.throws(() => x.rt.founder.actions.preview(x.session, 'ACADEMY_PACKAGE_INSTALL', argsOf(V1)), /must qualify/);
+      const v1Before = JSON.stringify(v1);
+
+      // A revision never rewrites a Skill Version label: refused whole, nothing written.
+      assert.throws(() => act(x, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(conflict), subjectEmployeeId: ceo }), /already names a different payload/);
+      assert.throws(() => act(x, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(taken), subjectEmployeeId: ceo }), /already qualified in an earlier package/);
+      assert.equal(viewOf(x, conflict)?.record ?? null, null, 'a refused revision leaves no package record');
+      assert.equal(viewOf(x, taken)?.record ?? null, null);
+
+      phase = 'V2';
+      await qualifyPkg(x, V2, ceo);
+      const v2 = viewOf(x, V2);
+      assert.ok(v2?.record);
+      assert.equal(JSON.stringify(viewOf(x, V1)), v1Before, 'v1 stays readable and unchanged after v2 is registered and benchmarked');
+      const v1Runs = new Set(v1.skills.flatMap((s) => s.runs.map((r) => r.id)));
+      for (const s2 of v2.skills) {
+        const s1: PackageViewOf['skills'][number] | undefined = v1.skills.find((s) => s.code === s2.code);
+        assert.ok(s1);
+        assert.equal(s2.skillId, s1.skillId, `${s2.code}: v2 reuses the semantic Skill identity`);
+        assert.notEqual(s2.skillVersionId, s1.skillVersionId, `${s2.code}: v2 qualifies its own new Skill Version`);
+        const ver = x.rt.mind.skills.version(s2.skillVersionId);
+        assert.equal(ver.versionLabel, '1.0.0+pkg2');
+        assert.equal(ver.previousVersionId, s1.skillVersionId, `${s2.code}: the new version is chained to v1's`);
+        assert.equal(x.rt.mind.skills.versions(s2.skillId).length, 2, `${s2.code}: one identity, two versions (no duplicate identity, no refused-revision residue)`);
+        assert.equal(s2.runs.length, (V2.skills.find((s) => s.code === s2.code)?.benchmark.length ?? 0) * 2, `${s2.code}: exactly v2's own cases x arms`);
+        assert.ok(s2.runs.every((r) => !v1Runs.has(r.id)), `${s2.code}: v2's view never sees a v1 run`);
+        assert.ok(s2.verdict.benchmarkPassed && s2.verdict.comparePassed);
+      }
+      assert.equal(v2.installable, true);
+      const ceilings = [...new Set(x.seen.filter((r) => r.kind === 'BENCHMARK').map((r) => r.maxTokens))].sort();
+      assert.deepEqual(ceilings, [V1.limits.benchmarkMaxOutputTokens, V2.limits.benchmarkMaxOutputTokens].sort(), 'each package ran under its own pinned output ceiling');
+
+      // v1's failure cannot be turned into a pass: nothing to re-run (no VOID run), install still refused.
+      assert.throws(() => x.rt.founder.actions.preview(x.session, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V1), subjectEmployeeId: ceo }), /nothing to re-run/);
+      assert.throws(() => x.rt.founder.actions.preview(x.session, 'ACADEMY_PACKAGE_INSTALL', argsOf(V1)), /must qualify/);
+
+      act(x, 'ACADEMY_PACKAGE_INSTALL', argsOf(V2));
+      for (const s2 of v2.skills) assert.equal(x.rt.mind.skills.version(s2.skillVersionId).pipelineState, 'APPROVED');
+      for (const s1 of v1.skills) assert.equal(x.rt.mind.skills.version(s1.skillVersionId).pipelineState, 'SANDBOXED', 'v1 versions stay held in the sandbox');
+
+      // A host that registers a rewritten v1 (same code and version, a weaker rubric) never sees it as installable.
+      await x.rt.stop();
+      x.rt = makeRuntime(x.root, x.transport, x.logs, [V2, weakV1]);
+      await x.rt.start();
+      const weak = x.rt.founder.activation().packages.find((v) => v.version === V1.version);
+      assert.ok(weak?.record, 'the durable v1 record is found by code and version');
+      assert.notEqual(weak.record.sha256, academyPackageDigest(weakV1));
+      assert.equal(weak.installable, false, 'a definition whose digest differs from the recorded one is never installable');
+      assert.throws(() => act(x, 'ACADEMY_PACKAGE_INSTALL', argsOf(weakV1)), /must qualify|different package|digest/);
+    }, { packages: [V2, V1, conflict, taken] });
+  });
+
+  test('v1 passing evidence never satisfies v2: v2 qualifies only on its own exact versions\' runs', () => {
+    let phase: 'V1' | 'V2' = 'V1';
+    return withCompany('l1-02-revision-isolation', (c) => (phase === 'V2' && isEeWithSkill(c) ? 'OVERCONFIDENT' : 'TRUTHFUL'), async (x) => {
+      const ceo = hireCeo(x);
+      await qualifyPkg(x, V1, ceo);
+      assert.equal(viewOf(x, V1)?.installable, true, 'v1 qualified here (left uninstalled)');
+      phase = 'V2';
+      act(x, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V2), subjectEmployeeId: ceo });
+      const fresh = viewOf(x, V2);
+      assert.equal(fresh?.installable, false, 'a just-registered v2 inherits nothing from v1');
+      assert.ok(fresh?.skills.every((s) => !s.verdict.benchmarkPassed && s.runs.every((r) => r.result === null)));
+      await eventually(() => finished(viewOf(x, V2), V2) || undefined, 60_000, 'v2 benchmark runs finished');
+      const v2 = viewOf(x, V2);
+      assert.equal(v2?.skills.find((s) => s.code === EE)?.verdict.reason, 'WITH_SKILL_CASE_FAILED', 'v2 is judged on its own (failing) evidence, never on v1\'s pass');
+      assert.equal(v2?.installable, false);
+      assert.throws(() => x.rt.founder.actions.preview(x.session, 'ACADEMY_PACKAGE_INSTALL', argsOf(V2)), /must qualify/);
+      assert.equal(viewOf(x, V1)?.installable, true, 'v2\'s failure leaves v1 untouched');
+    }, { packages: [V2, V1] });
+  });
+
+  test('package history only moves forward: a version older than a recorded one is never created beside it', () => {
+    const v3: AcademyPackage = { ...V2, version: 3, skills: V2.skills.map((s) => ({ ...s, versionLabel: '1.0.0+pkg3' })) };
+    return withCompany('l1-02-revision-order', () => 'TRUTHFUL', async (x) => {
+      const ceo = hireCeo(x);
+      act(x, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(v3), subjectEmployeeId: ceo });
+      assert.throws(() => act(x, 'SKILL_PACKAGE_QUALIFY', { ...argsOf(V2), subjectEmployeeId: ceo }), /newer than every recorded version/);
+      assert.equal(viewOf(x, V2)?.record ?? null, null);
+    }, { packages: [v3, V2] });
+  });
 });

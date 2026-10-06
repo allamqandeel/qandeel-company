@@ -349,7 +349,7 @@ const L1_02_CLOSURE = /^docs\/L1_02_[^/]*CLOSURE[^/]*\.md$/i;
 const L1_02_ACTIVATION = 'packages/storage/src/founder-activation.ts';
 const L1_02_PACKAGES = 'packages/storage/src/academy-packages.ts';
 const L1_02_FILES = [L1_02_ACTIVATION, L1_02_PACKAGES, 'packages/storage/src/answers.ts', 'packages/storage/src/activation-view.ts'];
-const L1_02_PROOF_MARKERS = ['L1-02-PROOF: activation-runtime', 'L1-02-PROOF: activation-surface', 'L1-02-PROOF: academy-answer'];
+const L1_02_PROOF_MARKERS = ['L1-02-PROOF: activation-runtime', 'L1-02-PROOF: activation-surface', 'L1-02-PROOF: academy-answer', 'L1-02-PROOF: package-revision'];
 const L1_02_BENCH_LOADER = /\bloadBenchmarkSkillInstructions\b/;
 const L1_02_BENCH_LOADER_FILES = ['packages/storage/src/mind-core.ts', 'packages/storage/src/mind-writes.ts'];
 const L1_VAULT_SRC = 'packages/secret-vault/src/';
@@ -603,6 +603,11 @@ const MUTATION_PINS = {
       'l1-02-answer-any-task',
       'l1-02-answer-run-not-ended',
       'l1-02-benchmark-failing-case-passes',
+      'l1-02-package-skill-identity-duplicated',
+      'l1-02-package-version-unchained',
+      'l1-02-package-label-rewritable',
+      'l1-02-package-view-digest-unbound',
+      'l1-02-package-version-not-forward',
       'l1-02-answer-manifest-unbound',
       'l1-02-answer-unspent-manifest',
       'l1-02-answer-scenario-unchecked',
