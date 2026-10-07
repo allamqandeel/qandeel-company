@@ -74,12 +74,13 @@ function powershellExe(): string {
 /** A PowerShell single-quoted literal (the only escape inside '…' is a doubled quote). */
 export const psLiteral = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 
-function runPowerShell(script: string, timeoutMs: number): Promise<{ ok: boolean; stdout: string }> {
-  if (process.platform !== 'win32') return Promise.resolve({ ok: false, stdout: '' });
+function runPowerShell(script: string, timeoutMs: number): Promise<{ ok: boolean; stdout: string; failure: string | null }> {
+  if (process.platform !== 'win32') return Promise.resolve({ ok: false, stdout: '', failure: 'NOT_WINDOWS' });
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
   return new Promise((resolve) => {
     execFile(powershellExe(), ['-NoProfile', '-NonInteractive', '-NoLogo', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded], { shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1024 }, (error, stdout) => {
-      resolve({ ok: error === null, stdout: String(stdout) });
+      // A content-free failure reason only (never the script or its output).
+      resolve({ ok: error === null, stdout: String(stdout), failure: error === null ? null : error.killed ? 'TIMEOUT' : `EXIT_${String(error.code ?? 'UNKNOWN')}` });
     });
   });
 }
@@ -117,16 +118,31 @@ const shortcutDir = (s: ShortcutSpec, roots: ShortcutRoots): string[] => [
   ...(s.subfolder ? [`$dir = Join-Path $dir ${psLiteral(s.subfolder)}`] : []),
 ];
 
+let shortcutFailure: string | null = null;
+/** Why the last shortcut write / removal failed (content-free: TIMEOUT, EXIT_<code>, OUTPUT), or null. */
+export const lastShortcutFailure = (): string | null => shortcutFailure;
+
+/**
+ * Runs one idempotent shortcut script, bounded. A cold Windows PowerShell / COM start on a fresh machine can be slow,
+ * so a failed attempt is retried once (D-D1-01); the scripts overwrite / remove exactly the named .lnk files.
+ */
 async function shortcutScript(lines: string[]): Promise<string[] | null> {
   lines.push('[Console]::OutputEncoding = [Text.Encoding]::UTF8; ConvertTo-Json -Compress @($out)');
-  const r = await runPowerShell(lines.join('\n'), 30_000);
-  if (!r.ok) return null;
-  try {
-    const parsed = JSON.parse(r.stdout.trim() || '[]') as unknown;
-    return Array.isArray(parsed) ? parsed.map(String) : [String(parsed)];
-  } catch {
-    return null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const r = await runPowerShell(lines.join('\n'), 60_000);
+    if (!r.ok) {
+      shortcutFailure = r.failure;
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(r.stdout.trim() || '[]') as unknown;
+      shortcutFailure = null;
+      return Array.isArray(parsed) ? parsed.map(String) : [String(parsed)];
+    } catch {
+      shortcutFailure = 'OUTPUT';
+    }
   }
+  return null;
 }
 
 /** Writes per-user .lnk shortcuts (no elevation). Resolves the written paths, or null when Windows refused. */

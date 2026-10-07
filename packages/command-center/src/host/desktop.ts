@@ -30,6 +30,7 @@ import { readReleasePin, selfReleaseRoot, verifyReleaseTree } from '@qandeel-com
 
 import { writeJsonAtomic } from './descriptor.js';
 import { discoverHost, ensureRunning, installShortcuts, launcherConfigDir, launcherConfigPath, readLauncherConfig, stopHost, uninstallShortcuts, writeLauncherConfig, PRODUCT_ICON_FILE } from './lifecycle.js';
+import { lastShortcutFailure } from './processes.js';
 import { activateRelease, importRelease, releaseCli, releasesDir } from './release.js';
 
 export const DESKTOP_PRODUCT = 'QANDEEL COMPANY';
@@ -263,7 +264,7 @@ export async function desktopInstall(options: DesktopInstallOptions): Promise<De
   // 6. The launcher configuration (only when the Founder chose the workspace now) and the shortcuts on THIS runtime.
   if (config === null) writeLauncherConfig(configFile, { version: 1, workspace, providers });
   const shortcuts = await installShortcuts(releaseCli(imported.root), launcherConfigDir(), options.shortcutRoot === undefined ? {} : { root: options.shortcutRoot });
-  steps.push({ step: 'SHORTCUTS', result: shortcuts === null ? 'FAILED' : 'OK' });
+  steps.push({ step: 'SHORTCUTS', result: shortcuts === null ? `FAILED:${lastShortcutFailure() ?? 'UNKNOWN'}` : 'OK' });
   writeJsonAtomic(desktopProductRecordPath(), { version: 1, product: DESKTOP_PRODUCT, desktopVersion: manifest.desktopVersion, bundleId: manifest.bundleId, bundleDir, runtime: path.join(bundleDir, ...BUNDLE_NODE.split('/')), releaseId: imported.releaseId, installedAt: now().toISOString() } satisfies DesktopProductRecord);
   if (shortcuts === null) return result(false, 'SHORTCUTS_FAILED', { state });
   return result(true, 'INSTALLED', { previousReleaseId: activation.previousReleaseId, state, shortcuts });
@@ -295,7 +296,7 @@ export async function desktopUninstall(options: DesktopUninstallOptions = {}): P
     if (!ok) return { ok: false, outcome: 'HOST_NOT_STOPPED', code: stopped.outcome, desktopVersion: record?.desktopVersion ?? null, bundleId: record?.bundleId ?? null, releaseId: null, previousReleaseId: null, workspace: config.workspace, steps, state, shortcuts: null };
   } else steps.push({ step: 'STOP', result: 'NOT_CONFIGURED' });
   const removed = await uninstallShortcuts(launcherConfigDir(), options.shortcutRoot === undefined ? {} : { root: options.shortcutRoot });
-  steps.push({ step: 'SHORTCUTS', result: removed === null ? 'FAILED' : 'REMOVED' });
+  steps.push({ step: 'SHORTCUTS', result: removed === null ? `FAILED:${lastShortcutFailure() ?? 'UNKNOWN'}` : 'REMOVED' });
   rmSync(desktopProductRecordPath(), { force: true });
   const pin = config === null ? null : readReleasePin(config.workspace);
   return { ok: removed !== null, outcome: removed === null ? 'SHORTCUTS_NOT_REMOVED' : 'UNINSTALLED', code: removed === null ? 'SHORTCUTS_NOT_REMOVED' : null, desktopVersion: record?.desktopVersion ?? null, bundleId: record?.bundleId ?? null, releaseId: pin ? pin.releaseId : null, previousReleaseId: null, workspace: config?.workspace ?? null, steps, state, shortcuts: removed };
