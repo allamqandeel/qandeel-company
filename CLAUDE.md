@@ -66,6 +66,12 @@
   through the records, not the directory listing.
 
 ## Before your final response
-- Run `npm ci` and `npm run ci`; all must pass. Do not claim a check passed unless it ran.
+- Run `npm ci` and `npm run ci`; all must pass. Do not claim a check passed unless it ran. `npm run ci` is the
+  proportional runner (D-D0-01): it prints the plan from `scripts/ci/impact-map.mjs` and validates the impacted boundary
+  only. Never start the historical C1→L1 mutation families serially by hand. FULL continuity proof is the GitHub gate,
+  run once on the exact final head of a FULL-boundary change; a Desktop release candidate always needs one green FULL
+  GitHub gate on its exact tree.
+- Changing `scripts/ci/impact-map.mjs` (a new boundary, new proofs) is itself a FULL change; keep its repository
+  audit green (`node scripts/ci/impact-map.mjs --self-test`).
 - Report the Skills you actually used and their concrete effect.
 - Work on a branch and open a PR. **Never merge** unless your task explicitly authorizes it.

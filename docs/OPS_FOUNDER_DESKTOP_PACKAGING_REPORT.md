@@ -3,6 +3,14 @@
 **Status: IMPLEMENTATION CANDIDATE — NOT CLOSED** (branch `ops/founder-desktop-packaging`, from `main` @
 `725508fae3cf615b48a89d3d409871d81f0f0bd4`; decisions D-OPS-01 … D-OPS-08 in `docs/architecture/DECISION_LOG.md`).
 
+> **Current status note (D0, 2026-10-07).** The status line above is the historical candidate record and is kept
+> as written. OPS is now **CLOSED / MERGED / CANONICAL**: PR #19 merged into `main` as `d86be37`
+> (`docs/architecture/IMPLEMENTATION_MAP.md`). The next stages are Desktop productization D0 → D4, not P1. P1
+> (First Production Staffing under Salim) is PAUSED until QANDEEL COMPANY Desktop v1 is installed and accepted on
+> the Founder's Windows laptop. The "Build → Test = local `npm run ci`" step before `release-stage` (§1, R-OPS-01b) is
+> superseded by **D-D0-01**. Locally, `npm run ci` / `npm run validate:affected` validates the impacted boundary only.
+> A Desktop release candidate is qualified by one green **FULL** GitHub quality gate on its exact tree.
+
 **Founder review of `a61e0a5` (first candidate): two Product / Security MAJOR findings, both closed on `b104881`.**
 
 | Finding | Root cause | Correction |

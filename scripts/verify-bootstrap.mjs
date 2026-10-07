@@ -419,12 +419,14 @@ const C4_CONTENT_IN_TELEMETRY = /\b(?:appendAudit|appendEvent|\.(?:info|warn|err
 const CANONICAL_DEPARTMENTS = ['strategic-market-intelligence', 'growth', 'brand-creative', 'product', 'engineering'];
 const R4_REVIEW_CHECK = /CHECK\s*\(\s*risk_level\s*<>\s*'R4'\s+OR\s+state\s+NOT\s+IN\s*\(\s*'SATISFIED'\s*,\s*'CONSUMED'\s*\)\s*\)/;
 const AUTHORITY_KERNEL = 'packages/governance/src/authority.ts';
-// --- CI contract (D-R1-07 / D-C4-08) --------------------------------------------------------------
+// --- CI contract (D-R1-07 / D-C4-08 / D-D0-01) ----------------------------------------------------
 const CI_WORKFLOW = '.github/workflows/ci.yml';
 const CI_CLASSIFIER = 'scripts/ci/classify-changes.mjs';
 const CI_GATE = 'scripts/ci/quality-gate.mjs';
 const CI_POST_MERGE = 'scripts/ci/post-merge-mode.mjs';
-const CI_JOBS = ['classify', 'docs-fast', 'integrity', 'static', 'tests', 'mutation', 'acceptance', 'quality-gate'];
+const CI_IMPACT_MAP = 'scripts/ci/impact-map.mjs';
+const CI_LOCAL_RUNNER = 'scripts/ci/validate-affected.mjs';
+const CI_JOBS = ['classify', 'docs-fast', 'integrity', 'affected-checks', 'affected-mutation', 'static', 'tests', 'mutation', 'acceptance', 'quality-gate'];
 const CI_BOTH_OS_JOBS = ['static', 'tests', 'acceptance', 'integrity'];
 const CI_OPERATING_SYSTEMS = ['windows-latest', 'ubuntu-latest'];
 /** The body of one top-level job of a workflow (two-space job keys under `jobs:`). */
@@ -435,6 +437,14 @@ const ciJob = (wf, id) => {
   const rest = jobs.slice(start + 1);
   const next = rest.search(/^ {2}[\w-]+:\s*$/m);
   return next < 0 ? jobs.slice(start) : jobs.slice(start, start + 1 + next);
+};
+// D-D0-01: a mutation family is wired into the continuity proof when the FULL CI mutation matrix runs it on BOTH
+// operating systems. Returns e.g. "c1:mutation c2:mutation …" (the families every OS runs).
+const fullMutationSuites = (read) => {
+  const job = ciJob(read(CI_WORKFLOW) ?? '', 'mutation') ?? '';
+  const per = Object.fromEntries(CI_OPERATING_SYSTEMS.map((os) => [os, new Set()]));
+  for (const m of job.matchAll(/os:\s*([\w-]+),[^}]*suite:\s*'([^']+)'/g)) for (const spec of m[2].split(/\s+/)) per[m[1]]?.add(spec.split(':')[0]);
+  return [...per[CI_OPERATING_SYSTEMS[0]]].filter((x) => CI_OPERATING_SYSTEMS.every((os) => per[os].has(x))).map((x) => `${x}:mutation`).join(' ');
 };
 /**
  * A workflow that does not parse runs NOTHING: GitHub cannot read `on:`, records a failed zero-job run for
@@ -461,7 +471,8 @@ const yamlPlainScalarErrors = (text) => {
 };
 // R1-15: the mutation checks are pinned. Every recorded mutation must stay in its script (a script may
 // only grow), the script must keep the machinery that makes a mutation meaningful (the exact-count
-// guard, the run of the proof tests, the restore, the failing exit) and the root "ci" script must run it.
+// guard, the run of the proof tests, the restore, the failing exit) and the FULL CI mutation matrix must run it on both
+// operating systems (D-D0-01: the root "ci" script is the proportional local entrypoint and never runs mutations).
 const R1_MUTATION_CHECK = 'scripts/r1-mutation-check.mjs';
 const MUTATION_PINS = {
   [MUTATION_CHECK]: { script: 'c1:mutation', ids: ['claim-without-supervisor-verification', 'recovery-without-supervisor-verification', 'heartbeat-without-wake-reconciliation', 'backup-finalization-without-retry', 'backup-failure-leaves-attempt', 'backup-record-not-idempotent'] },
@@ -1165,8 +1176,8 @@ export const RULES = [
       const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
       const problems = C1_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
       if (!files.includes(MUTATION_CHECK)) problems.push(`missing ${MUTATION_CHECK}`);
-      const ci = json(read('package.json'))?.scripts?.ci ?? '';
-      if (!/\bc1:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c1:mutation');
+      const ci = fullMutationSuites(read);
+      if (!/\bc1:mutation\b/.test(ci)) problems.push('the FULL CI mutation matrix (both operating systems) does not run c1:mutation');
       return problems;
     },
   },
@@ -1273,8 +1284,8 @@ export const RULES = [
       const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
       const problems = C2_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
       if (!files.includes(C2_MUTATION_CHECK)) problems.push(`missing ${C2_MUTATION_CHECK}`);
-      const ci = json(read('package.json'))?.scripts?.ci ?? '';
-      if (!/\bc2:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c2:mutation');
+      const ci = fullMutationSuites(read);
+      if (!/\bc2:mutation\b/.test(ci)) problems.push('the FULL CI mutation matrix (both operating systems) does not run c2:mutation');
       return problems;
     },
   },
@@ -1300,8 +1311,8 @@ export const RULES = [
       const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
       const problems = C3_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
       if (!files.includes(C3_MUTATION_CHECK)) problems.push(`missing ${C3_MUTATION_CHECK}`);
-      const ci = json(read('package.json'))?.scripts?.ci ?? '';
-      if (!/\bc3:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c3:mutation');
+      const ci = fullMutationSuites(read);
+      if (!/\bc3:mutation\b/.test(ci)) problems.push('the FULL CI mutation matrix (both operating systems) does not run c3:mutation');
       return problems;
     },
   },
@@ -1311,7 +1322,7 @@ export const RULES = [
     // gate, must fail CI. Scripts may only grow; each keeps the machinery that makes a catch meaningful.
     check: ({ files, read }) => {
       const problems = [];
-      const ci = json(read('package.json'))?.scripts?.ci ?? '';
+      const ci = fullMutationSuites(read);
       for (const [f, pin] of Object.entries(MUTATION_PINS)) {
         if (!files.includes(f)) {
           problems.push(`missing ${f}`);
@@ -1326,7 +1337,7 @@ export const RULES = [
         const pass = text.search(/mutation: PASS/);
         if (loop < 0 || (pass >= 0 && pass < loop)) problems.push(`${f} reports PASS before (or without) its mutation loop`);
         for (const id of pin.ids) if (!text.includes(`id: '${id}'`)) problems.push(`${f} no longer carries the recorded mutation "${id}"`);
-        if (!new RegExp(`\\b${pin.script}\\b`).test(ci)) problems.push(`the root "ci" script does not run ${pin.script}`);
+        if (!new RegExp(`\\b${pin.script}\\b`).test(ci)) problems.push(`the FULL CI mutation matrix (both operating systems) does not run ${pin.script}`);
       }
       return problems;
     },
@@ -1356,8 +1367,8 @@ export const RULES = [
       const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
       const problems = C4_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
       if (!files.includes(C4_MUTATION_CHECK)) problems.push(`missing ${C4_MUTATION_CHECK}`);
-      const ci = json(read('package.json'))?.scripts?.ci ?? '';
-      if (!/\bc4:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c4:mutation');
+      const ci = fullMutationSuites(read);
+      if (!/\bc4:mutation\b/.test(ci)) problems.push('the FULL CI mutation matrix (both operating systems) does not run c4:mutation');
       return problems;
     },
   },
@@ -1386,8 +1397,8 @@ export const RULES = [
       const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
       const problems = C5_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
       if (!files.includes(C5_MUTATION_CHECK)) problems.push(`missing ${C5_MUTATION_CHECK}`);
-      const ci = json(read('package.json'))?.scripts?.ci ?? '';
-      if (!/\bc5:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c5:mutation');
+      const ci = fullMutationSuites(read);
+      if (!/\bc5:mutation\b/.test(ci)) problems.push('the FULL CI mutation matrix (both operating systems) does not run c5:mutation');
       return problems;
     },
   },
@@ -1416,8 +1427,8 @@ export const RULES = [
       const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
       const problems = C6_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
       if (!files.includes(C6_MUTATION_CHECK)) problems.push(`missing ${C6_MUTATION_CHECK}`);
-      const ci = json(read('package.json'))?.scripts?.ci ?? '';
-      if (!/\bc6:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c6:mutation');
+      const ci = fullMutationSuites(read);
+      if (!/\bc6:mutation\b/.test(ci)) problems.push('the FULL CI mutation matrix (both operating systems) does not run c6:mutation');
       return problems;
     },
   },
@@ -1522,8 +1533,8 @@ export const RULES = [
       const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
       const problems = C7A_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
       if (!files.includes(C7A_MUTATION_CHECK)) problems.push(`missing ${C7A_MUTATION_CHECK}`);
-      const ci = json(read('package.json'))?.scripts?.ci ?? '';
-      if (!/\bc7a:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c7a:mutation');
+      const ci = fullMutationSuites(read);
+      if (!/\bc7a:mutation\b/.test(ci)) problems.push('the FULL CI mutation matrix (both operating systems) does not run c7a:mutation');
       return problems;
     },
   },
@@ -1618,8 +1629,8 @@ export const RULES = [
       const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
       const problems = C7B_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
       if (!files.includes(C7B_MUTATION_CHECK)) problems.push(`missing ${C7B_MUTATION_CHECK}`);
-      const ci = json(read('package.json'))?.scripts?.ci ?? '';
-      if (!/\bc7b:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c7b:mutation');
+      const ci = fullMutationSuites(read);
+      if (!/\bc7b:mutation\b/.test(ci)) problems.push('the FULL CI mutation matrix (both operating systems) does not run c7b:mutation');
       return problems;
     },
   },
@@ -1739,8 +1750,8 @@ export const RULES = [
       const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
       const problems = C7C_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
       if (!files.includes(C7C_MUTATION_CHECK)) problems.push(`missing ${C7C_MUTATION_CHECK}`);
-      const ci = json(read('package.json'))?.scripts?.ci ?? '';
-      if (!/\bc7c:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c7c:mutation');
+      const ci = fullMutationSuites(read);
+      if (!/\bc7c:mutation\b/.test(ci)) problems.push('the FULL CI mutation matrix (both operating systems) does not run c7c:mutation');
       return problems;
     },
   },
@@ -1818,8 +1829,8 @@ export const RULES = [
       const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
       const problems = C7D_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
       if (!files.includes(C7D_MUTATION_CHECK)) problems.push(`missing ${C7D_MUTATION_CHECK}`);
-      const ci = json(read('package.json'))?.scripts?.ci ?? '';
-      if (!/\bc7d:mutation\b/.test(ci)) problems.push('the root "ci" script does not run c7d:mutation');
+      const ci = fullMutationSuites(read);
+      if (!/\bc7d:mutation\b/.test(ci)) problems.push('the FULL CI mutation matrix (both operating systems) does not run c7d:mutation');
       return problems;
     },
   },
@@ -2109,8 +2120,8 @@ export const RULES = [
       const tests = files.filter((f) => /^packages\/[^/]+\/test\/.*\.test\.ts$/.test(f));
       const problems = L1_PROOF_MARKERS.filter((marker) => !tests.some((f) => (read(f) ?? '').includes(marker))).map((marker) => `no test carries the proof marker "${marker}"`);
       if (!files.includes(L1_MUTATION_CHECK)) problems.push(`missing ${L1_MUTATION_CHECK}`);
-      const ci = json(read('package.json'))?.scripts?.ci ?? '';
-      if (!/\bl1:mutation\b/.test(ci)) problems.push('the root "ci" script does not run l1:mutation');
+      const ci = fullMutationSuites(read);
+      if (!/\bl1:mutation\b/.test(ci)) problems.push('the FULL CI mutation matrix (both operating systems) does not run l1:mutation');
       return problems;
     },
   },
@@ -2332,7 +2343,7 @@ export const RULES = [
       const wf = read(CI_WORKFLOW);
       if (wf === undefined) return [`missing ${CI_WORKFLOW}`];
       const problems = [...yamlPlainScalarErrors(wf)];
-      for (const need of [CI_CLASSIFIER, CI_GATE, CI_POST_MERGE]) if (!files.includes(need)) problems.push(`missing ${need}`);
+      for (const need of [CI_CLASSIFIER, CI_GATE, CI_POST_MERGE, CI_IMPACT_MAP, CI_LOCAL_RUNNER]) if (!files.includes(need)) problems.push(`missing ${need}`);
       if (!/^\s+pull_request:\s*\n\s+branches:\s*\[main\]/m.test(wf) || !/^\s+push:\s*\n\s+branches:\s*\[main\]/m.test(wf) || !/^\s+workflow_dispatch:/m.test(wf)) problems.push('the workflow must run on pull_request / push to main and allow a manual (workflow_dispatch) full run');
       if (!/^permissions:\s*\n\s+contents:\s*read\s*$/m.test(wf)) problems.push('the workflow default permissions must be contents: read');
       for (const line of wf.split('\n').filter((l) => /^\s*(?:-\s*)?uses:/.test(l))) if (!/uses:\s*[\w.-]+\/[\w.-]+@[0-9a-f]{40}\b/.test(line)) problems.push(`action not pinned to a commit SHA: ${line.trim()}`);
@@ -2343,6 +2354,14 @@ export const RULES = [
       if (!/quality-gate\.mjs/.test(gate)) problems.push(`quality-gate does not run ${CI_GATE}`);
       const classify = ciJob(wf, 'classify') ?? '';
       if (!/classify-changes\.mjs --self-test/.test(classify)) problems.push('classify must run the classifier self-test');
+      for (const t of ['impact-map', 'quality-gate', 'post-merge-mode']) if (!new RegExp(`${t}\\.mjs --self-test`).test(classify)) problems.push(`classify must run the ${t} self-test`);
+      if (!/classify-changes\.mjs[^\n]*--plan-out/.test(classify) || !/name:\s*validation-plan/.test(classify)) problems.push('classify must publish the machine-readable validation plan');
+      // D-D0-01: the affected path runs only on the affected mode, executes the canonical plan, and reports.
+      for (const id of ['affected-checks', 'affected-mutation']) if (!/needs\.classify\.outputs\.mode == 'affected'/.test(ciJob(wf, id) ?? '')) problems.push(`${id} must run exactly on the affected path`);
+      if (!/validate-affected\.mjs --execute-plan/.test(ciJob(wf, 'affected-checks') ?? '')) problems.push('affected-checks must execute the canonical plan (validate-affected.mjs --execute-plan)');
+      if (!/--report/.test(ciJob(wf, 'affected-mutation') ?? '') || !/upload-artifact/.test(ciJob(wf, 'affected-mutation') ?? '')) problems.push('affected mutation shards must report the ids they ran (proof parity)');
+      if (!/--plan\b/.test(gate) || !/--proofs\b/.test(gate)) problems.push('quality-gate must check the affected plan and proofs');
+      if (!/--record-tested-tree/.test(gate)) problems.push('quality-gate must record the proven tree with its proof mode');
       if (!/post-merge-mode\.mjs/.test(classify)) problems.push('classify must decide the post-merge mode (fast integrity or full)');
       for (const id of ['static', 'tests', 'mutation', 'acceptance']) if (!/needs\.classify\.outputs\.mode == 'full'/.test(ciJob(wf, id) ?? '')) problems.push(`${id} must run exactly on the full path`);
       for (const id of CI_BOTH_OS_JOBS) {
@@ -2373,6 +2392,27 @@ export const RULES = [
     },
   },
   {
+    id: 'local-validation-proportional',
+    // D0-I1 / D-D0-01: no normal local command launches the historical C1→L1 mutation universe. The root "ci"
+    // script is the proportional runner (plan first, impacted boundary only); no root script chains two or more
+    // mutation families (the serial universe may not survive under another name).
+    check: ({ read }) => {
+      const scripts = json(read('package.json'))?.scripts ?? {};
+      const problems = [];
+      const ci = String(scripts.ci ?? '');
+      if (!/^node scripts\/ci\/validate-affected\.mjs\b/.test(ci)) problems.push('the root "ci" script must be the proportional runner (node scripts/ci/validate-affected.mjs)');
+      if (!/^node scripts\/ci\/validate-affected\.mjs\b/.test(String(scripts['validate:affected'] ?? ''))) problems.push('the root "validate:affected" script must be node scripts/ci/validate-affected.mjs');
+      for (const [name, cmd] of Object.entries(scripts)) {
+        const fams = new Set([...String(cmd).matchAll(/\b([a-z0-9]+)(?::mutation\b|-mutation-check\.mjs)/g)].map((m) => m[1]));
+        if (fams.size > 1) problems.push(`root script "${name}" chains ${fams.size} mutation families (the serial historical universe); FULL continuity proof belongs on GitHub`);
+        if (name === 'ci' && fams.size > 0) problems.push('the root "ci" script runs a mutation family');
+      }
+      const runner = read(CI_LOCAL_RUNNER) ?? '';
+      if (/-mutation-check\.mjs/.test(runner) || /MUTATION_FAMILIES/.test(runner)) problems.push(`${CI_LOCAL_RUNNER} can reach the historical mutation universe (only the plan's own families, opt-in)`);
+      return problems;
+    },
+  },
+  {
     id: 'ci-classifier-fails-closed',
     // The docs-only fast path is decided by a pure classifier that fails closed: an empty diff, any non-docs
     // path, or anything unexpected means the FULL proof set.
@@ -2382,6 +2422,15 @@ export const RULES = [
       const problems = [];
       for (const need of ["return 'full'", 'export function classify', 'SELF_TEST_CASES', "emit('full'"]) if (!src.includes(need)) problems.push(`${CI_CLASSIFIER} lost ${need}`);
       if (/return\s+'skip'|mode=skip/.test(src)) problems.push(`${CI_CLASSIFIER} can skip the proof set`);
+      // D-D0-01: the canonical impact map fails closed — unknown, ambiguous, high-risk and malformed paths are FULL.
+      const map = read(CI_IMPACT_MAP);
+      if (map === undefined) problems.push(`missing ${CI_IMPACT_MAP}`);
+      else {
+        for (const need of ["class: 'full', rule: 'unknown-path'", "class: 'full', rule: 'malformed-path'", "class: 'full', rule: `ambiguous:", "class: 'full', rule: `high-risk:", 'export function auditRepo', 'SELF_TEST_CASES']) if (!map.includes(need)) problems.push(`${CI_IMPACT_MAP} lost ${need}`);
+        if (/mode=skip|class:\s*'skip'/.test(map)) problems.push(`${CI_IMPACT_MAP} can skip the proof set`);
+      }
+      if (!/from '\.\/impact-map\.mjs'/.test(src)) problems.push(`${CI_CLASSIFIER} does not use the canonical impact map (one mapping, local and CI)`);
+      if (!/from '\.\/impact-map\.mjs'/.test(read(CI_LOCAL_RUNNER) ?? '')) problems.push(`${CI_LOCAL_RUNNER} does not use the canonical impact map (one mapping, local and CI)`);
       return problems;
     },
   },
@@ -2533,7 +2582,7 @@ const synthMap = (c0 = 'CLOSED / PASS', c1 = 'NEXT — CLOUD MEGA-TASK', c2 = 'N
   ].join('\n');
 const SYNTH_SQL = 'CREATE TABLE t (x INTEGER) STRICT;\n';
 const REAL_TEXT = (p) => (existsSync(path.join(ROOT, p)) ? readFileSync(path.join(ROOT, p), 'utf8') : '');
-const SYNTH_CI = { [CI_WORKFLOW]: REAL_TEXT(CI_WORKFLOW), [CI_CLASSIFIER]: REAL_TEXT(CI_CLASSIFIER), [CI_GATE]: REAL_TEXT(CI_GATE), [CI_POST_MERGE]: REAL_TEXT(CI_POST_MERGE) };
+const SYNTH_CI = { [CI_WORKFLOW]: REAL_TEXT(CI_WORKFLOW), [CI_CLASSIFIER]: REAL_TEXT(CI_CLASSIFIER), [CI_GATE]: REAL_TEXT(CI_GATE), [CI_POST_MERGE]: REAL_TEXT(CI_POST_MERGE), [CI_IMPACT_MAP]: REAL_TEXT(CI_IMPACT_MAP), [CI_LOCAL_RUNNER]: REAL_TEXT(CI_LOCAL_RUNNER) };
 // The real, frozen C1 migration texts (read from this checkout) so the synthetic repository is clean.
 const C1_MIGRATION_TEXT = Object.fromEntries(FROZEN_MIGRATIONS.map(({ file }) => [file, readFileSync(path.join(ROOT, MIGRATIONS_DIR, file), 'utf8')]));
 const c1Pins = () => FROZEN_MIGRATIONS.map(({ file }, i) => `  { version: ${i + 2}, name: 'c1-${i}', file: '${file}', sha256: '${migrationSha(C1_MIGRATION_TEXT[file])}' },\n`).join('');
@@ -2602,7 +2651,7 @@ function syntheticRepo(overrides = {}) {
     [AUTHORITY_INDEX]: `## Missing\n\n**${STAGE_16_MISSING}.**\n`,
     [AUTHORITY_MANIFEST]: synthManifest(manifestRow(SYNTH_SOURCE, SYNTH_SOURCE_TEXT)),
     [SYNTH_SOURCE]: SYNTH_SOURCE_TEXT,
-    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation && npm run c6:mutation && npm run c7a:mutation && npm run c7b:mutation && npm run c7c:mutation && npm run c7d:mutation && npm run l1:mutation' } }),
+    'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'node scripts/ci/validate-affected.mjs', 'validate:affected': 'node scripts/ci/validate-affected.mjs', 'c1:mutation': 'node scripts/c1-mutation-check.mjs' } }),
     'packages/bootstrap-contract/package.json': JSON.stringify({ private: true, scripts: { test: 'node --test dist/test' } }),
     'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { 'packages/bootstrap-contract': {}, 'node_modules/tar': { version: '7.0.0' } } }),
     '.gitattributes': '* text=auto eol=lf\n*.sh text eol=lf\n*.ps1 text eol=crlf\n*.png binary\n',
@@ -2884,7 +2933,7 @@ const VIOLATIONS = {
     { remove: ['packages/storage/test/product-decisions.test.ts'] },
     { contents: { 'packages/storage/test/backup-finalization.test.ts': '// marker removed\n' } },
     { remove: [MUTATION_CHECK] },
-    { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test' } }) } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }\n", '') } },
   ],
   'c1-proof-tests-present': { remove: ['packages/runtime/test/faults/fault-matrix.test.ts'] },
   'model-calls-confined': [
@@ -2947,7 +2996,7 @@ const VIOLATIONS = {
   'c5-proofs-present': [
     { contents: { 'packages/runtime/test/c5/proofs.test.ts': '// markers removed\n' } },
     { remove: [C5_MUTATION_CHECK] },
-    { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation' } }) } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: c5-1of1, suite: 'c5:1/1' }\n", '') } },
   ],
   'c5-not-claimed-closed': [
     { contents: { [IMPLEMENTATION_MAP]: `${synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS')}| \`C5\` | Founder | Cloud | CLOSED / MERGED |\n` } },
@@ -2969,7 +3018,7 @@ const VIOLATIONS = {
   'c6-proofs-present': [
     { contents: { 'packages/runtime/test/c6/proofs.test.ts': '// markers removed\n' } },
     { remove: [C6_MUTATION_CHECK] },
-    { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation && npm run c4:mutation && npm run c5:mutation' } }) } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: ubuntu-latest, label: c6-1of1, suite: 'c6:1/1' }\n", '') } },
   ],
   'c6-not-claimed-closed': [
     { contents: { [IMPLEMENTATION_MAP]: `${synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS')}| \`C6\` | Improve | Cloud | CLOSED / MERGED |\n` } },
@@ -3133,17 +3182,31 @@ const VIOLATIONS = {
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('  workflow_dispatch:\n', '') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('npm run c4:acceptance', 'echo c4') } },
     // The C4 run 36484710639 defect: an unquoted step name with ': ' — the workflow does not parse.
-    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('name: Classifier self-test (fails closed)', 'name: Classifier self-test (fails closed): no skip') } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('name: Upload the validation plan (machine-readable, names its mode)', 'name: Upload the validation plan: machine-readable') } },
+    // D-D0-01: the affected path widened beyond its mode, its plan executor dropped, or the map self-test dropped.
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("if: needs.classify.outputs.mode == 'affected' && needs.classify.outputs.mutation_matrix != '[]'", "if: needs.classify.outputs.mutation_matrix != '[]'") } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('node scripts/ci/validate-affected.mjs --execute-plan', 'npm run test #') } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('node scripts/ci/impact-map.mjs --self-test', 'true') } },
+    { remove: [CI_IMPACT_MAP] },
     { remove: [CI_GATE] },
+  ],
+  'local-validation-proportional': [
+    { contents: { 'package.json': JSON.stringify({ private: true, scripts: { ci: 'npm run build && npm run c1:mutation && npm run c2:mutation && npm run verify', 'validate:affected': 'node scripts/ci/validate-affected.mjs' } }) } },
+    { contents: { 'package.json': JSON.stringify({ private: true, scripts: { ci: 'node scripts/ci/validate-affected.mjs', 'validate:affected': 'node scripts/ci/validate-affected.mjs', 'ci:everything': 'npm run c1:mutation && npm run c2:mutation && npm run l1:mutation' } }) } },
+    { contents: { 'package.json': JSON.stringify({ private: true, scripts: { ci: 'node scripts/ci/validate-affected.mjs && npm run c5:mutation', 'validate:affected': 'node scripts/ci/validate-affected.mjs' } }) } },
+    { contents: { 'package.json': JSON.stringify({ private: true, scripts: { ci: 'echo ok', 'validate:affected': 'node scripts/ci/validate-affected.mjs' } }) } },
+    { contents: { [CI_LOCAL_RUNNER]: `${SYNTH_CI[CI_LOCAL_RUNNER]}\nfor (const f of MUTATION_FAMILIES) run(f);\n` } },
   ],
   'ci-classifier-fails-closed': [
     { contents: { [CI_CLASSIFIER]: SYNTH_CI[CI_CLASSIFIER].replace("if (!Array.isArray(files) || files.length === 0) return 'full';", "if (!Array.isArray(files) || files.length === 0) return 'skip';") } },
     { remove: [CI_CLASSIFIER] },
+    { contents: { [CI_IMPACT_MAP]: SYNTH_CI[CI_IMPACT_MAP].replace("return { file, class: 'full', rule: 'unknown-path' };", "return { file, class: 'affected', rule: 'unknown-path' };") } },
+    { contents: { [CI_LOCAL_RUNNER]: SYNTH_CI[CI_LOCAL_RUNNER].replace("from './impact-map.mjs'", "from './my-own-map.mjs'") } },
   ],
   'c4-proofs-present': [
     { contents: { 'packages/runtime/test/c4/proofs.test.ts': '// markers removed\n' } },
     { remove: [C4_MUTATION_CHECK] },
-    { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation && npm run c3:mutation && npm run r1:mutation' } }) } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: ubuntu-latest, label: c4-c5, suite: 'c4:1/1 c5:1/1' }\n", '') } },
   ],
   'c4-not-claimed-closed': [
     { contents: { [IMPLEMENTATION_MAP]: `${synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS')}` } },
@@ -3172,7 +3235,7 @@ const VIOLATIONS = {
   'c2-proofs-present': [
     { contents: { 'packages/runtime/test/c2/proofs.test.ts': '// markers removed\n' } },
     { remove: [C2_MUTATION_CHECK] },
-    { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation' } }) } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }\n", '') } },
   ],
   'c2-not-claimed-closed': [
     { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS') } },
@@ -3182,7 +3245,7 @@ const VIOLATIONS = {
   'c3-proofs-present': [
     { contents: { 'packages/runtime/test/c3/proofs.test.ts': '// markers removed\n' } },
     { remove: [C3_MUTATION_CHECK] },
-    { contents: { 'package.json': JSON.stringify({ private: true, engines: { node: '>=24.11.0 <25.0.0' }, workspaces: ['packages/bootstrap-contract'], scripts: { ci: 'npm run test && npm run c1:mutation && npm run c2:mutation' } }) } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: ubuntu-latest, label: c3-1of1, suite: 'c3:1/1' }\n", '') } },
   ],
   'mutation-checks-pinned': [
     // The whole script replaced by a comment (the R1-15 evidence): exits 0, proves nothing.
