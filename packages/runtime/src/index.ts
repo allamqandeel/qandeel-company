@@ -23,3 +23,4 @@ export type { MemoryProposal, MemoryProposalOutcome } from './c2/types.js';
 // C5: the Founder surface's proposal types (a message never carries authority; a goal act is fenced).
 export type { GoalActOutcome, GoalActProposal, MessageOutcome, MessageProposal } from './c2/types.js';
 export type { C4Health } from './c4/health.js';
+export { RELEASE_MANIFEST_FILE, RELEASE_PIN_FILE, admitRuntimeRelease, hashReleaseTree, readReleaseManifest, readReleasePin, releaseIdOf, releasePinPath, selfReleaseRoot, verifyReleaseTree, type ReleaseAdmission, type ReleaseFile, type ReleaseManifest, type ReleasePin, type ReleaseRefusal } from './release.js';

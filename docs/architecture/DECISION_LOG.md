@@ -4294,3 +4294,255 @@ performed: Calibration, the move to PROBATION and Activation.
 - Founder Calibration, the lifecycle move, Activation and Merge.
 - Any LIVE mutation, budget change, requalification or Academy rerun.
 - Any claim that learning from feedback has been demonstrated.
+
+## D-OPS-01 — Operational / Desktop Packaging: one host lifecycle over the existing runtime and surface (Founder task contract, executor)
+
+**Decision (Founder, 2026-10-07).** The Founder must start, use, close, reopen, stop, restart and recover QANDEEL
+COMPANY from Windows without a terminal. The Strong-v1 startup policy is **on-demand start, then persist**:
+- no sign-in autostart;
+- the first launch starts the host;
+- closing the UI never stops it;
+- an explicit controlled stop / restart exists.
+
+No Electron, Tauri, installer, second runtime, second backend or new authentication.
+
+**Repo truth (anti-duplication).** Every mechanism already existed except discovery and an out-of-terminal lifecycle.
+Reused unchanged:
+- `qandeel-founder serve` (FounderSurface → CompanyRuntime → loopback listener);
+- `launch` (the canonical launch-token mint from the workspace files) and the `/launch` page (token in the URL
+  fragment, redeemed once);
+- the durable supervisor lease (D-C1-22: a second runtime on a workspace waits and fails `LEASE_HELD`);
+- startup recovery (expired leases, stale instances ABANDONED) and graceful shutdown (`runtime.stop()`);
+- safe-upgrade at start, update / restore holds, and the DPAPI vault.
+
+What was missing:
+- a host could not be found (a random port, a URL printed once);
+- the process was tied to a terminal, and only Ctrl+C stopped it;
+- a fail-stopped runtime left the surface running;
+- `launch` could not name the port.
+
+**What was added.** All of it is inside `@qandeel-company/command-center`; there is no new package.
+- **`serve` is the workspace's Founder host.** It refuses to start beside a live host (`HOST_ALREADY_RUNNING`, exit 3),
+  publishes the host descriptor, accepts a controlled stop, and exits non-zero when the runtime fail-stops.
+  `--background` (used only by the launcher) reports readiness once over IPC and prints no launch URL.
+- **Launcher commands** (`host/lifecycle.ts`): `open`, `status`, `stop [--force]`, `restart` and `install-shortcuts`.
+- **Per-user shortcuts.** Desktop **QANDEEL COMPANY**, and a Start-menu folder with Open / Status / Stop / Restart. The
+  console is minimized, and `--notify` shows a fixed bilingual notice on any non-normal outcome.
+
+## D-OPS-02 — Discovery trusts the lease and proves the host by signature, never by a PID, port or file alone (executor)
+
+**The descriptor.** The host writes `<workspace>/runtime/founder-host.json` after it listens:
+`{ version, instanceId, pid, port, startedAt, publicKey }`. The key is an Ed25519 public key born with the runtime
+instance. The private key exists only in the host's memory: a private field, never exported, never logged.
+
+**The probe.** Discovery reads the durable lease and its holder's instance record. Only when the descriptor names the
+lease holder does it send a random nonce to `GET /host/identity` and verify the signature over
+`(instanceId, port, nonce)`.
+
+**Outcomes:**
+- RUNNING.
+- STARTING / STOPPING: a bounded wait.
+- STOPPED.
+- STALE: a dead holder, or a descriptor without a live lease. Startable: the runtime waits out the lease and recovers.
+- UPDATE_REQUIRED: start runs safe-upgrade.
+- HELD: an update / restore hold. Never started.
+- UNHEALTHY: the lease is live but there is no answer or a wrong one (for example a process squatting a freed port).
+- FOREIGN_RUNTIME: a runtime without the surface. A second one is never started beside it.
+- WORKSPACE_MISSING / WORKSPACE_INVALID: no Company store. The launcher never creates a Company.
+
+A PID is only a hint (a dead PID → STALE). A port or a descriptor alone never makes a host RUNNING.
+
+## D-OPS-03 — Two host-control routes on the existing listener; no Founder authority, no new execution surface (executor)
+
+**The routes.** `GET /host/identity?nonce=` and `POST /host/stop` live outside `/api` and exist only when the surface
+runs as the host. They pass the unchanged origin gate: the exact loopback Host, Sec-Fetch-Site, and the exact Origin +
+JSON for the POST. The stop is CSRF-exempt, like the launch exchange, because it carries its own one-shot proof.
+Neither route reads or creates a Founder session, sets a cookie, or returns Company content.
+
+**The stop proof.** A stop is accepted only for the one-shot request the launcher left in
+`<workspace>/runtime/founder-host.stop-request.json`: the instanceId plus a random requestId, consumed on use, so no
+replay. That is the same trust anchor as `launch`, which already mints a Founder launch token from the same files.
+Stopping is an operational act any same-user process could already perform by terminating the process. The controlled
+route makes it graceful: `runtime.stop()` settles, parks, releases the lease and marks the instance STOPPED.
+
+**The client.** The launcher's client (`host/probe.ts`) connects only to 127.0.0.1, and only to these two routes.
+
+## D-OPS-04 — One process module: Node host, installed browser, signed PowerShell; no shell (executor)
+
+`host/processes.ts` is the only module of the surface package that starts processes. It starts:
+- the signed Node runtime (`process.execPath`) running this package's CLI: detached, `windowsHide`, stdout / stderr to
+  the content-free host log, IPC once for readiness;
+- Edge, else Chrome, from its absolute install path, in `--app` mode on the one-shot loopback handoff address
+  (D-OPS-07), never on the launch URL;
+- the signed Windows PowerShell host by its System32 path with `-EncodedCommand`, for the fixed Founder notice and for
+  writing the shortcuts;
+- once per activation, a staged release's own CLI for its dry run (D-OPS-08).
+
+`shell: false` everywhere; no PATH lookup; no exec / execSync.
+
+**No secret in any argument.** No launch token, provider key, vault value or Founder content is ever a process argument,
+a shortcut field, a descriptor field or a log line. Verifier rule `founder-host-confined` and eslint enforce the
+confinement.
+
+*Correction (Founder review of PR #19 at `a61e0a5`, MAJOR 1).* The first candidate passed the launch URL — token in the
+fragment — as the browser's `--app` argument. The token is an authentication bootstrap credential; a process argument is
+readable process metadata for the browser's lifetime. That was a contract defect. D-OPS-07 replaces it.
+
+## D-OPS-05 — Single instance: lease + start lock + host refusal (executor)
+
+At most one host runs per workspace, in three layers:
+1. **The durable supervisor lease** — unchanged and authoritative.
+2. **A start lock** (`runtime/founder-host.start.lock`, exclusive create). Concurrent launchers spawn one host; the
+   others wait for it (bounded). The lock is stale when its launcher PID is gone or it is older than 180 s.
+3. **`serve` refuses to start** when discovery already sees a host.
+
+Readiness waits are bounded (120 s to start, 90 s to stop). Only the launcher polls discovery; the runtime keeps no
+polling loop.
+
+## D-OPS-06 — Validation proportional to the change; no new mutation family (executor)
+
+**Focused proofs**, both required by verifier rule `ops-proofs-present`:
+- `packages/command-center/test/founder-host.test.ts`: the descriptor and its signature, a port squatter, the one-shot
+  stop, the host routes behind the origin gate, every discovery state, holds refused before any spawn, the notices.
+- `packages/command-center/test/founder-host-lifecycle.test.ts`, with real detached processes: cold start, reuse,
+  concurrent launches, LAN unreachability, no token / key in the descriptor or the log, a controlled stop with the
+  instance STOPPED, a restart on the same Founder / Company, and a hard kill → STALE → the runtime's recovery ABANDONs the
+  dead instance.
+
+- `packages/command-center/test/founder-host-lifecycle.test.ts` also carries `founder-launch-handoff` (D-OPS-07), and
+  `packages/command-center/test/founder-host-release.test.ts` carries `founder-host-release` (D-OPS-08).
+
+**No new mutation shard or CI matrix change.** The negative cases a mutation family would inject (signature unchecked,
+stop proof unchecked, origin unchecked, handoff headers unchecked, admission skipped) are asserted directly by those
+tests and by the verifier's self-tested rules `founder-host-confined` and `ops-release-admission`.
+
+The Windows proof on the Founder host is recorded in `docs/OPS_FOUNDER_DESKTOP_PACKAGING_REPORT.md`.
+
+## D-OPS-07 — The launch credential reaches the browser over a one-shot loopback handoff, never as an argument (executor; Founder review MAJOR 1)
+
+**Problem.** The browser's command line is process metadata, readable for as long as the browser runs. The canonical
+launch token is the Founder's authentication bootstrap credential. It must not be there, however short-lived.
+
+**Decision.** The launcher starts the browser on `http://127.0.0.1:<random port>/`. That address carries nothing secret:
+no token, no query, no fragment. The port belongs to a one-shot responder inside the launcher process
+(`host/handoff.ts`), which lives at most 30 s:
+- **It answers exactly one request.** That request must be a user-started top-level browser navigation: `GET /`, the
+  exact Host `127.0.0.1:<its port>`, and `Sec-Fetch-Site: none`, `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`.
+  Edge 154 sends exactly these for an `--app` launch; this was measured on the Founder host.
+  - A web page cannot produce `Sec-Fetch-Site: none` (a page's navigation, fetch, form, image or frame never does).
+  - A DNS-rebound name fails the exact Host.
+  - A non-matching request is refused and consumes nothing.
+- **Only then is the token minted**, through the same canonical mint as `launch` (single-use, 90 s). It is handed over as
+  a `303` to the host's unchanged `/launch#<token>` page, which redeems it once and clears it from history. The
+  responder then closes.
+- **A browser that never arrives leaves no token minted** (`BROWSER_HANDOFF_TIMEOUT`, with a Founder notice).
+- **Nothing is logged.** The browser sends its loopback cookies to every 127.0.0.1 port, so the request, its headers and
+  the token are never logged or serialized.
+
+**Unchanged:**
+- the Founder session model;
+- the token lifetime;
+- the `/launch` exchange, the origin gate and CSRF.
+
+There is no new file, environment variable, shortcut field or configuration.
+
+**Residual.** A local process could race to the random port within the sub-second window and forge the headers. It would
+gain no more than the same-user `launch` command already grants. Unlike a command-line argument, nothing is left
+behind to read.
+
+**Enforcement.** Verifier rule `founder-host-confined` requires:
+- the random loopback bind;
+- the exact Host and the three fetch-metadata checks;
+- no request logging;
+- one-shot close;
+- `openBrowser(handoff.url)` as the only browser argument.
+
+The proof is `OPS-PROOF: founder-launch-handoff`.
+
+## D-OPS-08 — The production launcher runs an activated, frozen release; a pinned Company admits nothing else (executor; Founder review MAJOR 2)
+
+**Problem.** The first candidate's shortcuts ran `<checkout>\packages\command-center\dist\src\cli.js`: the same mutable
+checkout used for development, branch switches, `npm ci` and builds. Any later checkout mutation would silently become
+the production Company runtime, bypassing Stage 12's Build → Test → Migration Check → Backup → Staging / Dry Run →
+Health Check → Activate. ("Direct unvalidated mutation of the live runtime is not the default.")
+
+**Decision: a release and a pin, enforced by the runtime itself.**
+
+**The release.** `release-stage` freezes the current build into
+`%LOCALAPPDATA%\QANDEEL_COMPANY\releases\<id>\node_modules\@qandeel-company\<package>\…`. It runs after the operator's
+Build → Test (`npm run ci`).
+- It contains the compiled `dist/src` modules, `package.json` files, migrations and UI public files only.
+- `qandeel-release.json` lists every file's SHA-256.
+- The release ID is the SHA-256 of that list plus the runtime version, so the same build gives the same release, and any
+  change gives a new ID.
+- The source commit is recorded for information only.
+- A release is outside every checkout, so branch switches, `npm ci` and rebuilds never touch it.
+
+**The pin.** `<workspace>/runtime/production-release.json` names the one release ID that may run the workspace, and the
+previous one.
+
+**Admission.** Every `CompanyRuntime.start` calls `admitRuntimeRelease` (runtime package), before it opens, safe-upgrades
+or migrates the Company. For a pinned workspace it requires that:
+- this build is a release (a checkout build is refused `NOT_A_RELEASE`);
+- it is the activated one (`NOT_ACTIVATED`);
+- every file is byte-identical and none added (`RELEASE_TAMPERED`);
+- an unreadable pin is `PIN_INVALID`, never "unpinned".
+
+The refusal is `RUNTIME_RELEASE_REFUSED` with a reason code. Admission therefore holds for every entry point, not only
+the launcher. The launcher pre-checks it so the Founder gets a bounded notice before anything is spawned. An unpinned
+workspace (development or tests) admits any build, as before.
+
+**Activation (`release-activate`) is the one controlled replacement path.** It reuses the existing mechanisms:
+1. verify the release;
+2. **dry run**: the release's own CLI (`release-check`) loads, re-verifies itself and reads the workspace schema;
+3. controlled stop of the running host (D-OPS-03);
+4. a **verified backup** (`createBackup` + `verifyBackup`; a pending schema update is snapshotted by safe-upgrade itself);
+5. write the pin;
+6. start the host **from the release**, whose runtime start runs the existing schema safe-upgrade (rehearsal,
+   verification, `UPDATE_HOLD` on failure);
+7. **health**: the host proves its signed identity and its runtime is READY;
+8. point the Founder's shortcuts at the release CLI.
+
+A failure before the pin changes nothing. A failure after it restores the previous pin and restarts the previous release.
+A schema the new release already migrated stays migrated (forward-only); its pre-update snapshot is the existing
+`rollback-update` path.
+
+`install-shortcuts` refuses a workspace without an intact activated release.
+
+**Not added:** an installer, an updater service, a second runtime, Electron / Tauri, a network fetch.
+
+**Enforcement.** Verifier rule `ops-release-admission`: admission precedes open and upgrade, the three refusals exist, and
+the shortcuts target only a release CLI. The proof is `OPS-PROOF: founder-host-release`.
+
+## D-OPS-09 — Discovery lets a just-killed holder settle before it says UNHEALTHY; a live unresponsive holder stays UNHEALTHY (executor; Founder-approved OPS correction)
+
+**Defect.** On the GitHub Windows runner (runs #111 on `a61e0a5` and #113 on `574ac11`), the proof "after an abnormal
+termination the next launch runs the existing startup recovery" read `UNHEALTHY` instead of `STALE` right after a hard
+kill. The PID was already reported gone: the whole test took 30 ms. It passes on Ubuntu and on the Founder host (10 / 10
+kills in a local repro, all `STALE` / `HOST_PROCESS_GONE`). For the Founder this means a launch right after a crash could
+be refused with `HOST_UNHEALTHY` instead of recovering.
+
+**Cause.** A host that is disappearing at this moment can produce a reading that is UNHEALTHY only for an instant. On
+Windows, a terminated process's file locks are released asynchronously, so the durable store can be briefly unreadable;
+the holder can also look alive while its process is still being torn down. The test now logs the raw single reading next
+to the settled one, so the CI run records exactly which of these happened.
+
+**Decision.** `discoverHost` = `settleDiscovery(classifyHost)`. A reading that is UNHEALTHY for a reason a disappearing host
+can cause (a store-read error, or `HOST_NOT_ANSWERING`) is re-classified every 250 ms within a 1.5 s bound, measured from
+before the first reading. The last reading is the answer.
+- A healthy reading (RUNNING, STOPPED, STARTING, …) returns at once: an ordinary launch is never delayed.
+- `HOST_IDENTITY_MISMATCH` (a squatter) is reported at once.
+- Nothing is removed, ignored or written: the supervisor lease, the descriptor and the start lock are untouched.
+- A holder that is genuinely alive keeps answering UNHEALTHY. UNHEALTHY is not startable, so no second runtime starts beside
+  it. A hanging host adds no wait beyond its one 3-second probe.
+- **Rejected:** mapping UNHEALTHY to STALE (would start a second runtime beside a live, unresponsive host) and a long retry
+  loop.
+
+**Proofs (`founder-host.test.ts`, `founder-host-lifecycle.test.ts`):**
+- a scripted classifier: a healthy reading is read once, a squatter once; `STORAGE_BUSY`, `UNCLASSIFIED_ERROR` and
+  `HOST_NOT_ANSWERING` settle to STALE; a stuck UNHEALTHY is reported within the bound;
+- a real live lease holder whose descriptor points at a closed port, and at a port that accepts but never answers, stays
+  UNHEALTHY / `HOST_NOT_ANSWERING`, and `ensureRunning` refuses `HOST_UNHEALTHY` and spawns nothing;
+- the hard-kill proof asserts STALE with the full diagnostics (state, reason, leaseLive, runtimeState, descriptor, PID,
+  PID-alive), and the next launch recovers;
+- the squatter and the STOPPED / RUNNING / controlled-stop / STALE proofs are unchanged.

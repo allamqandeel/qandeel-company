@@ -8,6 +8,9 @@
  * - Routes are explicit capabilities (Stage 12 §50); bodies are bounded JSON; responses are `no-store`.
  * - Server-Sent Events push a content-free "changed" nudge after commits (no polling anywhere).
  * - Logs carry method, route, status and code — never a body, a name or a message (Rule A).
+ * - OPS (D-OPS-03): two host-control routes outside `/api` — a signed identity proof for discovery and a controlled stop
+ *   proven by a one-shot workspace file — pass the same origin gate, carry no Founder session and grant no Founder
+ *   authority; without a host control they do not exist (404).
  */
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -20,6 +23,14 @@ import type { CompanyRuntime } from '@qandeel-company/runtime';
 import * as api from '../api.js';
 import { CSRF_HEADER, LAUNCH_PATH, LOOPBACK_HOST, MAX_BODY_BYTES, SESSION_COOKIE, clearedCookies, csrfCookie, gateRequest, parseCookies, securityHeaders, sessionCookie, statusForCode } from '../security.js';
 import { resolveStatic, type StaticRoots } from '../static.js';
+import { HOST_IDENTITY_PATH, HOST_STOP_PATH, isNonce } from '../host/descriptor.js';
+
+/** OPS: the running host's discovery / controlled-stop hooks (the Founder host only; see `host/descriptor.ts`). */
+export interface HostControl {
+  identity(port: number, nonce: string): { readonly instanceId: string; readonly signature: string } | null;
+  /** Accepts a controlled stop only for the one-shot request the launcher left in the workspace; the stop runs after the reply. */
+  requestStop(requestId: unknown): boolean;
+}
 
 export interface ListenerOptions {
   readonly runtime: CompanyRuntime;
@@ -28,6 +39,7 @@ export interface ListenerOptions {
   readonly log?: (event: string, fields: Record<string, string | number | boolean | null>) => void;
   /** C7-D: the isolated internal Preview host (its own loopback site), if running. */
   readonly preview?: api.PreviewOpener;
+  readonly host?: HostControl;
 }
 
 type Json = Record<string, unknown>;
@@ -93,6 +105,7 @@ export class FounderListener {
   readonly #roots: StaticRoots;
   readonly #log: NonNullable<ListenerOptions['log']>;
   readonly #preview: api.PreviewOpener | undefined;
+  readonly #host: HostControl | undefined;
   readonly #streams = new Set<ServerResponse>();
   readonly #unsubscribe: (() => void)[] = [];
   #port = 0;
@@ -103,6 +116,7 @@ export class FounderListener {
     this.#roots = options.roots;
     this.#log = options.log ?? (() => undefined);
     this.#preview = options.preview;
+    this.#host = options.host;
     this.#port = options.port ?? 0;
     this.#server = createServer((req, res) => {
       this.#handle(req, res).catch((error: unknown) => {
@@ -165,12 +179,15 @@ export class FounderListener {
     const url = new URL(req.url ?? '/', this.origin);
     const cookies = parseCookies(req.headers.cookie);
     const facts = { method, host: req.headers.host, origin: req.headers.origin, secFetchSite: req.headers['sec-fetch-site'] as string | undefined, contentType: req.headers['content-type'], cookies, csrfHeader: req.headers[CSRF_HEADER] as string | undefined };
-    const gate = gateRequest(facts, this.#port, { csrfExempt: method === 'POST' && url.pathname === LAUNCH_PATH });
+    // The launch exchange is protected by its single-use token and the host stop by its one-shot workspace proof; both
+    // still need the exact loopback Host, Origin and fetch metadata. Every other state change also needs the CSRF secret.
+    const gate = gateRequest(facts, this.#port, { csrfExempt: method === 'POST' && (url.pathname === LAUNCH_PATH || url.pathname === HOST_STOP_PATH) });
     if (!gate.ok) return this.#json(res, gate.status, { ok: false, code: gate.code }, method, 'gate');
     if (method === 'HEAD') {
       res.writeHead(200);
       return void res.end();
     }
+    if (url.pathname === HOST_IDENTITY_PATH || url.pathname === HOST_STOP_PATH) return this.#hostControl(req, res, method, url);
     if (url.pathname.startsWith('/api/')) return this.#api(req, res, method, url, cookies, facts.csrfHeader);
     if (method !== 'GET') return this.#json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED' }, method, 'static');
     const file = resolveStatic(this.#roots, url.pathname);
@@ -217,6 +234,32 @@ export class FounderListener {
       this.#log('founder.request_refused', { route: match.r.name, code });
       return this.#json(res, statusForCode(code), { ok: false, code, details }, method, match.r.name);
     }
+  }
+
+  async #hostControl(req: IncomingMessage, res: ServerResponse, method: string, url: URL): Promise<void> {
+    res.setHeader('Cache-Control', 'no-store');
+    const host = this.#host;
+    if (host === undefined) return this.#json(res, 404, { ok: false, code: 'NOT_FOUND' }, method, 'host');
+    if (url.pathname === HOST_IDENTITY_PATH && method === 'GET') {
+      const nonce = url.searchParams.get('nonce');
+      if (!isNonce(nonce)) return this.#json(res, 400, { ok: false, code: 'VALIDATION_FAILED' }, method, 'host-identity');
+      const proof = host.identity(this.#port, nonce);
+      if (proof === null) return this.#json(res, 503, { ok: false, code: 'RUNTIME_NOT_READY' }, method, 'host-identity');
+      return this.#json(res, 200, { ok: true, instanceId: proof.instanceId, signature: proof.signature }, method, 'host-identity');
+    }
+    if (url.pathname === HOST_STOP_PATH && method === 'POST') {
+      const raw = await readBody(req);
+      let requestId: unknown;
+      try {
+        requestId = raw === null ? undefined : (JSON.parse(raw) as { requestId?: unknown }).requestId;
+      } catch {
+        requestId = undefined;
+      }
+      const accepted = host.requestStop(requestId);
+      this.#log(accepted ? 'founder.host_stop_accepted' : 'founder.host_stop_refused', { route: 'host-stop' });
+      return accepted ? this.#json(res, 202, { ok: true, accepted: true }, method, 'host-stop') : this.#json(res, 403, { ok: false, code: 'HOST_STOP_REFUSED' }, method, 'host-stop');
+    }
+    return this.#json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED' }, method, 'host');
   }
 
   async #launch(req: IncomingMessage, res: ServerResponse): Promise<void> {

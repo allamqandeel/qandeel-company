@@ -362,6 +362,21 @@ const L1_DECLARATION = 'packages/model-providers/src/deepseek/declaration.ts';
 const L1_PRICING = 'packages/model-providers/src/deepseek/pricing.ts';
 const L1_MIGRATION = `${MIGRATIONS_DIR}0016_l1_provider_pricing_identity.sql`;
 const L1_FILES = [L1_VAULT, L1_ADAPTER, L1_TRANSPORT, L1_MIGRATION];
+// --- OPS boundaries (Operational / Desktop Packaging: the Founder host lifecycle, D-OPS-01 … D-OPS-06) ---------------
+// The launcher's loopback-only identity / stop client and the one module that starts processes (host, browser, PowerShell).
+const OPS_HOST_PROBE = 'packages/command-center/src/host/probe.ts';
+const OPS_HOST_PROCESSES = 'packages/command-center/src/host/processes.ts';
+const OPS_HOST_DESCRIPTOR = 'packages/command-center/src/host/descriptor.ts';
+// D-OPS-07: the one-shot loopback launch handoff (the browser never receives the launch credential as an argument).
+const OPS_HOST_HANDOFF = 'packages/command-center/src/host/handoff.ts';
+const OPS_HOST_LIFECYCLE = 'packages/command-center/src/host/lifecycle.ts';
+// D-OPS-08: the production runtime release — admission in the runtime, staging / activation in the surface package.
+const OPS_RELEASE_ADMISSION = 'packages/runtime/src/release.ts';
+const OPS_RUNTIME = 'packages/runtime/src/runtime.ts';
+const OPS_RELEASE = 'packages/command-center/src/host/release.ts';
+const OPS_CLI = 'packages/command-center/src/cli.ts';
+const OPS_HOST_FILES = [OPS_HOST_PROBE, OPS_HOST_PROCESSES, OPS_HOST_DESCRIPTOR, OPS_HOST_HANDOFF, OPS_RELEASE];
+const OPS_PROOF_MARKERS = ['OPS-PROOF: founder-host-descriptor', 'OPS-PROOF: founder-host-lifecycle', 'OPS-PROOF: founder-launch-handoff', 'OPS-PROOF: founder-host-release'];
 const L1_GOVERNED_TRIGGERS = ['price_card_schedules_immutable_u', 'price_card_schedules_immutable_d', 'price_card_schedules_never_above_peak', 'usage_records_cached_within_input', 'model_identity_checks_append_only_u', 'model_identity_checks_append_only_d'];
 /** The provider's chain-of-thought field: never read, returned, logged or persisted (comments may name it). */
 const L1_THINKING_FIELD = /\breasoning_content\b/;
@@ -1021,7 +1036,7 @@ export const RULES = [
     // C7-D adds the isolated Preview host (rule `c7d-preview-isolated`) and the one fixed-host GitHub transport (`c7d-tool-boundary`).
     check: ({ files, read }) =>
       files
-        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && f !== FOUNDER_LISTENER && f !== C7D_PREVIEW && f !== C7D_TRANSPORT && f !== L1_TRANSPORT && f !== L1_VAULT && !f.startsWith(UI_SRC) && NETWORK_MODULE.test(read(f) ?? ''))
+        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && f !== FOUNDER_LISTENER && f !== C7D_PREVIEW && f !== C7D_TRANSPORT && f !== L1_TRANSPORT && f !== L1_VAULT && f !== OPS_HOST_PROBE && f !== OPS_HOST_PROCESSES && f !== OPS_HOST_HANDOFF && !f.startsWith(UI_SRC) && NETWORK_MODULE.test(read(f) ?? ''))
         .map((f) => `${f} opens a network path or spawns processes (C1 runtime code has neither)`),
   },
   {
@@ -1047,7 +1062,7 @@ export const RULES = [
         if (/['"](?:0\.0\.0\.0|::|::0)['"]/.test(listener) || /\.listen\(\s*\d/.test(listener)) problems.push(`${FOUNDER_LISTENER} binds a non-loopback address`);
         if (/child_process|worker_threads|node:sqlite/.test(listener)) problems.push(`${FOUNDER_LISTENER} spawns processes or reaches SQLite`);
       }
-      for (const f of files.filter((x) => x.startsWith('packages/command-center/src/') && x !== FOUNDER_LISTENER && x !== C7D_PREVIEW && isCode(x))) {
+      for (const f of files.filter((x) => x.startsWith('packages/command-center/src/') && x !== FOUNDER_LISTENER && x !== C7D_PREVIEW && x !== OPS_HOST_PROBE && x !== OPS_HOST_PROCESSES && x !== OPS_HOST_HANDOFF && isCode(x))) {
         if (NETWORK_MODULE.test(read(f) ?? '')) problems.push(`${f} opens a network path outside the loopback listener`);
       }
       for (const f of files.filter((x) => (x.startsWith(UI_SRC) || x.startsWith('packages/command-center-ui/public/')) && /\.(?:[cm]?[jt]s|html|css)$/i.test(x))) {
@@ -2133,6 +2148,115 @@ export const RULES = [
       return problems;
     },
   },
+  // --- OPS rules ---------------------------------------------------------------------------------------------------
+  {
+    id: 'founder-host-confined',
+    // OPS (D-OPS-03 / D-OPS-04): the host probe talks only to 127.0.0.1, only to the two host-control routes (never a
+    // Founder /api route), and starts no process; the process module starts only the signed Node runtime, an absolute
+    // browser path or the signed PowerShell host by its System32 path, never through a shell, and opens no network path;
+    // the host descriptor holds a public key only (the private key is a private field and never exported).
+    check: ({ read }) => {
+      const problems = [];
+      const strip = (t) => t.replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, '');
+      const probe = read(OPS_HOST_PROBE);
+      if (probe !== undefined) {
+        const code = strip(probe);
+        if (!/host:\s*LOOPBACK_HOST/.test(code)) problems.push(`${OPS_HOST_PROBE} does not connect to the loopback host constant`);
+        if (/\bhost:(?!\s*LOOPBACK_HOST\b)/.test(code) || /\bhostname:/.test(code) || /\bfetch\s*\(/.test(code)) problems.push(`${OPS_HOST_PROBE} can reach a host other than 127.0.0.1`);
+        if (/['"`]\/api\//.test(code)) problems.push(`${OPS_HOST_PROBE} reaches a Founder /api route (discovery and stop carry no Founder session)`);
+        if (/child_process|worker_threads|node:sqlite|node:(?:net|tls|https|http2|dgram|dns)['"]/.test(code)) problems.push(`${OPS_HOST_PROBE} starts a process, reaches SQLite or opens a non-HTTP network path`);
+      }
+      const proc = read(OPS_HOST_PROCESSES);
+      if (proc !== undefined) {
+        const code = strip(proc);
+        if (/(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?(?:http|https|http2|net|tls|dgram|dns|undici|sqlite|worker_threads)['"]|\bfetch\s*\(/.test(code)) problems.push(`${OPS_HOST_PROCESSES} opens a network path, reaches SQLite or starts a worker`);
+        if (/shell:\s*true|\bexec\(|execSync\(|spawnSync\(|execFileSync\(|\bfork\(/.test(code)) problems.push(`${OPS_HOST_PROCESSES} starts a process through a shell or an unbounded exec`);
+        if (!/shell:\s*false/.test(code)) problems.push(`${OPS_HOST_PROCESSES} does not state shell: false`);
+        for (const m of code.matchAll(/\b(?:spawn|execFile)\(\s*([^,]+),/g)) {
+          if (!['process.execPath', 'browser.exe', 'powershellExe()'].includes((m[1] ?? '').trim())) problems.push(`${OPS_HOST_PROCESSES} starts an executable other than the Node runtime, an installed browser or the signed PowerShell host (${(m[1] ?? '').trim()})`);
+        }
+        if (!/WindowsPowerShell['"]?,\s*['"]v1\.0['"]?,\s*['"]powershell\.exe/.test(code) || !/SystemRoot/.test(code) || !/-EncodedCommand/.test(code)) problems.push(`${OPS_HOST_PROCESSES} does not start the signed Windows PowerShell host by its absolute System32 path with an encoded fixed command`);
+      }
+      const handoff = read(OPS_HOST_HANDOFF);
+      if (handoff !== undefined) {
+        const code = strip(handoff);
+        if (!/\.listen\(\s*0\s*,\s*LOOPBACK_HOST\b/.test(code) || /['"](?:0\.0\.0\.0|::|::0)['"]/.test(code)) problems.push(`${OPS_HOST_HANDOFF} does not bind a random loopback port only`);
+        for (const [h, v] of [['sec-fetch-site', 'none'], ['sec-fetch-mode', 'navigate'], ['sec-fetch-dest', 'document']]) {
+          if (!new RegExp(`header\\(req, '${h}'\\) === '${v}'`).test(code)) problems.push(`${OPS_HOST_HANDOFF} does not require ${h}: ${v} (only a user-started browser navigation receives the token)`);
+        }
+        if (!/header\(req, 'host'\) === `\$\{LOOPBACK_HOST\}:\$\{port\}`/.test(code)) problems.push(`${OPS_HOST_HANDOFF} does not require its exact loopback Host (DNS rebinding)`);
+        if (/console\.|\blog\(|logger|req\.headers\)|JSON\.stringify\(req/.test(code)) problems.push(`${OPS_HOST_HANDOFF} logs or serializes the request (the browser sends its loopback cookies to every port)`);
+        if (/child_process|worker_threads|node:sqlite|node:(?:net|tls|https|http2|dgram|dns)['"]|\bfetch\s*\(/.test(code)) problems.push(`${OPS_HOST_HANDOFF} starts a process, reaches SQLite or opens another network path`);
+        if (!/server\.close\(\)/.test(code)) problems.push(`${OPS_HOST_HANDOFF} is not one-shot (it never closes after delivery)`);
+      }
+      const lifecycle = read(OPS_HOST_LIFECYCLE);
+      if (lifecycle !== undefined) {
+        const code = strip(lifecycle);
+        for (const m of code.matchAll(/openBrowser\)?\(\s*([^)]*)\)/g)) {
+          if ((m[1] ?? '').trim() !== 'handoff.url') problems.push(`${OPS_HOST_LIFECYCLE} opens the browser on something other than the one-shot handoff address (${(m[1] ?? '').trim()}): the launch credential would be a process argument`);
+        }
+      }
+      const desc = read(OPS_HOST_DESCRIPTOR);
+      if (desc !== undefined) {
+        const code = strip(desc);
+        if (!/readonly #privateKey/.test(code) || /pkcs8|privateKey\.export|type:\s*'pkcs1'/.test(code)) problems.push(`${OPS_HOST_DESCRIPTOR} can export or serialize the host's private key`);
+        if (/child_process|node:(?:http|https|net|tls|sqlite)['"]|\bfetch\s*\(/.test(code)) problems.push(`${OPS_HOST_DESCRIPTOR} opens a network path, starts a process or reaches SQLite`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'ops-release-admission',
+    // OPS (D-OPS-08, Stage 12): a pinned production Company runs only its activated, intact release. The runtime checks it
+    // at start BEFORE any open / safe-upgrade; a development build (no manifest) and an unreadable pin are refused, never
+    // treated as unpinned; the Founder's shortcuts are written only for a release's CLI, never for the running checkout.
+    check: ({ read }) => {
+      const problems = [];
+      const strip = (t) => t.replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, '');
+      const runtime = read(OPS_RUNTIME);
+      if (runtime !== undefined && read(OPS_RELEASE_ADMISSION) !== undefined) {
+        const code = strip(runtime);
+        const admit = code.indexOf('admitRuntimeRelease(this.#opts.workspace)');
+        const open = code.indexOf('CompanyStore.open(this.#opts.workspace');
+        const upgrade = code.indexOf('safeUpgrade(this.#opts.workspace');
+        if (admit < 0 || (open >= 0 && admit > open) || (upgrade >= 0 && admit > upgrade)) problems.push(`${OPS_RUNTIME} does not admit the runtime release before it opens or upgrades the Company`);
+      }
+      const admission = read(OPS_RELEASE_ADMISSION);
+      if (admission !== undefined) {
+        const code = strip(admission);
+        if (!/if \(pin === undefined\) return refuse\('PIN_INVALID'/.test(code)) problems.push(`${OPS_RELEASE_ADMISSION} does not refuse an unreadable pin`);
+        if (!/if \(self === null\) return refuse\('NOT_A_RELEASE'/.test(code)) problems.push(`${OPS_RELEASE_ADMISSION} admits a non-release (development) build for a pinned Company`);
+        if (!/releaseId !== pin\.releaseId\) return refuse\('NOT_ACTIVATED'/.test(code)) problems.push(`${OPS_RELEASE_ADMISSION} admits a release other than the activated one`);
+        if (!/verifyReleaseTree\(self\)/.test(code) || !/hashReleaseTree\(root\)/.test(code)) problems.push(`${OPS_RELEASE_ADMISSION} does not re-verify every release file before admitting it`);
+        if (/child_process|node:(?:http|https|net|tls|sqlite)['"]|\bfetch\s*\(/.test(code)) problems.push(`${OPS_RELEASE_ADMISSION} opens a network path, starts a process or reaches SQLite`);
+      }
+      for (const file of [OPS_CLI, OPS_RELEASE]) {
+        const text = read(file);
+        if (text === undefined) continue;
+        for (const m of strip(text).matchAll(/installShortcuts\(\s*([^,]+),/g)) {
+          if (!/^releaseCli\(/.test((m[1] ?? '').trim()) && (m[1] ?? '').trim() !== 'cli') problems.push(`${file} writes the Founder shortcuts for something other than a release CLI (${(m[1] ?? '').trim()})`);
+        }
+      }
+      const release = read(OPS_RELEASE);
+      if (release !== undefined) {
+        const code = strip(release);
+        if (!/const cli = releaseCli\(root\)/.test(code)) problems.push(`${OPS_RELEASE} does not start the activated release's own CLI`);
+        for (const step of ['verifyReleaseTree(releaseRoot)', "'release-check'", 'stopHost(workspace)', 'backupBeforeActivation(workspace)', 'writePin(workspace, before)']) {
+          if (!code.includes(step)) problems.push(`${OPS_RELEASE} activation lacks the step ${step}`);
+        }
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'ops-proofs-present',
+    // The Founder host proofs CI must execute (found by marker) whenever the host lifecycle modules exist.
+    check: ({ files, read }) => {
+      if (!files.some((f) => OPS_HOST_FILES.includes(f))) return [];
+      const tests = files.filter((f) => isTestPath(f) && isCode(f));
+      return OPS_PROOF_MARKERS.filter((m) => !tests.some((f) => (read(f) ?? '').includes(m))).map((m) => `no test carries the proof marker "${m}"`);
+    },
+  },
   {
     id: 'l1-provider-boundary',
     // The DeepSeek adapter (D-L1-03/D-L1-05): one fixed origin, no redirect, the endpoint allowlist re-checked before
@@ -2615,6 +2739,29 @@ const VIOLATIONS = {
     { contents: { [L1_VAULT]: "import { execFile } from 'node:child_process';\nimport { fetch } from 'undici';\nexecFile(path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-EncodedCommand', x], { shell: false }); child.stdin.end(p); // ProtectedData CurrentUser LOCALAPPDATA\n" } },
     { contents: { [L1_VAULT_CLI]: "const secret = values.secret; // no FORBIDDEN_FLAGS, no raw mode\n" } },
     { contents: { 'packages/secret-vault/src/helper.ts': "import { spawn } from 'node:child_process';\n" } },
+  ],
+  // OPS.
+  'founder-host-confined': [
+    { contents: { [OPS_HOST_PROBE]: "import http from 'node:http';\nhttp.request({ host: '192.168.1.5', port, path: '/host/identity' });\n" } },
+    { contents: { [OPS_HOST_PROBE]: "import http from 'node:http';\nhttp.request({ host: LOOPBACK_HOST, port, path: '/api/universe' });\n" } },
+    { contents: { [OPS_HOST_PROBE]: "import http from 'node:http';\nimport { spawn } from 'node:child_process';\nhttp.request({ host: LOOPBACK_HOST, port });\n" } },
+    { contents: { [OPS_HOST_PROCESSES]: "import { spawn } from 'node:child_process';\nspawn(userCommand, args, { shell: true });\n// path.join(SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') -EncodedCommand\n" } },
+    { contents: { [OPS_HOST_PROCESSES]: "import { spawn } from 'node:child_process';\nimport http from 'node:http';\nspawn(process.execPath, args, { shell: false });\nconst ps = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'); const a = ['-EncodedCommand'];\n" } },
+    { contents: { [OPS_HOST_PROCESSES]: "import { exec } from 'node:child_process';\nexec(`powershell ${cmd}`); // shell: false\n" } },
+    { contents: { [OPS_HOST_DESCRIPTOR]: "const { privateKey } = generateKeyPairSync('ed25519');\nconst pem = privateKey.export({ format: 'pem', type: 'pkcs8' });\nreadonly #privateKey: KeyObject;\n" } },
+    { contents: { [OPS_HOST_LIFECYCLE]: "const { launchUrl } = mintLaunchUrl(ws, origin);\nconst opened = await openBrowser(launchUrl);\n" } },
+    { contents: { [OPS_HOST_HANDOFF]: REAL_TEXT(OPS_HOST_HANDOFF).replace("header(req, 'sec-fetch-site') === 'none' &&", '') } },
+    { contents: { [OPS_HOST_HANDOFF]: REAL_TEXT(OPS_HOST_HANDOFF).replace('server.listen(0, LOOPBACK_HOST,', "server.listen(0, '0.0.0.0',") } },
+    { contents: { [OPS_HOST_HANDOFF]: REAL_TEXT(OPS_HOST_HANDOFF).replace('let location: string;', 'console.info(req.headers); let location: string;') } },
+  ],
+  'ops-proofs-present': [{ contents: { [OPS_HOST_PROBE]: 'export {};\n' } }],
+  'ops-release-admission': [
+    { contents: { [OPS_RELEASE_ADMISSION]: REAL_TEXT(OPS_RELEASE_ADMISSION), [OPS_RUNTIME]: "async start() {\n  const store = CompanyStore.open(this.#opts.workspace, {});\n  admitRuntimeRelease(this.#opts.workspace);\n}\n" } },
+    { contents: { [OPS_RELEASE_ADMISSION]: REAL_TEXT(OPS_RELEASE_ADMISSION), [OPS_RUNTIME]: "async start() {\n  const store = CompanyStore.open(this.#opts.workspace, {});\n}\n" } },
+    { contents: { [OPS_RELEASE_ADMISSION]: REAL_TEXT(OPS_RELEASE_ADMISSION).replace("if (self === null) return refuse('NOT_A_RELEASE'", "if (self === null) return { mode: 'UNPINNED', releaseId: null }; if (false) refuse('NOT_A_RELEASE'") } },
+    { contents: { [OPS_RELEASE_ADMISSION]: REAL_TEXT(OPS_RELEASE_ADMISSION).replace("if (pin === undefined) return refuse('PIN_INVALID'", "if (pin === undefined) return { mode: 'UNPINNED', releaseId: null }; if (false) refuse('PIN_INVALID'") } },
+    { contents: { [OPS_CLI]: 'const shortcuts = await installShortcuts(selfPath(), launcherConfigDir());\n' } },
+    { contents: { [OPS_RELEASE]: REAL_TEXT(OPS_RELEASE).replace('backupBeforeActivation(workspace)', 'Promise.resolve({ result: "SKIPPED", backupId: null })') } },
   ],
   'l1-provider-boundary': [
     { contents: { [L1_TRANSPORT]: "const r = await fetch(`${process.env.PROVIDER_ORIGIN}${request.path}`, { redirect: 'error' });\nassertDeepSeekEndpoint(request.method, request.path);\n", [L1_DECLARATION]: "export const DEEPSEEK_API_ORIGIN = 'https://api.deepseek.com';\nexport const DEEPSEEK_MODEL_CODE = 'deepseek-flash';\nexport const DEEPSEEK_THINKING_BY_CLASS = Object.freeze({ E1: 'none', E2: 'low', E3: 'high', E4: 'max' });\n" } },
@@ -3106,6 +3253,10 @@ const MUST_PASS = [
   // migration (comments may name the chain-of-thought field and the pricing-docs host); an adapter test calling generate.
   { id: 'l1-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`L1\` | Local | Local | IN PROGRESS — L1-01 implementation candidate; not closed |\n`, [L1_REPORT]: '# Report\n\nL1-01 is NOT CLOSED (implementation candidate).\n' } } },
   { id: 'l1-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`L1\` | Local | Local | CLOSED / MERGED / CANONICAL |\n`, 'docs/L1_01_CLOSURE_RECORD.md': '' } } },
+  // OPS legitimate states: the real host modules; proofs present.
+  { id: 'founder-host-confined', scenario: { contents: { [OPS_HOST_PROBE]: REAL_TEXT(OPS_HOST_PROBE), [OPS_HOST_PROCESSES]: REAL_TEXT(OPS_HOST_PROCESSES), [OPS_HOST_DESCRIPTOR]: REAL_TEXT(OPS_HOST_DESCRIPTOR), [OPS_HOST_HANDOFF]: REAL_TEXT(OPS_HOST_HANDOFF), [OPS_HOST_LIFECYCLE]: REAL_TEXT(OPS_HOST_LIFECYCLE) } } },
+  { id: 'ops-release-admission', scenario: { contents: { [OPS_RUNTIME]: REAL_TEXT(OPS_RUNTIME), [OPS_RELEASE_ADMISSION]: REAL_TEXT(OPS_RELEASE_ADMISSION), [OPS_RELEASE]: REAL_TEXT(OPS_RELEASE), [OPS_CLI]: REAL_TEXT(OPS_CLI) } } },
+  { id: 'ops-proofs-present', scenario: { contents: { [OPS_HOST_PROBE]: 'export {};\n', 'packages/command-center/test/host.test.ts': OPS_PROOF_MARKERS.map((m) => `// ${m}`).join('\n') } } },
   { id: 'l1-vault-protected', scenario: { contents: { [L1_VAULT]: REAL_TEXT(L1_VAULT), [L1_VAULT_CLI]: REAL_TEXT(L1_VAULT_CLI), 'packages/secret-vault/src/vault.ts': REAL_TEXT('packages/secret-vault/src/vault.ts') } } },
   { id: 'l1-provider-boundary', scenario: { contents: { [L1_TRANSPORT]: REAL_TEXT(L1_TRANSPORT), [L1_DECLARATION]: REAL_TEXT(L1_DECLARATION), [L1_ADAPTER]: REAL_TEXT(L1_ADAPTER), [L1_PRICING]: REAL_TEXT(L1_PRICING), 'packages/model-providers/src/deepseek/transport.ts': REAL_TEXT('packages/model-providers/src/deepseek/transport.ts'), 'packages/model-providers/test/x.test.ts': 'await adapter.generate(req, signal);\n' } } },
   { id: 'l1-pricing-truthful', scenario: { contents: { [L1_MIGRATION]: REAL_TEXT(L1_MIGRATION), 'packages/storage/src/governance-core.ts': REAL_TEXT('packages/storage/src/governance-core.ts'), 'packages/governance/src/economics.ts': REAL_TEXT('packages/governance/src/economics.ts') } } },

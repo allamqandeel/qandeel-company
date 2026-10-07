@@ -138,6 +138,7 @@ import {
 import { ProcessorRegistry } from './deterministic-processors.js';
 import { Logger, errorCode, silentLogger } from './logger.js';
 import { runRecovery, type RecoverySummary } from './recovery.js';
+import { admitRuntimeRelease } from './release.js';
 import { WakeSignal } from './wake.js';
 
 export const RUNTIME_VERSION = '0.1.0';
@@ -413,6 +414,10 @@ export class CompanyRuntime {
     this.#state = 'STARTING';
     this.#startedAt = this.#clock.nowMs();
     try {
+      // OPS (D-OPS-08): a pinned production workspace runs only its activated, intact release — checked before anything
+      // opens, upgrades or migrates it.
+      const release = admitRuntimeRelease(this.#opts.workspace);
+      this.#log.info('runtime.release_admitted', { instanceId: this.instanceId, mode: release.mode, releaseId: release.releaseId });
       const open = (): CompanyStore =>
         CompanyStore.open(this.#opts.workspace, {
           clock: this.#clock,
