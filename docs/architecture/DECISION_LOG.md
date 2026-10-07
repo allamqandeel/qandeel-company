@@ -4546,3 +4546,40 @@ before the first reading. The last reading is the answer.
 - the hard-kill proof asserts STALE with the full diagnostics (state, reason, leaseLive, runtimeState, descriptor, PID,
   PID-alive), and the next launch recovers;
 - the squatter and the STOPPED / RUNNING / controlled-stop / STALE proofs are unchanged.
+
+
+## D-C5-18 — C5-CORR-01: English application chrome, multilingual company content, the Activation surface included (executor; PO-approved correction)
+
+**Context.** D-C5-13 makes the application English and left-to-right while company content keeps its own script and
+direction. L1-02 added bilingual fixed chrome to the top bar (`Activate the Company · تفعيل الشركة`) and to the Activation
+surface (the title, the 28 "next step" lines, the 10 stage labels, a fixed placeholder), and the C5 launch page still
+carried the pre-D-C5-13 Arabic chrome (`lang="ar" dir="rtl"`, title, heading, status and two error lines). The spike
+check `spike-english-ui-content-as-written` therefore failed on the top bar, and the Activation surface was never inspected.
+
+**Decision.** Each visible string is classified by role, never by script:
+- **Application chrome → English only:** the top-bar control; the Activation title, next-step lines, stage labels and the
+  Arabic-name input's placeholder (now "Arabic display name (optional)"); the launch page (`lang="en" dir="ltr"`, title,
+  heading, status and both failure lines).
+- **Company / Founder content → kept as written:** the Employee's Arabic display name, answer and brief bodies, the
+  Founder's feedback (now a direction-aware content block), and what the Founder types (the Arabic-name input and the
+  feedback field are `dir="auto"`). The bilingual command grammar (`تفعيل الشركة` opens the same surface) is unchanged.
+
+Nothing below the presentation changed: no backend action, payload, state machine, API, runtime, schema or OPS file.
+
+**Proof.** The spike gains `spike-activation-english-chrome`. It opens the surface from the top-bar control and again from
+the Founder's Arabic command, and asserts:
+- the title, ten stages, a next step and an LTR direction;
+- no Arabic in the chrome. Chrome is the surface's text, placeholders and accessible names, minus the named content places
+  (`.act-name-ar`, `.act-answer-body`, `blockquote.content`). Content is named by place, not by the `.content` class, so
+  chrome dressed as content still fails. Against the pre-correction `activation.ts` the step fails with "the Activation
+  chrome carries Arabic".
+- every Arabic content block is right-to-left;
+- the Founder's Arabic command stays Arabic and right-to-left in the input.
+
+The rule is semantic ("no Arabic in chrome"), never "no Arabic in the DOM".
+
+**Residual (pre-existing, out of scope).** With the spike green again, the minimal visual proof reaches Scenario C for the
+first time since L1-02 and fails `C-goal-focus` with "leader crossings 1". The goal's leader overlaps its own selected goal's
+top edge by about 2 px (`.goal.is-selected` lifts by `translateY(-2px)`), which is over the 1 px tolerance.
+`origin/main`'s own UI and proof script fail it identically once only the known chrome assertion is bypassed. It is
+recorded for a separate C5 presentation correction and not changed here.

@@ -8,13 +8,13 @@ history.replaceState(null, '', '/launch');
 
 async function launch(): Promise<void> {
   if (!/^[A-Za-z0-9_-]{43}$/.test(token)) {
-    if (status) status.textContent = 'رمز الإطلاق غير موجود أو غير صالح. شغّل الأمر من جديد للحصول على رابط جديد.';
+    if (status) status.textContent = 'The launch token is missing or invalid. Run the command again for a new link.';
     return;
   }
   const res = await fetch('/api/session/launch', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-qandeel-founder-csrf': 'launch' }, credentials: 'same-origin', body: JSON.stringify({ token }) });
   if (!res.ok) {
     const json = (await res.json().catch(() => ({ code: 'FOUNDER_SESSION_INVALID' }))) as { code?: string };
-    if (status) status.textContent = `تعذّر الإطلاق: ${json.code ?? 'FOUNDER_SESSION_INVALID'}. الرمز يُستخدم مرة واحدة وينتهي بعد تسعين ثانية.`;
+    if (status) status.textContent = `The launch failed: ${json.code ?? 'FOUNDER_SESSION_INVALID'}. A launch token works once and expires after ninety seconds.`;
     return;
   }
   location.replace('/');
