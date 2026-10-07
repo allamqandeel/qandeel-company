@@ -109,7 +109,10 @@ export class GovernedModelRuntime {
     const policy = snapshot.policy;
     if (!policy) return { kind: 'UNAVAILABLE', code: 'NO_ROUTE_POLICY' };
     const profile = run.cognitiveProfile;
-    let requested = req.reasoningClass ?? profile.defaultClass;
+    // D-L1-44 precedence of the starting class: the Founder's one-task override (durable, read at the run's begin), else
+    // the processor's pinned class, else the Employee default. Bounded escalation may raise it; the Employee ceiling, the
+    // route policy, qualified deployments and the reservation still bind (route() and txReserve re-check them).
+    let requested = run.reasoningOverride ?? req.reasoningClass ?? profile.defaultClass;
     let firstKind: AttemptKind = 'PRIMARY';
     if (req.escalation) {
       const done = governance.reservations(run.runId).filter((r) => r.attemptKind === 'ESCALATION').length;

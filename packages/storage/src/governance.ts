@@ -146,6 +146,7 @@ import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from 
 import { liveCertifications } from './mind-core.js';
 import { wakeCapabilityGaps } from './mind-writes.js';
 import { isOrgManaged } from './org-core.js';
+import { txChangeReasoningProfile, txReasoningControlView, txSetReasoningOverride, type ReasoningControlView, type ReasoningOverridePlan } from './reasoning-control.js';
 import { storeContext, type CompanyStore } from './store.js';
 import { applyTransition, dependencyStatus, enqueueJob, reevaluateDependencyBlock } from './work-core.js';
 
@@ -646,6 +647,33 @@ export class GovernanceStore {
       }
       return next;
     });
+  }
+
+  /**
+   * D-L1-44: the Employee's persistent reasoning default / ceiling (Founder authority; the Employee can never raise its
+   * own). Version-safe against the previewed version; a material change, so VALID certifications become REVIEW_DUE.
+   */
+  changeReasoningProfile(actorRef: string, employeeId: string, input: { defaultClass: ReasoningClass; ceilingClass: ReasoningClass; expectedVersion: number; reasonCode: string }): EmployeeRecord {
+    return this.#admin('change reasoning profile', actorRef, (ctx) => {
+      const id = assertId(employeeId, 'employeeId');
+      const p = founder(ctx, actorRef, `employee:${id}`, 'employee reasoning profile');
+      return txChangeReasoningProfile(ctx, p.ref, { employeeId: id, defaultClass: input.defaultClass, ceilingClass: input.ceilingClass, expectedVersion: input.expectedVersion, reasonCode: assertCode(input.reasonCode, 'reasonCode') });
+    });
+  }
+
+  /** D-L1-44: the Founder's reasoning class for ONE not-yet-executed Employee Work Item (never the persistent profile). */
+  setWorkItemReasoningOverride(actorRef: string, workItemId: string, input: { reasoningClass: ReasoningClass; reasonCode: string }): ReasoningOverridePlan {
+    return this.#admin('set reasoning override', actorRef, (ctx) => {
+      const id = assertId(workItemId, 'workItemId');
+      const owner = employeeIdFromRef(getWorkItemRow(ctx, id).ownerRef);
+      const p = founder(ctx, actorRef, owner === null ? null : `employee:${owner}`, 'work item reasoning override');
+      return txSetReasoningOverride(ctx, p.ref, { workItemId: id, reasoningClass: input.reasoningClass, reasonCode: assertCode(input.reasonCode, 'reasonCode') });
+    });
+  }
+
+  /** D-L1-44 read model: the Employee's reasoning control and the classes its completed model calls actually used. */
+  reasoningControl(employeeId: Id): ReasoningControlView {
+    return this.#read((ctx) => txReasoningControlView(ctx, assertId(employeeId, 'employeeId')));
   }
 
   /**

@@ -37,6 +37,7 @@ import { getStaffingRequest } from './organization.js';
 import { CONTEST_DECISIONS, assertOutcomeClasses, txContestedVerification, type ContestDecision } from './outcome-core.js';
 import { PilotStore, planPilotStep, txBriefingStatus } from './pilots.js';
 import { txResolveReconciliation } from './queue.js';
+import { txPlanReasoningOverride, txPlanReasoningProfile } from './reasoning-control.js';
 import { ReviewStore } from './review.js';
 import { storeContext, type CompanyStore } from './store.js';
 import type { FounderAuthStore, FounderSession } from './founder-auth.js';
@@ -175,6 +176,30 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
       const currency = raw.currency ?? b.currency;
       if (currency !== b.currency) throw new QandeelError('CURRENCY_MISMATCH', 'the ceiling must be stated in the budget\'s currency', { budgetId, currency: b.currency });
       return { budgetId, scope: b.scope, scopeId: b.scopeId, currency: b.currency, capMoney, capTokens, reasonCode: assertCode(raw.reasonCode ?? 'founder.ceiling', 'reasonCode') };
+    }
+    // --- D-L1-44: Employee Reasoning Control (reasoning is never authority; nothing here grants, spends or calls a model) ---
+    case 'EMPLOYEE_REASONING_PROFILE': {
+      const plan = txPlanReasoningProfile(ctx, { employeeId: assertId(raw.employeeId, 'employeeId'), defaultClass: raw.defaultClass, ceilingClass: raw.ceilingClass, costDiscipline: raw.costDiscipline });
+      const e = plan.employee;
+      return {
+        employeeId: e.id, name: `${e.name.given} ${e.name.family}`, roleRef: e.roleRef, employeeState: e.state, employeeVersion: e.version,
+        previousDefault: plan.previousDefault, newDefault: plan.newDefault, previousCeiling: plan.previousCeiling, newCeiling: plan.newCeiling,
+        costDiscipline: plan.costDiscipline, costDisciplineChange: 'UNCHANGED',
+        certificationsReviewDue: [...plan.certificationsReviewDue],
+        authorityChange: 'NONE', budgetChange: 'NONE', providerCall: 'NONE',
+        reasonCode: assertCode(raw.reasonCode ?? 'founder.reasoning_profile', 'reasonCode'),
+      };
+    }
+    case 'WORK_ITEM_REASONING_OVERRIDE': {
+      const plan = txPlanReasoningOverride(ctx, { workItemId: assertId(raw.workItemId, 'workItemId'), reasoningClass: raw.reasoningClass });
+      return {
+        workItemId: plan.workItemId, workItemState: plan.workItemState, taskClass: plan.taskClass,
+        employeeId: plan.employee.id, name: `${plan.employee.name.given} ${plan.employee.name.family}`,
+        employeeDefault: plan.standingDefault, employeeCeiling: plan.standingCeiling,
+        requestedClass: plan.requestedClass, effectiveClass: plan.effectiveClass, routePolicyMaxClass: plan.routePolicyMaxClass, deploymentAvailable: plan.deploymentAvailable,
+        scope: 'THIS_WORK_ITEM_ONLY', persistentProfileChange: 'NONE', authorityChange: 'NONE', budgetChange: 'NONE',
+        reasonCode: assertCode(raw.reasonCode ?? 'founder.reasoning_override', 'reasonCode'),
+      };
     }
     case 'DELEGATE_WORK': {
       // Founder-originated authority delegation (C4): a capability grant, bounded and reviewed; never work delegation by text.
@@ -540,6 +565,16 @@ export class FounderActionStore {
       case 'APPROVAL_DECIDE': {
         const a = GovernanceStore.for(this.#store).decideApproval(founderRef, str('approvalId'), { decision: pl.decision as 'APPROVE' | 'REJECT', reasonCode: str('reasonCode') });
         return `approval:${a.id}`;
+      }
+      case 'EMPLOYEE_REASONING_PROFILE': {
+        // The store re-plans inside the confirm and refuses a profile that changed since the preview (version-safe).
+        const e = GovernanceStore.for(this.#store).changeReasoningProfile(founderRef, str('employeeId'), { defaultClass: pl.newDefault as 'E1', ceilingClass: pl.newCeiling as 'E1', expectedVersion: Number(pl.employeeVersion), reasonCode: str('reasonCode') });
+        return `employee:${e.id}`;
+      }
+      case 'WORK_ITEM_REASONING_OVERRIDE': {
+        const o = GovernanceStore.for(this.#store).setWorkItemReasoningOverride(founderRef, str('workItemId'), { reasoningClass: pl.requestedClass as 'E1', reasonCode: str('reasonCode') });
+        if (o.employee.id !== str('employeeId') || o.standingCeiling !== pl.employeeCeiling || o.standingDefault !== pl.employeeDefault) throw new QandeelError('INVALID_TRANSITION', 'the Employee profile changed since the preview', { reason: 'PROFILE_CHANGED' });
+        return `work_item:${o.workItemId}`;
       }
       case 'GOAL_APPROVE': {
         const goals = GoalStore.for(this.#store);

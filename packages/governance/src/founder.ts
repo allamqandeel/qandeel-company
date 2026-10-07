@@ -142,7 +142,13 @@ export const PROVISIONING_INTENTS = ['PROVIDER_PROVISION'] as const;
  * boundary: no text pattern produces them, and each calls the existing canonical store at confirmation.
  */
 export const ACTIVATION_INTENTS = ['EMPLOYEE_HIRE', 'EMPLOYEE_LIFECYCLE', 'EMPLOYEE_MODEL_ACCESS', 'SKILL_PACKAGE_QUALIFY', 'ACADEMY_PACKAGE_INSTALL', 'ACADEMY_ENROLL', 'ACADEMY_MODULES_COMPLETE', 'ACADEMY_ATTEMPT_START', 'ACADEMY_EVALUATE', 'ACADEMY_RETRAIN_COMPLETE', 'ACADEMY_SHADOW_ASSIGN', 'ACADEMY_PROBATION_EVIDENCE', 'ACADEMY_PROBATION_REVIEW', 'ACADEMY_CALIBRATION', 'ACTIVATION_DECIDE'] as const;
-export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS, ...EXTERNAL_EVIDENCE_INTENTS, ...PILOT_INTENTS, ...PROVISIONING_INTENTS, ...ACTIVATION_INTENTS] as const;
+/**
+ * D-L1-44 (D-L1-36): Employee Reasoning Control — the Founder's persistent reasoning default / ceiling of one Employee,
+ * and the one-task reasoning class of one not-yet-executed Employee Work Item. Structured-only (no text produces them);
+ * reasoning is never authority: neither changes grants, tools, data class, risk, approvals or budget.
+ */
+export const REASONING_INTENTS = ['EMPLOYEE_REASONING_PROFILE', 'WORK_ITEM_REASONING_OVERRIDE'] as const;
+export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS, ...EXTERNAL_EVIDENCE_INTENTS, ...PILOT_INTENTS, ...PROVISIONING_INTENTS, ...ACTIVATION_INTENTS, ...REASONING_INTENTS] as const;
 export type ReadIntent = (typeof READ_INTENTS)[number];
 export type MutatingIntent = (typeof MUTATING_INTENTS)[number];
 

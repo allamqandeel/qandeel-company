@@ -4174,3 +4174,49 @@ feedback between passed attempts.
 - It reaches the training context of the trainee's later attempts.
 - Whether the Employee learned from it can later be evidenced.
 - Earlier history is never changed (append-only; scores, answers and attempts already recorded stand as they are).
+
+## D-L1-44 — EMPLOYEE REASONING CONTROL implemented (closes the D-L1-36 requirement; AUTO stays out)
+
+**Decision (Founder Task Contract D-L1-44, 2026-10-07).** Company-wide (every current and future Employee, not
+CEO-specific), on the existing seams. The internal classes stay E0–E4; the DeepSeek mapping is unchanged.
+
+- **Persistent profile — `EMPLOYEE_REASONING_PROFILE`.** The Founder changes an Employee's standing default and/or
+  ceiling, kept where they always were (`employees.cognitive_profile_json`). Founder levels are E1–E4 (E0 is
+  deterministic NO_LLM, not a reasoning level); `ceiling ≥ default`; cost discipline is kept, never changed here. The
+  preview shows Employee, previous / new default and ceiling, cost discipline UNCHANGED, the certifications that become
+  REVIEW_DUE, and states no authority, budget or provider effect. The confirm is version-safe against the previewed
+  Employee version (`VERSION_CONFLICT` otherwise), appends Employee history (change kind `PROFILE`, `E1/E2 → E2/E4`) and
+  a content-free audit row (`employee.reasoning_profile_changed`).
+- **Certification safety.** A Cognitive / Reasoning Profile change is material (Stage 6 §14; the existing rule in
+  `requireRecertification`). The Employee's VALID certifications become REVIEW_DUE through the canonical
+  `markReviewDue` (reason `REASONING_PROFILE_CHANGED`) in the same transaction. No second rule; REVIEW_DUE still never
+  demotes. Salim's LIVE profile was not changed, so his certification stays VALID.
+- **One-task override — `WORK_ITEM_REASONING_OVERRIDE`.** The Founder sets the class of exactly one Employee Work Item
+  that has never run (no run row), for model work whose own input does not pin a class (a BQM-2 method pin is refused).
+  It is never above the Employee ceiling (raise the ceiling first, explicitly) nor the route policy maximum, is one per
+  Work Item, durable and immutable, and never touches the persistent profile.
+- **Runtime precedence for one model step.**
+  1. The Founder override (read durably when the run begins: `GovernedRunContext.reasoningOverride`).
+  2. Else the processor's pinned class.
+  3. Else the Employee default.
+  4. The existing bounded technical escalation may raise it, starting from the override. This is not AUTO.
+  5. It never goes above the Employee ceiling or the route policy (`route()`, `txReserve`).
+  6. It runs only on a qualified deployment of that class.
+  7. It runs only after that class's worst case is reserved.
+
+  `txReserve` additionally refuses any reservation below the override (`BELOW_REASONING_OVERRIDE`), so it is never
+  bypassed downward. Reasoning changes no grant, tool, risk, approval, data class or egress.
+- **Read model.** The `/api/employees/:id` response includes `reasoning`:
+  - the default, ceiling and cost discipline;
+  - the Founder overrides;
+  - per Work Item, the class that actually answered completed calls (from usage evidence).
+- **Migration 0020 was necessary.**
+  - The Founder intent catalogue is a datastore CHECK on `founder_action_previews`, so no new intent can be confirmed
+    without one. The table is recreated with the extended list, every row kept (0017 precedent).
+  - The override cannot live in `work_items.processor_input_json`. That input is immutable, submitter-set content: an
+    approval and an independent review bind its SHA-256, and a class pinned there is a method pin. It therefore gets its
+    own append-only relation `work_item_reasoning_overrides`, whose triggers refuse an override that is set after a run,
+    on another owner, or above the ceiling.
+  - 0001–0019 are unchanged. A LIVE workspace takes 0020 through the governed schema update on its next upgrade.
+- **Not done (out of scope):** AUTO, any LIVE mutation of Salim (still E1 / E2), requalification, Academy reruns,
+  budget changes, the D-L1-39 Feedback Loop, Founder Calibration, the lifecycle move, and Activation.

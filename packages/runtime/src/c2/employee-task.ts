@@ -204,13 +204,16 @@ export const employeeTaskProcessor: GovernedProcessor = {
         case 'UNCERTAIN':
           // The provider broke the contract or its outcome is unknown after send (money held).
           return { type: 'RETRYABLE_FAILURE', code: 'PROVIDER_FAILURE' };
-        case 'FAILED':
+        case 'FAILED': {
           // One evidence-based escalation per run step; never re-escalate from the class that just failed.
-          if (out.failure === 'CONTEXT_OVERFLOW' && !escalated && cfg.reasoningClass !== 'E4' && cfg.invalidOutputPolicy !== 'SAME_CLASS_RETRY') {
-            escalateFrom = { fromClass: cfg.reasoningClass ?? gov.context.cognitiveProfile.defaultClass, evidence: 'CONTEXT_OVERFLOW' };
+          // D-L1-44: the step started from the Founder override when one exists (the same precedence as the model runtime).
+          const startClass = gov.context.reasoningOverride ?? cfg.reasoningClass ?? gov.context.cognitiveProfile.defaultClass;
+          if (out.failure === 'CONTEXT_OVERFLOW' && !escalated && startClass !== 'E4' && cfg.invalidOutputPolicy !== 'SAME_CLASS_RETRY') {
+            escalateFrom = { fromClass: startClass, evidence: 'CONTEXT_OVERFLOW' };
             continue;
           }
           return { type: 'PERMANENT_FAILURE', code: providerFailedRunCode(out.failure) };
+        }
         case 'CONTEXT':
           // Typed context outcomes: an IMPORTANT unresolved conflict or conflicting skills park the work
           // for review (zero tokens); a context that cannot fit or fails integrity never reaches a model.

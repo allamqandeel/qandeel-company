@@ -57,6 +57,8 @@ export function employeeDetail(ctx: ApiContext, employeeId: string): Json {
     goals: u.goals.filter((g) => work.some((w) => w.goalIds.includes(g.id))).map((g) => ({ id: g.id, title: g.title, state: g.state })),
     budget: budget ? { currency: budget.currency, capMoney: budget.capMoney, spentMoney: budget.spentMoney, reservedMoney: budget.reservedMoney, id: budget.id } : null,
     grants,
+    // D-L1-44: the standing reasoning default / ceiling, Founder one-task overrides and the classes actually used.
+    reasoning: gov.reasoningControl(id) as unknown as Json,
     threads,
     blocked: work.some((w) => w.state === 'BLOCKED'),
     waiting: work.filter((w) => w.state.startsWith('WAITING')).map((w) => w.state),
@@ -615,6 +617,8 @@ function resolveMutatingTarget(ctx: ApiContext, u: CompanyUniverse, command: Ext
     case 'ACADEMY_PROBATION_REVIEW':
     case 'ACADEMY_CALIBRATION':
     case 'ACTIVATION_DECIDE':
+    case 'EMPLOYEE_REASONING_PROFILE':
+    case 'WORK_ITEM_REASONING_OVERRIDE':
       // Structured only (a form or a rail action posts IDs / codes), never free text (D-C5-07, R2-21, C7-A, C7-C, L1-01, L1-02).
       return null;
   }
@@ -728,6 +732,13 @@ export function structuredSummary(ctx: ApiContext, preview: { intentKind: string
       return `${p.decision === 'APPROVE' ? 'Approve' : 'Reject'} the Founder Calibration (evidence: ${Array.isArray(p.evidenceRefs) ? (p.evidenceRefs as string[]).length : 0} item(s))`;
     case 'ACTIVATION_DECIDE':
       return p.decision === 'APPROVE' ? `Activate ${s('name')} (${s('roleRef')}): the Academy activation gate re-checks the valid certification, the passed probation and the approved calibration. Activation grants no authority beyond explicit grants` : `Reject the activation of ${s('name')} (the enrollment closes; its evidence stays)`;
+    // --- D-L1-44: Employee Reasoning Control (reasoning is not authority) ---
+    case 'EMPLOYEE_REASONING_PROFILE': {
+      const due = Array.isArray(p.certificationsReviewDue) ? (p.certificationsReviewDue as string[]).length : 0;
+      return `Change ${s('name')}'s standing reasoning profile: default ${s('previousDefault')} → ${s('newDefault')}, ceiling ${s('previousCeiling')} → ${s('newCeiling')}; cost discipline ${s('costDiscipline')} unchanged. Future work without a one-task override starts from the new default. A material change: ${due} valid certification(s) become REVIEW_DUE. No authority, tool, data, approval or budget change; no provider call`;
+    }
+    case 'WORK_ITEM_REASONING_OVERRIDE':
+      return `Run this one Work Item (${s('workItemId').slice(0, 8)}…, ${s('taskClass')}) for ${s('name')} at ${s('requestedClass')} (routes at ${s('effectiveClass')}; standing default ${s('employeeDefault')}, ceiling ${s('employeeCeiling')}; route policy max ${s('routePolicyMaxClass')}${p.deploymentAvailable === true ? '' : '; no deployment of that class is provisioned now — the run cannot route until one is'}). This Work Item only: the persistent profile, authority, tools, data and budget are unchanged, and the worst case of the class is reserved before any call`;
     case 'PILOT_ADVANCE': {
       const step: Record<string, string> = {
         BRIEFING: 'Start the pilot briefing with the CEO (a conversation; it decides nothing)',
