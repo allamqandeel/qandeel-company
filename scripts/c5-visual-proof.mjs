@@ -16,8 +16,8 @@
 // With --minimal it captures the smoke checks and Scenario A–D only (plus the sheet beside the chips): the
 // frames a presentation-only correction is judged on, without the walkthrough or the scale frame.
 // With --spike it stops after the technical smoke checks (the company surface renders — spine, five columns,
-// goals, execution lines; English UI with content as written; selection / focus / return; reduced-motion
-// parity; no external asset) and prints them. The surface is DOM + SVG: no GPU or WebGL is needed anywhere.
+// goals, execution lines; English UI with content as written, the Activation surface included (C5-CORR-01);
+// selection / focus / return; reduced-motion parity; no external asset) and prints them. The surface is DOM + SVG: no GPU or WebGL is needed anywhere.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -461,6 +461,67 @@ try {
     await page.evaluate(`(() => { try { localStorage.removeItem('qandeel.reducedMotion'); } catch {} return true; })()`);
     const detail = { initial: describeMotion(initial), osPrefersReduced: initial.osReduce, marks: after.length, toReduced: toReduced.clicked ? 'clicked' : 'already', reducedStyles: inReduced, toFull: toFull.clicked ? 'clicked' : 'already', fullStyles: inFull, restoredTo: restored.to.mode };
     results.spike.reducedMotion = detail;
+    return detail;
+  });
+  await step('spike-activation-english-chrome', async () => {
+    // C5-CORR-01: the Activation surface (L1-02) is application chrome like the rest — English and left-to-right —
+    // while company / Founder content in it keeps its own script and direction. The rule is semantic, never "no
+    // Arabic in the DOM": chrome is everything in the surface except the named content places (the Employee's Arabic
+    // display name, an answer or brief body, the Founder's feedback) and the values the Founder typed; the Founder's
+    // Arabic command below must stay Arabic and right-to-left. Content is named by place, never by the `.content`
+    // class alone, so chrome dressed as content (the L1-02 regression's bilingual stage labels) still fails.
+    const AR = '/[\\u0600-\\u06FF]/';
+    const CONTENT = JSON.stringify('.act-name-ar, .act-answer-body, blockquote.content');
+    const inspect = () => page.evaluate(`(() => {
+      const section = document.querySelector('#palette .activation');
+      const clone = section.cloneNode(true);
+      clone.querySelectorAll(${CONTENT}).forEach((c) => c.remove());
+      const placeholders = [...section.querySelectorAll('[placeholder]')].map((e) => e.getAttribute('placeholder'));
+      const labels = [...section.querySelectorAll('[aria-label]')].map((e) => e.getAttribute('aria-label'));
+      const chrome = [clone.textContent, document.querySelector('#palette .palette-result')?.textContent ?? '', ...placeholders, ...labels].join(' ');
+      const content = [...section.querySelectorAll(${CONTENT})];
+      return {
+        title: section.querySelector('.section-title')?.textContent ?? null,
+        direction: getComputedStyle(section).direction,
+        stages: section.querySelectorAll('.act-stages li').length,
+        next: section.querySelector('.act-next')?.textContent.trim() ?? null,
+        chromeArabic: ${AR}.test(chrome),
+        chromeChars: chrome.length,
+        arabicContent: content.filter((c) => ${AR}.test(c.textContent)).length,
+        arabicContentNotRtl: content.filter((c) => ${AR}.test(c.textContent) && getComputedStyle(c).direction !== 'rtl').length,
+        button: document.getElementById('activation-open').textContent.trim(),
+      };
+    })()`);
+    const check = (r, how) => {
+      if (r.chromeArabic) throw new Error(`${how}: the Activation chrome carries Arabic (title ${r.title}; next ${r.next})`);
+      if (r.title !== 'Activate the Company' || r.direction !== 'ltr' || r.stages !== 10 || !r.next) throw new Error(`${how}: title ${r.title}, direction ${r.direction}, stages ${r.stages}, next ${r.next}`);
+      if (r.button !== 'Activate the Company') throw new Error(`${how}: the top-bar control reads ${JSON.stringify(r.button)}`);
+      if (r.arabicContentNotRtl > 0) throw new Error(`${how}: ${r.arabicContentNotRtl} Arabic content block(s) not right-to-left`);
+    };
+    // 1. The top-bar control opens it (a read: no fact changes).
+    await click('#activation-open');
+    await waitUntil(`!document.getElementById('palette').hidden && document.querySelector('#palette .activation .act-stages')`, 15_000);
+    await settle(600);
+    const byButton = await inspect();
+    check(byButton, 'top-bar control');
+    if (!values.spike) await shot('00-activation-english-chrome');
+    // 2. The Founder's own Arabic command reaches the same surface: the typed text stays Arabic and right-to-left
+    // (Founder content), and the chrome around it is still English.
+    const command = 'تفعيل الشركة';
+    await page.evaluate(`(() => { document.querySelector('#palette .activation').dataset.proofStale = '1'; return true; })()`);
+    await type('.palette-input', command);
+    await submit('.palette-form');
+    await waitUntil(`document.querySelector('#palette .activation:not([data-proof-stale]) .act-stages') && document.querySelector('#palette .palette-form .btn-primary')?.textContent === 'Go'`, 15_000);
+    await settle(600);
+    const byArabic = await inspect();
+    check(byArabic, 'Arabic command');
+    const typed = await page.evaluate(`(() => { const i = document.querySelector('#palette .palette-input'); return { value: i.value, direction: getComputedStyle(i).direction, matches: i.matches(':dir(rtl)') }; })()`);
+    if (typed.value !== command || !typed.matches) throw new Error(`the Founder's Arabic command did not keep its script and direction: ${JSON.stringify(typed)}`);
+    // Leave the surface as the next checks expect it: a fresh page (the palette's result is client state only).
+    await page.navigate(`${surface.origin}/`);
+    await waitReady();
+    const detail = { title: byButton.title, direction: byButton.direction, stages: byButton.stages, next: byButton.next, chromeArabic: false, chromeChars: byButton.chromeChars, arabicContentBlocks: byArabic.arabicContent, founderArabicCommand: { kept: true, direction: 'rtl' } };
+    results.spike.activation = detail;
     return detail;
   });
   if (values.spike) {

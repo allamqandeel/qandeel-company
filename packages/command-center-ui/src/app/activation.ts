@@ -1,5 +1,5 @@
 /**
- * L1-02 — "Activate the Company" (تفعيل الشركة): the first real CEO's production path in the command palette.
+ * L1-02 — "Activate the Company": the first real CEO's production path in the command palette.
  *
  * It renders the durable activation view only (no client state survives a refresh): the stages, the CEO seat and its
  * holder ([portrait] name / title from the seat — presentation, never authority), the provider, the Academy package
@@ -32,49 +32,49 @@ export const offersProbationMove = (stage: string, ceoState: string): boolean =>
 /** Activation is actionable only for an Employee the backend can activate (SHADOW or PROBATION). */
 export const activationActionable = (ceoState: string): boolean => ceoState === 'SHADOW' || ceoState === 'PROBATION';
 
-/** The next step in the Founder's words (English, Arabic). */
-const NEXT: Readonly<Record<string, readonly [string, string]>> = {
-  PROVISION_PROVIDER: ['Provision the model provider (identity check first)', 'تجهيز مزوّد النماذج'],
-  NO_CEO_SEAT: ['No CEO seat exists', 'لا يوجد مقعد للرئيس التنفيذي'],
-  HIRE_CEO: ['Hire the CEO into the vacant seat', 'تعيين الرئيس التنفيذي'],
-  START_TRAINING: ['Start the CEO\'s training', 'بدء التدريب'],
-  GRANT_MODEL_ACCESS: ['Open the CEO\'s bounded envelope and model access', 'فتح الميزانية والوصول المحدود للنموذج'],
-  QUALIFY_PACKAGE: ['Qualify the CEO Academy package (security review + bounded benchmark)', 'تأهيل حزمة الأكاديمية'],
-  BENCHMARK_RUNNING: ['The skill benchmark is running', 'اختبار المهارات قيد التشغيل'],
-  INSTALL_PACKAGE: ['Install the qualified package (one decision)', 'تثبيت الحزمة المؤهلة'],
-  BENCHMARK_UNCLASSIFIED_NO_ANSWER: ['A benchmark observation ended without an answer for an unexplained cause — qualification is blocked (never re-run as infrastructure)', 'ملاحظة اختبار انتهت دون إجابة لسبب غير مصنَّف — التأهيل متوقف (لا تُعاد كعطل بنية)'],
-  PACKAGE_NOT_QUALIFIED: ['A skill did not qualify — the package cannot be installed', 'مهارة لم تتأهل — لا يمكن التثبيت'],
-  ENROLL: ['Enroll the CEO in the Academy', 'التسجيل في الأكاديمية'],
-  COMPLETE_MODULES: ['Acknowledge the curriculum modules', 'إقرار وحدات المنهج'],
-  START_SIMULATION: ['Start a practice simulation', 'بدء محاكاة تدريبية'],
-  START_ASSESSMENT: ['Start an assessment (and the hidden holdout)', 'بدء التقييم'],
-  ATTEMPT_RUNNING: ['The attempt is running', 'المحاولة قيد التشغيل'],
-  EVALUATE_ATTEMPT: ['Read the answer and score it', 'اقرأ الإجابة وقيّمها'],
-  COMPLETE_RETRAINING: ['Diagnosis recorded — confirm the targeted retraining', 'تأكيد إعادة التدريب'],
-  START_RETEST: ['Re-test after retraining', 'إعادة الاختبار'],
-  ASSIGN_SHADOW_WORK: ['Assign the shadow work (launch-readiness brief)', 'إسناد العمل الظلي'],
-  SHADOW_RUNNING: ['The shadow work is running', 'العمل الظلي قيد التشغيل'],
-  RECORD_PROBATION_EVIDENCE: ['Read the brief and record probation evidence', 'تسجيل أدلة فترة الاختبار'],
-  PROBATION_REVIEW: ['Decide the probation review', 'قرار مراجعة فترة الاختبار'],
-  CERTIFICATION_WAITING: ['Certification is waiting on its evidence', 'الشهادة بانتظار الأدلة'],
-  FOUNDER_CALIBRATION: ['Founder Calibration (your judgment of the CEO)', 'معايرة المؤسس'],
-  MOVE_TO_PROBATION: ['Move the trainee to probation before activation', 'نقل المتدرب إلى فترة الاختبار'],
-  DECIDE_ACTIVATION: ['Decide the activation', 'قرار التفعيل'],
-  TALK_TO_CEO: ['The CEO is active — talk to the CEO', 'الرئيس التنفيذي نشط — تحدث معه'],
-  BLOCKED: ['The Academy path is blocked (repeated critical failure)', 'مسار الأكاديمية متوقف'],
+/** The next step in the Founder's words (application chrome: English, D-C5-13 / C5-CORR-01). */
+const NEXT: Readonly<Record<string, string>> = {
+  PROVISION_PROVIDER: 'Provision the model provider (identity check first)',
+  NO_CEO_SEAT: 'No CEO seat exists',
+  HIRE_CEO: 'Hire the CEO into the vacant seat',
+  START_TRAINING: 'Start the CEO\'s training',
+  GRANT_MODEL_ACCESS: 'Open the CEO\'s bounded envelope and model access',
+  QUALIFY_PACKAGE: 'Qualify the CEO Academy package (security review + bounded benchmark)',
+  BENCHMARK_RUNNING: 'The skill benchmark is running',
+  INSTALL_PACKAGE: 'Install the qualified package (one decision)',
+  BENCHMARK_UNCLASSIFIED_NO_ANSWER: 'A benchmark observation ended without an answer for an unexplained cause — qualification is blocked (never re-run as infrastructure)',
+  PACKAGE_NOT_QUALIFIED: 'A skill did not qualify — the package cannot be installed',
+  ENROLL: 'Enroll the CEO in the Academy',
+  COMPLETE_MODULES: 'Acknowledge the curriculum modules',
+  START_SIMULATION: 'Start a practice simulation',
+  START_ASSESSMENT: 'Start an assessment (and the hidden holdout)',
+  ATTEMPT_RUNNING: 'The attempt is running',
+  EVALUATE_ATTEMPT: 'Read the answer and score it',
+  COMPLETE_RETRAINING: 'Diagnosis recorded — confirm the targeted retraining',
+  START_RETEST: 'Re-test after retraining',
+  ASSIGN_SHADOW_WORK: 'Assign the shadow work (launch-readiness brief)',
+  SHADOW_RUNNING: 'The shadow work is running',
+  RECORD_PROBATION_EVIDENCE: 'Read the brief and record probation evidence',
+  PROBATION_REVIEW: 'Decide the probation review',
+  CERTIFICATION_WAITING: 'Certification is waiting on its evidence',
+  FOUNDER_CALIBRATION: 'Founder Calibration (your judgment of the CEO)',
+  MOVE_TO_PROBATION: 'Move the trainee to probation before activation',
+  DECIDE_ACTIVATION: 'Decide the activation',
+  TALK_TO_CEO: 'The CEO is active — talk to the CEO',
+  BLOCKED: 'The Academy path is blocked (repeated critical failure)',
 };
 
-const STAGES: readonly [string, string][] = [
-  ['Provider ready', 'المزوّد جاهز'],
-  ['CEO hired (candidate)', 'تعيين المرشح'],
-  ['Training + model access', 'التدريب والوصول'],
-  ['Package qualified', 'تأهيل الحزمة'],
-  ['Package installed', 'تثبيت الحزمة'],
-  ['Academy', 'الأكاديمية'],
-  ['Shadow / probation', 'العمل الظلي'],
-  ['Certified', 'الشهادة'],
-  ['Calibration', 'المعايرة'],
-  ['Active', 'نشط'],
+const STAGES: readonly string[] = [
+  'Provider ready',
+  'CEO hired (candidate)',
+  'Training + model access',
+  'Package qualified',
+  'Package installed',
+  'Academy',
+  'Shadow / probation',
+  'Certified',
+  'Calibration',
+  'Active',
 ];
 
 /** D-L1-19: the current package is the newest registered version; earlier versions are immutable history, shown read-only. */
@@ -134,13 +134,12 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
   const pkgReg = newest(arr(reg.packages));
   const pkgArgs = pkgReg ? { packageCode: str(pkgReg.code), packageVersion: Number(pkgReg.version), packageSha256: str(pkgReg.sha256) } : null;
   const section = h('section', { class: 'pilots activation', 'aria-label': 'Activate the Company' });
-  section.append(h('h3', { class: 'section-title' }, 'Activate the Company · ', content('span', 'تفعيل الشركة')));
+  section.append(h('h3', { class: 'section-title', text: 'Activate the Company' }));
   const next = str(v.next);
-  const [en, ar] = NEXT[next] ?? [humanize(next), ''];
-  section.append(h('p', { class: 'act-next' }, pill('Next', 'pill-needs_decision'), ' ', h('span', { text: en }), ' ', ar ? content('span', `· ${ar}`) : ''));
+  section.append(h('p', { class: 'act-next' }, pill('Next', 'pill-needs_decision'), ' ', h('span', { text: NEXT[next] ?? humanize(next) })));
   const done = stagesDone(v);
   const ol = h('ol', { class: 'act-stages' });
-  STAGES.forEach(([s, a], i) => ol.append(h('li', { class: i < done ? 'done' : i === done ? 'current' : '' }, h('span', { text: s }), ' ', content('span', a, 'muted small'))));
+  STAGES.forEach((s, i) => ol.append(h('li', { class: i < done ? 'done' : i === done ? 'current' : '' }, h('span', { text: s }))));
   section.append(ol);
   section.append(h('p', { class: 'muted small', text: 'Every step below is a structured preview: nothing changes until you confirm it. External side-effect capability: none.' }));
 
@@ -178,7 +177,7 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
     const form = h('form', { class: 'pilot-create act-hire' });
     const given = h('input', { type: 'text', placeholder: 'Given name (Latin)', 'aria-label': 'Given name', required: true, maxlength: 40 }) as HTMLInputElement;
     const family = h('input', { type: 'text', placeholder: 'Family name (Latin)', 'aria-label': 'Family name', required: true, maxlength: 40 }) as HTMLInputElement;
-    const arName = h('input', { type: 'text', placeholder: 'الاسم بالعربية', 'aria-label': 'Arabic display name', dir: 'rtl', maxlength: 60 }) as HTMLInputElement;
+    const arName = h('input', { type: 'text', placeholder: 'Arabic display name (optional)', 'aria-label': 'Arabic display name', dir: 'auto', maxlength: 60 }) as HTMLInputElement;
     const ident = h('select', { 'aria-label': 'Identity profile' }) as HTMLSelectElement;
     ident.append(h('option', { value: '', text: 'No identity profile' }));
     for (const i of arr(reg.identities)) if (str(i.roleRef) === str(seat.roleRef)) ident.append(h('option', { value: str(i.code), text: `${str(i.code)} (${str(i.sourceRef)})` }));
@@ -287,10 +286,10 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
         }
       }
       // D-L1-39: the Founder's own feedback on an evaluated attempt (never on a hidden holdout); later attempts carry it.
-      for (const f of arr(a.founderFeedback)) ab.append(h('blockquote', { class: 'small', text: str(f.body) }), h('p', { class: 'muted small', text: `Your feedback · carried into ${arr(f.exposedTo).length} later attempt(s)` }));
+      for (const f of arr(a.founderFeedback)) ab.append(content('blockquote', str(f.body), 'small'), h('p', { class: 'muted small', text: `Your feedback · carried into ${arr(f.exposedTo).length} later attempt(s)` }));
       if (a.state === 'EVALUATED' && a.holdout !== true && a.answer) {
         const fb = h('form', { class: 'act-eval' });
-        const t = h('textarea', { rows: '3', maxlength: '2400', required: true, 'aria-label': 'Your feedback to the trainee' }) as HTMLTextAreaElement;
+        const t = h('textarea', { rows: '3', maxlength: '2400', required: true, dir: 'auto', 'aria-label': 'Your feedback to the trainee' }) as HTMLTextAreaElement;
         fb.append(h('label', { class: 'small' }, h('span', { text: 'Your feedback (added to the record; later attempts carry it)' }), t), h('button', { type: 'submit', class: 'btn btn-quiet', text: 'Preview: give feedback' }));
         fb.addEventListener('submit', (e) => {
           e.preventDefault();
