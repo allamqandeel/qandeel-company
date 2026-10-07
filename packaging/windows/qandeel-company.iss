@@ -111,7 +111,9 @@ end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
-  Result := (PageID = WorkspacePage.ID) and HasLauncherConfig();
+  // Asked only when no Company is configured, and never in a silent install (whose choice is /WORKSPACE=<folder>;
+  // without one the install ends "setup required" and creates nothing).
+  Result := (PageID = WorkspacePage.ID) and (HasLauncherConfig() or WizardSilent());
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
