@@ -143,9 +143,11 @@ try {
   launchLikeWindows(stopLnk?.target ?? 'missing', String(stopLnk?.arguments ?? '').replace(/ --notify$/, ''), env, scratch);
   const viaShortcut = await run(A, ['status']);
   check('runtime.shortcut-command-headless', viaShortcut.json.state === 'STOPPED' && hosts().length === 0, `${viaShortcut.json.state}`);
+  // The shortcut above stopped the host: open → controlled stop → open again.
+  const reopened = await run(A, ['open', '--no-browser']);
   const stop = await run(A, ['stop']);
   const open = await run(A, ['open', '--no-browser']);
-  check('runtime.stop-open', stop.json.outcome === 'STOPPED' && open.json.ok === true && hosts().length === 1, `${stop.json.outcome} → ${open.json.outcome}`);
+  check('runtime.open-stop-open', reopened.json.ok === true && stop.json.outcome === 'STOPPED' && open.json.ok === true && hosts().length === 1, `${reopened.json.outcome} → ${stop.json.outcome} → ${open.json.outcome}`);
   check('install.company-unchanged', (await companyFingerprint(ws)) === fp0 && readFileSync(configFile).equals(configBytes));
 
   // update A → B
