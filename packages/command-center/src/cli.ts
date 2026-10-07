@@ -27,7 +27,18 @@
  *   restart [--workspace <dir>] [--no-browser] [--notify]   controlled stop, then open
  *   install-shortcuts --workspace <dir> [--provider deepseek]
  *         records the production workspace in %LOCALAPPDATA%\QANDEEL_COMPANY\launcher\founder-launcher.json (no secret) and
- *         writes the per-user Desktop and Start-menu QANDEEL COMPANY shortcuts (no elevation, no autostart).
+ *         writes the per-user Desktop and Start-menu QANDEEL COMPANY shortcuts (no elevation, no autostart). The
+ *         shortcuts always run the workspace's ACTIVATED release, never this checkout (D-OPS-08).
+ *
+ * OPS — the production runtime release (D-OPS-08):
+ *   release-stage [--releases-dir <dir>]
+ *         freezes the current build into a content-addressed release outside the checkout
+ *         (%LOCALAPPDATA%\QANDEEL_COMPANY\releases\<id>), after the operator's Build → Test (`npm run ci`).
+ *   release-activate --workspace <dir> --release <id | dir> [--provider deepseek] [--releases-dir <dir>] [--no-shortcuts]
+ *         the controlled activation: verify → dry run → controlled stop → verified backup → pin → start from the release
+ *         (schema safe-upgrade inside) → health → shortcuts; any failure after the pin rolls back to the previous release.
+ *   release-status --workspace <dir>      the pin, the pinned release's integrity, and whether THIS build is admitted.
+ *   release-check --workspace <dir>       (the activation's dry run, run from the staged release itself)
  *   Without --workspace these read the launcher configuration (`--config <file>` names another one).
  *   provider-check --workspace <dir> --provider deepseek [--probe] [--probe-class E1|E2|E3|E4]
  *         the operator's content-free identity check (L1-01, D-L1-05): resolves the vault reference, asks
@@ -47,15 +58,16 @@ import { parseArgs } from 'node:util';
 import { isQandeelError } from '@qandeel-company/domain';
 import { worstCase, type ProviderAdapter, type ProviderProvisioningProfile } from '@qandeel-company/governance';
 import { DEEPSEEK_FLASH_PRICE_CARD, DEEPSEEK_MODEL_CODE, DEEPSEEK_PROVIDER_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_PROFILE, DeepSeekHttpsTransport, DeepSeekProviderAdapter, PROBE_MAX_TOKENS, PROBE_THINKING_MAX_TOKENS } from '@qandeel-company/model-providers';
-import { Logger, jsonLinesSink } from '@qandeel-company/runtime';
+import { Logger, admitRuntimeRelease, jsonLinesSink, selfReleaseRoot, verifyReleaseTree } from '@qandeel-company/runtime';
 import { VaultError, WindowsUserVault } from '@qandeel-company/secret-vault';
 import { CompanyStore, FounderAuthStore, GovernanceStore } from '@qandeel-company/storage';
 
 import { hostPaths, readDescriptor } from './host/descriptor.js';
 import { discoverHost, installShortcuts, launcherConfigDir, launcherConfigPath, noticeFor, notify, openCompany, readLauncherConfig, restartHost, statusNotice, stopHost, writeLauncherConfig } from './host/lifecycle.js';
+import { activateRelease, releaseCli, releaseStatus, releasesDir, resolveRelease, stageRelease } from './host/release.js';
 import { FounderSurface } from './surface.js';
 
-const USAGE = 'usage: qandeel-founder <serve|launch|provider-check|open|status|stop|restart|install-shortcuts> [--workspace <dir>] [--port <n>] [--fake-provider <code>] [--provider deepseek] [--probe] [--probe-class E1|E2|E3|E4] [--background] [--no-browser] [--notify] [--force] [--config <file>]';
+const USAGE = 'usage: qandeel-founder <serve|launch|provider-check|open|status|stop|restart|install-shortcuts|release-stage|release-activate|release-status|release-check> [--workspace <dir>] [--port <n>] [--fake-provider <code>] [--provider deepseek] [--probe] [--probe-class E1|E2|E3|E4] [--background] [--no-browser] [--notify] [--force] [--config <file>] [--release <id|dir>] [--releases-dir <dir>] [--no-shortcuts]';
 const LAUNCHER_COMMANDS = ['open', 'status', 'stop', 'restart'];
 /** A host for this workspace already exists (or is coming up): a second `serve` never starts beside it. */
 const HOST_PRESENT = ['RUNNING', 'STARTING', 'STOPPING', 'UNHEALTHY', 'FOREIGN_RUNTIME'];
@@ -93,6 +105,17 @@ async function providersReady(codes: readonly string[]): Promise<boolean> {
   return true;
 }
 
+/** Whether this build may start the workspace's Company: ADMITTED, or the refusal reason (content-free). */
+function admission(workspace: string): string {
+  try {
+    admitRuntimeRelease(workspace);
+    return 'ADMITTED';
+  } catch (error) {
+    if (isQandeelError(error, 'RUNTIME_RELEASE_REFUSED')) return String(error.details.reason ?? 'REFUSED');
+    return isQandeelError(error) ? error.code : 'UNCLASSIFIED_ERROR';
+  }
+}
+
 interface LauncherValues {
   readonly workspace?: string | undefined;
   readonly provider?: string[] | undefined;
@@ -118,9 +141,20 @@ async function launcher(command: string, values: LauncherValues): Promise<void> 
   const start = { cliPath: selfPath(), providers, browser: values['no-browser'] !== true };
   if (command === 'status') {
     const status = await discoverHost(workspace);
-    out({ ok: true, command, ...status });
+    out({ ok: true, command, ...status, release: releaseStatus(workspace), admitted: admission(workspace) });
     if (values.notify) await notify(statusNotice(status));
     return;
+  }
+  // D-OPS-08: only the activated, intact release may start a pinned Company (the runtime re-checks at start). A stop is
+  // always allowed: it only asks the running host to shut down gracefully.
+  if (command !== 'stop') {
+    const admitted = admission(workspace);
+    if (admitted !== 'ADMITTED') {
+      out({ ok: false, command, outcome: 'RUNTIME_RELEASE_REFUSED', reason: admitted, workspace });
+      if (values.notify) await notify(noticeFor(command, 'RUNTIME_RELEASE_REFUSED'));
+      process.exitCode = 1;
+      return;
+    }
   }
   const result = command === 'open' ? await openCompany(workspace, start) : command === 'stop' ? await stopHost(workspace, { force: values.force === true }) : await restartHost(workspace, { ...start, force: values.force === true });
   let outcome = result.outcome;
@@ -132,9 +166,20 @@ async function launcher(command: string, values: LauncherValues): Promise<void> 
 
 export async function main(argv: readonly string[]): Promise<void> {
   const [command, ...rest] = argv;
-  const { values } = parseArgs({ args: rest, strict: true, options: { workspace: { type: 'string' }, port: { type: 'string' }, 'fake-provider': { type: 'string', multiple: true }, 'fake-driver': { type: 'string', multiple: true }, provider: { type: 'string', multiple: true }, probe: { type: 'boolean', default: false }, 'probe-class': { type: 'string', default: 'E1' }, background: { type: 'boolean', default: false }, 'no-browser': { type: 'boolean', default: false }, notify: { type: 'boolean', default: false }, force: { type: 'boolean', default: false }, config: { type: 'string' } } });
+  const { values } = parseArgs({ args: rest, strict: true, options: { workspace: { type: 'string' }, port: { type: 'string' }, 'fake-provider': { type: 'string', multiple: true }, 'fake-driver': { type: 'string', multiple: true }, provider: { type: 'string', multiple: true }, probe: { type: 'boolean', default: false }, 'probe-class': { type: 'string', default: 'E1' }, background: { type: 'boolean', default: false }, 'no-browser': { type: 'boolean', default: false }, notify: { type: 'boolean', default: false }, force: { type: 'boolean', default: false }, config: { type: 'string' }, release: { type: 'string' }, 'releases-dir': { type: 'string' }, 'no-shortcuts': { type: 'boolean', default: false } } });
   if (!['E1', 'E2', 'E3', 'E4'].includes(values['probe-class'] as string)) fail('USAGE', '--probe-class takes E1, E2, E3 or E4', 2);
   if (command !== undefined && LAUNCHER_COMMANDS.includes(command)) return launcher(command, values);
+  if (command === 'release-stage') {
+    // The checkout this CLI was built in (packages/command-center/dist/src/cli.js → the repository root).
+    if (selfReleaseRoot() !== null) fail('RELEASE_STAGE_REFUSED', 'release-stage runs from a development checkout, not from a release');
+    const source = path.resolve(path.dirname(selfPath()), '..', '..', '..', '..');
+    try {
+      out({ ok: true, command, ...stageRelease(source, values['releases-dir'] === undefined ? releasesDir() : path.resolve(values['releases-dir'])) });
+    } catch (error) {
+      fail(error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message : 'RELEASE_STAGE_FAILED', 'the current build could not be staged as a release');
+    }
+    return;
+  }
   if (command === undefined || values.workspace === undefined) fail('USAGE', USAGE, 2);
   const workspace = path.resolve(values.workspace);
   switch (command) {
@@ -246,16 +291,54 @@ export async function main(argv: readonly string[]): Promise<void> {
       }
       return;
     }
+    case 'release-check': {
+      // The activation's dry run, executed by the STAGED release's own code: it loads, verifies itself, reads the schema.
+      const self = selfReleaseRoot();
+      const verified = self === null ? null : verifyReleaseTree(self);
+      if (verified === null || !verified.ok) {
+        out({ ok: false, command, reason: verified === null ? 'NOT_A_RELEASE' : verified.reason });
+        process.exitCode = 1;
+        return;
+      }
+      let schema = 'CURRENT';
+      try {
+        CompanyStore.open(workspace, { create: false, migrationMode: 'verify' }).close();
+      } catch (error) {
+        schema = isQandeelError(error, 'SCHEMA_UPDATE_REQUIRED') ? 'UPDATE_REQUIRED' : isQandeelError(error) ? error.code : 'UNCLASSIFIED_ERROR';
+      }
+      const ok = schema === 'CURRENT' || schema === 'UPDATE_REQUIRED';
+      out({ ok, command, releaseId: verified.manifest.releaseId, runtimeVersion: verified.manifest.runtimeVersion, schema });
+      if (!ok) process.exitCode = 1;
+      return;
+    }
+    case 'release-status': {
+      out({ ok: true, command, workspace, ...releaseStatus(workspace), admitted: admission(workspace) });
+      return;
+    }
+    case 'release-activate': {
+      if (values.release === undefined) fail('USAGE', '--release <id | directory> is required (see release-stage)', 2);
+      const providers = [...new Set(values.provider ?? [])];
+      for (const p of providers) if (p !== DEEPSEEK_PROVIDER_CODE) fail('USAGE', `unknown live provider "${p}"`, 2);
+      const root = resolveRelease(values.release, values['releases-dir'] === undefined ? releasesDir() : path.resolve(values['releases-dir']));
+      if (root === null) fail('RELEASE_NOT_FOUND', 'no single staged release matches --release');
+      const r = await activateRelease(workspace, root, { providers, shortcuts: values['no-shortcuts'] !== true });
+      out({ command, ok: r.ok, outcome: r.outcome, code: r.code, releaseId: r.releaseId, previousReleaseId: r.previousReleaseId, backupId: r.backupId, steps: r.steps, state: r.status?.state ?? null, instanceId: r.status?.instanceId ?? null });
+      if (!r.ok) process.exitCode = 1;
+      return;
+    }
     case 'install-shortcuts': {
       const status = await discoverHost(workspace);
       if (status.state === 'WORKSPACE_MISSING' || status.state === 'WORKSPACE_INVALID') fail(status.state, 'install-shortcuts needs an existing Company workspace (nothing is created)');
+      // D-OPS-08: the shortcuts run the workspace's activated release — never this (possibly development) build.
+      const release = releaseStatus(status.workspace);
+      if (values.config === undefined && (release.root === null || release.intact !== true)) fail('RUNTIME_RELEASE_NOT_ACTIVATED', 'activate a release for this workspace first (release-stage, then release-activate)');
       const providers = [...new Set(values.provider ?? [])];
       for (const p of providers) if (p !== DEEPSEEK_PROVIDER_CODE) fail('USAGE', `unknown live provider "${p}"`, 2);
       const file = values.config === undefined ? launcherConfigPath() : path.resolve(values.config);
       writeLauncherConfig(file, { version: 1, workspace: status.workspace, providers });
       // An explicit --config writes only that file (tests, a second configuration); the shortcuts use the default one.
-      const shortcuts = process.platform === 'win32' && values.config === undefined ? await installShortcuts(selfPath(), launcherConfigDir()) : null;
-      out({ ok: shortcuts !== null || values.config !== undefined, command, config: file, workspace: status.workspace, providers, shortcuts });
+      const shortcuts = process.platform === 'win32' && values.config === undefined && release.root !== null ? await installShortcuts(releaseCli(release.root), launcherConfigDir()) : null;
+      out({ ok: shortcuts !== null || values.config !== undefined, command, config: file, workspace: status.workspace, providers, releaseId: release.releaseId, shortcuts });
       if (shortcuts === null && values.config === undefined) process.exitCode = 1;
       return;
     }

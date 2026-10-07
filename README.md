@@ -703,19 +703,36 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
 
 The Founder opens the Company with the **QANDEEL COMPANY** shortcut (Desktop and Start menu); no terminal, port or
 workspace path is needed. The shortcut runs `qandeel-founder open`, which reuses the running Company host or starts
-exactly one (the existing `serve`, detached and windowless), mints a fresh single-use launch token and opens the
-existing Command Center in an Edge (else Chrome) app window. Closing that window does not stop the Company. The Start
+exactly one (the existing `serve`, detached and windowless), and opens the existing Command Center in an Edge (else
+Chrome) app window. The browser hands the fresh single-use launch token over through a one-shot loopback handoff; the
+token is never in the browser's command line. Closing that window does not stop the Company. The Start
 menu folder **QANDEEL COMPANY** also holds **Status**, **Stop** (controlled shutdown) and **Restart**. Nothing starts at
 Windows sign-in. Details: `docs/OPS_FOUNDER_DESKTOP_PACKAGING_REPORT.md`.
 
-One-time setup, after `npm ci` and `npm run build` in this checkout:
+**The shortcuts run an activated release, never this checkout (D-OPS-08).** A release is a frozen, content-addressed copy
+of a build under `%LOCALAPPDATA%\QANDEEL_COMPANY\releases\`. Once a release is activated for the production workspace,
+the runtime refuses any other build for it (`RUNTIME_RELEASE_REFUSED`), including this checkout's own `dist`. Branch
+switches, `npm ci` and rebuilds therefore never change what the Founder starts.
+
+To put a new build into production, after `npm ci` and `npm run ci` pass in this checkout, freeze the build (this prints
+the release ID):
 
 ```bash
-node packages/command-center/dist/src/cli.js install-shortcuts --workspace "<production workspace>" --provider deepseek
+node packages/command-center/dist/src/cli.js release-stage
 ```
 
-It records the workspace (no secret) in `%LOCALAPPDATA%\QANDEEL_COMPANY\launcher\founder-launcher.json` and writes the
-per-user shortcuts; no elevation. The Company host's content-free log is `<workspace>\runtime\founder-host.log`.
+Then activate it, passing that ID as `--release`:
+
+```bash
+node packages/command-center/dist/src/cli.js release-activate --workspace "<production workspace>" --release <id> --provider deepseek
+```
+
+Activation is the one controlled path. It runs verify → dry run → controlled stop → verified backup → pin → start from
+the release (schema safe-upgrade inside) → health → shortcuts. A failure rolls back to the previous release.
+
+`install-shortcuts --workspace "<production workspace>" --provider deepseek` records the workspace (no secret) in
+`%LOCALAPPDATA%\QANDEEL_COMPANY\launcher\founder-launcher.json` and rewrites the per-user shortcuts for the activated
+release; no elevation. The Company host's content-free log is `<workspace>\runtime\founder-host.log`.
 
 ## License
 

@@ -92,6 +92,9 @@ export const ERROR_CODES = [
   // C7-D digital presence: a digital workspace, preview, candidate or promotion act refused by its contract (the reason is
   // a code in `details.reason`; never the refused content).
   'DIGITAL_REFUSED',
+  // OPS production release admission (D-OPS-08): a runtime build that is not the activated, intact release of a pinned
+  // workspace (the reason is a code in `details.reason`).
+  'RUNTIME_RELEASE_REFUSED',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

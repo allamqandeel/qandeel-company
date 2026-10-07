@@ -5,7 +5,13 @@
  * next launch performs the runtime's own startup recovery (the dead instance is ABANDONED by the new supervisor). Every
  * session still begins with the canonical single-use launch token; Founder reads need the session and writes the CSRF
  * secret; the host listens on loopback only; neither the descriptor nor the host log carries a token or a key.
+ *
+ * D-OPS-07 (adversarial): the browser process is given ONLY the one-shot loopback handoff address — its command line
+ * carries no launch credential. A forged, cross-site, rebound or non-navigation request to the handoff is refused and
+ * mints nothing; the real navigation receives the token as a redirect to the canonical /launch page, exactly once; a
+ * browser that never arrives leaves no token minted at all.
  * OPS-PROOF: founder-host-lifecycle
+ * OPS-PROOF: founder-launch-handoff
  */
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -35,7 +41,7 @@ after(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function request(origin: string, method: string, pathname: string, headers: Record<string, string> = {}, body?: string): Promise<{ status: number; body: string; cookies: Record<string, string> }> {
+function request(origin: string, method: string, pathname: string, headers: Record<string, string> = {}, body?: string): Promise<{ status: number; body: string; cookies: Record<string, string>; location: string | null }> {
   const u = new URL(origin);
   return new Promise((resolve, reject) => {
     const req = http.request({ host: u.hostname, port: Number(u.port), method, path: pathname, headers, agent: false }, (res) => {
@@ -48,7 +54,7 @@ function request(origin: string, method: string, pathname: string, headers: Reco
           const i = (kv ?? '').indexOf('=');
           if (i > 0) cookies[(kv ?? '').slice(0, i)] = (kv ?? '').slice(i + 1);
         }
-        resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8'), cookies });
+        resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8'), cookies, location: typeof res.headers.location === 'string' ? res.headers.location : null });
       });
     });
     req.on('error', reject);
@@ -72,6 +78,18 @@ const instance = (id: string): { state: string } | null => {
 };
 
 const tokens: string[] = [];
+
+const minted = (): number => {
+  const store = CompanyStore.open(ws, { create: false, migrationMode: 'verify' });
+  try {
+    return store.auditByAction('founder.launch_minted', 10_000).length;
+  } finally {
+    store.close();
+  }
+};
+
+/** The headers a browser sends for a top-level navigation the user started (typed, or a command-line --app URL). */
+const NAVIGATION = { 'Sec-Fetch-Site': 'none', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-User': '?1' };
 
 describe('Founder host lifecycle (real processes)', { timeout: 240_000 }, () => {
   let firstInstance = '';
@@ -113,6 +131,67 @@ describe('Founder host lifecycle (real processes)', { timeout: 240_000 }, () => 
       assert.equal(m.started, false);
       if (m.launchUrl) tokens.push(new URL(m.launchUrl).hash.slice(1));
     }
+  });
+
+  test('the browser process is given only the one-shot loopback handoff: no launch credential in its command line', async () => {
+    const commandLines: string[][] = [];
+    let mintedWhenSpawned = -1;
+    let navigation: Promise<{ status: number; location: string | null }> = Promise.resolve({ status: 0, location: null });
+    const refused: number[] = [];
+    const before = minted();
+    // A recording browser: it receives exactly the argument vector the real opener gives Edge / Chrome, then behaves like
+    // the browser — after a hostile local page and a forger have tried first.
+    const recordingBrowser = async (url: string): Promise<{ ok: boolean; browser: string }> => {
+      commandLines.push([`--app=${url}`]);
+      mintedWhenSpawned = minted();
+      navigation = (async () => {
+        const u = new URL(url);
+        refused.push((await request(u.origin, 'GET', '/')).status); // no fetch metadata: not a browser navigation
+        refused.push((await request(u.origin, 'GET', '/', { 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' })).status); // a web page navigating to it
+        refused.push((await request(u.origin, 'GET', '/', { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' })).status); // a page's fetch
+        refused.push((await request(u.origin, 'GET', '/', { ...NAVIGATION, Host: `rebound.example:${u.port}` })).status); // DNS rebinding
+        refused.push((await request(u.origin, 'POST', '/', NAVIGATION, '{}')).status);
+        refused.push((await request(u.origin, 'GET', '/launch', NAVIGATION)).status);
+        return request(u.origin, 'GET', '/', NAVIGATION);
+      })();
+      return { ok: true, browser: 'recording' };
+    };
+    const r = await openCompany(ws, { ...start, browser: true, openBrowser: recordingBrowser });
+    assert.equal(r.outcome, 'OPENED', JSON.stringify(r));
+    assert.equal(r.launchUrl, undefined, 'no launch URL is returned or printed when a browser received it');
+    const nav = await navigation;
+    assert.deepEqual(refused, [403, 403, 403, 403, 403, 403], 'every non-navigation request is refused');
+    assert.equal(nav.status, 303);
+    assert.ok(nav.location !== null);
+    const target = new URL(nav.location);
+    assert.equal(target.origin, r.status.origin, 'the redirect goes to the canonical host');
+    assert.equal(target.pathname, '/launch');
+    const token = target.hash.slice(1);
+    assert.match(token, /^[A-Za-z0-9_-]{20,}$/);
+    tokens.push(token);
+    // The browser's command line: the handoff address only — loopback, a port, "/" — and never the credential.
+    assert.equal(commandLines.length, 1);
+    const argv = (commandLines[0] ?? []).join(' ');
+    assert.match(argv, /^--app=http:\/\/127\.0\.0\.1:\d+\/$/);
+    assert.ok(!argv.includes(token) && !argv.includes('#') && !argv.includes('?') && !argv.includes('/launch'), 'no launch credential in the browser process arguments');
+    assert.equal(mintedWhenSpawned, before, 'no token exists yet when the browser process starts');
+    assert.equal(minted(), before + 1, 'exactly one token, minted for the one real navigation');
+    // The handed-over token is the canonical one: it opens one Founder session, once.
+    assert.equal((await redeem(nav.location)).status, 200);
+    assert.equal((await redeem(nav.location)).status, 401);
+    // One-shot: the handoff is gone after delivery.
+    await assert.rejects(request(new URL(argv.slice('--app='.length)).origin, 'GET', '/', NAVIGATION));
+  });
+
+  test('a browser that never arrives leaves no token minted (bounded BROWSER_HANDOFF_TIMEOUT)', async () => {
+    const before = minted();
+    const r = await openCompany(ws, { ...start, browser: true, openBrowser: async () => ({ ok: true, browser: 'absent' }), handoffTimeoutMs: 400 });
+    assert.equal(r.ok, false);
+    assert.equal(r.outcome, 'BROWSER_HANDOFF_TIMEOUT');
+    assert.equal(minted(), before, 'nothing minted');
+    const none = await openCompany(ws, { ...start, browser: true, openBrowser: async () => ({ ok: false, browser: null }) });
+    assert.equal(none.outcome, 'BROWSER_UNAVAILABLE');
+    assert.equal(minted(), before, 'nothing minted when no browser started');
   });
 
   test('the host keeps running without any launcher, listens on loopback only, and publishes no secret', async () => {

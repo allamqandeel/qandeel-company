@@ -73,4 +73,10 @@ detached and windowless, and stopped only by an explicit controlled stop (or by 
 the next launch performs the runtime's own startup recovery). One workspace has at most one host: the durable
 supervisor lease decides, the launcher only reads it. The launcher holds no Founder authority: it discovers the host
 through a content-free descriptor and a signed identity probe, and the Founder session still begins only with the
-canonical single-use launch token. No Windows sign-in autostart exists.
+canonical single-use launch token. That token reaches the browser only over a one-shot loopback handoff, never as a
+process argument (D-OPS-07). No Windows sign-in autostart exists.
+
+**The production runtime ≠ the development checkout (D-OPS-08).** A production workspace is pinned to one activated
+release, a frozen, content-addressed build outside every checkout. `CompanyRuntime.start` admits only that release,
+byte-identical, before it opens or migrates anything. Only `release-activate` replaces it (verify → dry run → controlled
+stop → verified backup → pin → start → health, with rollback).

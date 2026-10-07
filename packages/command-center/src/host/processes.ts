@@ -2,16 +2,17 @@
  * Every process the Founder host lifecycle starts (OPS, D-OPS-04; verifier rule `founder-host-confined`). Nothing else in
  * the surface package spawns a process, and this module starts exactly four kinds, never through a shell:
  *
- *   1. the Company host itself: the signed Node runtime (`process.execPath`) running this package's own CLI, detached,
+ *   1. the Company host itself (and, once per activation, a staged release's own CLI for its dry run, D-OPS-08): the signed Node runtime (`process.execPath`) running this package's own CLI, detached,
  *      windowless, with its content-free log as stdout/stderr and an IPC channel used once for readiness;
- *   2. the Founder's browser (Edge, else Chrome) from its absolute install path, in app-window mode, on the canonical
- *      launch URL;
+ *   2. the Founder's browser (Edge, else Chrome) from its absolute install path, in app-window mode, on the one-shot
+ *      loopback handoff address (`host/handoff.ts`, D-OPS-07) — never on the launch URL itself;
  *   3. the signed Windows PowerShell host, by its absolute System32 path, with a fixed encoded command, to show a
  *      fixed Founder notice (WScript.Shell Popup) — the message comes from a fixed table, never from Company content;
  *   4. the same PowerShell host to write the QANDEEL COMPANY shortcuts (WScript.Shell CreateShortcut).
  *
  * No argument ever carries a secret: the host takes a workspace path and provider codes (the provider key stays in the
- * DPAPI vault); the browser takes the canonical single-use, 90-second launch token, redeemed on arrival.
+ * DPAPI vault); the browser takes only `http://127.0.0.1:<port>/`, and receives the launch token over that loopback
+ * connection, never in its command line.
  */
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -19,6 +20,15 @@ import path from 'node:path';
 
 export function spawnHost(cliPath: string, args: readonly string[], logFd: number): ChildProcess {
   return spawn(process.execPath, [cliPath, ...args], { detached: true, windowsHide: true, shell: false, stdio: ['ignore', logFd, logFd, 'ipc'] });
+}
+
+/** Runs a staged release's own CLI once (the activation dry run, D-OPS-08): the signed Node runtime, bounded, no shell. */
+export function runReleaseCli(cliPath: string, args: readonly string[], timeoutMs: number): Promise<{ ok: boolean; stdout: string }> {
+  return new Promise((resolve) => {
+    execFile(process.execPath, [cliPath, ...args], { shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1024 }, (error, stdout) => {
+      resolve({ ok: error === null, stdout: String(stdout) });
+    });
+  });
 }
 
 export type BrowserKind = 'edge' | 'chrome';

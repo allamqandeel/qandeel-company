@@ -25,6 +25,7 @@ import { CompanyStore, FounderAuthStore, layoutFor, restoreStatus } from '@qande
 
 import { LOOPBACK_HOST } from '../security.js';
 import { hostPaths, newNonce, readDescriptor, removeStaleDescriptor, verifyIdentityProof, writeJsonAtomic, writeStopRequest, type HostDescriptor, type HostPaths } from './descriptor.js';
+import { serveLaunchHandoff } from './handoff.js';
 import { probeIdentity, requestHostStop } from './probe.js';
 import { openBrowser, pidAlive, showNotice, spawnHost, terminateProcess, writeShortcuts, type ShortcutSpec } from './processes.js';
 
@@ -277,14 +278,29 @@ export async function ensureRunning(workspace: string, options: StartOptions): P
   return { status, started, code: status.state === 'RUNNING' ? null : status.state === 'UNHEALTHY' ? 'HOST_UNHEALTHY' : status.state };
 }
 
-export async function openCompany(workspace: string, options: StartOptions & { readonly browser: boolean }): Promise<Outcome> {
+/** Opens a browser window on a URL (the default is the installed Edge / Chrome in app mode; tests inject a recorder). */
+export type BrowserOpener = (url: string) => Promise<{ ok: boolean; browser: string | null }>;
+
+export async function openCompany(workspace: string, options: StartOptions & { readonly browser: boolean; readonly openBrowser?: BrowserOpener; readonly handoffTimeoutMs?: number }): Promise<Outcome> {
   const r = await ensureRunning(workspace, options);
   if (r.code !== null || r.status.origin === null) return { ok: false, outcome: r.code ?? 'HOST_UNHEALTHY', status: r.status, started: r.started };
-  const { launchUrl, expiresAt } = mintLaunchUrl(r.status.workspace, r.status.origin);
-  if (!options.browser) return { ok: true, outcome: r.started ? 'STARTED' : 'REUSED', status: r.status, started: r.started, browser: null, launchUrl, expiresAt };
-  const opened = await openBrowser(launchUrl);
-  // The URL (with its token) is never printed when a browser received it; an unopened token simply expires in 90 s.
-  return opened.ok ? { ok: true, outcome: r.started ? 'STARTED_AND_OPENED' : 'OPENED', status: r.status, started: r.started, browser: opened.browser, expiresAt } : { ok: false, outcome: 'BROWSER_UNAVAILABLE', status: r.status, started: r.started, browser: opened.browser };
+  const origin = r.status.origin;
+  if (!options.browser) {
+    // Terminal use only (`--no-browser`): the URL goes to this process's own stdout, never into another process's arguments.
+    const { launchUrl, expiresAt } = mintLaunchUrl(r.status.workspace, origin);
+    return { ok: true, outcome: r.started ? 'STARTED' : 'REUSED', status: r.status, started: r.started, browser: null, launchUrl, expiresAt };
+  }
+  // D-OPS-07: the browser's argument is the one-shot loopback handoff address, never the launch credential. The token is
+  // minted only when the browser's own navigation arrives, and handed over as a redirect to the canonical /launch page.
+  const handoff = await serveLaunchHandoff(() => mintLaunchUrl(r.status.workspace, origin).launchUrl, options.handoffTimeoutMs);
+  const opened = await (options.openBrowser ?? openBrowser)(handoff.url);
+  if (!opened.ok) {
+    handoff.close();
+    return { ok: false, outcome: 'BROWSER_UNAVAILABLE', status: r.status, started: r.started, browser: opened.browser };
+  }
+  const delivered = await handoff.result;
+  if (delivered !== 'DELIVERED') return { ok: false, outcome: delivered === 'MINT_FAILED' ? 'LAUNCH_MINT_FAILED' : 'BROWSER_HANDOFF_TIMEOUT', status: r.status, started: r.started, browser: opened.browser };
+  return { ok: true, outcome: r.started ? 'STARTED_AND_OPENED' : 'OPENED', status: r.status, started: r.started, browser: opened.browser };
 }
 
 // --- controlled stop / restart ------------------------------------------------------------------------------------------
@@ -326,7 +342,7 @@ export async function stopHost(workspace: string, options: { readonly force?: bo
   return { ok: !pidAlive(status.pid), outcome: 'TERMINATED', status: await discoverHost(workspace) };
 }
 
-export async function restartHost(workspace: string, options: StartOptions & { readonly browser: boolean; readonly force?: boolean }): Promise<Outcome> {
+export async function restartHost(workspace: string, options: StartOptions & { readonly browser: boolean; readonly force?: boolean; readonly openBrowser?: BrowserOpener }): Promise<Outcome> {
   const stopped = await stopHost(workspace, { ...(options.force !== undefined ? { force: options.force } : {}) });
   if (!stopped.ok && stopped.outcome !== 'NOT_RUNNING') return stopped;
   return openCompany(workspace, options);
@@ -423,6 +439,10 @@ export function noticeFor(command: string, outcome: string): { kind: 'info' | 'w
       return m('error', 'تعمل نسخة تشغيل هندسية للشركة بدون مركز القيادة. أوقفها أولًا.', 'An engineering Company runtime is running without the Command Center. Stop it first.');
     case 'BROWSER_UNAVAILABLE':
       return m('error', 'تعذّر فتح Edge أو Chrome. الشركة تعمل؛ أعد المحاولة بعد تثبيت المتصفح.', 'Edge or Chrome could not be opened. The Company is running; try again once a browser is available.');
+    case 'RUNTIME_RELEASE_REFUSED':
+      return m('error', 'هذه النسخة من الشركة ليست الإصدار المفعّل للإنتاج، فلم يبدأ شيء. استخدم اختصار «QANDEEL COMPANY» أو فعّل الإصدار أولًا.', 'This build of the Company is not the activated production release, so nothing was started. Use the "QANDEEL COMPANY" shortcut, or activate the release first.');
+    case 'BROWSER_HANDOFF_TIMEOUT':
+      return m('error', 'فُتح المتصفح لكنه لم يصل إلى مركز القيادة في الوقت المتوقع. الشركة تعمل؛ افتحها مرة أخرى.', 'The browser opened but did not reach the Command Center in time. The Company is running; open it again.');
     case 'HOST_START_TIMEOUT':
       return m('error', 'استغرق بدء الشركة وقتًا أطول من المتوقع. أعد المحاولة بعد دقيقة.', 'The Company took longer than expected to start. Try again in a minute.');
     case 'HOST_STOP_TIMEOUT':

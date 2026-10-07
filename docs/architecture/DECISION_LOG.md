@@ -4372,18 +4372,21 @@ route makes it graceful: `runtime.stop()` settles, parks, releases the lease and
 `host/processes.ts` is the only module of the surface package that starts processes. It starts:
 - the signed Node runtime (`process.execPath`) running this package's CLI: detached, `windowsHide`, stdout / stderr to
   the content-free host log, IPC once for readiness;
-- Edge, else Chrome, from its absolute install path, in `--app` mode on the canonical launch URL;
+- Edge, else Chrome, from its absolute install path, in `--app` mode on the one-shot loopback handoff address
+  (D-OPS-07), never on the launch URL;
 - the signed Windows PowerShell host by its System32 path with `-EncodedCommand`, for the fixed Founder notice and for
-  writing the shortcuts.
+  writing the shortcuts;
+- once per activation, a staged release's own CLI for its dry run (D-OPS-08).
 
 `shell: false` everywhere; no PATH lookup; no exec / execSync.
 
-**The launch token in the browser's argument** is the canonical single-use, 90-second token. It is redeemed on arrival,
-and the same-user boundary already lets any local process mint one with `launch`. The URL is never printed when a
-browser received it.
+**No secret in any argument.** No launch token, provider key, vault value or Founder content is ever a process argument,
+a shortcut field, a descriptor field or a log line. Verifier rule `founder-host-confined` and eslint enforce the
+confinement.
 
-**No secret anywhere else.** No provider key, vault value or Founder content is ever an argument, a shortcut field, a
-descriptor field or a log line. Verifier rule `founder-host-confined` and eslint enforce the confinement.
+*Correction (Founder review of PR #19 at `a61e0a5`, MAJOR 1).* The first candidate passed the launch URL — token in the
+fragment — as the browser's `--app` argument. The token is an authentication bootstrap credential; a process argument is
+readable process metadata for the browser's lifetime. That was a contract defect. D-OPS-07 replaces it.
 
 ## D-OPS-05 — Single instance: lease + start lock + host refusal (executor)
 
@@ -4406,7 +4409,107 @@ polling loop.
   instance STOPPED, a restart on the same Founder / Company, and a hard kill → STALE → the runtime's recovery ABANDONs the
   dead instance.
 
+- `packages/command-center/test/founder-host-lifecycle.test.ts` also carries `founder-launch-handoff` (D-OPS-07), and
+  `packages/command-center/test/founder-host-release.test.ts` carries `founder-host-release` (D-OPS-08).
+
 **No new mutation shard or CI matrix change.** The negative cases a mutation family would inject (signature unchecked,
-stop proof unchecked, origin unchecked) are asserted directly by those tests.
+stop proof unchecked, origin unchecked, handoff headers unchecked, admission skipped) are asserted directly by those
+tests and by the verifier's self-tested rules `founder-host-confined` and `ops-release-admission`.
 
 The Windows proof on the Founder host is recorded in `docs/OPS_FOUNDER_DESKTOP_PACKAGING_REPORT.md`.
+
+## D-OPS-07 — The launch credential reaches the browser over a one-shot loopback handoff, never as an argument (executor; Founder review MAJOR 1)
+
+**Problem.** The browser's command line is process metadata, readable for as long as the browser runs. The canonical
+launch token is the Founder's authentication bootstrap credential. It must not be there, however short-lived.
+
+**Decision.** The launcher starts the browser on `http://127.0.0.1:<random port>/`. That address carries nothing secret:
+no token, no query, no fragment. The port belongs to a one-shot responder inside the launcher process
+(`host/handoff.ts`), which lives at most 30 s:
+- **It answers exactly one request.** That request must be a user-started top-level browser navigation: `GET /`, the
+  exact Host `127.0.0.1:<its port>`, and `Sec-Fetch-Site: none`, `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`.
+  Edge 154 sends exactly these for an `--app` launch; this was measured on the Founder host.
+  - A web page cannot produce `Sec-Fetch-Site: none` (a page's navigation, fetch, form, image or frame never does).
+  - A DNS-rebound name fails the exact Host.
+  - A non-matching request is refused and consumes nothing.
+- **Only then is the token minted**, through the same canonical mint as `launch` (single-use, 90 s). It is handed over as
+  a `303` to the host's unchanged `/launch#<token>` page, which redeems it once and clears it from history. The
+  responder then closes.
+- **A browser that never arrives leaves no token minted** (`BROWSER_HANDOFF_TIMEOUT`, with a Founder notice).
+- **Nothing is logged.** The browser sends its loopback cookies to every 127.0.0.1 port, so the request, its headers and
+  the token are never logged or serialized.
+
+**Unchanged:**
+- the Founder session model;
+- the token lifetime;
+- the `/launch` exchange, the origin gate and CSRF.
+
+There is no new file, environment variable, shortcut field or configuration.
+
+**Residual.** A local process could race to the random port within the sub-second window and forge the headers. It would
+gain no more than the same-user `launch` command already grants. Unlike a command-line argument, nothing is left
+behind to read.
+
+**Enforcement.** Verifier rule `founder-host-confined` requires:
+- the random loopback bind;
+- the exact Host and the three fetch-metadata checks;
+- no request logging;
+- one-shot close;
+- `openBrowser(handoff.url)` as the only browser argument.
+
+The proof is `OPS-PROOF: founder-launch-handoff`.
+
+## D-OPS-08 — The production launcher runs an activated, frozen release; a pinned Company admits nothing else (executor; Founder review MAJOR 2)
+
+**Problem.** The first candidate's shortcuts ran `<checkout>\packages\command-center\dist\src\cli.js`: the same mutable
+checkout used for development, branch switches, `npm ci` and builds. Any later checkout mutation would silently become
+the production Company runtime, bypassing Stage 12's Build → Test → Migration Check → Backup → Staging / Dry Run →
+Health Check → Activate. ("Direct unvalidated mutation of the live runtime is not the default.")
+
+**Decision: a release and a pin, enforced by the runtime itself.**
+
+**The release.** `release-stage` freezes the current build into
+`%LOCALAPPDATA%\QANDEEL_COMPANY\releases\<id>\node_modules\@qandeel-company\<package>\…`. It runs after the operator's
+Build → Test (`npm run ci`).
+- It contains the compiled `dist/src` modules, `package.json` files, migrations and UI public files only.
+- `qandeel-release.json` lists every file's SHA-256.
+- The release ID is the SHA-256 of that list plus the runtime version, so the same build gives the same release, and any
+  change gives a new ID.
+- The source commit is recorded for information only.
+- A release is outside every checkout, so branch switches, `npm ci` and rebuilds never touch it.
+
+**The pin.** `<workspace>/runtime/production-release.json` names the one release ID that may run the workspace, and the
+previous one.
+
+**Admission.** Every `CompanyRuntime.start` calls `admitRuntimeRelease` (runtime package), before it opens, safe-upgrades
+or migrates the Company. For a pinned workspace it requires that:
+- this build is a release (a checkout build is refused `NOT_A_RELEASE`);
+- it is the activated one (`NOT_ACTIVATED`);
+- every file is byte-identical and none added (`RELEASE_TAMPERED`);
+- an unreadable pin is `PIN_INVALID`, never "unpinned".
+
+The refusal is `RUNTIME_RELEASE_REFUSED` with a reason code. Admission therefore holds for every entry point, not only
+the launcher. The launcher pre-checks it so the Founder gets a bounded notice before anything is spawned. An unpinned
+workspace (development or tests) admits any build, as before.
+
+**Activation (`release-activate`) is the one controlled replacement path.** It reuses the existing mechanisms:
+1. verify the release;
+2. **dry run**: the release's own CLI (`release-check`) loads, re-verifies itself and reads the workspace schema;
+3. controlled stop of the running host (D-OPS-03);
+4. a **verified backup** (`createBackup` + `verifyBackup`; a pending schema update is snapshotted by safe-upgrade itself);
+5. write the pin;
+6. start the host **from the release**, whose runtime start runs the existing schema safe-upgrade (rehearsal,
+   verification, `UPDATE_HOLD` on failure);
+7. **health**: the host proves its signed identity and its runtime is READY;
+8. point the Founder's shortcuts at the release CLI.
+
+A failure before the pin changes nothing. A failure after it restores the previous pin and restarts the previous release.
+A schema the new release already migrated stays migrated (forward-only); its pre-update snapshot is the existing
+`rollback-update` path.
+
+`install-shortcuts` refuses a workspace without an intact activated release.
+
+**Not added:** an installer, an updater service, a second runtime, Electron / Tauri, a network fetch.
+
+**Enforcement.** Verifier rule `ops-release-admission`: admission precedes open and upgrade, the three refusals exist, and
+the shortcuts target only a release CLI. The proof is `OPS-PROOF: founder-host-release`.
