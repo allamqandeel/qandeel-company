@@ -2196,7 +2196,8 @@ export const RULES = [
         if (/shell:\s*true|\bexec\(|execSync\(|spawnSync\(|execFileSync\(|\bfork\(/.test(code)) problems.push(`${OPS_HOST_PROCESSES} starts a process through a shell or an unbounded exec`);
         if (!/shell:\s*false/.test(code)) problems.push(`${OPS_HOST_PROCESSES} does not state shell: false`);
         for (const m of code.matchAll(/\b(?:spawn|execFile)\(\s*([^,]+),/g)) {
-          if (!['process.execPath', 'browser.exe', 'powershellExe()'].includes((m[1] ?? '').trim())) problems.push(`${OPS_HOST_PROCESSES} starts an executable other than the Node runtime, an installed browser or the signed PowerShell host (${(m[1] ?? '').trim()})`);
+          // D1 (D-D1-08): `installedRuntime` is the pinned official node.exe of a verified, installed Desktop bundle.
+          if (!['process.execPath', 'browser.exe', 'powershellExe()', 'installedRuntime'].includes((m[1] ?? '').trim())) problems.push(`${OPS_HOST_PROCESSES} starts an executable other than the Node runtime, an installed browser or the signed PowerShell host (${(m[1] ?? '').trim()})`);
         }
         if (!/WindowsPowerShell['"]?,\s*['"]v1\.0['"]?,\s*['"]powershell\.exe/.test(code) || !/SystemRoot/.test(code) || !/-EncodedCommand/.test(code)) problems.push(`${OPS_HOST_PROCESSES} does not start the signed Windows PowerShell host by its absolute System32 path with an encoded fixed command`);
       }
@@ -2320,7 +2321,13 @@ export const RULES = [
         const activate = code.indexOf('activateRelease(');
         if (verify < 0 || activate < 0 || verify > activate || !code.includes("'PRIVATE_RUNTIME_REQUIRED'")) problems.push(`${DESKTOP_MODULE} activates before verifying the bundle and its private runtime`);
         if (!code.includes("'SETUP_REQUIRED'") || /CompanyStore|createBackup|writePin|writeReleasePin|seed/i.test(code)) problems.push(`${DESKTOP_MODULE} can create or write a Company (it only finds an existing one and uses the canonical activation)`);
-        for (const m of code.matchAll(/\brmSync\(\s*([^,]+)[,)]/g)) if ((m[1] ?? '').trim() !== 'desktopProductRecordPath()') problems.push(`${DESKTOP_MODULE} deletes something other than its own product record (${(m[1] ?? '').trim()})`);
+        // It deletes only its own product record, and (D-D1-08) a staging / retired copy inside <program dir>\versions.
+        for (const m of code.matchAll(/\brmSync\(\s*([^,]+)[,)]/g)) if (!['desktopProductRecordPath()', 'dir'].includes((m[1] ?? '').trim())) problems.push(`${DESKTOP_MODULE} deletes something other than its own product record or an installer staging copy (${(m[1] ?? '').trim()})`);
+        if (/\brmSync\(\s*dir\b/.test(code) && !/staging\|retired/.test(code)) problems.push(`${DESKTOP_MODULE} removes a directory without the staging / retired guard`);
+      }
+      const proc = read(OPS_HOST_PROCESSES);
+      if (proc !== undefined && /uninstallCommandLine/.test(proc)) {
+        if (!/!isProductProgramDir\(programDir\)/.test(proc) || !/!userKey\(key\)/.test(proc) || !/\^HKCU:/.test(proc)) problems.push(`${OPS_HOST_PROCESSES} removes a program directory or registry key without the product-directory / per-user guard`);
       }
       for (const f of files.filter((x) => x.startsWith('packaging/') && /\.(?:exe|msi|zip|7z|dll|node)$/i.test(x))) problems.push(`${f}: a generated binary is committed`);
       return problems;
@@ -2659,7 +2666,7 @@ const SYNTH_SQL = 'CREATE TABLE t (x INTEGER) STRICT;\n';
 const REAL_TEXT = (p) => (existsSync(path.join(ROOT, p)) ? readFileSync(path.join(ROOT, p), 'utf8') : '');
 const SYNTH_CI = { [CI_WORKFLOW]: REAL_TEXT(CI_WORKFLOW), [CI_DESKTOP_WORKFLOW]: REAL_TEXT(CI_DESKTOP_WORKFLOW), [CI_CLASSIFIER]: REAL_TEXT(CI_CLASSIFIER), [CI_GATE]: REAL_TEXT(CI_GATE), [CI_POST_MERGE]: REAL_TEXT(CI_POST_MERGE), [CI_IMPACT_MAP]: REAL_TEXT(CI_IMPACT_MAP), [CI_LOCAL_RUNNER]: REAL_TEXT(CI_LOCAL_RUNNER) };
 // D1: the real Desktop distribution files (the desktop-distribution rule's legitimate state and its violations).
-const SYNTH_DESKTOP = Object.fromEntries([DESKTOP_ISS, DESKTOP_PINS, DESKTOP_ICON_PROVENANCE, DESKTOP_MODULE, ...DESKTOP_PROOFS].map((f) => [f, REAL_TEXT(f)]));
+const SYNTH_DESKTOP = Object.fromEntries([DESKTOP_ISS, DESKTOP_PINS, DESKTOP_ICON_PROVENANCE, DESKTOP_MODULE, OPS_HOST_PROCESSES, ...DESKTOP_PROOFS].map((f) => [f, REAL_TEXT(f)]));
 // The real, frozen C1 migration texts (read from this checkout) so the synthetic repository is clean.
 const C1_MIGRATION_TEXT = Object.fromEntries(FROZEN_MIGRATIONS.map(({ file }) => [file, readFileSync(path.join(ROOT, MIGRATIONS_DIR, file), 'utf8')]));
 const c1Pins = () => FROZEN_MIGRATIONS.map(({ file }, i) => `  { version: ${i + 2}, name: 'c1-${i}', file: '${file}', sha256: '${migrationSha(C1_MIGRATION_TEXT[file])}' },\n`).join('');
@@ -3285,6 +3292,7 @@ const VIOLATIONS = {
     { contents: { ...SYNTH_DESKTOP, [DESKTOP_MODULE]: `${SYNTH_DESKTOP[DESKTOP_MODULE]}\nexport function fresh(ws: string) { CompanyStore.open(ws).close(); }\n` } },
     { contents: { ...SYNTH_DESKTOP, [DESKTOP_MODULE]: `${SYNTH_DESKTOP[DESKTOP_MODULE]}\nexport function wipe(ws: string) { rmSync(ws, { recursive: true }); }\n` } },
     { contents: { ...SYNTH_DESKTOP, 'packaging/windows/dist/QANDEEL-COMPANY-Setup.exe': 'MZ' } },
+    { contents: { ...SYNTH_DESKTOP, [OPS_HOST_PROCESSES]: SYNTH_DESKTOP[OPS_HOST_PROCESSES].replace('if (!isProductProgramDir(programDir) || !userKey(key)) return null;', '') } },
   ],
   'local-validation-proportional': [
     { contents: { 'package.json': JSON.stringify({ private: true, scripts: { ci: 'npm run build && npm run c1:mutation && npm run c2:mutation && npm run verify', 'validate:affected': 'node scripts/ci/validate-affected.mjs' } }) } },

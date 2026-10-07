@@ -78,6 +78,23 @@ export function powershellJson(script, timeoutMs = 60_000) {
   }
 }
 
+/**
+ * Runs a registered command line the way Windows does (a shortcut double-click, Windows "Apps" → Uninstall): started by
+ * the shell, not as a child with redirected stdio — `conhost --headless` started with redirected stdio returns at once
+ * without running its child. Waits for it; the environment is inherited. conhost does not pass its child's exit code
+ * through, so callers judge the command by its effects.
+ */
+export function launchLikeWindows(target, argumentsLine, env, cwd, timeoutMs = 600_000) {
+  const r = spawnSync(PS(), ['-NoProfile', '-NonInteractive', '-Command', `$p = Start-Process -FilePath ${lit(target)} -ArgumentList ${lit(argumentsLine)} -WorkingDirectory ${lit(cwd)} -WindowStyle Hidden -Wait -PassThru; $p.ExitCode`], { env, encoding: 'utf8', windowsHide: true, timeout: timeoutMs });
+  return { launched: r.status === 0, exitCode: Number((r.stdout ?? '').trim()) };
+}
+
+/** Splits a registered command line into its executable and the rest of the line. */
+export function splitCommandLine(line) {
+  const m = /^\s*("([^"]+)"|(\S+))\s*(.*)$/.exec(String(line ?? ''));
+  return m ? { target: m[2] ?? m[3], rest: m[4] ?? '' } : { target: '', rest: '' };
+}
+
 /** A .lnk file's target, arguments, icon and working directory (WScript.Shell; read-only). */
 export function readShortcut(file) {
   if (!existsSync(file)) return null;

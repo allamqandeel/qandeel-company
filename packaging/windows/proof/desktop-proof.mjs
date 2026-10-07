@@ -32,8 +32,8 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { readIco } from '../lib/png-ico.mjs';
-import { PACKAGING_DIR, ROOT, composeBundle, fetchPinned, loadPins, peMachine, productModules, scanForLeaks, sha256, sha256File, sourceState, verifyNodeRuntime } from '../lib/desktop-build.mjs';
-import { companyFingerprint, devModules, isolatedEnv, listTree, pathWithoutDevTools, processesNaming, readShortcut, recorder, runInstalled, seedSentinel, sleep, variantRelease } from '../lib/proof-kit.mjs';
+import { PACKAGING_DIR, ROOT, authenticode, composeBundle, fetchPinned, loadPins, peMachine, productModules, scanForLeaks, sha256, sha256File, sourceState, verifyNodeRuntime } from '../lib/desktop-build.mjs';
+import { companyFingerprint, devModules, isolatedEnv, launchLikeWindows, listTree, pathWithoutDevTools, powershellJson, processesNaming, readShortcut, recorder, runInstalled, seedSentinel, sleep, splitCommandLine, variantRelease } from '../lib/proof-kit.mjs';
 
 const { values } = parseArgs({ options: { workspace: { type: 'string' }, cache: { type: 'string' }, keep: { type: 'boolean', default: false } } });
 const scratch = path.resolve(values.workspace ?? mkdtempSync(path.join(tmpdir(), 'qc-desktop-proof-')));
@@ -78,6 +78,10 @@ const A = await composeBundle({ out: path.join(scratch, 'build-A'), pins, nodeEx
 const source = sourceState();
 check('packaging.node-pinned', pins.node.version.startsWith('24.') && A.manifest.node.version === pins.node.version && A.manifest.node.sha256 === pins.node.sha256 && sha256File(path.join(A.bundleDir, 'node', 'node.exe')) === pins.node.sha256, `Node ${pins.node.version} win-x64 ${pins.node.sha256.slice(0, 16)}…`);
 check('packaging.node-is-x64-image', peMachine(readFileSync(nodeExe)) === 'x64');
+if (process.platform === 'win32') {
+  const sig = authenticode(nodeExe);
+  check('packaging.node-officially-signed', sig.status === 'Valid' && /OpenJS Foundation/i.test(sig.signer ?? ''), `${sig.status} ${sig.signer ?? ''}`.trim());
+}
 {
   const corrupt = path.join(scratch, 'corrupt-node.exe');
   const buf = Buffer.from(readFileSync(nodeExe));
@@ -161,31 +165,43 @@ if (process.platform !== 'win32') {
   const env = isolatedEnv(LAD);
   const devToolsVisible = env.PATH.split(path.delimiter).filter((d) => ['node.exe', 'npm.cmd', 'git.exe'].some((t) => existsSync(path.join(d, t))));
   check('install.no-global-node-npm-git-on-path', devToolsVisible.length === 0 && pathWithoutDevTools(env.PATH) === env.PATH);
+  // The supported Founder-local install (D-D1-08): the bundle as the Founder receives it (a folder, e.g. in Downloads),
+  // installed by its own official node.exe with desktop-local-install. A scratch per-user key stands in for the real
+  // "Apps" entry; uninstall runs exactly the command that entry holds.
+  const appsKey = `HKCU:\\Software\\QANDEEL_COMPANY_DESKTOP_PROOF\\${path.basename(scratch).replace(/[^\w-]/g, '')}-${process.pid}`;
+  const cliOf = (dir) => path.join(dir, 'release', 'node_modules', '@qandeel-company', 'command-center', 'dist', 'src', 'cli.js');
   const layDown = (bundle) => {
+    const download = path.join(scratch, 'Downloads', `QANDEEL-COMPANY-${bundle.versionDir}`);
+    if (!existsSync(download)) cpSync(bundle.bundleDir, download, { recursive: true });
     const dir = path.join(programRoot, 'versions', bundle.versionDir);
-    cpSync(bundle.bundleDir, dir, { recursive: true });
-    return { dir, node: path.join(dir, 'node', 'node.exe'), cli: path.join(dir, 'release', 'node_modules', '@qandeel-company', 'command-center', 'dist', 'src', 'cli.js') };
+    return { dir, node: path.join(dir, 'node', 'node.exe'), cli: cliOf(dir), src: { dir: download, node: path.join(download, 'node', 'node.exe'), cli: cliOf(download) } };
   };
   const run = (inst, args, timeoutMs) => runInstalled({ node: inst.node, cli: inst.cli, args, env, cwd: scratch, ...(timeoutMs ? { timeoutMs } : {}) });
-  const install = (inst, extra = []) => run(inst, ['desktop-install', '--bundle', inst.dir, '--shortcut-root', shell, ...extra]);
+  const install = (inst, extra = []) => run(inst.src, ['desktop-local-install', '--bundle', inst.src.dir, '--shortcut-root', shell, '--uninstall-key', appsKey, ...extra], 900_000);
+  // The registered uninstall command: System32 conhost → System32 PowerShell → an encoded script naming the INSTALLED runtime.
+  const uninstallScript = (entry) => Buffer.from(/-EncodedCommand\s+(\S+)/.exec(String(entry?.UninstallString ?? ''))?.[1] ?? '', 'base64').toString('utf16le');
+  const system32 = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32').toLowerCase();
+  const signedWindowsOnly = (entry) => { const l = String(entry?.UninstallString ?? '').toLowerCase(); return l.startsWith(`"${system32}\\conhost.exe" --headless "${system32}\\windowspowershell\\v1.0\\powershell.exe"`); };
+  const appsEntry = () => powershellJson(`$k = '${appsKey}'; if (Test-Path -LiteralPath $k) { Get-ItemProperty -LiteralPath $k | Select-Object DisplayName, DisplayVersion, DisplayIcon, InstallLocation, UninstallString | ConvertTo-Json -Compress } else { 'null' }`);
   const lnk = (name) => path.join(shell, 'Desktop', `${name}.lnk`);
   const startLnks = () => listTree(path.join(shell, 'Programs', 'QANDEEL COMPANY'));
   const pinOf = () => runtime.readReleasePin(ws);
   const lower = (p) => String(p ?? '').toLowerCase();
   const serveProcesses = () => processesNaming(' serve --workspace ').filter((p) => lower(p.commandLine).includes(lower(path.basename(ws))) && lower(p.commandLine).includes(lower(scratch)));
   try {
-    // install: no configuration → bounded SETUP_REQUIRED, nothing created
+    const stepsOf = (json) => Object.fromEntries((json.steps ?? []).map((st) => [st.step.replace(/^INSTALLED\./, ''), st.result]));
+    // install: no configuration → bounded SETUP_REQUIRED, nothing installed, nothing created
     const instA = layDown(A);
     const none = await install(instA);
-    check('install.no-config-setup-required', none.code === 2 && none.json.outcome === 'SETUP_REQUIRED' && !existsSync(companyData) && listTree(shell).length === 0, `exit ${none.code} ${none.json.outcome}`);
+    check('install.no-config-setup-required', none.code === 2 && none.json.outcome === 'SETUP_REQUIRED' && !existsSync(companyData) && !existsSync(programRoot) && appsEntry() === null && listTree(shell).length === 0, `exit ${none.code} ${none.json.outcome}`);
     const empty = path.join(scratch, 'empty-folder');
     mkdirSync(empty);
     const invalid = await install(instA, ['--workspace', empty]);
-    check('install.invalid-workspace-creates-nothing', invalid.code === 1 && invalid.json.outcome === 'WORKSPACE_INVALID' && readdirSync(empty).length === 0 && !existsSync(companyData), `${invalid.json.outcome}`);
+    check('install.invalid-workspace-creates-nothing', invalid.code === 1 && invalid.json.outcome === 'WORKSPACE_INVALID' && readdirSync(empty).length === 0 && !existsSync(companyData) && !existsSync(programRoot), `${invalid.json.outcome}`);
     const missing = path.join(scratch, 'no-such-company');
     const miss = await install(instA, ['--workspace', missing]);
-    check('install.missing-workspace-creates-nothing', miss.code === 1 && miss.json.outcome === 'WORKSPACE_MISSING' && !existsSync(missing) && !existsSync(companyData), `${miss.json.outcome}`);
-    const foreign = await runInstalled({ node: process.execPath, cli: instA.cli, args: ['desktop-install', '--bundle', instA.dir, '--shortcut-root', shell], env: { ...env, PATH: process.env.PATH }, cwd: scratch });
+    check('install.missing-workspace-creates-nothing', miss.code === 1 && miss.json.outcome === 'WORKSPACE_MISSING' && !existsSync(missing) && !existsSync(companyData) && !existsSync(programRoot), `${miss.json.outcome}`);
+    const foreign = await runInstalled({ node: process.execPath, cli: instA.src.cli, args: ['desktop-local-install', '--bundle', instA.src.dir, '--shortcut-root', shell, '--uninstall-key', appsKey], env: { ...env, PATH: process.env.PATH }, cwd: scratch });
     check('install.private-runtime-required', foreign.code === 1 && foreign.json.outcome === 'PRIVATE_RUNTIME_REQUIRED', `${foreign.json.outcome}`);
 
     // the existing Founder Company (as OPS left it: a workspace and the launcher configuration)
@@ -202,10 +218,13 @@ if (process.platform !== 'win32') {
     writeFileSync(vaultBlob, JSON.stringify({ format: 'QANDEEL_COMPANY_VAULT_DPAPI_V1', scope: 'CurrentUser', protected: 'placeholder-not-a-secret', createdAt: new Date().toISOString() }));
     const vaultBytes = readFileSync(vaultBlob);
     const first = await install(instA);
-    const steps = Object.fromEntries((first.json.steps ?? []).map((s) => [s.step, s.result]));
-    check('install.existing-company-adopted', first.code === 0 && first.json.outcome === 'INSTALLED' && steps['ACTIVATE.BACKUP'] === 'VERIFIED' && steps['ACTIVATE.HEALTH'] === 'READY' && pinOf()?.releaseId === A.manifest.release.releaseId, `${first.json.outcome} ${(first.json.steps ?? []).map((s) => `${s.step}=${s.result}`).join(' ')}`);
+    const steps = stepsOf(first.json);
+    check('install.existing-company-adopted', first.code === 0 && first.json.outcome === 'INSTALLED' && steps.COPY === 'INSTALLED' && steps['ACTIVATE.BACKUP'] === 'VERIFIED' && steps['ACTIVATE.HEALTH'] === 'READY' && pinOf()?.releaseId === A.manifest.release.releaseId, `${first.json.outcome} ${(first.json.steps ?? []).map((s) => `${s.step}=${s.result}`).join(' ')}`);
     check('install.release-in-canonical-releases-dir', lower(pinOf()?.root).startsWith(lower(path.join(companyData, 'releases'))));
     check('install.launcher-config-preserved', readFileSync(configFile).equals(configBytes));
+    const entryA = appsEntry();
+    check('install.apps-entry', entryA?.DisplayName === 'QANDEEL COMPANY' && entryA?.DisplayVersion === '1.0.0' && lower(entryA?.InstallLocation) === lower(programRoot) && signedWindowsOnly(entryA) && lower(uninstallScript(entryA)).includes(lower(`'${instA.node}'`)) && uninstallScript(entryA).includes("'desktop-local-uninstall'") && lower(uninstallScript(entryA)).includes(lower(`'${programRoot}'`)) && lower(entryA?.DisplayIcon).endsWith('qandeel-company.ico'), entryA ? `${entryA.DisplayName} ${entryA.DisplayVersion}` : 'no entry');
+    check('install.from-download-not-referenced', !lower(JSON.stringify(entryA)).includes(lower(path.join(scratch, 'Downloads'))) && !lower(readFileSync(path.join(companyData, 'launcher', 'desktop-product.json'), 'utf8')).includes('downloads'));
     const sc = readShortcut(lnk('QANDEEL COMPANY'));
     const conhost = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'conhost.exe');
     const cliA = path.join(pinOf()?.root ?? '', 'node_modules', '@qandeel-company', 'command-center', 'dist', 'src', 'cli.js');
@@ -239,6 +258,13 @@ if (process.platform !== 'win32') {
     check('runtime.hard-kill-recovery', killed !== undefined && afterKill.json.state !== 'RUNNING' && recovered.json.ok === true && recovered.json.instanceId !== restart.json.instanceId && (await run(cliInst, ['status'])).json.state === 'RUNNING', `after kill ${afterKill.json.state}; ${recovered.json.outcome}`);
     const hostLog = readFileSync(path.join(ws, 'runtime', 'founder-host.log'), 'utf8');
     check('runtime.no-token-in-host-log', !hostLog.includes('/launch#') && !/sk-[A-Za-z0-9]{20,}/.test(hostLog));
+    // The Start-menu Stop shortcut's own command line, launched the way Windows launches it (conhost --headless → the
+    // private runtime → the release CLI); its effect is the proof (the Founder notice is left out: no pop-up here).
+    const stopLnk = readShortcut(path.join(shell, 'Programs', 'QANDEEL COMPANY', 'QANDEEL COMPANY — Stop.lnk'));
+    launchLikeWindows(stopLnk?.target ?? 'missing', String(stopLnk?.arguments ?? '').replace(/ --notify$/, ''), env, scratch);
+    const viaShortcut = await run(cliInst, ['status']);
+    check('runtime.shortcut-command-headless', viaShortcut.json.state === 'STOPPED' && serveProcesses().length === 0, `${viaShortcut.json.state}`);
+    check('runtime.open-after-shortcut-stop', (await run(cliInst, ['open', '--no-browser'])).json.ok === true);
     check('runtime.company-unchanged', (await companyFingerprint(ws)) === fp0);
 
     // update A → B (side by side)
@@ -247,13 +273,14 @@ if (process.platform !== 'win32') {
     const instB = layDown(B);
     const nodeABefore = sha256File(instA.node);
     const up = await install(instB);
-    const upSteps = Object.fromEntries((up.json.steps ?? []).map((s) => [s.step, s.result]));
+    const upSteps = stepsOf(up.json);
     const cliB = path.join(pinOf()?.root ?? '', 'node_modules', '@qandeel-company', 'command-center', 'dist', 'src', 'cli.js');
     check('update.a-to-b', up.code === 0 && up.json.outcome === 'INSTALLED' && up.json.previousReleaseId === A.manifest.release.releaseId && pinOf()?.releaseId === B.manifest.release.releaseId && pinOf()?.previous?.releaseId === A.manifest.release.releaseId && upSteps['ACTIVATE.BACKUP'] === 'VERIFIED' && upSteps['ACTIVATE.HEALTH'] === 'READY', `${up.json.outcome} ${(up.json.steps ?? []).map((s) => `${s.step}=${s.result}`).join(' ')}`);
     check('update.side-by-side', instA.dir !== instB.dir && existsSync(instA.node) && sha256File(instA.node) === nodeABefore && desktop.verifyDesktopBundle(instA.dir).ok);
     const scB = readShortcut(lnk('QANDEEL COMPANY'));
     check('update.shortcuts-and-runtime-on-b', lower(scB?.arguments).startsWith(lower(`--headless "${instB.node}" "${cliB}"`)) && lower(serveProcesses()[0]?.exe) === lower(instB.node));
     check('update.company-unchanged', (await companyFingerprint(ws)) === fp0);
+    check('update.apps-entry-on-b', appsEntry()?.DisplayVersion === '1.0.1' && signedWindowsOnly(appsEntry()) && lower(uninstallScript(appsEntry())).includes(lower(`'${instB.node}'`)));
 
     // failed update C → rollback to B
     const relC = await variantRelease(relB, path.join(scratch, 'releases-C'), 'c', (d) => appendFileSync(path.join(d, 'node_modules', '@qandeel-company', 'command-center', 'dist', 'src', 'cli.js'), '\nif (process.argv.includes("serve")) process.exit(9);\n'));
@@ -263,23 +290,23 @@ if (process.platform !== 'win32') {
     const recordFile = path.join(companyData, 'launcher', 'desktop-product.json');
     const recordBefore = readFileSync(recordFile);
     const failed = await install(instC);
-    const fSteps = Object.fromEntries((failed.json.steps ?? []).map((s) => [s.step, s.result]));
+    const fSteps = stepsOf(failed.json);
     check('update.failed-c-rolled-back', failed.code === 1 && failed.json.outcome === 'UPDATE_ROLLED_BACK' && fSteps['ACTIVATE.ROLLBACK_PIN'] === 'PREVIOUS' && fSteps['ACTIVATE.ROLLBACK_START'] === 'RUNNING', `${failed.json.outcome} ${(failed.json.steps ?? []).map((s) => `${s.step}=${s.result}`).join(' ')}`);
     const afterFail = await run({ node: instB.node, cli: cliB }, ['status']);
     check('update.failed-c-previous-pin-and-host', pinOf()?.releaseId === B.manifest.release.releaseId && afterFail.json.state === 'RUNNING' && afterFail.json.admitted === 'ADMITTED');
     check('update.failed-c-no-half-update', JSON.stringify(readShortcut(lnk('QANDEEL COMPANY'))) === scBefore && readFileSync(recordFile).equals(recordBefore) && desktop.verifyDesktopBundle(instB.dir).ok);
     check('update.failed-c-company-unchanged', (await companyFingerprint(ws)) === fp0);
+    check('update.failed-c-apps-entry-kept', appsEntry()?.DisplayVersion === '1.0.1' && fSteps.APPS_ENTRY === 'KEPT', `${appsEntry()?.DisplayVersion} ${fSteps.APPS_ENTRY}`);
 
-    // repair (the same Setup B again): missing application file and shortcut restored
+    // repair (the same bundle B installed again): missing application file and shortcut restored
     const uiFile = runtime.verifyReleaseTree(path.join(instB.dir, 'release')).manifest.files.find((f) => f.path.includes('command-center-ui/'))?.path;
     rmSync(path.join(instB.dir, 'app', 'qandeel-company.ico'));
     if (uiFile) rmSync(path.join(instB.dir, 'release', ...uiFile.split('/')));
     rmSync(lnk('QANDEEL COMPANY'));
     check('repair.damage-detected', !desktop.verifyDesktopBundle(instB.dir).ok);
-    await run(instB, ['stop']); // Setup's PrepareToInstall (controlled stop before the version's files are restored)
-    cpSync(B.bundleDir, instB.dir, { recursive: true });
     const repaired = await install(instB);
-    check('repair.files-restored', repaired.json.outcome === 'INSTALLED' && desktop.verifyDesktopBundle(instB.dir).ok, `${repaired.json.outcome}`);
+    const rSteps = stepsOf(repaired.json);
+    check('repair.files-restored', repaired.json.outcome === 'INSTALLED' && rSteps.COPY === 'RESTORED' && rSteps['COPY.STOP'] === 'STOPPED' && desktop.verifyDesktopBundle(instB.dir).ok && listTree(path.join(programRoot, 'versions')).every((f) => !f.startsWith('.')), `${repaired.json.outcome} COPY=${rSteps.COPY} STOP=${rSteps['COPY.STOP']}`);
     check('repair.shortcut-restored', lower(readShortcut(lnk('QANDEEL COMPANY'))?.arguments).startsWith(lower(`--headless "${instB.node}"`)));
     check('repair.same-release-previous-kept', pinOf()?.releaseId === B.manifest.release.releaseId && pinOf()?.previous?.releaseId === A.manifest.release.releaseId);
     check('repair.company-unchanged', (await companyFingerprint(ws)) === fp0 && (await run({ node: instB.node, cli: cliB }, ['status'])).json.state === 'RUNNING');
@@ -288,10 +315,13 @@ if (process.platform !== 'win32') {
     const releasesBefore = listTree(path.join(companyData, 'releases')).length;
     const backupsBefore = listTree(path.join(ws, 'backups')).length;
     const pinBefore = readFileSync(runtime.releasePinPath(ws));
-    const removed = await run(instB, ['desktop-uninstall', '--shortcut-root', shell]);
-    rmSync(programRoot, { recursive: true, force: true }); // Setup's own removal of its program files
+    // Windows "Apps" → Uninstall: exactly the registered command (conhost --headless → the installed node.exe).
+    const command = splitCommandLine(appsEntry()?.UninstallString);
+    const uninstallRun = launchLikeWindows(command.target, command.rest, env, scratch);
+    for (let i = 0; i < 120 && (existsSync(programRoot) || appsEntry() !== null); i++) await sleep(500);
+    const removed = { code: uninstallRun.launched && !existsSync(programRoot) ? 0 : 1, json: { outcome: uninstallRun.launched && !existsSync(programRoot) ? 'UNINSTALLED' : 'NOT_REMOVED', steps: [] } };
     check('uninstall.host-stopped', removed.code === 0 && removed.json.outcome === 'UNINSTALLED' && serveProcesses().length === 0, `${removed.json.outcome} ${(removed.json.steps ?? []).map((s) => `${s.step}=${s.result}`).join(' ')}`);
-    check('uninstall.application-and-shortcuts-gone', !existsSync(programRoot) && !existsSync(lnk('QANDEEL COMPANY')) && !existsSync(path.join(shell, 'Programs', 'QANDEEL COMPANY')) && !existsSync(recordFile));
+    check('uninstall.application-and-shortcuts-gone', !existsSync(programRoot) && appsEntry() === null && !existsSync(lnk('QANDEEL COMPANY')) && !existsSync(path.join(shell, 'Programs', 'QANDEEL COMPANY')) && !existsSync(recordFile));
     check('uninstall.company-data-preserved', (await companyFingerprint(ws)) === fp0 && readFileSync(runtime.releasePinPath(ws)).equals(pinBefore) && listTree(path.join(companyData, 'releases')).length === releasesBefore && listTree(path.join(ws, 'backups')).length === backupsBefore && backupsBefore > 0);
     check('uninstall.vault-and-config-preserved', readFileSync(vaultBlob).equals(vaultBytes) && readFileSync(configFile).equals(configBytes));
 
@@ -326,6 +356,8 @@ if (process.platform !== 'win32') {
         // already gone
       }
     }
+    // The scratch "Apps" key (never the real Uninstall entry).
+    powershellJson(`Remove-Item -LiteralPath '${appsKey}' -Recurse -Force -ErrorAction SilentlyContinue; $p = 'HKCU:\\Software\\QANDEEL_COMPANY_DESKTOP_PROOF'; if ((Test-Path $p) -and -not (Get-ChildItem $p)) { Remove-Item -LiteralPath $p -Force }; 'null'`);
   }
 }
 

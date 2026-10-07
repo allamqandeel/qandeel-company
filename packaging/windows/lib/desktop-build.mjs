@@ -242,6 +242,46 @@ export function authenticode(file) {
   }
 }
 
+export const BUNDLE_VERIFICATION_SCHEMA = 'qandeel.desktop-bundle-verification/v1';
+
+/**
+ * The verification record of the supported Founder-local Desktop bundle (D-D1-08). Commercial code signing is not a
+ * requirement for the Founder-local product (Founder decision): no custom executable is in it, and the only executable
+ * it runs is the pinned official node.exe, whose own Authenticode signature (OpenJS Foundation) is verified here.
+ * FOUNDER-RC when the bundle verifies byte for byte, carries no development path or secret, the runtime is the pinned,
+ * officially signed node.exe, and the source is a clean exact commit; otherwise ENGINEERING with the blockers named.
+ */
+export async function bundleVerificationRecord({ bundleDir, manifest, versionDir, now = () => new Date() }) {
+  const { desktop } = await productModules();
+  const check = desktop.verifyDesktopBundle(bundleDir);
+  const leaks = scanForLeaks(bundleDir);
+  const nodeSig = authenticode(path.join(bundleDir, 'node', 'node.exe'));
+  const blockers = [];
+  if (!check.ok) blockers.push(`BUNDLE_${check.reason}`);
+  if (leaks.length) blockers.push('BUNDLE_LEAK');
+  if (!manifest.source.clean || !/^[0-9a-f]{40}$/.test(manifest.source.commit ?? '')) blockers.push('SOURCE_NOT_CLEAN_EXACT_COMMIT');
+  if (nodeSig.status !== 'Valid' || !/OpenJS Foundation/i.test(nodeSig.signer ?? '')) blockers.push('RUNTIME_NOT_OFFICIALLY_SIGNED');
+  return {
+    schema: BUNDLE_VERIFICATION_SCHEMA,
+    artifact: `QANDEEL-COMPANY-Desktop-${versionDir}`,
+    artifactClass: blockers.length === 0 ? 'FOUNDER-RC' : 'ENGINEERING',
+    distribution: 'Founder-local (D-D1-08): a folder; installed by its own node.exe with desktop-local-install; no custom executable; commercial signing deferred to external distribution',
+    blockers,
+    bundleId: manifest.bundleId,
+    bundleManifestSha256: sha256File(path.join(bundleDir, 'qandeel-desktop-bundle.json')),
+    product: manifest.product,
+    desktopVersion: manifest.desktopVersion,
+    sourceCommit: manifest.source.commit,
+    sourceClean: manifest.source.clean,
+    releaseId: manifest.release.releaseId,
+    runtimeVersion: manifest.release.runtimeVersion,
+    node: { version: manifest.node.version, arch: manifest.node.arch, sha256: manifest.node.sha256, authenticode: nodeSig },
+    versionDir,
+    installCommand: `"<bundle>\\node\\node.exe" "<bundle>\\release\\node_modules\\@qandeel-company\\command-center\\dist\\src\\cli.js" desktop-local-install --bundle "<bundle>"`,
+    builtAt: now().toISOString(),
+  };
+}
+
 /**
  * The artifact verification record. FOUNDER-RC only when every condition holds: a clean exact source commit, a
  * trusted valid Authenticode signature, and the bundle verified; anything else is ENGINEERING (never "final").

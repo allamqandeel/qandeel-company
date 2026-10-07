@@ -8,7 +8,12 @@
  *      loopback handoff address (`host/handoff.ts`, D-OPS-07) — never on the launch URL itself;
  *   3. the signed Windows PowerShell host, by its absolute System32 path, with a fixed encoded command, to show a
  *      fixed Founder notice (WScript.Shell Popup) — the message comes from a fixed table, never from Company content;
- *   4. the same PowerShell host to write (WScript.Shell CreateShortcut) or remove the QANDEEL COMPANY shortcuts.
+ *   4. the same PowerShell host to write (WScript.Shell CreateShortcut) or remove the QANDEEL COMPANY shortcuts, to
+ *      register the per-user Windows "Apps" uninstall entry, whose command (run by Windows, not by this module) is the
+ *      console host running the same PowerShell host with a fixed encoded uninstall script (D1, D-D1-08);
+ *   5. D1 Founder-local install (D-D1-08): the INSTALLED private Node runtime (`installedRuntime`, the pinned official
+ *      node.exe of a verified Desktop bundle) running that bundle's own CLI, so the installed product takes over from
+ *      the copy it was installed from.
  *
  * No argument ever carries a secret: the host takes a workspace path and provider codes (the provider key stays in the
  * DPAPI vault); the browser takes only `http://127.0.0.1:<port>/`, and receives the launch token over that loopback
@@ -27,6 +32,18 @@ export function runReleaseCli(cliPath: string, args: readonly string[], timeoutM
   return new Promise((resolve) => {
     execFile(process.execPath, [cliPath, ...args], { shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1024 }, (error, stdout) => {
       resolve({ ok: error === null, stdout: String(stdout) });
+    });
+  });
+}
+
+/**
+ * D1 Founder-local install (D-D1-08): runs a verified, installed Desktop bundle's own CLI on that bundle's own pinned
+ * private runtime (the caller has verified the bundle byte for byte, its runtime included). Bounded, no shell.
+ */
+export function runInstalledRuntime(installedRuntime: string, cliPath: string, args: readonly string[], timeoutMs: number): Promise<{ code: number; stdout: string }> {
+  return new Promise((resolve) => {
+    execFile(installedRuntime, [cliPath, ...args], { shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      resolve({ code: error === null ? 0 : typeof error.code === 'number' ? error.code : 1, stdout: String(stdout) });
     });
   });
 }
@@ -174,6 +191,73 @@ export async function removeShortcuts(specs: readonly ShortcutSpec[], roots: Sho
     if (s.subfolder) lines.push('if ((Test-Path -LiteralPath $dir) -and -not (Get-ChildItem -LiteralPath $dir -Force)) { Remove-Item -LiteralPath $dir -Force }');
   }
   return shortcutScript(lines);
+}
+
+// --- D1 Founder-local install: the per-user "Apps" entry and the program directory (D-D1-08) ---------------------------
+
+/** Only a per-user key: never HKLM, never outside HKCU\Software. */
+const userKey = (key: string): boolean => /^HKCU:\\Software\\[^*?]+$/.test(key) && !key.includes('..');
+/** Only the product's own program directory: `<…>\Programs\QANDEEL COMPANY`, absolute (never Company data). */
+export const isProductProgramDir = (dir: string): boolean => path.win32.isAbsolute(dir) && path.win32.basename(dir) === 'QANDEEL COMPANY' && path.win32.basename(path.win32.dirname(dir)).toLowerCase() === 'programs';
+
+export interface UninstallEntry {
+  readonly displayName: string;
+  readonly displayVersion: string;
+  readonly publisher: string;
+  readonly displayIcon: string;
+  readonly installLocation: string;
+  readonly uninstallString: string;
+}
+
+/** Registers (replaces) the per-user Windows "Apps" uninstall entry. No elevation; string values only plus two flags. */
+export async function writeUninstallEntry(key: string, entry: UninstallEntry): Promise<boolean> {
+  if (process.platform !== 'win32' || !userKey(key)) return false;
+  const values: [string, string][] = [
+    ['DisplayName', entry.displayName],
+    ['DisplayVersion', entry.displayVersion],
+    ['Publisher', entry.publisher],
+    ['DisplayIcon', entry.displayIcon],
+    ['InstallLocation', entry.installLocation],
+    ['UninstallString', entry.uninstallString],
+    ['QuietUninstallString', entry.uninstallString],
+  ];
+  const lines = ["$ErrorActionPreference='Stop'", `$k = ${psLiteral(key)}`, '[void](New-Item -Path $k -Force)'];
+  for (const [name, value] of values) lines.push(`[void](New-ItemProperty -LiteralPath $k -Name ${psLiteral(name)} -Value ${psLiteral(value)} -PropertyType String -Force)`);
+  for (const flag of ['NoModify', 'NoRepair']) lines.push(`[void](New-ItemProperty -LiteralPath $k -Name ${psLiteral(flag)} -Value 1 -PropertyType DWord -Force)`);
+  lines.push("'true'");
+  for (let attempt = 1; attempt <= 2; attempt++) if ((await runPowerShell(lines.join('\n'), 60_000)).ok) return true;
+  return false;
+}
+
+/** Whether the per-user uninstall entry exists (read-only). */
+export async function uninstallEntryExists(key: string): Promise<boolean> {
+  if (process.platform !== 'win32' || !userKey(key)) return false;
+  const r = await runPowerShell(`if (Test-Path -LiteralPath ${psLiteral(key)}) { 'true' } else { 'false' }`, 60_000);
+  return r.ok && r.stdout.trim() === 'true';
+}
+
+/**
+ * The Founder-local "Apps" uninstall command line (D-D1-08). Signed Windows binaries only: the console host in headless
+ * mode runs the signed Windows PowerShell with a fixed encoded script that
+ *   1. runs the INSTALLED runtime's application-only uninstall (controlled stop, shortcuts, product record), and
+ *   2. only if that succeeded — and only after the runtime has exited, so nothing in the directory is in use — removes the
+ *      product's program directory and then its uninstall entry.
+ * Refuses anything but `<…>\Programs\QANDEEL COMPANY` and a per-user key; Company data is never there. (PowerShell
+ * started without a console does not run its script, so no detached process is used.)
+ */
+export function uninstallCommandLine(installedRuntime: string, cliPath: string, args: readonly string[], programDir: string, key: string): string | null {
+  if (!isProductProgramDir(programDir) || !userKey(key)) return null;
+  const script = [
+    `& ${psLiteral(installedRuntime)} ${psLiteral(cliPath)} 'desktop-local-uninstall' ${args.map(psLiteral).join(' ')} | Out-Null`,
+    'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
+    `$dir = ${psLiteral(programDir)}`,
+    'for ($i = 0; $i -lt 40 -and (Test-Path -LiteralPath $dir); $i++) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath $dir) { Start-Sleep -Milliseconds 500 } }',
+    `if (Test-Path -LiteralPath $dir) { exit 3 }`,
+    `Remove-Item -LiteralPath ${psLiteral(key)} -Recurse -Force -ErrorAction SilentlyContinue`,
+  ].join('\n');
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  const conhost = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'conhost.exe');
+  return `"${conhost}" --headless "${powershellExe()}" -NoProfile -NonInteractive -NoLogo -WindowStyle Hidden -EncodedCommand ${encoded}`;
 }
 
 /** Whether a PID names a live process (a hint only: a PID can be reused, so it never proves the host by itself). */

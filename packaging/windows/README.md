@@ -1,48 +1,62 @@
 # QANDEEL COMPANY — Windows Desktop distribution (D1)
 
-The one canonical place for the Windows Desktop product: **`QANDEEL-COMPANY-Setup.exe`**. Decisions are in
-`docs/architecture/DECISION_LOG.md` as D-D1-01 … D-D1-07.
+The one canonical place for the Windows Desktop product. Decisions are in `docs/architecture/DECISION_LOG.md` as
+D-D1-01 … D-D1-08.
 
 The installed product is an orchestration shell over the existing OPS mechanisms. It adds no second runtime, release
 format, updater database, backup system, host identity or Founder authentication.
 
-## What Setup installs
+## The supported Founder-local install (D-D1-08)
+
+Desktop v1 is Founder-local. The supported artifact is the **Desktop bundle**, a folder; commercial code signing is
+deferred until external distribution. The folder holds:
+- the pinned official Node.js 24.19.0 win-x64 `node.exe`, Authenticode-signed by the OpenJS Foundation;
+- the canonical QANDEEL release;
+- the approved icon;
+- `qandeel-desktop-bundle.json`.
+
+Installing runs only signed binaries, with no custom executable. Run the bundle's own `node.exe` once:
 
 ```text
-%LOCALAPPDATA%\Programs\QANDEEL COMPANY\                  per-user, no elevation (Inno Setup, PrivilegesRequired=lowest)
-  versions\<desktop version>-<bundle id 12>\               one directory per Setup: side by side, never overwritten in use
-    node\node.exe, node\LICENSE                            the private Node 24.19.0 win-x64 runtime (pinned SHA-256)
-    release\…                                              one canonical content-addressed release (qandeel-release.json)
-    app\qandeel-company.ico                                the approved product icon
-    qandeel-desktop-bundle.json                            qandeel.desktop-bundle/v1: source → release → runtime → icon
-  unins000.exe / .dat                                      Inno Setup's own uninstaller (HKCU "Apps" entry)
+"<bundle>\node\node.exe" "<bundle>\release\node_modules\@qandeel-company\command-center\dist\src\cli.js" desktop-local-install --bundle "<bundle>"
 ```
 
-Company data stays where OPS put it, and Setup never moves, creates or deletes it:
+If no Company is configured yet, add `--workspace "<existing Company workspace>"`. Setup never creates a Company.
+
+`desktop-local-install` runs these steps:
+1. verifies the bundle byte for byte, and that it runs on the bundle's own runtime and code;
+2. finds the EXISTING Company read-only, before installing anything;
+3. copies the bundle, verified, into `%LOCALAPPDATA%\Programs\QANDEEL COMPANY\versions\<version>-<bundle id>\`;
+4. hands over to the INSTALLED copy for the canonical activation: verify → dry run → controlled stop → verified backup
+   → pin → start → health, with rollback on failure;
+5. writes the branded Desktop and Start-menu shortcuts (no console window);
+6. registers **QANDEEL COMPANY** in Windows "Apps".
+
+After that, the Founder uses QANDEEL COMPANY like any desktop application. It needs no terminal, Git, npm, global
+Node or development checkout.
+
+| Run | What happens |
+|---|---|
+| **First install** | Adopts the existing Company: the launcher configuration, or `--workspace`. With no Company it ends `SETUP_REQUIRED` (exit 2) and installs and creates nothing. |
+| **Update (newer bundle)** | Installed beside the running version, then the same activation. Reported only when the new host is READY. On failure the canonical rollback restores the previous release; shortcuts, the "Apps" entry and the Company are unchanged (exit 1). |
+| **Repair (same bundle again)** | A damaged copy is replaced after a controlled stop; the identical release is reused; the shortcuts are re-established. |
+| **Uninstall (Windows "Apps")** | The entry's command uses signed Windows binaries only (`conhost --headless` → Windows PowerShell). It runs the installed runtime's application-only uninstall: controlled stop, shortcuts removed. Then it removes `…\Programs\QANDEEL COMPANY` and the entry. If the host cannot be stopped, nothing is removed. |
+
+Company data stays where OPS put it. Neither the install nor the uninstall ever moves, creates or deletes:
 - the workspace (e.g. `E:\QANDEEL_COMPANY_DATA\LIVE`);
-- `%LOCALAPPDATA%\QANDEEL_COMPANY\launcher\` (the launcher configuration plus the product record
-  `desktop-product.json`);
+- `%LOCALAPPDATA%\QANDEEL_COMPANY\launcher\` (the launcher configuration);
 - `…\releases\`;
 - `…\vault\`;
 - the production pin;
 - the backups.
 
-## How Setup behaves
-
-| Run | What happens |
-|---|---|
-| **First install** | Setup verifies the bundle and adopts the EXISTING Company: the launcher configuration, or the Founder's choice on the first-run page. It imports the release, runs the canonical activation (verify → dry run → controlled stop → verified backup → pin → start → health) and writes the shortcuts (`conhost --headless` → private runtime, product icon). With no Company chosen it finishes with "setup required" (exit 102) and creates nothing. |
-| **Newer Setup (update)** | Installs a new versioned directory beside the running one, then runs the same activation. Reported successful only when the new host is READY. On failure the canonical rollback restores the previous release; shortcuts and Company are unchanged (exit 101). |
-| **Same Setup again (repair)** | Controlled stop through that version's own CLI, then restores every installer-owned file. It then reuses the identical release and re-establishes the shortcuts. |
-| **Uninstall (Windows Apps)** | Controlled stop and removes the shortcuts. Setup then removes its program files and its HKCU entry. If the host cannot be stopped, nothing is removed. Company data, vault, releases, pin and configuration stay; a reinstall returns to the same Company. |
-
 Desktop v1 has no internet updater, no autostart, no PATH change and no "delete my Company" option.
 
-## Build (Windows build machine or CI)
+## Build
 
 ```bash
 npm ci
-npm run desktop:setup -- --out <a directory outside this repository>
+npm run desktop:bundle -- --out <a directory outside this repository>
 ```
 
 The build:
@@ -53,46 +67,45 @@ The build:
 4. obtains the pinned Node runtime and verifies it: SHA-256 plus an x64 PE image;
 5. composes and self-verifies the bundle;
 6. runs the leak scan (no checkout path, no secret);
-7. installs the pinned Inno Setup 6.7.3 per-user into the build directory and verifies it;
-8. compiles `dist\QANDEEL-COMPANY-Setup.exe`;
-9. records its SHA-256 and Authenticode status in `QANDEEL-COMPANY-Setup.verification.json`.
+7. writes `QANDEEL-COMPANY-Desktop.verification.json`.
 
-`npm run desktop:verify -- --dist <out>\dist` re-checks a built artifact.
+The record is `FOUNDER-RC` when the bundle verifies, has no leak, its `node.exe` signature is Valid (OpenJS
+Foundation) and the source is a clean exact commit.
 
-Pins live in `desktop.pins.json`: the Node version, URL and hashes, Inno Setup, the AppId, the Desktop version and
-the icon hash. Downloads, the compiler, the Setup and caches stay in the build directory. Nothing generated is
-committed.
+Pins live in `desktop.pins.json`. Nothing generated is committed.
 
-### Signing (D-D1-06)
+### Optional: `QANDEEL-COMPANY-Setup.exe` (ENGINEERING)
 
-Setup and its uninstaller are Authenticode-signed only when the build environment provides:
-- `QANDEEL_SIGN_THUMBPRINT`: a trusted code-signing certificate in the build user's store;
-- `QANDEEL_SIGNTOOL`: the Windows SDK `signtool.exe`;
-- optionally `QANDEEL_SIGN_TIMESTAMP_URL`.
+`npm run desktop:setup` also compiles an Inno Setup 6.7.3 installer over the same bundle (per-user, side by side, the
+same `desktop-install` / `desktop-uninstall`). It is proven end to end on CI. It stays an ENGINEERING artifact until
+external distribution, because an unsigned custom executable can be refused by Smart App Control.
 
-No credential is ever committed or used by CI. The artifact class is `FOUNDER-RC` only when the signature is `Valid`
-and the source is a clean exact commit; otherwise it is `ENGINEERING`. A self-signed or unsigned artifact is never a
-Founder release.
+Its signing seam (D-D1-06) takes `QANDEEL_SIGN_THUMBPRINT` and `QANDEEL_SIGNTOOL` from the environment only. Its
+artifact class is `FOUNDER-RC` only when it is signed with a valid signature.
 
-## Proofs (D-D1-07)
+`npm run desktop:verify -- --dist <dir>` re-checks the Founder-local bundle and the Setup artifact from their own
+files.
+
+## Proofs (D-D1-07, D-D1-08)
 
 - `npm run desktop:proof -- --workspace <disposable dir>`
   - **Where:** any machine, including the Founder's, because it is fully disposable. It uses an isolated
-    LOCALAPPDATA, an isolated shortcut root and a disposable Company; it never touches the real profile or LIVE.
-  - **How:** it runs the INSTALLED CLI on the INSTALLED private runtime, with no Node / npm / Git on PATH. It mirrors
-    Setup's file copy instead of running Setup.exe.
-  - **What it proves:** packaging, install, runtime, update, rollback, repair, uninstall, reinstall, and the product
+    LOCALAPPDATA, shortcut root and Company, plus a scratch per-user "Apps" key that it removes afterwards. It never
+    touches the real profile or LIVE.
+  - **How:** it installs with `desktop-local-install` from a "downloaded" bundle folder. It runs the INSTALLED CLI on
+    the INSTALLED private runtime with no Node / npm / Git on PATH. It launches the shortcut and uninstall commands
+    the way Windows does and judges them by their effects.
+  - **What it proves:** packaging, install, runtime, update, rollback, repair, uninstall from "Apps", reinstall, and
     running with the checkout's `packages/` and `node_modules/` unavailable.
 - `npm run desktop:e2e -- --workspace <dir> [--artifacts <dir>]`
   - **Where:** a disposable Windows CI runner only. It refuses elsewhere, and wherever any QANDEEL data exists.
-  - **What it proves:** the real Setup.exe end to end — first run, invalid choice, per-user install, update, failed
-    update rollback, repair, detached, uninstall, reinstall.
-  - **Output:** the ENGINEERING Setup artifact.
+  - **What it proves:** the optional Setup.exe end to end, plus the Founder-local install with the runner's real
+    "Apps" entry and its uninstall.
+  - **Output:** the Founder-local bundle with its verification record, and the ENGINEERING Setup.exe.
 - `.github/workflows/desktop.yml` runs both, plus `desktop:verify`, on the GitHub Windows runner. It runs as the FULL
   gate's `desktop` job and on any non-main branch push that changes this directory.
 
-The Setup is never built or run locally on the Founder's Smart App Control host during engineering. The real Founder
-installation is D2 — Founder Laptop Acceptance.
+The real Founder installation is D2 — Founder Laptop Acceptance.
 
 ## Icon (D-D1-03)
 

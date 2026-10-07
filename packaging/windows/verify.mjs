@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
-import { SETUP_NAME, VERIFICATION_SCHEMA, authenticode, sha256File } from './lib/desktop-build.mjs';
+import { SETUP_NAME, VERIFICATION_SCHEMA, authenticode, productModules, sha256File } from './lib/desktop-build.mjs';
 
 const { values } = parseArgs({ options: { dist: { type: 'string' } } });
 if (!values.dist) throw new Error('usage: desktop:verify -- --dist <directory holding QANDEEL-COMPANY-Setup.exe>');
@@ -38,6 +38,19 @@ if (record && bundle) {
 const signature = existsSync(setup) ? authenticode(setup) : null;
 if (record && signature && signature.status !== record.authenticode?.status) problems.push(`Authenticode status ${signature.status} differs from the record (${record.authenticode?.status})`);
 if (record?.artifactClass === 'FOUNDER-RC' && signature?.status !== 'Valid') problems.push('a FOUNDER-RC must carry a valid, trusted Authenticode signature');
-const summary = { ok: problems.length === 0, artifact: `${SETUP_NAME}.exe`, setupSha256: actual, artifactClass: record?.artifactClass ?? null, authenticode: signature?.status ?? null, signer: signature?.signer ?? null, sourceCommit: record?.sourceCommit ?? null, desktopVersion: record?.desktopVersion ?? null, releaseId: record?.releaseId ?? null, node: record?.node ?? null, problems };
+// D-D1-08: the supported Founder-local bundle beside it (when present) is re-verified from its own files.
+const bundleRecord = read(path.join(dist, 'QANDEEL-COMPANY-Desktop.verification.json'));
+let founderLocal = null;
+if (bundleRecord) {
+  const dir = path.join(dist, bundleRecord.artifact ?? '');
+  const { desktop } = await productModules();
+  const check = existsSync(dir) ? desktop.verifyDesktopBundle(dir) : { ok: false, reason: 'BUNDLE_MISSING' };
+  if (!check.ok) problems.push(`Founder-local bundle does not verify (${check.reason})`);
+  else if (check.manifest.bundleId !== bundleRecord.bundleId || sha256File(path.join(dir, 'qandeel-desktop-bundle.json')) !== bundleRecord.bundleManifestSha256) problems.push('Founder-local bundle differs from its verification record');
+  const nodeSig = existsSync(dir) ? authenticode(path.join(dir, 'node', 'node.exe')) : null;
+  if (bundleRecord.artifactClass === 'FOUNDER-RC' && (bundleRecord.blockers?.length || nodeSig?.status !== 'Valid')) problems.push('a Founder-local FOUNDER-RC must verify with no blocker and an officially signed runtime');
+  founderLocal = { artifact: bundleRecord.artifact, artifactClass: bundleRecord.artifactClass, bundleId: bundleRecord.bundleId, sourceCommit: bundleRecord.sourceCommit, releaseId: bundleRecord.releaseId, node: { version: bundleRecord.node?.version, sha256: bundleRecord.node?.sha256, authenticode: nodeSig?.status ?? null, signer: nodeSig?.signer ?? null } };
+}
+const summary = { founderLocal, ok: problems.length === 0, artifact: `${SETUP_NAME}.exe`, setupSha256: actual, artifactClass: record?.artifactClass ?? null, authenticode: signature?.status ?? null, signer: signature?.signer ?? null, sourceCommit: record?.sourceCommit ?? null, desktopVersion: record?.desktopVersion ?? null, releaseId: record?.releaseId ?? null, node: record?.node ?? null, problems };
 process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
 if (problems.length) process.exitCode = 1;

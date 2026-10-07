@@ -76,6 +76,7 @@
 - Desktop distribution (D1, `packaging/windows/`): `npm run desktop:proof` is disposable and safe anywhere. Never run
   `desktop:e2e` or install / update / uninstall QANDEEL COMPANY on the Founder's machine during engineering; never build
   or run a Setup.exe locally (Smart App Control). The real Setup is built and proven on the GitHub Windows runner; the
-  Founder's own install is D2. Signing credentials never enter the repository or CI.
+  Founder's own install is D2, through the supported Founder-local `desktop-local-install` (D-D1-08: signed binaries only;
+  commercial signing is deferred to external distribution). Signing credentials never enter the repository or CI.
 - Report the Skills you actually used and their concrete effect.
 - Work on a branch and open a PR. **Never merge** unless your task explicitly authorizes it.

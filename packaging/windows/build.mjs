@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
-import { ROOT, SETUP_NAME, authenticode, compileSetup, composeBundle, ensureInno, fetchPinned, loadPins, scanForLeaks, signingFromEnv, sourceState, verificationRecord } from './lib/desktop-build.mjs';
+import { ROOT, SETUP_NAME, authenticode, bundleVerificationRecord, compileSetup, composeBundle, ensureInno, fetchPinned, loadPins, scanForLeaks, signingFromEnv, sourceState, verificationRecord } from './lib/desktop-build.mjs';
 
 const { values } = parseArgs({ options: { out: { type: 'string' }, setup: { type: 'boolean', default: false }, class: { type: 'string', default: 'ENGINEERING' }, 'desktop-version': { type: 'string' }, 'skip-build': { type: 'boolean', default: false } } });
 const out = path.resolve(values.out ?? path.join(tmpdir(), 'qandeel-desktop-build'));
@@ -50,6 +50,12 @@ const composed = await composeBundle({ out, pins, nodeExe, nodeLicense, source, 
 const leaks = scanForLeaks(composed.bundleDir);
 if (leaks.length) throw new Error(`BUNDLE_LEAK\n${leaks.join('\n')}`);
 log('BUNDLE', { dir: composed.bundleDir, bundleId: composed.manifest.bundleId, releaseId: composed.manifest.release.releaseId, versionDir: composed.versionDir, files: composed.manifest.files.length });
+
+// The supported Founder-local artifact (D-D1-08): the bundle folder and its verification record.
+const bundleRecord = await bundleVerificationRecord({ bundleDir: composed.bundleDir, manifest: composed.manifest, versionDir: composed.versionDir });
+writeFileSync(path.join(out, 'QANDEEL-COMPANY-Desktop.verification.json'), `${JSON.stringify(bundleRecord, null, 2)}\n`);
+log('FOUNDER_LOCAL', { artifactClass: bundleRecord.artifactClass, blockers: bundleRecord.blockers, bundle: composed.bundleDir, install: 'desktop-local-install (see packaging/windows/README.md)' });
+if (values.class === 'FOUNDER-RC' && bundleRecord.artifactClass !== 'FOUNDER-RC') process.exitCode = 1;
 
 if (values.setup) {
   const iscc = await ensureInno({ pins, cacheDir, toolsDir: path.join(out, 'tools') });

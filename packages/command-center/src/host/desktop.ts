@@ -22,15 +22,15 @@
  *
  * Every outcome is content-free: states, codes, IDs and paths of installed application files.
  */
-import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import { readReleasePin, selfReleaseRoot, verifyReleaseTree } from '@qandeel-company/runtime';
 
 import { writeJsonAtomic } from './descriptor.js';
-import { discoverHost, ensureRunning, installShortcuts, launcherConfigDir, launcherConfigPath, readLauncherConfig, stopHost, uninstallShortcuts, writeLauncherConfig, PRODUCT_ICON_FILE } from './lifecycle.js';
-import { lastShortcutFailure } from './processes.js';
+import { discoverHost, ensureRunning, installShortcuts, launcherConfigDir, launcherConfigPath, readLauncherConfig, stopHost, uninstallShortcuts, writeLauncherConfig, PRODUCT_ICON_FILE, type LauncherConfig } from './lifecycle.js';
+import { isProductProgramDir, lastShortcutFailure, runInstalledRuntime, uninstallCommandLine, uninstallEntryExists, writeUninstallEntry } from './processes.js';
 import { activateRelease, importRelease, releaseCli, releasesDir } from './release.js';
 
 export const DESKTOP_PRODUCT = 'QANDEEL COMPANY';
@@ -193,6 +193,22 @@ export interface DesktopOutcome {
   readonly shortcuts: readonly string[] | null;
 }
 
+/**
+ * The EXISTING Company, read-only: the launcher configuration, or the Founder's explicit choice of a workspace when
+ * none is configured. Nothing is created; a choice that differs from the configured Company is refused (switching the
+ * Founder's production Company is not an installer decision).
+ */
+async function findExistingCompany(choice: string | undefined): Promise<{ ok: true; step: string; workspace: string; configFile: string; config: LauncherConfig | null } | { ok: false; step: string; outcome: string }> {
+  const configFile = launcherConfigPath();
+  const config = readLauncherConfig(configFile);
+  const chosen = choice === undefined ? null : path.resolve(choice);
+  if (config === null && chosen === null) return { ok: false, step: 'NOT_CONFIGURED', outcome: 'SETUP_REQUIRED' };
+  if (config !== null && chosen !== null && !same(config.workspace, chosen)) return { ok: false, step: 'CONFLICT', outcome: 'WORKSPACE_CONFLICT' };
+  const status = await discoverHost(chosen ?? (config as LauncherConfig).workspace);
+  if (status.state === 'WORKSPACE_MISSING' || status.state === 'WORKSPACE_INVALID') return { ok: false, step: status.state, outcome: status.state };
+  return { ok: true, step: 'EXISTING', workspace: status.workspace, configFile, config };
+}
+
 /** First install, update, repair and reinstall: one bounded path over the canonical activation (see module header). */
 export async function desktopInstall(options: DesktopInstallOptions): Promise<DesktopOutcome> {
   const steps: { step: string; result: string }[] = [];
@@ -213,22 +229,11 @@ export async function desktopInstall(options: DesktopInstallOptions): Promise<De
   if (!privateRuntime) return result(false, 'PRIVATE_RUNTIME_REQUIRED');
 
   // 2. The EXISTING Company: the launcher configuration, or the Founder's explicit choice. Never a new Company.
-  const configFile = launcherConfigPath();
-  const config = readLauncherConfig(configFile);
-  const chosen = options.workspace === undefined ? null : path.resolve(options.workspace);
-  if (config === null && chosen === null) {
-    steps.push({ step: 'WORKSPACE', result: 'NOT_CONFIGURED' });
-    return result(false, 'SETUP_REQUIRED');
-  }
-  if (config !== null && chosen !== null && !same(config.workspace, chosen)) {
-    // Switching the Founder's production Company is not an installer decision.
-    steps.push({ step: 'WORKSPACE', result: 'CONFLICT' });
-    return result(false, 'WORKSPACE_CONFLICT');
-  }
-  const status = await discoverHost(chosen ?? (config as { workspace: string }).workspace);
-  workspace = status.workspace;
-  steps.push({ step: 'WORKSPACE', result: status.state === 'WORKSPACE_MISSING' || status.state === 'WORKSPACE_INVALID' ? status.state : 'EXISTING' });
-  if (status.state === 'WORKSPACE_MISSING' || status.state === 'WORKSPACE_INVALID') return result(false, status.state);
+  const found = await findExistingCompany(options.workspace);
+  steps.push({ step: 'WORKSPACE', result: found.step });
+  if (!found.ok) return result(false, found.outcome);
+  const { configFile, config } = found;
+  workspace = found.workspace;
   const providers = [...new Set(options.providers ?? config?.providers ?? [])];
 
   // 3. The bundle's release into the canonical releases directory (same format; an identical one is reused).
@@ -302,3 +307,132 @@ export async function desktopUninstall(options: DesktopUninstallOptions = {}): P
   return { ok: removed !== null, outcome: removed === null ? 'SHORTCUTS_NOT_REMOVED' : 'UNINSTALLED', code: removed === null ? 'SHORTCUTS_NOT_REMOVED' : null, desktopVersion: record?.desktopVersion ?? null, bundleId: record?.bundleId ?? null, releaseId: pin ? pin.releaseId : null, previousReleaseId: null, workspace: config?.workspace ?? null, steps, state, shortcuts: removed };
 }
 
+
+
+// --- D1 Founder-local install (D-D1-08) ----------------------------------------------------------------------------------
+//
+// The supported Founder installation needs no custom executable: the official, signed node.exe of a verified bundle
+// runs the bundle's own CLI, which copies the bundle into the per-user program directory, hands over to the INSTALLED
+// copy (`desktop-install`, the canonical activation above), and registers the per-user Windows "Apps" entry, whose
+// uninstall command is the signed console host running the installed runtime. Nothing here is signed by QANDEEL and
+// nothing needs to be: every executable that runs is Windows' own or the pinned official Node.
+
+/** The per-user Windows "Apps" entry of the Founder-local installation. */
+export const LOCAL_UNINSTALL_KEY = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\QANDEEL COMPANY';
+
+/** The product's program directory: `%LOCALAPPDATA%\Programs\QANDEEL COMPANY` (never Company data). */
+export function productProgramDir(env: NodeJS.ProcessEnv = process.env): string | null {
+  return env.LOCALAPPDATA && path.win32.isAbsolute(env.LOCALAPPDATA) ? path.join(env.LOCALAPPDATA, 'Programs', DESKTOP_PRODUCT) : null;
+}
+
+const bundleCli = (dir: string): string => path.join(dir, BUNDLE_RELEASE, 'node_modules', '@qandeel-company', 'command-center', 'dist', 'src', 'cli.js');
+
+/** Removes a staging or retired copy inside `<program dir>\versions` — and nothing else. */
+function removeInstalledDir(dir: string): void {
+  const versions = path.join(productProgramDir() ?? '\0', 'versions');
+  const inside = path.dirname(path.resolve(dir)) === path.resolve(versions) && /^\.(?:staging|retired)-[0-9a-f]{12}$/.test(path.basename(dir));
+  if (inside) rmSync(dir, { recursive: true, force: true });
+}
+
+export interface DesktopLocalOptions {
+  readonly bundleDir: string;
+  readonly workspace?: string;
+  readonly providers?: readonly string[];
+  /** Disposable proofs only. */
+  readonly shortcutRoot?: string;
+  /** Disposable proofs only: a per-user key other than the real "Apps" entry. */
+  readonly uninstallKey?: string;
+}
+
+const passOn = (options: Omit<DesktopLocalOptions, 'bundleDir'>): string[] => [
+  ...(options.shortcutRoot === undefined ? [] : ['--shortcut-root', options.shortcutRoot]),
+  ...(options.uninstallKey === undefined ? [] : ['--uninstall-key', options.uninstallKey]),
+];
+
+/**
+ * The Founder-local install: first install, update, repair and reinstall. Read-only Company check first (no Company →
+ * nothing installed), then the verified copy (side by side; a damaged copy of the same version is replaced after a
+ * controlled stop), then the canonical activation run BY THE INSTALLED COPY, then the per-user "Apps" entry (kept
+ * unchanged when an update fails, so it still names the version that runs).
+ */
+export async function desktopLocalInstall(options: DesktopLocalOptions): Promise<DesktopOutcome> {
+  const steps: { step: string; result: string }[] = [];
+  const source = path.resolve(options.bundleDir);
+  let manifest: DesktopBundleManifest | null = null;
+  const result = (ok: boolean, outcome: string, extra: Partial<DesktopOutcome> = {}): DesktopOutcome => ({ ok, outcome, code: ok ? null : outcome, desktopVersion: manifest?.desktopVersion ?? null, bundleId: manifest?.bundleId ?? null, releaseId: manifest?.release.releaseId ?? null, previousReleaseId: null, workspace: null, steps, state: null, shortcuts: null, ...extra });
+
+  const bundle = verifyDesktopBundle(source);
+  steps.push({ step: 'BUNDLE', result: bundle.ok ? 'VERIFIED' : bundle.reason });
+  if (!bundle.ok) return result(false, bundle.reason);
+  manifest = bundle.manifest;
+  const self = selfReleaseRoot();
+  const privateRuntime = same(process.execPath, path.join(source, ...BUNDLE_NODE.split('/'))) && self !== null && same(self, path.join(source, BUNDLE_RELEASE));
+  steps.push({ step: 'RUNTIME', result: privateRuntime ? 'PRIVATE' : 'REFUSED' });
+  if (!privateRuntime) return result(false, 'PRIVATE_RUNTIME_REQUIRED');
+
+  // The existing Company, read-only, BEFORE anything is installed.
+  const found = await findExistingCompany(options.workspace);
+  steps.push({ step: 'WORKSPACE', result: found.step });
+  if (!found.ok) return result(false, found.outcome);
+
+  // The verified copy into the program directory, side by side.
+  const programDir = productProgramDir();
+  if (programDir === null || !isProductProgramDir(programDir)) return result(false, 'PROGRAM_DIR_UNAVAILABLE');
+  const versions = path.join(programDir, 'versions');
+  const target = path.join(versions, `${manifest.desktopVersion}-${manifest.bundleId.slice(0, 12)}`);
+  const current = existsSync(target) ? verifyDesktopBundle(target) : null;
+  if (same(source, target) || (current?.ok === true && current.manifest.bundleId === manifest.bundleId)) steps.push({ step: 'COPY', result: 'REUSED' });
+  else {
+    if (current !== null) {
+      // A damaged copy of this version: its runtime may be hosting the Company — controlled stop before it is replaced
+      // (the activation below restarts the host).
+      const stopped = await stopHost(found.workspace);
+      steps.push({ step: 'COPY.STOP', result: stopped.outcome });
+      if (!stopped.ok && stopped.outcome !== 'NOT_RUNNING') return result(false, 'HOST_NOT_STOPPED');
+    }
+    mkdirSync(versions, { recursive: true });
+    const staging = path.join(versions, `.staging-${randomBytes(6).toString('hex')}`);
+    try {
+      cpSync(source, staging, { recursive: true });
+      const copied = verifyDesktopBundle(staging);
+      if (!copied.ok || copied.manifest.bundleId !== manifest.bundleId) return result(false, 'INSTALL_COPY_FAILED');
+      if (current !== null) {
+        const retired = path.join(versions, `.retired-${randomBytes(6).toString('hex')}`);
+        renameSync(target, retired);
+        renameSync(staging, target);
+        removeInstalledDir(retired);
+      } else renameSync(staging, target);
+    } catch {
+      return result(false, 'INSTALL_COPY_FAILED');
+    } finally {
+      removeInstalledDir(staging);
+    }
+    steps.push({ step: 'COPY', result: current === null ? 'INSTALLED' : 'RESTORED' });
+  }
+
+  // The installed copy takes over: its own runtime runs its own CLI through the canonical activation.
+  const node = path.join(target, ...BUNDLE_NODE.split('/'));
+  const cli = bundleCli(target);
+  const args = ['desktop-install', '--bundle', target, ...(options.workspace === undefined ? [] : ['--workspace', found.workspace]), ...(options.providers ?? []).flatMap((p) => ['--provider', p]), ...(options.shortcutRoot === undefined ? [] : ['--shortcut-root', options.shortcutRoot])];
+  const ran = await runInstalledRuntime(node, cli, args, 600_000);
+  let inner: Partial<DesktopOutcome>;
+  try {
+    inner = JSON.parse(ran.stdout.trim().split('\n').filter((l) => l.startsWith('{')).at(-1) ?? '{}') as Partial<DesktopOutcome>;
+  } catch {
+    inner = {};
+  }
+  for (const s of inner.steps ?? []) steps.push({ step: `INSTALLED.${s.step}`, result: s.result });
+  const ok = ran.code === 0 && inner.ok === true;
+
+  // The per-user "Apps" entry: written on success, or when none exists yet (the files are there and must be removable).
+  const key = options.uninstallKey ?? LOCAL_UNINSTALL_KEY;
+  if (ok || !(await uninstallEntryExists(key))) {
+    const uninstall = uninstallCommandLine(node, cli, passOn(options), programDir, key);
+    if (uninstall === null) return result(false, 'APPS_ENTRY_REFUSED');
+    const written = await writeUninstallEntry(key, { displayName: DESKTOP_PRODUCT, displayVersion: manifest.desktopVersion, publisher: 'QANDEEL', displayIcon: path.join(target, ...BUNDLE_ICON.split('/')), installLocation: programDir, uninstallString: uninstall });
+    steps.push({ step: 'APPS_ENTRY', result: written ? 'REGISTERED' : 'FAILED' });
+    if (ok && !written) return result(false, 'APPS_ENTRY_FAILED', { workspace: inner.workspace ?? null, state: inner.state ?? null });
+  } else steps.push({ step: 'APPS_ENTRY', result: 'KEPT' });
+  const outcome = typeof inner.outcome === 'string' ? inner.outcome : ran.code === 2 ? 'SETUP_REQUIRED' : 'INSTALL_FAILED';
+  return result(ok, ok ? 'INSTALLED' : outcome, { previousReleaseId: inner.previousReleaseId ?? null, workspace: inner.workspace ?? null, state: inner.state ?? null, shortcuts: inner.shortcuts ?? null, ...(ok ? {} : { code: inner.code ?? outcome }) });
+}

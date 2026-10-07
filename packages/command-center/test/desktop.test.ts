@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 
 import { DESKTOP_BUNDLE_FILE, DESKTOP_BUNDLE_SCHEMA, DESKTOP_INSTALLER_SCHEMA, DESKTOP_PRODUCT, bundleApplicationFiles, bundleIdOf, desktopInstall, sha256File, verifyDesktopBundle, type DesktopBundleManifest } from '../src/host/desktop.js';
 import { headlessConsoleHost, productIcon, shortcutSpecs } from '../src/host/lifecycle.js';
+import { isProductProgramDir, uninstallCommandLine } from '../src/host/processes.js';
 import { importRelease, stageRelease } from '../src/host/release.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -102,6 +103,30 @@ describe('Desktop v1 orchestration (D1)', { timeout: 120_000 }, () => {
       if (before === undefined) delete process.env.LOCALAPPDATA;
       else process.env.LOCALAPPDATA = before;
     }
+  });
+
+  test('the Founder-local "Apps" uninstall command: signed Windows binaries only, the product directory and a per-user key only', () => {
+    const programDir = 'C:\\Users\\f\\AppData\\Local\\Programs\\QANDEEL COMPANY';
+    const runtime = `${programDir}\\versions\\1.0.0-abc\\node\\node.exe`;
+    const cli = `${programDir}\\versions\\1.0.0-abc\\release\\cli.js`;
+    const key = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\QANDEEL COMPANY';
+    const line = uninstallCommandLine(runtime, cli, [], programDir, key) ?? '';
+    assert.match(line, /^"[^"]*\\System32\\conhost\.exe" --headless "[^"]*\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe" -NoProfile .* -EncodedCommand [A-Za-z0-9+/=]+$/);
+    const script = Buffer.from(/-EncodedCommand (\S+)$/.exec(line)?.[1] ?? '', 'base64').toString('utf16le');
+    assert.ok(script.includes(`& '${runtime}' '${cli}' 'desktop-local-uninstall'`), 'it runs the INSTALLED runtime first');
+    assert.ok(script.indexOf('desktop-local-uninstall') < script.indexOf('Remove-Item'), 'the directory goes only after the application uninstall');
+    assert.match(script, /if \(\$LASTEXITCODE -ne 0\) \{ exit \$LASTEXITCODE \}/, 'a failed uninstall removes nothing');
+    for (const [dir, k] of [
+      ['E:\\QANDEEL_COMPANY_DATA\\LIVE', key],
+      ['C:\\Users\\f\\AppData\\Local\\QANDEEL_COMPANY', key],
+      ['C:\\Users\\f\\AppData\\Local\\Programs', key],
+      [programDir, 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\QANDEEL COMPANY'],
+      [programDir, 'HKCU:\\Environment'],
+    ] as const) {
+      assert.equal(uninstallCommandLine(runtime, cli, [], dir, k), null, `${dir} / ${k}`);
+    }
+    assert.equal(isProductProgramDir(programDir), true);
+    assert.equal(isProductProgramDir('QANDEEL COMPANY'), false, 'never a relative path');
   });
 
   test('the shortcuts run the private runtime through the headless console host, with the product icon', () => {

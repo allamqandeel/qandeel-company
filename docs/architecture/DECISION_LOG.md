@@ -4919,3 +4919,55 @@ window (R-OPS-03).
 
 **D1 itself** changes the impact map and the CI architecture, so it is FULL by its own map. It gets one FULL GitHub
 gate on the exact release-candidate head.
+
+## D-D1-08 — Desktop v1 is Founder-local: the supported install runs only signed binaries; commercial signing is deferred (executor; Founder decision change, 2026-10-07)
+
+**Context.** The Founder decided that QANDEEL COMPANY Desktop v1 is Founder-local only. A commercial Authenticode
+certificate is not a closure requirement for this stage, and D1 does not stop on `SIGNING_CREDENTIAL_MISSING`.
+Windows security is never disabled, and a paid certificate is never required.
+
+Smart App Control can refuse an unsigned custom `Setup.exe`. The supported installation therefore needs no custom
+executable at all, while the Founder still gets a normal desktop application with no terminal, Git, npm, global
+Node or development checkout.
+
+**Decision.**
+1. **The supported Founder artifact is the Desktop bundle itself:** a folder carrying the pinned, officially signed
+   `node.exe` (Authenticode Valid, OpenJS Foundation; the build and the proofs check it), the canonical release, the
+   approved icon and `qandeel.desktop-bundle/v1`.
+2. **It is installed by its own `node.exe`:**
+   `"<bundle>\node\node.exe" "<bundle>\release\…\command-center\dist\src\cli.js" desktop-local-install --bundle "<bundle>"`.
+   `desktop-local-install` runs these steps:
+   1. verifies the bundle and that it runs on that bundle's own runtime and code;
+   2. checks the EXISTING Company read-only, BEFORE anything is installed: no Company → `SETUP_REQUIRED`, nothing
+      installed or created;
+   3. copies the bundle, verified, into `%LOCALAPPDATA%\Programs\QANDEEL COMPANY\versions\<version>-<bundle>\`
+      (staged, then renamed; a damaged copy of the same version is replaced only after a controlled stop);
+   4. hands over to the INSTALLED copy's runtime for `desktop-install` (D-D1-01: the canonical activation);
+   5. registers the per-user Windows "Apps" entry.
+3. **Uninstall from Windows "Apps".** The "Apps" entry's uninstall command uses signed Windows binaries only: System32
+   `conhost.exe --headless` → System32 Windows PowerShell with a fixed encoded script. The script:
+   1. runs the installed runtime's application-only uninstall (controlled stop, shortcuts, product record);
+   2. only if that succeeded, and after that runtime has exited, removes `<…>\Programs\QANDEEL COMPANY` and the entry.
+
+   Measured: Windows PowerShell started without a console does not run its script, so no detached process is used.
+   The script refuses anything but the product directory and a per-user key; Company data is never there.
+4. **Update / failed update.** An update is a newer bundle installed the same way. A failed update keeps the "Apps"
+   entry unchanged, so it still names the version that runs (this closes the Setup.exe residual of D-D1-05).
+5. **Process kinds.** One more process kind is allowed in `processes.ts`: the INSTALLED private runtime
+   (`installedRuntime`), the pinned official node.exe of a verified bundle. The verifier (`founder-host-confined`,
+   `desktop-distribution`) pins the guards.
+6. **`QANDEEL-COMPANY-Setup.exe` stays an optional ENGINEERING artifact.** It is built and proven end to end on CI, and
+   trusted commercial signing is deferred until public / external distribution. The D-D1-06 signing seam is unchanged.
+   Its rule "FOUNDER-RC only when signed" now applies to the Setup.exe artifact only.
+7. **Artifact class.** The Founder-local bundle is `FOUNDER-RC` when all four hold: it verifies byte for byte, it
+   carries no development path or secret, its runtime is the pinned, officially signed node.exe, and the source is a
+   clean exact commit (`QANDEEL-COMPANY-Desktop.verification.json`; `desktop:verify` re-checks it).
+8. **Proofs.**
+   - `desktop:proof` now installs through `desktop-local-install` from a "downloaded" bundle folder, under a scratch
+     per-user key. It uninstalls by launching exactly the registered command the way Windows does, and judges it by
+     its effects. Measured: `conhost --headless` started as a child with redirected stdio returns at once without
+     running its command, so the proofs launch it like Windows.
+   - `desktop:e2e` adds the Founder-local install with the runner's real "Apps" entry and its uninstall.
+
+**Unchanged:** every OPS / D1 security boundary (loopback, no secret in arguments, shortcuts or logs, the canonical
+activation and rollback, the existing Company only, Company data never touched), and Smart App Control.
