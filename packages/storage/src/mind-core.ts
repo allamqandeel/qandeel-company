@@ -321,6 +321,25 @@ export function loadSkillPayloadForInspection(ctx: StoreContext, skillVersionId:
   return typeof text === 'string' && sha256Hex(text) === v.instructionsSha256 ? text : null;
 }
 
+/**
+ * L1-02 (D-L1-13): the payload of the ONE Skill version a fenced SKILL_BENCHMARK run benchmarks, for that run's WITH_SKILL
+ * arm only. It never relaxes production eligibility: the version must be exactly the open benchmark run's version, in
+ * the sandbox (SANDBOXED — statically reviewed and security-cleared, not approved), with zero inspection findings,
+ * integrity OK and a verifying hash. A BASELINE run, a closed run, another version or an approved / rejected version
+ * loads nothing. Kept beside the pinned loader (verifier rules `skill-load-pinned`, `l1-02-benchmark-load-confined`).
+ */
+export function loadBenchmarkSkillInstructions(ctx: StoreContext, runId: Id): { readonly skillVersionId: Id; readonly text: string } | null {
+  const r = ctx.db.get<{ v: string; arm: string; state: string }>(
+    `SELECT b.skill_version_id AS v, b.arm, b.state FROM run_benchmark_modes m JOIN skill_benchmark_runs b ON b.id = m.benchmark_run_id WHERE m.run_id = ?`,
+    runId,
+  );
+  if (!r || r.arm !== 'WITH_SKILL' || r.state !== 'OPEN') return null;
+  const v = getSkillVersionRow(ctx, r.v as Id);
+  if (v.pipelineState !== 'SANDBOXED' || v.securityStatus !== 'CLEARED' || (v.inspectionFindings ?? []).length > 0 || v.integrity !== 'OK') return null;
+  const text = loadVerified(ctx, 'skill_versions', v.id);
+  return text === null ? null : { skillVersionId: v.id, text };
+}
+
 // --- Capability eligibility snapshot --------------------------------------------------------------
 
 /** Certification status at now, materializing EXPIRED (history + audit) when a write transaction is open. */

@@ -16,11 +16,14 @@
  * `BEGIN IMMEDIATE` — the check, the effect, CONFIRMED and the audit commit together or not at all.
  */
 import { QandeelError, assertCode, assertId, boundedJson, canonicalJson, isTimestamp, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { APP_CONTROL_APPROVAL_ACTION, BINDING_ROLES, BINDING_SUBJECTS, PILOT_MODES, SOURCE_DECISIONS, assertGoalTransition, assertMoney, assertSourceRegistration, assertTokens, cachedInputRate, isGoalState, isMutatingIntent, nextSourceState, provisioningProfileDigest, type GoalState, type MutatingIntent, type PilotMode, type PilotState, type ProviderProvisioningProfile, type SourceDecision, type SourceState } from '@qandeel-company/governance';
-import { assertCauses, containsSecretMaterial, summarizeCauses, type AttributedCause } from '@qandeel-company/mind';
+import { ACTIVATION_INTENTS, APP_CONTROL_APPROVAL_ACTION, BINDING_ROLES, BINDING_SUBJECTS, PILOT_MODES, SOURCE_DECISIONS, assertGoalTransition, assertMoney, assertSourceRegistration, assertTokens, cachedInputRate, isGoalState, isMutatingIntent, nextSourceState, provisioningProfileDigest, type GoalState, type MutatingIntent, type PilotMode, type PilotState, type ProviderProvisioningProfile, type SourceDecision, type SourceState } from '@qandeel-company/governance';
+import { academyPackageDigest, assertCauses, containsSecretMaterial, summarizeCauses, type AcademyPackage, type AttributedCause, type EmployeeIdentityProfile } from '@qandeel-company/mind';
 
+import { AcademyStore } from './academy.js';
+import { txPlanFounderFeedback } from './academy-feedback.js';
 import { txControlDecisionView } from './app-controls.js';
 import { txDigitalDecisionView } from './digital.js';
+import { executeActivation, validateActivationPayload, type ActivationEnv } from './founder-activation.js';
 import { txAssertExternalEvidence } from './external-core.js';
 import { ExternalEvidenceStore, txAssertBindable } from './external-evidence.js';
 import { getBudgetRow, budgetFor } from './governance-core.js';
@@ -36,6 +39,7 @@ import { getStaffingRequest } from './organization.js';
 import { CONTEST_DECISIONS, assertOutcomeClasses, txContestedVerification, type ContestDecision } from './outcome-core.js';
 import { PilotStore, planPilotStep, txBriefingStatus } from './pilots.js';
 import { txResolveReconciliation } from './queue.js';
+import { txPlanReasoningOverride, txPlanReasoningProfile } from './reasoning-control.js';
 import { ReviewStore } from './review.js';
 import { storeContext, type CompanyStore } from './store.js';
 import type { FounderAuthStore, FounderSession } from './founder-auth.js';
@@ -83,10 +87,18 @@ const decodeCause = (v: string): unknown => {
 export interface FounderActionOptions {
   /** L1-01: the release-pinned provider profiles the host registered (the only ones PROVIDER_PROVISION may name). */
   readonly profiles?: readonly ProviderProvisioningProfile[];
+  /** L1-02: the release-pinned Academy packages the host registered (the only ones the activation intents may name). */
+  readonly academyPackages?: readonly AcademyPackage[];
+  /** L1-02: the release-pinned Employee identity profiles the host registered (the only ones a hire may name). */
+  readonly identityProfiles?: readonly EmployeeIdentityProfile[];
 }
 
+const isActivationIntent = (v: string): boolean => (ACTIVATION_INTENTS as readonly string[]).includes(v);
+
 /** Validates one intent's payload against durable state. Returns the canonical (re-shaped) payload. */
-function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<string, unknown>, profiles: readonly ProviderProvisioningProfile[]): Payload {
+function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<string, unknown>, profiles: readonly ProviderProvisioningProfile[], env: ActivationEnv): Payload {
+  // L1-02: the activation intents live in their own module (same boundary, same preview → fingerprint → confirm).
+  if (isActivationIntent(intent)) return validateActivationPayload(ctx, intent, raw, env);
   const s = (k: string, max = 161): string => {
     const v = raw[k];
     if (typeof v !== 'string' || v.trim().length === 0 || v.length > max) throw new QandeelError('VALIDATION_FAILED', `${k} is required`, { field: k });
@@ -166,6 +178,42 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
       const currency = raw.currency ?? b.currency;
       if (currency !== b.currency) throw new QandeelError('CURRENCY_MISMATCH', 'the ceiling must be stated in the budget\'s currency', { budgetId, currency: b.currency });
       return { budgetId, scope: b.scope, scopeId: b.scopeId, currency: b.currency, capMoney, capTokens, reasonCode: assertCode(raw.reasonCode ?? 'founder.ceiling', 'reasonCode') };
+    }
+    // --- D-L1-44: Employee Reasoning Control (reasoning is never authority; nothing here grants, spends or calls a model) ---
+    case 'EMPLOYEE_REASONING_PROFILE': {
+      const plan = txPlanReasoningProfile(ctx, { employeeId: assertId(raw.employeeId, 'employeeId'), defaultClass: raw.defaultClass, ceilingClass: raw.ceilingClass, costDiscipline: raw.costDiscipline });
+      const e = plan.employee;
+      return {
+        employeeId: e.id, name: `${e.name.given} ${e.name.family}`, roleRef: e.roleRef, employeeState: e.state, employeeVersion: e.version,
+        previousDefault: plan.previousDefault, newDefault: plan.newDefault, previousCeiling: plan.previousCeiling, newCeiling: plan.newCeiling,
+        costDiscipline: plan.costDiscipline, costDisciplineChange: 'UNCHANGED',
+        certificationsReviewDue: [...plan.certificationsReviewDue],
+        authorityChange: 'NONE', budgetChange: 'NONE', providerCall: 'NONE',
+        reasonCode: assertCode(raw.reasonCode ?? 'founder.reasoning_profile', 'reasonCode'),
+      };
+    }
+    case 'WORK_ITEM_REASONING_OVERRIDE': {
+      const plan = txPlanReasoningOverride(ctx, { workItemId: assertId(raw.workItemId, 'workItemId'), reasoningClass: raw.reasoningClass });
+      return {
+        workItemId: plan.workItemId, workItemState: plan.workItemState, taskClass: plan.taskClass,
+        employeeId: plan.employee.id, name: `${plan.employee.name.given} ${plan.employee.name.family}`,
+        employeeDefault: plan.standingDefault, employeeCeiling: plan.standingCeiling,
+        requestedClass: plan.requestedClass, effectiveClass: plan.effectiveClass, routePolicyMaxClass: plan.routePolicyMaxClass, deploymentAvailable: plan.deploymentAvailable,
+        scope: 'THIS_WORK_ITEM_ONLY', persistentProfileChange: 'NONE', authorityChange: 'NONE', budgetChange: 'NONE',
+        reasonCode: assertCode(raw.reasonCode ?? 'founder.reasoning_override', 'reasonCode'),
+      };
+    }
+    // --- D-L1-39: Academy Founder Feedback (the Founder's own words to the trainee; nothing is scored, granted or rewritten) ---
+    case 'ACADEMY_FOUNDER_FEEDBACK': {
+      const plan = txPlanFounderFeedback(ctx, { attemptId: raw.attemptId, body: raw.feedback });
+      return {
+        attemptId: plan.attemptId, attemptKind: plan.attemptKind, trial: plan.trial, scenarioCode: plan.scenarioCode, outcome: plan.outcome, averagePct: plan.averagePct,
+        employeeId: plan.employee.id, name: `${plan.employee.name.given} ${plan.employee.name.family}`,
+        answerRef: `work_answer:${plan.answerId}`, answerSha256: plan.answerSha256,
+        feedback: plan.body, feedbackSha256: plan.bodySha256, feedbackBytes: plan.bodyBytes, priorFeedbackOnAttempt: plan.priorOnAttempt,
+        reaches: 'LATER_ACADEMY_ATTEMPTS_OF_THIS_EMPLOYEE', historyChange: 'NONE', scoreChange: 'NONE', authorityChange: 'NONE', budgetChange: 'NONE', providerCall: 'NONE',
+        reasonCode: assertCode(raw.reasonCode ?? 'academy.founder_feedback', 'reasonCode'),
+      };
     }
     case 'DELEGATE_WORK': {
       // Founder-originated authority delegation (C4): a capability grant, bounded and reviewed; never work delegation by text.
@@ -406,11 +454,24 @@ export class FounderActionStore {
   readonly #store: CompanyStore;
   readonly #auth: FounderAuthStore;
   readonly #profiles: readonly ProviderProvisioningProfile[];
+  readonly #activation: ActivationEnv;
 
   private constructor(store: CompanyStore, auth: FounderAuthStore, options: FounderActionOptions) {
     this.#store = store;
     this.#auth = auth;
     this.#profiles = options.profiles ?? [];
+    this.#activation = { packages: options.academyPackages ?? [], identities: options.identityProfiles ?? [] };
+  }
+
+  /** L1-02: the exact digest of one registered Academy package (what a form posts back; never typed by the Founder). */
+  packageDigest(code: string, version: number): string | null {
+    const p = this.#activation.packages.find((x) => x.code === code && x.version === version);
+    return p ? academyPackageDigest(p) : null;
+  }
+
+  /** L1-02: the registered Academy packages and identity profiles (read by the activation view; never typed). */
+  activationEnv(): ActivationEnv {
+    return this.#activation;
   }
 
   static for(store: CompanyStore, auth: FounderAuthStore, options: FounderActionOptions = {}): FounderActionStore {
@@ -418,8 +479,8 @@ export class FounderActionStore {
   }
 
   /** The release-pinned provisioning profiles this store may offer (codes, digests, display facts; never a credential). */
-  provisioningProfiles(): readonly { code: string; sha256: string; providerCode: string; modelCode: string; expectedPublicName: string }[] {
-    return this.#profiles.map((p) => ({ code: p.code, sha256: provisioningProfileDigest(p), providerCode: p.provider.code, modelCode: p.model.code, expectedPublicName: p.model.expectedPublicName }));
+  provisioningProfiles(): readonly { code: string; sha256: string; providerCode: string; modelCode: string; expectedPublicName: string; currency: string; deployments: number; taskClasses: readonly string[] }[] {
+    return this.#profiles.map((p) => ({ code: p.code, sha256: provisioningProfileDigest(p), providerCode: p.provider.code, modelCode: p.model.code, expectedPublicName: p.model.expectedPublicName, currency: p.priceCard.currency, deployments: p.deployments.length, taskClasses: p.routePolicies.map((r) => r.taskClass) }));
   }
 
   /** One write transaction; an optional `onRefusal` runs (in its own transaction) after a typed refusal rolled back. */
@@ -449,7 +510,7 @@ export class FounderActionStore {
     return this.#write('founder action preview', (ctx) => {
       if (!isMutatingIntent(intent)) throw new QandeelError('VALIDATION_FAILED', 'unknown mutating intent', { field: 'intent' });
       if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) throw new QandeelError('VALIDATION_FAILED', 'payload must be an object', { field: 'payload' });
-      const canonical = validatePayload(ctx, intent, payload as Record<string, unknown>, this.#profiles);
+      const canonical = validatePayload(ctx, intent, payload as Record<string, unknown>, this.#profiles, this.#activation);
       const id = newId();
       const at = ts(ctx);
       const fingerprint = sha256Hex(canonicalJson({ v: 1, intent, payload: canonical, session: session.id }));
@@ -511,12 +572,28 @@ export class FounderActionStore {
    */
   #execute(ctx: StoreContext, founderRef: string, p: ActionPreviewRecord): string {
     const pl = p.payload;
+    if (isActivationIntent(p.intentKind)) return executeActivation(this.#store, ctx, founderRef, p.intentKind, pl as Record<string, unknown>, this.#activation);
     const str = (k: string): string => String(pl[k]);
     const strings = (k: string): string[] => (Array.isArray(pl[k]) ? (pl[k] as readonly string[]).map(String) : []);
     switch (p.intentKind) {
       case 'APPROVAL_DECIDE': {
         const a = GovernanceStore.for(this.#store).decideApproval(founderRef, str('approvalId'), { decision: pl.decision as 'APPROVE' | 'REJECT', reasonCode: str('reasonCode') });
         return `approval:${a.id}`;
+      }
+      case 'EMPLOYEE_REASONING_PROFILE': {
+        // The store re-plans inside the confirm and refuses a profile that changed since the preview (version-safe).
+        const e = GovernanceStore.for(this.#store).changeReasoningProfile(founderRef, str('employeeId'), { defaultClass: pl.newDefault as 'E1', ceilingClass: pl.newCeiling as 'E1', expectedVersion: Number(pl.employeeVersion), reasonCode: str('reasonCode') });
+        return `employee:${e.id}`;
+      }
+      case 'WORK_ITEM_REASONING_OVERRIDE': {
+        const o = GovernanceStore.for(this.#store).setWorkItemReasoningOverride(founderRef, str('workItemId'), { reasoningClass: pl.requestedClass as 'E1', reasonCode: str('reasonCode') });
+        if (o.employee.id !== str('employeeId') || o.standingCeiling !== pl.employeeCeiling || o.standingDefault !== pl.employeeDefault) throw new QandeelError('INVALID_TRANSITION', 'the Employee profile changed since the preview', { reason: 'PROFILE_CHANGED' });
+        return `work_item:${o.workItemId}`;
+      }
+      case 'ACADEMY_FOUNDER_FEEDBACK': {
+        // The store re-plans inside the confirm: the answer and the note must be exactly the previewed ones.
+        const out = AcademyStore.for(this.#store).recordFounderFeedback(founderRef, str('attemptId'), { feedback: str('feedback'), expectedAnswerSha256: str('answerSha256'), expectedFeedbackSha256: str('feedbackSha256'), reasonCode: str('reasonCode') });
+        return `academy_founder_feedback:${out.id}`;
       }
       case 'GOAL_APPROVE': {
         const goals = GoalStore.for(this.#store);
@@ -637,6 +714,8 @@ export class FounderActionStore {
         const out = GovernanceStore.for(this.#store).provisionProviderProfile(founderRef, profile, { capMoney: Number(pl.capMoney), capTokens: Number(pl.capTokens), reasonCode: str('reasonCode') });
         return `provider:${out.providerId}`;
       }
+      default:
+        throw new QandeelError('VALIDATION_FAILED', 'unknown intent', { field: 'intent' });
     }
   }
 

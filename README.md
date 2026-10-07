@@ -30,7 +30,8 @@ governed and auditable.
 | `C7-B` Governed App Operations Control Plane | CLOSED / MERGED / CANONICAL (PR #14, `c06fd2e`; `docs/C7B_CLOSURE_RECORD.md`) |
 | `C7-C` Pilot Instrumentation Pack | CLOSED / MERGED / CANONICAL (PR #15, `f450d6a`; `docs/C7C_CLOSURE_RECORD.md`) |
 | `C7-D` Digital Presence Creation & Operations | CLOSED / MERGED / CANONICAL (PR #16, `3d835ec`; `docs/C7D_CLOSURE_RECORD.md`) — C7 complete |
-| `L1-01` DeepSeek V4.1 Flash live provider + Windows secure vault + first local bring-up | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/L1_01_IMPLEMENTATION_REPORT.md`) |
+| `L1-01` DeepSeek V4.1 Flash live provider + Windows secure vault + first local bring-up | CLOSED / MERGED / CANONICAL (PR #17, `11805a9`; `docs/L1_01_CLOSURE_RECORD.md`) |
+| `L1-02` First Production Company Activation (permanent workspace, first real CEO through hire → Academy → activation) | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/L1_02_IMPLEMENTATION_REPORT.md`) |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
@@ -224,7 +225,7 @@ later build and operate QANDEEL's digital presence itself; C7-D does not build t
 
 Details: `docs/C7D_IMPLEMENTATION_REPORT.md`, decisions D-C7D-01 onward; closure: `docs/C7D_CLOSURE_RECORD.md`.
 
-**L1-01 (implementation candidate, not closed) brings up the Founder-selected live provider** — DeepSeek-V4.1-Flash
+**L1-01 (closed; `docs/L1_01_CLOSURE_RECORD.md`) brings up the Founder-selected live provider** — DeepSeek-V4.1-Flash
 (`deepseek-flash`) — through the EXISTING governed Model Runtime, never beside it:
 - a **Windows user-scoped secret vault** (`@qandeel-company/secret-vault`): opaque `vault:<name>` references everywhere,
   values protected with built-in Windows DPAPI (CurrentUser) through the signed PowerShell host and stored under the

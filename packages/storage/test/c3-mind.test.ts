@@ -17,7 +17,7 @@ import { COMPACTION_THRESHOLD } from '@qandeel-company/mind';
 import { loadPinnedSkillInstructions } from '../src/mind-core.js';
 import { MEMORY_POOL_LIMIT } from '../src/mind-writes.js';
 import { hire, seed, testManifest, type Seed } from './c2-helpers.js';
-import { academyWorld, approvedSkill, assemble, attempt, certify, claimFor, complete, finish, propose, scores, stores, workItem } from './c3-helpers.js';
+import { academyWorld, answerIn, answerWork, approvedSkill, assemble, attempt, certify, claimFor, complete, propose, scores, stores, workItem } from './c3-helpers.js';
 import { TEST_SUPERVISOR_TTL_MS, harness, type Harness } from './helpers.js';
 
 // A secret-shaped value assembled at runtime: no secret-looking literal sits in the repository.
@@ -714,7 +714,9 @@ describe('C3 academy: gated, evidence-bound, never self-certifying', () => {
       h.clock.advance(60 * 60_000);
       const second = claimFor(h, started.workItemId, 'w-resumed');
       assert.ok(second.begun.ok && second.begun.context.executionMode === 'ACADEMY_ATTEMPT');
-      assert.equal(assemble(h, second.claim, 1).outcome, 'OK');
+      const resumed = assemble(h, second.claim, 1);
+      assert.equal(resumed.outcome, 'OK');
+      answerIn(h, s, second.claim, resumed.manifestId, 1);
       complete(h, second.claim);
       const once = a.evaluateDeterministic(started.attempt.id);
       const twice = a.evaluateDeterministic(started.attempt.id);
@@ -778,6 +780,7 @@ describe('C3 academy: gated, evidence-bound, never self-certifying', () => {
       const ctx = assemble(h, claim, 1);
       assert.ok(ctx.outcome === 'OK' && ctx.messages.some((m) => m.content.includes('Scenario practice-1')) && !ctx.messages.some((m) => m.content.includes('holdout-1')));
       assert.equal(a.exposures(s.employee.id, w.scenarios.holdout), 0);
+      answerIn(h, s, claim, ctx.manifestId, 1);
       complete(h, claim);
       a.evaluateDeterministic(started.attempt.id);
       a.recordEvaluation(s.founder, started.attempt.id, ASSESSMENT_SCORES);
@@ -786,8 +789,9 @@ describe('C3 academy: gated, evidence-bound, never self-certifying', () => {
       assert.equal(first.attempt.holdoutClean, true);
       h.store.transitionWorkItem(first.workItemId, { to: 'READY', reasonCode: 'release' });
       const run2 = claimFor(h, first.workItemId).claim;
-      assemble(h, run2, 1);
+      const ctx2 = assemble(h, run2, 1);
       assert.equal(a.exposures(s.employee.id, w.scenarios.holdout), 1);
+      answerIn(h, s, run2, ctx2.manifestId, 1);
       complete(h, run2);
       a.evaluateDeterministic(first.attempt.id);
       a.recordEvaluation(s.founder, first.attempt.id, ASSESSMENT_SCORES.map((x) => (x.dimension === 'EVIDENCE_USE' ? { ...x, scorePct: 10 } : x)));
@@ -811,7 +815,7 @@ describe('C3 academy: gated, evidence-bound, never self-certifying', () => {
       assert.throws(() => a.recordEvaluation(s.founder, started.attempt.id, [{ dimension: 'AUTHORITY_COMPLIANCE', scorePct: 100 }]), reason('DETERMINISTIC_DIMENSION'));
       assert.throws(() => a.evaluateDeterministic(started.attempt.id), code('INVALID_TRANSITION'), 'not before the attempt ran');
       assert.throws(() => storeContext(h.store).db.immediate('bypass', () => storeContext(h.store).db.run(`INSERT INTO academy_dimension_results (attempt_id, dimension, score_pct, evaluator_kind, evaluator_ref, evidence_refs_json, recorded_at) VALUES (?, 'CORRECTNESS', 100, 'EVALUATOR', ?, '[]', ?)`, started.attempt.id, s.employee.ref, h.store.now())), code('STORAGE_INVARIANT'));
-      finish(h, started.workItemId);
+      answerWork(h, s, started.workItemId);
       const once = a.evaluateDeterministic(started.attempt.id);
       assert.equal(a.dimensionResults(once.id).filter((d) => d.evaluatorKind === 'DETERMINISTIC_RUBRIC').length, 2);
       a.recordEvaluation(s.founder, started.attempt.id, ASSESSMENT_SCORES);

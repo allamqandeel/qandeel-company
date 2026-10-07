@@ -14,7 +14,15 @@ const timeOnly = new Intl.DateTimeFormat(LOCALE, { timeStyle: 'short' });
 const relative = new Intl.RelativeTimeFormat(LOCALE, { numeric: 'auto' });
 
 export const fmtNumber = (n: number): string => numberFormat.format(n);
-export const fmtMoneyMicros = (micros: number, currency: string): string => new Intl.NumberFormat(LOCALE, { style: 'currency', currency, currencyDisplay: 'code', maximumFractionDigits: 0, signDisplay: 'never' }).format(Math.max(0, Number.isFinite(micros) ? micros : 0) / 1_000_000);
+/**
+ * A money amount from micro-units. Precision follows the magnitude, so a live sub-unit amount is never rounded into a
+ * different figure (L1-02: a USD 0.50 cap used to read "USD 1"; a benchmark costing USD 0.0123 read "USD 0").
+ */
+export const fmtMoneyMicros = (micros: number, currency: string): string => {
+  const units = Math.max(0, Number.isFinite(micros) ? micros : 0) / 1_000_000;
+  const digits = units >= 1_000 ? 0 : units >= 1 ? 2 : 4;
+  return new Intl.NumberFormat(LOCALE, { style: 'currency', currency, currencyDisplay: 'code', minimumFractionDigits: 0, maximumFractionDigits: digits, signDisplay: 'never' }).format(units);
+};
 
 /** "1 department", "3 departments". */
 export const plural = (n: number, one: string, other: string): string => `${fmtNumber(n)} ${n === 1 ? one : other}`;
@@ -155,6 +163,25 @@ export const INTENT_LABEL: Readonly<Record<string, string>> = {
   PILOT_CREATE: 'Create a pilot',
   PILOT_ADVANCE: 'Take a pilot step',
   PROVIDER_PROVISION: 'Provision a model provider',
+  SHOW_ACTIVATION: 'Activate the Company',
+  EMPLOYEE_HIRE: 'Hire into a seat (candidate)',
+  EMPLOYEE_LIFECYCLE: 'Move a trainee',
+  EMPLOYEE_MODEL_ACCESS: 'Open an envelope and model access',
+  SKILL_PACKAGE_QUALIFY: 'Qualify an Academy package',
+  ACADEMY_PACKAGE_INSTALL: 'Install an Academy package',
+  ACADEMY_ENROLL: 'Enroll in the Academy',
+  ACADEMY_MODULES_COMPLETE: 'Acknowledge curriculum modules',
+  ACADEMY_ATTEMPT_START: 'Start an Academy attempt',
+  ACADEMY_EVALUATE: 'Evaluate an Academy attempt',
+  ACADEMY_RETRAIN_COMPLETE: 'Confirm retraining',
+  ACADEMY_SHADOW_ASSIGN: 'Assign shadow work',
+  ACADEMY_PROBATION_EVIDENCE: 'Record probation evidence',
+  ACADEMY_PROBATION_REVIEW: 'Decide the probation review',
+  ACADEMY_CALIBRATION: 'Founder Calibration',
+  ACTIVATION_DECIDE: 'Decide the activation',
+  EMPLOYEE_REASONING_PROFILE: 'Change a reasoning profile',
+  WORK_ITEM_REASONING_OVERRIDE: 'Set the reasoning level of one task',
+  ACADEMY_FOUNDER_FEEDBACK: 'Give feedback on an Academy attempt',
 };
 
 /** Decisions and outcomes in a preview, in words. */
@@ -242,6 +269,15 @@ export const RESULT_LABEL: Readonly<Record<string, string>> = {
   outcome_verification: 'outcome verification',
   lesson_promotion: 'lesson sharing',
   pilot: 'pilot',
+  provider: 'model provider',
+  employee: 'employee',
+  academy_package: 'Academy package',
+  academy_enrollment: 'Academy enrollment',
+  academy_attempt: 'Academy attempt',
+  academy_remediation: 'retraining',
+  probation_review: 'probation review',
+  activation_request: 'activation decision',
+  work_item: 'shadow work',
 };
 export const CALENDAR_LABEL: Readonly<Record<string, string>> = { ACTING_ENDS: 'Acting cover ends', DELEGATION_DUE: 'Delegation due', STAFFING_DECISION_DUE: 'Staffing decision due', GOAL_HORIZON: 'Goal horizon', WORK_DUE: 'Work due', APPROVAL_EXPIRES: 'Approval expires', SESSION_EXPIRES: 'Your session ends', PUBLICATION_WINDOW: 'Publication window (exact, approved per post)' };
 

@@ -57,6 +57,8 @@ export function employeeDetail(ctx: ApiContext, employeeId: string): Json {
     goals: u.goals.filter((g) => work.some((w) => w.goalIds.includes(g.id))).map((g) => ({ id: g.id, title: g.title, state: g.state })),
     budget: budget ? { currency: budget.currency, capMoney: budget.capMoney, spentMoney: budget.spentMoney, reservedMoney: budget.reservedMoney, id: budget.id } : null,
     grants,
+    // D-L1-44: the standing reasoning default / ceiling, Founder one-task overrides and the classes actually used.
+    reasoning: gov.reasoningControl(id) as unknown as Json,
     threads,
     blocked: work.some((w) => w.state === 'BLOCKED'),
     waiting: work.filter((w) => w.state.startsWith('WAITING')).map((w) => w.state),
@@ -304,6 +306,10 @@ function providersView(ctx: ApiContext): Json {
       providerCode: p.providerCode,
       modelCode: p.modelCode,
       expectedPublicName: p.expectedPublicName,
+      // L1-02: the cap is labelled in the profile's own currency (was always shown as USD).
+      currency: p.currency,
+      deployments: p.deployments,
+      taskClasses: p.taskClasses,
       provisioned: provider !== null,
       providerStatus: provider?.status ?? null,
       latestCheck: check ? { result: check.result, observedName: check.observedName, checkedAt: check.checkedAt } : null,
@@ -314,6 +320,52 @@ function providersView(ctx: ApiContext): Json {
 
 export function providers(ctx: ApiContext): Json {
   return providersView(ctx);
+}
+
+/**
+ * L1-02: the Company activation flow — the durable activation view plus the release-pinned registry the forms post
+ * (package codes / versions / digests, scenario and assignment codes, identity profile codes, provider profiles). IDs,
+ * codes and the Founder's own Company content only; never a key or a reference value.
+ */
+function activationPayload(ctx: ApiContext): Json {
+  const env = ctx.runtime.founder.actions.activationEnv();
+  return {
+    view: ctx.runtime.founder.activation(),
+    registry: {
+      packages: env.packages.map((p) => ({
+        code: p.code,
+        version: p.version,
+        sha256: ctx.runtime.founder.actions.packageDigest(p.code, p.version),
+        title: p.title,
+        roleRef: p.roleRef,
+        skills: p.skills.map((s) => ({ code: s.code, name: s.name, bytes: s.instructions.length, cases: s.benchmark.length, sourceRefs: s.sourceRefs })),
+        curriculum: p.program.curriculum.map((m) => ({ code: m.code, category: m.category })),
+        scenarios: p.scenarios.map((s) => ({ code: s.code, kind: s.kind, content: s.kind === 'HOLDOUT' ? null : s.content })),
+        shadowAssignments: p.shadowAssignments.map((a) => ({ code: a.code, objective: a.objective })),
+        taskClasses: p.taskClasses,
+        limits: p.limits,
+        founderCalibrationRequired: p.program.founderCalibrationRequired,
+        assessmentTrials: p.program.assessmentTrials,
+      })),
+      identities: env.identities.map((i) => ({ code: i.code, roleRef: i.roleRef, sourceRef: i.sourceRef })),
+      providers: providersView(ctx),
+      evaluatorDimensions: ['REASONING_QUALITY', 'CORRECTNESS', 'EVIDENCE_USE', 'QANDEEL_UNDERSTANDING', 'ROLE_MASTERY', 'COLLABORATION', 'FOUNDER_COMMUNICATION', 'LEARNING_FROM_FEEDBACK'],
+    },
+  };
+}
+
+export function activation(ctx: ApiContext): Json {
+  return activationPayload(ctx);
+}
+
+/**
+ * L1-02: the candidate's actual answer to one Academy attempt — what the Founder reads before scoring it. A read of
+ * Founder-scoped Company content (the session is the authority; nothing is mutated, and no log line carries the body).
+ */
+export function attemptAnswer(ctx: ApiContext, attemptId: string): Json {
+  const id = str(attemptId, 'attemptId', 36);
+  const a = ctx.runtime.founder.attemptAnswer(id);
+  return { attemptId: id, answer: a === null ? null : { ref: `work_answer:${a.id}`, runId: a.runId, body: a.body, facets: a.facets, recordedAt: a.createdAt } };
 }
 
 export function pilotInspect(ctx: ApiContext, pilotId: string, query: { workItemId?: string | undefined }): Json {
@@ -336,6 +388,8 @@ export interface CommandResolution {
   readonly providers?: Json;
   /** C7-D read intent: the digital projects, the exact external acts awaiting the Founder and (one match) the project. */
   readonly digital?: Json;
+  /** L1-02 read intent: the Company activation flow (every step is a structured-only confirmation). */
+  readonly activation?: Json;
 }
 
 /** Resolves a read intent to a focus change, or a mutating one to a preview (never to a mutation). */
@@ -402,6 +456,9 @@ export function command(ctx: ApiContext, body: Json): CommandResolution {
       case 'SHOW_PROVIDERS':
         // L1-01: a read of the model providers; provisioning is the structured-only PROVIDER_PROVISION confirmation.
         return { intent, focus: { lens: 'LIVE', targetId: null, query: null }, matches: [], providers: providersView(ctx) };
+      case 'SHOW_ACTIVATION':
+        // L1-02: a read of the activation flow; every activation act is a structured-only confirmation.
+        return { intent, focus: { lens: 'LIVE', targetId: null, query: null }, matches: [], activation: activationPayload(ctx) };
       case 'SHOW_PERFORMANCE': {
         const ms = matchEmployees(u, intent.argument ?? '');
         const e = ms.length === 1 ? ms[0] : undefined;
@@ -545,7 +602,25 @@ function resolveMutatingTarget(ctx: ApiContext, u: CompanyUniverse, command: Ext
     case 'PILOT_CREATE':
     case 'PILOT_ADVANCE':
     case 'PROVIDER_PROVISION':
-      // Structured only (a form or a rail action posts IDs / codes), never free text (D-C5-07, R2-21, C7-A, C7-C, L1-01).
+    case 'EMPLOYEE_HIRE':
+    case 'EMPLOYEE_LIFECYCLE':
+    case 'EMPLOYEE_MODEL_ACCESS':
+    case 'SKILL_PACKAGE_QUALIFY':
+    case 'ACADEMY_PACKAGE_INSTALL':
+    case 'ACADEMY_ENROLL':
+    case 'ACADEMY_MODULES_COMPLETE':
+    case 'ACADEMY_ATTEMPT_START':
+    case 'ACADEMY_EVALUATE':
+    case 'ACADEMY_RETRAIN_COMPLETE':
+    case 'ACADEMY_SHADOW_ASSIGN':
+    case 'ACADEMY_PROBATION_EVIDENCE':
+    case 'ACADEMY_PROBATION_REVIEW':
+    case 'ACADEMY_CALIBRATION':
+    case 'ACTIVATION_DECIDE':
+    case 'EMPLOYEE_REASONING_PROFILE':
+    case 'WORK_ITEM_REASONING_OVERRIDE':
+    case 'ACADEMY_FOUNDER_FEEDBACK':
+      // Structured only (a form or a rail action posts IDs / codes), never free text (D-C5-07, R2-21, C7-A, C7-C, L1-01, L1-02).
       return null;
   }
 }
@@ -553,7 +628,7 @@ function resolveMutatingTarget(ctx: ApiContext, u: CompanyUniverse, command: Ext
 const GOAL_STATE_VERB: Readonly<Record<string, string>> = { PAUSED: 'Pause the goal', CANCELLED: 'Cancel the goal', ACHIEVED: 'Mark the goal achieved', ACTIVE: 'Activate the goal', APPROVED: 'Approve the goal', SUPERSEDED: 'Supersede the goal' };
 
 /** The sentence a structured preview shows: what will happen at the real boundary (from the validated payload only). */
-function structuredSummary(ctx: ApiContext, preview: { intentKind: string; payload: Record<string, unknown> }): string {
+export function structuredSummary(ctx: ApiContext, preview: { intentKind: string; payload: Record<string, unknown> }): string {
   const p = preview.payload;
   const s = (k: string): string => String(p[k] ?? '');
   switch (preview.intentKind) {
@@ -624,6 +699,49 @@ function structuredSummary(ctx: ApiContext, preview: { intentKind: string; paylo
       const cap = p.companyBudgetExists === true ? `the existing Company cap stays ${s('existingCapMoney')} micro-${s('currency')}` : `first Company cap ${s('capMoney')} micro-${s('currency')} / ${s('capTokens')} tokens (hard; no automatic top-up)`;
       return `Provision the model provider ${s('providerCode')} (${s('modelCode')} = ${s('observedPublicName')}, identity checked) with deployments ${deployments} at ${s('qualificationTarget')}, egress up to ${s('egressMaxDataClass')}; reservation rates (peak, cache miss) ${s('peakInputPerMTok')} in / ${s('peakOutputPerMTok')} out micro-${s('currency')} per MTok (cached input ${s('peakCachedInputPerMTok')}; off-peak ${s('offPeakInputPerMTok')} / ${s('offPeakOutputPerMTok')}; basis ${s('pricingBasisDate')}); ${cap}`;
     }
+    // --- L1-02: the activation acts, stated as exactly what the canonical store will do (nothing more) ---
+    case 'EMPLOYEE_HIRE':
+      return `Hire ${s('givenName')} ${s('familyName')}${p.displayNameAr ? ` (${s('displayNameAr')})` : ''} into the seat ${s('positionTitle')} (${s('roleRef')}) as a CANDIDATE — not active, no authority, no budget; cognitive profile ${s('defaultClass')}..${s('ceilingClass')}; portrait pending. The Academy alone decides activation`;
+    case 'EMPLOYEE_LIFECYCLE':
+      return `Move ${s('name')} from ${s('from')} to ${s('to')} (a trainee step; ACTIVE comes only from the Academy's activation decision)`;
+    case 'EMPLOYEE_MODEL_ACCESS':
+      return `${p.envelopeExists === true ? 'Keep' : 'Open'} ${s('name')}'s hard envelope of ${s('capMoney')} micro-${s('currency')} and grant model access (R0, up to ${s('dataClassCeiling')}) for: ${Array.isArray(p.taskClasses) ? (p.taskClasses as string[]).join(', ') : ''}. No tools, no external effect`;
+    case 'SKILL_PACKAGE_QUALIFY':
+      // D-L1-23: a BQM-2 qualification states its method, its fixed class, its observation count and its enforced bounds.
+      if (p.benchmarkMethod === 'BQM-2' && p.qualification !== 'FINALIZE_SCORES') return `${p.qualification === 'QUALIFY' ? 'Register and qualify' : `Finalize ${s('scoresToFinalize')} finished benchmark observations (deterministic, never re-run) and re-run the void observations of`} the Academy package ${s('packageCode')} v${s('packageVersion')} (digest ${s('packageSha256').slice(0, 12)}…) under benchmark method BQM-2 (declaration ${s('methodSha256').slice(0, 12)}…, rubric ${s('rubricVersion')}, ANSWER contract ${s('answerContractVersion')} ${s('answerContractSha256').slice(0, 12)}…): inspection, licence check, the deterministic static security review, then ${s('benchmarkRuns')} bounded benchmark observations — ${s('observationsPerArm')} per case and arm, every one at the fixed reasoning class ${s('reasoningClass')} (each delivers only one ANSWER: any other proposal is never executed and counts as an invalid output; one same-class retry after an invalid output; two invalid outputs fail the observation) — each capped at ${s('perRunCapMicros')} micro-units and at a hard maximum of ${s('maxModelCallsPerObservation')} model calls; the enforced cap bound on the total is ${s('totalCapBoundMicros')} micro-units and the hard stop is the Employee envelope (${s('envelopeRemainingMicros')} micro-units remaining): exhausting it leaves the package incomplete, never overspent, and no budget is raised. Nothing is approved here${Array.isArray(p.reusedSkills) && p.reusedSkills.length > 0 ? `. Reused qualified Skill Versions (no new version, no review, no benchmark — their own evidence, bound by fingerprint): ${(p.reusedSkills as string[]).join('; ')}; only ${Array.isArray(p.newlyQualifiedSkills) ? (p.newlyQualifiedSkills as string[]).join(', ') : ''} qualify new versions` : ''}`;
+      if (p.qualification === 'FINALIZE_SCORES') return `Finalize the deterministic benchmark scores of the Academy package ${s('packageCode')} v${s('packageVersion')} (digest ${s('packageSha256').slice(0, 12)}…): ${s('scoresToFinalize')} finished, answered benchmark runs become durable SCORED evidence with the deterministic rubric — a failed case stays failed and is never re-run. Creates 0 benchmark runs and makes 0 paid provider calls; nothing is approved or installed`;
+      return `${p.qualification === 'QUALIFY' ? 'Register and qualify' : `Finalize ${s('scoresToFinalize')} finished benchmark scores (deterministic, never re-run) and re-run the void benchmark cases of`} the Academy package ${s('packageCode')} v${s('packageVersion')} (digest ${s('packageSha256').slice(0, 12)}…): inspection, licence check, the deterministic static security review, then ${s('benchmarkRuns')} bounded benchmark runs (with / without each skill), each capped at ${s('perRunCapMicros')} micro-units; the hard bound on the total is the Employee envelope (${s('envelopeRemainingMicros')} micro-units remaining). Nothing is approved here`;
+    case 'ACADEMY_PACKAGE_INSTALL':
+      return `Install the qualified Academy package ${s('packageCode')} v${s('packageVersion')} (digest ${s('packageSha256').slice(0, 12)}…): approve its Skill versions on their own evidence, publish the ${s('roleRef')} blueprint and program (${s('scenarios')}; calibration ${p.founderCalibrationRequired === true ? 'required' : 'not required'}). This authorizes the install; it asserts no test result`;
+    case 'ACADEMY_ENROLL':
+      return `Enroll ${s('name')} in the ${s('roleRef')} program and open ${s('passports')} LEARNING skill passports (training, not authority)`;
+    case 'ACADEMY_MODULES_COMPLETE':
+      return `Record the trainer acknowledgement of ${Array.isArray(p.moduleCodes) ? (p.moduleCodes as string[]).length : 0} curriculum module(s); the learning path advances only as far as the evidence allows`;
+    case 'ACADEMY_ATTEMPT_START':
+      return `Start the ${s('attemptKind').toLowerCase()} attempt on ${s('scenarioKind').toLowerCase()} scenario ${s('scenarioCode')}: one bounded run (cap ${s('capMicros')} micro-units, output ${s('maxOutputTokens')} tokens, task class ${s('taskClass')}), constrained authority, no external effect`;
+    case 'ACADEMY_EVALUATE':
+      return p.answered === true ? `Record your evaluator scores (${Array.isArray(p.scores) ? (p.scores as string[]).join(', ') : ''}); authority compliance and cost discipline come from run facts, never from you or the model` : 'Close the unanswered attempt through the deterministic rubric (void, or failed on a refusal) — nothing to score';
+    case 'ACADEMY_RETRAIN_COMPLETE':
+      return `Record that the targeted retraining is done (${Array.isArray(p.categories) ? (p.categories as string[]).join(', ') : ''}); the trainee is re-tested next`;
+    case 'ACADEMY_SHADOW_ASSIGN':
+      return `Assign the shadow work "${s('objective')}" (internal, no external effect, cap ${s('capMicros')} micro-units)`;
+    case 'ACADEMY_PROBATION_EVIDENCE':
+      return `Record probation evidence on the shadow work — positive: ${Array.isArray(p.positive) ? (p.positive as string[]).join(', ') || 'none' : 'none'}; negative: ${Array.isArray(p.negative) ? (p.negative as string[]).join(', ') || 'none' : 'none'}`;
+    case 'ACADEMY_PROBATION_REVIEW':
+      return `Decide the probation review: ${s('decision')} (PASS needs the program's evidence; certification follows only from complete evidence and is not activation)`;
+    case 'ACADEMY_CALIBRATION':
+      return `${p.decision === 'APPROVE' ? 'Approve' : 'Reject'} the Founder Calibration (evidence: ${Array.isArray(p.evidenceRefs) ? (p.evidenceRefs as string[]).length : 0} item(s))`;
+    case 'ACTIVATION_DECIDE':
+      return p.decision === 'APPROVE' ? `Activate ${s('name')} (${s('roleRef')}): the Academy activation gate re-checks the valid certification, the passed probation and the approved calibration. Activation grants no authority beyond explicit grants` : `Reject the activation of ${s('name')} (the enrollment closes; its evidence stays)`;
+    // --- D-L1-44: Employee Reasoning Control (reasoning is not authority) ---
+    case 'EMPLOYEE_REASONING_PROFILE': {
+      const due = Array.isArray(p.certificationsReviewDue) ? (p.certificationsReviewDue as string[]).length : 0;
+      return `Change ${s('name')}'s standing reasoning profile: default ${s('previousDefault')} → ${s('newDefault')}, ceiling ${s('previousCeiling')} → ${s('newCeiling')}; cost discipline ${s('costDiscipline')} unchanged. Future work without a one-task override starts from the new default. A material change: ${due} valid certification(s) become REVIEW_DUE. No authority, tool, data, approval or budget change; no provider call`;
+    }
+    case 'WORK_ITEM_REASONING_OVERRIDE':
+      return `Run this one Work Item (${s('workItemId').slice(0, 8)}…, ${s('taskClass')}) for ${s('name')} at ${s('requestedClass')} (routes at ${s('effectiveClass')}; standing default ${s('employeeDefault')}, ceiling ${s('employeeCeiling')}; route policy max ${s('routePolicyMaxClass')}${p.deploymentAvailable === true ? '' : '; no deployment of that class is provisioned now — the run cannot route until one is'}). This Work Item only: the persistent profile, authority, tools, data and budget are unchanged, and the worst case of the class is reserved before any call`;
+    case 'ACADEMY_FOUNDER_FEEDBACK':
+      return `Record your feedback (${s('feedbackBytes')} bytes) on ${s('name')}'s ${s('attemptKind').toLowerCase()} #${s('trial')} (${s('scenarioCode')}, ${s('outcome')}), bound to that attempt's recorded answer. It is added, never rewritten: the attempt, its answer and its scores stand as decided. The trainee's later Academy attempts carry it in their context; production work does not. No authority, budget or provider call`;
     case 'PILOT_ADVANCE': {
       const step: Record<string, string> = {
         BRIEFING: 'Start the pilot briefing with the CEO (a conversation; it decides nothing)',

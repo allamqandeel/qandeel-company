@@ -4,7 +4,7 @@
  * routing, budgets and fencing on every call (Stage 12 §11, Stage 13 D13-D).
  */
 import type { JsonObject, Processor, ProcessorContext, ProcessorResult } from '@qandeel-company/domain';
-import type { EscalationEvidence, ModelProposal, ProviderFailureClass, ProviderUsage, ReasoningClass } from '@qandeel-company/governance';
+import type { EscalationEvidence, OutputDiagnosticCode, ModelProposal, ProviderFailureClass, ProviderUsage, ReasoningClass } from '@qandeel-company/governance';
 import type { GovernedRunContext } from '@qandeel-company/storage/runtime-authority';
 
 /**
@@ -83,6 +83,15 @@ export type MessageProposal = Extract<ModelProposal, { type: 'MESSAGE' }>;
 /** C5: a Director's goal act proposed from inside its run (seat and Department re-checked by the fenced write). */
 export type GoalActProposal = Extract<ModelProposal, { type: 'GOAL_ACTION' }>;
 
+/** L1-02: the typed deliverable of an answer-bearing Work Item (bound to the run's own Work Item by the runtime). */
+export type AnswerProposal = Extract<ModelProposal, { type: 'ANSWER' }>;
+
+export interface AnswerOutcome {
+  readonly outcome: 'RECORDED' | 'REFUSED';
+  readonly code: string;
+  readonly answerId: string | null;
+}
+
 export interface MessageOutcome {
   readonly outcome: 'RECORDED' | 'REFUSED';
   readonly code: string;
@@ -115,10 +124,18 @@ export interface GovernedRunServices {
    * result: the next turn's governed context shows the model the question it must answer before it can finish.
    */
   refuseFinal(step: number, code: 'FINAL_REFUSED_CLARIFICATION_PENDING'): void;
+  /**
+   * D-L1-20: durably records the parser's content-free classification of an output that failed validation at this step
+   * (the output text is never stored, and nothing reads it back into a context). D-L1-24: or the output-contract code of a
+   * valid proposal an answer-only Work Item refuses, with the recognized proposal type or the answer refusal code.
+   */
+  noteInvalidOutput(step: number, code: OutputDiagnosticCode, reasoningClass: string, detail?: { readonly proposalType?: string; readonly refusalCode?: string }): void;
   /** C5: the Employee's message into the Founder thread its Work Item answers (fenced; never authority). */
   sendMessage(proposal: MessageProposal, step: number): MessageOutcome;
   /** C5: a Director's goal derivation / link from inside its run (fenced). */
   goalAct(proposal: GoalActProposal, step: number): GoalActOutcome;
+  /** L1-02: the one answer of this run's answer-bearing Work Item (fenced; never authority, never a score). */
+  recordAnswer(proposal: AnswerProposal, step: number, manifestId: string): AnswerOutcome;
 }
 
 /**

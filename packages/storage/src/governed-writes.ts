@@ -31,12 +31,14 @@ import {
   maxDataClass,
   reasoningRank,
   decideEmployeeAction,
+  effectiveClass,
   toolCapability,
   validateArgs,
   type AttemptKind,
   type CognitiveProfile,
   type DataClass,
   type ProviderFailureClass,
+  type ReasoningClass,
   type RoutePolicy,
   externalEgressAvailable,
 } from '@qandeel-company/governance';
@@ -68,6 +70,7 @@ import { academyExecutionMode, academyRun, constrainedRun, contextClassOf, manif
 import { OPEN_HANDOFF_STATES, acceptDelegationOnStart, materializeExpiredActing, snapshotRunOrganization } from './org-core.js';
 import { verifyFence } from './queue.js';
 import type { Fence } from './records.js';
+import { txReasoningOverride } from './reasoning-control.js';
 import { actionReviewGate, consumeActionReview, recheckReviewWait } from './review-core.js';
 
 export const SYSTEM_RUNTIME_REF = 'system:runtime';
@@ -81,10 +84,15 @@ export interface GovernedRunContext {
   readonly departmentId: Id | null;
   readonly orgScope: 'DEPARTMENT' | 'COMPANY';
   readonly cognitiveProfile: CognitiveProfile;
+  /**
+   * D-L1-44: the Founder's one-task reasoning class for this Work Item (durable, set before it first ran), or null. It
+   * replaces only the starting class; the Employee ceiling, the route policy and the budget still bind.
+   */
+  readonly reasoningOverride: ReasoningClass | null;
   /** Highest data class of this run's context (declared on the Work Item; the model cannot lower it). */
   readonly dataClass: DataClass;
   /** ACTIVE duty, or constrained Academy / shadow execution by a non-ACTIVE Employee (C3, Stage 6 §11). */
-  readonly executionMode: 'ACTIVE' | 'ACADEMY_ATTEMPT' | 'SHADOW_WORK';
+  readonly executionMode: 'ACTIVE' | 'ACADEMY_ATTEMPT' | 'SHADOW_WORK' | 'SKILL_BENCHMARK';
   /**
    * R1-03: the first Work-Item-global step of this job. A processor's loop step counts per job (its
    * checkpoints are per job), but idempotency keys, step results and memory candidates are keyed per
@@ -167,6 +175,7 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
     departmentId: e.departmentId,
     orgScope: e.orgScope,
     cognitiveProfile: Object.freeze({ ...assertCognitiveProfile(e.cognitiveProfile) }),
+    reasoningOverride: txReasoningOverride(ctx, item.id),
     dataClass: workItemDataClass(item.processorInput),
     executionMode: academyMode ?? 'ACTIVE',
     stepBase,
@@ -297,6 +306,14 @@ function policyById(ctx: StoreContext, id: Id): RoutePolicy {
  * atomically: either every level has headroom and all are reserved, or nothing is. Also enforces
  * the per-Run call ceiling, escalation depth and retry/fallback/escalation overhead ceiling.
  */
+/** D-L1-24: the hard model-call bound a Work Item's own (immutable, submitter-set) processor input declares, if any. */
+function workItemMaxModelCalls(ctx: StoreContext, workItemId: Id): number | null {
+  const raw = ctx.db.get<{ j: string | null }>('SELECT processor_input_json AS j FROM work_items WHERE id = ?', workItemId)?.j ?? null;
+  if (raw === null) return null;
+  const v = (JSON.parse(raw) as { maxModelCalls?: unknown } | null)?.maxModelCalls;
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= 1 ? v : null;
+}
+
 export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput): ReserveResult {
   const job = verifyFence(ctx, fence);
   const a = attributed(ctx, fence);
@@ -332,6 +349,15 @@ export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput):
     if (!(JSON.parse(d.task_classes_json) as string[]).includes(policy.taskClass)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'TASK_CLASS_NOT_QUALIFIED');
     const ceiling = assertCognitiveProfile(e.cognitiveProfile).ceilingClass;
     if (!isReasoningClass(d.reasoning_class) || reasoningRank(d.reasoning_class) > reasoningRank(ceiling) || reasoningRank(d.reasoning_class) > reasoningRank(policy.maxClass)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'REASONING_ABOVE_CEILING');
+    // D-L1-44: a Founder one-task override is never bypassed downward: no call of this Work Item is reserved below the
+    // class it starts from (bounded escalation, its retries and fallbacks only ever sit at or above it).
+    const override = txReasoningOverride(ctx, a.workItemId);
+    if (override !== null && reasoningRank(d.reasoning_class) < reasoningRank(effectiveClass({ reasoningClass: override }, policy))) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'BELOW_REASONING_OVERRIDE');
+    // D-L1-24: a Work Item that declares a hard model-call bound (a BQM-2 benchmark observation: two) never reserves past
+    // it, across every run of the item (a retry or a resume after a crash included). Counted from durable reservations;
+    // a RELEASED one was never sent, so only possibly-sent calls count.
+    const maxModelCalls = workItemMaxModelCalls(ctx, a.workItemId);
+    if (maxModelCalls !== null && Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM budget_reservations WHERE work_item_id = ? AND purpose = 'MODEL_CALL' AND state <> 'RELEASED'`, a.workItemId)?.n ?? 0) >= maxModelCalls) return refuse('RUN_LIMIT', 'MAX_CALLS_PER_WORK_ITEM');
     const calls = ctx.db.all(`SELECT attempt_kind, state, money FROM budget_reservations WHERE run_id = ? AND purpose = 'MODEL_CALL'`, fence.runId);
     if (calls.length >= policy.maxCallsPerRun) return refuse('RUN_LIMIT', 'MAX_CALLS_PER_RUN');
     if (input.attemptKind === 'ESCALATION' && calls.filter((c) => c.attempt_kind === 'ESCALATION').length >= policy.escalation.maxDepth) return refuse('RUN_LIMIT', 'ESCALATION_DEPTH');

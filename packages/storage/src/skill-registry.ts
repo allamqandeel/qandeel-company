@@ -190,40 +190,17 @@ export class SkillStore {
   }
 
   #advance(ctx: StoreContext, v: SkillVersionRecord, to: PipelineState, reason: string, actorRef: string, set: { findings?: string[]; security?: 'CLEARED' | 'FAILED'; benchmark?: string; approvedBy?: string } = {}, evidenceRef: string | null = null): SkillVersionRecord {
-    assertPipelineStep(v.pipelineState, to);
-    const benchmarks = set.benchmark ? [...v.benchmarkRefs, set.benchmark] : v.benchmarkRefs;
-    const changed = ctx.db.run(
-      `UPDATE skill_versions SET pipeline_state = ?, failure_reason = ?, inspection_findings_json = COALESCE(?, inspection_findings_json), security_status = COALESCE(?, security_status), benchmark_refs_json = ?, approved_by_ref = COALESCE(?, approved_by_ref), version = version + 1, updated_at = ? WHERE id = ? AND version = ?`,
-      to, to === 'REJECTED' ? reason.slice(0, 64) : null, set.findings === undefined ? null : JSON.stringify(set.findings), set.security ?? null, JSON.stringify(benchmarks), set.approvedBy ?? null, ts(ctx), v.id, v.version,
-    ).changes;
-    if (changed !== 1) throw new QandeelError('VERSION_CONFLICT', 'skill version changed concurrently', { skillVersionId: v.id });
-    history(ctx, v, 'PIPELINE', v.pipelineState, to, reason, actorRef, evidenceRef);
-    return getSkillVersionRow(ctx, v.id);
+    return advanceVersion(ctx, v, to, reason, actorRef, set, evidenceRef);
   }
 
   /** Deterministic static inspection (system). Findings reject the version; the reason is preserved. */
   inspectSkillVersion(versionId: string): SkillVersionRecord {
-    return this.#write('inspect skill version', (ctx) => {
-      const v = getSkillVersionRow(ctx, assertId(versionId, 'versionId'));
-      if (v.pipelineState !== 'DISCOVERED') throw new QandeelError('INVALID_TRANSITION', 'only a discovered version is inspected', { skillVersionId: v.id });
-      const instructions = loadSkillPayloadForInspection(ctx, v.id);
-      const findings = instructions !== null ? inspectSkillPayload(instructions, v.directives) : ['INTEGRITY_FAILED'];
-      const inspected = this.#advance(ctx, v, 'INSPECTED', findings.length ? 'inspection.findings' : 'inspection.clean', SYSTEM_MIND_REF, { findings });
-      return findings.length ? this.#advance(ctx, inspected, 'REJECTED', `INSPECTION_${findings[0]}`, SYSTEM_MIND_REF) : inspected;
-    });
+    return this.#write('inspect skill version', (ctx) => txInspectSkillVersion(ctx, versionId));
   }
 
   /** Deterministic license / dependency check (system). No clear free license → rejected, never production. */
   checkLicenseAndDependencies(versionId: string): SkillVersionRecord {
-    return this.#write('check skill license', (ctx) => {
-      const v = getSkillVersionRow(ctx, assertId(versionId, 'versionId'));
-      if (v.pipelineState !== 'INSPECTED') throw new QandeelError('INVALID_TRANSITION', 'only an inspected version is license-checked', { skillVersionId: v.id });
-      // Unknown / non-free licences are rejected; licences with obligations wait for a recorded licence
-      // review (never auto-cleared, never auto-rejected); clear-free and QANDEEL-owned continue.
-      if (v.licenseStatus === 'UNCLEAR' || v.licenseStatus === 'NOT_FREE') return this.#advance(ctx, v, 'REJECTED', `LICENSE_${v.licenseStatus}`, SYSTEM_MIND_REF);
-      if (v.licenseStatus === 'REVIEW_REQUIRED') return this.#advance(ctx, v, 'LICENSE_DEPENDENCY_CHECKED', 'license.review_required', SYSTEM_MIND_REF);
-      return this.#advance(ctx, v, 'LICENSE_DEPENDENCY_CHECKED', v.paidDependency ? 'license.clear_paid_dependency' : 'license.clear', SYSTEM_MIND_REF);
-    });
+    return this.#write('check skill license', (ctx) => txCheckSkillLicense(ctx, versionId));
   }
 
   /**
@@ -579,4 +556,38 @@ function wakeAllCapabilityGaps(ctx: StoreContext, reason: string): void {
 
 function notFound(what: string, id: string): never {
   throw new QandeelError('NOT_FOUND', `${what} not found`, { id });
+}
+
+/** One pipeline step of a Skill version with its history row (shared by the store and the L1-02 package path). */
+function advanceVersion(ctx: StoreContext, v: SkillVersionRecord, to: PipelineState, reason: string, actorRef: string, set: { findings?: string[]; security?: 'CLEARED' | 'FAILED'; benchmark?: string; approvedBy?: string } = {}, evidenceRef: string | null = null): SkillVersionRecord {
+  assertPipelineStep(v.pipelineState, to);
+  const benchmarks = set.benchmark ? [...v.benchmarkRefs, set.benchmark] : v.benchmarkRefs;
+  const changed = ctx.db.run(
+    `UPDATE skill_versions SET pipeline_state = ?, failure_reason = ?, inspection_findings_json = COALESCE(?, inspection_findings_json), security_status = COALESCE(?, security_status), benchmark_refs_json = ?, approved_by_ref = COALESCE(?, approved_by_ref), version = version + 1, updated_at = ? WHERE id = ? AND version = ?`,
+    to, to === 'REJECTED' ? reason.slice(0, 64) : null, set.findings === undefined ? null : JSON.stringify(set.findings), set.security ?? null, JSON.stringify(benchmarks), set.approvedBy ?? null, ts(ctx), v.id, v.version,
+  ).changes;
+  if (changed !== 1) throw new QandeelError('VERSION_CONFLICT', 'skill version changed concurrently', { skillVersionId: v.id });
+  history(ctx, v, 'PIPELINE', v.pipelineState, to, reason, actorRef, evidenceRef);
+  return getSkillVersionRow(ctx, v.id);
+}
+
+/** Deterministic static inspection (system; in the caller's transaction). Findings reject the version. */
+export function txInspectSkillVersion(ctx: StoreContext, versionId: string): SkillVersionRecord {
+  const v = getSkillVersionRow(ctx, assertId(versionId, 'versionId'));
+  if (v.pipelineState !== 'DISCOVERED') throw new QandeelError('INVALID_TRANSITION', 'only a discovered version is inspected', { skillVersionId: v.id });
+  const instructions = loadSkillPayloadForInspection(ctx, v.id);
+  const findings = instructions !== null ? inspectSkillPayload(instructions, v.directives) : ['INTEGRITY_FAILED'];
+  const inspected = advanceVersion(ctx, v, 'INSPECTED', findings.length ? 'inspection.findings' : 'inspection.clean', SYSTEM_MIND_REF, { findings });
+  return findings.length ? advanceVersion(ctx, inspected, 'REJECTED', `INSPECTION_${findings[0]}`, SYSTEM_MIND_REF) : inspected;
+}
+
+/** Deterministic license / dependency check (system; in the caller's transaction). */
+export function txCheckSkillLicense(ctx: StoreContext, versionId: string): SkillVersionRecord {
+  const v = getSkillVersionRow(ctx, assertId(versionId, 'versionId'));
+  if (v.pipelineState !== 'INSPECTED') throw new QandeelError('INVALID_TRANSITION', 'only an inspected version is license-checked', { skillVersionId: v.id });
+  // Unknown / non-free licences are rejected; licences with obligations wait for a recorded licence
+  // review (never auto-cleared, never auto-rejected); clear-free and QANDEEL-owned continue.
+  if (v.licenseStatus === 'UNCLEAR' || v.licenseStatus === 'NOT_FREE') return advanceVersion(ctx, v, 'REJECTED', `LICENSE_${v.licenseStatus}`, SYSTEM_MIND_REF);
+  if (v.licenseStatus === 'REVIEW_REQUIRED') return advanceVersion(ctx, v, 'LICENSE_DEPENDENCY_CHECKED', 'license.review_required', SYSTEM_MIND_REF);
+  return advanceVersion(ctx, v, 'LICENSE_DEPENDENCY_CHECKED', v.paidDependency ? 'license.clear_paid_dependency' : 'license.clear', SYSTEM_MIND_REF);
 }

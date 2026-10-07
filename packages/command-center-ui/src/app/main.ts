@@ -3,7 +3,7 @@
  * projection → the Tree of Light view → lenses, attention, conversation, governed confirmation, timeline.
  * Server-Sent "changed" nudges re-project; nothing polls.
  */
-import { deptName, fmtRelative, INTENT_LABEL, LEVEL_LABEL, RELATION_LABEL, RESULT_LABEL, SOURCE_LABEL, t } from '../model/format.js';
+import { deptName, fmtRelative, humanize, INTENT_LABEL, LEVEL_LABEL, RELATION_LABEL, RESULT_LABEL, SOURCE_LABEL, t } from '../model/format.js';
 import { layoutUniverse } from '../model/layout.js';
 import { applyLens, attentionSpotlight, chainNodeIds, showsRelations } from '../model/lenses.js';
 import type { CompanyUniverse, Emphasis, Layout, LayoutNode, Lens } from '../model/types.js';
@@ -74,6 +74,8 @@ class App implements PanelHost {
     window.addEventListener('keydown', (e) => this.#hotkeys(e));
     $('logout').addEventListener('click', () => void api.post('/api/session/logout').then(() => location.reload()));
     $('palette-open').addEventListener('click', () => this.openPalette());
+    // L1-02: the Company activation flow is one click away (a read; every act in it is a governed confirmation).
+    $('activation-open').addEventListener('click', () => void this.runCommand('show activation'));
     $('legend-toggle').addEventListener('click', () => $('legend').toggleAttribute('hidden'));
     $('attention-toggle').addEventListener('click', () => (this.#railOpen ? this.closeRail() : this.showLane(null)));
     this.#paletteInput();
@@ -129,6 +131,11 @@ class App implements PanelHost {
       }
       renderTimeline($('timeline'), { live: at === null, at, earliest: this.timelineBounds.earliest, now: this.timelineBounds.now }, this);
       renderHealthLine($('health'), u, this.stream);
+      // L1-02: an open activation panel re-reads the durable view (after a confirmation or a change elsewhere).
+      if (!$('palette').hidden && this.paletteResult && (this.paletteResult as Json).activation) {
+        this.paletteResult = { ...this.paletteResult, activation: await api.get<Json>('/api/activation') };
+        this.#paletteInput(false);
+      }
       if (this.lens.kind === 'EMPLOYEE' || this.lens.kind === 'CONVERSATION' || this.lens.kind === 'GOAL') {
         await this.#renderFocus();
         this.#applyTether();
@@ -467,7 +474,8 @@ class App implements PanelHost {
       const r = await api.post<{ preview: Json }>('/api/previews', { intent, payload });
       this.showPreview(r.preview);
     } catch (e) {
-      this.note(`No preview (${e instanceof ApiError ? e.code : 'error'}). Nothing changed.`, 'system');
+      const reason = e instanceof ApiError && typeof e.details.reason === 'string' ? `: ${humanize(e.details.reason)}` : '';
+      this.note(`No preview (${e instanceof ApiError ? e.code : 'error'}${reason}). Nothing changed.`, 'system');
       await this.refresh(false);
     }
   }

@@ -522,7 +522,7 @@ describe('C7-C restart, idempotency, atomicity, the governed confirmation and th
       v13.close();
       const v14 = openStoreForTests(root, { clock: new ManualClock(), liveSchemaUpdate: true });
       try {
-        assert.deepEqual(v14.migration.applied, [14, 15, 16]);
+        assert.deepEqual(v14.migration.applied, [14, 15, 16, 17, 18, 19, 20, 21]);
         const d = storeContext(v14).db;
         assert.deepEqual({ previews: Number(d.get<{ n: number }>('SELECT COUNT(*) AS n FROM founder_action_previews')?.n), audit: Number(d.get<{ n: number }>('SELECT COUNT(*) AS n FROM audit_events')?.n), goals: Number(d.get<{ n: number }>('SELECT COUNT(*) AS n FROM goals')?.n) }, before);
         assert.equal(Number(d.get<{ n: number }>('SELECT COUNT(*) AS n FROM pilots')?.n), 0, 'the release creates no Pilot');

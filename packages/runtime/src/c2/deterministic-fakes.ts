@@ -8,6 +8,9 @@
  */
 import { ProviderError, type ProviderAdapter, type ProviderFailureClass, type ProviderRequest, type ProviderResponse, type ToolDriver, type ToolDriverInput, type ToolDriverResult } from '@qandeel-company/governance';
 
+/** The default answer of an answer-bearing item (closed facets; a cautious, reversible, in-authority decision). */
+const FAKE_ANSWER = { type: 'ANSWER', body: 'Fake answer: gather the missing evidence before acting.', decision: 'GATHER_EVIDENCE', reversible: true, authority: 'WITHIN_HELD_AUTHORITY', evidence: 'PARTIAL', confidence: 'MEDIUM', founderDecisionNeeded: false, spendMicros: 0 };
+
 /**
  * Scripted fake provider. The user message carries `{ "script": [output, ...] }`; the n-th call of a
  * run (n = number of tool messages already in the context) returns `script[n]` as JSON text. Output
@@ -82,7 +85,9 @@ export class DeterministicFakeProvider implements ProviderAdapter {
         }
       }
     }
-    let entry: unknown = script[turn] ?? { type: 'FINAL', summaryCode: 'fake.done' };
+    // L1-02: an answer-bearing item (its context offers the ANSWER shape) is answered by default, as the contract asks.
+    const answerBearing = request.messages.some((m) => m.role === 'system' && m.content.includes('{"type":"ANSWER"'));
+    let entry: unknown = script[turn] ?? (answerBearing ? FAKE_ANSWER : { type: 'FINAL', summaryCode: 'fake.done' });
     // C5: `{ hold: <ms>, then: <entry> }` keeps the call (and so the run) visibly in progress — a bounded,
     // abortable wait, never a real model — so live proofs can show work that is running right now.
     if (typeof entry === 'object' && entry !== null && 'hold' in entry) {

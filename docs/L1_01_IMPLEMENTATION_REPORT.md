@@ -358,3 +358,13 @@ CEO through the Academy and the Founder surface" is the next L1 task.
 - **R-L1-08** No budget period / monthly reset exists (C2 residual); the L1 caps are lifetime envelopes.
 
 L1-01 is NOT CLOSED.
+
+## 24. Lifecycle note (appended at the L1-02 start, 2026-10-06)
+
+The narrative above is history and is not rewritten. After the Technical Lead's exact-head review of `80086dd` (which
+followed the D-L1-10 wire correction and the D-L1-11 proof-portability correction), PR #17 merged into `main` as
+`11805a94182f9590f69fb977351acb11c56e4674` (same tree `45f6e31a`). Exact-head run #107 passed the full Windows + Ubuntu
+gate on attempt 2 (attempt 1: one Windows mutation shard stalled at runner checkout before its first step —
+infrastructure only, re-run on the same SHA without a new commit); post-merge run #108 passed the fast-integrity path.
+The canonical closure statement is `docs/L1_01_CLOSURE_RECORD.md`: L1-01 is CLOSED / MERGED / CANONICAL. Residual
+R-L1-04 (the first production CEO) is L1-02's scope.

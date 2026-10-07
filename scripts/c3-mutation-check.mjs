@@ -135,7 +135,7 @@ const MUTATIONS = [
   {
     id: 'holdout-reused',
     gate: 'a holdout already exposed never certifies',
-    edits: [{ file: `${STORE}/academy.js`, search: "            if (s.kind === 'HOLDOUT' && exposed > 0)", replace: '            if (false) /* mutation: holdout exposure check removed */' }],
+    edits: [{ file: `${STORE}/academy.js`, search: "    if (s.kind === 'HOLDOUT' && exposed > 0)", replace: '    if (false) /* mutation: holdout exposure check removed */' }],
     runs: [STORAGE],
   },
   {

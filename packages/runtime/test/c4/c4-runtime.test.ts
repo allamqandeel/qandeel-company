@@ -149,6 +149,7 @@ describe('R2-04: the delegator loop answers a pending clarification instead of w
       openHandoffs: () => open,
       clarificationsRequested: () => asked,
       refuseFinal: (step: number, c: string) => void refused.push(`${step}:${c}`),
+      noteInvalidOutput: () => undefined,
     } as unknown as GovernedRunServices;
     return { result: await employeeTaskProcessor.runGoverned(ctx, gov), calls, refused };
   };

@@ -171,7 +171,7 @@ describe('D-C3-18: losing the current-role certification ends ordinary duty', ()
       const { w, employee, certificationId } = activeCertified(h, s);
       const a = AcademyStore.for(h.store);
       a.revokeCertification(s.founder, certificationId, 'conduct.review');
-      const again = certify(h, s, s.gov.getEmployee(employee.id), w);
+      const again = certify(h, s, s.gov.getEmployee(employee.id), { ...w, scenarios: { ...w.scenarios, holdout: w.scenarios.holdout2 } });
       assert.equal(s.gov.getEmployee(employee.id).state, 'RETRAINING', 'a new certification alone never re-activates');
       s.gov.transitionEmployee(s.founder, employee.id, { to: 'PROBATION', reasonCode: 'recertified' });
       const req = a.activationRequests(employee.id).find((r) => r.enrollmentId === again.enrollmentId);

@@ -114,7 +114,7 @@ export function warrantsFounderAttention(purpose: MessagePurpose, level: Attenti
 // --- Founder command intents ---------------------------------------------------------------------
 
 /** Read intents change attention only; mutating intents become structured previews (explicit confirmation). */
-export const READ_INTENTS = ['OPEN_EMPLOYEE', 'SHOW_DEPARTMENT', 'SHOW_GOAL', 'WHO_WORKS_ON', 'WHAT_IS_BLOCKED', 'NEEDS_MY_APPROVAL', 'SHOW_BRIEFS', 'RETURN_TO_LIVE', 'SHOW_CEO', 'SHOW_TIMELINE', 'SHOW_REPORT', 'SHOW_PERFORMANCE', 'SHOW_PILOT', 'SHOW_DIGITAL', 'SHOW_PROVIDERS'] as const;
+export const READ_INTENTS = ['OPEN_EMPLOYEE', 'SHOW_DEPARTMENT', 'SHOW_GOAL', 'WHO_WORKS_ON', 'WHAT_IS_BLOCKED', 'NEEDS_MY_APPROVAL', 'SHOW_BRIEFS', 'RETURN_TO_LIVE', 'SHOW_CEO', 'SHOW_TIMELINE', 'SHOW_REPORT', 'SHOW_PERFORMANCE', 'SHOW_PILOT', 'SHOW_DIGITAL', 'SHOW_PROVIDERS', 'SHOW_ACTIVATION'] as const;
 /**
  * The Founder's exception decisions (R2-21) are STRUCTURED-ONLY intents: no natural-language pattern produces
  * them (like GOAL_PROPOSE); the surface posts them with IDs / codes / bounded numbers, and they are confirmed
@@ -134,7 +134,27 @@ export const EXTERNAL_EVIDENCE_INTENTS = ['SOURCE_REGISTER', 'SOURCE_DECIDE', 'E
 // bounded budget) is a structured-only Founder act of the same boundary: no text pattern produces it, the preview shows
 // the exact deployments, peak rates and cap, and the confirm registers everything through the canonical catalog APIs.
 export const PROVISIONING_INTENTS = ['PROVIDER_PROVISION'] as const;
-export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS, ...EXTERNAL_EVIDENCE_INTENTS, ...PILOT_INTENTS, ...PROVISIONING_INTENTS] as const;
+/**
+ * L1-02 (D-L1-13): the first production activation of a Company role — a hire into a vacant seat, the trainee lifecycle
+ * steps (never ACTIVE), the Employee's bounded model access, the release-pinned Academy package's qualification and its
+ * one install confirmation, and the Academy's own Founder acts (enrollment, modules, attempts, evaluation, retraining,
+ * shadow work, probation, calibration) up to the final Activation decision. Structured-only, like every act of this
+ * boundary: no text pattern produces them, and each calls the existing canonical store at confirmation.
+ */
+export const ACTIVATION_INTENTS = ['EMPLOYEE_HIRE', 'EMPLOYEE_LIFECYCLE', 'EMPLOYEE_MODEL_ACCESS', 'SKILL_PACKAGE_QUALIFY', 'ACADEMY_PACKAGE_INSTALL', 'ACADEMY_ENROLL', 'ACADEMY_MODULES_COMPLETE', 'ACADEMY_ATTEMPT_START', 'ACADEMY_EVALUATE', 'ACADEMY_RETRAIN_COMPLETE', 'ACADEMY_SHADOW_ASSIGN', 'ACADEMY_PROBATION_EVIDENCE', 'ACADEMY_PROBATION_REVIEW', 'ACADEMY_CALIBRATION', 'ACTIVATION_DECIDE'] as const;
+/**
+ * D-L1-44 (D-L1-36): Employee Reasoning Control — the Founder's persistent reasoning default / ceiling of one Employee,
+ * and the one-task reasoning class of one not-yet-executed Employee Work Item. Structured-only (no text produces them);
+ * reasoning is never authority: neither changes grants, tools, data class, risk, approvals or budget.
+ */
+export const REASONING_INTENTS = ['EMPLOYEE_REASONING_PROFILE', 'WORK_ITEM_REASONING_OVERRIDE'] as const;
+/**
+ * D-L1-39 — the Academy Founder Feedback Loop: the Founder's own textual feedback on one evaluated attempt, bound to its
+ * recorded answer. Structured-only (no text pattern produces it); it reaches the trainee's later Academy attempts and
+ * changes no attempt, answer, score, authority or budget.
+ */
+export const ACADEMY_FEEDBACK_INTENTS = ['ACADEMY_FOUNDER_FEEDBACK'] as const;
+export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS, ...EXTERNAL_EVIDENCE_INTENTS, ...PILOT_INTENTS, ...PROVISIONING_INTENTS, ...ACTIVATION_INTENTS, ...REASONING_INTENTS, ...ACADEMY_FEEDBACK_INTENTS] as const;
 export type ReadIntent = (typeof READ_INTENTS)[number];
 export type MutatingIntent = (typeof MUTATING_INTENTS)[number];
 
@@ -216,6 +236,9 @@ const PATTERNS: readonly Pattern[] = [
   // L1-01: the model providers (release-pinned profiles, identity checks, what is provisioned) — a read; provisioning
   // itself is the structured-only PROVIDER_PROVISION confirmation.
   { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:المزودين|مزودي النماذج|مزود|النماذج|providers?|models?)${W}|^(?:providers?|models?|المزودين|النماذج)$`), intent: 'SHOW_PROVIDERS', kind: 'READ' },
+  // L1-02: the Company activation flow — a read; every activation act is a structured-only confirmation ("activate …"
+  // stays a lead verb of the closed grammar and is never a read).
+  { re: new RegExp(String.raw`(?:اعرض|اظهر|افتح|عرض|show|open)${W}.*(?:التفعيل|تفعيل الشركه|activation)${W}|^(?:activation|company activation|تفعيل الشركه|التفعيل)$`), intent: 'SHOW_ACTIVATION', kind: 'READ' },
   { re: /(?:افتح|اعرض|اظهر|open|show)\s+(.+)/, intent: 'OPEN_EMPLOYEE', kind: 'READ' },
 ];
 
@@ -412,7 +435,7 @@ export function classifyFounderIntent(input: string): FounderIntent {
     if (!p.re.test(text)) continue;
     const argument = argumentOf(text, p.intent);
     if (p.intent === 'OPEN_EMPLOYEE' && argument === null) return { kind: 'UNKNOWN' };
-    return { kind: 'READ', intent: p.intent, argument: p.intent === 'RETURN_TO_LIVE' || p.intent === 'WHAT_IS_BLOCKED' || p.intent === 'NEEDS_MY_APPROVAL' || p.intent === 'SHOW_BRIEFS' || p.intent === 'SHOW_CEO' || p.intent === 'SHOW_TIMELINE' || p.intent === 'SHOW_PROVIDERS' ? null : argument };
+    return { kind: 'READ', intent: p.intent, argument: p.intent === 'RETURN_TO_LIVE' || p.intent === 'WHAT_IS_BLOCKED' || p.intent === 'NEEDS_MY_APPROVAL' || p.intent === 'SHOW_BRIEFS' || p.intent === 'SHOW_CEO' || p.intent === 'SHOW_TIMELINE' || p.intent === 'SHOW_PROVIDERS' || p.intent === 'SHOW_ACTIVATION' ? null : argument };
   }
   return { kind: 'UNKNOWN' };
 }

@@ -24,6 +24,19 @@ export interface EmployeeTaskInput {
   readonly instructions: string;
   readonly maxTurns?: number;
   readonly maxOutputTokens?: number;
+  /**
+   * D-L1-23 (BQM-2 qualification observations): SAME_CLASS_RETRY pins the class — one invalid output is retried once at
+   * the SAME class, a second ends the run (MODEL_OUTPUT_INVALID), and no output or context failure ever escalates it.
+   */
+  readonly invalidOutputPolicy?: 'ESCALATE' | 'SAME_CLASS_RETRY';
+  /**
+   * D-L1-24 (BQM-2 qualification observations): the Work Item's only deliverable is ONE ANSWER. Any other valid proposal
+   * (FINAL, memory, observation, tool, organizational act, review, message, goal act) is never executed: it is an output
+   * that failed the Work Item's contract (WRONG_PROPOSAL_TYPE), handled exactly like a parser-invalid output.
+   */
+  readonly answerOnly?: boolean;
+  /** D-L1-24: a hard bound on the Work Item's model calls (the store enforces it again at every reservation). */
+  readonly maxModelCalls?: number;
 }
 
 interface LoopState {
@@ -39,11 +52,16 @@ interface LoopState {
 }
 
 
-function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasoningClass' | 'dataClass'>> & { reasoningClass: ReasoningClass | null } {
+function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasoningClass' | 'dataClass' | 'maxModelCalls'>> & { reasoningClass: ReasoningClass | null; maxModelCalls: number | null } {
   const o = (input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}) as Record<string, JsonValue>;
   // An invalid data class is refused outright (classification never fails open).
   if (o.dataClass !== undefined && !isDataClass(o.dataClass)) throw new Error('invalid dataClass');
   if (o.reasoningClass !== undefined && !isReasoningClass(o.reasoningClass)) throw new Error('invalid reasoningClass');
+  if (o.invalidOutputPolicy !== undefined && o.invalidOutputPolicy !== 'ESCALATE' && o.invalidOutputPolicy !== 'SAME_CLASS_RETRY') throw new Error('invalid invalidOutputPolicy');
+  // A pinned class is the point of SAME_CLASS_RETRY: without one the policy is refused (never an unpinned default).
+  if (o.invalidOutputPolicy === 'SAME_CLASS_RETRY' && o.reasoningClass === undefined) throw new Error('SAME_CLASS_RETRY needs a pinned reasoningClass');
+  if (o.answerOnly !== undefined && typeof o.answerOnly !== 'boolean') throw new Error('invalid answerOnly');
+  if (o.maxModelCalls !== undefined) assertIntInRange(o.maxModelCalls, 'maxModelCalls', 1, 32);
   // C3 context controls are validated up front (a typed refusal, never a failure inside assembly).
   if (o.contextDataClassCeiling !== undefined && !isDataClass(o.contextDataClassCeiling)) throw new Error('invalid contextDataClassCeiling');
   if (o.contextBudgetTokens !== undefined) assertIntInRange(o.contextBudgetTokens, 'contextBudgetTokens', 1_024, 64_000);
@@ -56,6 +74,9 @@ function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasonin
     maxTurns: o.maxTurns === undefined ? 8 : assertIntInRange(o.maxTurns, 'maxTurns', 1, 32),
     maxOutputTokens: o.maxOutputTokens === undefined ? 512 : assertIntInRange(o.maxOutputTokens, 'maxOutputTokens', 1, 32_768),
     reasoningClass: isReasoningClass(o.reasoningClass) ? o.reasoningClass : null,
+    invalidOutputPolicy: o.invalidOutputPolicy === 'SAME_CLASS_RETRY' ? 'SAME_CLASS_RETRY' : 'ESCALATE',
+    answerOnly: o.answerOnly === true,
+    maxModelCalls: typeof o.maxModelCalls === 'number' ? o.maxModelCalls : null,
   };
 }
 
@@ -67,6 +88,19 @@ function readState(ctx: ProcessorContext): LoopState {
 }
 
 const save = (ctx: ProcessorContext, s: LoopState): Promise<void> => ctx.checkpoint('employee-loop', s as unknown as JsonValue);
+
+/**
+ * One output that did not satisfy the Work Item (a parser-invalid output, or under D-L1-24 a valid proposal outside an
+ * answer-only contract). Observable evidence may justify one escalation; a second failure (or one after an escalation)
+ * ends the run. D-L1-23: a pinned qualification observation retries once at the SAME class (the pinned class is
+ * requested again); it never escalates, so both arms of a comparison are always answered by the same class.
+ */
+function outputFailed(cfg: ReturnType<typeof readInput>, s: LoopState, escalated: boolean, reasoningClass: ReasoningClass): { s: LoopState; end: ProcessorResult | null; escalateFrom: { fromClass: ReasoningClass; evidence: 'OUTPUT_FAILED_VALIDATION' } | null } {
+  const next = { ...s, invalid: s.invalid + 1 };
+  if (next.invalid >= 2 || escalated) return { s: next, end: { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_INVALID' }, escalateFrom: null };
+  if (cfg.invalidOutputPolicy === 'SAME_CLASS_RETRY') return { s: next, end: null, escalateFrom: null };
+  return { s: next, end: null, escalateFrom: { fromClass: reasoningClass, evidence: 'OUTPUT_FAILED_VALIDATION' } };
+}
 
 
 export const employeeTaskProcessor: GovernedProcessor = {
@@ -138,6 +172,8 @@ export const employeeTaskProcessor: GovernedProcessor = {
             return { type: 'PERMANENT_FAILURE', code: 'TOOL_FAILED' };
         }
       }
+      // D-L1-24: a declared model-call bound is never exceeded (the store's reservation refuses past it too, durably).
+      if (cfg.maxModelCalls !== null && s.modelCalls >= cfg.maxModelCalls) return { type: 'PERMANENT_FAILURE', code: 'RUN_LIMIT' };
       const requested = escalateFrom === null ? (cfg.reasoningClass ?? undefined) : undefined;
       const out = await gov.invokeModel({
         taskClass: cfg.taskClass,
@@ -168,13 +204,16 @@ export const employeeTaskProcessor: GovernedProcessor = {
         case 'UNCERTAIN':
           // The provider broke the contract or its outcome is unknown after send (money held).
           return { type: 'RETRYABLE_FAILURE', code: 'PROVIDER_FAILURE' };
-        case 'FAILED':
+        case 'FAILED': {
           // One evidence-based escalation per run step; never re-escalate from the class that just failed.
-          if (out.failure === 'CONTEXT_OVERFLOW' && !escalated && cfg.reasoningClass !== 'E4') {
-            escalateFrom = { fromClass: cfg.reasoningClass ?? gov.context.cognitiveProfile.defaultClass, evidence: 'CONTEXT_OVERFLOW' };
+          // D-L1-44: the step started from the Founder override when one exists (the same precedence as the model runtime).
+          const startClass = gov.context.reasoningOverride ?? cfg.reasoningClass ?? gov.context.cognitiveProfile.defaultClass;
+          if (out.failure === 'CONTEXT_OVERFLOW' && !escalated && startClass !== 'E4' && cfg.invalidOutputPolicy !== 'SAME_CLASS_RETRY') {
+            escalateFrom = { fromClass: startClass, evidence: 'CONTEXT_OVERFLOW' };
             continue;
           }
           return { type: 'PERMANENT_FAILURE', code: providerFailedRunCode(out.failure) };
+        }
         case 'CONTEXT':
           // Typed context outcomes: an IMPORTANT unresolved conflict or conflicting skills park the work
           // for review (zero tokens); a context that cannot fit or fails integrity never reaches a model.
@@ -186,6 +225,17 @@ export const employeeTaskProcessor: GovernedProcessor = {
       }
       s = { ...s, modelCalls: s.modelCalls + 1 };
       const proposal: ModelProposal = out.proposal;
+      if (cfg.answerOnly && proposal.type !== 'ANSWER' && proposal.type !== 'INVALID') {
+        // D-L1-24: the answer-only fence. The proposal was recognized, but this Work Item delivers only an ANSWER: it is
+        // never executed (no memory, tool, organizational, message or goal effect, no completion) — an output failure.
+        gov.noteInvalidOutput(s.turn, 'WRONG_PROPOSAL_TYPE', out.reasoningClass, { proposalType: proposal.type });
+        const f = outputFailed(cfg, s, escalated, out.reasoningClass);
+        if (f.end) return f.end;
+        s = f.s;
+        await save(ctx, s);
+        escalateFrom = f.escalateFrom;
+        continue;
+      }
       if (proposal.type === 'FINAL') {
         // Accountability stays with the delegator (Stage 8 §23): work with open handoffs does not finish; it
         // waits (zero tokens) and resumes when a delegate answers or its work ends.
@@ -234,11 +284,42 @@ export const employeeTaskProcessor: GovernedProcessor = {
         await save(ctx, s);
         continue;
       }
+      if (proposal.type === 'ANSWER') {
+        // L1-02: an answer-bearing item (an Academy attempt, a benchmark case, shadow work) exists to deliver one typed
+        // answer. Once the fence records it the work is done (the D-L1-09 discipline): no second answer, no wasted call.
+        const rec = gov.recordAnswer(proposal, s.turn, out.manifestId);
+        // ALREADY_ANSWERED: a resumed run whose item already holds its one answer (recorded before a crash) is done —
+        // the stored answer stands, and no further model call can replace it.
+        if (rec.outcome === 'RECORDED' || rec.code === 'ALREADY_ANSWERED') {
+          await save(ctx, { ...s, phase: 'FINAL', pending: null, summaryCode: 'answer.recorded' });
+          return { type: 'COMPLETED', evidence: { summaryCode: 'answer.recorded', turns: s.turn, modelCalls: s.modelCalls, reasoningClass: out.reasoningClass, answerId: rec.answerId } };
+        }
+        if (cfg.answerOnly) {
+          // D-L1-24: an answer-only item has no further turn. An answer refused for the model's own content is an output
+          // failure (the one same-class retry applies); any other refusal means the item cannot take an answer at all.
+          if (rec.code !== 'INVALID_ARGS' && rec.code !== 'SECRET_MATERIAL') return { type: 'PERMANENT_FAILURE', code: 'INVALID_TASK_INPUT' };
+          gov.noteInvalidOutput(s.turn, 'ANSWER_REFUSED', out.reasoningClass, { refusalCode: rec.code });
+          const f = outputFailed(cfg, s, escalated, out.reasoningClass);
+          if (f.end) return f.end;
+          s = f.s;
+          await save(ctx, s);
+          escalateFrom = f.escalateFrom;
+          continue;
+        }
+        s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null };
+        await save(ctx, s);
+        continue;
+      }
       if (proposal.type === 'INVALID') {
-        // Observable evidence (the output failed validation) may justify one escalation.
-        s = { ...s, invalid: s.invalid + 1 };
-        if (s.invalid >= 2 || escalated) return { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_INVALID' };
-        escalateFrom = { fromClass: out.reasoningClass, evidence: 'OUTPUT_FAILED_VALIDATION' };
+        // Observable evidence (the output failed validation) may justify one escalation. D-L1-20: its content-free
+        // classification is recorded first (never the output), so a run that ends without an answer is diagnosable.
+        gov.noteInvalidOutput(s.turn, proposal.code, out.reasoningClass);
+        const f = outputFailed(cfg, s, escalated, out.reasoningClass);
+        if (f.end) return f.end;
+        s = f.s;
+        // D-L1-24: an answer-only item checkpoints its failure count, so a resumed run never gets a fresh retry.
+        if (cfg.answerOnly) await save(ctx, s);
+        escalateFrom = f.escalateFrom;
         continue;
       }
       if (proposal.type === 'ORG_ACTION' || proposal.type === 'REVIEW_DECISION') {

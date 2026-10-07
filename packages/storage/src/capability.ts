@@ -50,21 +50,7 @@ export class CapabilityStore {
 
   /** Declares the Work Item's capability requirements and retrieval context (once, before release). */
   declareRequirements(workItemId: string, input: DeclareRequirementsInput): WorkItemCapabilities {
-    return this.#write('declare capability requirements', (ctx) => {
-      const item = getWorkItemRow(ctx, assertId(workItemId, 'workItemId'));
-      if (item.state !== 'PROPOSED') throw new QandeelError('INVALID_TRANSITION', 'requirements are declared before the Work Item is released', { state: item.state });
-      const requirements = assertRequirements(input.requirements);
-      const market = input.marketRef === undefined ? null : input.marketRef;
-      if (market !== null && !/^market:[a-z][a-z0-9-]{1,31}$/.test(market)) throw new QandeelError('VALIDATION_FAILED', 'marketRef is "market:<code>"', { field: 'marketRef' });
-      for (const r of requirements) if (r.kind === 'MARKET' && market !== `market:${r.marketCode}`) throw new QandeelError('VALIDATION_FAILED', 'a MARKET requirement names the Work Item market', { field: 'marketRef' });
-      const topics = (input.topics ?? []).slice(0, 16).map((t) => assertKeyCode(t, 'topics'));
-      ctx.db.run(
-        'INSERT INTO work_item_capabilities (work_item_id, requirements_json, market_ref, importance, topic_terms_json, expected_outcome_code, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        item.id, JSON.stringify(requirements), market, input.importance === 'IMPORTANT' ? 'IMPORTANT' : 'ORDINARY', JSON.stringify(termsOf(topics.map((t) => t.replace(/[.-]/g, ' ')).join(' '))), input.expectedOutcomeCode === undefined ? null : assertCode(input.expectedOutcomeCode, 'expectedOutcomeCode'), ts(ctx),
-      );
-      appendAudit(ctx, 'capability.requirements_declared', 'work_item', item.id, {}, 'OK', null, { requirements: requirements.length });
-      return workItemCapabilities(ctx, item.id);
-    });
+    return this.#write('declare capability requirements', (ctx) => txDeclareRequirements(ctx, workItemId, input));
   }
 
   requirements(workItemId: Id): WorkItemCapabilities {
@@ -97,4 +83,21 @@ export class CapabilityStore {
       return gap;
     });
   }
+}
+
+/** Declares a PROPOSED Work Item's capability requirements and retrieval topics (in the caller's transaction). */
+export function txDeclareRequirements(ctx: StoreContext, workItemId: string, input: DeclareRequirementsInput): WorkItemCapabilities {
+  const item = getWorkItemRow(ctx, assertId(workItemId, 'workItemId'));
+  if (item.state !== 'PROPOSED') throw new QandeelError('INVALID_TRANSITION', 'requirements are declared before the Work Item is released', { state: item.state });
+  const requirements = assertRequirements(input.requirements);
+  const market = input.marketRef === undefined ? null : input.marketRef;
+  if (market !== null && !/^market:[a-z][a-z0-9-]{1,31}$/.test(market)) throw new QandeelError('VALIDATION_FAILED', 'marketRef is "market:<code>"', { field: 'marketRef' });
+  for (const r of requirements) if (r.kind === 'MARKET' && market !== `market:${r.marketCode}`) throw new QandeelError('VALIDATION_FAILED', 'a MARKET requirement names the Work Item market', { field: 'marketRef' });
+  const topics = (input.topics ?? []).slice(0, 16).map((t) => assertKeyCode(t, 'topics'));
+  ctx.db.run(
+    'INSERT INTO work_item_capabilities (work_item_id, requirements_json, market_ref, importance, topic_terms_json, expected_outcome_code, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    item.id, JSON.stringify(requirements), market, input.importance === 'IMPORTANT' ? 'IMPORTANT' : 'ORDINARY', JSON.stringify(termsOf(topics.map((t) => t.replace(/[.-]/g, ' ')).join(' '))), input.expectedOutcomeCode === undefined ? null : assertCode(input.expectedOutcomeCode, 'expectedOutcomeCode'), ts(ctx),
+  );
+  appendAudit(ctx, 'capability.requirements_declared', 'work_item', item.id, {}, 'OK', null, { requirements: requirements.length });
+  return workItemCapabilities(ctx, item.id);
 }
