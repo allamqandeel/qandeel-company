@@ -14,6 +14,11 @@
  *       │yes
  *   signed identity proof on the descriptor's port verifies? ──▶ RUNNING | STARTING (not READY yet) | UNHEALTHY | STALE
  *
+ * D-OPS-09: an UNHEALTHY that a host disappearing this very moment can cause (the store not yet readable, or a holder not
+ * answering) is re-classified a few times within a short bound before it is reported; the last reading is the answer. A
+ * wrong identity is reported at once, a healthy host is never delayed, nothing is removed or ignored, and a holder that
+ * is genuinely alive stays UNHEALTHY (never startable), so no second runtime starts beside it.
+ *
  * Every outcome is content-free: states, codes, IDs, a PID and a loopback port.
  */
 import { closeSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -55,6 +60,9 @@ const PUBLISH_GRACE_MS = 30_000;
 export const HOST_READY_TIMEOUT_MS = 120_000;
 export const HOST_STOP_TIMEOUT_MS = 90_000;
 const START_LOCK_STALE_MS = 180_000;
+/** D-OPS-09: the bound on re-classifying a possibly-settling UNHEALTHY (a just-killed holder's teardown on Windows). */
+export const DISCOVERY_SETTLE_MS = 1_500;
+const DISCOVERY_SETTLE_STEP_MS = 250;
 const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -81,7 +89,30 @@ function readLease(root: string): { lease: { holderId: string; expiresAt: string
   }
 }
 
+/**
+ * Whether an UNHEALTHY reading may be a host disappearing right now: the durable store briefly unreadable while a killed
+ * process's file locks are released, or the holder not answering while its process is still being torn down. A wrong
+ * identity on the port (a squatter) is never a settling state.
+ */
+const mayBeSettling = (s: HostStatus): boolean => s.state === 'UNHEALTHY' && s.reason !== 'HOST_IDENTITY_MISMATCH';
+
+/** D-OPS-09: bounded re-classification of a possibly-settling UNHEALTHY; every other reading is returned at once. */
+export async function settleDiscovery(classify: () => Promise<HostStatus>, budgetMs: number = DISCOVERY_SETTLE_MS, stepMs: number = DISCOVERY_SETTLE_STEP_MS): Promise<HostStatus> {
+  const deadline = Date.now() + budgetMs;
+  let status = await classify();
+  while (mayBeSettling(status) && Date.now() < deadline) {
+    await sleep(stepMs);
+    status = await classify();
+  }
+  return status;
+}
+
 export async function discoverHost(workspace: string, now: () => number = Date.now): Promise<HostStatus> {
+  return settleDiscovery(() => classifyHost(workspace, now));
+}
+
+/** One discovery reading: one durable read and at most one identity probe (exported for the crash-recovery diagnostics). */
+export async function classifyHost(workspace: string, now: () => number = Date.now): Promise<HostStatus> {
   const paths = hostPaths(workspace);
   const ws = paths.root;
   if (!existsSync(ws)) return base(ws, 'WORKSPACE_MISSING', { reason: 'WORKSPACE_MISSING' });

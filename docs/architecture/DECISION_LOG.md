@@ -4513,3 +4513,36 @@ A schema the new release already migrated stays migrated (forward-only); its pre
 
 **Enforcement.** Verifier rule `ops-release-admission`: admission precedes open and upgrade, the three refusals exist, and
 the shortcuts target only a release CLI. The proof is `OPS-PROOF: founder-host-release`.
+
+## D-OPS-09 — Discovery lets a just-killed holder settle before it says UNHEALTHY; a live unresponsive holder stays UNHEALTHY (executor; Founder-approved OPS correction)
+
+**Defect.** On the GitHub Windows runner (runs #111 on `a61e0a5` and #113 on `574ac11`), the proof "after an abnormal
+termination the next launch runs the existing startup recovery" read `UNHEALTHY` instead of `STALE` right after a hard
+kill. The PID was already reported gone: the whole test took 30 ms. It passes on Ubuntu and on the Founder host (10 / 10
+kills in a local repro, all `STALE` / `HOST_PROCESS_GONE`). For the Founder this means a launch right after a crash could
+be refused with `HOST_UNHEALTHY` instead of recovering.
+
+**Cause.** A host that is disappearing at this moment can produce a reading that is UNHEALTHY only for an instant. On
+Windows, a terminated process's file locks are released asynchronously, so the durable store can be briefly unreadable;
+the holder can also look alive while its process is still being torn down. The test now logs the raw single reading next
+to the settled one, so the CI run records exactly which of these happened.
+
+**Decision.** `discoverHost` = `settleDiscovery(classifyHost)`. A reading that is UNHEALTHY for a reason a disappearing host
+can cause (a store-read error, or `HOST_NOT_ANSWERING`) is re-classified every 250 ms within a 1.5 s bound, measured from
+before the first reading. The last reading is the answer.
+- A healthy reading (RUNNING, STOPPED, STARTING, …) returns at once: an ordinary launch is never delayed.
+- `HOST_IDENTITY_MISMATCH` (a squatter) is reported at once.
+- Nothing is removed, ignored or written: the supervisor lease, the descriptor and the start lock are untouched.
+- A holder that is genuinely alive keeps answering UNHEALTHY. UNHEALTHY is not startable, so no second runtime starts beside
+  it. A hanging host adds no wait beyond its one 3-second probe.
+- **Rejected:** mapping UNHEALTHY to STALE (would start a second runtime beside a live, unresponsive host) and a long retry
+  loop.
+
+**Proofs (`founder-host.test.ts`, `founder-host-lifecycle.test.ts`):**
+- a scripted classifier: a healthy reading is read once, a squatter once; `STORAGE_BUSY`, `UNCLASSIFIED_ERROR` and
+  `HOST_NOT_ANSWERING` settle to STALE; a stuck UNHEALTHY is reported within the bound;
+- a real live lease holder whose descriptor points at a closed port, and at a port that accepts but never answers, stays
+  UNHEALTHY / `HOST_NOT_ANSWERING`, and `ensureRunning` refuses `HOST_UNHEALTHY` and spawns nothing;
+- the hard-kill proof asserts STALE with the full diagnostics (state, reason, leaseLive, runtimeState, descriptor, PID,
+  PID-alive), and the next launch recovers;
+- the squatter and the STOPPED / RUNNING / controlled-stop / STALE proofs are unchanged.

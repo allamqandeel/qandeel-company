@@ -20,7 +20,7 @@ import { CompanyStore } from '@qandeel-company/storage';
 
 import { FounderSurface } from '../src/index.js';
 import { HOST_IDENTITY_PATH, HOST_STOP_PATH, HostIdentity, consumeStopRequest, hostPaths, newNonce, readDescriptor, verifyIdentityProof, writeJsonAtomic, writeStopRequest } from '../src/host/descriptor.js';
-import { discoverHost, ensureRunning, noticeFor, stopHost } from '../src/host/lifecycle.js';
+import { DISCOVERY_SETTLE_MS, discoverHost, ensureRunning, noticeFor, settleDiscovery, stopHost, type HostStatus } from '../src/host/lifecycle.js';
 import { probeIdentity } from '../src/host/probe.js';
 
 const uiRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'command-center-ui');
@@ -212,6 +212,69 @@ describe('discovery', () => {
       assert.equal((await discoverHost(ws)).state, 'RUNNING');
     } finally {
       squatter.close();
+      await surface.stop();
+    }
+  });
+
+  test('D-OPS-09: only a possibly-settling UNHEALTHY is re-read, within a bound; healthy and squatter readings are not', async () => {
+    const reading = (state: HostStatus['state'], reason: string | null): HostStatus => ({ state, workspace: 'w', instanceId: null, pid: null, port: null, origin: null, runtimeState: null, leaseLive: true, descriptor: 'VALID', hold: null, reason });
+    const scripted = (...seq: HostStatus[]): { classify: () => Promise<HostStatus>; calls: () => number } => {
+      let n = 0;
+      return { classify: async () => seq[Math.min(n++, seq.length - 1)] as HostStatus, calls: () => n };
+    };
+    // A healthy host is answered by its first reading: never delayed.
+    const healthy = scripted(reading('RUNNING', null));
+    assert.equal((await settleDiscovery(healthy.classify, 1_000, 10)).state, 'RUNNING');
+    assert.equal(healthy.calls(), 1);
+    // A squatter (wrong identity) is reported at once.
+    const squat = scripted(reading('UNHEALTHY', 'HOST_IDENTITY_MISMATCH'), reading('STALE', 'HOST_PROCESS_GONE'));
+    assert.equal((await settleDiscovery(squat.classify, 1_000, 10)).reason, 'HOST_IDENTITY_MISMATCH');
+    assert.equal(squat.calls(), 1);
+    // A holder disappearing right now: the store briefly unreadable, or the holder not yet gone, settles to STALE.
+    for (const reason of ['STORAGE_BUSY', 'UNCLASSIFIED_ERROR', 'HOST_NOT_ANSWERING']) {
+      const dying = scripted(reading('UNHEALTHY', reason), reading('UNHEALTHY', reason), reading('STALE', 'HOST_PROCESS_GONE'));
+      assert.equal((await settleDiscovery(dying.classify, 1_000, 10)).state, 'STALE', reason);
+      assert.equal(dying.calls(), 3);
+    }
+    // A holder that stays unhealthy is reported UNHEALTHY once the short bound is spent: no long retry loop.
+    const stuck = scripted(reading('UNHEALTHY', 'HOST_NOT_ANSWERING'));
+    const t0 = Date.now();
+    assert.equal((await settleDiscovery(stuck.classify, 300, 50)).state, 'UNHEALTHY');
+    assert.ok(Date.now() - t0 < 1_000 && stuck.calls() <= 8, `bounded: ${stuck.calls()} readings`);
+  });
+
+  test('D-OPS-09: a genuinely live holder whose surface does not answer stays UNHEALTHY and no second runtime starts', async () => {
+    const ws = company();
+    const surface = await hostSurface(ws);
+    const closed = http.createServer();
+    await new Promise<void>((r) => closed.listen(0, '127.0.0.1', () => r()));
+    const deadPort = (closed.address() as AddressInfo).port;
+    await new Promise<void>((r) => closed.close(() => r()));
+    const hung = http.createServer(() => undefined); // accepts, never answers
+    await new Promise<void>((r) => hung.listen(0, '127.0.0.1', () => r()));
+    try {
+      const paths = hostPaths(ws);
+      const d = readDescriptor(paths);
+      assert.ok(d);
+      for (const port of [deadPort, (hung.address() as AddressInfo).port]) {
+        writeJsonAtomic(paths.descriptor, { ...d, port });
+        const t0 = Date.now();
+        const s = await discoverHost(ws);
+        assert.equal(s.state, 'UNHEALTHY', JSON.stringify(s));
+        assert.equal(s.reason, 'HOST_NOT_ANSWERING');
+        assert.equal(s.instanceId, surface.runtime.instanceId, 'the live lease holder is kept, never ignored');
+        assert.ok(Date.now() - t0 < DISCOVERY_SETTLE_MS + 4_000, 'bounded');
+        const r = await ensureRunning(ws, { cliPath: path.join(ws, 'no-such-cli.js'), providers: [] });
+        assert.equal(r.code, 'HOST_UNHEALTHY');
+        assert.equal(r.started, false);
+        assert.equal(existsSync(paths.log), false, 'no second host was spawned');
+        assert.equal(surface.runtime.state, 'READY', 'the live holder is untouched');
+      }
+      writeJsonAtomic(paths.descriptor, d);
+      assert.equal((await discoverHost(ws)).state, 'RUNNING');
+    } finally {
+      hung.closeAllConnections();
+      hung.close();
       await surface.stop();
     }
   });

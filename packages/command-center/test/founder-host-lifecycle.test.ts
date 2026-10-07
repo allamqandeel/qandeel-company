@@ -26,7 +26,7 @@ import { CompanyStore } from '@qandeel-company/storage';
 
 import { CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE } from '../src/index.js';
 import { hostPaths, readDescriptor } from '../src/host/descriptor.js';
-import { discoverHost, openCompany, restartHost, stopHost } from '../src/host/lifecycle.js';
+import { classifyHost, discoverHost, openCompany, restartHost, stopHost } from '../src/host/lifecycle.js';
 import { pidAlive } from '../src/host/processes.js';
 
 // <root>/packages/command-center/dist/test/x.test.js → the compiled CLI the shortcuts run
@@ -239,15 +239,20 @@ describe('Founder host lifecycle (real processes)', { timeout: 240_000 }, () => 
     assert.equal((JSON.parse(session.body) as { founderRef: string }).founderRef, founderRef, 'the same Company and Founder, not a new one');
   });
 
-  test('after an abnormal termination the next launch runs the existing startup recovery', async () => {
+  test('after an abnormal termination the next launch runs the existing startup recovery', async (t) => {
     const live = await discoverHost(ws);
     assert.equal(live.state, 'RUNNING');
     const crashed = live.instanceId as string;
     process.kill(live.pid as number, 'SIGKILL'); // a controlled proof of a hard crash (TerminateProcess on Windows)
     const deadline = Date.now() + 15_000;
     while (pidAlive(live.pid as number) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
-    const after = await discoverHost(ws);
-    assert.equal(after.state, 'STALE', 'a dead holder is never reported as running');
+    const diag = (s: Awaited<ReturnType<typeof discoverHost>>): string => JSON.stringify({ state: s.state, reason: s.reason, leaseLive: s.leaseLive, runtimeState: s.runtimeState, descriptor: s.descriptor, pid: s.pid, pidAlive: pidAlive(live.pid as number) });
+    // D-OPS-09 evidence: the raw single reading right after the kill (it may still be settling) and, started at the same
+    // moment, the settled discovery the launcher acts on.
+    const [first, after] = await Promise.all([classifyHost(ws), discoverHost(ws)]);
+    t.diagnostic(`raw reading after the kill: ${diag(first)}`);
+    t.diagnostic(`settled reading: ${diag(after)}`);
+    assert.equal(after.state, 'STALE', `a dead holder is never reported as running or unhealthy: ${diag(after)} (first: ${diag(first)})`);
     const r = await openCompany(ws, start);
     assert.equal(r.outcome, 'STARTED', JSON.stringify(r));
     assert.notEqual(r.status.instanceId, crashed);

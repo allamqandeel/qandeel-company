@@ -259,7 +259,20 @@ There is no second runtime, backend, UI, database, authentication system or pack
   - A header-measurement probe printed the Founder's loopback session cookies once, to this session only. All LIVE
     sessions had already been revoked by the earlier controlled stop (0 live of 28), so nothing usable was exposed.
 
-**Final closure gate:** see §7. It is one full `npm ci` + `npm run ci` on the exact closure-candidate head.
+**Focused, for the Windows crash-recovery correction (D-OPS-09):**
+- **The defect.** On the GitHub Windows runner (#111, #113), the hard-kill proof read `UNHEALTHY` instead of `STALE`. Classified
+  **A (product, OPS)**.
+- `founder-host.test.ts` (now 13 tests), two new proofs:
+  - a scripted classifier: healthy and squatter readings are read once; store-read errors and `HOST_NOT_ANSWERING` settle
+    to STALE; a stuck UNHEALTHY is reported within the bound;
+  - a real live holder whose surface does not answer (a closed port, and a port that accepts but never answers) stays
+    `UNHEALTHY` / `HOST_NOT_ANSWERING`, `ensureRunning` refuses `HOST_UNHEALTHY`, and no host is spawned.
+- `founder-host-lifecycle.test.ts`: the hard-kill proof now logs the raw single reading and the settled one (state,
+  reason, leaseLive, runtimeState, descriptor, PID, PID-alive). On the Founder host both read `STALE` /
+  `HOST_PROCESS_GONE`.
+- The `@qandeel-company/command-center` suite: **40 / 40**.
+
+**Final closure gate:** see §7.
 
 ## 6. Windows real proof (Founder host, 2026-10-07, LIVE workspace `E:\QANDEEL_COMPANY_DATA\LIVE`)
 
@@ -336,7 +349,18 @@ A full scan of all 149 process command lines on the host also found 0 credential
 
 - **`a61e0a5`:** the gate was started, then cancelled on the Founder's instruction after review found the two MAJOR
   defects. It is not closure evidence.
-- **This head:** to be recorded after the single full gate on the exact closure-candidate head.
+- **`574ac11`** (Founder rule: `LOCAL = IMPACTED BOUNDARY`; the full historical mutation universe is a parallel GitHub
+  proof, not a per-task local requirement):
+  - **local:** `npm ci`, build, typecheck, lint, every workspace test and the harness, and C1 / C2 / C3 mutation all
+    passed; the serial gate was then stopped on the Founder's instruction; `npm run verify` passed 108 / 108;
+  - **GitHub #113:** `acceptance` failed on both OSes on the pre-existing C5 defect below; `tests (windows-latest)` failed
+    on the OPS crash-recovery proof (D-OPS-09); everything else that ran was green.
+- **The D-OPS-09 head:** locally, the command-center suite (40 / 40), typecheck, lint and `npm run verify`. The
+  cross-environment proof is the GitHub `tests (windows-latest)` job on the same SHA; its result is reported with the
+  SHA, not assumed here.
+- **Known, pre-existing, outside OPS scope:** the C5 acceptance smoke `spike-english-ui-content-as-written` fails with
+  "application chrome carries Arabic". Classified **A — pre-existing product regression**, not caused by this branch.
+  Deferred to a bounded follow-up before P1, not fixed here.
 
 ## 8. Residuals (real, Product-level)
 
