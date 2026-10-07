@@ -171,6 +171,12 @@ export class TreeView {
     this.#observer.observe(container);
     this.#observer.observe(this.#goalsHost);
     window.addEventListener('resize', () => this.#scheduleLines());
+    // A selected node settles with a short transform (a goal lifts 2px); the ResizeObserver never sees a transform,
+    // so the tether measured at selection would keep the pre-lift edge and run into the node it leaves (C5-CORR-02).
+    // When the tether's own subject finishes moving, the lines are measured again from where it now stands.
+    container.addEventListener('transitionend', (e) => {
+      if (e.propertyName === 'transform' && this.#tether !== null && e.target === this.#els.get(this.#tether.from)) this.#scheduleLines();
+    });
     // The goal band stays in view while the columns scroll under it: the lines follow (and the desk moves).
     container.addEventListener('scroll', () => {
       this.#measureShelves();
