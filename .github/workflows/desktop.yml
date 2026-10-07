@@ -1,0 +1,62 @@
+name: Desktop
+
+# D1 (D-D1-07): the QANDEEL COMPANY Desktop v1 proof on a disposable Windows runner — the focused Desktop proof
+# (desktop:proof), the real QANDEEL-COMPANY-Setup.exe end to end (desktop:e2e: first run, per-user install, update,
+# failed update rollback, repair, uninstall, reinstall, no development dependency) and the verified Setup artifact.
+#   workflow_call → the FULL path's `desktop` job (ci.yml; the quality-gate requires it).
+#   push          → early Desktop feedback on a non-main branch that changes the Windows packaging, WITHOUT a PR and
+#                   without a FULL run (D1 workflow rule). It is never a gate.
+# The Setup it uploads is an ENGINEERING artifact (unsigned: no signing credential lives in CI).
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The exact commit to build and prove (the PR head for a pull request)
+        type: string
+        required: false
+        default: ''
+  push:
+    branches-ignore: [main]
+    paths:
+      - 'packaging/windows/**'
+      - 'packages/command-center/src/host/**'
+      - '.github/workflows/desktop.yml'
+
+# Least privilege: the workflow only reads the repository. No secrets are used.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  desktop:
+    name: desktop (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run build
+      - name: Desktop proof (disposable profile; packaging, install, runtime, update, rollback, repair, uninstall, reinstall, detached)
+        run: npm run desktop:proof -- --workspace "${{ runner.temp }}/desktop-proof"
+      - name: Desktop e2e (the real Setup.exe on this disposable runner; pinned Inno Setup and private Node)
+        run: npm run desktop:e2e -- --workspace "${{ runner.temp }}/desktop-e2e" --artifacts "${{ runner.temp }}/desktop-artifacts"
+      - name: Verify the Setup artifact (SHA-256, Authenticode status, source → release → bundle identity)
+        run: npm run desktop:verify -- --dist "${{ runner.temp }}/desktop-artifacts"
+      - name: Upload the Setup artifact (ENGINEERING)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: qandeel-company-setup
+          path: ${{ runner.temp }}/desktop-artifacts
+          if-no-files-found: error
+          retention-days: 30

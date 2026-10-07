@@ -120,6 +120,35 @@ export function stageRelease(sourceRoot: string, dir: string = releasesDir(), no
   }
 }
 
+/**
+ * Imports an already-staged release (the one a Desktop Setup carries, D-D1-02) into `<dir>/<id prefix>` — the SAME
+ * content-addressed release format and location `stageRelease` produces; nothing is rebuilt. The source must verify
+ * byte-for-byte before and the copy after; an existing identical release is reused, anything else there is refused.
+ */
+export function importRelease(sourceRoot: string, dir: string = releasesDir()): StagedRelease {
+  const source = verifyReleaseTree(sourceRoot);
+  if (!source.ok) throw new Error(source.reason);
+  const { releaseId } = source.manifest;
+  const target = path.resolve(dir);
+  const final = path.join(target, releaseId.slice(0, 16));
+  if (existsSync(final)) {
+    const existing = verifyReleaseTree(final);
+    if (!existing.ok || existing.manifest.releaseId !== releaseId) throw new Error('RELEASE_DIR_CONFLICT');
+    return { releaseId, root: final, reused: true, files: existing.manifest.files.length, sourceCommit: existing.manifest.sourceCommit };
+  }
+  mkdirSync(target, { recursive: true });
+  const staging = path.join(target, `.import-${randomBytes(6).toString('hex')}`);
+  try {
+    cpSync(path.resolve(sourceRoot), staging, { recursive: true });
+    const copied = verifyReleaseTree(staging);
+    if (!copied.ok || copied.manifest.releaseId !== releaseId) throw new Error('RELEASE_IMPORT_FAILED');
+    renameSync(staging, final);
+    return { releaseId, root: final, reused: false, files: copied.manifest.files.length, sourceCommit: copied.manifest.sourceCommit };
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
+
 /** Resolves `--release <id | id prefix | directory>` against the releases directory. */
 export function resolveRelease(ref: string, dir: string = releasesDir()): string | null {
   if (path.isAbsolute(ref)) return existsSync(path.join(ref, RELEASE_MANIFEST_FILE)) ? path.resolve(ref) : null;
@@ -141,6 +170,8 @@ export interface ActivationOptions {
   readonly providers: readonly string[];
   /** Point the Founder's shortcuts at the release (Windows; the default). Tests pass false. */
   readonly shortcuts?: boolean;
+  /** Disposable proofs only: write the shortcuts under this root instead of the user's Desktop / Start menu. */
+  readonly shortcutRoot?: string;
   readonly readyTimeoutMs?: number;
   readonly now?: () => Date;
 }
@@ -241,7 +272,10 @@ export async function activateRelease(workspace: string, releaseRoot: string, op
   }
 
   // 5. Pin, 6. start from the release (safe-upgrade runs inside its runtime start), 7. health.
-  writePin(workspace, { version: 1, releaseId, root, activatedAt: now().toISOString(), previous: before ? { releaseId: before.releaseId, root: before.root } : null });
+  // Re-activating the pinned release itself (a Desktop repair / reinstall, D-D1-05) keeps the real previous release as
+  // the rollback point instead of recording the release as its own predecessor.
+  const previous = before ? (before.releaseId === releaseId ? before.previous : { releaseId: before.releaseId, root: before.root }) : null;
+  writePin(workspace, { version: 1, releaseId, root, activatedAt: now().toISOString(), previous });
   steps.push({ step: 'PIN', result: 'OK' });
   const started = await ensureRunning(workspace, { cliPath: cli, providers: options.providers, ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}) });
   steps.push({ step: 'START', result: started.code ?? 'RUNNING' });
@@ -249,7 +283,7 @@ export async function activateRelease(workspace: string, releaseRoot: string, op
   steps.push({ step: 'HEALTH', result: healthy ? 'READY' : 'FAILED' });
   if (healthy) {
     if (options.shortcuts !== false && process.platform === 'win32') {
-      const written = await installShortcuts(cli, launcherConfigDir());
+      const written = await installShortcuts(cli, launcherConfigDir(), options.shortcutRoot === undefined ? {} : { root: options.shortcutRoot });
       steps.push({ step: 'SHORTCUTS', result: written === null ? 'FAILED' : 'OK' });
     }
     return { ok: true, outcome: 'ACTIVATED', code: null, releaseId, previousReleaseId, backupId, steps, status: started.status };

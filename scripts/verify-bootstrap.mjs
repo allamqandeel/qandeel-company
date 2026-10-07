@@ -426,7 +426,17 @@ const CI_GATE = 'scripts/ci/quality-gate.mjs';
 const CI_POST_MERGE = 'scripts/ci/post-merge-mode.mjs';
 const CI_IMPACT_MAP = 'scripts/ci/impact-map.mjs';
 const CI_LOCAL_RUNNER = 'scripts/ci/validate-affected.mjs';
-const CI_JOBS = ['classify', 'docs-fast', 'integrity', 'affected-checks', 'affected-mutation', 'static', 'tests', 'mutation', 'acceptance', 'quality-gate'];
+// D1 (D-D1-07): the reusable Windows Desktop proof workflow (the FULL path's `desktop` job).
+const CI_DESKTOP_WORKFLOW = '.github/workflows/desktop.yml';
+const CI_JOBS = ['classify', 'docs-fast', 'integrity', 'affected-checks', 'affected-mutation', 'static', 'tests', 'mutation', 'acceptance', 'desktop', 'quality-gate'];
+// --- D1 Desktop v1 distribution (D-D1-01 … D-D1-07) ------------------------------------------------
+const DESKTOP_ISS = 'packaging/windows/qandeel-company.iss';
+const DESKTOP_PINS = 'packaging/windows/desktop.pins.json';
+const DESKTOP_ICON_PROVENANCE = 'packaging/windows/assets/ICON_PROVENANCE.json';
+const DESKTOP_MODULE = 'packages/command-center/src/host/desktop.ts';
+const DESKTOP_PROOFS = ['packaging/windows/proof/desktop-proof.mjs', 'packaging/windows/proof/desktop-e2e.mjs'];
+/** The frozen I-08B2.4 Variant B app icon carried by the ratified I-08B2.5 brand authority (the only approved source). */
+const DESKTOP_ICON_SOURCE_SHA256 = '859665d86a7bbf4248ff479034031a8df1f08833c7db36336b3d29832bcddd09';
 const CI_BOTH_OS_JOBS = ['static', 'tests', 'acceptance', 'integrity'];
 const CI_OPERATING_SYSTEMS = ['windows-latest', 'ubuntu-latest'];
 /** The body of one top-level job of a workflow (two-space job keys under `jobs:`). */
@@ -888,8 +898,10 @@ export const RULES = [
     id: 'no-app-repo-dependency',
     check: ({ files, read }) => {
       const appPath = /qandeel[\\/]+qandeel project|allamqandeel\/qandeel(?:\.git|['"\s/]|$)/i;
+      // D1 (Task Contract §3): the icon's provenance record names the one-time source of the approved brand asset. It
+      // is a record, never a build or runtime dependency; every other file stays free of the App repository.
       const found = files
-        .filter((f) => scanned(f) && appPath.test(read(f) ?? ''))
+        .filter((f) => f !== DESKTOP_ICON_PROVENANCE && scanned(f) && appPath.test(read(f) ?? ''))
         .map((f) => `${f} references the QANDEEL App repository`);
       const deps = allManifests({ files, read }).flatMap(([f, m]) =>
         Object.entries({ ...m.dependencies, ...m.devDependencies, ...m.optionalDependencies, ...m.peerDependencies })
@@ -2241,10 +2253,10 @@ export const RULES = [
         if (!/verifyReleaseTree\(self\)/.test(code) || !/hashReleaseTree\(root\)/.test(code)) problems.push(`${OPS_RELEASE_ADMISSION} does not re-verify every release file before admitting it`);
         if (/child_process|node:(?:http|https|net|tls|sqlite)['"]|\bfetch\s*\(/.test(code)) problems.push(`${OPS_RELEASE_ADMISSION} opens a network path, starts a process or reaches SQLite`);
       }
-      for (const file of [OPS_CLI, OPS_RELEASE]) {
+      for (const file of [OPS_CLI, OPS_RELEASE, DESKTOP_MODULE]) {
         const text = read(file);
         if (text === undefined) continue;
-        for (const m of strip(text).matchAll(/installShortcuts\(\s*([^,]+),/g)) {
+        for (const m of strip(text).matchAll(/\binstallShortcuts\(\s*([^,]+),/g)) {
           if (!/^releaseCli\(/.test((m[1] ?? '').trim()) && (m[1] ?? '').trim() !== 'cli') problems.push(`${file} writes the Founder shortcuts for something other than a release CLI (${(m[1] ?? '').trim()})`);
         }
       }
@@ -2266,6 +2278,52 @@ export const RULES = [
       if (!files.some((f) => OPS_HOST_FILES.includes(f))) return [];
       const tests = files.filter((f) => isTestPath(f) && isCode(f));
       return OPS_PROOF_MARKERS.filter((m) => !tests.some((f) => (read(f) ?? '').includes(m))).map((m) => `no test carries the proof marker "${m}"`);
+    },
+  },
+  {
+    id: 'desktop-distribution',
+    // D1 (D-D1-01 … D-D1-07): the Windows Desktop product is an orchestration shell over OPS. The installer is per-user
+    // (no elevation, %LOCALAPPDATA%\Programs), versioned side by side, never changes PATH, registers no autostart, writes
+    // no registry of its own, never deletes Company data and hands every Company operation to the canonical activation
+    // (desktop-install / desktop-uninstall). The private runtime is an exactly pinned official Node 24 win-x64 build;
+    // the icon is the pinned derivative of the ratified brand authority's frozen icon. The Desktop module verifies the
+    // bundle and its own private runtime before anything else, never opens or creates a Company store, never writes a
+    // pin itself and deletes nothing but its own product record. No generated binary is committed.
+    check: ({ files, read }) => {
+      const iss = read(DESKTOP_ISS);
+      const pinsText = read(DESKTOP_PINS);
+      const mod = read(DESKTOP_MODULE);
+      if (iss === undefined && pinsText === undefined && mod === undefined) return [];
+      const problems = [];
+      for (const need of [DESKTOP_ISS, DESKTOP_PINS, DESKTOP_MODULE, DESKTOP_ICON_PROVENANCE, ...DESKTOP_PROOFS]) if (!files.includes(need)) problems.push(`missing ${need}`);
+      const hex = /^[0-9a-f]{64}$/;
+      const pins = json(pinsText ?? '') ?? {};
+      if (!/^24\.\d+\.\d+$/.test(pins.node?.version ?? '') || pins.node?.platform !== 'win32' || pins.node?.arch !== 'x64') problems.push(`${DESKTOP_PINS}: the private runtime must be an exact Node 24 win32 x64 version`);
+      if (!String(pins.node?.url ?? '').startsWith(`https://nodejs.org/dist/v${pins.node?.version}/win-x64/`) || !hex.test(pins.node?.sha256 ?? '') || !hex.test(pins.node?.licenseSha256 ?? '')) problems.push(`${DESKTOP_PINS}: the private runtime is not pinned to the official URL and SHA-256`);
+      if (!/^\d+\.\d+\.\d+$/.test(pins.inno?.version ?? '') || !String(pins.inno?.url ?? '').startsWith('https://github.com/jrsoftware/issrc/releases/download/') || !hex.test(pins.inno?.sha256 ?? '')) problems.push(`${DESKTOP_PINS}: the Inno Setup compiler is not pinned (version, official release URL, SHA-256)`);
+      const prov = json(read(DESKTOP_ICON_PROVENANCE) ?? '') ?? {};
+      if (prov.sourceSha256 !== DESKTOP_ICON_SOURCE_SHA256 || !/I-08B2\.5/.test(prov.authority ?? '') || !hex.test(pins.icon?.sha256 ?? '') || prov.ico?.sha256 !== pins.icon?.sha256) problems.push(`${DESKTOP_PINS}: the icon is not the pinned derivative of the ratified I-08B2.5 app icon`);
+      if (iss !== undefined) {
+        const code = iss.split('\n').filter((l) => !l.trim().startsWith(';')).join('\n');
+        if (!/^PrivilegesRequired=lowest\s*$/m.test(code) || /PrivilegesRequiredOverridesAllowed/.test(code)) problems.push(`${DESKTOP_ISS} is not a per-user, non-elevated installation`);
+        if (!/^DefaultDirName=\{autopf\}\\/m.test(code)) problems.push(`${DESKTOP_ISS} does not install into the per-user program root`);
+        if (!/^ChangesEnvironment=no\s*$/m.test(code)) problems.push(`${DESKTOP_ISS} may change the environment (PATH)`);
+        if (/^\[(?:Registry|Icons|UninstallDelete|InstallDelete)\]/m.test(code)) problems.push(`${DESKTOP_ISS} writes registry / shortcuts / deletions of its own (the canonical code owns them)`);
+        if (/CurrentVersion\\Run|\{(?:user|common)startup\}|\bDelTree\b|\bDeleteFile\b|\bRemoveDir\b|QANDEEL_COMPANY_DATA/i.test(code)) problems.push(`${DESKTOP_ISS} registers autostart or deletes / names Company data`);
+        if (!/DestDir: "\{app\}\\versions\\\{#VersionDir\}"/.test(code)) problems.push(`${DESKTOP_ISS} does not install side by side (versioned directory)`);
+        if (!code.includes('desktop-install --bundle') || !code.includes('desktop-uninstall')) problems.push(`${DESKTOP_ISS} does not hand install / uninstall to the canonical activation`);
+        if (/\/p\s|\/csp\s|password/i.test(code)) problems.push(`${DESKTOP_ISS} carries a signing credential`);
+      }
+      if (mod !== undefined) {
+        const code = mod.replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, '');
+        const verify = code.indexOf('verifyDesktopBundle(bundleDir)');
+        const activate = code.indexOf('activateRelease(');
+        if (verify < 0 || activate < 0 || verify > activate || !code.includes("'PRIVATE_RUNTIME_REQUIRED'")) problems.push(`${DESKTOP_MODULE} activates before verifying the bundle and its private runtime`);
+        if (!code.includes("'SETUP_REQUIRED'") || /CompanyStore|createBackup|writePin|writeReleasePin|seed/i.test(code)) problems.push(`${DESKTOP_MODULE} can create or write a Company (it only finds an existing one and uses the canonical activation)`);
+        for (const m of code.matchAll(/\brmSync\(\s*([^,]+)[,)]/g)) if ((m[1] ?? '').trim() !== 'desktopProductRecordPath()') problems.push(`${DESKTOP_MODULE} deletes something other than its own product record (${(m[1] ?? '').trim()})`);
+      }
+      for (const f of files.filter((x) => x.startsWith('packaging/') && /\.(?:exe|msi|zip|7z|dll|node)$/i.test(x))) problems.push(`${f}: a generated binary is committed`);
+      return problems;
     },
   },
   {
@@ -2346,7 +2404,24 @@ export const RULES = [
       for (const need of [CI_CLASSIFIER, CI_GATE, CI_POST_MERGE, CI_IMPACT_MAP, CI_LOCAL_RUNNER]) if (!files.includes(need)) problems.push(`missing ${need}`);
       if (!/^\s+pull_request:\s*\n\s+branches:\s*\[main\]/m.test(wf) || !/^\s+push:\s*\n\s+branches:\s*\[main\]/m.test(wf) || !/^\s+workflow_dispatch:/m.test(wf)) problems.push('the workflow must run on pull_request / push to main and allow a manual (workflow_dispatch) full run');
       if (!/^permissions:\s*\n\s+contents:\s*read\s*$/m.test(wf)) problems.push('the workflow default permissions must be contents: read');
-      for (const line of wf.split('\n').filter((l) => /^\s*(?:-\s*)?uses:/.test(l))) if (!/uses:\s*[\w.-]+\/[\w.-]+@[0-9a-f]{40}\b/.test(line)) problems.push(`action not pinned to a commit SHA: ${line.trim()}`);
+      // A local reusable workflow of this repository (D1: ./.github/workflows/desktop.yml) is pinned by being in the tree.
+      const unpinned = (text) => text.split('\n').filter((l) => /^\s*(?:-\s*)?uses:/.test(l) && !/uses:\s*[\w.-]+\/[\w.-]+@[0-9a-f]{40}\b/.test(l) && !/uses:\s*\.\/\.github\/workflows\/[\w.-]+\.yml\s*$/.test(l));
+      for (const line of unpinned(wf)) problems.push(`action not pinned to a commit SHA: ${line.trim()}`);
+      // D1 (D-D1-07): the FULL path runs the Windows Desktop proof; the reusable workflow is read-only, SHA-pinned,
+      // secret-free, Windows, and runs the Desktop proof, the real Setup end to end and the artifact verification.
+      const desktopJob = ciJob(wf, 'desktop') ?? '';
+      if (!/needs\.classify\.outputs\.mode == 'full'/.test(desktopJob) || !/uses:\s*\.\/\.github\/workflows\/desktop\.yml/.test(desktopJob)) problems.push('desktop must run .github/workflows/desktop.yml exactly on the full path');
+      const dwf = read(CI_DESKTOP_WORKFLOW);
+      if (dwf === undefined) problems.push(`missing ${CI_DESKTOP_WORKFLOW}`);
+      else {
+        for (const line of unpinned(dwf)) problems.push(`${CI_DESKTOP_WORKFLOW}: action not pinned to a commit SHA: ${line.trim()}`);
+        if (!/^permissions:\s*\n\s+contents:\s*read\s*$/m.test(dwf)) problems.push(`${CI_DESKTOP_WORKFLOW} default permissions must be contents: read`);
+        if (/\$\{\{\s*secrets\./.test(dwf)) problems.push(`${CI_DESKTOP_WORKFLOW} uses a secret (no signing credential lives in CI)`);
+        if (!/^\s+workflow_call:/m.test(dwf) || !/runs-on:\s*windows-latest/.test(dwf)) problems.push(`${CI_DESKTOP_WORKFLOW} must be a reusable Windows workflow`);
+        for (const s of ['desktop:proof', 'desktop:e2e', 'desktop:verify']) if (!new RegExp(`npm run ${s}\\b`).test(dwf)) problems.push(`${CI_DESKTOP_WORKFLOW} does not run ${s}`);
+        if (!/upload-artifact/.test(dwf)) problems.push(`${CI_DESKTOP_WORKFLOW} does not publish the verified Setup artifact`);
+        problems.push(...yamlPlainScalarErrors(dwf).map((e) => `${CI_DESKTOP_WORKFLOW}: ${e}`));
+      }
       for (const id of CI_JOBS) if (ciJob(wf, id) === undefined) problems.push(`the workflow has no ${id} job`);
       const gate = ciJob(wf, 'quality-gate') ?? '';
       if (!/^\s+if:\s*always\(\)\s*$/m.test(gate)) problems.push('quality-gate must run always() (a skipped or failed job fails the gate, never passes it)');
@@ -2582,7 +2657,9 @@ const synthMap = (c0 = 'CLOSED / PASS', c1 = 'NEXT — CLOUD MEGA-TASK', c2 = 'N
   ].join('\n');
 const SYNTH_SQL = 'CREATE TABLE t (x INTEGER) STRICT;\n';
 const REAL_TEXT = (p) => (existsSync(path.join(ROOT, p)) ? readFileSync(path.join(ROOT, p), 'utf8') : '');
-const SYNTH_CI = { [CI_WORKFLOW]: REAL_TEXT(CI_WORKFLOW), [CI_CLASSIFIER]: REAL_TEXT(CI_CLASSIFIER), [CI_GATE]: REAL_TEXT(CI_GATE), [CI_POST_MERGE]: REAL_TEXT(CI_POST_MERGE), [CI_IMPACT_MAP]: REAL_TEXT(CI_IMPACT_MAP), [CI_LOCAL_RUNNER]: REAL_TEXT(CI_LOCAL_RUNNER) };
+const SYNTH_CI = { [CI_WORKFLOW]: REAL_TEXT(CI_WORKFLOW), [CI_DESKTOP_WORKFLOW]: REAL_TEXT(CI_DESKTOP_WORKFLOW), [CI_CLASSIFIER]: REAL_TEXT(CI_CLASSIFIER), [CI_GATE]: REAL_TEXT(CI_GATE), [CI_POST_MERGE]: REAL_TEXT(CI_POST_MERGE), [CI_IMPACT_MAP]: REAL_TEXT(CI_IMPACT_MAP), [CI_LOCAL_RUNNER]: REAL_TEXT(CI_LOCAL_RUNNER) };
+// D1: the real Desktop distribution files (the desktop-distribution rule's legitimate state and its violations).
+const SYNTH_DESKTOP = Object.fromEntries([DESKTOP_ISS, DESKTOP_PINS, DESKTOP_ICON_PROVENANCE, DESKTOP_MODULE, ...DESKTOP_PROOFS].map((f) => [f, REAL_TEXT(f)]));
 // The real, frozen C1 migration texts (read from this checkout) so the synthetic repository is clean.
 const C1_MIGRATION_TEXT = Object.fromEntries(FROZEN_MIGRATIONS.map(({ file }) => [file, readFileSync(path.join(ROOT, MIGRATIONS_DIR, file), 'utf8')]));
 const c1Pins = () => FROZEN_MIGRATIONS.map(({ file }, i) => `  { version: ${i + 2}, name: 'c1-${i}', file: '${file}', sha256: '${migrationSha(C1_MIGRATION_TEXT[file])}' },\n`).join('');
@@ -3176,7 +3253,12 @@ const VIOLATIONS = {
   ],
   'ci-contract': [    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: r1-4of4, suite: 'r1:4/4' }\n", '') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace(/- \{ os: ubuntu-latest, label: c4-c5, suite: 'c4:1\/1 c5:1\/1' \}\n/, '') } },
-    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('acceptance]\n    if: always()\n', 'acceptance]\n    if: success()\n') } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('desktop]\n    if: always()\n', 'desktop]\n    if: success()\n') } },
+    // D1: the Desktop proof dropped from the FULL path, or the reusable workflow weakened.
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('uses: ./.github/workflows/desktop.yml', 'uses: ./.github/workflows/other.yml') } },
+    { contents: { [CI_DESKTOP_WORKFLOW]: SYNTH_CI[CI_DESKTOP_WORKFLOW].replace('npm run desktop:e2e', 'echo skipped') } },
+    { contents: { [CI_DESKTOP_WORKFLOW]: SYNTH_CI[CI_DESKTOP_WORKFLOW].replace('    timeout-minutes: 75\n', '    timeout-minutes: 75\n    env:\n      KEY: ${{ secrets.SIGNING_KEY }}\n') } },
+    { remove: [CI_DESKTOP_WORKFLOW] },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'actions/checkout@v7') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace(/os: \[windows-latest, ubuntu-latest\]/g, 'os: [ubuntu-latest]') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('  workflow_dispatch:\n', '') } },
@@ -3189,6 +3271,20 @@ const VIOLATIONS = {
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('node scripts/ci/impact-map.mjs --self-test', 'true') } },
     { remove: [CI_IMPACT_MAP] },
     { remove: [CI_GATE] },
+  ],
+  'desktop-distribution': [
+    { contents: { ...SYNTH_DESKTOP, [DESKTOP_ISS]: SYNTH_DESKTOP[DESKTOP_ISS].replace('PrivilegesRequired=lowest', 'PrivilegesRequired=admin') } },
+    { contents: { ...SYNTH_DESKTOP, [DESKTOP_ISS]: SYNTH_DESKTOP[DESKTOP_ISS].replace('ChangesEnvironment=no', 'ChangesEnvironment=yes') } },
+    { contents: { ...SYNTH_DESKTOP, [DESKTOP_ISS]: `${SYNTH_DESKTOP[DESKTOP_ISS]}\n[Registry]\nRoot: HKCU; Subkey: "Software\\Microsoft\\Windows\\CurrentVersion\\Run"; ValueName: "QANDEEL"\n` } },
+    { contents: { ...SYNTH_DESKTOP, [DESKTOP_ISS]: `${SYNTH_DESKTOP[DESKTOP_ISS]}\n[UninstallDelete]\nType: filesandordirs; Name: "{localappdata}\\QANDEEL_COMPANY"\n` } },
+    { contents: { ...SYNTH_DESKTOP, [DESKTOP_ISS]: SYNTH_DESKTOP[DESKTOP_ISS].replace('DestDir: "{app}\\versions\\{#VersionDir}"', 'DestDir: "{app}"') } },
+    { contents: { ...SYNTH_DESKTOP, [DESKTOP_PINS]: SYNTH_DESKTOP[DESKTOP_PINS].replace('"arch": "x64"', '"arch": "arm64"') } },
+    { contents: { ...SYNTH_DESKTOP, [DESKTOP_PINS]: SYNTH_DESKTOP[DESKTOP_PINS].replace(/"sha256": "3602f2bb[0-9a-f]+"/, '"sha256": null') } },
+    { contents: { ...SYNTH_DESKTOP, [DESKTOP_ICON_PROVENANCE]: SYNTH_DESKTOP[DESKTOP_ICON_PROVENANCE].replace(DESKTOP_ICON_SOURCE_SHA256, '0'.repeat(64)) } },
+    { contents: { ...SYNTH_DESKTOP, [DESKTOP_MODULE]: SYNTH_DESKTOP[DESKTOP_MODULE].replace('  const bundle = verifyDesktopBundle(bundleDir);', '  const bundle = { ok: true, manifest: null };') } },
+    { contents: { ...SYNTH_DESKTOP, [DESKTOP_MODULE]: `${SYNTH_DESKTOP[DESKTOP_MODULE]}\nexport function fresh(ws: string) { CompanyStore.open(ws).close(); }\n` } },
+    { contents: { ...SYNTH_DESKTOP, [DESKTOP_MODULE]: `${SYNTH_DESKTOP[DESKTOP_MODULE]}\nexport function wipe(ws: string) { rmSync(ws, { recursive: true }); }\n` } },
+    { contents: { ...SYNTH_DESKTOP, 'packaging/windows/dist/QANDEEL-COMPANY-Setup.exe': 'MZ' } },
   ],
   'local-validation-proportional': [
     { contents: { 'package.json': JSON.stringify({ private: true, scripts: { ci: 'npm run build && npm run c1:mutation && npm run c2:mutation && npm run verify', 'validate:affected': 'node scripts/ci/validate-affected.mjs' } }) } },
@@ -3319,6 +3415,7 @@ const MUST_PASS = [
   // OPS legitimate states: the real host modules; proofs present.
   { id: 'founder-host-confined', scenario: { contents: { [OPS_HOST_PROBE]: REAL_TEXT(OPS_HOST_PROBE), [OPS_HOST_PROCESSES]: REAL_TEXT(OPS_HOST_PROCESSES), [OPS_HOST_DESCRIPTOR]: REAL_TEXT(OPS_HOST_DESCRIPTOR), [OPS_HOST_HANDOFF]: REAL_TEXT(OPS_HOST_HANDOFF), [OPS_HOST_LIFECYCLE]: REAL_TEXT(OPS_HOST_LIFECYCLE) } } },
   { id: 'ops-release-admission', scenario: { contents: { [OPS_RUNTIME]: REAL_TEXT(OPS_RUNTIME), [OPS_RELEASE_ADMISSION]: REAL_TEXT(OPS_RELEASE_ADMISSION), [OPS_RELEASE]: REAL_TEXT(OPS_RELEASE), [OPS_CLI]: REAL_TEXT(OPS_CLI) } } },
+  { id: 'desktop-distribution', scenario: { contents: SYNTH_DESKTOP } },
   { id: 'ops-proofs-present', scenario: { contents: { [OPS_HOST_PROBE]: 'export {};\n', 'packages/command-center/test/host.test.ts': OPS_PROOF_MARKERS.map((m) => `// ${m}`).join('\n') } } },
   { id: 'l1-vault-protected', scenario: { contents: { [L1_VAULT]: REAL_TEXT(L1_VAULT), [L1_VAULT_CLI]: REAL_TEXT(L1_VAULT_CLI), 'packages/secret-vault/src/vault.ts': REAL_TEXT('packages/secret-vault/src/vault.ts') } } },
   { id: 'l1-provider-boundary', scenario: { contents: { [L1_TRANSPORT]: REAL_TEXT(L1_TRANSPORT), [L1_DECLARATION]: REAL_TEXT(L1_DECLARATION), [L1_ADAPTER]: REAL_TEXT(L1_ADAPTER), [L1_PRICING]: REAL_TEXT(L1_PRICING), 'packages/model-providers/src/deepseek/transport.ts': REAL_TEXT('packages/model-providers/src/deepseek/transport.ts'), 'packages/model-providers/test/x.test.ts': 'await adapter.generate(req, signal);\n' } } },

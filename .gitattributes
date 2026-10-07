@@ -45,3 +45,7 @@ docs/authority/company-architecture/*/*.md -text -whitespace
 *.sqlite  binary
 *.sqlite3 binary
 *.db    binary
+
+# D1: the one-time copy of the ratified brand authority's app icon (QANDEEL App, I-08B2.5) is byte-exact:
+# its SHA-256 is the provenance (packaging/windows/assets/ICON_PROVENANCE.json); Git never normalizes it.
+packaging/windows/assets/source/*.svg -text

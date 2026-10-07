@@ -10,6 +10,14 @@
 > the Founder's Windows laptop. The "Build → Test = local `npm run ci`" step before `release-stage` (§1, R-OPS-01b) is
 > superseded by **D-D0-01**. Locally, `npm run ci` / `npm run validate:affected` validates the impacted boundary only.
 > A Desktop release candidate is qualified by one green **FULL** GitHub quality gate on its exact tree.
+>
+> **Current status note (D1, 2026-10-07).** D0 is CLOSED / MERGED / CANONICAL (PR #22, `main` @ `074673b`). By
+> Founder decision the former D1 + D2 + D3 are one Mega Stage, **D1 — Desktop v1 Productization** (ACTIVE), followed
+> only by **D2 — Founder Laptop Acceptance**. D1 builds `QANDEEL-COMPANY-Setup.exe` over these OPS mechanisms
+> (D-D1-01 … D-D1-07), without replacing them. It addresses two residuals:
+> - **R-OPS-02:** the shortcuts carry the approved QANDEEL icon (D-D1-03).
+> - **R-OPS-03:** the shortcuts run through the signed console host in headless mode, so no console window appears
+>   (D-D1-04).
 
 **Founder review of `a61e0a5` (first candidate): two Product / Security MAJOR findings, both closed on `b104881`.**
 

@@ -27,7 +27,7 @@ export { OPERATING_SYSTEMS };
 export const REQUIRED = {
   docs: ['classify', 'docs-fast'],
   'fast-integrity': ['classify', 'integrity'],
-  full: ['classify', 'static', 'tests', 'mutation', 'acceptance'],
+  full: ['classify', 'static', 'tests', 'mutation', 'acceptance', 'desktop'],
   affected: ['classify', 'affected-checks'],
 };
 
@@ -116,7 +116,7 @@ export function selfTest() {
   const failures = [];
   const ids = (s) => [`${s}-a`, `${s}-b`];
   const ok = { result: 'success' };
-  const fullNeeds = { classify: ok, static: ok, tests: ok, mutation: ok, acceptance: ok };
+  const fullNeeds = { classify: ok, static: ok, tests: ok, mutation: ok, acceptance: ok, desktop: ok };
   const fullReports = OPERATING_SYSTEMS.flatMap((os) => MUTATION_SCRIPTS.flatMap((s) => [
     { os, script: `${s}:mutation`, total: 2, ran: [`${s}-a`] },
     { os, script: `${s}:mutation`, total: 2, ran: [`${s}-b`] },
@@ -127,6 +127,8 @@ export function selfTest() {
   };
   // FULL parity is unchanged.
   expect('full complete', evaluate({ mode: 'full', needs: fullNeeds, reports: fullReports, ids }), true);
+  expect('full without the Desktop proof (D1)', evaluate({ mode: 'full', needs: { ...fullNeeds, desktop: { result: 'failure' } }, reports: fullReports, ids }), false);
+  expect('full with the Desktop proof skipped', evaluate({ mode: 'full', needs: { ...fullNeeds, desktop: { result: 'skipped' } }, reports: fullReports, ids }), false);
   expect('full missing one mutation on Windows', evaluate({ mode: 'full', needs: fullNeeds, reports: fullReports.filter((r) => !(r.os === 'windows-latest' && r.script === 'l1:mutation' && r.ran[0] === 'l1-b')), ids }), false);
   expect('full duplicate shard on Ubuntu', evaluate({ mode: 'full', needs: fullNeeds, reports: [...fullReports, fullReports.at(-1)], ids }), false);
   expect('full without a family report', evaluate({ mode: 'full', needs: fullNeeds, reports: fullReports.filter((r) => r.script !== 'c3:mutation'), ids }), false);

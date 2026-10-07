@@ -8,7 +8,7 @@
  *      loopback handoff address (`host/handoff.ts`, D-OPS-07) — never on the launch URL itself;
  *   3. the signed Windows PowerShell host, by its absolute System32 path, with a fixed encoded command, to show a
  *      fixed Founder notice (WScript.Shell Popup) — the message comes from a fixed table, never from Company content;
- *   4. the same PowerShell host to write the QANDEEL COMPANY shortcuts (WScript.Shell CreateShortcut).
+ *   4. the same PowerShell host to write (WScript.Shell CreateShortcut) or remove the QANDEEL COMPANY shortcuts.
  *
  * No argument ever carries a secret: the host takes a workspace path and provider codes (the provider key stays in the
  * DPAPI vault); the browser takes only `http://127.0.0.1:<port>/`, and receives the launch token over that loopback
@@ -100,33 +100,64 @@ export interface ShortcutSpec {
   readonly arguments: string;
   readonly workingDirectory: string;
   readonly description: string;
+  /** The installed product's icon (D1, Desktop v1); absent for a development launcher (the runtime's own icon). */
+  readonly icon?: string;
+}
+
+/**
+ * Where the shortcuts go. Windows resolves the per-user Desktop / Start-menu `Programs` folder (OneDrive-aware); a
+ * disposable proof passes `root` so nothing ever lands in the real user profile (`<root>\Desktop`, `<root>\Programs`).
+ */
+export interface ShortcutRoots {
+  readonly root?: string;
+}
+
+const shortcutDir = (s: ShortcutSpec, roots: ShortcutRoots): string[] => [
+  roots.root === undefined ? `$dir = [Environment]::GetFolderPath(${psLiteral(s.folder)})` : `$dir = Join-Path ${psLiteral(roots.root)} ${psLiteral(s.folder)}`,
+  ...(s.subfolder ? [`$dir = Join-Path $dir ${psLiteral(s.subfolder)}`] : []),
+];
+
+async function shortcutScript(lines: string[]): Promise<string[] | null> {
+  lines.push('[Console]::OutputEncoding = [Text.Encoding]::UTF8; ConvertTo-Json -Compress @($out)');
+  const r = await runPowerShell(lines.join('\n'), 30_000);
+  if (!r.ok) return null;
+  try {
+    const parsed = JSON.parse(r.stdout.trim() || '[]') as unknown;
+    return Array.isArray(parsed) ? parsed.map(String) : [String(parsed)];
+  } catch {
+    return null;
+  }
 }
 
 /** Writes per-user .lnk shortcuts (no elevation). Resolves the written paths, or null when Windows refused. */
-export async function writeShortcuts(specs: readonly ShortcutSpec[]): Promise<string[] | null> {
+export async function writeShortcuts(specs: readonly ShortcutSpec[], roots: ShortcutRoots = {}): Promise<string[] | null> {
   const lines = ["$ErrorActionPreference='Stop'", '$sh = New-Object -ComObject WScript.Shell', '$out = @()'];
   for (const s of specs) {
-    lines.push(`$dir = [Environment]::GetFolderPath(${psLiteral(s.folder)})`);
-    if (s.subfolder) lines.push(`$dir = Join-Path $dir ${psLiteral(s.subfolder)}; [void](New-Item -ItemType Directory -Force -Path $dir)`);
+    lines.push(...shortcutDir(s, roots), '[void](New-Item -ItemType Directory -Force -Path $dir)');
     lines.push(`$p = Join-Path $dir ${psLiteral(`${s.name}.lnk`)}`);
     lines.push('$l = $sh.CreateShortcut($p)');
     lines.push(`$l.TargetPath = ${psLiteral(s.target)}`);
     lines.push(`$l.Arguments = ${psLiteral(s.arguments)}`);
     lines.push(`$l.WorkingDirectory = ${psLiteral(s.workingDirectory)}`);
     lines.push(`$l.Description = ${psLiteral(s.description)}`);
+    if (s.icon) lines.push(`$l.IconLocation = ${psLiteral(`${s.icon},0`)}`);
     lines.push('$l.WindowStyle = 7'); // minimized: the launcher's console never takes the screen
     lines.push('$l.Save()');
     lines.push('$out += $p');
   }
-  lines.push('[Console]::OutputEncoding = [Text.Encoding]::UTF8; ConvertTo-Json -Compress @($out)');
-  const r = await runPowerShell(lines.join('\n'), 30_000);
-  if (!r.ok) return null;
-  try {
-    const parsed = JSON.parse(r.stdout.trim()) as unknown;
-    return Array.isArray(parsed) ? parsed.map(String) : [String(parsed)];
-  } catch {
-    return null;
+  return shortcutScript(lines);
+}
+
+/** Removes exactly these shortcuts (and their Start-menu folder once it is empty). Resolves the removed paths. */
+export async function removeShortcuts(specs: readonly ShortcutSpec[], roots: ShortcutRoots = {}): Promise<string[] | null> {
+  const lines = ["$ErrorActionPreference='Stop'", '$out = @()'];
+  for (const s of specs) {
+    lines.push(...shortcutDir(s, roots));
+    lines.push(`$p = Join-Path $dir ${psLiteral(`${s.name}.lnk`)}`);
+    lines.push('if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force; $out += $p }');
+    if (s.subfolder) lines.push('if ((Test-Path -LiteralPath $dir) -and -not (Get-ChildItem -LiteralPath $dir -Force)) { Remove-Item -LiteralPath $dir -Force }');
   }
+  return shortcutScript(lines);
 }
 
 /** Whether a PID names a live process (a hint only: a PID can be reused, so it never proves the host by itself). */
