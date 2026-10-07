@@ -4613,3 +4613,105 @@ Scenario C assertion are unchanged.
 **Rejected:**
 - dropping the selected goal's lift (a visual change that hides the stale measurement instead of fixing it);
 - excluding the selected goal from the detector.
+
+
+## D-D0-01 — D0: quality complete, validation proportional to change; one canonical impact map for local and GitHub (executor; PO-approved D0 Task Contract)
+
+**Problem.** Before D0, the root `npm run ci` ran build → typecheck → lint → every workspace test → the C1, C2, C3, R1,
+C4, C5, C6, C7-A, C7-B, C7-C, C7-D and L1 mutation families one after another → the verifier, as a multi-hour serial
+local job. GitHub classified every non-documentation pull request as FULL. Every small change therefore re-proved the
+whole Company history.
+
+**Decision.** LOCAL = IMPACTED BOUNDARY. The FULL historical continuity proof is a parallel GitHub gate at real release
+and foundation boundaries, not something every task runs.
+
+1. **One canonical map.** `scripts/ci/impact-map.mjs` decides each changed path, first match wins:
+   - a malformed path → FULL;
+   - a HIGH_RISK path → FULL. These are CI / workflow / quality gate; the map, classifier, gate, post-merge and
+     runner; the verifier; the shared test runner; the mutation framework; toolchain, lockfile, compiler and lint
+     configuration; workspace manifests; migrations; storage / runtime; domain / governance / mind /
+     bootstrap-contract; and the runtime-loaded model-providers / secret-vault / tool-drivers;
+   - a RESERVED path → FULL;
+   - documentation → docs;
+   - exactly one BOUNDARY → affected;
+   - an ambiguous or unknown path → FULL.
+
+   A change with no files is FULL. Any FULL path makes the whole change FULL (mixed affected + high-risk is FULL). The
+   classifier (`classify-changes.mjs`), the gate (`quality-gate.mjs`) and the local runner (`validate-affected.mjs`)
+   all import this module. There is no second mapping.
+2. **Boundaries (Desktop-v1 path).**
+   - `c5-presentation`: `packages/command-center-ui/**`, `scripts/c5/**` and `scripts/c5-visual-proof.mjs`.
+   - `founder-host`: `packages/command-center/**`.
+
+   Each boundary declares its proof:
+   - build, typecheck, lint and verifier;
+   - the tests of every workspace that depends on it;
+   - the browser harness, for the UI;
+   - the C5 acceptance and the C5 browser smoke;
+   - the mutation families c5, c7d and l1, with the same shards as FULL;
+   - checks on Windows and Ubuntu, and mutations on Windows. Windows proof is mandatory; Ubuntu mutation parity
+     stays a FULL property.
+3. **Audited against the repository** (`impact-map.mjs --self-test`, run in CI). The audit fails when:
+   - a boundary leaves out a workspace that transitively depends on it;
+   - a boundary leaves out a mutation family whose compiled edits or proof tests touch those workspaces;
+   - a boundary leaves out a FULL acceptance step that imports those workspaces;
+   - a boundary reaches a shared foundation;
+   - a boundary has no Windows proof;
+   - a workspace is neither a boundary nor explicitly high-risk;
+   - the FULL matrix stops partitioning each family exactly as `MUTATION_SHARDS` declares.
+
+   Negative self-tests prove the audit refuses each kind of weakened boundary. The map cannot silently under-prove.
+4. **Investigated and kept FULL.** `model-providers`, `secret-vault` and `tool-drivers` are imported by the Company
+   Runtime. Their reverse-dependency closure reaches runtime and command-center, which means C1–C6 acceptance and
+   nearly every mutation family. Their ownership is not narrow, so they stay FULL. A future Windows packaging
+   boundary (`packaging/`, `installer/`, `distribution/`) is **reserved as FULL**. Its proofs do not exist yet, and D1
+   defines them in a map change, which is itself FULL. No Product behaviour is invented.
+5. **GitHub modes: `docs` / `affected` / `full` / `fast-integrity`. `quality-gate` stays the one required status.**
+   - The classifier publishes a machine-readable `validation-plan` artifact that names its mode and carries a
+     digest.
+   - `affected` adds two jobs:
+     - `affected (os)` re-derives the plan from its own files (it never trusts a stored plan), runs the steps and
+       uploads a proof bound to the plan digest;
+     - `affected mutation` runs only the plan's families, with the FULL shard specs and the same `--report` proof.
+   - The gate fails closed in affected mode when:
+     - the plan is missing, unreadable or tampered with;
+     - the plan does not match the pull request diff, which the gate re-derives;
+     - a planned OS proof is missing, extra, failed, out of order or bound to another plan;
+     - a required job is not green;
+     - mutation parity on the planned OS is incomplete.
+   - FULL is unchanged: Windows + Ubuntu, static, every workspace test, all 12 mutation families in the same shards
+     with parity on both OSes, acceptance, verifier. Nothing is serialized, no timeout is raised and no coverage is
+     deleted.
+6. **Post-merge.** A green pull request gate records `tested-tree.json`, which holds the schema, the tree and the
+   proof mode (`full` or `affected`). A merge commit whose tree equals it takes `fast-integrity`. Any of the following
+   runs FULL: not a merge commit, no PR, no green run for the exact head, a missing / unreadable / legacy artifact,
+   an unknown mode, a different tree, or an API error.
+7. **Local.** `npm run validate:affected [-- --base <rev>] [-- --head <rev>]` prints the plan first.
+   - Defaults: base = the merge-base with `origin/main`; head = the working tree, including untracked files.
+   - Affected: it runs exactly the plan's steps. `--with-mutation` adds only the plan's own families.
+   - FULL: it runs a preflight (build, typecheck, lint, verifier, the four CI self-tests, and the tests of the
+     directly changed workspaces) and says the continuity proof belongs on GitHub.
+   - `npm run ci` runs the same runner. The verifier rule `local-validation-proportional` fails when `ci` is anything
+     else, runs a mutation family, or when any root script chains two or more mutation families (the serial
+     universe cannot come back under another name).
+   - The per-family `cN:mutation` scripts remain for deliberate, single-family diagnosis.
+8. **Release rule.** Affected proof qualifies ordinary implementation iterations. It does **not** qualify an
+   installable Desktop release. Before D1–D4 declares a Desktop v1 release candidate closed, the exact
+   release-candidate tree must have one green **FULL** GitHub quality gate: a FULL-classified PR run, or a manual
+   `workflow_dispatch` run. The earlier instruction to "run local `npm run ci` before release-stage" (OPS report,
+   README) is no longer authoritative.
+
+**Verifier.** The per-stage rules that required the root `ci` script to run each mutation family now require the FULL
+CI mutation matrix to run it on both operating systems. `ci-contract` covers the affected jobs, the plan artifact, the
+self-tests and the tested-tree record. `ci-classifier-fails-closed` covers the map's fail-closed rules and requires both
+the classifier and the runner to import the one map.
+
+**Rejected:**
+- renaming the serial command, for example `ci:full`, which would only keep a tempting default;
+- a second hand-written mapping in the workflow;
+- a dynamic affected matrix rebuilt per boundary;
+- treating the provider / vault packages as affected, since the runtime loads them;
+- running affected mutations on Ubuntu too, a cost with no Desktop-path benefit that stays covered by FULL.
+
+**D0 itself** changes the validation architecture, so it is FULL by its own map. It gets one FULL GitHub gate on the
+exact final head.

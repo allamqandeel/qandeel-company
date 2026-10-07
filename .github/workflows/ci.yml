@@ -1,14 +1,19 @@
 name: CI
 
-# D-R1-07 / D-C4-08. One run per change, one stable required status (`quality-gate`):
-#   docs-only change   → fast, fail-closed docs path (install, build, repository verifier) — no Windows suite;
-#   any other change   → the FULL proof set on Windows AND Ubuntu, split into parallel jobs (static / tests /
-#                        sharded mutation checks / acceptance) with proof parity enforced by the gate;
-#   push to main       → fast integrity proof when the merged tree is exactly the tree a green PR run proved,
-#                        otherwise (or on any doubt) the FULL proof set;
-#   workflow_dispatch  → the FULL proof set on demand (the manual full-main escape hatch).
+# D-R1-07 / D-C4-08 / D-D0-01. One run per change, one stable required status (`quality-gate`). The mode comes
+# from the ONE canonical impact map (scripts/ci/impact-map.mjs — the same map `npm run validate:affected` uses):
+#   docs           → fast, fail-closed docs path (install, build, repository verifier) — no Windows suite;
+#   affected       → only safely owned boundaries changed: that boundary's declared proof (static, its workspace
+#                    tests, its acceptance, its mutation families with parity) on the planned OSes — Windows
+#                    always; the machine-readable plan is an artifact the gate re-derives and checks;
+#   full           → anything else (high-risk, unknown, ambiguous, mixed, empty, any error): the FULL proof set on
+#                    Windows AND Ubuntu, split into parallel jobs (static / tests / sharded mutation checks /
+#                    acceptance) with proof parity enforced by the gate;
+#   fast-integrity → push to main whose merged tree is exactly the tree a green PR run (full OR affected) proved,
+#                    otherwise (or on any doubt) the FULL proof set;
+#   workflow_dispatch → the FULL proof set on demand (the manual full-main / release-candidate gate).
 # Parallelism never deletes coverage: every test, mutation, verifier rule and acceptance step still runs on both
-# operating systems.
+# operating systems in FULL. A Desktop release candidate needs one green FULL gate on its exact tree (D-D0-01).
 
 on:
   push:
@@ -42,18 +47,32 @@ jobs:
       pull-requests: read
     outputs:
       mode: ${{ steps.pr.outputs.mode || steps.push.outputs.mode || steps.manual.outputs.mode }}
+      affected_os: ${{ steps.pr.outputs.affected_os || '[]' }}
+      mutation_matrix: ${{ steps.pr.outputs.mutation_matrix || '[]' }}
     steps:
       - name: Checkout (full history for the diff)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Classifier self-test (fails closed)
-        run: node scripts/ci/classify-changes.mjs --self-test
-      - name: Pull request — docs-only or full
+      - name: Validation architecture self-tests (impact map + repository audit, classifier, gate, post-merge; fail closed)
+        run: |
+          node scripts/ci/impact-map.mjs --self-test
+          node scripts/ci/classify-changes.mjs --self-test
+          node scripts/ci/quality-gate.mjs --self-test
+          node scripts/ci/post-merge-mode.mjs --self-test
+      - name: Pull request — docs, affected or full (canonical impact map)
         id: pr
         if: github.event_name == 'pull_request'
-        run: node scripts/ci/classify-changes.mjs --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}"
+        run: node scripts/ci/classify-changes.mjs --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}" --plan-out validation-plan.json
+      - name: Upload the validation plan (machine-readable, names its mode)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: validation-plan
+          path: validation-plan.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Push to main — docs-only, fast integrity or full
         id: push
         if: github.event_name == 'push'
@@ -114,6 +133,78 @@ jobs:
           npm run typecheck
           npm run verify
           npm run c1:acceptance -- --workspace "${{ runner.temp }}/c1-acceptance"
+
+  affected-checks:
+    name: affected (${{ matrix.os }})
+    needs: classify
+    if: needs.classify.outputs.mode == 'affected'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.classify.outputs.affected_os) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: npm ci
+      - name: Download the validation plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: validation-plan
+          path: validation-plan
+      - name: Affected boundary proof (steps re-derived from the canonical impact map; build, typecheck, lint, verifier, boundary tests, acceptance)
+        run: node scripts/ci/validate-affected.mjs --execute-plan validation-plan/validation-plan.json --os "${{ matrix.os }}" --proof-out "affected-proof/${{ matrix.os }}.json"
+      - name: Upload the affected proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: affected-proof-${{ matrix.os }}
+          path: affected-proof/
+          if-no-files-found: error
+          retention-days: 14
+
+  affected-mutation:
+    name: affected mutation (${{ matrix.os }}, ${{ matrix.label }})
+    needs: classify
+    if: needs.classify.outputs.mode == 'affected' && needs.classify.outputs.mutation_matrix != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        # The plan's families only, with the same shards as the FULL matrix (the impact map audits the equality).
+        include: ${{ fromJSON(needs.classify.outputs.mutation_matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run build
+      - name: Mutation checks (${{ matrix.suite }})
+        run: |
+          mkdir -p mutation-reports
+          for spec in ${{ matrix.suite }}; do
+            s="${spec%%:*}"; shard="${spec#*:}"
+            node "scripts/${s}-mutation-check.mjs" --shard "$shard" --report "mutation-reports/${{ matrix.os }}__${s}__${shard/\//of}.json"
+          done
+      - name: Upload the shard's proof report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-${{ matrix.os }}-${{ matrix.label }}
+          path: mutation-reports/
+          if-no-files-found: error
+          retention-days: 14
 
   static:
     name: static (${{ matrix.os }})
@@ -285,35 +376,54 @@ jobs:
 
   quality-gate:
     name: quality-gate
-    needs: [classify, docs-fast, integrity, static, tests, mutation, acceptance]
+    needs: [classify, docs-fast, integrity, affected-checks, affected-mutation, static, tests, mutation, acceptance]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Download the mutation proof reports
-        if: needs.classify.outputs.mode == 'full'
+        if: needs.classify.outputs.mode == 'full' || needs.classify.outputs.mode == 'affected'
+        continue-on-error: true # a missing report fails the gate's parity check (fail closed)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: mutation-*
           path: mutation-reports
           merge-multiple: true
-      - name: Gate — every required job green, mutation proof parity on both operating systems
+      - name: Download the validation plan
+        if: needs.classify.outputs.mode == 'affected'
+        continue-on-error: true # a missing plan fails the gate (fail closed)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: validation-plan
+          path: validation-plan
+      - name: Download the affected proofs
+        if: needs.classify.outputs.mode == 'affected'
+        continue-on-error: true # a missing proof fails the gate (fail closed)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: affected-proof-*
+          path: affected-proofs
+          merge-multiple: true
+      - name: Gate — every required job green, the mode's proof complete (FULL parity on both OSes; affected plan re-derived and proven)
         env:
           NEEDS: ${{ toJSON(needs) }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           printf '%s' "$NEEDS" > needs.json
-          node scripts/ci/quality-gate.mjs --mode "${{ needs.classify.outputs.mode }}" --needs needs.json --reports mutation-reports
-      - name: Record the proven tree (lets the post-merge run take the fast integrity path)
-        if: github.event_name == 'pull_request' && needs.classify.outputs.mode == 'full'
-        run: git rev-parse 'HEAD^{tree}' > tested-tree.txt
+          node scripts/ci/quality-gate.mjs --mode "${{ needs.classify.outputs.mode }}" --needs needs.json --reports mutation-reports --plan validation-plan/validation-plan.json --proofs affected-proofs --base "$BASE_SHA" --head "$HEAD_SHA"
+      - name: Record the proven tree and its proof mode (lets the post-merge run take the fast integrity path)
+        if: github.event_name == 'pull_request' && (needs.classify.outputs.mode == 'full' || needs.classify.outputs.mode == 'affected')
+        run: node scripts/ci/post-merge-mode.mjs --record-tested-tree tested-tree.json --mode "${{ needs.classify.outputs.mode }}"
       - name: Upload the proven tree
-        if: github.event_name == 'pull_request' && needs.classify.outputs.mode == 'full'
+        if: github.event_name == 'pull_request' && (needs.classify.outputs.mode == 'full' || needs.classify.outputs.mode == 'affected')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tested-tree
-          path: tested-tree.txt
+          path: tested-tree.json
           if-no-files-found: error
           retention-days: 30

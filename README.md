@@ -32,7 +32,11 @@ governed and auditable.
 | `C7-D` Digital Presence Creation & Operations | CLOSED / MERGED / CANONICAL (PR #16, `3d835ec`; `docs/C7D_CLOSURE_RECORD.md`) — C7 complete |
 | `L1-01` DeepSeek V4.1 Flash live provider + Windows secure vault + first local bring-up | CLOSED / MERGED / CANONICAL (PR #17, `11805a9`; `docs/L1_01_CLOSURE_RECORD.md`) |
 | `L1-02` First Production Company Activation (permanent workspace, first real CEO through hire → Academy → activation) | CLOSED / MERGED / CANONICAL (PR #18, `725508f`; `docs/L1_02_CLOSURE_RECORD.md`) — Salim Nasser is the ACTIVE production CEO |
-| `OPS` Operational / Desktop Packaging (open / reopen / close / stop / restart / recover the Company from Windows, no terminal) | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/OPS_FOUNDER_DESKTOP_PACKAGING_REPORT.md`) |
+| `OPS` Operational / Desktop Packaging (open / reopen / close / stop / restart / recover the Company from Windows, no terminal) | CLOSED / MERGED / CANONICAL (PR #19, `d86be37`; `docs/OPS_FOUNDER_DESKTOP_PACKAGING_REPORT.md`) |
+| `C5-CORR-01` / `C5-CORR-02` English application chrome; Goal Focus leader geometry | CLOSED / MERGED / CANONICAL (PR #20, `cf1578e`; PR #21, `c88afbc`) |
+| `D0` Final Engineering & Validation Closure (proportional validation, D-D0-01) | ACTIVE — not closed |
+| `D1` … `D4` Installable Windows Distribution → Desktop Experience & First Run → Update / Recovery / Uninstall Safety → Founder Laptop Install + Acceptance | Not started — QANDEEL COMPANY Desktop v1 closes only when installed, running and accepted |
+| `P1` First Production Staffing under Salim | **PAUSED** by Founder decision until Desktop v1 is installed and accepted (`docs/architecture/IMPLEMENTATION_MAP.md`) |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
@@ -305,6 +309,12 @@ npm ci
 npm run ci
 ```
 
+`npm run ci` is the **proportional** local validation (D-D0-01; same as `npm run validate:affected`). It prints the
+validation plan from the one canonical impact map (`scripts/ci/impact-map.mjs`), then runs only the impacted boundary.
+It never runs the historical C1→L1 mutation universe. A FULL-classified change (shared foundations, toolchain, CI,
+unknown paths…) gets a local preflight, and its FULL continuity proof runs on GitHub. Options: `-- --base <rev>`,
+`-- --head <rev>`, `-- --plan-only`, `-- --with-mutation` (affected mode only: the plan's own families).
+
 | Script | What it does |
 |---|---|
 | `npm run build` | Compiles every workspace with `tsc` into its `dist/` |
@@ -326,13 +336,20 @@ npm run ci
 | `npm run l1:mutation` | Removes 27 L1-01 gates (plaintext vault, a secret on the command line, an arbitrary provider URL / redirect / endpoint, the E4 thinking mapping, the top-level reasoning_effort wire contract (nested or unlisted), the ProviderRequest leaking into the body, the recorded-message run end, 401 retried, 402 transient, a timeout marked not-sent, cache hits billed as misses, off-peak / holidays ignored, a reservation below the worst case, alias drift ignored, D3 egress…) from the build; their proof tests must fail (after a build). `-- --only id,id` a local focus |
 | `npm run l1:smoke -- --workspace <dir>` | **Founder host only, never CI:** the L1-01 live smoke through the real governed runtime and the real DeepSeek adapter (needs `vault:deepseek-company`, the network and a tiny bounded spend; see below) |
 | `npm run verify` | Repository-contract verifier (`scripts/verify-bootstrap.mjs`) |
-| `npm run ci` | build → typecheck → lint → test → C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A + C7-B + C7-C + C7-D + L1 mutation checks → verify (CI runs the same proofs, split into parallel jobs) |
+| `npm run ci` / `npm run validate:affected` | Proportional validation: print the plan (docs / affected / full) from the canonical impact map, then run only the impacted boundary — never the serial historical mutation universe (D-D0-01) |
+| `npm run validate:plan` | Print the validation plan for the current change and run nothing |
+
+**GitHub CI** classifies each pull request with the same map. `docs` runs build + verifier. `affected` runs the boundary's
+static checks, tests, acceptance and its mutation families (Windows mandatory). `full` runs every test, every mutation
+family (sharded, parity on Windows and Ubuntu), every acceptance and the verifier. The required status is `quality-gate`.
+A merge whose tree a green `full` or `affected` run proved takes `fast-integrity`. **A Desktop release candidate needs
+one green FULL GitHub gate on its exact tree**, from a FULL pull request run or a manual `workflow_dispatch` run.
 
 ### C1 local acceptance (Founder host)
 
 ```bash
 npm ci
-npm run ci
+npm run build
 npm run c1:acceptance -- --workspace "D:\QANDEEL-C1-ACCEPTANCE\run-1"
 ```
 
@@ -714,8 +731,9 @@ of a build under `%LOCALAPPDATA%\QANDEEL_COMPANY\releases\`. Once a release is a
 the runtime refuses any other build for it (`RUNTIME_RELEASE_REFUSED`), including this checkout's own `dist`. Branch
 switches, `npm ci` and rebuilds therefore never change what the Founder starts.
 
-To put a new build into production, after `npm ci` and `npm run ci` pass in this checkout, freeze the build (this prints
-the release ID):
+To put a new build into production, the exact commit must first have one green **FULL** GitHub quality gate (D-D0-01; a
+local `npm run ci` is proportional validation, not release qualification). Then run `npm ci` and `npm run build` in this
+checkout, and freeze the build (this prints the release ID):
 
 ```bash
 node packages/command-center/dist/src/cli.js release-stage
