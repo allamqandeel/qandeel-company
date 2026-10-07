@@ -74,7 +74,7 @@ let logN = 0;
 const runSetup = (setup, args = []) => {
   const log = path.join(scratch, 'logs', `setup-${++logN}.log`);
   const r = spawnSync(setup, ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', `/LOG=${log}`, ...args], { windowsHide: true, timeout: 900_000 });
-  return { code: r.status, log };
+  return { code: r.status, log, tail: () => (existsSync(log) ? readFileSync(log, 'utf8').split(/\r?\n/).slice(-25).join(' | ') : 'no log') };
 };
 const versionDir = (b) => path.join(programRoot, 'versions', b.versionDir);
 const inst = (b) => ({ dir: versionDir(b), node: path.join(versionDir(b), 'node', 'node.exe') });
@@ -92,6 +92,7 @@ const hosts = () => processesNaming(' serve --workspace ').filter((p) => lower(p
 const uninstallAndWait = async () => {
   const entry = uninstallEntry(pins.appId);
   const exe = String(entry?.UninstallString ?? '').replace(/^"|"$/g, '');
+  if (!exe) return { code: null, gone: true };
   const r = spawnSync(exe, ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', `/LOG=${path.join(scratch, 'logs', `uninstall-${++logN}.log`)}`], { windowsHide: true, timeout: 600_000 });
   // The Inno uninstaller re-launches itself from a temporary copy and returns at once: wait for its effect, bounded.
   for (let i = 0; i < 240 && (uninstallEntry(pins.appId) !== null || existsSync(path.join(programRoot, 'versions'))); i++) await sleep(500);
@@ -101,7 +102,7 @@ const uninstallAndWait = async () => {
 try {
   // first run without a Company: bounded, nothing created; then an invalid choice: nothing created
   const none = runSetup(setupA);
-  check('install.no-company-setup-required', none.code === 102 && !existsSync(companyData) && !existsSync(desktopLnk), `exit ${none.code}`);
+  check('install.no-company-setup-required', none.code === 102 && !existsSync(companyData) && !existsSync(desktopLnk), `exit ${none.code}${none.code === 102 ? '' : ` — ${none.tail()}`}`);
   await uninstallAndWait();
   const empty = path.join(scratch, 'empty-folder');
   mkdirSync(empty, { recursive: true });
