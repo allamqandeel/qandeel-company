@@ -173,13 +173,18 @@ export async function ensureInno({ pins, cacheDir, toolsDir }) {
     const r = spawnSync(installer, ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/CURRENTUSER', '/NOICONS', `/DIR=${path.dirname(iscc)}`], { windowsHide: true, timeout: 300_000 });
     if (r.status !== 0 || !existsSync(iscc)) throw new Error(`INNO_INSTALL_FAILED (${r.status})`);
   }
-  // The compiler's own file version (its banner may omit the patch level), then the banner as a fallback.
-  const ps = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const info = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-Command', `(Get-Item -LiteralPath '${iscc.replace(/'/g, "''")}').VersionInfo.ProductVersion`], { encoding: 'utf8', windowsHide: true, timeout: 60_000 });
+  // The compiler's identity is the pinned, hash-verified installer that put it here (ISCC.exe carries no version
+  // resource). Defence in depth: any Inno Setup version the compiler does report must be the pinned one.
   const banner = spawnSync(iscc, ['/?'], { encoding: 'utf8', windowsHide: true });
-  const text = `${info.stdout ?? ''}\n${banner.stdout ?? ''}${banner.stderr ?? ''}`;
-  if (!new RegExp(`(^|[^\\d.])${pins.inno.version.replace(/\./g, '\\.')}([^\\d.]|$)`, 'm').test(text)) throw new Error(`INNO_VERSION_MISMATCH: expected ${pins.inno.version}, found ${text.trim().slice(0, 200)}`);
+  innoVersionCheck(`${banner.stdout ?? ''}${banner.stderr ?? ''}`, pins);
   return iscc;
+}
+
+/** Refuses a compiler that reports an Inno Setup version other than the pinned one (silence is not a mismatch). */
+export function innoVersionCheck(text, pins) {
+  const reported = [...String(text).matchAll(/Inno Setup[^\n\d]*(\d+\.\d+\.\d+)/g)].map((m) => m[1]);
+  if (reported.some((v) => v !== pins.inno.version)) throw new Error(`INNO_VERSION_MISMATCH: expected ${pins.inno.version}, reported ${reported.join(', ')}`);
+  return reported;
 }
 
 /**
@@ -219,6 +224,7 @@ export function compileSetup({ iscc, bundleDir, manifest, versionDir, pins, outD
   const r = spawnSync(iscc, args, { encoding: 'utf8', windowsHide: true, timeout: 900_000 });
   const setup = path.join(outDir, `${SETUP_NAME}.exe`);
   if (r.status !== 0 || !existsSync(setup)) throw new Error(`SETUP_COMPILE_FAILED (${r.status})\n${(r.stdout ?? '').slice(-4000)}\n${(r.stderr ?? '').slice(-2000)}`);
+  innoVersionCheck(`${r.stdout ?? ''}${r.stderr ?? ''}`, pins);
   return setup;
 }
 
