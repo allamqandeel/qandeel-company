@@ -11,7 +11,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { describe, test } from 'node:test';
 
-import { sha256Hex, type Id } from '@qandeel-company/domain';
+import { isQandeelError, sha256Hex, type Id } from '@qandeel-company/domain';
 import { BQM2_DECLARATION, BQM2_DECLARATION_SHA256, CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, CEO_ACADEMY_PACKAGE_V4, CEO_ACADEMY_PACKAGE_V5, CEO_ACADEMY_PACKAGE_V6, CEO_ACADEMY_PACKAGE_V7, CEO_IDENTITY_PROFILE_V1, CEO_V5_INSTRUCTION_ADDITIONS, CEO_V5_REUSED_SKILLS, CEO_V6_INSTRUCTION_ADDITION, CEO_V6_REUSED_SKILLS, CEO_V6_REVISED_SKILL, CEO_V7_LANGUAGE_DIRECTION_REMOVALS, CEO_V7_REUSED_SKILLS, CEO_V7_REVISED_SKILL, INVALID_OUTPUT_RESULT, RUBRIC_R2_DECLARATION, academyPackageDigest, benchmarkVerdictBqm2, forbiddenHitsR2, observationsPerArm, packageMethod, scoreAnswer, scoreAnswerR2, scriptFamily, skillQualificationFingerprint, withoutLanguageDirection, type AcademyPackage, type AnswerExpectation, type BenchmarkCase, type RubricResult } from '@qandeel-company/mind';
 import { DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DeepSeekProviderAdapter, FakeDeepSeekTransport, fakeChatAnswer, fakeModelsAnswer, type DeepSeekRequest, type DeepSeekResponse } from '@qandeel-company/model-providers';
 import { InMemorySecretVault } from '@qandeel-company/secret-vault';
@@ -1690,4 +1690,71 @@ describe('D-L1-35A: package v7 = v6 with the language-direction wording removed 
       assert.equal(JSON.stringify([V4, V5, V6].map((p) => viewOf(x, p)?.skills.map((s) => s.runs))), historyBefore, 'v4, v5 and v6 evidence is unchanged');
     }, { pkg: V4, packages: [V4] });
   });
+});
+
+describe('L1-02 closure: Founder feedback reaches later attempts; the activation readiness is truthful; only the Founder decides', () => {
+  test('feedback on a passed simulation reaches the next attempts\' model calls; at ACTIVATION_APPROVAL the readiness lists no blocker and exactly the remaining Founder decisions; a material change (reasoning profile) makes the certification REVIEW_DUE and activation is refused at preview, never offered', () =>
+    withCompany('l1-02-readiness', () => 'TRUTHFUL', async (x) => {
+      const ceo = hireCeo(x);
+      await qualify(x, ceo);
+      act(x, 'ACADEMY_PACKAGE_INSTALL', pkgArgs);
+      const enrollmentId = refOf(act(x, 'ACADEMY_ENROLL', { ...pkgArgs, employeeId: ceo }));
+      act(x, 'ACADEMY_MODULES_COMPLETE', { enrollmentId, moduleCodes: PKG.program.curriculum.filter((m) => m.category !== 'REAL_CASE_STUDIES').map((m) => m.code) });
+      act(x, 'ACADEMY_MODULES_COMPLETE', { enrollmentId, moduleCodes: PKG.program.curriculum.filter((m) => m.category === 'REAL_CASE_STUDIES').map((m) => m.code) });
+      await attempt(x, enrollmentId, 'ceo.sim.product-vs-engineering');
+      // D-L1-39: the Founder's own words on a PASSED attempt (which opens no remediation) — durable, bound, append-only.
+      const sim = x.rt.founder.activation().enrollment?.attempts[0];
+      assert.ok(sim && sim.outcome === 'PASS');
+      const NOTE = 'Founder feedback: the structured decision facet must state the operational decision the body actually takes. ملاحظة المؤسس fb-91c2';
+      const fbRef = act(x, 'ACADEMY_FOUNDER_FEEDBACK', { attemptId: sim.id, feedback: NOTE });
+      assert.match(fbRef, /^academy_founder_feedback:/);
+      const seenBefore = x.seen.length;
+      await attempt(x, enrollmentId, 'ceo.assess.founder-crosses-boundary');
+      await attempt(x, enrollmentId, 'ceo.assess.department-asks-authority');
+      await attempt(x, enrollmentId, 'ceo.holdout.enthusiastic-founder-trap');
+      const later = x.seen.slice(seenBefore).filter((s) => s.kind === 'SCENARIO');
+      assert.ok(later.length >= 3 && later.every((s) => s.text.includes(NOTE)), 'every later attempt\'s actual model call carries the Founder\'s exact words');
+      assert.ok(x.seen.slice(0, seenBefore).every((s) => !s.text.includes('fb-91c2')), 'nothing before the note carried it');
+      const v1 = x.rt.founder.activation();
+      const fb = v1.enrollment?.attempts.find((a) => a.id === sim.id)?.founderFeedback ?? [];
+      assert.equal(fb.length, 1);
+      assert.equal(fb[0]?.body, NOTE);
+      assert.deepEqual(fb[0]?.exposedTo.map((e) => e.attemptId), (v1.enrollment?.attempts ?? []).slice(1).map((a) => a.id), 'the exposure evidence names exactly the later attempts');
+      assert.equal(sim.results.length, v1.enrollment?.attempts.find((a) => a.id === sim.id)?.results.length, 'no score was added or rewritten');
+      // A hidden holdout takes no feedback (it would expose the holdout).
+      const holdout = v1.enrollment?.attempts.find((a) => a.holdout);
+      assert.ok(holdout);
+      assert.throws(() => x.rt.founder.actions.preview(x.session, 'ACADEMY_FOUNDER_FEEDBACK', { attemptId: holdout.id, feedback: NOTE }), /holdout/);
+
+      // TRAINING → PROBATION (the governed lifecycle path), shadow work, probation review → certification.
+      act(x, 'EMPLOYEE_LIFECYCLE', { employeeId: ceo, to: 'PROBATION' });
+      const shadow = refOf(act(x, 'ACADEMY_SHADOW_ASSIGN', { ...pkgArgs, enrollmentId, assignmentCode: 'ceo.shadow.launch-readiness' }));
+      assert.equal(await done(x, shadow), 'COMPLETED');
+      act(x, 'ACADEMY_PROBATION_EVIDENCE', { enrollmentId, workItemId: shadow, positive: ['QUALITY', 'DEMONSTRATED_LEARNING', 'COST_DISCIPLINE', 'CORRECT_ESCALATION', 'COLLABORATION'] });
+      act(x, 'ACADEMY_PROBATION_REVIEW', { enrollmentId, decision: 'PASS' });
+      const v2 = x.rt.founder.activation();
+      const r = v2.enrollment?.readiness;
+      assert.ok(r);
+      assert.equal(v2.enrollment?.stage, 'ACTIVATION_APPROVAL');
+      assert.deepEqual([r.certification.status, r.certification.valid, r.calibration, r.lifecycle, r.activationRequest?.state, r.activationRequest?.certificationBound], ['VALID', true, 'PENDING', 'PROBATION', 'PENDING_APPROVAL', true]);
+      assert.equal(r.skillPins.length, PKG.skills.length, 'one pin per program Skill');
+      assert.ok(r.skillPins.every((p) => p.current && p.reasons.length === 0), 'every pinned Skill Version is production-eligible now');
+      assert.deepEqual(r.blockers, [], 'no hidden blocker');
+      assert.deepEqual(r.founderDecisions, ['ACADEMY_CALIBRATION', 'ACTIVATION_DECIDE'], 'only Founder decisions remain');
+      assert.deepEqual(r.reasoning, { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' });
+      assert.equal(v2.next, 'FOUNDER_CALIBRATION');
+      assert.equal(x.rt.governance.getEmployee(ceo).state, 'PROBATION', 'nothing activates without the Founder');
+
+      // A material change after certification: the reasoning profile (D-L1-44) → the certification is REVIEW_DUE (Stage 6
+      // §14). The readiness names the blocker, the next step says so, and ACTIVATION_DECIDE is refused at preview.
+      act(x, 'EMPLOYEE_REASONING_PROFILE', { employeeId: ceo, defaultClass: 'E1', ceilingClass: 'E3', reasonCode: 'founder.deeper' });
+      const v3 = x.rt.founder.activation();
+      assert.equal(v3.enrollment?.certification?.status, 'REVIEW_DUE');
+      assert.deepEqual(v3.enrollment?.readiness?.blockers, ['CERTIFICATION_REVIEW_DUE']);
+      assert.equal(v3.next, 'CERTIFICATION_REVIEW_DUE');
+      act(x, 'ACADEMY_CALIBRATION', { enrollmentId, decision: 'APPROVE', evidenceRefs: (v3.enrollment?.attempts ?? []).map((a) => `academy_attempt:${a.id}`) });
+      assert.throws(() => x.rt.founder.actions.preview(x.session, 'ACTIVATION_DECIDE', { requestId: v3.enrollment?.activationRequest?.id, decision: 'APPROVE' }), (e: unknown) => isQandeelError(e) && e.details.reason === 'CERTIFICATION_NOT_VALID');
+      assert.equal(x.rt.governance.getEmployee(ceo).state, 'PROBATION');
+      assert.equal(x.rt.founder.activation().enrollment?.activationRequest?.state, 'PENDING_APPROVAL');
+    }));
 });

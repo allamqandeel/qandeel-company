@@ -23,7 +23,10 @@ if (!values.workspace) {
 const workspace = path.resolve(values.workspace);
 
 const { CompanyStore, GovernanceStore, OrganizationStore, AcademyStore, CommunicationStore, activationView } = await import('@qandeel-company/storage');
-const { CEO_ACADEMY_PACKAGE_V1, academyPackageDigest } = await import('@qandeel-company/mind');
+const mind = await import('@qandeel-company/mind');
+const { academyPackageDigest } = mind;
+// The host's registry, newest first — the same order the Founder surface registers (command-center surface.ts).
+const REGISTRY = [mind.CEO_ACADEMY_PACKAGE_V7, mind.CEO_ACADEMY_PACKAGE_V6, mind.CEO_ACADEMY_PACKAGE_V5, mind.CEO_ACADEMY_PACKAGE_V4, mind.CEO_ACADEMY_PACKAGE_V3, mind.CEO_ACADEMY_PACKAGE_V2, mind.CEO_ACADEMY_PACKAGE_V1];
 
 // The workspace lives outside every Git working tree (never committed).
 let insideGit = false;
@@ -39,7 +42,7 @@ try {
   const org = OrganizationStore.for(store);
   const academy = AcademyStore.for(store);
   const comm = CommunicationStore.for(store);
-  const v = activationView(store, [CEO_ACADEMY_PACKAGE_V1]);
+  const v = activationView(store, REGISTRY);
   out.next = v.next;
   out.seat = v.seat ? { positionId: v.seat.positionId, code: v.seat.code, roleRef: v.seat.roleRef, title: v.seat.title } : null;
   out.ceo = v.ceo ? { employeeId: v.ceo.employeeId, name: v.ceo.name, displayNameAr: v.ceo.displayNameAr, jobTitle: v.ceo.jobTitle, state: v.ceo.state, portraitAssetRef: v.ceo.portraitAssetRef, identityProfile: v.ceo.identityProfile } : null;
@@ -72,13 +75,14 @@ try {
   out.provider = prov ? { status: prov.status, credentialRefKind: String(prov.credentialRef ?? '').split(':')[0], routedTaskClasses: v.provider.routedTaskClasses } : null;
   out.modelAccess = v.modelAccess;
   out.accountingInvariants = gov.accountingInvariants();
-  const pkg = v.packages[0];
+  // The installed package (the one the enrollment runs on), else the newest registered.
+  const pkg = v.packages.find((p) => p.record?.state === 'INSTALLED') ?? v.packages[0];
   out.package = pkg
     ? {
         code: pkg.code,
         version: pkg.version,
         sha256: pkg.sha256,
-        registeredDigestMatches: pkg.sha256 === academyPackageDigest(CEO_ACADEMY_PACKAGE_V1),
+        registeredDigestMatches: REGISTRY.some((r) => r.code === pkg.code && r.version === pkg.version && academyPackageDigest(r) === pkg.sha256),
         state: pkg.record?.state ?? null,
         installedAt: pkg.record?.installedAt ?? null,
         benchmarkSpentMicros: pkg.spentMicros,
@@ -100,6 +104,8 @@ try {
         calibration: en.calibration,
         certification: en.certification,
         activationRequest: en.activationRequest,
+        readiness: en.readiness,
+        founderFeedback: en.attempts.map((a) => ({ attemptId: a.id, notes: a.founderFeedback.length, exposedTo: a.founderFeedback.flatMap((f) => f.exposedTo.map((x) => x.attemptId)) })),
       }
     : null;
   if (v.ceo) {

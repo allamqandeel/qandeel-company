@@ -181,6 +181,7 @@ export const INTENT_LABEL: Readonly<Record<string, string>> = {
   ACTIVATION_DECIDE: 'Decide the activation',
   EMPLOYEE_REASONING_PROFILE: 'Change a reasoning profile',
   WORK_ITEM_REASONING_OVERRIDE: 'Set the reasoning level of one task',
+  ACADEMY_FOUNDER_FEEDBACK: 'Give feedback on an Academy attempt',
 };
 
 /** Decisions and outcomes in a preview, in words. */

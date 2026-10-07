@@ -619,6 +619,7 @@ function resolveMutatingTarget(ctx: ApiContext, u: CompanyUniverse, command: Ext
     case 'ACTIVATION_DECIDE':
     case 'EMPLOYEE_REASONING_PROFILE':
     case 'WORK_ITEM_REASONING_OVERRIDE':
+    case 'ACADEMY_FOUNDER_FEEDBACK':
       // Structured only (a form or a rail action posts IDs / codes), never free text (D-C5-07, R2-21, C7-A, C7-C, L1-01, L1-02).
       return null;
   }
@@ -739,6 +740,8 @@ export function structuredSummary(ctx: ApiContext, preview: { intentKind: string
     }
     case 'WORK_ITEM_REASONING_OVERRIDE':
       return `Run this one Work Item (${s('workItemId').slice(0, 8)}…, ${s('taskClass')}) for ${s('name')} at ${s('requestedClass')} (routes at ${s('effectiveClass')}; standing default ${s('employeeDefault')}, ceiling ${s('employeeCeiling')}; route policy max ${s('routePolicyMaxClass')}${p.deploymentAvailable === true ? '' : '; no deployment of that class is provisioned now — the run cannot route until one is'}). This Work Item only: the persistent profile, authority, tools, data and budget are unchanged, and the worst case of the class is reserved before any call`;
+    case 'ACADEMY_FOUNDER_FEEDBACK':
+      return `Record your feedback (${s('feedbackBytes')} bytes) on ${s('name')}'s ${s('attemptKind').toLowerCase()} #${s('trial')} (${s('scenarioCode')}, ${s('outcome')}), bound to that attempt's recorded answer. It is added, never rewritten: the attempt, its answer and its scores stand as decided. The trainee's later Academy attempts carry it in their context; production work does not. No authority, budget or provider call`;
     case 'PILOT_ADVANCE': {
       const step: Record<string, string> = {
         BRIEFING: 'Start the pilot briefing with the CEO (a conversation; it decides nothing)',

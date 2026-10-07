@@ -39,6 +39,7 @@ import {
   type ScenarioKind,
 } from '@qandeel-company/mind';
 
+import { txFounderFeedbackOf, txPlanFounderFeedback, txRecordFounderFeedback, type FounderFeedbackView } from './academy-feedback.js';
 import { txAnswerOf, type AnswerRecord } from './answers.js';
 import { getEmployeeRow, setEmployeeState } from './governance-core.js';
 import { founder, founderAdminWrite } from './governance.js';
@@ -319,6 +320,24 @@ export class AcademyStore {
     });
   }
 
+
+  /**
+   * D-L1-39: the Founder's own textual feedback on one evaluated, non-holdout attempt, bound to its recorded answer
+   * (append-only; no attempt, answer or score is rewritten). It reaches the trainee's later Academy attempts' context.
+   */
+  recordFounderFeedback(actorRef: string, attemptId: string, input: { feedback: string; expectedAnswerSha256: string; expectedFeedbackSha256: string; reasonCode: string }): { readonly id: Id } {
+    return founderAdminWrite(this.#store, 'record founder feedback', actorRef, (ctx) => {
+      const id = assertId(attemptId, 'attemptId');
+      const plan = txPlanFounderFeedback(ctx, { attemptId: id, body: input.feedback });
+      const p = founder(ctx, actorRef, `employee:${plan.employee.id}`, 'academy founder feedback');
+      return { id: txRecordFounderFeedback(ctx, p.ref, { attemptId: id, body: input.feedback, expectedAnswerSha256: input.expectedAnswerSha256, expectedBodySha256: input.expectedFeedbackSha256, reasonCode: assertCode(input.reasonCode, 'reasonCode') }).id };
+    });
+  }
+
+  /** Read-only: the Founder's notes on one attempt and the later attempts whose context carried each (manifest evidence). */
+  founderFeedback(attemptId: string): readonly FounderFeedbackView[] {
+    return this.#read((ctx) => txFounderFeedbackOf(ctx, assertId(attemptId, 'attemptId')));
+  }
 
   /** Retraining completed for a diagnosed failure (trainer authority): the trainee may be re-tested. */
   completeRetraining(actorRef: string, remediationId: string, evidenceRef: string): RemediationRecord {

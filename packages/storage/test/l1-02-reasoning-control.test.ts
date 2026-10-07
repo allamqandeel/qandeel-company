@@ -231,7 +231,7 @@ describe('D-L1-44: migration 0020', () => {
       const migrations = JSON.stringify(d19.all('SELECT version, name, sha256, applied_at FROM schema_migrations ORDER BY version'));
       assert.notEqual(JSON.parse(previews).length, 0);
       v19.close();
-      const v20 = openStoreForTests(root, { clock: new ManualClock(), liveSchemaUpdate: true });
+      const v20 = openStoreForTests(root, { clock: new ManualClock(), liveSchemaUpdate: true, migrations: loadReleasedMigrations(20) });
       try {
         assert.deepEqual(v20.migration.applied, [20]);
         const d = storeContext(v20).db;

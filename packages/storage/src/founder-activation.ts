@@ -298,6 +298,10 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
       if (decision !== 'APPROVE' && decision !== 'REJECT') refuse('DECISION', 'decision is APPROVE or REJECT', { field: 'decision' });
       const e = getEmployeeRow(ctx, r.employee_id as Id);
       if (decision === 'APPROVE' && e.state !== 'SHADOW' && e.state !== 'PROBATION') transition('activation applies to an Employee in SHADOW or PROBATION (move the trainee first)', 'LIFECYCLE_NOT_PROBATION', { state: e.state });
+      // L1-02 closure: a preview never offers an activation the gate refuses — the request's certification must still be
+      // VALID for this role and unexpired (a material change such as a reasoning-profile change makes it REVIEW_DUE).
+      const cert = ctx.db.get<{ status: string; role_ref: string; valid_until: string }>('SELECT status, role_ref, valid_until FROM certifications WHERE id = ?', r.certification_id);
+      if (decision === 'APPROVE' && (!cert || cert.status !== 'VALID' || cert.role_ref !== e.roleRef || cert.valid_until <= ts(ctx))) transition('the certification this request rests on is no longer valid', 'CERTIFICATION_NOT_VALID', { status: cert?.status ?? null });
       const cal = ctx.db.get<{ state: string }>('SELECT state FROM founder_calibrations WHERE enrollment_id = ?', r.enrollment_id);
       if (decision === 'APPROVE' && cal && cal.state !== 'APPROVED') transition('activation of this role needs an approved Founder Calibration', `CALIBRATION_${cal.state}`);
       return { requestId, employeeId: e.id, name: `${e.name.given} ${e.name.family}`, roleRef: e.roleRef, from: e.state, decision: String(decision), certificationId: r.certification_id, calibration: cal?.state ?? 'NOT_REQUIRED', reasonCode: assertCode(raw.reasonCode ?? 'founder.activation', 'reasonCode') };

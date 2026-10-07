@@ -42,6 +42,7 @@ import {
   type RenderItem,
 } from '@qandeel-company/mind';
 
+import { txFeedbackForAttemptContext } from './academy-feedback.js';
 import { benchmarkPinMismatch, txBenchmarkRunPins } from './benchmark-pins.js';
 import { getEmployeeRow, wakeWorkItemJob } from './governance-core.js';
 import type { EmployeeRecord } from './governance-records.js';
@@ -858,6 +859,15 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
     if (s) {
       scenario = { id: s.scenario_id as Id, attemptId: s.attempt_id as Id };
       add(baseCandidate({ key: `scenario:${s.scenario_id}`, kind: 'ACADEMY_SCENARIO', layer: 'WORK', required: true, itemId: s.scenario_id, sha256: s.content_sha256, provenanceRef: `academy_scenario:${s.scenario_id}`, estTokens: Number(s.bytes) + itemEstimate(''), dataClass: declared }, at), () => loadVerified(ctx, 'academy_scenarios', s.scenario_id));
+      // D-L1-39: the Founder's feedback on this trainee's earlier attempts (recorded before this attempt started), in the
+      // RECENT share like other governed content; the newest is required (never crowded out), each integrity-checked on
+      // load. The manifest entry (provenance academy_founder_feedback:<id>) is the durable evidence of the exposure.
+      txFeedbackForAttemptContext(ctx, e.id, s.attempt_id as Id).forEach((f, rank) => {
+        add(
+          baseCandidate({ key: `feedback:${f.id}`, kind: 'TOOL_RESULT', layer: 'RECENT', required: rank === 0, itemId: f.id, sha256: f.bodySha256, provenanceRef: `academy_founder_feedback:${f.id}`, authorityWeight: 2, dataClass: 'D1', createdAt: f.createdAt as Timestamp, estTokens: itemEstimate(f.prefix + f.body) }, at),
+          () => (sha256Hex(f.body) === f.bodySha256 ? `${f.prefix}${f.body}` : null),
+        );
+      });
     }
   }
 

@@ -282,6 +282,18 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
           ab.append(h('p', { class: 'muted small', text: 'You are the evaluator. Authority compliance and cost discipline are scored from run facts; the model never scores itself.' }), form);
         }
       }
+      // D-L1-39: the Founder's own feedback on an evaluated attempt (never on a hidden holdout); later attempts carry it.
+      for (const f of arr(a.founderFeedback)) ab.append(h('blockquote', { class: 'small', text: str(f.body) }), h('p', { class: 'muted small', text: `Your feedback · carried into ${arr(f.exposedTo).length} later attempt(s)` }));
+      if (a.state === 'EVALUATED' && a.holdout !== true && a.answer) {
+        const fb = h('form', { class: 'act-eval' });
+        const t = h('textarea', { rows: '3', maxlength: '2400', required: true, 'aria-label': 'Your feedback to the trainee' }) as HTMLTextAreaElement;
+        fb.append(h('label', { class: 'small' }, h('span', { text: 'Your feedback (added to the record; later attempts carry it)' }), t), h('button', { type: 'submit', class: 'btn btn-quiet', text: 'Preview: give feedback' }));
+        fb.addEventListener('submit', (e) => {
+          e.preventDefault();
+          void host.previewAction('ACADEMY_FOUNDER_FEEDBACK', { attemptId: str(a.id), feedback: t.value });
+        });
+        ab.append(fb);
+      }
       box.append(ab);
     }
     for (const r of arr(enr.remediations)) if (r.state === 'DIAGNOSED' || r.state === 'RETRAINING') box.append(h('div', { class: 'pilot-actions' }, h('span', { class: 'muted small', text: `Diagnosis: ${arr(r.categories).map((c) => humanize(str(c))).join(', ')} ` }), btn('Preview: retraining done', () => void host.previewAction('ACADEMY_RETRAIN_COMPLETE', { remediationId: str(r.id) }))));

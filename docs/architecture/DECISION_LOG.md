@@ -4220,3 +4220,77 @@ CEO-specific), on the existing seams. The internal classes stay E0–E4; the Dee
   - 0001–0019 are unchanged. A LIVE workspace takes 0020 through the governed schema update on its next upgrade.
 - **Not done (out of scope):** AUTO, any LIVE mutation of Salim (still E1 / E2), requalification, Academy reruns,
   budget changes, the D-L1-39 Feedback Loop, Founder Calibration, the lifecycle move, and Activation.
+
+## D-L1-45 — L1-02 FINAL PRODUCTION CEO ACTIVATION CLOSURE: Academy Founder Feedback Loop (closes D-L1-39) and activation readiness
+
+**Decision (Founder, 2026-10-07).** The rest of L1-02 is one closure task. Validation is focused per change, with one final
+full gate on the final head. This entry closes D-L1-39 and the readiness integration. The Founder decisions are not
+performed: Calibration, the move to PROBATION and Activation.
+
+**Repo truth (anti-duplication).**
+- Every Academy table holds codes and numbers only. Remediation is codes-only and opens only on a FAIL. No Founder text
+  exists anywhere on the Academy path.
+- A trainee's attempt context never read earlier attempts.
+- The closest precedent for governed text is the C4 review rationale. It is inline, SHA-256 checked, append-only, and
+  reaches the RECENT layer of later inferences. It is reused as the pattern, not as the table: it belongs to a REQUIRED
+  review of one Work Item.
+
+**Feedback Loop (D-L1-39 closed).**
+- **The act.** `ACADEMY_FOUNDER_FEEDBACK` is a structured-only Founder act (preview → fingerprint → confirm). The preview
+  shows:
+  - the attempt (kind, trial, scenario, outcome, average);
+  - the Employee;
+  - the bound answer (`work_answer:<id>` and its SHA-256);
+  - the exact note with its SHA-256 and size;
+  - the notes already on the attempt;
+  - its reach: `LATER_ACADEMY_ATTEMPTS_OF_THIS_EMPLOYEE`;
+  - `historyChange`, `scoreChange`, `authorityChange`, `budgetChange` and `providerCall`, all `NONE`.
+
+  The confirmation re-plans and refuses `ANSWER_CHANGED` or `FEEDBACK_CHANGED`.
+- **Storage.** The note goes into `academy_founder_feedback` (migration 0021). It is bound to one EVALUATED, non-holdout
+  attempt of that Employee and to that attempt's own recorded answer, which the datastore trigger enforces. It is
+  append-only (UPDATE and DELETE are refused), at most 5 notes per attempt and 2,400 UTF-8 bytes per note, and
+  secret-scanned. A hidden holdout takes no feedback, because the note would carry the holdout into later contexts.
+- **Rule A.** The body lives only in its own row and in the Founder's own preview. Audit `academy.founder_feedback_recorded`
+  carries only the feedback, Employee and answer IDs and the size. `academy-feedback.ts` is covered by the verifier's
+  content-in-telemetry rule.
+- **It reaches later attempts.** Every Academy attempt started after the note carries the Employee's newest three notes
+  on other attempts. They sit in the governed context's RECENT layer and are SHA-256 checked on load. The newest is
+  required, so it is never crowded out silently.
+- **Exposure evidence.** The context manifest records each exposure (`academy_founder_feedback:<id>`, SELECTED). The
+  read model (`AttemptView.founderFeedback`, `AcademyStore.founderFeedback`) lists, per note, the later attempts whose
+  context actually carried it. That is the evidence on which a `LEARNING_FROM_FEEDBACK` claim can later stand or fall.
+  No claim is made here.
+- **Scope.** Production (non-Academy) work never sees the notes, and nothing rewrites an attempt, an answer or a score.
+
+**Activation readiness (read-only).**
+- **The view.** `ActivationView.enrollment.readiness` reports:
+  - the certification (status, validity);
+  - each certification Skill pin with its production eligibility now;
+  - the calibration;
+  - the lifecycle state;
+  - the request and whether it is bound to that certification;
+  - the reasoning profile;
+  - `blockers`: conditions no Founder decision resolves;
+  - `founderDecisions`: the remaining Founder-only steps, in order.
+- **Next step.** The next step at ACTIVATION_APPROVAL now surfaces a blocker first: `CERTIFICATION_REVIEW_DUE` or
+  `CERTIFICATION_EXPIRED`, `SKILL_PIN_NOT_CURRENT`, `CALIBRATION_REJECTED`. Before, it offered calibration or activation
+  regardless.
+- **Preview.** The `ACTIVATION_DECIDE` APPROVE preview refuses `CERTIFICATION_NOT_VALID`. A preview never offers what the
+  store and the datastore gate already refuse.
+- **No path back.** A certification made REVIEW_DUE by a material change (for example a reasoning-profile change,
+  D-L1-44) has no path back to VALID. Therefore **Salim's reasoning profile must not be changed before his activation
+  decision.**
+- **LIVE proof script.** `scripts/l1-02-activation-proof.mjs` reads the host registry (v7 … v1) instead of v1 alone, and
+  prints the readiness and the feedback exposure.
+
+**Migration 0021 is necessary.**
+- No existing table can hold Founder text on an attempt.
+- The intent catalogue is a datastore CHECK (`founder_action_previews` is recreated with the extended list, every row
+  kept; 0020 precedent).
+- 0001–0020 are unchanged. LIVE takes 0020 and 0021 through the governed schema update on its next upgrade.
+
+**Not done:**
+- Founder Calibration, the lifecycle move, Activation and Merge.
+- Any LIVE mutation, budget change, requalification or Academy rerun.
+- Any claim that learning from feedback has been demonstrated.

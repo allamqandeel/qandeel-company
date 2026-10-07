@@ -19,6 +19,8 @@ import { QandeelError, assertCode, assertId, boundedJson, canonicalJson, isTimes
 import { ACTIVATION_INTENTS, APP_CONTROL_APPROVAL_ACTION, BINDING_ROLES, BINDING_SUBJECTS, PILOT_MODES, SOURCE_DECISIONS, assertGoalTransition, assertMoney, assertSourceRegistration, assertTokens, cachedInputRate, isGoalState, isMutatingIntent, nextSourceState, provisioningProfileDigest, type GoalState, type MutatingIntent, type PilotMode, type PilotState, type ProviderProvisioningProfile, type SourceDecision, type SourceState } from '@qandeel-company/governance';
 import { academyPackageDigest, assertCauses, containsSecretMaterial, summarizeCauses, type AcademyPackage, type AttributedCause, type EmployeeIdentityProfile } from '@qandeel-company/mind';
 
+import { AcademyStore } from './academy.js';
+import { txPlanFounderFeedback } from './academy-feedback.js';
 import { txControlDecisionView } from './app-controls.js';
 import { txDigitalDecisionView } from './digital.js';
 import { executeActivation, validateActivationPayload, type ActivationEnv } from './founder-activation.js';
@@ -199,6 +201,18 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
         requestedClass: plan.requestedClass, effectiveClass: plan.effectiveClass, routePolicyMaxClass: plan.routePolicyMaxClass, deploymentAvailable: plan.deploymentAvailable,
         scope: 'THIS_WORK_ITEM_ONLY', persistentProfileChange: 'NONE', authorityChange: 'NONE', budgetChange: 'NONE',
         reasonCode: assertCode(raw.reasonCode ?? 'founder.reasoning_override', 'reasonCode'),
+      };
+    }
+    // --- D-L1-39: Academy Founder Feedback (the Founder's own words to the trainee; nothing is scored, granted or rewritten) ---
+    case 'ACADEMY_FOUNDER_FEEDBACK': {
+      const plan = txPlanFounderFeedback(ctx, { attemptId: raw.attemptId, body: raw.feedback });
+      return {
+        attemptId: plan.attemptId, attemptKind: plan.attemptKind, trial: plan.trial, scenarioCode: plan.scenarioCode, outcome: plan.outcome, averagePct: plan.averagePct,
+        employeeId: plan.employee.id, name: `${plan.employee.name.given} ${plan.employee.name.family}`,
+        answerRef: `work_answer:${plan.answerId}`, answerSha256: plan.answerSha256,
+        feedback: plan.body, feedbackSha256: plan.bodySha256, feedbackBytes: plan.bodyBytes, priorFeedbackOnAttempt: plan.priorOnAttempt,
+        reaches: 'LATER_ACADEMY_ATTEMPTS_OF_THIS_EMPLOYEE', historyChange: 'NONE', scoreChange: 'NONE', authorityChange: 'NONE', budgetChange: 'NONE', providerCall: 'NONE',
+        reasonCode: assertCode(raw.reasonCode ?? 'academy.founder_feedback', 'reasonCode'),
       };
     }
     case 'DELEGATE_WORK': {
@@ -575,6 +589,11 @@ export class FounderActionStore {
         const o = GovernanceStore.for(this.#store).setWorkItemReasoningOverride(founderRef, str('workItemId'), { reasoningClass: pl.requestedClass as 'E1', reasonCode: str('reasonCode') });
         if (o.employee.id !== str('employeeId') || o.standingCeiling !== pl.employeeCeiling || o.standingDefault !== pl.employeeDefault) throw new QandeelError('INVALID_TRANSITION', 'the Employee profile changed since the preview', { reason: 'PROFILE_CHANGED' });
         return `work_item:${o.workItemId}`;
+      }
+      case 'ACADEMY_FOUNDER_FEEDBACK': {
+        // The store re-plans inside the confirm: the answer and the note must be exactly the previewed ones.
+        const out = AcademyStore.for(this.#store).recordFounderFeedback(founderRef, str('attemptId'), { feedback: str('feedback'), expectedAnswerSha256: str('answerSha256'), expectedFeedbackSha256: str('feedbackSha256'), reasonCode: str('reasonCode') });
+        return `academy_founder_feedback:${out.id}`;
       }
       case 'GOAL_APPROVE': {
         const goals = GoalStore.for(this.#store);

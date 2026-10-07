@@ -102,7 +102,7 @@ describe('C7-B lifecycle, migration and the persistent seat', () => {
       v12.close();
       const v13 = openStoreForTests(root, { clock: new ManualClock(), liveSchemaUpdate: true });
       try {
-        assert.deepEqual(v13.migration.applied, [13, 14, 15, 16, 17, 18, 19, 20]);
+        assert.deepEqual(v13.migration.applied, [13, 14, 15, 16, 17, 18, 19, 20, 21]);
         const d = storeContext(v13).db;
         assert.equal(Number(d.get<{ n: number }>('SELECT COUNT(*) AS n FROM events')?.n), before.events, 'the outbox keeps every event');
         assert.equal(Number(d.get<{ n: number }>('SELECT COUNT(*) AS n FROM audit_events')?.n), before.audit, 'audit history is untouched');

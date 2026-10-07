@@ -148,7 +148,13 @@ export const ACTIVATION_INTENTS = ['EMPLOYEE_HIRE', 'EMPLOYEE_LIFECYCLE', 'EMPLO
  * reasoning is never authority: neither changes grants, tools, data class, risk, approvals or budget.
  */
 export const REASONING_INTENTS = ['EMPLOYEE_REASONING_PROFILE', 'WORK_ITEM_REASONING_OVERRIDE'] as const;
-export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS, ...EXTERNAL_EVIDENCE_INTENTS, ...PILOT_INTENTS, ...PROVISIONING_INTENTS, ...ACTIVATION_INTENTS, ...REASONING_INTENTS] as const;
+/**
+ * D-L1-39 — the Academy Founder Feedback Loop: the Founder's own textual feedback on one evaluated attempt, bound to its
+ * recorded answer. Structured-only (no text pattern produces it); it reaches the trainee's later Academy attempts and
+ * changes no attempt, answer, score, authority or budget.
+ */
+export const ACADEMY_FEEDBACK_INTENTS = ['ACADEMY_FOUNDER_FEEDBACK'] as const;
+export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS, ...EXTERNAL_EVIDENCE_INTENTS, ...PILOT_INTENTS, ...PROVISIONING_INTENTS, ...ACTIVATION_INTENTS, ...REASONING_INTENTS, ...ACADEMY_FEEDBACK_INTENTS] as const;
 export type ReadIntent = (typeof READ_INTENTS)[number];
 export type MutatingIntent = (typeof MUTATING_INTENTS)[number];
 

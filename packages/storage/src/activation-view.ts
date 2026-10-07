@@ -10,12 +10,14 @@
  * they never enter telemetry.
  */
 import type { Id } from '@qandeel-company/domain';
-import { scoreAnswer, type AcademyPackage, type RubricResult } from '@qandeel-company/mind';
+import { productionEligibility, scoreAnswer, type AcademyPackage, type RubricResult } from '@qandeel-company/mind';
 
+import { txFounderFeedbackOf, type FounderFeedbackView } from './academy-feedback.js';
 import { txAnswerOf } from './answers.js';
 import { txPackageRecord, txPackageView, type PackageView } from './academy-packages.js';
 import { budgetFor, getEmployeeRow } from './governance-core.js';
 import { ts, type StoreContext } from './internal.js';
+import { getSkillVersionRow, skillVersionView } from './mind-core.js';
 import { mapActivation, mapAttempt, mapCertification, mapEnrollment, mapRemediation } from './mind-records.js';
 import { ceoSeat, seatHolder } from './org-core.js';
 import { storeContext, type CompanyStore } from './store.js';
@@ -49,6 +51,24 @@ export interface AttemptView {
   readonly results: readonly { readonly dimension: string; readonly scorePct: number; readonly evaluatorKind: string }[];
   /** The package's advisory facet expectations applied to the answer (shown to the evaluator; never a score). */
   readonly advisory: RubricResult | null;
+  /** D-L1-39: the Founder's notes on this attempt and the later attempts whose context carried each (manifest evidence). */
+  readonly founderFeedback: readonly FounderFeedbackView[];
+}
+
+/**
+ * The readiness of one certified enrollment for Production Activation. `blockers` are conditions no Founder decision
+ * resolves (a certification no longer VALID, a pinned Skill version no longer production-eligible, a rejected
+ * calibration, a missing request); `founderDecisions` are the remaining Founder-only steps, in order. Nothing here acts.
+ */
+export interface ActivationReadiness {
+  readonly certification: { readonly id: Id; readonly status: string; readonly validUntil: string; readonly valid: boolean };
+  readonly skillPins: readonly { readonly skillCode: string; readonly skillVersionId: Id; readonly versionLabel: string; readonly proficiency: string; readonly current: boolean; readonly reasons: readonly string[] }[];
+  readonly calibration: string;
+  readonly lifecycle: string;
+  readonly activationRequest: { readonly id: Id; readonly state: string; readonly certificationBound: boolean } | null;
+  readonly reasoning: { readonly defaultClass: string; readonly ceilingClass: string; readonly costDiscipline: string };
+  readonly blockers: readonly string[];
+  readonly founderDecisions: readonly string[];
 }
 
 export interface ActivationView {
@@ -72,6 +92,8 @@ export interface ActivationView {
     readonly calibration: { readonly state: string } | null;
     readonly certification: { readonly id: Id; readonly status: string; readonly validUntil: string } | null;
     readonly activationRequest: { readonly id: Id; readonly state: string } | null;
+    /** L1-02 closure: the Production Activation readiness of this enrollment (read-only, from durable state). */
+    readonly readiness: ActivationReadiness | null;
   } | null;
   readonly next: string;
 }
@@ -133,6 +155,7 @@ export function activationView(store: CompanyStore, packages: readonly AcademyPa
             answer: ans ? { body: ans.body, facets: { ...ans.facets } } : null,
             results: ctx.db.all<{ dimension: string; score_pct: number; evaluator_kind: string }>('SELECT dimension, score_pct, evaluator_kind FROM academy_dimension_results WHERE attempt_id = ? ORDER BY dimension', a.id).map((r) => ({ dimension: r.dimension, scorePct: Number(r.score_pct), evaluatorKind: r.evaluator_kind })),
             advisory: ans && expect && pkg ? scoreAnswer(expect, { body: ans.body, ...ans.facets }, pkg.limits.benchmarkPassPct) : null,
+            founderFeedback: txFounderFeedbackOf(ctx, a.id),
           };
         });
         const count = (kind: string, positive: number): number => Number(ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM probation_evidence WHERE enrollment_id = ? AND kind = ? AND positive = ? AND epoch = ?', en.id, kind, positive, en.evidenceEpoch)?.n ?? 0);
@@ -161,12 +184,48 @@ export function activationView(store: CompanyStore, packages: readonly AcademyPa
           })(),
           certification: certRec ? { id: certRec.id, status: certRec.status, validUntil: certRec.validUntil } : null,
           activationRequest: reqRec ? { id: reqRec.id, state: reqRec.state } : null,
+          readiness: certRec ? readinessOf(ctx, at, certRec, reqRec, ctx.db.get<{ state: string }>('SELECT state FROM founder_calibrations WHERE enrollment_id = ?', en.id)?.state ?? 'NOT_REQUIRED', ceo.employeeId) : null,
         };
       }
     }
     const view = { at, seat, ceo, provider: { provisioned: provider !== undefined, status: provider?.status ?? null, routedTaskClasses: routed }, envelope, companyBudget: money(budgetFor(ctx, 'COMPANY', 'company')), modelAccess, packages: views, enrollment };
     return { ...view, next: nextStep(view) };
   });
+}
+
+function readinessOf(ctx: StoreContext, at: string, cert: ReturnType<typeof mapCertification>, req: ReturnType<typeof mapActivation> | null, calibration: string, employeeId: Id): ActivationReadiness {
+  const e = getEmployeeRow(ctx, employeeId);
+  const valid = cert.status === 'VALID' && cert.validUntil > at && cert.roleRef === e.roleRef;
+  const skillPins = cert.skillPins.map((p) => {
+    const v = getSkillVersionRow(ctx, p.skillVersionId);
+    const s = ctx.db.get<{ code: string; skill_type: string }>('SELECT code, skill_type FROM skills WHERE id = ?', v.skillId);
+    const elig = productionEligibility(skillVersionView(v, s?.skill_type as Parameters<typeof skillVersionView>[1]));
+    return { skillCode: s?.code ?? '', skillVersionId: v.id, versionLabel: v.versionLabel, proficiency: String(p.proficiency), current: elig.eligible, reasons: [...elig.reasons] };
+  });
+  const open = req !== null && req.state === 'PENDING_APPROVAL';
+  const blockers = [
+    ...(valid ? [] : [`CERTIFICATION_${cert.status === 'VALID' ? 'EXPIRED' : cert.status}`]),
+    ...(skillPins.every((p) => p.current) ? [] : ['SKILL_PIN_NOT_CURRENT']),
+    ...(calibration === 'REJECTED' ? ['CALIBRATION_REJECTED'] : []),
+    ...(open ? (req?.certificationId === cert.id ? [] : ['REQUEST_NOT_BOUND_TO_CERTIFICATION']) : ['ACTIVATION_REQUEST_MISSING']),
+    ...(['SHADOW', 'PROBATION', 'TRAINING'].includes(e.state) ? [] : [`LIFECYCLE_${e.state}`]),
+  ];
+  const founderDecisions = [
+    ...(calibration === 'PENDING' ? ['ACADEMY_CALIBRATION'] : []),
+    ...(e.state === 'TRAINING' ? ['EMPLOYEE_LIFECYCLE_TO_PROBATION'] : []),
+    ...(open ? ['ACTIVATION_DECIDE'] : []),
+  ];
+  const p = e.cognitiveProfile as { defaultClass?: string; ceilingClass?: string; costDiscipline?: string };
+  return {
+    certification: { id: cert.id, status: cert.status, validUntil: cert.validUntil, valid },
+    skillPins,
+    calibration,
+    lifecycle: e.state,
+    activationRequest: req ? { id: req.id, state: req.state, certificationBound: req.certificationId === cert.id } : null,
+    reasoning: { defaultClass: String(p.defaultClass ?? ''), ceilingClass: String(p.ceilingClass ?? ''), costDiscipline: String(p.costDiscipline ?? '') },
+    blockers,
+    founderDecisions,
+  };
 }
 
 /** The next step of the flow (a code the surface renders in Arabic / English). Deterministic from the view. */
@@ -204,10 +263,14 @@ function nextStep(v: Omit<ActivationView, 'next'>): string {
       return 'PROBATION_REVIEW';
     case 'CERTIFICATION':
       return 'CERTIFICATION_WAITING';
-    case 'ACTIVATION_APPROVAL':
+    case 'ACTIVATION_APPROVAL': {
+      // A condition no Founder decision resolves is surfaced first: a preview would never offer a step the gate refuses.
+      const blocker = en.readiness?.blockers[0];
+      if (blocker !== undefined && blocker !== 'ACTIVATION_REQUEST_MISSING') return blocker;
       if (en.calibration?.state === 'PENDING') return 'FOUNDER_CALIBRATION';
       if (v.ceo.state !== 'SHADOW' && v.ceo.state !== 'PROBATION') return 'MOVE_TO_PROBATION';
       return en.activationRequest?.state === 'PENDING_APPROVAL' ? 'DECIDE_ACTIVATION' : 'ACTIVATION_REQUEST_MISSING';
+    }
     case 'BLOCKED':
       return 'BLOCKED';
     default:
