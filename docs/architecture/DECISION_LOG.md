@@ -4583,3 +4583,33 @@ first time since L1-02 and fails `C-goal-focus` with "leader crossings 1". The g
 top edge by about 2 px (`.goal.is-selected` lifts by `translateY(-2px)`), which is over the 1 px tolerance.
 `origin/main`'s own UI and proof script fail it identically once only the known chrome assertion is bypassed. It is
 recorded for a separate C5 presentation correction and not changed here.
+
+
+## D-C5-19 — C5-CORR-02: the tether is re-measured when its subject settles; a selected goal's leader leaves its visible edge (executor; PO-approved correction)
+
+**Defect.** In Goal Focus, the minimal visual proof's `C-goal-focus` failed with "leader crossings 1".
+
+**Root cause (measured, not assumed).** A selected goal lifts with a 160 ms transform (`.goal.is-selected` →
+`translateY(-2px)`). The line layer is drawn one animation frame after `setTether`, while that transform has barely
+started, so the leader is anchored at the goal's pre-lift top edge. Nothing redraws it afterwards:
+- `ResizeObserver` never fires for a transform;
+- the selection fires no scroll or resize.
+
+Measured in Scenario C:
+- the goal's visible top is 697.77 px and the leader ends at 699.97 px, 2 px inside the selected goal, so 1 crossing;
+- after one redraw on the settled geometry the leader ends at 697.97 px and there are 0 crossings.
+
+The detector was right: the stale leader really did run into the goal it leaves.
+
+**Decision.** `view.ts` listens for `transitionend` on the surface and, when the `transform` of the tether's own subject
+finishes, reschedules the existing rAF-coalesced line draw. The leader is then measured from where the subject now stands.
+- No polling.
+- No geometry or design change: the selected goal keeps its lift, border and ring, and the leader keeps its route.
+- In reduced motion there is no transition, so the first draw is already on settled geometry.
+
+**Proof not weakened.** The crossing tolerance, the protected blocks (the selected goal included), the tether and every
+Scenario C assertion are unchanged.
+
+**Rejected:**
+- dropping the selected goal's lift (a visual change that hides the stale measurement instead of fixing it);
+- excluding the selected goal from the detector.
