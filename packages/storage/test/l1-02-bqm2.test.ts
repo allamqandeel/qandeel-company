@@ -240,7 +240,7 @@ describe('D-L1-23: BQM-2 at the store boundary (0018)', () => {
       v17.close();
       const v18 = openStoreForTests(root, { clock: new ManualClock(), liveSchemaUpdate: true });
       try {
-        assert.deepEqual(v18.migration.applied, [18, 19]);
+        assert.deepEqual(v18.migration.applied, [18, 19, 20]);
         const d = storeContext(v18).db;
         const p = d.get('SELECT * FROM academy_packages WHERE id = ?', pid) as Record<string, unknown> | undefined;
         assert.deepEqual([p?.benchmark_method, p?.method_sha256, p?.answer_contract_version, p?.answer_contract_sha256], ['BQM-1', null, null, null], 'an existing package is truthfully BQM-1 with no pins');
