@@ -4294,3 +4294,119 @@ performed: Calibration, the move to PROBATION and Activation.
 - Founder Calibration, the lifecycle move, Activation and Merge.
 - Any LIVE mutation, budget change, requalification or Academy rerun.
 - Any claim that learning from feedback has been demonstrated.
+
+## D-OPS-01 — Operational / Desktop Packaging: one host lifecycle over the existing runtime and surface (Founder task contract, executor)
+
+**Decision (Founder, 2026-10-07).** The Founder must start, use, close, reopen, stop, restart and recover QANDEEL
+COMPANY from Windows without a terminal. The Strong-v1 startup policy is **on-demand start, then persist**:
+- no sign-in autostart;
+- the first launch starts the host;
+- closing the UI never stops it;
+- an explicit controlled stop / restart exists.
+
+No Electron, Tauri, installer, second runtime, second backend or new authentication.
+
+**Repo truth (anti-duplication).** Every mechanism already existed except discovery and an out-of-terminal lifecycle.
+Reused unchanged:
+- `qandeel-founder serve` (FounderSurface → CompanyRuntime → loopback listener);
+- `launch` (the canonical launch-token mint from the workspace files) and the `/launch` page (token in the URL
+  fragment, redeemed once);
+- the durable supervisor lease (D-C1-22: a second runtime on a workspace waits and fails `LEASE_HELD`);
+- startup recovery (expired leases, stale instances ABANDONED) and graceful shutdown (`runtime.stop()`);
+- safe-upgrade at start, update / restore holds, and the DPAPI vault.
+
+What was missing:
+- a host could not be found (a random port, a URL printed once);
+- the process was tied to a terminal, and only Ctrl+C stopped it;
+- a fail-stopped runtime left the surface running;
+- `launch` could not name the port.
+
+**What was added.** All of it is inside `@qandeel-company/command-center`; there is no new package.
+- **`serve` is the workspace's Founder host.** It refuses to start beside a live host (`HOST_ALREADY_RUNNING`, exit 3),
+  publishes the host descriptor, accepts a controlled stop, and exits non-zero when the runtime fail-stops.
+  `--background` (used only by the launcher) reports readiness once over IPC and prints no launch URL.
+- **Launcher commands** (`host/lifecycle.ts`): `open`, `status`, `stop [--force]`, `restart` and `install-shortcuts`.
+- **Per-user shortcuts.** Desktop **QANDEEL COMPANY**, and a Start-menu folder with Open / Status / Stop / Restart. The
+  console is minimized, and `--notify` shows a fixed bilingual notice on any non-normal outcome.
+
+## D-OPS-02 — Discovery trusts the lease and proves the host by signature, never by a PID, port or file alone (executor)
+
+**The descriptor.** The host writes `<workspace>/runtime/founder-host.json` after it listens:
+`{ version, instanceId, pid, port, startedAt, publicKey }`. The key is an Ed25519 public key born with the runtime
+instance. The private key exists only in the host's memory: a private field, never exported, never logged.
+
+**The probe.** Discovery reads the durable lease and its holder's instance record. Only when the descriptor names the
+lease holder does it send a random nonce to `GET /host/identity` and verify the signature over
+`(instanceId, port, nonce)`.
+
+**Outcomes:**
+- RUNNING.
+- STARTING / STOPPING: a bounded wait.
+- STOPPED.
+- STALE: a dead holder, or a descriptor without a live lease. Startable: the runtime waits out the lease and recovers.
+- UPDATE_REQUIRED: start runs safe-upgrade.
+- HELD: an update / restore hold. Never started.
+- UNHEALTHY: the lease is live but there is no answer or a wrong one (for example a process squatting a freed port).
+- FOREIGN_RUNTIME: a runtime without the surface. A second one is never started beside it.
+- WORKSPACE_MISSING / WORKSPACE_INVALID: no Company store. The launcher never creates a Company.
+
+A PID is only a hint (a dead PID → STALE). A port or a descriptor alone never makes a host RUNNING.
+
+## D-OPS-03 — Two host-control routes on the existing listener; no Founder authority, no new execution surface (executor)
+
+**The routes.** `GET /host/identity?nonce=` and `POST /host/stop` live outside `/api` and exist only when the surface
+runs as the host. They pass the unchanged origin gate: the exact loopback Host, Sec-Fetch-Site, and the exact Origin +
+JSON for the POST. The stop is CSRF-exempt, like the launch exchange, because it carries its own one-shot proof.
+Neither route reads or creates a Founder session, sets a cookie, or returns Company content.
+
+**The stop proof.** A stop is accepted only for the one-shot request the launcher left in
+`<workspace>/runtime/founder-host.stop-request.json`: the instanceId plus a random requestId, consumed on use, so no
+replay. That is the same trust anchor as `launch`, which already mints a Founder launch token from the same files.
+Stopping is an operational act any same-user process could already perform by terminating the process. The controlled
+route makes it graceful: `runtime.stop()` settles, parks, releases the lease and marks the instance STOPPED.
+
+**The client.** The launcher's client (`host/probe.ts`) connects only to 127.0.0.1, and only to these two routes.
+
+## D-OPS-04 — One process module: Node host, installed browser, signed PowerShell; no shell (executor)
+
+`host/processes.ts` is the only module of the surface package that starts processes. It starts:
+- the signed Node runtime (`process.execPath`) running this package's CLI: detached, `windowsHide`, stdout / stderr to
+  the content-free host log, IPC once for readiness;
+- Edge, else Chrome, from its absolute install path, in `--app` mode on the canonical launch URL;
+- the signed Windows PowerShell host by its System32 path with `-EncodedCommand`, for the fixed Founder notice and for
+  writing the shortcuts.
+
+`shell: false` everywhere; no PATH lookup; no exec / execSync.
+
+**The launch token in the browser's argument** is the canonical single-use, 90-second token. It is redeemed on arrival,
+and the same-user boundary already lets any local process mint one with `launch`. The URL is never printed when a
+browser received it.
+
+**No secret anywhere else.** No provider key, vault value or Founder content is ever an argument, a shortcut field, a
+descriptor field or a log line. Verifier rule `founder-host-confined` and eslint enforce the confinement.
+
+## D-OPS-05 — Single instance: lease + start lock + host refusal (executor)
+
+At most one host runs per workspace, in three layers:
+1. **The durable supervisor lease** — unchanged and authoritative.
+2. **A start lock** (`runtime/founder-host.start.lock`, exclusive create). Concurrent launchers spawn one host; the
+   others wait for it (bounded). The lock is stale when its launcher PID is gone or it is older than 180 s.
+3. **`serve` refuses to start** when discovery already sees a host.
+
+Readiness waits are bounded (120 s to start, 90 s to stop). Only the launcher polls discovery; the runtime keeps no
+polling loop.
+
+## D-OPS-06 — Validation proportional to the change; no new mutation family (executor)
+
+**Focused proofs**, both required by verifier rule `ops-proofs-present`:
+- `packages/command-center/test/founder-host.test.ts`: the descriptor and its signature, a port squatter, the one-shot
+  stop, the host routes behind the origin gate, every discovery state, holds refused before any spawn, the notices.
+- `packages/command-center/test/founder-host-lifecycle.test.ts`, with real detached processes: cold start, reuse,
+  concurrent launches, LAN unreachability, no token / key in the descriptor or the log, a controlled stop with the
+  instance STOPPED, a restart on the same Founder / Company, and a hard kill → STALE → the runtime's recovery ABANDONs the
+  dead instance.
+
+**No new mutation shard or CI matrix change.** The negative cases a mutation family would inject (signature unchecked,
+stop proof unchecked, origin unchecked) are asserted directly by those tests.
+
+The Windows proof on the Founder host is recorded in `docs/OPS_FOUNDER_DESKTOP_PACKAGING_REPORT.md`.

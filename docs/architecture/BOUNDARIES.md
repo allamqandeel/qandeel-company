@@ -63,3 +63,14 @@ Three separate rules apply (see `docs/authority/COMPANY_CANONICAL_BASELINE.md` �
   Product authority before it exists.
 - **No routine or exceptional human review of private QANDEEL conversation content** is authorized
   through Company Operations or safety-monitoring flows.
+
+## Founder host boundary (OPS)
+
+**The visible Founder UI ≠ the Company host.** The Command Center window (an Edge / Chrome app window on the loopback
+surface) is only a view: closing it ends nothing. The Company host is the one `qandeel-founder serve` process of a
+workspace — the canonical runtime plus the loopback Founder surface — started on demand by the `open` launcher,
+detached and windowless, and stopped only by an explicit controlled stop (or by Windows sign-out / shutdown, after which
+the next launch performs the runtime's own startup recovery). One workspace has at most one host: the durable
+supervisor lease decides, the launcher only reads it. The launcher holds no Founder authority: it discovers the host
+through a content-free descriptor and a signed identity probe, and the Founder session still begins only with the
+canonical single-use launch token. No Windows sign-in autostart exists.

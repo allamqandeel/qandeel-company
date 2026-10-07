@@ -31,7 +31,8 @@ governed and auditable.
 | `C7-C` Pilot Instrumentation Pack | CLOSED / MERGED / CANONICAL (PR #15, `f450d6a`; `docs/C7C_CLOSURE_RECORD.md`) |
 | `C7-D` Digital Presence Creation & Operations | CLOSED / MERGED / CANONICAL (PR #16, `3d835ec`; `docs/C7D_CLOSURE_RECORD.md`) — C7 complete |
 | `L1-01` DeepSeek V4.1 Flash live provider + Windows secure vault + first local bring-up | CLOSED / MERGED / CANONICAL (PR #17, `11805a9`; `docs/L1_01_CLOSURE_RECORD.md`) |
-| `L1-02` First Production Company Activation (permanent workspace, first real CEO through hire → Academy → activation) | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/L1_02_IMPLEMENTATION_REPORT.md`) |
+| `L1-02` First Production Company Activation (permanent workspace, first real CEO through hire → Academy → activation) | CLOSED / MERGED / CANONICAL (PR #18, `725508f`; `docs/L1_02_CLOSURE_RECORD.md`) — Salim Nasser is the ACTIVE production CEO |
+| `OPS` Operational / Desktop Packaging (open / reopen / close / stop / restart / recover the Company from Windows, no terminal) | IMPLEMENTATION CANDIDATE — NOT CLOSED (`docs/OPS_FOUNDER_DESKTOP_PACKAGING_REPORT.md`) |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
@@ -697,6 +698,24 @@ explicit `.gitattributes`, and (locally) `core.longpaths=true`. It also checks:
   new device or user account, store them again with `qandeel-vault set`.
 - **Line endings:** text is LF everywhere (`.gitattributes`); PowerShell files, if added, are CRLF
   and UTF-8 with BOM.
+
+## Operating the Company from Windows (OPS)
+
+The Founder opens the Company with the **QANDEEL COMPANY** shortcut (Desktop and Start menu); no terminal, port or
+workspace path is needed. The shortcut runs `qandeel-founder open`, which reuses the running Company host or starts
+exactly one (the existing `serve`, detached and windowless), mints a fresh single-use launch token and opens the
+existing Command Center in an Edge (else Chrome) app window. Closing that window does not stop the Company. The Start
+menu folder **QANDEEL COMPANY** also holds **Status**, **Stop** (controlled shutdown) and **Restart**. Nothing starts at
+Windows sign-in. Details: `docs/OPS_FOUNDER_DESKTOP_PACKAGING_REPORT.md`.
+
+One-time setup, after `npm ci` and `npm run build` in this checkout:
+
+```bash
+node packages/command-center/dist/src/cli.js install-shortcuts --workspace "<production workspace>" --provider deepseek
+```
+
+It records the workspace (no secret) in `%LOCALAPPDATA%\QANDEEL_COMPANY\launcher\founder-launcher.json` and writes the
+per-user shortcuts; no elevation. The Company host's content-free log is `<workspace>\runtime\founder-host.log`.
 
 ## License
 

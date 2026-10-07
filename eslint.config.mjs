@@ -35,8 +35,9 @@ export default tseslint.config(
     // C7-D adds two reviewed network paths: the isolated loopback Preview host and the one fixed-host GitHub transport
     // (verifier rules `c7d-preview-isolated` / `c7d-tool-boundary`). L1-01 adds the one fixed-host DeepSeek transport
     // (`l1-provider-boundary`) and the one reviewed process path: the Windows DPAPI vault through the signed PowerShell
-    // host (`l1-vault-protected`).
-    ignores: ['packages/storage/src/sqlite/**', 'packages/command-center/src/server/listener.ts', 'packages/command-center/src/server/preview-listener.ts', 'packages/tool-drivers/src/github/https-transport.ts', 'packages/model-providers/src/deepseek/https-transport.ts', 'packages/secret-vault/src/windows-dpapi.ts', 'packages/command-center-ui/src/**'],
+    // host (`l1-vault-protected`). OPS adds the Founder host lifecycle's two (`founder-host-confined`): the loopback-only
+    // host probe and the one module that starts the host, the browser and the signed PowerShell host.
+    ignores: ['packages/storage/src/sqlite/**', 'packages/command-center/src/server/listener.ts', 'packages/command-center/src/server/preview-listener.ts', 'packages/tool-drivers/src/github/https-transport.ts', 'packages/model-providers/src/deepseek/https-transport.ts', 'packages/secret-vault/src/windows-dpapi.ts', 'packages/command-center/src/host/probe.ts', 'packages/command-center/src/host/processes.ts', 'packages/command-center-ui/src/**'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -154,7 +155,7 @@ export default tseslint.config(
   {
     // The Founder listener: the one module that may open a (loopback-only) network path; still no SQLite,
     // no child processes, no storage internals.
-    files: ['packages/command-center/src/server/listener.ts', 'packages/command-center/src/server/preview-listener.ts', 'packages/tool-drivers/src/github/https-transport.ts', 'packages/model-providers/src/deepseek/https-transport.ts'],
+    files: ['packages/command-center/src/server/listener.ts', 'packages/command-center/src/server/preview-listener.ts', 'packages/tool-drivers/src/github/https-transport.ts', 'packages/model-providers/src/deepseek/https-transport.ts', 'packages/command-center/src/host/probe.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -170,7 +171,9 @@ export default tseslint.config(
   {
     // L1-01 (D-L1-02): the Windows vault is the ONE module that may start a process — the signed Windows PowerShell host
     // for DPAPI — and it still opens no network path and reaches no SQLite.
-    files: ['packages/secret-vault/src/windows-dpapi.ts'],
+    // OPS (D-OPS-04): the Founder host's process module starts the host, the browser and the signed PowerShell host — and
+    // likewise opens no network path and reaches no SQLite.
+    files: ['packages/secret-vault/src/windows-dpapi.ts', 'packages/command-center/src/host/processes.ts'],
     rules: {
       'no-restricted-imports': [
         'error',

@@ -362,6 +362,13 @@ const L1_DECLARATION = 'packages/model-providers/src/deepseek/declaration.ts';
 const L1_PRICING = 'packages/model-providers/src/deepseek/pricing.ts';
 const L1_MIGRATION = `${MIGRATIONS_DIR}0016_l1_provider_pricing_identity.sql`;
 const L1_FILES = [L1_VAULT, L1_ADAPTER, L1_TRANSPORT, L1_MIGRATION];
+// --- OPS boundaries (Operational / Desktop Packaging: the Founder host lifecycle, D-OPS-01 … D-OPS-06) ---------------
+// The launcher's loopback-only identity / stop client and the one module that starts processes (host, browser, PowerShell).
+const OPS_HOST_PROBE = 'packages/command-center/src/host/probe.ts';
+const OPS_HOST_PROCESSES = 'packages/command-center/src/host/processes.ts';
+const OPS_HOST_DESCRIPTOR = 'packages/command-center/src/host/descriptor.ts';
+const OPS_HOST_FILES = [OPS_HOST_PROBE, OPS_HOST_PROCESSES, OPS_HOST_DESCRIPTOR];
+const OPS_PROOF_MARKERS = ['OPS-PROOF: founder-host-descriptor', 'OPS-PROOF: founder-host-lifecycle'];
 const L1_GOVERNED_TRIGGERS = ['price_card_schedules_immutable_u', 'price_card_schedules_immutable_d', 'price_card_schedules_never_above_peak', 'usage_records_cached_within_input', 'model_identity_checks_append_only_u', 'model_identity_checks_append_only_d'];
 /** The provider's chain-of-thought field: never read, returned, logged or persisted (comments may name it). */
 const L1_THINKING_FIELD = /\breasoning_content\b/;
@@ -1021,7 +1028,7 @@ export const RULES = [
     // C7-D adds the isolated Preview host (rule `c7d-preview-isolated`) and the one fixed-host GitHub transport (`c7d-tool-boundary`).
     check: ({ files, read }) =>
       files
-        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && f !== FOUNDER_LISTENER && f !== C7D_PREVIEW && f !== C7D_TRANSPORT && f !== L1_TRANSPORT && f !== L1_VAULT && !f.startsWith(UI_SRC) && NETWORK_MODULE.test(read(f) ?? ''))
+        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && f !== FOUNDER_LISTENER && f !== C7D_PREVIEW && f !== C7D_TRANSPORT && f !== L1_TRANSPORT && f !== L1_VAULT && f !== OPS_HOST_PROBE && f !== OPS_HOST_PROCESSES && !f.startsWith(UI_SRC) && NETWORK_MODULE.test(read(f) ?? ''))
         .map((f) => `${f} opens a network path or spawns processes (C1 runtime code has neither)`),
   },
   {
@@ -1047,7 +1054,7 @@ export const RULES = [
         if (/['"](?:0\.0\.0\.0|::|::0)['"]/.test(listener) || /\.listen\(\s*\d/.test(listener)) problems.push(`${FOUNDER_LISTENER} binds a non-loopback address`);
         if (/child_process|worker_threads|node:sqlite/.test(listener)) problems.push(`${FOUNDER_LISTENER} spawns processes or reaches SQLite`);
       }
-      for (const f of files.filter((x) => x.startsWith('packages/command-center/src/') && x !== FOUNDER_LISTENER && x !== C7D_PREVIEW && isCode(x))) {
+      for (const f of files.filter((x) => x.startsWith('packages/command-center/src/') && x !== FOUNDER_LISTENER && x !== C7D_PREVIEW && x !== OPS_HOST_PROBE && x !== OPS_HOST_PROCESSES && isCode(x))) {
         if (NETWORK_MODULE.test(read(f) ?? '')) problems.push(`${f} opens a network path outside the loopback listener`);
       }
       for (const f of files.filter((x) => (x.startsWith(UI_SRC) || x.startsWith('packages/command-center-ui/public/')) && /\.(?:[cm]?[jt]s|html|css)$/i.test(x))) {
@@ -2133,6 +2140,53 @@ export const RULES = [
       return problems;
     },
   },
+  // --- OPS rules ---------------------------------------------------------------------------------------------------
+  {
+    id: 'founder-host-confined',
+    // OPS (D-OPS-03 / D-OPS-04): the host probe talks only to 127.0.0.1, only to the two host-control routes (never a
+    // Founder /api route), and starts no process; the process module starts only the signed Node runtime, an absolute
+    // browser path or the signed PowerShell host by its System32 path, never through a shell, and opens no network path;
+    // the host descriptor holds a public key only (the private key is a private field and never exported).
+    check: ({ read }) => {
+      const problems = [];
+      const strip = (t) => t.replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, '');
+      const probe = read(OPS_HOST_PROBE);
+      if (probe !== undefined) {
+        const code = strip(probe);
+        if (!/host:\s*LOOPBACK_HOST/.test(code)) problems.push(`${OPS_HOST_PROBE} does not connect to the loopback host constant`);
+        if (/\bhost:(?!\s*LOOPBACK_HOST\b)/.test(code) || /\bhostname:/.test(code) || /\bfetch\s*\(/.test(code)) problems.push(`${OPS_HOST_PROBE} can reach a host other than 127.0.0.1`);
+        if (/['"`]\/api\//.test(code)) problems.push(`${OPS_HOST_PROBE} reaches a Founder /api route (discovery and stop carry no Founder session)`);
+        if (/child_process|worker_threads|node:sqlite|node:(?:net|tls|https|http2|dgram|dns)['"]/.test(code)) problems.push(`${OPS_HOST_PROBE} starts a process, reaches SQLite or opens a non-HTTP network path`);
+      }
+      const proc = read(OPS_HOST_PROCESSES);
+      if (proc !== undefined) {
+        const code = strip(proc);
+        if (/(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?(?:http|https|http2|net|tls|dgram|dns|undici|sqlite|worker_threads)['"]|\bfetch\s*\(/.test(code)) problems.push(`${OPS_HOST_PROCESSES} opens a network path, reaches SQLite or starts a worker`);
+        if (/shell:\s*true|\bexec\(|execSync\(|spawnSync\(|execFileSync\(|\bfork\(/.test(code)) problems.push(`${OPS_HOST_PROCESSES} starts a process through a shell or an unbounded exec`);
+        if (!/shell:\s*false/.test(code)) problems.push(`${OPS_HOST_PROCESSES} does not state shell: false`);
+        for (const m of code.matchAll(/\b(?:spawn|execFile)\(\s*([^,]+),/g)) {
+          if (!['process.execPath', 'browser.exe', 'powershellExe()'].includes((m[1] ?? '').trim())) problems.push(`${OPS_HOST_PROCESSES} starts an executable other than the Node runtime, an installed browser or the signed PowerShell host (${(m[1] ?? '').trim()})`);
+        }
+        if (!/WindowsPowerShell['"]?,\s*['"]v1\.0['"]?,\s*['"]powershell\.exe/.test(code) || !/SystemRoot/.test(code) || !/-EncodedCommand/.test(code)) problems.push(`${OPS_HOST_PROCESSES} does not start the signed Windows PowerShell host by its absolute System32 path with an encoded fixed command`);
+      }
+      const desc = read(OPS_HOST_DESCRIPTOR);
+      if (desc !== undefined) {
+        const code = strip(desc);
+        if (!/readonly #privateKey/.test(code) || /pkcs8|privateKey\.export|type:\s*'pkcs1'/.test(code)) problems.push(`${OPS_HOST_DESCRIPTOR} can export or serialize the host's private key`);
+        if (/child_process|node:(?:http|https|net|tls|sqlite)['"]|\bfetch\s*\(/.test(code)) problems.push(`${OPS_HOST_DESCRIPTOR} opens a network path, starts a process or reaches SQLite`);
+      }
+      return problems;
+    },
+  },
+  {
+    id: 'ops-proofs-present',
+    // The Founder host proofs CI must execute (found by marker) whenever the host lifecycle modules exist.
+    check: ({ files, read }) => {
+      if (!files.some((f) => OPS_HOST_FILES.includes(f))) return [];
+      const tests = files.filter((f) => isTestPath(f) && isCode(f));
+      return OPS_PROOF_MARKERS.filter((m) => !tests.some((f) => (read(f) ?? '').includes(m))).map((m) => `no test carries the proof marker "${m}"`);
+    },
+  },
   {
     id: 'l1-provider-boundary',
     // The DeepSeek adapter (D-L1-03/D-L1-05): one fixed origin, no redirect, the endpoint allowlist re-checked before
@@ -2616,6 +2670,17 @@ const VIOLATIONS = {
     { contents: { [L1_VAULT_CLI]: "const secret = values.secret; // no FORBIDDEN_FLAGS, no raw mode\n" } },
     { contents: { 'packages/secret-vault/src/helper.ts': "import { spawn } from 'node:child_process';\n" } },
   ],
+  // OPS.
+  'founder-host-confined': [
+    { contents: { [OPS_HOST_PROBE]: "import http from 'node:http';\nhttp.request({ host: '192.168.1.5', port, path: '/host/identity' });\n" } },
+    { contents: { [OPS_HOST_PROBE]: "import http from 'node:http';\nhttp.request({ host: LOOPBACK_HOST, port, path: '/api/universe' });\n" } },
+    { contents: { [OPS_HOST_PROBE]: "import http from 'node:http';\nimport { spawn } from 'node:child_process';\nhttp.request({ host: LOOPBACK_HOST, port });\n" } },
+    { contents: { [OPS_HOST_PROCESSES]: "import { spawn } from 'node:child_process';\nspawn(userCommand, args, { shell: true });\n// path.join(SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') -EncodedCommand\n" } },
+    { contents: { [OPS_HOST_PROCESSES]: "import { spawn } from 'node:child_process';\nimport http from 'node:http';\nspawn(process.execPath, args, { shell: false });\nconst ps = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'); const a = ['-EncodedCommand'];\n" } },
+    { contents: { [OPS_HOST_PROCESSES]: "import { exec } from 'node:child_process';\nexec(`powershell ${cmd}`); // shell: false\n" } },
+    { contents: { [OPS_HOST_DESCRIPTOR]: "const { privateKey } = generateKeyPairSync('ed25519');\nconst pem = privateKey.export({ format: 'pem', type: 'pkcs8' });\nreadonly #privateKey: KeyObject;\n" } },
+  ],
+  'ops-proofs-present': [{ contents: { [OPS_HOST_PROBE]: 'export {};\n' } }],
   'l1-provider-boundary': [
     { contents: { [L1_TRANSPORT]: "const r = await fetch(`${process.env.PROVIDER_ORIGIN}${request.path}`, { redirect: 'error' });\nassertDeepSeekEndpoint(request.method, request.path);\n", [L1_DECLARATION]: "export const DEEPSEEK_API_ORIGIN = 'https://api.deepseek.com';\nexport const DEEPSEEK_MODEL_CODE = 'deepseek-flash';\nexport const DEEPSEEK_THINKING_BY_CLASS = Object.freeze({ E1: 'none', E2: 'low', E3: 'high', E4: 'max' });\n" } },
     { contents: { [L1_TRANSPORT]: "const r = await fetch(`${DEEPSEEK_API_ORIGIN}${request.path}`, { redirect: 'follow' });\nassertDeepSeekEndpoint(request.method, request.path);\n", [L1_DECLARATION]: "export const DEEPSEEK_API_ORIGIN = 'https://api.deepseek.com';\nexport const DEEPSEEK_MODEL_CODE = 'deepseek-flash';\nexport const DEEPSEEK_THINKING_BY_CLASS = Object.freeze({ E1: 'none', E2: 'low', E3: 'high', E4: 'max' });\n" } },
@@ -3106,6 +3171,9 @@ const MUST_PASS = [
   // migration (comments may name the chain-of-thought field and the pricing-docs host); an adapter test calling generate.
   { id: 'l1-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`L1\` | Local | Local | IN PROGRESS — L1-01 implementation candidate; not closed |\n`, [L1_REPORT]: '# Report\n\nL1-01 is NOT CLOSED (implementation candidate).\n' } } },
   { id: 'l1-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`L1\` | Local | Local | CLOSED / MERGED / CANONICAL |\n`, 'docs/L1_01_CLOSURE_RECORD.md': '' } } },
+  // OPS legitimate states: the real host modules; proofs present.
+  { id: 'founder-host-confined', scenario: { contents: { [OPS_HOST_PROBE]: REAL_TEXT(OPS_HOST_PROBE), [OPS_HOST_PROCESSES]: REAL_TEXT(OPS_HOST_PROCESSES), [OPS_HOST_DESCRIPTOR]: REAL_TEXT(OPS_HOST_DESCRIPTOR) } } },
+  { id: 'ops-proofs-present', scenario: { contents: { [OPS_HOST_PROBE]: 'export {};\n', 'packages/command-center/test/host.test.ts': OPS_PROOF_MARKERS.map((m) => `// ${m}`).join('\n') } } },
   { id: 'l1-vault-protected', scenario: { contents: { [L1_VAULT]: REAL_TEXT(L1_VAULT), [L1_VAULT_CLI]: REAL_TEXT(L1_VAULT_CLI), 'packages/secret-vault/src/vault.ts': REAL_TEXT('packages/secret-vault/src/vault.ts') } } },
   { id: 'l1-provider-boundary', scenario: { contents: { [L1_TRANSPORT]: REAL_TEXT(L1_TRANSPORT), [L1_DECLARATION]: REAL_TEXT(L1_DECLARATION), [L1_ADAPTER]: REAL_TEXT(L1_ADAPTER), [L1_PRICING]: REAL_TEXT(L1_PRICING), 'packages/model-providers/src/deepseek/transport.ts': REAL_TEXT('packages/model-providers/src/deepseek/transport.ts'), 'packages/model-providers/test/x.test.ts': 'await adapter.generate(req, signal);\n' } } },
   { id: 'l1-pricing-truthful', scenario: { contents: { [L1_MIGRATION]: REAL_TEXT(L1_MIGRATION), 'packages/storage/src/governance-core.ts': REAL_TEXT('packages/storage/src/governance-core.ts'), 'packages/governance/src/economics.ts': REAL_TEXT('packages/governance/src/economics.ts') } } },
