@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
+import { activationActionable, offersProbationMove } from '../src/app/activation.js';
 import { splitLeader } from '../src/app/view.js';
 import { DEPT_LABEL, RANK_ORDER, applyLens, attentionSpotlight, chainNodeIds, layoutUniverse, showsRelations } from '../src/index.js';
 import type { CompanyUniverse } from '../src/model/types.js';
@@ -252,5 +253,19 @@ describe('Lenses', () => {
     const clear = splitLeader([{ x: 0, y: 10 }, { x: 100, y: 10 }], [block(20, 40, 60, 90), block(98, 0, 200, 20)]);
     assert.equal(clear.over, 'M 0 10 L 95 10');
     assert.equal(clear.under, 'M 95 10 L 100 10');
+  });
+});
+
+describe('L1-02 activation steps (Salim at ACTIVATION_APPROVAL, still TRAINING)', () => {
+  test('the TRAINING → PROBATION step is offered at ACTIVATION_APPROVAL, and activation is not actionable before it', () => {
+    assert.equal(offersProbationMove('ACTIVATION_APPROVAL', 'TRAINING'), true);
+    assert.equal(offersProbationMove('CERTIFICATION', 'TRAINING'), true);
+    assert.equal(offersProbationMove('SHADOW_WORK', 'TRAINING'), true);
+    assert.equal(offersProbationMove('ACTIVATION_APPROVAL', 'PROBATION'), false);
+    assert.equal(offersProbationMove('ASSESSMENT', 'TRAINING'), false);
+    assert.equal(offersProbationMove('ACTIVATED', 'TRAINING'), false);
+    assert.equal(activationActionable('TRAINING'), false);
+    assert.equal(activationActionable('PROBATION'), true);
+    assert.equal(activationActionable('SHADOW'), true);
   });
 });

@@ -27,6 +27,10 @@ const btn = (text: string, onClick: () => void, primary = false): HTMLElement =>
 };
 const pill = (text: string, cls = ''): HTMLElement => h('span', { class: `pill ${cls}`.trim(), text });
 const WORK_DONE = ['COMPLETED', 'FAILED', 'CANCELLED', 'SUPERSEDED'];
+/** The Founder's TRAINING → PROBATION step is offered from shadow work until activation (activation needs SHADOW or PROBATION). */
+export const offersProbationMove = (stage: string, ceoState: string): boolean => ceoState === 'TRAINING' && ['SHADOW_WORK', 'PROBATION_REVIEW', 'CERTIFICATION', 'ACTIVATION_APPROVAL'].includes(stage);
+/** Activation is actionable only for an Employee the backend can activate (SHADOW or PROBATION). */
+export const activationActionable = (ceoState: string): boolean => ceoState === 'SHADOW' || ceoState === 'PROBATION';
 
 /** The next step in the Founder's words (English, Arabic). */
 const NEXT: Readonly<Record<string, readonly [string, string]>> = {
@@ -311,7 +315,7 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
       box.append(form);
     }
     // Shadow work and probation.
-    if (['SHADOW_WORK', 'PROBATION_REVIEW'].includes(stage) && ceo.state === 'TRAINING') box.append(h('div', { class: 'pilot-actions' }, btn('Preview: move the trainee to PROBATION', () => void host.previewAction('EMPLOYEE_LIFECYCLE', { employeeId: str(ceo.employeeId), to: 'PROBATION' }))));
+    if (offersProbationMove(stage, str(ceo.state))) box.append(h('div', { class: 'pilot-actions' }, btn('Preview: move the trainee to PROBATION', () => void host.previewAction('EMPLOYEE_LIFECYCLE', { employeeId: str(ceo.employeeId), to: 'PROBATION' }))));
     const shadow = arr(enr.shadow);
     if (stage === 'SHADOW_WORK' && shadow.length === 0) for (const a of arr(pkgReg?.shadowAssignments)) box.append(h('div', { class: 'pilot-actions' }, btn(`Preview: assign shadow work — ${str(a.objective)}`, () => void host.previewAction('ACADEMY_SHADOW_ASSIGN', { ...pkgArgs, enrollmentId: str(enr.id), assignmentCode: str(a.code) }))));
     for (const s of shadow) {
@@ -348,7 +352,8 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
     const req = enr.activationRequest as Json | null;
     if (req) {
       box.append(h('p', { class: 'muted small', text: `Activation request: ${humanize(str(req.state))}` }));
-      if (req.state === 'PENDING_APPROVAL' && cal?.state !== 'PENDING') box.append(h('div', { class: 'pilot-actions' }, btn(`Preview: activate ${str(ceo.name)}`, () => void host.previewAction('ACTIVATION_DECIDE', { requestId: str(req.id), decision: 'APPROVE' }), true), btn('Preview: reject activation', () => void host.previewAction('ACTIVATION_DECIDE', { requestId: str(req.id), decision: 'REJECT' }))));
+      if (req.state === 'PENDING_APPROVAL' && cal?.state !== 'PENDING' && !activationActionable(str(ceo.state))) box.append(h('p', { class: 'muted small', text: `Activation waits for the lifecycle step: ${str(ceo.name)} is ${humanize(str(ceo.state))} — move the trainee to PROBATION first.` }));
+      else if (req.state === 'PENDING_APPROVAL' && cal?.state !== 'PENDING') box.append(h('div', { class: 'pilot-actions' }, btn(`Preview: activate ${str(ceo.name)}`, () => void host.previewAction('ACTIVATION_DECIDE', { requestId: str(req.id), decision: 'APPROVE' }), true), btn('Preview: reject activation', () => void host.previewAction('ACTIVATION_DECIDE', { requestId: str(req.id), decision: 'REJECT' }))));
     }
     section.append(box);
   }
