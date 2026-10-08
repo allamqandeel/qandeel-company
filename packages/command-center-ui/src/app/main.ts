@@ -75,6 +75,9 @@ class App implements PanelHost {
       onHoverAttention: (nodeId, itemEl) => this.spotlightAttention(nodeId === null ? null : nodeId.replace('attention:', ''), itemEl),
     });
     this.view.setReducedMotion(this.reduced);
+    // D2-UX-01: a sheet too short to spare its head (a small window beside the goals) lets the head scroll away with the
+    // content instead of covering it; the primary actions stay at the top either way.
+    new ResizeObserver(() => $('focus').classList.toggle('is-short', $('focus').clientHeight < 440)).observe($('focus'));
     $('motion-toggle').addEventListener('click', () => this.setReduced(!this.reduced));
     this.#renderMotionToggle();
     window.addEventListener('keydown', (e) => this.#hotkeys(e));

@@ -5086,3 +5086,64 @@ window never stops the Company, and the Start-menu shortcuts stay as emergency c
   Command Center; Restart; close; reopen with one host; the truthful external stop; the emergency commands; no secret in
   a command line, the host log or history; and the Company unchanged.
 - The Edge proof is local only (it shows a window) and is not a CI step.
+
+## D-D2-02 — Founder UX: the Academy overview, the Meeting Room notice, the person sheet's primary actions, an explicit budget ceiling, a dismissible activation view and the QANDEEL window identity (executor; Founder-approved D2-UX-01 Task Contract)
+
+**Context.** Founder laptop acceptance (D2) found the following:
+- The person sheet put Talk and the budget action at the bottom, beneath the work.
+- The budget action sent the text command `set <name> budget ceiling EGP 0`, which previews a ceiling of zero.
+- The "Activate the Company" view could not be closed except by Escape.
+- Academy facts were reachable only inside the CEO-only activation flow.
+- There was no meeting entry.
+- The window and taskbar showed Edge's generic globe.
+
+The research found:
+- The C3 / L1-02 stores already hold the whole Academy record (enrolments, attempts and scores, certifications, the Skill
+  Passport, blueprints, packages, reviewer qualifications), but no company-wide read existed.
+- Stage 9 meetings exist only as a design contract. Threads are Founder plus exactly one Employee, enforced by an
+  immutable `employee_id`. There is no participants table, agenda, minutes, decision artefact or per-discussion budget.
+- The page declared an empty favicon (`data:,`). Edge `--app` windows take their title-bar and taskbar icon from the page
+  favicon.
+
+**Decision.**
+1. **The Academy overview** (`storage/academy-overview.ts`, runtime `founder.academy()`, `GET /api/academy`).
+   - It is a read in one snapshot over the canonical tables and writes nothing.
+   - It carries only codes, states, scores and dates. It carries no answer, scenario content, instruction payload or
+     evaluator note.
+   - The route sits behind the existing session gate and has no write route.
+   - The profile sheet uses the same projection narrowed to one Employee (`employeeDetail.profile`). The record holds no
+     biography, so none is shown, and the sheet says so.
+   - No Academy act is reachable from the overview. Training, qualification, shadow work and activation stay governed
+     previews in the activation flow.
+2. **The Meeting Room** is an informational notice. It makes no request, has no input, and shows no attendees,
+   transcript or tasks. Stage 9 meetings need their own Task Contract.
+3. **The person sheet** reads top-down:
+   - identity with Talk and Budget in the head (sticky when the sheet is tall enough);
+   - About;
+   - Skills and training;
+   - reporting line and authority;
+   - work and relations.
+   A person sheet never shrinks below a usable height.
+4. **Budget.**
+   - The Founder types the new ceiling in the envelope's own currency: up to two decimals, strictly above zero, with no
+     default amount.
+   - The entry becomes the existing `BUDGET_CEILING` structured preview and nothing else. It is fingerprinted and
+     confirmed by the Founder.
+   - The text command placeholder is removed.
+5. **The command panel and the activation view in it** close by ×, by Escape, and by a press outside. A press outside
+   never closes anything while a governed confirmation is on screen. Focus returns to the control that opened it.
+   Closing never rejects, accepts or alters a preview.
+6. **Window identity.**
+   - The pages declare the byte-identical canonical icon (`packaging/windows/assets/source`, SHA-256 `859665d8…`) as an
+     SVG favicon (`/qandeel-icon.svg`).
+   - The stopped-state controller serves that one file as well.
+   - No launcher, shortcut, AppUserModelID, browser executable or packaging change is made.
+
+**Evidence (real Windows, disposable Company, isolated Edge profiles).**
+- The `main` build shows the globe in both the title bar and its own taskbar button.
+- This build shows the QANDEEL mark in both places.
+- Taskbar grouping under the Founder's default Edge profile was not exercised, because only isolated profiles are
+  allowed in proof.
+
+**Not changed.** The paid-by-default conversation behaviour is out of scope by Founder decision and recorded for
+separate review.

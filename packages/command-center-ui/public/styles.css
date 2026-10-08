@@ -604,6 +604,9 @@ button.chip:hover { background: var(--paper); border-color: rgba(29, 27, 38, 0.2
 .hall-foot { margin: 20px 0 0; }
 .academy-people { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .academy-person { display: grid; grid-template-columns: minmax(180px, 240px) 1fr; gap: 8px 18px; padding: 12px 14px; background: var(--surface-strong); border: 1px solid var(--line); border-radius: 14px; }
+.academy-person.is-quiet { padding-block: 8px; align-items: center; background: transparent; }
+.academy-person.is-quiet .academy-who { flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.academy-none { margin: 0; font-size: 13px; }
 .academy-who { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; }
 .academy-name { font-weight: 600; font-size: 14.5px; text-align: start; }
 .academy-facts { margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 14px; }
@@ -612,6 +615,11 @@ button.chip:hover { background: var(--paper); border-color: rgba(29, 27, 38, 0.2
 /* The person sheet: Talk and Budget sit in the sticky head, under the name. */
 .sheet-head { flex-wrap: wrap; }
 .sheet-head > .identity { flex: 1 1 200px; }
+/* A person sheet never shrinks below a usable height: on a small window it reaches over the goals band rather than
+   hiding the person's name and actions in a sliver. */
+.focus { min-height: min(480px, calc(100% - 24px)); }
+.focus.is-below-desk { min-height: min(480px, calc(100% - var(--desk-b, 0px) - 24px)); }
+.focus.is-short .sheet-head { position: static; }
 .sheet-primary { flex: 1 0 100%; display: flex; gap: 8px; flex-wrap: wrap; }
 .sheet-primary .btn { flex: 1 1 auto; justify-content: center; }
 .about-facts dd { margin: 0; }
@@ -633,4 +641,14 @@ button.chip:hover { background: var(--paper); border-color: rgba(29, 27, 38, 0.2
 @media (max-width: 600px) {
   .btn-nav { padding-inline: 10px; }
   .hall-head, .hall-body { padding-inline: 14px; }
+}
+/* D2-UX-01: on a narrow window the brand keeps its own line and the actions wrap across the full width beneath it
+   (never over the brand); the shortcut hint yields first. */
+@media (max-width: 900px) {
+  .topbar { grid-template-columns: 1fr; gap: 6px; }
+  .topbar-actions { justify-content: flex-start; }
+  .topbar-actions .btn { padding: 6px 10px; }
+  .topbar-actions kbd { display: none; }
+  /* The sheet docks above the bottom bar here (bottom: 70px): it never grows up into the top bar. */
+  .focus, .focus.is-left, .focus.is-below-desk { min-height: min(480px, calc(100% - 82px)); }
 }

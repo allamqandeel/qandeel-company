@@ -415,7 +415,7 @@ export function budgetCeilingMicros(raw: string): number | null {
  */
 function budgetEditor(full: string, budget: Json | null, host: PanelHost, draft: string, close: () => void): HTMLElement {
   const box = h('section', { class: 'budget-editor', id: 'budget-editor', 'aria-label': `Budget ceiling of ${full}` });
-  const cancel = h('button', { type: 'button', class: 'btn btn-ghost', text: budget ? 'Cancel' : 'Close' });
+  const cancel = h('button', { type: 'button', class: 'btn btn-ghost', text: budget ? 'Cancel' : 'Close', 'aria-label': budget ? 'Cancel the budget change' : 'Close the budget panel' });
   cancel.addEventListener('click', close);
   box.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') {

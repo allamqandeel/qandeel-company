@@ -94,7 +94,11 @@ export function renderAcademy(root: HTMLElement, data: Json | null, host: HallHo
   body.append(h('div', { class: 'hall-stats', role: 'group', 'aria-label': 'Academy totals' }, stat(totals.employees, 'employees'), stat(totals.enrolled, 'in the Academy'), stat(totals.certifiedValid, 'with a valid certification'), stat(`${str(totals.attemptsPassed)}/${str(totals.attemptsEvaluated)}`, 'evaluated attempts passed'), stat(totals.packagesInstalled, 'skill packages installed')));
 
   // --- People -------------------------------------------------------------------------------------------------------
-  const people = arr(data.employees);
+  // Those with an Academy record first (furthest along the path first); the rest, never enrolled, as one quiet line each.
+  const ORDER = Object.keys(STAGE_LABEL);
+  const inAcademy = (e: Json): boolean => e.enrollment !== null || e.certification !== null || arr(e.skills).length > 0;
+  const rank = (e: Json): number => (inAcademy(e) ? ORDER.length - ORDER.indexOf(str((e.enrollment as Json | null)?.stage)) : 1000);
+  const people = arr(data.employees).map((e, i) => ({ e, i })).sort((a, b) => rank(a.e) - rank(b.e) || a.i - b.i).map((x) => x.e);
   const list = h('ul', { class: 'academy-people', role: 'list', 'aria-label': 'Employees in the Academy' });
   if (people.length === 0) list.append(h('li', { class: 'empty', text: 'No employees on record yet.' }));
   for (const e of people) {
@@ -107,9 +111,9 @@ export function renderAcademy(root: HTMLElement, data: Json | null, host: HallHo
     const role = [e.jobTitle ? str(e.jobTitle) : humanize(str(e.roleRef)), e.departmentId ? host.deptNameOf(str(e.departmentId)) : 'Company'].join(' · ');
     const fact = (label: string, value: string, cls = ''): HTMLElement => h('div', { class: `academy-fact ${cls}`.trim() }, h('dt', { text: label }), h('dd', { text: value }));
     list.append(
-      h('li', { class: 'academy-person' },
+      h('li', { class: `academy-person${inAcademy(e) ? '' : ' is-quiet'}` },
         h('div', { class: 'academy-who' }, open, h('span', { class: 'muted small', text: role }), h('span', { class: `pill pill-state state-${str(e.lifecycle).toLowerCase()}`, text: t(STATE_LABEL, str(e.lifecycle)) })),
-        h('dl', { class: 'academy-facts' }, fact('Academy', f.stage), fact('Programme', f.modules), fact('Attempts', f.attempts), fact('Certification', f.certification), fact('Skills', f.skills)),
+        inAcademy(e) ? h('dl', { class: 'academy-facts' }, fact('Academy', f.stage), fact('Programme', f.modules), fact('Attempts', f.attempts), fact('Certification', f.certification), fact('Skills', f.skills)) : h('p', { class: 'muted academy-none', text: 'Not in the Academy · no certification · no skills on the passport' }),
       ),
     );
   }
