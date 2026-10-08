@@ -1,0 +1,109 @@
+{
+  "schema": "qandeel.desktop-icon-provenance/v1",
+  "authority": "QANDEEL brand authority I-08B2.5 (ratified final Brand Authority, P4-C2 §1; icon bytes / hash kept, P4 final closure)",
+  "sourceRepository": "allamqandeel/qandeel (QANDEEL App) — one-time copy; no build or runtime dependency on that repository",
+  "sourceCommit": "b089c86fb05a286a287a29c32530f39a528df2ad",
+  "sourcePath": "docs/design/canonical-artifacts/brand/i-08b2.5/app-icon/APP_ICON_B_DARK_LUMINOUS.svg",
+  "sourceSha256": "859665d86a7bbf4248ff479034031a8df1f08833c7db36336b3d29832bcddd09",
+  "copiedTo": "packaging/windows/assets/source/APP_ICON_B_DARK_LUMINOUS.svg",
+  "derivation": "Chromium (headless, device scale factor 1) rasterisation of the unmodified SVG at each exact Windows icon size; no redraw, no recolour, no mask",
+  "icoSizes": [
+    16,
+    20,
+    24,
+    32,
+    40,
+    48,
+    64,
+    256
+  ],
+  "renders": {
+    "16": "644938e9fac6fcaf89be31d31c6760679c479d956fa2142863b943bb49cff429",
+    "20": "39bc266d11d0b8834cf7f4f4d79b1de2f28ec5894888694f1500780df1d9e489",
+    "24": "3f37ff99121ab10e732bb78ff62f50afb270f0ddc5489af8aaa8ae396bb49ca1",
+    "32": "17e57f6cb3779c506d3c1ad7b0dcd8e2275dfaaf6a559b32c80c6903e86f2e37",
+    "40": "c72f6f089ba82359f7015d3cab49330354cd8f1eaccdf4c9a2c037b9541865db",
+    "48": "3a29de1df203bc18748dad8685907a0bc5dee25ef58ed57d254dc6c280a1b3cd",
+    "64": "70ac4e3094f570e9a1753cd9fb919df0cf9d610f412b578f5ba01b4795f40321",
+    "256": "7aa82f4f9934ff5a155039b17e0376b960e237eaedc3049f8da9f8719e79969c"
+  },
+  "fidelityAgainstBrandPackageIosRenders": [
+    {
+      "size": 20,
+      "reference": "app-icon/ios/AppIcon.appiconset/AppIcon-20.png",
+      "meanAbsDiff": 0,
+      "maxAbsDiff": 0
+    },
+    {
+      "size": 29,
+      "reference": "app-icon/ios/AppIcon.appiconset/AppIcon-29.png",
+      "meanAbsDiff": 0,
+      "maxAbsDiff": 0
+    },
+    {
+      "size": 40,
+      "reference": "app-icon/ios/AppIcon.appiconset/AppIcon-40.png",
+      "meanAbsDiff": 0,
+      "maxAbsDiff": 0
+    },
+    {
+      "size": 58,
+      "reference": "app-icon/ios/AppIcon.appiconset/AppIcon-58.png",
+      "meanAbsDiff": 0,
+      "maxAbsDiff": 0
+    },
+    {
+      "size": 60,
+      "reference": "app-icon/ios/AppIcon.appiconset/AppIcon-60.png",
+      "meanAbsDiff": 0,
+      "maxAbsDiff": 0
+    },
+    {
+      "size": 76,
+      "reference": "app-icon/ios/AppIcon.appiconset/AppIcon-76.png",
+      "meanAbsDiff": 0,
+      "maxAbsDiff": 0
+    },
+    {
+      "size": 80,
+      "reference": "app-icon/ios/AppIcon.appiconset/AppIcon-80.png",
+      "meanAbsDiff": 0,
+      "maxAbsDiff": 0
+    },
+    {
+      "size": 87,
+      "reference": "app-icon/ios/AppIcon.appiconset/AppIcon-87.png",
+      "meanAbsDiff": 0,
+      "maxAbsDiff": 0
+    },
+    {
+      "size": 120,
+      "reference": "app-icon/ios/AppIcon.appiconset/AppIcon-120.png",
+      "meanAbsDiff": 0,
+      "maxAbsDiff": 0
+    },
+    {
+      "size": 152,
+      "reference": "app-icon/ios/AppIcon.appiconset/AppIcon-152.png",
+      "meanAbsDiff": 0,
+      "maxAbsDiff": 0
+    },
+    {
+      "size": 167,
+      "reference": "app-icon/ios/AppIcon.appiconset/AppIcon-167.png",
+      "meanAbsDiff": 0,
+      "maxAbsDiff": 0
+    },
+    {
+      "size": 180,
+      "reference": "app-icon/ios/AppIcon.appiconset/AppIcon-180.png",
+      "meanAbsDiff": 0,
+      "maxAbsDiff": 0
+    }
+  ],
+  "ico": {
+    "file": "packaging/windows/assets/qandeel-company.ico",
+    "sha256": "5482841f1b80b29a8138a57776c12e4292e6f529c2313441ff5fb0f5154a9a51",
+    "bytes": 52535
+  }
+}

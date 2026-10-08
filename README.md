@@ -34,8 +34,9 @@ governed and auditable.
 | `L1-02` First Production Company Activation (permanent workspace, first real CEO through hire → Academy → activation) | CLOSED / MERGED / CANONICAL (PR #18, `725508f`; `docs/L1_02_CLOSURE_RECORD.md`) — Salim Nasser is the ACTIVE production CEO |
 | `OPS` Operational / Desktop Packaging (open / reopen / close / stop / restart / recover the Company from Windows, no terminal) | CLOSED / MERGED / CANONICAL (PR #19, `d86be37`; `docs/OPS_FOUNDER_DESKTOP_PACKAGING_REPORT.md`) |
 | `C5-CORR-01` / `C5-CORR-02` English application chrome; Goal Focus leader geometry | CLOSED / MERGED / CANONICAL (PR #20, `cf1578e`; PR #21, `c88afbc`) |
-| `D0` Final Engineering & Validation Closure (proportional validation, D-D0-01) | ACTIVE — not closed |
-| `D1` … `D4` Installable Windows Distribution → Desktop Experience & First Run → Update / Recovery / Uninstall Safety → Founder Laptop Install + Acceptance | Not started — QANDEEL COMPANY Desktop v1 closes only when installed, running and accepted |
+| `D0` Final Engineering & Validation Closure (proportional validation, D-D0-01) | CLOSED / MERGED / CANONICAL (PR #22, `074673b`) |
+| `D1` Desktop v1 Productization Mega Stage (the former D1 + D2 + D3: `QANDEEL-COMPANY-Setup.exe`, private runtime, update / rollback / repair / uninstall; D-D1-01 … D-D1-07) | ACTIVE — not closed |
+| `D2` Founder Laptop Acceptance (the former D4) | Not started — QANDEEL COMPANY Desktop v1 closes only when the signed Founder RC is installed, running and accepted |
 | `P1` First Production Staffing under Salim | **PAUSED** by Founder decision until Desktop v1 is installed and accepted (`docs/architecture/IMPLEMENTATION_MAP.md`) |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
@@ -338,6 +339,11 @@ unknown paths…) gets a local preflight, and its FULL continuity proof runs on 
 | `npm run verify` | Repository-contract verifier (`scripts/verify-bootstrap.mjs`) |
 | `npm run ci` / `npm run validate:affected` | Proportional validation: print the plan (docs / affected / full) from the canonical impact map, then run only the impacted boundary — never the serial historical mutation universe (D-D0-01) |
 | `npm run validate:plan` | Print the validation plan for the current change and run nothing |
+| `npm run desktop:bundle -- [--out <dir>]` | D1: compose the Desktop bundle (build → canonical release → pinned private Node 24 win-x64 → icon → `qandeel.desktop-bundle/v1`) in a directory outside the checkout |
+| `npm run desktop:setup -- [--out <dir>] [--class ENGINEERING\|FOUNDER-RC]` | D1 (optional ENGINEERING installer): the bundle, then `QANDEEL-COMPANY-Setup.exe` with the pinned Inno Setup, its SHA-256 and verification record (signed only when a signing credential is configured, D-D1-06). **Windows build machines / CI only** |
+| `npm run desktop:verify -- --dist <dir>` | D1: re-verify a built Setup (SHA-256, Authenticode status, source → release → bundle identity) |
+| `npm run desktop:proof -- --workspace <dir>` | D1: the focused Desktop proof in a disposable profile (packaging, install, runtime, update, rollback, repair, uninstall, reinstall, detached from the checkout) |
+| `npm run desktop:e2e -- --workspace <dir>` | D1: the Founder-local install with the real "Apps" entry, and the optional Setup.exe, end to end — **disposable Windows CI runner only** (refuses anywhere QANDEEL data exists) |
 
 **GitHub CI** classifies each pull request with the same map. `docs` runs build + verifier. `affected` runs the boundary's
 static checks, tests, acceptance and its mutation families (Windows mandatory). `full` runs every test, every mutation
@@ -725,6 +731,24 @@ Chrome) app window. The browser hands the fresh single-use launch token over thr
 token is never in the browser's command line. Closing that window does not stop the Company. The Start
 menu folder **QANDEEL COMPANY** also holds **Status**, **Stop** (controlled shutdown) and **Restart**. Nothing starts at
 Windows sign-in. Details: `docs/OPS_FOUNDER_DESKTOP_PACKAGING_REPORT.md`.
+
+**QANDEEL COMPANY Desktop v1 (D1, Founder-local, D-D1-08).** The Founder's product is the verified Desktop bundle:
+the pinned, officially signed Node runtime, the canonical release and the approved icon, in one folder.
+
+- **Install.** The bundle installs itself once with its own `node.exe` (`desktop-local-install`), as a per-user
+  install into `%LOCALAPPDATA%\Programs\QANDEEL COMPANY\`. It needs no custom executable, no elevation, no terminal
+  afterwards, and no Git, npm or global Node.
+- **Which Company.** It adopts the EXISTING Company (the launcher configuration, or an explicit existing workspace)
+  and never creates one.
+- **What it does.** It activates the bundled release through the canonical activation below, writes the branded
+  Desktop and Start-menu shortcuts (no console window) and registers QANDEEL COMPANY in Windows "Apps".
+- **Update and repair.** A newer bundle updates through the same activation, rolled back on failure. Installing the
+  same bundle again repairs it.
+- **Uninstall.** Uninstalling from "Apps" removes the application only. The Company, its backups, the vault, the
+  releases and the configuration stay.
+
+`QANDEEL-COMPANY-Setup.exe` is an optional ENGINEERING installer over the same bundle. Commercial signing is deferred
+to external distribution. Build, install command and proofs: `packaging/windows/README.md`.
 
 **The shortcuts run an activated release, never this checkout (D-OPS-08).** A release is a frozen, content-addressed copy
 of a build under `%LOCALAPPDATA%\QANDEEL_COMPANY\releases\`. Once a release is activated for the production workspace,

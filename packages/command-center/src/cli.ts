@@ -47,6 +47,19 @@
  *         default; `--probe-class E2|E3|E4` sends the official thinking fields under a small ceiling, to
  *         qualify the wire contract) and prints its metering only. Prints no model text, no key, no body.
  *
+ * D1 — QANDEEL COMPANY Desktop v1 (D-D1-08: the supported Founder-local install runs only signed binaries):
+ *   desktop-local-install --bundle <Desktop bundle dir> [--workspace <existing Company>] [--provider deepseek]
+ *         run with the bundle's own node.exe: the existing Company only (read-only check first) → the verified copy into
+ *         %LOCALAPPDATA%\Programs\QANDEEL COMPANY\versions\<version> → desktop-install by the INSTALLED copy → the per-user
+ *         Windows "Apps" entry. First install, update, repair and reinstall.
+ *   desktop-local-uninstall   (run by the "Apps" entry's command) the application-only uninstall; that command then
+ *         removes the program directory once this runtime has exited.
+ *   Setup.exe (optional engineering artifact) runs the two below:
+ *   desktop-install --bundle <installed version dir> [--workspace <existing Company>] [--provider deepseek] [--shortcut-root <dir>]
+ *         verify the bundle → the existing Company only → import the bundled release → the canonical activation above →
+ *         shortcuts on the bundle's private runtime. First install, update, repair and reinstall are this one path.
+ *   desktop-uninstall [--shortcut-root <dir>]   controlled stop + shortcuts removed; Company data is never touched.
+ *
  * Output is content-free JSON. A Founder reference typed on the command line is never authentication:
  * this CLI has no approve / reject / register command.
  */
@@ -64,10 +77,12 @@ import { CompanyStore, FounderAuthStore, GovernanceStore } from '@qandeel-compan
 
 import { hostPaths, readDescriptor } from './host/descriptor.js';
 import { discoverHost, installShortcuts, launcherConfigDir, launcherConfigPath, noticeFor, notify, openCompany, readLauncherConfig, restartHost, statusNotice, stopHost, writeLauncherConfig } from './host/lifecycle.js';
+import { desktopInstall, desktopLocalInstall, desktopUninstall } from './host/desktop.js';
 import { activateRelease, releaseCli, releaseStatus, releasesDir, resolveRelease, stageRelease } from './host/release.js';
 import { FounderSurface } from './surface.js';
 
-const USAGE = 'usage: qandeel-founder <serve|launch|provider-check|open|status|stop|restart|install-shortcuts|release-stage|release-activate|release-status|release-check> [--workspace <dir>] [--port <n>] [--fake-provider <code>] [--provider deepseek] [--probe] [--probe-class E1|E2|E3|E4] [--background] [--no-browser] [--notify] [--force] [--config <file>] [--release <id|dir>] [--releases-dir <dir>] [--no-shortcuts]';
+const USAGE = 'usage: qandeel-founder <serve|launch|provider-check|open|status|stop|restart|install-shortcuts|release-stage|release-activate|release-status|release-check|desktop-local-install|desktop-local-uninstall|desktop-install|desktop-uninstall> [--workspace <dir>] [--port <n>] [--fake-provider <code>] [--provider deepseek] [--probe] [--probe-class E1|E2|E3|E4] [--background] [--no-browser] [--notify] [--force] [--config <file>] [--release <id|dir>] [--releases-dir <dir>] [--no-shortcuts] [--bundle <dir>] [--shortcut-root <dir>] [--uninstall-key <HKCU key>]';
+const DESKTOP_COMMANDS = ['desktop-local-install', 'desktop-local-uninstall', 'desktop-install', 'desktop-uninstall'];
 const LAUNCHER_COMMANDS = ['open', 'status', 'stop', 'restart'];
 /** A host for this workspace already exists (or is coming up): a second `serve` never starts beside it. */
 const HOST_PRESENT = ['RUNNING', 'STARTING', 'STOPPING', 'UNHEALTHY', 'FOREIGN_RUNTIME'];
@@ -166,7 +181,7 @@ async function launcher(command: string, values: LauncherValues): Promise<void> 
 
 export async function main(argv: readonly string[]): Promise<void> {
   const [command, ...rest] = argv;
-  const { values } = parseArgs({ args: rest, strict: true, options: { workspace: { type: 'string' }, port: { type: 'string' }, 'fake-provider': { type: 'string', multiple: true }, 'fake-driver': { type: 'string', multiple: true }, provider: { type: 'string', multiple: true }, probe: { type: 'boolean', default: false }, 'probe-class': { type: 'string', default: 'E1' }, background: { type: 'boolean', default: false }, 'no-browser': { type: 'boolean', default: false }, notify: { type: 'boolean', default: false }, force: { type: 'boolean', default: false }, config: { type: 'string' }, release: { type: 'string' }, 'releases-dir': { type: 'string' }, 'no-shortcuts': { type: 'boolean', default: false } } });
+  const { values } = parseArgs({ args: rest, strict: true, options: { workspace: { type: 'string' }, port: { type: 'string' }, 'fake-provider': { type: 'string', multiple: true }, 'fake-driver': { type: 'string', multiple: true }, provider: { type: 'string', multiple: true }, probe: { type: 'boolean', default: false }, 'probe-class': { type: 'string', default: 'E1' }, background: { type: 'boolean', default: false }, 'no-browser': { type: 'boolean', default: false }, notify: { type: 'boolean', default: false }, force: { type: 'boolean', default: false }, config: { type: 'string' }, release: { type: 'string' }, 'releases-dir': { type: 'string' }, 'no-shortcuts': { type: 'boolean', default: false }, bundle: { type: 'string' }, 'shortcut-root': { type: 'string' }, 'uninstall-key': { type: 'string' } } });
   if (!['E1', 'E2', 'E3', 'E4'].includes(values['probe-class'] as string)) fail('USAGE', '--probe-class takes E1, E2, E3 or E4', 2);
   if (command !== undefined && LAUNCHER_COMMANDS.includes(command)) return launcher(command, values);
   if (command === 'release-stage') {
@@ -178,6 +193,30 @@ export async function main(argv: readonly string[]): Promise<void> {
     } catch (error) {
       fail(error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message : 'RELEASE_STAGE_FAILED', 'the current build could not be staged as a release');
     }
+    return;
+  }
+  if (DESKTOP_COMMANDS.includes(command ?? '')) {
+    // D1: run under a Desktop bundle's private runtime — by the Founder-local install, Windows "Apps", or Setup.exe
+    // (never with a secret).
+    const providers = values.provider === undefined ? undefined : [...new Set(values.provider)];
+    for (const p of providers ?? []) if (p !== DEEPSEEK_PROVIDER_CODE) fail('USAGE', `unknown live provider "${p}"`, 2);
+    const shortcutRoot = values['shortcut-root'] === undefined ? {} : { shortcutRoot: path.resolve(values['shortcut-root']) };
+    const uninstallKey = values['uninstall-key'] === undefined ? {} : { uninstallKey: values['uninstall-key'] };
+    const install = command === 'desktop-install' || command === 'desktop-local-install';
+    if (install && values.bundle === undefined) fail('USAGE', `${command} needs --bundle <Desktop bundle directory>`, 2);
+    const installOptions = { bundleDir: path.resolve(values.bundle ?? '.'), ...(values.workspace === undefined ? {} : { workspace: values.workspace }), ...(providers === undefined ? {} : { providers }), ...shortcutRoot };
+    const r =
+      command === 'desktop-install'
+        ? await desktopInstall(installOptions)
+        : command === 'desktop-local-install'
+          ? await desktopLocalInstall({ ...installOptions, ...uninstallKey })
+          : command === 'desktop-local-uninstall'
+            ? await desktopUninstall(shortcutRoot)
+            : await desktopUninstall(shortcutRoot);
+    out({ command, ...r });
+    if (values.notify) await notify(noticeFor(command as string, r.outcome));
+    // Setup reads the exit code: 0 done, 2 setup required (no existing Company chosen), 1 any other bounded failure.
+    if (!r.ok) process.exitCode = r.outcome === 'SETUP_REQUIRED' ? 2 : 1;
     return;
   }
   if (command === undefined || values.workspace === undefined) fail('USAGE', USAGE, 2);

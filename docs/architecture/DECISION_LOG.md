@@ -4715,3 +4715,292 @@ the classifier and the runner to import the one map.
 
 **D0 itself** changes the validation architecture, so it is FULL by its own map. It gets one FULL GitHub gate on the
 exact final head.
+
+## D-D1-01 — Desktop v1 is an orchestration shell over OPS: one Setup, per-user, versioned side by side; install, update, repair and reinstall are one canonical path (executor; Founder-approved D1 Mega Stage Task Contract)
+
+**Context.** By Founder decision the former D1 + D2 + D3 are one Mega Stage. Its output is a real Windows product,
+`QANDEEL-COMPANY-Setup.exe`, that installs, opens, updates, repairs and uninstalls QANDEEL COMPANY without a terminal,
+Git, npm, a global Node or the development checkout. It must reuse OPS, not recreate it.
+
+**Decision.**
+1. **Installer: Inno Setup, per-user** (`PrivilegesRequired=lowest`, `{autopf}` = `%LOCALAPPDATA%\Programs`, no
+   directory page, no elevation, `ChangesEnvironment=no`, no `[Registry]` / `[Icons]` / deletion sections, no
+   autostart). Uninstall registration is Inno's own HKCU entry.
+2. **Program files and Company data are separate.** Setup writes only
+   `%LOCALAPPDATA%\Programs\QANDEEL COMPANY\versions\<desktop version>-<bundle id 12>\`:
+   - `node\node.exe` + `LICENSE`, the private runtime (D-D1-02);
+   - `release\…`, one canonical content-addressed release, byte-identical to what `stageRelease` produces;
+   - `app\qandeel-company.ico` (D-D1-03);
+   - `qandeel-desktop-bundle.json` (`qandeel.desktop-bundle/v1`).
+
+   The Company workspace (e.g. `E:\QANDEEL_COMPANY_DATA\LIVE`), the launcher configuration, the releases directory,
+   the production pin, the backups and the DPAPI vault stay exactly where OPS put them. Nothing is moved.
+3. **One bounded path for every install** — the release CLI's new `desktop-install`, run by Setup under the bundle's
+   own private runtime and the bundle's own release code (`packages/command-center/src/host/desktop.ts`):
+   1. verify the bundle byte for byte: its content identity, every application file, the pinned runtime, the release
+      manifest;
+   2. refuse unless THIS process is the bundle's private runtime running the bundle's own release (`PRIVATE_RUNTIME_REQUIRED`);
+   3. find the EXISTING Company: the launcher configuration, or the Founder's explicit choice on the first-run page.
+      None → `SETUP_REQUIRED` (exit 2), nothing created. Missing / invalid workspace → refused, nothing created. A
+      choice that differs from the configured workspace → `WORKSPACE_CONFLICT`. Setup never creates a Company, a CEO
+      or a database;
+   4. `importRelease` the bundled release into the canonical releases directory (reused when identical, refused on
+      conflict);
+   5. the canonical `activateRelease` (verify → dry run → controlled stop → verified backup → pin → start → health;
+      rollback on failure) — D-OPS-08 is not bypassed;
+   6. `ALREADY_ACTIVE` (the same release, running) gets a controlled restart onto THIS version's runtime;
+   7. the launcher configuration is written only when the Founder chose the workspace now; the shortcuts are rewritten
+      on the private runtime; a content-free product record (`launcher\desktop-product.json`) names the installed
+      version.
+
+   Success is reported only when the host is READY.
+4. **Uninstall removes the application** (`desktop-uninstall`, run by Setup's `InitializeUninstall`): controlled stop
+   (the verified PID is force-terminated only if it does not answer), the shortcuts, the product record. If the host
+   cannot be stopped, the uninstall is cancelled and nothing is removed. Workspace, database, artifacts, backups,
+   vault, releases, pin and launcher configuration are never touched. There is no "delete my Company" option.
+   Reinstalling returns to the same Company.
+
+**Rejected:**
+- Electron / Tauri / a native launcher (a second runtime, and an unsigned executable on a Smart App Control host);
+- a second updater database or release format;
+- moving Company state into the program directory;
+- per-machine installation (needs elevation; Program Files).
+
+## D-D1-02 — The pinned private runtime, the bundle contract and the build pipeline (executor; D1 Task Contract §§1, 4, 5)
+
+**Decision.**
+- **Private runtime:** Node.js **24.19.0 win-x64**, the official `win-x64/node.exe`, pinned to its official SHA-256
+  `3602f2bb1a10f2cbab4c36886218a33c1ab3db87290e73b033c46c77147d0237` (nodejs.org `SHASUMS256.txt`), and its LICENSE
+  (`148eacf7…`). A download or cache entry with another hash is refused (`PIN_MISMATCH`) and never cached; a runtime
+  whose bytes match but whose PE machine is not x64 is refused (`RUNTIME_ARCH_MISMATCH`). Never added to PATH, never
+  global. Because OPS spawns hosts and writes shortcuts from `process.execPath`, every descendant of the installed CLI
+  runs the private runtime.
+- **Inno Setup 6.7.3** (`innosetup-6.7.3.exe`, GitHub release asset SHA-256 `9c73c3ba…b732`) — a build-time tool only,
+  installed per-user into the build directory and checked by its version banner; never shipped.
+- **Pins** live in `packaging/windows/desktop.pins.json`, together with the Desktop version (`1.0.0`), the AppId and
+  the icon hash.
+- **Bundle manifest `qandeel.desktop-bundle/v1`** binds the Desktop version, the exact source commit and whether the
+  tree was clean, the release ID and runtime version, the Node version / platform / architecture / SHA-256 / URL, the
+  icon hash and source, the installer schema and tool version, and every application file. Its `bundleId` is the
+  SHA-256 of the canonical manifest content without `bundleId` and `createdAt`: time is never identity.
+- **Pipeline** `packaging/windows/build.mjs` (`npm run desktop:bundle` / `desktop:setup`):
+  1. source check;
+  2. `npm run build`;
+  3. the product's own `stageRelease`;
+  4. pinned runtime;
+  5. compose + self-verify the bundle;
+  6. leak scan: no checkout path in any spelling (including JSON-escaped), no npm `.bin`, no credential shape;
+  7. compile Setup;
+  8. Authenticode status;
+  9. `QANDEEL-COMPANY-Setup.verification.json` + `.exe.sha256` + the bundle manifest.
+
+  `npm run desktop:verify` re-checks a built artifact from its own files. The build directory must lie outside the
+  checkout (`stageRelease` refuses otherwise). No generated binary, download or cache is committed (verifier rule
+  `desktop-distribution`). No build step reads or writes a Company workspace, the vault or LIVE.
+
+## D-D1-03 — The product icon is the ratified QANDEEL app icon, copied once with provenance (executor; D1 Task Contract §3)
+
+**Decision.**
+- **Source.** The approved icon is the QANDEEL brand authority **I-08B2.5**, ratified as the final Brand Authority by
+  the App's P4-C2 §1 decision record, with icon bytes / hash kept at P4 closure. Its app icon is
+  `APP_ICON_B_DARK_LUMINOUS.svg`, SHA-256 `859665d8…ddd09` (the frozen I-08B2.4 Variant B file).
+- **Copy.** It is copied once, byte-identical, into `packaging/windows/assets/source/` (`-text` in `.gitattributes`).
+  Its repository and commit are recorded in `packaging/windows/assets/ICON_PROVENANCE.json`. The provenance record is
+  the one file the `no-app-repo-dependency` rule exempts: it is a record, never a build or runtime dependency.
+- **Derivation.** `qandeel-company.ico` (16 / 20 / 24 / 32 / 40 / 48 / 64 / 256 px; 256 PNG-compressed, smaller sizes
+  32-bit DIB) is rasterised by Chromium at each exact size from the unmodified SVG — the brand package's own method.
+  No redraw, recolour or mask. `assets/render-icon.mjs` is run once by an engineer.
+- **Fidelity.** At all 12 sizes the brand package also exports (its iOS set), the renders are pixel-identical to the
+  package's own renders: mean and maximum difference 0.
+- **Pins.** The ICO hash is pinned; the build refuses any other icon.
+- **Known limitation.** The SVG's internal header comment predates the I-08B2.4 freeze ("NOT approved"). It is the
+  brand package's recorded limitation L-1 and is left unedited, because editing it would break the hash.
+
+## D-D1-04 — No console window: the shortcuts run the private runtime through the signed console host in headless mode (executor; D1 Task Contract §7)
+
+**Context.** An OPS shortcut targets `node.exe`, a console program, so Windows briefly opened a console / Terminal
+window (R-OPS-03).
+
+**Decision.**
+- **Shortcut.** Every QANDEEL COMPANY shortcut targets `%SystemRoot%\System32\conhost.exe` with
+  `--headless "<private node.exe>" "<release cli.js>" <command> --notify`, using the product icon. `conhost.exe` is the
+  signed Windows console host: no new executable, no script host, no Smart App Control exception.
+- **Measured on the Founder-class host.** `node.exe` started directly creates a visible Windows Terminal window; the
+  same command under `conhost --headless` creates none.
+- **Unchanged.** The host itself stays detached and windowless (OPS); the Founder notices are GUI pop-ups.
+- **Fallback.** Without `conhost.exe` the shortcut falls back to the runtime itself, minimized (the OPS behaviour).
+
+**Rejected:**
+- a VBScript / WSH launcher (a script-host dependency on a Smart App Control host);
+- a compiled stub launcher (an unsigned local executable);
+- hiding windows by weakening any Windows protection.
+
+## D-D1-05 — Update, failed update, repair and retention semantics (executor; D1 Task Contract §§8–11)
+
+**Decision.**
+- **Update.** A newer Setup installs into a NEW versioned directory, so it never overwrites the runtime hosting the
+  Company. Its `desktop-install` runs the canonical activation, whose STOP step stops the old host. Its START step
+  starts the new release on the new runtime. Success only when the host is READY.
+- **Failed update.** The canonical rollback restores the previous pin and restarts the previous release. The
+  shortcuts and the product record are written only after success, so they still name the previous version.
+  Company state is unchanged. Setup exits `101` with a bounded message, and the new version's files stay inert
+  beside the old ones. Two residuals are recorded:
+  - The rolled-back host runs the previous release on the newer, equally pinned and verified runtime until its next
+    controlled restart or shortcut start.
+  - Windows "Apps" shows the newer version number until a later Setup succeeds.
+- **Repair.** Running the same Setup again first stops the host through that version's own CLI (Setup's
+  `PrepareToInstall`), so its runtime is not in use. It then restores every installer-owned file and re-runs
+  `desktop-install`. Re-activating the pinned release keeps the pin's real `previous` (an `activateRelease` refinement:
+  a release is never recorded as its own predecessor). An identical release is reused.
+- **Retention.** Conservative: no product version, release, backup or pin is pruned by Setup in Desktop v1.
+
+## D-D1-06 — Authenticode signing seam; FOUNDER-RC only when signed, valid and from a clean exact commit (executor; D1 Task Contract §§12, 18)
+
+**Decision.**
+- **Seam.** Setup and its uninstaller are signed by Inno Setup itself (`SignTool=qandeelsign`, `SignedUninstaller=yes`)
+  when the build is given `QANDEEL_SIGN_THUMBPRINT` (a code-signing certificate in the build user's store, SHA-256,
+  RFC 3161 timestamp via `QANDEEL_SIGN_TIMESTAMP_URL`) and `QANDEEL_SIGNTOOL`. The credential never enters the
+  repository, the workflow (`desktop.yml` uses no secret) or a log.
+- **Verification record.** It states the Authenticode status, signer and timestamp.
+- **Artifact class.** `FOUNDER-RC` only when all three hold: a clean exact source commit, a `Valid` (trusted)
+  signature, and a verified bundle. Otherwise the artifact is `ENGINEERING` and the record names the blockers
+  (`SIGNING_CREDENTIAL_MISSING`, `SOURCE_NOT_CLEAN_EXACT_COMMIT`).
+- **No workarounds.** No self-signed production artifact, no untrusted root, no Smart App Control bypass.
+
+## D-D1-07 — Desktop validation: the desktop-distribution boundary, the Desktop proofs, and the FULL `desktop` job (executor; D1 Task Contract §§14–17)
+
+**Decision.**
+- **Impact map.**
+  - `packaging/windows/**` is the affected boundary `desktop-distribution`: Windows only; build / typecheck / lint /
+    verify, then `desktop:e2e` and `desktop:proof`; no workspace, no mutation family.
+  - `installer/`, `distribution/` and any other `packaging/` area stay reserved (FULL).
+  - `founder-host` and `c5-presentation` add both Desktop proofs, because their code ships in the Desktop release (the
+    map audit enforces it).
+  - The workflow, the root scripts and the map stay high-risk (FULL).
+- **`desktop:proof`** (disposable LOCALAPPDATA, shortcut root and Company; never the real profile, never LIVE). It
+  runs the INSTALLED CLI on the INSTALLED private runtime, with a PATH free of Node / npm / Git, from outside the
+  checkout. It proves:
+  - **packaging:** pins, corrupt download and cache refused, wrong architecture refused, tampering refused,
+    traceability, no development path or secret, the icon, the installer definition;
+  - **install:** no Company → nothing created; another runtime refused; the existing Company adopted;
+  - **runtime:** open, reopen, concurrent open → one host, stop, restart, hard kill → recovery, no token in process
+    arguments or logs;
+  - **update and rollback:** A → B, and a failed C rolled back;
+  - **repair, uninstall, reinstall;**
+  - **detached:** the installed product with the checkout's `packages/` and `node_modules/` made unavailable.
+
+  Setup's file copy is mirrored there.
+- **`desktop:e2e`.** The real Setup.exe on a disposable Windows runner only: it refuses outside CI and wherever
+  QANDEEL data or an installation already exists. Steps:
+  1. first run without a Company;
+  2. an invalid choice;
+  3. per-user install (HKCU, no HKLM);
+  4. the shortcut's own command line;
+  5. update A → B;
+  6. failed C → rollback;
+  7. repair;
+  8. detached;
+  9. uninstall;
+  10. reinstall.
+
+  It publishes the ENGINEERING Setup artifact.
+- **Never built locally.** The local proofs never build or run a Setup.exe on the Founder's Smart App Control host
+  (CLAUDE.md: no locally built executables). The Setup is built and proven only on the GitHub Windows runner.
+- **Workflow.** `.github/workflows/desktop.yml` is a reusable workflow: Windows, read-only, SHA-pinned, secret-free.
+  The FULL path's `desktop` job calls it on the exact PR head, and the `quality-gate` requires it in FULL mode. It
+  also runs on a non-main branch push that changes the Windows packaging: early Desktop feedback without a PR and
+  without a FULL run, never a gate.
+- **Verifier.**
+  - New rule `desktop-distribution`: per-user, no elevation / PATH / autostart / registry / data deletion; side by
+    side; delegation to the canonical activation; exact Node 24 x64 pin; pinned Inno; the I-08B2.5 icon provenance;
+    the Desktop module verifies before activating, never opens or creates a Company store, deletes only its own
+    record; no committed binaries.
+  - `ci-contract` covers the `desktop` job and the reusable workflow.
+
+**D1 itself** changes the impact map and the CI architecture, so it is FULL by its own map. It gets one FULL GitHub
+gate on the exact release-candidate head.
+
+## D-D1-08 — Desktop v1 is Founder-local: the supported install runs only signed binaries; commercial signing is deferred (executor; Founder decision change, 2026-10-07)
+
+**Context.** The Founder decided that QANDEEL COMPANY Desktop v1 is Founder-local only. A commercial Authenticode
+certificate is not a closure requirement for this stage, and D1 does not stop on `SIGNING_CREDENTIAL_MISSING`.
+Windows security is never disabled, and a paid certificate is never required.
+
+Smart App Control can refuse an unsigned custom `Setup.exe`. The supported installation therefore needs no custom
+executable at all, while the Founder still gets a normal desktop application with no terminal, Git, npm, global
+Node or development checkout.
+
+**Decision.**
+1. **The supported Founder artifact is the Desktop bundle itself:** a folder carrying the pinned, officially signed
+   `node.exe` (Authenticode Valid, OpenJS Foundation; the build and the proofs check it), the canonical release, the
+   approved icon and `qandeel.desktop-bundle/v1`.
+2. **It is installed by its own `node.exe`:**
+   `"<bundle>\node\node.exe" "<bundle>\release\…\command-center\dist\src\cli.js" desktop-local-install --bundle "<bundle>"`.
+   `desktop-local-install` runs these steps:
+   1. verifies the bundle and that it runs on that bundle's own runtime and code;
+   2. checks the EXISTING Company read-only, BEFORE anything is installed: no Company → `SETUP_REQUIRED`, nothing
+      installed or created;
+   3. copies the bundle, verified, into `%LOCALAPPDATA%\Programs\QANDEEL COMPANY\versions\<version>-<bundle>\`
+      (staged, then renamed; a damaged copy of the same version is replaced only after a controlled stop);
+   4. hands over to the INSTALLED copy's runtime for `desktop-install` (D-D1-01: the canonical activation);
+   5. registers the per-user Windows "Apps" entry.
+3. **Uninstall from Windows "Apps".** The "Apps" entry's uninstall command uses signed Windows binaries only: System32
+   `conhost.exe --headless` → System32 Windows PowerShell with a fixed encoded script. The script:
+   1. runs the installed runtime's application-only uninstall (controlled stop, shortcuts, product record);
+   2. only if that succeeded, and after that runtime has exited, removes `<…>\Programs\QANDEEL COMPANY` and the entry.
+
+   Measured: Windows PowerShell started without a console does not run its script, so no detached process is used.
+   The script refuses anything but the product directory and a per-user key; Company data is never there.
+4. **Update / failed update.** An update is a newer bundle installed the same way. A failed update keeps the "Apps"
+   entry unchanged, so it still names the version that runs (this closes the Setup.exe residual of D-D1-05).
+5. **Process kinds.** One more process kind is allowed in `processes.ts`: the INSTALLED private runtime
+   (`installedRuntime`), the pinned official node.exe of a verified bundle. The verifier (`founder-host-confined`,
+   `desktop-distribution`) pins the guards.
+6. **`QANDEEL-COMPANY-Setup.exe` stays an optional ENGINEERING artifact.** It is built and proven end to end on CI, and
+   trusted commercial signing is deferred until public / external distribution. The D-D1-06 signing seam is unchanged.
+   Its rule "FOUNDER-RC only when signed" now applies to the Setup.exe artifact only.
+7. **Artifact class.** The Founder-local bundle is `FOUNDER-RC` when all four hold: it verifies byte for byte, it
+   carries no development path or secret, its runtime is the pinned, officially signed node.exe, and the source is a
+   clean exact commit (`QANDEEL-COMPANY-Desktop.verification.json`; `desktop:verify` re-checks it).
+8. **Proofs.**
+   - `desktop:proof` now installs through `desktop-local-install` from a "downloaded" bundle folder, under a scratch
+     per-user key. It uninstalls by launching exactly the registered command the way Windows does, and judges it by
+     its effects. Measured: `conhost --headless` started as a child with redirected stdio returns at once without
+     running its command, so the proofs launch it like Windows.
+   - `desktop:e2e` adds the Founder-local install with the runner's real "Apps" entry and its uninstall.
+
+**Unchanged:** every OPS / D1 security boundary (loopback, no secret in arguments, shortcuts or logs, the canonical
+activation and rollback, the existing Company only, Company data never touched), and Smart App Control.
+
+## D-D1-09 — The Windows L1 mutation family runs as 9 disjoint shards (executor; Task Contract D1-CI-L1-SHARD-CORR-01)
+
+**Context.** FULL run #124 (`f321e4d`) was cancelled twice at the 45-minute job ceiling in `mutation (windows-latest,
+l1-1of1)`. The single Windows shard caught 44 and then 50 of the 124 recorded L1 mutations before cancellation, with no
+uncaught mutation and no Product assertion failure. The Ubuntu shard ran all 124 in about 23 minutes. The L1 workload
+(L1-01 plus the L1-02 activation mutations) has outgrown one shard: a validation-capacity defect, not a Product defect.
+
+**Measurement.** Per-mutation cost comes from the run #124 log timestamps. The 50 Windows mutations measured took
+43.4 minutes. The heavy mutations (≥ 15 s on Ubuntu) cost about 7.4× their Ubuntu time on Windows. Estimating the 74
+unmeasured mutations from their Ubuntu time at 7.5× gives about 169 minutes of Windows mutation time in all. About one
+more minute per job goes to checkout, `npm ci` and the build.
+
+| Windows shards (existing `i % n`) | Heaviest shard (estimate) | With +15 % runner variance and setup |
+|---|---|---|
+| 8 | 25.0 min | 29.8 min |
+| **9** | **21.9 min** (lightest 16.1) | **26.2 min** |
+| 10 | 21.6 min | 25.9 min |
+
+**Decision.**
+1. **Windows L1 runs as 9 shards.** `MUTATION_SHARDS[windows-latest].l1` is `9`, and the FULL matrix lists `l1:1/9` …
+   `l1:9/9`, as the impact map's audit requires. The affected-mode Windows matrix of the `c5-presentation` and
+   `founder-host` boundaries reuses the same shards.
+2. **The existing modulo sharding is reused.** It already balances the suite within the budget, so the runner's
+   partition, assertions and report schema are unchanged. The quality gate still proves that each OS ran every
+   recorded mutation exactly once.
+3. **What stays unchanged.**
+   - The Ubuntu L1 shard (about 23 minutes, within budget).
+   - The 45-minute ceiling.
+   - Every other family.
+
+**Consequence.** Each Windows L1 shard is expected below 30 minutes. If a shard repeatedly runs above 35 minutes, it
+is split again; the ceiling is never raised.

@@ -48,7 +48,7 @@ export const MUTATION_FAMILIES = ['c1', 'c2', 'c3', 'r1', 'c4', 'c5', 'c6', 'c7a
  * way (audited); the affected matrix reuses the same shards, so a family's Windows budget is the same in both modes.
  */
 export const MUTATION_SHARDS = {
-  [WINDOWS]: { c1: 1, c2: 1, c3: 2, r1: 4, c4: 2, c5: 1, c6: 4, c7a: 4, c7b: 3, c7c: 2, c7d: 2, l1: 1 },
+  [WINDOWS]: { c1: 1, c2: 1, c3: 2, r1: 4, c4: 2, c5: 1, c6: 4, c7a: 4, c7b: 3, c7c: 2, c7d: 2, l1: 9 },
   [UBUNTU]: { c1: 1, c2: 1, c3: 1, r1: 2, c4: 1, c5: 1, c6: 1, c7a: 2, c7b: 2, c7c: 1, c7d: 1, l1: 1 },
 };
 
@@ -71,7 +71,8 @@ export const HIGH_RISK = [
 
 /** A future boundary reserved by name only: its proofs are not defined yet, so it is FULL until a stage defines them. */
 export const RESERVED = [
-  { id: 'windows-distribution', re: /^(?:packaging|installer|distribution)\//, why: 'reserved for D1 (Installable Windows Distribution); proofs undefined, FULL until D1 maps them' },
+  // D1 mapped packaging/windows/ (the desktop-distribution boundary below); every other distribution area stays reserved.
+  { id: 'distribution-reserved', re: /^(?:installer|distribution)\/|^packaging\/(?!windows\/)/, why: 'reserved distribution area (only packaging/windows/ is mapped, D-D1-07); proofs undefined, FULL until a stage maps it' },
 ];
 
 /** Documentation only: anything under docs/, or a Markdown file at the repository root. */
@@ -91,7 +92,8 @@ export const BOUNDARIES = [
     packages: ['command-center-ui'],
     workspaces: ['command-center-ui', 'command-center'],
     harness: true,
-    acceptance: ['c5:acceptance', 'c5:spike'],
+    // D1: the UI ships inside the Desktop release, so its Desktop proofs run too.
+    acceptance: ['c5:acceptance', 'c5:spike', 'desktop:e2e', 'desktop:proof'],
     mutation: ['c5', 'c7d', 'l1'],
     os: [WINDOWS, UBUNTU],
     mutationOs: [WINDOWS],
@@ -103,9 +105,25 @@ export const BOUNDARIES = [
     packages: ['command-center'],
     workspaces: ['command-center'],
     harness: false,
-    acceptance: ['c5:acceptance', 'c5:spike'],
+    // D1: desktop-install / desktop-uninstall and the shortcuts live here, so the Desktop proofs run too.
+    acceptance: ['c5:acceptance', 'c5:spike', 'desktop:e2e', 'desktop:proof'],
     mutation: ['c5', 'c7d', 'l1'],
     os: [WINDOWS, UBUNTU],
+    mutationOs: [WINDOWS],
+  },
+  {
+    // D1 (D-D1-07): the Windows Desktop product build and its proofs — pins, icon, Inno Setup definition, bundle /
+    // Setup build, desktop:proof and desktop:e2e. It owns no workspace and no mutation family (the product code it
+    // packages is founder-host / c5-presentation / FULL). Windows only: the product is a Windows installer.
+    id: 'desktop-distribution',
+    title: 'Windows Desktop distribution (Setup.exe build, private runtime, installer proofs)',
+    paths: [/^packaging\/windows\//],
+    packages: [],
+    workspaces: [],
+    harness: false,
+    acceptance: ['desktop:e2e', 'desktop:proof'],
+    mutation: [],
+    os: [WINDOWS],
     mutationOs: [WINDOWS],
   },
 ];
@@ -300,10 +318,14 @@ export function auditRepo(root = ROOT, boundaries = BOUNDARIES) {
   }
   // Every acceptance step the FULL path runs, and which workspaces its script imports.
   const acceptanceJob = workflowJob(wf, 'acceptance') ?? '';
-  const ciAcceptance = uniq([...acceptanceJob.matchAll(/npm run ([a-z0-9]+:[a-z-]+)/g)].map((m) => m[1]));
+  // D1: the FULL path's `desktop` job runs the reusable Desktop workflow; its steps are FULL acceptance steps too.
+  const desktopWfFile = path.join(root, '.github', 'workflows', 'desktop.yml');
+  const desktopWf = existsSync(desktopWfFile) ? readFileSync(desktopWfFile, 'utf8') : '';
+  if (!/uses:\s*\.\/\.github\/workflows\/desktop\.yml/.test(workflowJob(wf, 'desktop') ?? '')) problems.push('the FULL path has no desktop job running .github/workflows/desktop.yml');
+  const ciAcceptance = uniq([...`${acceptanceJob}\n${desktopWf}`.matchAll(/npm run ([a-z0-9]+:[a-z0-9-]+)/g)].map((m) => m[1]).filter((a) => pkg.scripts?.[a]));
   const acceptanceImports = Object.fromEntries(
     ciAcceptance.map((a) => {
-      const script = /node\s+(?:--\S+\s+)*(scripts\/\S+\.mjs)/.exec(pkg.scripts?.[a] ?? '')?.[1];
+      const script = /node\s+(?:--\S+\s+)*((?:scripts|packaging)\/\S+\.mjs)/.exec(pkg.scripts?.[a] ?? '')?.[1];
       const text = script && existsSync(path.join(root, script)) ? readFileSync(path.join(root, script), 'utf8') : '';
       if (!text) problems.push(`acceptance step ${a} has no readable script`);
       return [a, uniq([...text.matchAll(/(?:@qandeel-company\/|packages\/)([a-z0-9-]+)/g)].map((m) => m[1]))];
@@ -324,7 +346,8 @@ export function auditRepo(root = ROOT, boundaries = BOUNDARIES) {
     for (const [a, imports] of Object.entries(acceptanceImports)) {
       if (imports.some((w) => closure.includes(w)) && !b.acceptance.includes(a)) problems.push(`${b.id}: CI acceptance ${a} imports the boundary but is not in the plan`);
     }
-    for (const a of b.acceptance) if (!ciAcceptance.includes(a)) problems.push(`${b.id}: acceptance ${a} is not a step of the FULL acceptance job`);
+    for (const a of b.acceptance) if (!ciAcceptance.includes(a)) problems.push(`${b.id}: acceptance ${a} is not a step of the FULL acceptance / desktop job`);
+    if (b.paths.some((re) => RESERVED.some((r) => [...['packaging/windows/x', 'installer/x', 'distribution/x']].some((probe) => re.test(probe) && r.re.test(probe))))) problems.push(`${b.id}: its paths are still reserved`);
     if (b.harness && !pkg.scripts?.['test:harness']) problems.push(`${b.id}: no root test:harness script`);
     if (!b.os.includes(WINDOWS) || !b.mutationOs.includes(WINDOWS)) problems.push(`${b.id}: Windows proof is mandatory for a Desktop-path boundary`);
   }
@@ -342,7 +365,15 @@ export const SELF_TEST_CASES = [
   ['C5 browser harness', ['scripts/c5/cdp.mjs'], 'affected', ['c5-presentation']],
   ['Founder host', ['packages/command-center/src/host/lifecycle.ts', 'packages/command-center/test/founder-host.test.ts'], 'affected', ['founder-host']],
   ['UI + host', ['packages/command-center-ui/src/app/view.ts', 'packages/command-center/src/cli.ts'], 'affected', ['c5-presentation', 'founder-host']],
-  ['reserved Windows packaging', ['packaging/windows/setup.iss'], 'full', []],
+  ['Windows Desktop packaging', ['packaging/windows/qandeel-company.iss'], 'affected', ['desktop-distribution']],
+  ['Desktop proof', ['packaging/windows/proof/desktop-proof.mjs', 'packaging/windows/lib/desktop-build.mjs'], 'affected', ['desktop-distribution']],
+  ['Desktop pins + docs', ['packaging/windows/desktop.pins.json', 'docs/architecture/DECISION_LOG.md'], 'affected', ['desktop-distribution']],
+  ['Desktop packaging + host', ['packaging/windows/build.mjs', 'packages/command-center/src/host/desktop.ts'], 'affected', ['founder-host', 'desktop-distribution']],
+  ['Desktop packaging + runtime', ['packaging/windows/build.mjs', 'packages/runtime/src/release.ts'], 'full', []],
+  ['Desktop workflow', ['.github/workflows/desktop.yml'], 'full', []],
+  ['reserved packaging (non-Windows)', ['packaging/macos/build.mjs'], 'full', []],
+  ['reserved installer area', ['installer/setup.iss'], 'full', []],
+  ['reserved distribution area', ['distribution/channel.json'], 'full', []],
   ['runtime foundation', ['packages/runtime/src/runtime.ts'], 'full', []],
   ['storage foundation', ['packages/storage/src/queue.ts'], 'full', []],
   ['domain foundation', ['packages/domain/src/errors.ts'], 'full', []],
@@ -390,10 +421,12 @@ export function selfTest() {
   }
   // Affected plans: exact proof, Windows mandatory, no historical universe.
   const ui = planFor(['packages/command-center-ui/src/app/view.ts']);
-  const want = ['build', 'typecheck', 'lint', 'verify', 'test:command-center', 'test:command-center-ui', 'test:harness', 'acceptance:c5:acceptance', 'acceptance:c5:spike'];
+  const want = ['build', 'typecheck', 'lint', 'verify', 'test:command-center', 'test:command-center-ui', 'test:harness', 'acceptance:c5:acceptance', 'acceptance:c5:spike', 'acceptance:desktop:e2e', 'acceptance:desktop:proof'];
   if (ui.steps.map((s) => s.id).join() !== want.join()) failures.push(`C5 UI steps are [${ui.steps.map((s) => s.id)}]`);
   if (ui.mutation.families.join() !== 'c5,c7d,l1' || ui.mutation.os.join() !== WINDOWS) failures.push('C5 UI mutation proof is not c5,c7d,l1 on Windows');
-  if (ui.mutation.matrix.map((m) => m.suite).join(' ') !== 'c5:1/1 c7d:1/2 c7d:2/2 l1:1/1') failures.push(`C5 UI mutation shards are ${ui.mutation.matrix.map((m) => m.suite)}`);
+  if (ui.mutation.matrix.map((m) => m.suite).join(' ') !== 'c5:1/1 c7d:1/2 c7d:2/2 l1:1/9 l1:2/9 l1:3/9 l1:4/9 l1:5/9 l1:6/9 l1:7/9 l1:8/9 l1:9/9') failures.push(`C5 UI mutation shards are ${ui.mutation.matrix.map((m) => m.suite)}`);
+  const desk = planFor(['packaging/windows/qandeel-company.iss']);
+  if (desk.steps.map((s) => s.id).join() !== 'build,typecheck,lint,verify,acceptance:desktop:e2e,acceptance:desktop:proof' || desk.os.join() !== WINDOWS || desk.mutation.matrix.length !== 0) failures.push(`Desktop distribution plan is [${desk.steps.map((s) => s.id)}] on [${desk.os}]`);
   const host = planFor(['packages/command-center/src/host/lifecycle.ts']);
   if (host.steps.some((s) => s.id === 'test:command-center-ui' || s.id === 'test:harness')) failures.push('Founder host plan runs UI-only proofs');
   if (!host.os.includes(WINDOWS) || !host.mutation.os.includes(WINDOWS)) failures.push('Founder host plan lacks Windows proof');
@@ -413,6 +446,8 @@ export function selfTest() {
     ['a touching mutation family dropped', { ...ccui, mutation: ['c5', 'c7d'] }],
     ['an importing acceptance step dropped', { ...ccui, acceptance: ['c5:spike'] }],
     ['Windows proof dropped', { ...ccui, mutationOs: [UBUNTU] }],
+    ['an importing Desktop proof dropped', { ...ccui, acceptance: ['c5:acceptance', 'c5:spike', 'desktop:e2e'] }],
+    ['a Desktop boundary without Windows', { ...BOUNDARIES.find((b) => b.id === 'desktop-distribution'), os: [UBUNTU], mutationOs: [UBUNTU] }],
     ['a shared foundation claimed as a boundary', { ...ccui, id: 'storage', packages: ['storage'], workspaces: ['storage'] }],
   ];
   for (const [name, b] of weakened) if (auditRepo(ROOT, [b]).length === 0) failures.push(`repository audit accepted a boundary with ${name}`);

@@ -32,7 +32,7 @@ import { LOOPBACK_HOST } from '../security.js';
 import { hostPaths, newNonce, readDescriptor, removeStaleDescriptor, verifyIdentityProof, writeJsonAtomic, writeStopRequest, type HostDescriptor, type HostPaths } from './descriptor.js';
 import { serveLaunchHandoff } from './handoff.js';
 import { probeIdentity, requestHostStop } from './probe.js';
-import { openBrowser, pidAlive, showNotice, spawnHost, terminateProcess, writeShortcuts, type ShortcutSpec } from './processes.js';
+import { openBrowser, pidAlive, removeShortcuts, showNotice, spawnHost, terminateProcess, writeShortcuts, type ShortcutRoots, type ShortcutSpec } from './processes.js';
 
 export type HostState = 'RUNNING' | 'STARTING' | 'STOPPING' | 'STOPPED' | 'STALE' | 'UPDATE_REQUIRED' | 'HELD' | 'UNHEALTHY' | 'FOREIGN_RUNTIME' | 'WORKSPACE_MISSING' | 'WORKSPACE_INVALID';
 
@@ -412,11 +412,32 @@ export function writeLauncherConfig(file: string, config: LauncherConfig): void 
 
 export const SHORTCUT_FOLDER = 'QANDEEL COMPANY';
 
+/** The installed Desktop product's icon beside its private runtime (`<version>\node\node.exe` → `<version>\app\…`). */
+export const PRODUCT_ICON_FILE = 'qandeel-company.ico';
+export function productIcon(runtime: string = process.execPath): string | null {
+  const icon = path.join(path.dirname(path.dirname(runtime)), 'app', PRODUCT_ICON_FILE);
+  return path.basename(path.dirname(runtime)) === 'node' && existsSync(icon) ? icon : null;
+}
+
+/**
+ * The signed Windows console host in headless mode (D-D1-04): the launcher's own console never appears — no window, no
+ * taskbar flash — while the launcher still runs the same signed Node runtime with the same arguments. No new
+ * executable: conhost.exe ships with Windows (System32).
+ */
+export function headlessConsoleHost(env: NodeJS.ProcessEnv = process.env): string | null {
+  if (process.platform !== 'win32') return null;
+  const exe = path.join(env.SystemRoot ?? 'C:\\Windows', 'System32', 'conhost.exe');
+  return existsSync(exe) ? exe : null;
+}
+
 /** The Founder's entry points: the Desktop launcher, and Start-menu Open / Status / Stop / Restart. */
-export function shortcutSpecs(cliPath: string, configDir: string): ShortcutSpec[] {
-  const target = process.execPath;
+export function shortcutSpecs(cliPath: string, configDir: string, runtime: string = process.execPath): ShortcutSpec[] {
   const q = (s: string): string => `"${s}"`;
-  const mk = (folder: ShortcutSpec['folder'], name: string, command: string, description: string, subfolder?: string): ShortcutSpec => ({ folder, name, target, arguments: `${q(cliPath)} ${command} --notify`, workingDirectory: configDir, description, ...(subfolder ? { subfolder } : {}) });
+  const conhost = headlessConsoleHost();
+  const target = conhost ?? runtime;
+  const prefix = conhost === null ? '' : `--headless ${q(runtime)} `;
+  const icon = productIcon(runtime);
+  const mk = (folder: ShortcutSpec['folder'], name: string, command: string, description: string, subfolder?: string): ShortcutSpec => ({ folder, name, target, arguments: `${prefix}${q(cliPath)} ${command} --notify`, workingDirectory: configDir, description, ...(subfolder ? { subfolder } : {}), ...(icon ? { icon } : {}) });
   return [
     mk('Desktop', 'QANDEEL COMPANY', 'open', 'افتح شركة قنديل — Open QANDEEL COMPANY'),
     mk('Programs', 'QANDEEL COMPANY', 'open', 'افتح شركة قنديل — Open QANDEEL COMPANY', SHORTCUT_FOLDER),
@@ -426,8 +447,13 @@ export function shortcutSpecs(cliPath: string, configDir: string): ShortcutSpec[
   ];
 }
 
-export async function installShortcuts(cliPath: string, configDir: string): Promise<string[] | null> {
-  return writeShortcuts(shortcutSpecs(cliPath, configDir));
+export async function installShortcuts(cliPath: string, configDir: string, roots: ShortcutRoots = {}): Promise<string[] | null> {
+  return writeShortcuts(shortcutSpecs(cliPath, configDir), roots);
+}
+
+/** Removes the QANDEEL COMPANY shortcuts (the Desktop application's uninstall; Company data is never touched). */
+export async function uninstallShortcuts(configDir: string, roots: ShortcutRoots = {}): Promise<string[] | null> {
+  return removeShortcuts(shortcutSpecs('', configDir), roots);
 }
 
 // --- Founder notices -------------------------------------------------------------------------------------------------------
