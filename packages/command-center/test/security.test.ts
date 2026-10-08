@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { CSRF_COOKIE, allowedHosts, allowedOrigins, gateRequest, parseCookies, securityHeaders, statusForCode, type RequestFacts } from '../src/index.js';
+import { isLaunchPageNavigation } from '../src/security.js';
 
 const facts = (over: Partial<RequestFacts> = {}): RequestFacts => ({ method: 'GET', host: '127.0.0.1:4173', origin: undefined, secFetchSite: 'same-origin', contentType: undefined, cookies: {}, csrfHeader: undefined, ...over });
 const post = (over: Partial<RequestFacts> = {}): RequestFacts => facts({ method: 'POST', origin: 'http://127.0.0.1:4173', contentType: 'application/json', cookies: { [CSRF_COOKIE]: 'c'.repeat(43) }, csrfHeader: 'c'.repeat(43), ...over });
@@ -65,5 +66,42 @@ describe('Founder surface request gate', () => {
     assert.equal(statusForCode('NOT_FOUND'), 404);
     assert.equal(statusForCode('VALIDATION_FAILED'), 400);
     assert.equal(statusForCode('SOMETHING_ELSE'), 500);
+  });
+});
+
+describe('D-D2-01: the one same-site exception — loading the static launch page, nothing else', () => {
+  const nav = (over: Partial<RequestFacts> = {}): RequestFacts => facts({ secFetchSite: 'same-site', path: '/launch', secFetchMode: 'navigate', secFetchDest: 'document', ...over });
+
+  test('a top-level document navigation from another loopback port may load /launch', () => {
+    assert.equal(isLaunchPageNavigation(nav()), true);
+    assert.deepEqual(gateRequest(nav(), 4173), { ok: true });
+  });
+
+  test('every other same-site request stays refused: other paths, fetches, frames, subresources, other methods', () => {
+    const refused = (over: Partial<RequestFacts>, why: string): void => {
+      const g = gateRequest(nav(over), 4173);
+      assert.equal(g.ok, false, why);
+      assert.equal(g.ok ? null : g.code, 'CROSS_SITE_REQUEST', why);
+    };
+    for (const path of ['/', '/index.html', '/launch.html', '/launch/', '/LAUNCH', '/launch%2F', '/api/session', '/api/session/launch', '/api/universe', '/api/desktop/control', '/api/events', '/app/app/launch.js', '/styles.css', '/host/identity', '/host/stop', undefined]) refused({ path: path as string }, `path ${String(path)}`);
+    for (const secFetchMode of ['cors', 'no-cors', 'same-origin', 'websocket', undefined]) refused({ secFetchMode: secFetchMode as string }, `mode ${String(secFetchMode)} (a page's fetch or subresource, not a navigation)`);
+    for (const secFetchDest of ['iframe', 'frame', 'embed', 'object', 'empty', 'script', 'style', undefined]) refused({ secFetchDest: secFetchDest as string }, `dest ${String(secFetchDest)} (framing or reading it)`);
+    for (const method of ['POST', 'HEAD', 'PUT', 'DELETE', 'OPTIONS']) refused({ method }, `method ${method}`);
+  });
+
+  test('a cross-site (internet) navigation to /launch is refused; the exact loopback Host is still required', () => {
+    const g = gateRequest(nav({ secFetchSite: 'cross-site' }), 4173);
+    assert.equal(g.ok ? null : g.code, 'CROSS_SITE_REQUEST');
+    for (const host of ['evil.example', 'attacker.localtest.me:4173', '127.0.0.1:4174', undefined]) assert.equal(gateRequest(nav({ host: host as string }), 4173).ok, false, `host ${String(host)}`);
+  });
+
+  test('the token exchange and every state change keep their full protection: a same-site POST to the exchange is refused', () => {
+    const exchange = post({ path: '/api/session/launch', secFetchSite: 'same-site', secFetchMode: 'cors', secFetchDest: 'empty', origin: 'http://127.0.0.1:9999', csrfHeader: undefined, cookies: {} });
+    assert.equal(gateRequest(exchange, 4173, { csrfExempt: true }).ok, false);
+    // Even with navigate/document claimed, a POST never takes the exception.
+    assert.equal(gateRequest(post({ path: '/launch', secFetchSite: 'same-site', secFetchMode: 'navigate', secFetchDest: 'document' }), 4173).ok, false);
+    // A same-origin exchange from the launch page itself still needs its exact Origin.
+    assert.deepEqual(gateRequest(post({ path: '/api/session/launch', csrfHeader: undefined, cookies: {} }), 4173, { csrfExempt: true }), { ok: true });
+    assert.equal(gateRequest(post({ path: '/api/session/launch', origin: 'http://127.0.0.1:9999', csrfHeader: undefined, cookies: {} }), 4173, { csrfExempt: true }).ok, false);
   });
 });

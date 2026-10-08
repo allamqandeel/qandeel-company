@@ -14,6 +14,7 @@
       <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">QANDEEL</span><span class="lens" id="lens">Company Live</span></div>
       <p class="health" id="health" aria-live="polite"></p>
       <div class="topbar-actions">
+        <button type="button" class="btn btn-ghost btn-company" id="company-toggle" aria-controls="company-panel" aria-expanded="false"><span class="company-dot" aria-hidden="true"></span>Company running</button>
         <button type="button" class="btn btn-quiet" id="activation-open">Activate the Company</button>
         <button type="button" class="btn btn-quiet" id="palette-open" aria-keyshortcuts="Control+K">Ask the company <kbd>Ctrl K</kbd></button>
         <button type="button" class="btn btn-ghost btn-dock" id="attention-toggle" aria-controls="rail" aria-expanded="false">Attention <span class="count" id="attention-count">0</span></button>
@@ -27,6 +28,7 @@
       <aside id="rail" class="rail" aria-label="Founder attention" hidden></aside>
       <aside id="focus" class="focus" hidden aria-live="polite"></aside>
       <section id="palette" class="palette" hidden aria-label="Founder command"></section>
+      <section id="company-panel" class="company-panel" hidden aria-label="Company lifecycle"></section>
       <div id="preview" class="preview" role="dialog" aria-modal="true" aria-label="Confirm a governed action" hidden></div>
       <section id="legend" class="legend" hidden aria-label="Key">
         <h3>Reading the company</h3>
@@ -49,9 +51,15 @@
   <div id="lock" class="lock" hidden>
     <div class="lock-card">
       <h1>No Founder session</h1>
-      <p>Open the command center from the command line on this same machine:</p>
-      <pre>qandeel-founder serve --workspace &lt;dir&gt;</pre>
-      <p>Then open the launch link it prints (valid for ninety seconds, once). Reason: <code data-code></code></p>
+      <p>Open QANDEEL COMPANY from its Desktop shortcut on this same computer.</p>
+      <p>Engineering use: <code>qandeel-founder serve --workspace &lt;dir&gt;</code>, then the launch link it prints (valid for ninety seconds, once). Reason: <code data-code></code></p>
+    </div>
+  </div>
+  <div id="unavailable" class="lock" hidden>
+    <div class="lock-card">
+      <h1>QANDEEL COMPANY is not running</h1>
+      <p>The Company was stopped outside this window (for example from the Start menu), or it ended. Nothing in it was changed by this window.</p>
+      <p>Reopen QANDEEL COMPANY from its Desktop shortcut.</p>
     </div>
   </div>
   <script type="module" src="/app/app/main.js" nonce="{{nonce}}"></script>

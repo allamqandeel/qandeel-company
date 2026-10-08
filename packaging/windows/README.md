@@ -52,6 +52,20 @@ Company data stays where OPS put it. Neither the install nor the uninstall ever 
 
 Desktop v1 has no internet updater, no autostart, no PATH change and no "delete my Company" option.
 
+### Controlling the Company from its window (D-D2-01)
+
+In the Command Center, **Company running** opens Status, **Stop Company** and **Restart Company**, each confirmed first.
+- **Stop** keeps the same window open on a STOPPED screen with **Start Company**. The screen is served by the short-lived,
+  loopback-only stopped-state controller, which uses only the canonical launcher operations.
+- **Start** returns the window to the Command Center once the Company is READY, through the canonical single-use launch
+  token.
+- Closing the window (X) never stops the Company.
+- The Start-menu **Status / Stop / Restart** shortcuts remain the emergency controls. A Stop from there leaves an open
+  window on a truthful "not running" screen.
+
+`npm run desktop:control-proof -- [--out <evidence dir>]` proves this in a real Microsoft Edge app window, with an
+isolated profile on a disposable Company. It is local only: it shows a window and is not a CI step.
+
 ## Build
 
 ```bash

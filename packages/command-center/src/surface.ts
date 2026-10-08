@@ -12,7 +12,7 @@ import { CompanyRuntime, DeterministicFakeProvider, FakeToolDriver, employeeTask
 
 import { BriefingPolicy } from './briefing.js';
 import { HostIdentity, consumeStopRequest, hostPaths, removeDescriptorIfOwned, writeJsonAtomic, type HostPaths } from './host/descriptor.js';
-import { FounderListener, type HostControl } from './server/listener.js';
+import { FounderListener, type DesktopControl, type HostControl } from './server/listener.js';
 import { PreviewHost } from './server/preview-listener.js';
 import { defaultStaticRoots, type StaticRoots } from './static.js';
 
@@ -41,7 +41,7 @@ export interface FounderSurfaceOptions {
    * OPS: run as the workspace's Founder host — publish the descriptor and accept a controlled stop. `onStopRequested` is
    * called (after the reply) when a verified stop request arrives; the host process stops the surface and exits.
    */
-  readonly host?: { readonly onStopRequested: () => void };
+  readonly host?: { readonly onStopRequested: () => void; readonly desktop?: DesktopControl };
 }
 
 export class FounderSurface {
@@ -84,7 +84,8 @@ export class FounderSurface {
     this.#hostOptions = options.host;
     this.#hostPaths = hostPaths(options.workspace);
     const host: HostControl | undefined = options.host ? { identity: (port, nonce) => this.#prove(port, nonce), requestStop: (requestId) => this.#acceptStop(requestId) } : undefined;
-    this.listener = new FounderListener({ runtime: this.runtime, roots: options.roots ?? defaultStaticRoots(), ...(options.port !== undefined ? { port: options.port } : {}), log, preview: this.previews, ...(host ? { host } : {}) });
+    const desktop = options.host?.desktop;
+    this.listener = new FounderListener({ runtime: this.runtime, roots: options.roots ?? defaultStaticRoots(), ...(options.port !== undefined ? { port: options.port } : {}), log, preview: this.previews, ...(host ? { host } : {}), ...(desktop ? { desktop } : {}) });
     // L1-02 (D-L1-17): the briefing policy reads `runtime.founder`, which exists only once the runtime opened its store;
     // building it here made every production `serve` (briefing on by default) fail with RUNTIME_NOT_READY.
     this.#briefingEnabled = options.briefing !== false;

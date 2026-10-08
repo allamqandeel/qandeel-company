@@ -37,8 +37,8 @@ export default tseslint.config(
     // (`l1-provider-boundary`) and the one reviewed process path: the Windows DPAPI vault through the signed PowerShell
     // host (`l1-vault-protected`). OPS adds the Founder host lifecycle's two (`founder-host-confined`): the loopback-only
     // host probe, the one-shot loopback launch handoff (D-OPS-07) and the one module that starts the host, the browser and the
-    // signed PowerShell host.
-    ignores: ['packages/storage/src/sqlite/**', 'packages/command-center/src/server/listener.ts', 'packages/command-center/src/server/preview-listener.ts', 'packages/tool-drivers/src/github/https-transport.ts', 'packages/model-providers/src/deepseek/https-transport.ts', 'packages/secret-vault/src/windows-dpapi.ts', 'packages/command-center/src/host/probe.ts', 'packages/command-center/src/host/handoff.ts', 'packages/command-center/src/host/processes.ts', 'packages/command-center-ui/src/**'],
+    // signed PowerShell host. D2-CTRL-01 adds the loopback-only stopped-state desktop controller (D-D2-01).
+    ignores: ['packages/storage/src/sqlite/**', 'packages/command-center/src/server/listener.ts', 'packages/command-center/src/server/preview-listener.ts', 'packages/tool-drivers/src/github/https-transport.ts', 'packages/model-providers/src/deepseek/https-transport.ts', 'packages/secret-vault/src/windows-dpapi.ts', 'packages/command-center/src/host/probe.ts', 'packages/command-center/src/host/handoff.ts', 'packages/command-center/src/host/desktop-control.ts', 'packages/command-center/src/host/processes.ts', 'packages/command-center-ui/src/**'],
     rules: {
       'no-restricted-imports': [
         'error',

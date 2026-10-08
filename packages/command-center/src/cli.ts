@@ -60,6 +60,11 @@
  *         shortcuts on the bundle's private runtime. First install, update, repair and reinstall are this one path.
  *   desktop-uninstall [--shortcut-root <dir>]   controlled stop + shortcuts removed; Company data is never touched.
  *
+ * D2-CTRL-01 — lifecycle control inside the Command Center window (D-D2-01):
+ *   desktop-control --workspace <dir>   (started by the RUNNING host for an authenticated Founder Stop / Restart, armed
+ *         over IPC only; refuses to run otherwise) the stopped-state desktop controller: the window's local Stop / Start /
+ *         Restart through the canonical launcher operations of the configured Company. No Company runtime, no Founder API.
+ *
  * Output is content-free JSON. A Founder reference typed on the command line is never authentication:
  * this CLI has no approve / reject / register command.
  */
@@ -78,10 +83,12 @@ import { CompanyStore, FounderAuthStore, GovernanceStore } from '@qandeel-compan
 import { hostPaths, readDescriptor } from './host/descriptor.js';
 import { discoverHost, installShortcuts, launcherConfigDir, launcherConfigPath, noticeFor, notify, openCompany, readLauncherConfig, restartHost, statusNotice, stopHost, writeLauncherConfig } from './host/lifecycle.js';
 import { desktopInstall, desktopLocalInstall, desktopUninstall } from './host/desktop.js';
+import { DesktopController, acquireDesktopControl, armDesktopController, configuredCompany, type DesktopIntent } from './host/desktop-control.js';
 import { activateRelease, releaseCli, releaseStatus, releasesDir, resolveRelease, stageRelease } from './host/release.js';
+import { defaultStaticRoots } from './static.js';
 import { FounderSurface } from './surface.js';
 
-const USAGE = 'usage: qandeel-founder <serve|launch|provider-check|open|status|stop|restart|install-shortcuts|release-stage|release-activate|release-status|release-check|desktop-local-install|desktop-local-uninstall|desktop-install|desktop-uninstall> [--workspace <dir>] [--port <n>] [--fake-provider <code>] [--provider deepseek] [--probe] [--probe-class E1|E2|E3|E4] [--background] [--no-browser] [--notify] [--force] [--config <file>] [--release <id|dir>] [--releases-dir <dir>] [--no-shortcuts] [--bundle <dir>] [--shortcut-root <dir>] [--uninstall-key <HKCU key>]';
+const USAGE = 'usage: qandeel-founder <serve|launch|provider-check|open|status|stop|restart|install-shortcuts|release-stage|release-activate|release-status|release-check|desktop-local-install|desktop-local-uninstall|desktop-install|desktop-uninstall|desktop-control> [--workspace <dir>] [--port <n>] [--fake-provider <code>] [--provider deepseek] [--probe] [--probe-class E1|E2|E3|E4] [--background] [--no-browser] [--notify] [--force] [--config <file>] [--release <id|dir>] [--releases-dir <dir>] [--no-shortcuts] [--bundle <dir>] [--shortcut-root <dir>] [--uninstall-key <HKCU key>]';
 const DESKTOP_COMMANDS = ['desktop-local-install', 'desktop-local-uninstall', 'desktop-install', 'desktop-uninstall'];
 const LAUNCHER_COMMANDS = ['open', 'status', 'stop', 'restart'];
 /** A host for this workspace already exists (or is coming up): a second `serve` never starts beside it. */
@@ -179,6 +186,68 @@ async function launcher(command: string, values: LauncherValues): Promise<void> 
   if (!result.ok) process.exitCode = 1;
 }
 
+/**
+ * D2-CTRL-01: the stopped-state desktop controller. It runs only when the RUNNING host started it with an IPC channel and
+ * arms it there (the ticket's hash never travels as an argument); it acts only on the configured Company, with the
+ * configured providers, through the canonical launcher operations of THIS release's CLI.
+ */
+async function desktopControl(workspace: string): Promise<void> {
+  const send = (message: Record<string, unknown>): void => {
+    if (typeof process.send === 'function' && process.connected) process.send(message);
+  };
+  if (typeof process.send !== 'function') fail('USAGE', 'desktop-control is started by the running host only', 2);
+  const company = configuredCompany(workspace);
+  if (company === null) {
+    send({ type: 'failed', code: 'DESKTOP_CONTROL_UNAVAILABLE' });
+    fail('DESKTOP_CONTROL_UNAVAILABLE', 'the launcher configuration does not name this workspace');
+  }
+  const release = acquireDesktopControl(company.workspace);
+  if (release === null) {
+    send({ type: 'failed', code: 'DESKTOP_CONTROL_BUSY' });
+    fail('DESKTOP_CONTROL_BUSY', 'a desktop controller already runs for this workspace');
+  }
+  const logger = new Logger(jsonLinesSink((line) => process.stdout.write(line)));
+  const controller = new DesktopController({
+    workspace: company.workspace,
+    cliPath: selfPath(),
+    providers: company.providers,
+    roots: defaultStaticRoots(),
+    admit: () => admission(company.workspace),
+    log: (event, fields) => logger.info(event, fields),
+    onExit: () => {
+      release();
+      process.exit(0);
+    },
+  });
+  const arm = await new Promise<{ ticketHash: string; intent: DesktopIntent } | null>((resolve) => {
+    const timer = setTimeout(() => resolve(null), 10_000);
+    process.once('message', (m: { type?: unknown; ticketHash?: unknown; intent?: unknown }) => {
+      clearTimeout(timer);
+      resolve(m?.type === 'arm' && typeof m.ticketHash === 'string' && (m.intent === 'STOP' || m.intent === 'RESTART') ? { ticketHash: m.ticketHash, intent: m.intent } : null);
+    });
+  });
+  if (arm === null) {
+    release();
+    send({ type: 'failed', code: 'DESKTOP_CONTROL_ARM_INVALID' });
+    fail('DESKTOP_CONTROL_ARM_INVALID', 'the controller was not armed');
+  }
+  try {
+    controller.arm(arm.ticketHash, arm.intent);
+    await controller.listen();
+  } catch {
+    release();
+    send({ type: 'failed', code: 'DESKTOP_CONTROL_FAILED' });
+    fail('DESKTOP_CONTROL_FAILED', 'the controller could not listen');
+  }
+  logger.info('desktop_control.listening', { port: controller.port, intent: arm.intent });
+  send({ type: 'listening', port: controller.port });
+  if (process.connected) process.disconnect();
+  const end = (): void => controller.close();
+  process.on('SIGINT', end);
+  process.on('SIGTERM', end);
+  if (process.platform === 'win32') process.on('SIGBREAK', end);
+}
+
 export async function main(argv: readonly string[]): Promise<void> {
   const [command, ...rest] = argv;
   const { values } = parseArgs({ args: rest, strict: true, options: { workspace: { type: 'string' }, port: { type: 'string' }, 'fake-provider': { type: 'string', multiple: true }, 'fake-driver': { type: 'string', multiple: true }, provider: { type: 'string', multiple: true }, probe: { type: 'boolean', default: false }, 'probe-class': { type: 'string', default: 'E1' }, background: { type: 'boolean', default: false }, 'no-browser': { type: 'boolean', default: false }, notify: { type: 'boolean', default: false }, force: { type: 'boolean', default: false }, config: { type: 'string' }, release: { type: 'string' }, 'releases-dir': { type: 'string' }, 'no-shortcuts': { type: 'boolean', default: false }, bundle: { type: 'string' }, 'shortcut-root': { type: 'string' }, 'uninstall-key': { type: 'string' } } });
@@ -221,6 +290,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   }
   if (command === undefined || values.workspace === undefined) fail('USAGE', USAGE, 2);
   const workspace = path.resolve(values.workspace);
+  if (command === 'desktop-control') return desktopControl(workspace);
   switch (command) {
     case 'serve': {
       const port = values.port === undefined ? 0 : Number(values.port);
@@ -270,7 +340,17 @@ export async function main(argv: readonly string[]): Promise<void> {
         providers: live.map((l) => l.adapter),
         provisioningProfiles: live.flatMap((l) => l.profiles),
         log: (event, fields) => logger.info(event, fields),
-        host: { onStopRequested: () => stop(0) },
+        host: {
+          onStopRequested: () => stop(0),
+          // D2-CTRL-01: the window's own lifecycle control (an authenticated Founder request; see host/desktop-control.ts).
+          desktop: {
+            status: () => {
+              const release = releaseStatus(workspace);
+              return { available: configuredCompany(workspace) !== null, state: 'RUNNING', runtimeState: surface?.runtime.state ?? null, instanceId: surface?.runtime.instanceId ?? null, release: { pinned: release.pinned, releaseId: release.releaseId, intact: release.intact }, admitted: admission(workspace) };
+            },
+            control: (intent: DesktopIntent) => armDesktopController({ workspace, cliPath: selfPath(), intent }),
+          },
+        },
       });
       process.on('SIGINT', () => stop(0));
       process.on('SIGTERM', () => stop(0));

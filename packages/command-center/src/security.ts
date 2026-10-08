@@ -21,6 +21,24 @@ export interface RequestFacts {
   readonly contentType: string | undefined;
   readonly cookies: Readonly<Record<string, string>>;
   readonly csrfHeader: string | undefined;
+  /** D-D2-01: the request path and navigation metadata, for the one same-site exception below (absent: no exception). */
+  readonly path?: string | undefined;
+  readonly secFetchMode?: string | undefined;
+  readonly secFetchDest?: string | undefined;
+}
+
+/** The static launch page (it reads its single-use token from its own fragment and holds no authority itself). */
+export const LAUNCH_PAGE_PATH = '/launch';
+
+/**
+ * D-D2-01 (Founder-approved, the only same-site exception): the Command Center window returning from the stopped-state
+ * desktop controller (another loopback port, so the browser says `same-site`) may LOAD the static launch page, and nothing
+ * else: a top-level document navigation (GET, `navigate`, `document`) to exactly `/launch`. The page grants nothing; the
+ * token exchange it then makes is a same-origin POST under the full gate. Cross-site requests and every other path stay
+ * refused.
+ */
+export function isLaunchPageNavigation(facts: RequestFacts): boolean {
+  return facts.method === 'GET' && facts.path === LAUNCH_PAGE_PATH && facts.secFetchSite === 'same-site' && facts.secFetchMode === 'navigate' && facts.secFetchDest === 'document';
 }
 
 export type Gate = { readonly ok: true } | { readonly ok: false; readonly status: 400 | 403 | 415; readonly code: string };
@@ -56,7 +74,7 @@ const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  */
 export function gateRequest(facts: RequestFacts, port: number, options: { csrfExempt?: boolean } = {}): Gate {
   if (facts.host === undefined || !allowedHosts(port).includes(facts.host.toLowerCase())) return { ok: false, status: 403, code: 'HOST_NOT_LOOPBACK' };
-  if (facts.secFetchSite !== undefined && facts.secFetchSite !== 'same-origin' && facts.secFetchSite !== 'none') return { ok: false, status: 403, code: 'CROSS_SITE_REQUEST' };
+  if (facts.secFetchSite !== undefined && facts.secFetchSite !== 'same-origin' && facts.secFetchSite !== 'none' && !isLaunchPageNavigation(facts)) return { ok: false, status: 403, code: 'CROSS_SITE_REQUEST' };
   if (!MUTATING.has(facts.method)) return { ok: true };
   if (facts.origin === undefined || !allowedOrigins(port).includes(facts.origin.toLowerCase())) return { ok: false, status: 403, code: 'ORIGIN_NOT_LOOPBACK' };
   if (facts.contentType === undefined || !/^application\/json(?:\s*;.*)?$/i.test(facts.contentType)) return { ok: false, status: 415, code: 'CONTENT_TYPE' };

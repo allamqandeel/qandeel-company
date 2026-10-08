@@ -370,13 +370,16 @@ const OPS_HOST_DESCRIPTOR = 'packages/command-center/src/host/descriptor.ts';
 // D-OPS-07: the one-shot loopback launch handoff (the browser never receives the launch credential as an argument).
 const OPS_HOST_HANDOFF = 'packages/command-center/src/host/handoff.ts';
 const OPS_HOST_LIFECYCLE = 'packages/command-center/src/host/lifecycle.ts';
+// D-D2-01: the stopped-state desktop controller (the Command Center window's own Stop / Start / Restart while stopped).
+const OPS_DESKTOP_CONTROL = 'packages/command-center/src/host/desktop-control.ts';
+const OPS_SECURITY = 'packages/command-center/src/security.ts';
 // D-OPS-08: the production runtime release — admission in the runtime, staging / activation in the surface package.
 const OPS_RELEASE_ADMISSION = 'packages/runtime/src/release.ts';
 const OPS_RUNTIME = 'packages/runtime/src/runtime.ts';
 const OPS_RELEASE = 'packages/command-center/src/host/release.ts';
 const OPS_CLI = 'packages/command-center/src/cli.ts';
-const OPS_HOST_FILES = [OPS_HOST_PROBE, OPS_HOST_PROCESSES, OPS_HOST_DESCRIPTOR, OPS_HOST_HANDOFF, OPS_RELEASE];
-const OPS_PROOF_MARKERS = ['OPS-PROOF: founder-host-descriptor', 'OPS-PROOF: founder-host-lifecycle', 'OPS-PROOF: founder-launch-handoff', 'OPS-PROOF: founder-host-release'];
+const OPS_HOST_FILES = [OPS_HOST_PROBE, OPS_HOST_PROCESSES, OPS_HOST_DESCRIPTOR, OPS_HOST_HANDOFF, OPS_RELEASE, OPS_DESKTOP_CONTROL];
+const OPS_PROOF_MARKERS = ['OPS-PROOF: founder-host-descriptor', 'OPS-PROOF: founder-host-lifecycle', 'OPS-PROOF: founder-launch-handoff', 'OPS-PROOF: founder-host-release', 'OPS-PROOF: desktop-lifecycle-control', 'OPS-PROOF: desktop-control-boundary'];
 const L1_GOVERNED_TRIGGERS = ['price_card_schedules_immutable_u', 'price_card_schedules_immutable_d', 'price_card_schedules_never_above_peak', 'usage_records_cached_within_input', 'model_identity_checks_append_only_u', 'model_identity_checks_append_only_d'];
 /** The provider's chain-of-thought field: never read, returned, logged or persisted (comments may name it). */
 const L1_THINKING_FIELD = /\breasoning_content\b/;
@@ -1059,7 +1062,7 @@ export const RULES = [
     // C7-D adds the isolated Preview host (rule `c7d-preview-isolated`) and the one fixed-host GitHub transport (`c7d-tool-boundary`).
     check: ({ files, read }) =>
       files
-        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && f !== FOUNDER_LISTENER && f !== C7D_PREVIEW && f !== C7D_TRANSPORT && f !== L1_TRANSPORT && f !== L1_VAULT && f !== OPS_HOST_PROBE && f !== OPS_HOST_PROCESSES && f !== OPS_HOST_HANDOFF && !f.startsWith(UI_SRC) && NETWORK_MODULE.test(read(f) ?? ''))
+        .filter((f) => /^packages\/[^/]+\/src\//.test(f) && isCode(f) && f !== FOUNDER_LISTENER && f !== C7D_PREVIEW && f !== C7D_TRANSPORT && f !== L1_TRANSPORT && f !== L1_VAULT && f !== OPS_HOST_PROBE && f !== OPS_HOST_PROCESSES && f !== OPS_DESKTOP_CONTROL && f !== OPS_HOST_HANDOFF && !f.startsWith(UI_SRC) && NETWORK_MODULE.test(read(f) ?? ''))
         .map((f) => `${f} opens a network path or spawns processes (C1 runtime code has neither)`),
   },
   {
@@ -1085,7 +1088,7 @@ export const RULES = [
         if (/['"](?:0\.0\.0\.0|::|::0)['"]/.test(listener) || /\.listen\(\s*\d/.test(listener)) problems.push(`${FOUNDER_LISTENER} binds a non-loopback address`);
         if (/child_process|worker_threads|node:sqlite/.test(listener)) problems.push(`${FOUNDER_LISTENER} spawns processes or reaches SQLite`);
       }
-      for (const f of files.filter((x) => x.startsWith('packages/command-center/src/') && x !== FOUNDER_LISTENER && x !== C7D_PREVIEW && x !== OPS_HOST_PROBE && x !== OPS_HOST_PROCESSES && x !== OPS_HOST_HANDOFF && isCode(x))) {
+      for (const f of files.filter((x) => x.startsWith('packages/command-center/src/') && x !== FOUNDER_LISTENER && x !== C7D_PREVIEW && x !== OPS_HOST_PROBE && x !== OPS_HOST_PROCESSES && x !== OPS_HOST_HANDOFF && x !== OPS_DESKTOP_CONTROL && isCode(x))) {
         if (NETWORK_MODULE.test(read(f) ?? '')) problems.push(`${f} opens a network path outside the loopback listener`);
       }
       for (const f of files.filter((x) => (x.startsWith(UI_SRC) || x.startsWith('packages/command-center-ui/public/')) && /\.(?:[cm]?[jt]s|html|css)$/i.test(x))) {
@@ -2213,6 +2216,33 @@ export const RULES = [
         if (/child_process|worker_threads|node:sqlite|node:(?:net|tls|https|http2|dgram|dns)['"]|\bfetch\s*\(/.test(code)) problems.push(`${OPS_HOST_HANDOFF} starts a process, reaches SQLite or opens another network path`);
         if (!/server\.close\(\)/.test(code)) problems.push(`${OPS_HOST_HANDOFF} is not one-shot (it never closes after delivery)`);
       }
+      // D-D2-01: the stopped-state desktop controller. Loopback only; its own window only (exact Host, required same-origin
+      // fetch metadata, exact Origin); 256-bit single-use capability material compared in constant time; no Founder API, no
+      // process of its own, no request logging; never a forced stop.
+      const desk = read(OPS_DESKTOP_CONTROL);
+      if (desk !== undefined) {
+        const code = strip(desk);
+        if (!/listen\(\{\s*host:\s*LOOPBACK_HOST,\s*port:\s*0\b/.test(code) || /['"](?:0\.0\.0\.0|::|::0)['"]/.test(code)) problems.push(`${OPS_DESKTOP_CONTROL} does not bind a random loopback port only`);
+        if (!/facts\.host\.toLowerCase\(\) !== `\$\{LOOPBACK_HOST\}:\$\{port\}`/.test(code)) problems.push(`${OPS_DESKTOP_CONTROL} does not require its exact loopback Host (DNS rebinding, localhost)`);
+        if (!/if \(facts\.secFetchSite !== 'same-origin'\) return \{ ok: false/.test(code)) problems.push(`${OPS_DESKTOP_CONTROL} does not require Sec-Fetch-Site: same-origin on every state change`);
+        if (!/facts\.origin\.toLowerCase\(\) !== origin\) return \{ ok: false/.test(code)) problems.push(`${OPS_DESKTOP_CONTROL} does not require its exact Origin`);
+        if (!/randomBytes\(32\)/.test(code) || !/timingSafeEqual\(/.test(code)) problems.push(`${OPS_DESKTOP_CONTROL} does not mint 256-bit capability material or compare it in constant time`);
+        if (/['"`]\/api\//.test(code)) problems.push(`${OPS_DESKTOP_CONTROL} reaches a Founder /api route (it carries no Founder authority)`);
+        if (/child_process|worker_threads|node:sqlite|node:(?:net|tls|https|http2|dgram|dns)['"]|\bfetch\s*\(/.test(code)) problems.push(`${OPS_DESKTOP_CONTROL} starts a process itself, reaches SQLite or opens another network path`);
+        if (/console\.|req\.headers\)|JSON\.stringify\(req|\bticket\b[^\n]*#log\(|#log\([^\n]*\b(?:ticket|key|secret|launchUrl)\b\s*[,}:]/.test(code)) problems.push(`${OPS_DESKTOP_CONTROL} logs or serializes a request or a secret`);
+        if (/stopHost\([^)]*force/.test(code) || /terminateProcess/.test(code)) problems.push(`${OPS_DESKTOP_CONTROL} can force-stop the Company (only an explicit Start-menu --force may)`);
+      }
+      // D-D2-01 (Founder-approved): the host gate's ONE same-site exception is loading the static launch page by a top-level
+      // document navigation — exactly GET, exactly /launch, same-site, navigate, document — and it relaxes nothing else.
+      const sec = read(OPS_SECURITY);
+      if (sec !== undefined && /isLaunchPageNavigation/.test(sec)) {
+        const code = strip(sec);
+        const fn = /export function isLaunchPageNavigation\(facts: RequestFacts\): boolean \{\s*return ([^;]+);/.exec(code)?.[1] ?? '';
+        const need = ["facts.method === 'GET'", 'facts.path === LAUNCH_PAGE_PATH', "facts.secFetchSite === 'same-site'", "facts.secFetchMode === 'navigate'", "facts.secFetchDest === 'document'"];
+        if (need.some((n) => !fn.includes(n)) || /\|\||startsWith|includes|!==/.test(fn)) problems.push(`${OPS_SECURITY} widens the launch-page exception beyond a GET document navigation to exactly /launch`);
+        if (!/export const LAUNCH_PAGE_PATH = '\/launch';/.test(code)) problems.push(`${OPS_SECURITY} names a launch-page path other than /launch`);
+        if ((code.match(/isLaunchPageNavigation\(facts\)/g) ?? []).length !== 1 || !/facts\.secFetchSite !== 'none' && !isLaunchPageNavigation\(facts\)\) return \{ ok: false, status: 403, code: 'CROSS_SITE_REQUEST' \}/.test(code)) problems.push(`${OPS_SECURITY} applies the launch-page exception anywhere but the fetch-metadata check`);
+      }
       const lifecycle = read(OPS_HOST_LIFECYCLE);
       if (lifecycle !== undefined) {
         const code = strip(lifecycle);
@@ -2886,6 +2916,21 @@ const VIOLATIONS = {
     { contents: { [OPS_HOST_HANDOFF]: REAL_TEXT(OPS_HOST_HANDOFF).replace("header(req, 'sec-fetch-site') === 'none' &&", '') } },
     { contents: { [OPS_HOST_HANDOFF]: REAL_TEXT(OPS_HOST_HANDOFF).replace('server.listen(0, LOOPBACK_HOST,', "server.listen(0, '0.0.0.0',") } },
     { contents: { [OPS_HOST_HANDOFF]: REAL_TEXT(OPS_HOST_HANDOFF).replace('let location: string;', 'console.info(req.headers); let location: string;') } },
+    // D-D2-01: the host gate's launch-page exception stays exactly a GET document navigation to /launch.
+    { contents: { [OPS_SECURITY]: REAL_TEXT(OPS_SECURITY).replace(" && facts.secFetchMode === 'navigate'", '') } },
+    { contents: { [OPS_SECURITY]: REAL_TEXT(OPS_SECURITY).replace('facts.path === LAUNCH_PAGE_PATH', 'facts.path?.startsWith(LAUNCH_PAGE_PATH) === true') } },
+    { contents: { [OPS_SECURITY]: REAL_TEXT(OPS_SECURITY).replace("facts.method === 'GET' && ", '') } },
+    { contents: { [OPS_SECURITY]: REAL_TEXT(OPS_SECURITY).replace("if (!MUTATING.has(facts.method)) return { ok: true };", "if (!MUTATING.has(facts.method) || isLaunchPageNavigation(facts)) return { ok: true };") } },
+    // D-D2-01: the stopped-state desktop controller.
+    { contents: { [OPS_DESKTOP_CONTROL]: REAL_TEXT(OPS_DESKTOP_CONTROL).replace('listen({ host: LOOPBACK_HOST, port: 0,', "listen({ host: '0.0.0.0', port: 0,") } },
+    { contents: { [OPS_DESKTOP_CONTROL]: REAL_TEXT(OPS_DESKTOP_CONTROL).replace("if (facts.secFetchSite !== 'same-origin') return { ok: false", "if (facts.secFetchSite === 'cross-site') return { ok: false") } },
+    { contents: { [OPS_DESKTOP_CONTROL]: REAL_TEXT(OPS_DESKTOP_CONTROL).replace('facts.host.toLowerCase() !== `${LOOPBACK_HOST}:${port}`', '!allowedHosts(port).includes(facts.host.toLowerCase())') } },
+    { contents: { [OPS_DESKTOP_CONTROL]: REAL_TEXT(OPS_DESKTOP_CONTROL).replace("facts.origin.toLowerCase() !== origin) return { ok: false", "!facts.origin.startsWith('http://127.0.0.1')) return { ok: false") } },
+    { contents: { [OPS_DESKTOP_CONTROL]: REAL_TEXT(OPS_DESKTOP_CONTROL).replace('return timingSafeEqual(', 'return hashSecret(candidate) === hash || timingSafeEqual(').replace('randomBytes(32)', 'randomBytes(8)') } },
+    { contents: { [OPS_DESKTOP_CONTROL]: REAL_TEXT(OPS_DESKTOP_CONTROL).replace('const r = await stopHost(this.#o.workspace);', 'const r = await stopHost(this.#o.workspace, { force: true });') } },
+    { contents: { [OPS_DESKTOP_CONTROL]: REAL_TEXT(OPS_DESKTOP_CONTROL).replace("case `${DESKTOP_CONTROL_PATH}/enter`:", "case '/api/universe': case `${DESKTOP_CONTROL_PATH}/enter`:") } },
+    { contents: { [OPS_DESKTOP_CONTROL]: REAL_TEXT(OPS_DESKTOP_CONTROL).replace("const method = (req.method ?? 'GET').toUpperCase();", "const method = (req.method ?? 'GET').toUpperCase(); console.info(req.headers);") } },
+    { contents: { [OPS_DESKTOP_CONTROL]: REAL_TEXT(OPS_DESKTOP_CONTROL).replace("this.#log('desktop_control.redeemed', { intent: this.#intent });", "this.#log('desktop_control.redeemed', { intent: this.#intent, ticket });") } },
   ],
   'ops-proofs-present': [{ contents: { [OPS_HOST_PROBE]: 'export {};\n' } }],
   'ops-release-admission': [
@@ -3421,7 +3466,7 @@ const MUST_PASS = [
   { id: 'l1-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`L1\` | Local | Local | IN PROGRESS — L1-01 implementation candidate; not closed |\n`, [L1_REPORT]: '# Report\n\nL1-01 is NOT CLOSED (implementation candidate).\n' } } },
   { id: 'l1-not-claimed-closed', scenario: { contents: { [IMPLEMENTATION_MAP]: `${synthMap()}| \`L1\` | Local | Local | CLOSED / MERGED / CANONICAL |\n`, 'docs/L1_01_CLOSURE_RECORD.md': '' } } },
   // OPS legitimate states: the real host modules; proofs present.
-  { id: 'founder-host-confined', scenario: { contents: { [OPS_HOST_PROBE]: REAL_TEXT(OPS_HOST_PROBE), [OPS_HOST_PROCESSES]: REAL_TEXT(OPS_HOST_PROCESSES), [OPS_HOST_DESCRIPTOR]: REAL_TEXT(OPS_HOST_DESCRIPTOR), [OPS_HOST_HANDOFF]: REAL_TEXT(OPS_HOST_HANDOFF), [OPS_HOST_LIFECYCLE]: REAL_TEXT(OPS_HOST_LIFECYCLE) } } },
+  { id: 'founder-host-confined', scenario: { contents: { [OPS_HOST_PROBE]: REAL_TEXT(OPS_HOST_PROBE), [OPS_HOST_PROCESSES]: REAL_TEXT(OPS_HOST_PROCESSES), [OPS_HOST_DESCRIPTOR]: REAL_TEXT(OPS_HOST_DESCRIPTOR), [OPS_HOST_HANDOFF]: REAL_TEXT(OPS_HOST_HANDOFF), [OPS_HOST_LIFECYCLE]: REAL_TEXT(OPS_HOST_LIFECYCLE), [OPS_DESKTOP_CONTROL]: REAL_TEXT(OPS_DESKTOP_CONTROL), [OPS_SECURITY]: REAL_TEXT(OPS_SECURITY) } } },
   { id: 'ops-release-admission', scenario: { contents: { [OPS_RUNTIME]: REAL_TEXT(OPS_RUNTIME), [OPS_RELEASE_ADMISSION]: REAL_TEXT(OPS_RELEASE_ADMISSION), [OPS_RELEASE]: REAL_TEXT(OPS_RELEASE), [OPS_CLI]: REAL_TEXT(OPS_CLI) } } },
   { id: 'desktop-distribution', scenario: { contents: SYNTH_DESKTOP } },
   { id: 'ops-proofs-present', scenario: { contents: { [OPS_HOST_PROBE]: 'export {};\n', 'packages/command-center/test/host.test.ts': OPS_PROOF_MARKERS.map((m) => `// ${m}`).join('\n') } } },
