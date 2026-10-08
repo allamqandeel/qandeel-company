@@ -92,7 +92,7 @@ export function academyOverview(store: CompanyStore, options: { employeeId?: Id 
   return ctx.db.snapshot(() => {
     const at = ts(ctx);
     const rows = options.employeeId === undefined
-      ? ctx.db.all<Row>(`SELECT * FROM employees ORDER BY created_at, id`)
+      ? ctx.db.all<Row>(`SELECT * FROM employees ORDER BY created_at, rowid`)
       : ctx.db.all<Row>(`SELECT * FROM employees WHERE id = ?`, options.employeeId);
     const employees: AcademyEmployeeView[] = rows.map((r) => {
       const id = s(r.id) as Id;
@@ -112,7 +112,7 @@ export function academyOverview(store: CompanyStore, options: { employeeId?: Id 
           programVersion: Number(pv?.version ?? 0),
           modulesDone: Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM academy_module_completions WHERE enrollment_id = ?`, s(en.id))?.n ?? 0),
           modulesTotal: curriculum.length,
-          attempts: ctx.db.all<Row>(`SELECT kind, trial_no, holdout, state, outcome, average_pct, created_at, evaluated_at FROM academy_attempts WHERE enrollment_id = ? ORDER BY created_at, id`, s(en.id)).map((a) => ({
+          attempts: ctx.db.all<Row>(`SELECT kind, trial_no, holdout, state, outcome, average_pct, created_at, evaluated_at FROM academy_attempts WHERE enrollment_id = ? ORDER BY created_at, rowid`, s(en.id)).map((a) => ({
             kind: s(a.kind),
             trial: Number(a.trial_no),
             holdout: Number(a.holdout) === 1,
@@ -124,12 +124,12 @@ export function academyOverview(store: CompanyStore, options: { employeeId?: Id 
           })),
           remediationsOpen: Number(ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM academy_remediations WHERE enrollment_id = ? AND state IN ('DIAGNOSED', 'RETRAINING')`, s(en.id))?.n ?? 0),
           calibration: sn(ctx.db.get<{ state: string }>(`SELECT state FROM founder_calibrations WHERE enrollment_id = ?`, s(en.id))?.state),
-          activationRequest: sn(ctx.db.get<{ state: string }>(`SELECT state FROM activation_requests WHERE enrollment_id = ? ORDER BY created_at DESC LIMIT 1`, s(en.id))?.state),
+          activationRequest: sn(ctx.db.get<{ state: string }>(`SELECT state FROM activation_requests WHERE enrollment_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`, s(en.id))?.state),
           startedAt: s(en.created_at),
           updatedAt: s(en.updated_at),
         };
       }
-      const cert = ctx.db.get<Row>(`SELECT status, role_ref, issued_at, valid_until FROM certifications WHERE employee_id = ? ORDER BY issued_at DESC, id LIMIT 1`, id);
+      const cert = ctx.db.get<Row>(`SELECT status, role_ref, issued_at, valid_until FROM certifications WHERE employee_id = ? ORDER BY issued_at DESC, rowid DESC LIMIT 1`, id);
       const blueprint = ctx.db.get<{ id: string }>(`SELECT id FROM role_blueprints WHERE role_ref = ? AND status = 'ACTIVE'`, s(r.role_ref));
       return {
         employeeId: id,
@@ -154,7 +154,7 @@ export function academyOverview(store: CompanyStore, options: { employeeId?: Id 
     const narrowed = options.employeeId !== undefined;
     const packages = narrowed
       ? []
-      : ctx.db.all<Row>(`SELECT * FROM academy_packages ORDER BY created_at, id`).map((p) => ({
+      : ctx.db.all<Row>(`SELECT * FROM academy_packages ORDER BY created_at, rowid`).map((p) => ({
           code: s(p.code),
           version: Number(p.package_version),
           roleRef: s(p.role_ref),
