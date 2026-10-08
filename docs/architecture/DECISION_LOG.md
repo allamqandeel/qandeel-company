@@ -4971,3 +4971,36 @@ Node or development checkout.
 
 **Unchanged:** every OPS / D1 security boundary (loopback, no secret in arguments, shortcuts or logs, the canonical
 activation and rollback, the existing Company only, Company data never touched), and Smart App Control.
+
+## D-D1-09 — The Windows L1 mutation family runs as 9 disjoint shards (executor; Task Contract D1-CI-L1-SHARD-CORR-01)
+
+**Context.** FULL run #124 (`f321e4d`) was cancelled twice at the 45-minute job ceiling in `mutation (windows-latest,
+l1-1of1)`. The single Windows shard caught 44 and then 50 of the 124 recorded L1 mutations before cancellation, with no
+uncaught mutation and no Product assertion failure. The Ubuntu shard ran all 124 in about 23 minutes. The L1 workload
+(L1-01 plus the L1-02 activation mutations) has outgrown one shard: a validation-capacity defect, not a Product defect.
+
+**Measurement.** Per-mutation cost comes from the run #124 log timestamps. The 50 Windows mutations measured took
+43.4 minutes. The heavy mutations (≥ 15 s on Ubuntu) cost about 7.4× their Ubuntu time on Windows. Estimating the 74
+unmeasured mutations from their Ubuntu time at 7.5× gives about 169 minutes of Windows mutation time in all. About one
+more minute per job goes to checkout, `npm ci` and the build.
+
+| Windows shards (existing `i % n`) | Heaviest shard (estimate) | With +15 % runner variance and setup |
+|---|---|---|
+| 8 | 25.0 min | 29.8 min |
+| **9** | **21.9 min** (lightest 16.1) | **26.2 min** |
+| 10 | 21.6 min | 25.9 min |
+
+**Decision.**
+1. **Windows L1 runs as 9 shards.** `MUTATION_SHARDS[windows-latest].l1` is `9`, and the FULL matrix lists `l1:1/9` …
+   `l1:9/9`, as the impact map's audit requires. The affected-mode Windows matrix of the `c5-presentation` and
+   `founder-host` boundaries reuses the same shards.
+2. **The existing modulo sharding is reused.** It already balances the suite within the budget, so the runner's
+   partition, assertions and report schema are unchanged. The quality gate still proves that each OS ran every
+   recorded mutation exactly once.
+3. **What stays unchanged.**
+   - The Ubuntu L1 shard (about 23 minutes, within budget).
+   - The 45-minute ceiling.
+   - Every other family.
+
+**Consequence.** Each Windows L1 shard is expected below 30 minutes. If a shard repeatedly runs above 35 minutes, it
+is split again; the ceiling is never raised.
