@@ -11,6 +11,7 @@ import { ACTION_LABEL, CALENDAR_LABEL, CAPABILITY_LABEL, DECISION_LABEL, dirOf, 
 import type { CompanyUniverse } from '../model/types.js';
 import { renderActivation } from './activation.js';
 import { trainingFacts } from './halls.js';
+import { keepFocus, restoreFocus } from './keep-focus.js';
 
 type Json = Record<string, unknown>;
 
@@ -267,11 +268,13 @@ function attentionItem(i: Json, host: PanelHost): HTMLElement {
  * shown as not on record.
  */
 export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost, deptColor: string): void {
-  // A live company re-renders the sheet: an open budget entry, its draft amount and the reading position survive it.
+  // A live company re-renders the sheet: an open budget entry, its draft amount, the reading position and the focused
+  // control (with the caret and selection in the amount) survive it.
   const same = root.dataset.sheet === 'employee' && root.dataset.employeeId === String((d.employee as Json).id);
   const budgetOpen = same && root.querySelector('.budget-editor') !== null;
   const budgetDraft = same ? (root.querySelector<HTMLInputElement>('.budget-editor input')?.value ?? '') : '';
   const scroll = same ? root.scrollTop : 0;
+  const kept = same ? keepFocus(root) : null;
   root.replaceChildren();
   root.dataset.sheet = 'employee';
   root.style.setProperty('--accent', deptColor);
@@ -289,9 +292,9 @@ export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost,
   const head = sheetHead(host, full, [h('span', { text: roleTitle ?? 'No seat' }), h('span', { class: 'sep' }), h('span', { class: 'sheet-dept', text: deptLabel }), seat && seat.holderKind === 'ACTING' ? h('span', { class: 'pill pill-acting', text: 'Acting cover' }) : null, statePill(String(e.state))], personAvatar(full, deptColor, 'avatar-lg'));
   // 1. The primary actions live in the sticky head: visible without scrolling past any work, on every window size.
   const budget = d.budget as Json | null;
-  const talk = h('button', { type: 'button', class: 'btn btn-primary', text: `Talk to ${name.given}`, 'aria-label': `Talk to ${full}` });
+  const talk = h('button', { type: 'button', class: 'btn btn-primary', text: `Talk to ${name.given}`, 'aria-label': `Talk to ${full}`, 'data-keep': 'talk' });
   talk.addEventListener('click', () => host.startConversation(String(e.id)));
-  const budgetBtn = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Budget', 'aria-label': `Budget of ${full}`, 'aria-expanded': 'false', 'aria-controls': 'budget-editor' });
+  const budgetBtn = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Budget', 'aria-label': `Budget of ${full}`, 'aria-expanded': 'false', 'aria-controls': 'budget-editor', 'data-keep': 'budget' });
   head.append(h('div', { class: 'sheet-primary', role: 'group', 'aria-label': `Actions for ${full}` }, talk, budgetBtn));
   root.append(head);
   const editorSlot = h('div', { class: 'budget-slot' });
@@ -342,7 +345,7 @@ export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost,
     const reviewer = (profile.reviewer as Json[]) ?? [];
     if (reviewer.length) training.append(h('p', { class: 'muted small', text: `Review Pool: ${reviewer.map((q) => `${humanize(String(q.domain))} — ${humanize(String(q.level))}, ${humanize(String(q.mode)).toLowerCase()}`).join('; ')}` }));
   } else training.append(h('p', { class: 'muted', text: 'No Academy record.' }));
-  const academy = h('button', { type: 'button', class: 'link', text: 'Open the Academy' });
+  const academy = h('button', { type: 'button', class: 'link', text: 'Open the Academy', 'data-keep': 'open-academy' });
   academy.addEventListener('click', () => host.openAcademy());
   training.append(academy);
   root.append(sectionEl('Skills and training', training));
@@ -385,6 +388,7 @@ export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost,
     }
     root.append(sectionEl('Live relations', relEl));
   }
+  restoreFocus(root, kept);
   root.scrollTop = scroll;
 }
 
@@ -415,7 +419,7 @@ export function budgetCeilingMicros(raw: string): number | null {
  */
 function budgetEditor(full: string, budget: Json | null, host: PanelHost, draft: string, close: () => void): HTMLElement {
   const box = h('section', { class: 'budget-editor', id: 'budget-editor', 'aria-label': `Budget ceiling of ${full}` });
-  const cancel = h('button', { type: 'button', class: 'btn btn-ghost', text: budget ? 'Cancel' : 'Close', 'aria-label': budget ? 'Cancel the budget change' : 'Close the budget panel' });
+  const cancel = h('button', { type: 'button', class: 'btn btn-ghost', text: budget ? 'Cancel' : 'Close', 'aria-label': budget ? 'Cancel the budget change' : 'Close the budget panel', 'data-keep': 'budget-cancel' });
   cancel.addEventListener('click', close);
   box.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') {
@@ -434,7 +438,7 @@ function budgetEditor(full: string, budget: Json | null, host: PanelHost, draft:
   const input = h('input', { id: 'budget-amount', type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: 'Amount', 'aria-describedby': 'budget-hint budget-error', maxlength: 18 }) as HTMLInputElement;
   input.value = draft;
   const error = h('p', { id: 'budget-error', class: 'budget-error', role: 'alert' });
-  const submit = h('button', { type: 'submit', class: 'btn btn-primary', text: 'Preview the new ceiling' });
+  const submit = h('button', { type: 'submit', class: 'btn btn-primary', text: 'Preview the new ceiling', 'data-keep': 'budget-preview' });
   form.append(
     h('label', { for: 'budget-amount', class: 'budget-label', text: `New ceiling (${currency})` }),
     h('div', { class: 'budget-row' }, h('span', { class: 'budget-currency', 'aria-hidden': 'true', text: currency }), input),

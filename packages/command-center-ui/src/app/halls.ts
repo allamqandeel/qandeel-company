@@ -41,7 +41,7 @@ const STAGE_LABEL: Readonly<Record<string, string>> = {
 const CERT_LABEL: Readonly<Record<string, string>> = { VALID: 'Valid', REVIEW_DUE: 'Review due', EXPIRED: 'Expired', REVOKED: 'Revoked', SUPERSEDED: 'Superseded' };
 
 function hallHead(host: HallHost, title: string, sub: string, icon: string): HTMLElement {
-  const close = h('button', { type: 'button', class: 'btn btn-ghost hall-close', 'aria-label': `Close the ${title}`, title: 'Close (Esc)' }, h('span', { 'aria-hidden': 'true', text: '×' }));
+  const close = h('button', { type: 'button', class: 'btn btn-ghost hall-close', 'aria-label': `Close the ${title}`, title: 'Close (Esc)', 'data-keep': 'close' }, h('span', { 'aria-hidden': 'true', text: '×' }));
   close.addEventListener('click', () => host.closeHall());
   const mark = h('span', { class: `hall-mark hall-mark-${icon}`, 'aria-hidden': 'true' });
   return h('header', { class: 'hall-head' }, mark, h('div', { class: 'hall-titles' }, h('h2', { id: 'hall-title', class: 'hall-title', text: title }), h('p', { class: 'hall-sub', text: sub })), close);
@@ -102,7 +102,7 @@ export function renderAcademy(root: HTMLElement, data: Json | null, host: HallHo
   if (people.length === 0) list.append(h('li', { class: 'empty', text: 'No employees on record yet.' }));
   for (const e of people) {
     const f = trainingFacts(e);
-    const open = h('button', { type: 'button', class: 'link academy-name', 'aria-label': `Open ${str(e.name)}'s profile` }, name(str(e.name)));
+    const open = h('button', { type: 'button', class: 'link academy-name', 'aria-label': `Open ${str(e.name)}'s profile`, 'data-keep': `employee:${str(e.employeeId)}` }, name(str(e.name)));
     open.addEventListener('click', () => {
       host.closeHall();
       host.openEmployee(str(e.employeeId));

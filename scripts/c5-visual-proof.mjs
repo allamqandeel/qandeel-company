@@ -283,6 +283,9 @@ try {
   page.on('Runtime.exceptionThrown', (p) => consoleLines.push(`exception: ${p.exceptionDetails.exception?.description ?? p.exceptionDetails.text}`));
   results.console = consoleLines;
   await page.send('Network.enable');
+  // D2-UX-01: the proof keeps a handle on the page's change stream, so it can deliver the runtime's own content-free
+  // "changed" nudge without writing anything to the Company (a test-only wrapper; the product is untouched).
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: '(() => { const Native = window.EventSource; window.__proofStreams = []; window.EventSource = class extends Native { constructor(...a) { super(...a); window.__proofStreams.push(this); } }; })()' });
   await page.navigate(surface.launchUrl());
   await waitUntil(`location.pathname === '/'`, 20_000);
   await waitReady();
@@ -522,6 +525,71 @@ try {
     await waitReady();
     const detail = { title: byButton.title, direction: byButton.direction, stages: byButton.stages, next: byButton.next, chromeArabic: false, chromeChars: byButton.chromeChars, arabicContentBlocks: byArabic.arabicContent, founderArabicCommand: { kept: true, direction: 'rtl' } };
     results.spike.activation = detail;
+    return detail;
+  });
+  // D2-UX-01 review: a live refresh (the runtime's "changed" nudge on the page's own stream; nothing is written to the
+  // Company) leaves the Founder where they were — on the same Academy link with the reading position kept, and in the
+  // budget amount with the draft, caret and selection kept. Nothing is submitted, previewed or written.
+  await step('spike-refresh-keeps-focus', async () => {
+    const writes = [];
+    page.on('Network.requestWillBeSent', (p) => { if (p.request.method !== 'GET') writes.push(`${p.request.method} ${new URL(p.request.url).pathname}`); });
+    const key = async (k, code, vk) => {
+      await page.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: k, code, windowsVirtualKeyCode: vk });
+      await page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk });
+      await settle(150);
+    };
+    // Marks the region's current element stale, delivers the nudge, and waits for the region to be rebuilt.
+    const liveRefresh = async (selector) => {
+      const sent = await page.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return -1; el.dataset.proofStale = '1'; let n = 0; for (const s of window.__proofStreams ?? []) if (s.readyState === 1) { s.dispatchEvent(new MessageEvent('changed', { data: '{}' })); n += 1; } return n; })()`);
+      if (sent < 1) throw new Error(`no live refresh could be delivered (${sent === -1 ? `no ${selector}` : 'no open change stream'})`);
+      await waitUntil(`document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(`${selector}[data-proof-stale]`)})`, 15_000);
+      await settle(400);
+    };
+    const where = () => page.evaluate(`(() => { const a = document.activeElement; const hall = document.getElementById('hall'); return { label: a?.getAttribute('aria-label') ?? null, id: a?.id || null, inHall: hall.contains(a), hallScroll: hall.scrollTop, value: a && 'value' in a ? a.value : null, start: a?.selectionStart ?? null, end: a?.selectionEnd ?? null }; })()`);
+
+    // 1. The Academy: Tab from one employee link to the next, scroll the overview, then a live refresh.
+    await click('#academy-open');
+    await waitUntil(`document.querySelectorAll('#hall .academy-name').length >= 3`, 15_000);
+    await settle(300);
+    await page.evaluate(`document.querySelector('#hall .academy-name').focus()`);
+    await key('Tab', 'Tab', 9);
+    const onLink = await where();
+    const second = await page.evaluate(`document.querySelectorAll('#hall .academy-name')[1].getAttribute('aria-label')`);
+    if (onLink.label !== second) throw new Error(`Tab did not reach the next employee link: ${JSON.stringify(onLink)}`);
+    const scrolled = await page.evaluate(`(() => { const h = document.getElementById('hall'); h.scrollTop = Math.min(140, h.scrollHeight - h.clientHeight); return h.scrollTop; })()`);
+    await liveRefresh('#hall .hall-body');
+    const afterAcademy = await where();
+    if (afterAcademy.label !== second || !afterAcademy.inHall || Math.abs(afterAcademy.hallScroll - scrolled) > 1) throw new Error(`a live refresh moved the Founder in the Academy: was on ${second} at ${scrolled}px, now ${JSON.stringify(afterAcademy)}`);
+    await key('Tab', 'Tab', 9);
+    const third = await page.evaluate(`document.querySelectorAll('#hall .academy-name')[2].getAttribute('aria-label')`);
+    const next = await where();
+    if (next.label !== third) throw new Error(`keyboard navigation did not continue after the refresh: ${JSON.stringify(next)}`);
+    await key('Escape', 'Escape', 27);
+    const closed = await page.evaluate(`({ hidden: document.getElementById('hall').hidden, back: document.activeElement?.id })`);
+    if (!closed.hidden || closed.back !== 'academy-open') throw new Error(`Escape no longer closes the Academy back to its opener: ${JSON.stringify(closed)}`);
+
+    // 2. The budget amount: typed with the keyboard, part of it selected, then a live refresh, then typing goes on.
+    await click(`.card[data-id="employee:${ceo}"]`);
+    await waitUntil(`document.querySelector('#focus .sheet-primary')`, 10_000);
+    await click('#focus .sheet-primary .btn-quiet');
+    await waitUntil(`document.activeElement?.id === 'budget-amount'`, 5_000);
+    await page.send('Input.insertText', { text: '35000' });
+    await page.evaluate(`document.getElementById('budget-amount').setSelectionRange(1, 3)`);
+    await liveRefresh('#budget-amount');
+    const afterBudget = await where();
+    if (afterBudget.id !== 'budget-amount' || afterBudget.value !== '35000' || afterBudget.start !== 1 || afterBudget.end !== 3) throw new Error(`a live refresh interrupted the budget entry: ${JSON.stringify(afterBudget)}`);
+    await page.send('Input.insertText', { text: '9' });
+    const typed = await where();
+    if (typed.value !== '3900' || typed.start !== 2) throw new Error(`typing did not continue at the caret after the refresh: ${JSON.stringify(typed)}`);
+    const preview = await page.evaluate(`!document.getElementById('preview').hidden`);
+    await key('Escape', 'Escape', 27);
+    const budgetClosed = await page.evaluate(`({ editor: !!document.querySelector('#focus .budget-editor'), back: document.activeElement?.getAttribute('aria-label') ?? null })`);
+    if (preview || budgetClosed.editor || !/^Budget of /.test(budgetClosed.back ?? '')) throw new Error(`the budget entry did not stay a draft closed by Escape: preview ${preview}, ${JSON.stringify(budgetClosed)}`);
+    if (writes.length) throw new Error(`a refresh or a keystroke wrote to the Company: ${writes.join(', ')}`);
+    await page.navigate(`${surface.origin}/`);
+    await waitReady();
+    const detail = { academy: { link: 'kept', scrollPx: scrolled, tabContinues: true, escapeReturnsToOpener: true }, budget: { focus: 'kept', draft: 'kept', selection: [1, 3], typingContinues: true, previewOpened: false }, writes: 0 };
+    results.spike.refreshKeepsFocus = detail;
     return detail;
   });
   if (values.spike) {

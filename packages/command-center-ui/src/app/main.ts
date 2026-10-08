@@ -10,6 +10,7 @@ import type { CompanyUniverse, Emphasis, Layout, LayoutNode, Lens } from '../mod
 import { api, ApiError, subscribeChanges } from './api.js';
 import { CompanyControl } from './company-control.js';
 import { renderAcademy, renderMeetingRoom } from './halls.js';
+import { keepFocus, restoreFocus } from './keep-focus.js';
 import { h, renderActivity, renderAttentionRail, renderCalendar, renderConversation, renderEmployeeFocus, renderGoalFocus, renderHealthLine, renderPalette, renderPreview, renderTimeline, type PanelHost } from './panels.js';
 import { departmentColor, TreeView } from './view.js';
 
@@ -611,15 +612,16 @@ class App implements PanelHost {
   }
 
   async #loadAcademy(): Promise<void> {
-    // A live refresh re-renders the overview: the reading position and keyboard focus stay in the hall.
+    // A live refresh re-renders the overview: the reading position stays, and keyboard focus stays on the same control
+    // (the close button only when that control is gone).
     const hall = $('hall');
     const render = (data: Json | null, error: string | null): void => {
       if (this.#hall !== 'academy') return;
-      const focused = hall.contains(document.activeElement);
+      const kept = keepFocus(hall);
       const scroll = hall.scrollTop;
       renderAcademy(hall, data, this, error);
+      restoreFocus(hall, kept, '.hall-close');
       hall.scrollTop = scroll;
-      if (focused) hall.querySelector<HTMLElement>('.hall-close')?.focus();
     };
     try {
       render(await api.get<Json>('/api/academy'), null);

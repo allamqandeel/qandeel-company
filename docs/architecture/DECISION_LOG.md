@@ -5138,6 +5138,13 @@ The research found:
      SVG favicon (`/qandeel-icon.svg`).
    - The stopped-state controller serves that one file as well.
    - No launcher, shortcut, AppUserModelID, browser executable or packaging change is made.
+7. **A live refresh never moves the Founder** (independent review).
+   - The Academy overview and the person sheet are rebuilt on each "changed" nudge.
+   - The control that had focus is found again by a stable key (`data-keep`, else its id) and refocused without
+     scrolling. In the budget amount the caret and selection come back too, as does the reading position.
+   - The Academy falls back to its close button only when that control is gone.
+   - Proven in the headless browser spike (`spike-refresh-keeps-focus`): it reproduced both faults before the fix, and
+     it delivers the nudge on the page's own stream, so nothing is written.
 
 **Evidence (real Windows, disposable Company, isolated Edge profiles).**
 - The `main` build shows the globe in both the title bar and its own taskbar button.
