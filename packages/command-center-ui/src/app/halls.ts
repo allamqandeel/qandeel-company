@@ -39,7 +39,6 @@ const STAGE_LABEL: Readonly<Record<string, string>> = {
   WITHDRAWN: 'Withdrawn',
 };
 const CERT_LABEL: Readonly<Record<string, string>> = { VALID: 'Valid', REVIEW_DUE: 'Review due', EXPIRED: 'Expired', REVOKED: 'Revoked', SUPERSEDED: 'Superseded' };
-const PROFICIENCY_LABEL: Readonly<Record<string, string>> = { LEARNING: 'Learning', QUALIFIED: 'Qualified', PROFICIENT: 'Proficient', EXPERT: 'Expert' };
 
 function hallHead(host: HallHost, title: string, sub: string, icon: string): HTMLElement {
   const close = h('button', { type: 'button', class: 'btn btn-ghost hall-close', 'aria-label': `Close the ${title}`, title: 'Close (Esc)' }, h('span', { 'aria-hidden': 'true', text: '×' }));
