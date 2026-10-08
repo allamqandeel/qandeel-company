@@ -8,6 +8,7 @@ import { layoutUniverse } from '../model/layout.js';
 import { applyLens, attentionSpotlight, chainNodeIds, showsRelations } from '../model/lenses.js';
 import type { CompanyUniverse, Emphasis, Layout, LayoutNode, Lens } from '../model/types.js';
 import { api, ApiError, subscribeChanges } from './api.js';
+import { CompanyControl } from './company-control.js';
 import { h, renderActivity, renderAttentionRail, renderCalendar, renderConversation, renderEmployeeFocus, renderGoalFocus, renderHealthLine, renderPalette, renderPreview, renderTimeline, type PanelHost } from './panels.js';
 import { departmentColor, TreeView } from './view.js';
 
@@ -78,6 +79,8 @@ class App implements PanelHost {
     $('activation-open').addEventListener('click', () => void this.runCommand('show activation'));
     $('legend-toggle').addEventListener('click', () => $('legend').toggleAttribute('hidden'));
     $('attention-toggle').addEventListener('click', () => (this.#railOpen ? this.closeRail() : this.showLane(null)));
+    // D2-CTRL-01: Status / Stop Company / Restart Company inside this window.
+    new CompanyControl($('company-toggle'), $('company-panel'));
     this.#paletteInput();
     await this.refresh(true);
     subscribeChanges(
@@ -85,9 +88,28 @@ class App implements PanelHost {
       (s) => {
         this.stream = s;
         renderHealthLine($('health'), this.universe, s);
+        if (s === 'closed') void this.#checkReachable();
+        else if (!$('unavailable').hidden) {
+          $('unavailable').hidden = true;
+          $('app').removeAttribute('hidden');
+        }
       },
     );
     $('app').removeAttribute('data-booting');
+  }
+
+  /**
+   * D2-CTRL-01: when the live stream drops, ask the host once whether it is still there. A host that is gone (stopped
+   * from the Start menu, or ended) is shown truthfully — never as running — with the way back: the Desktop shortcut.
+   */
+  async #checkReachable(): Promise<void> {
+    try {
+      const res = await fetch('/api/session', { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } });
+      if (res.status === 401) this.lock('FOUNDER_SESSION_INVALID');
+    } catch {
+      $('unavailable').hidden = false;
+      $('app').setAttribute('hidden', '');
+    }
   }
 
   lock(code: string): void {

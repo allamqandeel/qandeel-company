@@ -495,6 +495,39 @@ button.chip:hover { background: var(--paper); border-color: rgba(29, 27, 38, 0.2
 .lock-card pre, .lock-card code { font-family: 'Cascadia Mono', 'Consolas', ui-monospace, monospace; font-size: 0.9em; }
 .lock-card pre { background: rgba(29, 27, 38, 0.05); padding: 10px 12px; border-radius: 10px; overflow: auto; }
 
+/* D2-CTRL-01: the Company's lifecycle controls (topbar) and the stopped-state window (desktop.html). */
+.btn-company .company-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 3px rgba(42, 157, 106, 0.16); }
+.btn-company[aria-expanded="true"] { color: var(--fg); background: rgba(29, 27, 38, 0.06); }
+.company-panel { position: absolute; top: 10px; right: 20px; width: min(380px, 90vw); background: var(--surface-strong); border: 1px solid var(--line-strong); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px 16px 14px; z-index: 31; }
+.company-panel[hidden] { display: none; }
+.company-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.company-facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 8px 0 12px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.company-facts dt { color: var(--fg-3); }
+.company-facts dd { margin: 0; color: var(--fg); overflow-wrap: anywhere; }
+.company-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.company-actions .btn[disabled] { opacity: 0.55; cursor: default; }
+.btn-stop { color: #a33232; border-color: rgba(214, 69, 69, 0.35); }
+.btn-stop:hover { background: rgba(214, 69, 69, 0.06); border-color: rgba(214, 69, 69, 0.55); }
+.company-confirm { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 4px; }
+.company-confirm p { margin: 0 0 10px; color: var(--fg-2); font-size: 13.5px; line-height: 1.5; }
+.company-confirm .company-confirm-title { color: var(--fg); font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+.company-note { margin: 10px 0 0; font-size: 12.5px; color: var(--fg-2); line-height: 1.5; }
+.lifecycle { width: min(520px, 100%); }
+.lifecycle .brand { margin-bottom: 18px; }
+.lifecycle .lens { color: var(--fg-3); font-size: 13px; padding-left: 10px; border-left: 1px solid var(--line-strong); }
+.lifecycle p { color: var(--fg-2); line-height: 1.55; margin: 0 0 14px; }
+.lc-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.lc-actions .btn[hidden] { display: none; } /* .btn's inline-flex would otherwise override [hidden] */
+.lc-code { margin: 14px 0 0 !important; font-size: 12px; color: var(--fg-3) !important; font-variant-numeric: tabular-nums; }
+.lc-progress { height: 4px; border-radius: 999px; background: var(--gold-soft); overflow: hidden; margin: 4px 0 16px; }
+.lc-progress[hidden] { display: none; }
+.lc-progress span { display: block; width: 36%; height: 100%; border-radius: inherit; background: var(--gold); animation: lc-slide 1.4s var(--ease-in-out) infinite; }
+@keyframes lc-slide { from { transform: translateX(-100%); } to { transform: translateX(280%); } }
+.lifecycle[data-phase="STOPPED"] h1::before { content: ''; display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--fg-3); margin-right: 10px; vertical-align: middle; }
+.lifecycle[data-phase="ERROR"] h1::before, .lifecycle[data-phase="HELD"] h1::before { content: ''; display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--urgent); margin-right: 10px; vertical-align: middle; }
+.lifecycle[data-phase="READY"] h1::before, .lifecycle[data-phase="ENTERED"] h1::before { content: ''; display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--good); margin-right: 10px; vertical-align: middle; }
+@media (prefers-reduced-motion: reduce) { .lc-progress span { animation: none; width: 100%; opacity: 0.6; } }
+
 /* Reduced motion: a parity mode — the same information, cuts instead of tweens, no ambient drift. */
 :root[data-motion="reduced"] .stage::before, :root[data-motion="reduced"] .line-flow, :root[data-motion="reduced"] .card[data-running="true"] .avatar::after, :root[data-motion="reduced"] .chip-attention.is-new, :root[data-motion="reduced"] .pending-ring { animation: none; }
 :root[data-motion="reduced"] .btn, :root[data-motion="reduced"] .focus, :root[data-motion="reduced"] .rail, :root[data-motion="reduced"] .card, :root[data-motion="reduced"] .goal, :root[data-motion="reduced"] .line, :root[data-motion="reduced"] .line-port, :root[data-motion="reduced"] .column, :root[data-motion="reduced"] .stage, :root[data-motion="reduced"] .scrub, :root[data-motion="reduced"] .toast, :root[data-motion="reduced"] .chip-attention, :root[data-motion="reduced"] .rail-item, :root[data-motion="reduced"] .rail-tab, :root[data-motion="reduced"] .column-head, :root[data-motion="reduced"] .founder, :root[data-motion="reduced"] .chip { transition: none; }

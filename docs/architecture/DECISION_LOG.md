@@ -5004,3 +5004,85 @@ more minute per job goes to checkout, `npm ci` and the build.
 
 **Consequence.** Each Windows L1 shard is expected below 30 minutes. If a shard repeatedly runs above 35 minutes, it
 is split again; the ceiling is never raised.
+
+## D-D2-01 — Lifecycle control inside the Command Center window: the stopped-state desktop controller and the one launch-page exception (executor; Founder-approved D2-CTRL-01 Task Contract, Option B, and the conditional `/launch` exception)
+
+**Context.** D2 installed Desktop v1 (FOUNDER-RC `4e495579d47c`). It passed installation, visual and shortcut checks, but
+the Founder requires the Company to be controlled from inside its own window: Stop keeps the window open on a STOPPED
+screen with Start Company, Start returns the same window to the Command Center after the canonical READY, closing the
+window never stops the Company, and the Start-menu shortcuts stay as emergency controls. The research found four facts:
+- a stop revokes every Founder session (`surface.ts`), so no Founder session exists while the Company is stopped;
+- lifecycle authority is the Windows user's (D-OPS-03), not the Founder session;
+- the window's origin is the host's random loopback port, which dies with the host;
+- the host forbids framing and cross-origin connections.
+
+**Decision (Option B).**
+1. **The stopped-state desktop controller** (`host/desktop-control.ts`, CLI `desktop-control`). It is a narrowly scoped,
+   local-only desktop-lifecycle component, not a host:
+   - it has no Company runtime, no Founder API, no Company data and no supervisor role;
+   - its only acts are the canonical launcher operations of the workspace that the existing launcher configuration names:
+     `discoverHost`, `stopHost` (controlled, never forced) and `ensureRunning` (the admitted, pinned release, the
+     configured providers);
+   - once the host is READY again, it calls `mintLaunchUrl`. This is the same single-use, 90-second token the Desktop
+     shortcut mints for the same Windows user, so the window re-enters through the canonical `/launch` exchange;
+   - it is started by the RUNNING host through `processes.ts` (the signed runtime, this release's own CLI);
+   - only one controller runs per workspace (an exclusive lock).
+2. **The authority chain.**
+   - `POST /api/desktop/control` sits behind the existing origin gate, Founder session and CSRF secret.
+   - The host mints a 256-bit single-use ticket and arms the controller over IPC with the ticket's SHA-256 only.
+   - The raw ticket goes only into that `no-store` response body.
+   - The page replaces itself with `http://127.0.0.1:<controller>/desktop#<ticket>` and strips the fragment from
+     history before anything else.
+   - The page redeems the ticket once and receives a 256-bit control key. The key is held in page memory only and sent
+     as a custom header, so a cross-origin caller would need a CORS preflight, which is never answered.
+   - Nothing stops before the window redeems the ticket.
+3. **The controller's gate is stricter than the host's.**
+   - The Host must be exactly `127.0.0.1:<port>`; `localhost` is refused.
+   - Every POST needs `Sec-Fetch-Site: same-origin`; a client that omits fetch metadata is refused, not trusted.
+   - Every POST needs the exact Origin and a JSON body.
+   - No other method exists.
+   - Ticket rules: spent, expired (60 s) or wrong tickets are refused, and three wrong tickets end the controller.
+   - It serves only its own page, the stylesheet, the font and its one script.
+4. **Bounded lifetime.**
+   - An unredeemed ticket ends the controller after 60 s.
+   - Once its window's watch stream has been gone for 15 s, the controller ends after any operation in flight.
+   - After handing the window back, it ends.
+   - Closing the window never stops or starts the Company.
+5. **Truthful states.**
+   - The window shows a phase: STOPPING, STOPPED, STARTING, RESTARTING, READY, ERROR or HELD.
+   - Beside the phase it shows the canonical state (STALE, UNHEALTHY, FOREIGN_RUNTIME, UPDATE_REQUIRED, HELD); the
+     phase never replaces it.
+   - READY only when the lease holder's signed identity answered and the runtime is READY.
+   - A hold is never bypassed, and an unresponsive host is reported, never terminated.
+   - An external Start-menu Stop leaves the Command Center window on a truthful "QANDEEL COMPANY is not running" screen
+     that points to the Desktop shortcut (Founder decision 2).
+6. **The one launch-page exception** (Founder-approved, conditional on proof). The real Edge proof showed that the
+   returning window's navigation to the host's `/launch` comes from another loopback port. The browser marks it
+   `Sec-Fetch-Site: same-site`, and the host gate refused it (`CROSS_SITE_REQUEST`). The gate now admits exactly one
+   more case (`isLaunchPageNavigation`, `security.ts`): a top-level document navigation to the static launch page. That
+   means `GET`, path exactly `/launch`, `same-site`, `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`, and the
+   unchanged exact loopback Host. `same-site` is not treated as proof of QANDEEL origin. The exception only lets a page
+   load. That page holds no authority: it reads a token from its own fragment and exchanges it with a same-origin POST
+   under the full gate (exact Origin, JSON).
+   - Fetches, frames, subresources, every other path and method, and cross-site requests stay refused.
+   - Tests prove that an unrelated local origin or a website can neither read the page nor redeem a valid unspent token
+     (and that the attempts do not spend it). They also cannot reach a Founder or lifecycle route.
+   - Tests prove that a stop still revokes every pre-stop session.
+
+**Rejected.**
+- **A host that stays alive in a "stopped" mode.** It breaks fail-closed session revocation and would be a second host
+  mode beside the lease.
+- **A per-user custom URL protocol.** Any page could trigger it, and it opens a new window.
+- **Reusing the stopped host's port.** The port can be squatted while it is free, and the lifecycle would have to change.
+- **Opening a fresh window on Start.** It breaks the same-window requirement.
+
+**Proofs.**
+- `desktop-control-gate.test.ts` (`OPS-PROOF: desktop-control-boundary`).
+- `desktop-control.test.ts` (`OPS-PROOF: desktop-lifecycle-control`; real host and controller processes).
+- The `security.test.ts` D-D2-01 suite.
+- Verifier `founder-host-confined`, with negative mutations for the controller and for the exception.
+- `npm run desktop:control-proof`: a real Microsoft Edge app window with an isolated profile on a disposable Company,
+  driven with trusted input. It covers Stop → the same window STOPPED → Start → the canonical READY → an authenticated
+  Command Center; Restart; close; reopen with one host; the truthful external stop; the emergency commands; no secret in
+  a command line, the host log or history; and the Company unchanged.
+- The Edge proof is local only (it shows a window) and is not a CI step.

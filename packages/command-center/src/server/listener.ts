@@ -32,6 +32,20 @@ export interface HostControl {
   requestStop(requestId: unknown): boolean;
 }
 
+/**
+ * D2-CTRL-01 (D-D2-01): the Founder's lifecycle control from inside the Command Center window. Both routes live under
+ * `/api` and so need the verified Founder session (and, for the POST, the CSRF secret); they return content-free states
+ * and, for a Stop / Restart, the stopped-state controller's loopback address and its single-use ticket — the only place
+ * that ticket is ever given out. The listener itself starts nothing: the host's hook does (`host/desktop-control.ts`).
+ */
+export interface DesktopControl {
+  status(): Record<string, unknown>;
+  control(intent: 'STOP' | 'RESTART'): Promise<{ readonly ok: true; readonly controller: string; readonly ticket: string } | { readonly ok: false; readonly code: string }>;
+}
+
+export const DESKTOP_STATUS_PATH = '/api/desktop/status';
+export const DESKTOP_CONTROL_API_PATH = '/api/desktop/control';
+
 export interface ListenerOptions {
   readonly runtime: CompanyRuntime;
   readonly roots: StaticRoots;
@@ -40,6 +54,8 @@ export interface ListenerOptions {
   /** C7-D: the isolated internal Preview host (its own loopback site), if running. */
   readonly preview?: api.PreviewOpener;
   readonly host?: HostControl;
+  /** D2-CTRL-01: the Founder host's window lifecycle control (absent: the routes do not exist). */
+  readonly desktop?: DesktopControl;
 }
 
 type Json = Record<string, unknown>;
@@ -106,6 +122,7 @@ export class FounderListener {
   readonly #log: NonNullable<ListenerOptions['log']>;
   readonly #preview: api.PreviewOpener | undefined;
   readonly #host: HostControl | undefined;
+  readonly #desktop: DesktopControl | undefined;
   readonly #streams = new Set<ServerResponse>();
   readonly #unsubscribe: (() => void)[] = [];
   #port = 0;
@@ -117,6 +134,7 @@ export class FounderListener {
     this.#log = options.log ?? (() => undefined);
     this.#preview = options.preview;
     this.#host = options.host;
+    this.#desktop = options.desktop;
     this.#port = options.port ?? 0;
     this.#server = createServer((req, res) => {
       this.#handle(req, res).catch((error: unknown) => {
@@ -178,7 +196,7 @@ export class FounderListener {
     const method = (req.method ?? 'GET').toUpperCase();
     const url = new URL(req.url ?? '/', this.origin);
     const cookies = parseCookies(req.headers.cookie);
-    const facts = { method, host: req.headers.host, origin: req.headers.origin, secFetchSite: req.headers['sec-fetch-site'] as string | undefined, contentType: req.headers['content-type'], cookies, csrfHeader: req.headers[CSRF_HEADER] as string | undefined };
+    const facts = { method, host: req.headers.host, origin: req.headers.origin, secFetchSite: req.headers['sec-fetch-site'] as string | undefined, contentType: req.headers['content-type'], cookies, csrfHeader: req.headers[CSRF_HEADER] as string | undefined, path: url.pathname, secFetchMode: req.headers['sec-fetch-mode'] as string | undefined, secFetchDest: req.headers['sec-fetch-dest'] as string | undefined };
     // The launch exchange is protected by its single-use token and the host stop by its one-shot workspace proof; both
     // still need the exact loopback Host, Origin and fetch metadata. Every other state change also needs the CSRF secret.
     const gate = gateRequest(facts, this.#port, { csrfExempt: method === 'POST' && (url.pathname === LAUNCH_PATH || url.pathname === HOST_STOP_PATH) });
@@ -210,6 +228,7 @@ export class FounderListener {
       return this.#json(res, 401, { ok: false, code: isQandeelError(error) ? error.code : 'FOUNDER_SESSION_INVALID' }, method, 'session');
     }
     if (method === 'GET' && url.pathname === '/api/events') return this.#stream(req, res);
+    if (url.pathname === DESKTOP_STATUS_PATH || url.pathname === DESKTOP_CONTROL_API_PATH) return this.#desktopControl(req, res, method, url);
     const match = ROUTES.map((r) => ({ r, m: r.method === method ? r.pattern.exec(url.pathname) : null })).find((x) => x.m !== null);
     if (!match || !match.m) return this.#json(res, 404, { ok: false, code: 'NOT_FOUND' }, method, 'unknown');
     let body: Json = {};
@@ -260,6 +279,26 @@ export class FounderListener {
       return accepted ? this.#json(res, 202, { ok: true, accepted: true }, method, 'host-stop') : this.#json(res, 403, { ok: false, code: 'HOST_STOP_REFUSED' }, method, 'host-stop');
     }
     return this.#json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED' }, method, 'host');
+  }
+
+  /** Reached only after the session (and, for the POST, the CSRF secret) verified in `#api`. */
+  async #desktopControl(req: IncomingMessage, res: ServerResponse, method: string, url: URL): Promise<void> {
+    const desktop = this.#desktop;
+    if (desktop === undefined) return this.#json(res, 404, { ok: false, code: 'NOT_FOUND' }, method, 'desktop');
+    if (url.pathname === DESKTOP_STATUS_PATH && method === 'GET') return this.#json(res, 200, { ok: true, ...desktop.status() }, method, 'desktop-status');
+    if (url.pathname !== DESKTOP_CONTROL_API_PATH || method !== 'POST') return this.#json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED' }, method, 'desktop');
+    const raw = await readBody(req);
+    let intent: unknown;
+    try {
+      intent = raw === null ? undefined : (JSON.parse(raw) as { intent?: unknown }).intent;
+    } catch {
+      intent = undefined;
+    }
+    if (intent !== 'STOP' && intent !== 'RESTART') return this.#json(res, 400, { ok: false, code: 'VALIDATION_FAILED' }, method, 'desktop-control');
+    const out = await desktop.control(intent);
+    // The ticket is in this no-store response body only; the log line carries the route and the outcome code.
+    this.#log(out.ok ? 'founder.desktop_control_armed' : 'founder.desktop_control_refused', { route: 'desktop-control', intent, code: out.ok ? null : out.code });
+    return out.ok ? this.#json(res, 200, { ok: true, controller: out.controller, ticket: out.ticket }, method, 'desktop-control') : this.#json(res, 409, { ok: false, code: out.code }, method, 'desktop-control');
   }
 
   async #launch(req: IncomingMessage, res: ServerResponse): Promise<void> {

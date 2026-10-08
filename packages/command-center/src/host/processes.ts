@@ -3,7 +3,9 @@
  * the surface package spawns a process, and this module starts exactly four kinds, never through a shell:
  *
  *   1. the Company host itself (and, once per activation, a staged release's own CLI for its dry run, D-OPS-08): the signed Node runtime (`process.execPath`) running this package's own CLI, detached,
- *      windowless, with its content-free log as stdout/stderr and an IPC channel used once for readiness;
+ *      windowless, with its content-free log as stdout/stderr and an IPC channel used once for readiness; the same path
+ *      starts this release's stopped-state desktop controller for an authenticated Founder Stop / Restart (D-D2-01),
+ *      armed over that IPC channel, never by an argument;
  *   2. the Founder's browser (Edge, else Chrome) from its absolute install path, in app-window mode, on the one-shot
  *      loopback handoff address (`host/handoff.ts`, D-OPS-07) — never on the launch URL itself;
  *   3. the signed Windows PowerShell host, by its absolute System32 path, with a fixed encoded command, to show a

@@ -40,6 +40,7 @@
     "desktop:setup": "node packaging/windows/build.mjs --setup",
     "desktop:verify": "node packaging/windows/verify.mjs",
     "desktop:proof": "node packaging/windows/proof/desktop-proof.mjs",
+    "desktop:control-proof": "node packaging/windows/proof/desktop-control-proof.mjs",
     "desktop:e2e": "node packaging/windows/proof/desktop-e2e.mjs",
     "c2:mutation": "node scripts/c2-mutation-check.mjs",
     "c2:acceptance": "node --conditions=qandeel-test scripts/c2-acceptance.mjs",
