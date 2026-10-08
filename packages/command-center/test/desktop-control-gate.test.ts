@@ -7,7 +7,7 @@
  * OPS-PROOF: desktop-control-boundary
  */
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -138,6 +138,24 @@ describe('the controller lifetime', () => {
     assert.ok(configuredCompany(ws));
     assert.equal(configuredCompany(other), null);
     assert.deepEqual(await armDesktopController({ workspace: other, cliPath: 'unused', intent: 'STOP' }), { ok: false, code: 'DESKTOP_CONTROL_UNAVAILABLE' });
+  });
+
+  test('the configured Company is the resolved directory, not its spelling (8.3 short name, junction, letter case)', () => {
+    // The host always runs on the canonical root; the configuration may name the same directory another way (a GitHub
+    // Windows runner's temp directory is `C:\Users\RUNNER~1\…`). A junction is the portable stand-in for that alias.
+    const alias = path.join(root, 'alias-of-company');
+    symlinkSync(ws, alias, 'junction');
+    try {
+      writeLauncherConfig(launcherConfigPath(), { version: 1, workspace: alias, providers: [] });
+      assert.equal(configuredCompany(realpathSync.native(ws))?.workspace, realpathSync.native(ws));
+      assert.ok(configuredCompany(alias));
+      if (process.platform === 'win32') assert.ok(configuredCompany(ws.toUpperCase()));
+      assert.equal(configuredCompany(other), null, 'an alias never widens the configuration to another Company');
+    } finally {
+      writeLauncherConfig(launcherConfigPath(), { version: 1, workspace: ws, providers: [] });
+      rmSync(alias, { force: true }); // the link only, never what it points at
+      CompanyStore.open(ws, { create: false, migrationMode: 'verify' }).close(); // the Company itself is untouched
+    }
   });
 });
 

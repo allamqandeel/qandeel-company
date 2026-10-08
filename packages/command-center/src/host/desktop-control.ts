@@ -459,11 +459,13 @@ const samePath = (a: string, b: string): boolean => (process.platform === 'win32
 
 /**
  * The existing launcher configuration, when it names THIS workspace: the controller only ever acts on the configured
- * Company (never a workspace a request names). Null when the Desktop lifecycle is not configured for it.
+ * Company (never a workspace a request names). Null when the Desktop lifecycle is not configured for it. The identity is
+ * the resolved directory, never the spelling: the host runs on the canonical root, while the configuration may name the
+ * same directory through an 8.3 short name (`C:\Users\RUNNER~1\…`), a junction or another letter case.
  */
 export function configuredCompany(workspace: string): { workspace: string; providers: readonly string[] } | null {
   const config = readLauncherConfig(launcherConfigPath());
-  if (config === null || !samePath(config.workspace, workspace) || !samePath(hostPaths(config.workspace).root, hostPaths(workspace).root)) return null;
+  if (config === null || !samePath(hostPaths(config.workspace).root, hostPaths(workspace).root)) return null;
   return { workspace: hostPaths(workspace).root, providers: config.providers };
 }
 

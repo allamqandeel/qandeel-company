@@ -56,6 +56,8 @@ interface Reply {
 }
 
 function request(port: number, method: string, pathname: string, headers: Record<string, string> = {}, body?: string): Promise<Reply> {
+  // Port 0 would silently become 80 (whatever answers there, e.g. HTTP.sys on a Windows runner): an earlier step failed.
+  assert.ok(Number.isInteger(port) && port > 0, `no port to request ${pathname} on: an earlier step did not provide one`);
   return new Promise((resolve, reject) => {
     const req = http.request({ host: '127.0.0.1', port, method, path: pathname, headers: { Host: `127.0.0.1:${port}`, ...headers }, agent: false }, (res) => {
       const chunks: Buffer[] = [];
