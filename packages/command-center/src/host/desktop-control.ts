@@ -103,10 +103,10 @@ export function gateControlRequest(facts: ControlRequestFacts, port: number): Co
   return { ok: true };
 }
 
-/** The controller's own public files: its page, the shared stylesheet and font, its one script. Nothing else. */
+/** The controller's own public files: its page, the shared stylesheet and font, its one script and the QANDEEL icon (D2-UX-01: the window keeps its identity while stopped). Nothing else. */
 export function controllerStaticPath(urlPath: string): string | null {
   if (urlPath === DESKTOP_CONTROL_PATH) return '/desktop.html';
-  if (urlPath === '/styles.css' || urlPath === '/app/app/desktop.js') return urlPath;
+  if (urlPath === '/styles.css' || urlPath === '/app/app/desktop.js' || urlPath === '/qandeel-icon.svg') return urlPath;
   if (/^\/fonts\/[A-Za-z0-9_-]{1,64}\.woff2$/.test(urlPath)) return urlPath;
   return null;
 }

@@ -59,6 +59,8 @@ export function employeeDetail(ctx: ApiContext, employeeId: string): Json {
     grants,
     // D-L1-44: the standing reasoning default / ceiling, Founder one-task overrides and the classes actually used.
     reasoning: gov.reasoningControl(id) as unknown as Json,
+    // D2-UX-01: the record's own "About" facts and training summary (the Academy overview narrowed to this Employee).
+    profile: (ctx.runtime.founder.academy({ employeeId: id }).employees[0] ?? null) as unknown as Json,
     threads,
     blocked: work.some((w) => w.state === 'BLOCKED'),
     waiting: work.filter((w) => w.state.startsWith('WAITING')).map((w) => w.state),
@@ -356,6 +358,18 @@ function activationPayload(ctx: ApiContext): Json {
 
 export function activation(ctx: ApiContext): Json {
   return activationPayload(ctx);
+}
+
+/**
+ * D2-UX-01: the company-wide Academy overview — a Founder read of the canonical Academy, Skills and Employee records
+ * (codes, states, scores, dates; never an answer or a scenario's content). It starts no training, qualification,
+ * certification or shadow work, calls no model and changes no budget or lifecycle: every Academy act stays a governed
+ * preview in the activation flow. Package titles come from the release-pinned registry.
+ */
+export function academy(ctx: ApiContext): Json {
+  const titles = new Map(ctx.runtime.founder.actions.activationEnv().packages.map((p) => [`${p.code}@${p.version}`, p.title]));
+  const view = ctx.runtime.founder.academy();
+  return { ...view, packages: view.packages.map((p) => ({ ...p, title: titles.get(`${p.code}@${p.version}`) ?? null })) };
 }
 
 /**

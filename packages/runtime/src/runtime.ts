@@ -87,9 +87,11 @@ import {
   SkillStore,
   createPortableBackup,
   activationView,
+  academyOverview,
   type AnswerRecord,
   projectUniverse,
   type ActivationView,
+  type AcademyOverview,
   pruneLocalBackups,
   prunePortableBackups,
   resilienceStatus,
@@ -229,6 +231,8 @@ export interface FounderAdmin {
   universe(options?: { at?: string }): CompanyUniverse;
   /** L1-02: the Company activation flow, read from durable state only (silent; never a write). */
   activation(): ActivationView;
+  /** D2-UX-01: the company-wide Academy overview, or one Employee's slice of it (silent; never a write, never a call). */
+  academy(options?: { employeeId?: Id }): AcademyOverview;
   /** L1-02: the candidate's durable answer to one Academy attempt (Founder-scoped content; silent read), or null. */
   attemptAnswer(attemptId: string): AnswerRecord | null;
 }
@@ -900,6 +904,8 @@ export class CompanyRuntime {
           return projectUniverse(s, options.at === undefined ? {} : { at: options.at });
         },
         activation: (): ActivationView => activationView(s, this.#opts.governance?.academyPackages ?? []),
+        // D2-UX-01: the company-wide Academy overview (a read in one snapshot; nothing acts, nothing is called).
+        academy: (options: { employeeId?: Id } = {}): AcademyOverview => academyOverview(s, options),
         attemptAnswer: (attemptId: string): AnswerRecord | null => AcademyStore.for(s).attemptAnswer(attemptId),
       });
     }

@@ -10,6 +10,7 @@
 import { ACTION_LABEL, CALENDAR_LABEL, CAPABILITY_LABEL, DECISION_LABEL, dirOf, EVIDENCE_LABEL, FIELD_LABEL, fmtDate, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, fmtTime, hasArabic, humanize, INTENT_LABEL, KIND_LABEL, LANE_LABEL, MARKET_CLAIM_LABEL, PILOT_DECISION_LABEL, PILOT_MODE_LABEL, plural, PROMOTION_KIND_LABEL, PROMOTION_STATE_LABEL, PURPOSE_LABEL, READINESS_LABEL, RELATION_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATE_LABEL, t } from '../model/format.js';
 import type { CompanyUniverse } from '../model/types.js';
 import { renderActivation } from './activation.js';
+import { trainingFacts } from './halls.js';
 
 type Json = Record<string, unknown>;
 
@@ -41,6 +42,10 @@ export interface PanelHost {
   openDepartment(id: string): void;
   openThread(threadId: string, employeeId: string): void;
   startConversation(employeeId: string | null): void;
+  /** D2-UX-01: the company-wide Academy overview (a read). */
+  openAcademy(): void;
+  /** D2-UX-01: closes the command panel (and the activation view in it); never touches a pending confirmation. */
+  closePalette(): void;
   runCommand(text: string): Promise<void>;
   /** A structured act the surface already knows (IDs / codes): posted as a governed preview, never re-typed as text. */
   previewAction(intent: string, payload: Json): Promise<void>;
@@ -255,20 +260,94 @@ function attentionItem(i: Json, host: PanelHost): HTMLElement {
 
 // --- context sheet: employee ----------------------------------------------------------------------------
 
+/**
+ * D2-UX-01: one person, read top-down — who they are with the two things the Founder does with them (Talk, Budget) in
+ * the sheet's sticky head; then what the record says about them; their skills and training; their reporting line and
+ * authority; and only then their work and live relations. Nothing here is invented: a fact the record does not hold is
+ * shown as not on record.
+ */
 export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost, deptColor: string): void {
+  // A live company re-renders the sheet: an open budget entry, its draft amount and the reading position survive it.
+  const same = root.dataset.sheet === 'employee' && root.dataset.employeeId === String((d.employee as Json).id);
+  const budgetOpen = same && root.querySelector('.budget-editor') !== null;
+  const budgetDraft = same ? (root.querySelector<HTMLInputElement>('.budget-editor input')?.value ?? '') : '';
+  const scroll = same ? root.scrollTop : 0;
   root.replaceChildren();
   root.dataset.sheet = 'employee';
   root.style.setProperty('--accent', deptColor);
   const e = d.employee as Json;
+  root.dataset.employeeId = String(e.id);
   const seat = d.seat as Json | null;
   const dept = d.department as Json | null;
+  const profile = d.profile as Json | null;
   const name = e.name as { given: string; family: string };
   const full = `${name.given} ${name.family}`;
   const chain = (e.chain as Json[]) ?? [];
   const deptLabel = dept ? host.deptNameOf(String(dept.id)) : 'Company';
   const isCeo = seat?.kind === 'CEO';
-  root.append(sheetHead(host, full, [h('span', { text: seat ? (isCeo ? 'Chief Executive Officer' : String(seat.title)) : 'No seat' }), h('span', { class: 'sep' }), h('span', { class: 'sheet-dept', text: deptLabel }), seat && seat.holderKind === 'ACTING' ? h('span', { class: 'pill pill-acting', text: 'Acting cover' }) : null, statePill(String(e.state))], personAvatar(full, deptColor, 'avatar-lg')));
-  // Reports to: the seat chain inward, every link a person with a name, drawn like the lane in the column.
+  const roleTitle = seat ? (isCeo ? 'Chief Executive Officer' : String(seat.title)) : null;
+  const head = sheetHead(host, full, [h('span', { text: roleTitle ?? 'No seat' }), h('span', { class: 'sep' }), h('span', { class: 'sheet-dept', text: deptLabel }), seat && seat.holderKind === 'ACTING' ? h('span', { class: 'pill pill-acting', text: 'Acting cover' }) : null, statePill(String(e.state))], personAvatar(full, deptColor, 'avatar-lg'));
+  // 1. The primary actions live in the sticky head: visible without scrolling past any work, on every window size.
+  const budget = d.budget as Json | null;
+  const talk = h('button', { type: 'button', class: 'btn btn-primary', text: `Talk to ${name.given}`, 'aria-label': `Talk to ${full}` });
+  talk.addEventListener('click', () => host.startConversation(String(e.id)));
+  const budgetBtn = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Budget', 'aria-label': `Budget of ${full}`, 'aria-expanded': 'false', 'aria-controls': 'budget-editor' });
+  head.append(h('div', { class: 'sheet-primary', role: 'group', 'aria-label': `Actions for ${full}` }, talk, budgetBtn));
+  root.append(head);
+  const editorSlot = h('div', { class: 'budget-slot' });
+  root.append(editorSlot);
+  const closeEditor = (): void => {
+    editorSlot.replaceChildren();
+    budgetBtn.setAttribute('aria-expanded', 'false');
+  };
+  const openEditor = (draft: string, focus: boolean): void => {
+    editorSlot.replaceChildren(budgetEditor(full, budget, host, draft, () => {
+      closeEditor();
+      budgetBtn.focus();
+    }));
+    budgetBtn.setAttribute('aria-expanded', 'true');
+    if (focus) editorSlot.querySelector<HTMLElement>('input, .btn')?.focus();
+  };
+  budgetBtn.addEventListener('click', () => (editorSlot.childElementCount ? closeEditor() : openEditor('', true)));
+  if (budgetOpen) openEditor(budgetDraft, false);
+
+  // 2. About: the record's own facts (no biography is invented).
+  const about = h('dl', { class: 'facts about-facts' });
+  const fact = (k: string, v: Node | string): void => {
+    about.append(h('dt', { text: k }), h('dd', {}, v));
+  };
+  fact('Role', roleTitle ?? humanize(String(e.roleRef)));
+  fact('Department', deptLabel);
+  if (profile?.displayNameAr) fact('Arabic name', content('span', String(profile.displayNameAr)));
+  if (profile?.since) fact('With the company since', fmtDate(String(profile.since)));
+  if (profile?.identityProfile) fact('Identity profile', humanize(String(profile.identityProfile)));
+  const record = profile?.work as Json | undefined;
+  fact('Work on record', record ? `${plural(Number(record.total), 'work item', 'work items')} owned, ${fmtNumber(Number(record.completed))} completed` : 'Not on record');
+  root.append(sectionEl(`About ${name.given}`, about, h('p', { class: 'muted small', text: 'Only what the Company record holds. No biography or outside experience is on record.' })));
+
+  // 3. Skills, qualifications and training (the Academy overview narrowed to this person).
+  const training = h('div', { class: 'training' });
+  if (profile) {
+    const f = trainingFacts(profile);
+    const tf = h('dl', { class: 'facts' });
+    for (const [k, v] of [['Academy', f.stage], ['Programme', f.modules], ['Attempts', f.attempts], ['Certification', f.certification]] as const) tf.append(h('dt', { text: k }), h('dd', { text: v }));
+    training.append(tf);
+    const skills = (profile.skills as Json[]) ?? [];
+    const chips = h('div', { class: 'chips', 'aria-label': 'Skill passport' });
+    if (skills.length === 0) chips.append(h('span', { class: 'muted', text: 'No skills on the passport yet' }));
+    for (const s of skills) chips.append(h('span', { class: 'chip' }, h('span', { text: String(s.name) }), h('span', { class: 'chip-state', text: t(PROFICIENCY_LABEL, String(s.proficiency)) })));
+    training.append(chips);
+    const requires = (profile.roleRequires as Json[]) ?? [];
+    if (requires.length) training.append(h('p', { class: 'muted small', text: `The role asks for: ${requires.map((r) => `${String(r.name)} (${t(PROFICIENCY_LABEL, String(r.minProficiency)).toLowerCase()}${r.critical ? ', critical' : ''})`).join(', ')}` }));
+    const reviewer = (profile.reviewer as Json[]) ?? [];
+    if (reviewer.length) training.append(h('p', { class: 'muted small', text: `Review Pool: ${reviewer.map((q) => `${humanize(String(q.domain))} — ${humanize(String(q.level))}, ${humanize(String(q.mode)).toLowerCase()}`).join('; ')}` }));
+  } else training.append(h('p', { class: 'muted', text: 'No Academy record.' }));
+  const academy = h('button', { type: 'button', class: 'link', text: 'Open the Academy' });
+  academy.addEventListener('click', () => host.openAcademy());
+  training.append(academy);
+  root.append(sectionEl('Skills and training', training));
+
+  // 4. Reporting line and authority.
   const chainEl = h('ol', { class: 'chain', 'aria-label': 'Reporting line to the Founder' });
   for (const link of chain) {
     if (String(link.employeeId) === String(e.id)) continue;
@@ -278,7 +357,17 @@ export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost,
     else li.append(h('span', { class: 'person' }, h('span', { class: 'avatar avatar-vacant', 'aria-hidden': 'true' }), h('span', { class: 'person-name muted', text: 'Vacant seat' }), h('span', { class: 'person-sub', text: t(KIND_LABEL, String(link.kind)) })));
     chainEl.append(li);
   }
-  root.append(sectionEl(isCeo ? 'Reports to' : 'Reports to', chainEl));
+  root.append(sectionEl('Reports to', chainEl));
+  const grants = (d.grants as Json[]) ?? [];
+  const authority = h('div', { class: 'authority' });
+  authority.append(budget ? budgetMeter(budget) : h('p', { class: 'muted small', text: 'No budget envelope.' }));
+  const may = h('div', { class: 'chips' });
+  if (grants.length === 0) may.append(h('span', { class: 'muted', text: 'Nothing granted yet' }));
+  for (const g of grants) may.append(h('span', { class: 'chip chip-grant' }, h('span', { text: t(CAPABILITY_LABEL, String(g.capability)) }), h('span', { class: 'chip-state', text: String(g.riskCeiling) })));
+  authority.append(may);
+  root.append(sectionEl('Authority', authority));
+
+  // 5. Work, then live relations.
   const work = (d.work as Json[]) ?? [];
   const workEl = h('ul', { class: 'work-list' });
   if (work.length === 0) workEl.append(h('li', { class: 'empty', text: 'No live work right now.' }));
@@ -296,25 +385,79 @@ export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost,
     }
     root.append(sectionEl('Live relations', relEl));
   }
-  const budget = d.budget as Json | null;
-  const grants = (d.grants as Json[]) ?? [];
-  const authority = h('div', { class: 'authority' });
-  if (budget) {
-    const spent = Number(budget.spentMoney);
-    const cap = Number(budget.capMoney);
-    const ratio = cap > 0 ? Math.min(1, spent / cap) : 0;
-    authority.append(h('div', { class: 'meter', role: 'img', 'aria-label': `${fmtMoneyMicros(spent, String(budget.currency))} spent of ${fmtMoneyMicros(cap, String(budget.currency))}` }, h('span', { class: 'meter-bar' }, h('span', { class: 'meter-fill', style: `width:${Math.round(ratio * 100)}%` })), h('span', { class: 'meter-text' }, h('strong', { text: fmtMoneyMicros(spent, String(budget.currency)) }), h('span', { class: 'muted', text: ` of ${fmtMoneyMicros(cap, String(budget.currency))}` }))));
+  root.scrollTop = scroll;
+}
+
+const PROFICIENCY_LABEL: Readonly<Record<string, string>> = { LEARNING: 'Learning', QUALIFIED: 'Qualified', PROFICIENT: 'Proficient', EXPERT: 'Expert' };
+
+function budgetMeter(budget: Json): HTMLElement {
+  const spent = Number(budget.spentMoney);
+  const cap = Number(budget.capMoney);
+  const ratio = cap > 0 ? Math.min(1, spent / cap) : 0;
+  return h('div', { class: 'meter', role: 'img', 'aria-label': `${fmtMoneyMicros(spent, String(budget.currency))} spent of ${fmtMoneyMicros(cap, String(budget.currency))}` }, h('span', { class: 'meter-bar' }, h('span', { class: 'meter-fill', style: `width:${Math.round(ratio * 100)}%` })), h('span', { class: 'meter-text' }, h('strong', { text: fmtMoneyMicros(spent, String(budget.currency)) }), h('span', { class: 'muted', text: ` of ${fmtMoneyMicros(cap, String(budget.currency))}` })));
+}
+
+/**
+ * D2-UX-01: a typed budget ceiling in the envelope's own currency → micro-units, or null. Digits with up to two decimals
+ * (thousands commas tolerated), strictly above zero: an empty, zero, negative or malformed entry is never sent.
+ */
+export function budgetCeilingMicros(raw: string): number | null {
+  const text = raw.trim().replace(/,/g, '');
+  if (!/^\d{1,12}(?:\.\d{1,2})?$/.test(text)) return null;
+  const [units = '0', cents = ''] = text.split('.');
+  const micros = Number(units) * 1_000_000 + Number(cents.padEnd(2, '0')) * 10_000;
+  return Number.isSafeInteger(micros) && micros > 0 ? micros : null;
+}
+
+/**
+ * The budget ceiling, stated explicitly: no default amount. A valid entry becomes the existing BUDGET_CEILING governed
+ * preview (fingerprinted, confirmed by the Founder in the confirmation dialog) and nothing else.
+ */
+function budgetEditor(full: string, budget: Json | null, host: PanelHost, draft: string, close: () => void): HTMLElement {
+  const box = h('section', { class: 'budget-editor', id: 'budget-editor', 'aria-label': `Budget ceiling of ${full}` });
+  const cancel = h('button', { type: 'button', class: 'btn btn-ghost', text: budget ? 'Cancel' : 'Close' });
+  cancel.addEventListener('click', close);
+  box.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      ev.stopPropagation();
+      close();
+    }
+  });
+  if (!budget) {
+    box.append(h('p', { class: 'muted', text: `${full} has no budget envelope yet. A ceiling can only be set on an existing envelope, so nothing can be changed here.` }), h('div', { class: 'budget-actions' }, cancel));
+    return box;
   }
-  const may = h('div', { class: 'chips' });
-  if (grants.length === 0) may.append(h('span', { class: 'muted', text: 'Nothing granted yet' }));
-  for (const g of grants) may.append(h('span', { class: 'chip chip-grant' }, h('span', { text: t(CAPABILITY_LABEL, String(g.capability)) }), h('span', { class: 'chip-state', text: String(g.riskCeiling) })));
-  authority.append(may);
-  root.append(sectionEl('Authority', authority));
-  const talk = h('button', { type: 'button', class: 'btn btn-primary btn-wide', text: `Talk to ${name.given}` });
-  talk.addEventListener('click', () => host.startConversation(String(e.id)));
-  const ceiling = h('button', { type: 'button', class: 'btn btn-quiet btn-wide', text: 'Set budget ceiling' });
-  ceiling.addEventListener('click', () => void host.runCommand(`set ${full} budget ceiling EGP 0`));
-  root.append(h('div', { class: 'sheet-actions' }, talk, budget ? ceiling : null));
+  const currency = String(budget.currency);
+  const current = Number(budget.capMoney);
+  box.append(h('p', { class: 'budget-now' }, h('span', { text: 'Current ceiling ' }), h('strong', { text: fmtMoneyMicros(current, currency) }), h('span', { class: 'muted', text: ` · spent ${fmtMoneyMicros(Number(budget.spentMoney), currency)} · reserved ${fmtMoneyMicros(Number(budget.reservedMoney ?? 0), currency)}` })));
+  const form = h('form', { class: 'budget-form', novalidate: true }) as HTMLFormElement;
+  const input = h('input', { id: 'budget-amount', type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: 'Amount', 'aria-describedby': 'budget-hint budget-error', maxlength: 18 }) as HTMLInputElement;
+  input.value = draft;
+  const error = h('p', { id: 'budget-error', class: 'budget-error', role: 'alert' });
+  const submit = h('button', { type: 'submit', class: 'btn btn-primary', text: 'Preview the new ceiling' });
+  form.append(
+    h('label', { for: 'budget-amount', class: 'budget-label', text: `New ceiling (${currency})` }),
+    h('div', { class: 'budget-row' }, h('span', { class: 'budget-currency', 'aria-hidden': 'true', text: currency }), input),
+    h('p', { id: 'budget-hint', class: 'muted small', text: 'Up to two decimals. Nothing changes until you confirm the preview.' }),
+    error,
+    h('div', { class: 'budget-actions' }, cancel, submit),
+  );
+  form.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const micros = budgetCeilingMicros(input.value);
+    const refuse = (text: string): void => {
+      error.textContent = text;
+      input.setAttribute('aria-invalid', 'true');
+      input.focus();
+    };
+    if (micros === null) return refuse(`Enter an amount above zero in ${currency}, with at most two decimals.`);
+    if (micros === current) return refuse('That is already the current ceiling.');
+    error.textContent = '';
+    input.removeAttribute('aria-invalid');
+    void host.previewAction('BUDGET_CEILING', { budgetId: String(budget.id), capMoney: micros, currency, reasonCode: 'founder.ceiling' });
+  });
+  box.append(form);
+  return box;
 }
 
 function workRow(w: Json, host: PanelHost, opts: { owner: boolean; goals: boolean }): HTMLElement {
@@ -485,7 +628,9 @@ export function renderPalette(root: HTMLElement, host: PanelHost, result: Json |
   const form = h('form', { class: 'palette-form', role: 'search' });
   const input = h('input', { type: 'text', class: 'palette-input', placeholder: 'Ask the company: open Laila · what is blocked? · who is working on the Saudi launch?', 'aria-label': 'Founder command', autocomplete: 'off', maxlength: 400, dir: 'auto' }) as HTMLInputElement;
   const go = h('button', { type: 'submit', class: 'btn btn-primary', text: busy ? '…' : 'Go' });
-  form.append(input, go);
+  const close = h('button', { type: 'button', class: 'btn btn-ghost palette-close', 'aria-label': result && result.activation ? 'Close Activate the Company' : 'Close the command panel', title: 'Close (Esc)' }, h('span', { 'aria-hidden': 'true', text: '×' }));
+  close.addEventListener('click', () => host.closePalette());
+  form.append(input, go, close);
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const v = input.value.trim();

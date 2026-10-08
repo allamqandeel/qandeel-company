@@ -9,6 +9,7 @@ import { applyLens, attentionSpotlight, chainNodeIds, showsRelations } from '../
 import type { CompanyUniverse, Emphasis, Layout, LayoutNode, Lens } from '../model/types.js';
 import { api, ApiError, subscribeChanges } from './api.js';
 import { CompanyControl } from './company-control.js';
+import { renderAcademy, renderMeetingRoom } from './halls.js';
 import { h, renderActivity, renderAttentionRail, renderCalendar, renderConversation, renderEmployeeFocus, renderGoalFocus, renderHealthLine, renderPalette, renderPreview, renderTimeline, type PanelHost } from './panels.js';
 import { departmentColor, TreeView } from './view.js';
 
@@ -41,6 +42,10 @@ class App implements PanelHost {
   #toastTimer = 0;
   /** The attention item under the Founder's eye (its spotlight outlives the live refreshes of a working company). */
   #spotlight: { itemId: string; el: HTMLElement | null } | null = null;
+  /** D2-UX-01: the open hall (Academy / Meeting Room) and the control that opened it (focus returns there). */
+  #hall: 'academy' | 'meeting' | null = null;
+  #hallOpener: HTMLElement | null = null;
+  #paletteOpener: HTMLElement | null = null;
 
   constructor() {
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -77,6 +82,11 @@ class App implements PanelHost {
     $('palette-open').addEventListener('click', () => this.openPalette());
     // L1-02: the Company activation flow is one click away (a read; every act in it is a governed confirmation).
     $('activation-open').addEventListener('click', () => void this.runCommand('show activation'));
+    // D2-UX-01: the Academy (a company-wide read) and the Meeting Room (an honest notice), each one click from home.
+    $('academy-open').addEventListener('click', () => this.openAcademy());
+    $('meeting-open').addEventListener('click', () => this.openMeetingRoom());
+    // Click outside closes the hall or the command panel — never while a governed confirmation is open.
+    document.addEventListener('pointerdown', (e) => this.#outside(e), true);
     $('legend-toggle').addEventListener('click', () => $('legend').toggleAttribute('hidden'));
     $('attention-toggle').addEventListener('click', () => (this.#railOpen ? this.closeRail() : this.showLane(null)));
     // D2-CTRL-01: Status / Stop Company / Restart Company inside this window.
@@ -158,6 +168,7 @@ class App implements PanelHost {
         this.paletteResult = { ...this.paletteResult, activation: await api.get<Json>('/api/activation') };
         this.#paletteInput(false);
       }
+      if (this.#hall === 'academy') await this.#loadAcademy();
       if (this.lens.kind === 'EMPLOYEE' || this.lens.kind === 'CONVERSATION' || this.lens.kind === 'GOAL') {
         await this.#renderFocus();
         this.#applyTether();
@@ -476,6 +487,8 @@ class App implements PanelHost {
 
   openPalette(prefill = ''): void {
     const p = $('palette');
+    if (p.hidden) this.#paletteOpener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+    if (this.#hall !== null) this.closeHall(false);
     p.hidden = false;
     const input = this.#paletteInput(false);
     if (prefill) input.value = prefill;
@@ -561,6 +574,84 @@ class App implements PanelHost {
     this.#toastTimer = window.setTimeout(() => renderActivity($('activity'), null), 7000);
   }
 
+  /** D2-UX-01: closes the command panel (and an activation view in it). A pending confirmation is left exactly as it is. */
+  closePalette(): void {
+    const p = $('palette');
+    if (p.hidden) return;
+    p.hidden = true;
+    const back = this.#paletteOpener;
+    this.#paletteOpener = null;
+    if (back && back.isConnected) back.focus();
+  }
+
+  openAcademy(): void {
+    this.#openHall('academy', $('academy-open'));
+    renderAcademy($('hall'), null, this, null);
+    void this.#loadAcademy();
+  }
+
+  openMeetingRoom(): void {
+    // Informational only: nothing is read from or written to the Company.
+    this.#openHall('meeting', $('meeting-open'));
+    renderMeetingRoom($('hall'), this);
+  }
+
+  #openHall(kind: 'academy' | 'meeting', opener: HTMLElement): void {
+    $('palette').hidden = true;
+    const hall = $('hall');
+    if (this.#hall === null) this.#hallOpener = opener;
+    this.#hall = kind;
+    hall.hidden = false;
+    $('academy-open').setAttribute('aria-expanded', kind === 'academy' ? 'true' : 'false');
+    $('meeting-open').setAttribute('aria-expanded', kind === 'meeting' ? 'true' : 'false');
+    queueMicrotask(() => hall.querySelector<HTMLElement>('.hall-close')?.focus());
+  }
+
+  async #loadAcademy(): Promise<void> {
+    // A live refresh re-renders the overview: the reading position and keyboard focus stay in the hall.
+    const hall = $('hall');
+    const render = (data: Json | null, error: string | null): void => {
+      if (this.#hall !== 'academy') return;
+      const focused = hall.contains(document.activeElement);
+      const scroll = hall.scrollTop;
+      renderAcademy(hall, data, this, error);
+      hall.scrollTop = scroll;
+      if (focused) hall.querySelector<HTMLElement>('.hall-close')?.focus();
+    };
+    try {
+      render(await api.get<Json>('/api/academy'), null);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) return this.lock(e.code);
+      render(null, e instanceof ApiError ? e.code : 'error');
+    }
+  }
+
+  closeHall(restoreFocus = true): void {
+    if (this.#hall === null) return;
+    this.#hall = null;
+    const hall = $('hall');
+    hall.hidden = true;
+    hall.replaceChildren();
+    $('academy-open').setAttribute('aria-expanded', 'false');
+    $('meeting-open').setAttribute('aria-expanded', 'false');
+    const back = this.#hallOpener;
+    this.#hallOpener = null;
+    if (restoreFocus && back && back.isConnected) back.focus();
+  }
+
+  /** A press outside an open hall / command panel closes it; never while a governed confirmation is on screen. */
+  #outside(e: PointerEvent): void {
+    if (!$('preview').hidden) return;
+    const target = e.target instanceof Node ? e.target : null;
+    if (target === null) return;
+    if (this.#hall !== null && !$('hall').contains(target) && !$('academy-open').contains(target) && !$('meeting-open').contains(target)) this.closeHall(false);
+    const palette = $('palette');
+    if (!palette.hidden && !palette.contains(target) && !$('palette-open').contains(target) && !$('activation-open').contains(target)) {
+      palette.hidden = true;
+      this.#paletteOpener = null;
+    }
+  }
+
   #hotkeys(e: KeyboardEvent): void {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
       e.preventDefault();
@@ -571,8 +662,12 @@ class App implements PanelHost {
         preview.hidden = true;
         return;
       }
+      if (this.#hall !== null) {
+        this.closeHall();
+        return;
+      }
       if (!$('palette').hidden) {
-        $('palette').hidden = true;
+        this.closePalette();
         return;
       }
       this.returnToLive();
