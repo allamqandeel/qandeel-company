@@ -85,7 +85,7 @@ export function openBrowser(url: string): Promise<{ ok: boolean; browser: Browse
 }
 
 function powershellExe(): string {
-  return path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  return path.win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 }
 
 /** A PowerShell single-quoted literal (the only escape inside '…' is a doubled quote). */
@@ -256,7 +256,7 @@ export function uninstallCommandLine(installedRuntime: string, cliPath: string, 
     `Remove-Item -LiteralPath ${psLiteral(key)} -Recurse -Force -ErrorAction SilentlyContinue`,
   ].join('\n');
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
-  const conhost = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'conhost.exe');
+  const conhost = path.win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'conhost.exe');
   return `"${conhost}" --headless "${powershellExe()}" -NoProfile -NonInteractive -NoLogo -WindowStyle Hidden -EncodedCommand ${encoded}`;
 }
 
