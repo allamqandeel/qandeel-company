@@ -45,7 +45,8 @@ const secrets: string[] = [];
 
 after(async () => {
   await stopHost(ws, { force: true, timeoutMs: 30_000 });
-  rmSync(root, { recursive: true, force: true });
+  // Windows may release the stopped host's handles a moment later: bounded retries, as the sibling suites do.
+  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 interface Reply {

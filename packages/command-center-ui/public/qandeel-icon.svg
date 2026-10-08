@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- QANDEEL App Icon Presentation Study B - DARK LUMINOUS
+     I-08B2.4. NOT approved, NOT frozen, NOT canonical. One of three directions
+     for Product visual review; the directions are not ranked.
+
+     The Q geometry is the APPROVED I-08B2.3 compact mark, unmodified. The
+     defs group id="q-mark" below is a verbatim copy of the one in
+     QANDEEL_Q_BASE_MASTER.svg (ring, tail, structural light-point core).
+     It is placed by one uniform matrix and is otherwise untouched.
+
+     Framing (identical in all three directions):
+       canvas 1024 x 1024, conceptually square, no mask shape baked in;
+       the mark's minimum enclosing circle is set equal to the Android adaptive
+       safe circle (66/108 of the canvas), concentric with it, so no ink - ring,
+       opening, tail, tail termination or light point - can be masked away.
+
+     COLOUR STATUS: every colour in this file is an APP ICON PRESENTATION
+     CANDIDATE. None is a QANDEEL Brand colour token. Brand tokens are not
+     frozen by this task. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 1024 1024" width="1024" height="1024" fill-rule="nonzero">
+ <title>QANDEEL App Icon B - DARK LUMINOUS</title>
+ <desc>App-icon presentation candidate. The approved I-08B2.3 compact Q, unmodified, placed by a single uniform matrix. Same ground as A. The approved halo at full measured radius and opacity, plus a restrained stroke bloom so the tail keeps light at small sizes.</desc>
+ <defs>
+  <g id="q-mark">
+   <path id="q-ring" d="M1059.19 968.2C1000.69 1030.77 930.99 1081.49 852.31 1115.72C780.22 1147.08 702.13 1164.27 623.52 1165.99C551.87 1167.56 480.05 1156.29 412.32 1132.85C347.94 1110.58 287.43 1077.38 233.99 1035.12C186.21 997.34 144.17 952.39 109.59 902.25C-40.81 684.21 -35.06 390.02 122.95 177.58C172.4 111.1 235.24 54.78 306.84 13.06C375.51 -26.96 451.92 -53.37 530.67 -64.15C602.24 -73.96 675.48 -70.84 745.95 -54.96C809.21 -40.71 870.08 -16.23 925.62 17.22C977.84 48.67 1025.25 88 1065.87 133.46C1194.88 277.84 1248.82 479.35 1210.97 669.04C1197.33 737.38 1172.06 802.69 1137.11 862.92L1048.83 821.62C1081.68 765 1104.8 703.5 1116.01 638.93C1145.4 469.81 1091.92 291.18 970.47 169.1C936.01 134.46 896.61 104.77 853.75 81.31C807.84 56.18 758.03 38.26 706.61 28.47C648.9 17.48 589.33 16.78 531.37 26.38C467.44 36.97 405.74 60.06 350.44 93.82C290.36 130.49 238.12 179.57 197.39 236.95C60.25 430.12 67.1 701.57 216.17 886.23C246.72 924.07 282.58 957.6 322.49 985.41C365.08 1015.08 412.2 1038.18 461.79 1053.53C517.27 1070.7 575.69 1078.12 633.7 1075.3C697.56 1072.21 760.66 1056.71 818.77 1030.06C884.07 1000.1 941.8 956.36 989.68 902.93Z"/>
+   <path id="q-tail" d="M663.82 896.5C685.9 893.21 708.04 888.9 730.24 886.59C747.91 884.75 765.7 885.39 783.38 883.48C819.38 879.59 858.08 874.67 894.08 881.19C928.66 887.46 962.61 903.24 995.92 914.23C1013.44 920 1031.11 925.6 1049.06 929.85C1062.4 933.01 1076.08 934.4 1088.91 939.44C1199.37 982.85 1304.24 1040.55 1421.02 1066.38C1480.64 1079.56 1541.63 1084.45 1602.56 1080.2C1635.21 1077.93 1667.4 1071.22 1699.98 1068.08L1710.08 1068.82C1664.55 1089.17 1632.81 1107.01 1598.14 1118.09C1538.89 1137.02 1478.72 1146 1416.59 1143.92C1300.26 1140.02 1193.63 1085.97 1088.91 1041.22C1076.14 1035.76 1062.39 1034.08 1049.06 1030.51C1028.03 1024.89 1007.4 1017.55 987.07 1009.81C958.9 999.09 930.13 988.16 902.94 975.14C890.6 969.23 880.28 959.73 867.51 954.67C838.85 943.34 805.14 937.22 774.52 934.71C759.79 933.51 744.9 934.65 730.24 932.59C707.63 929.4 685.55 921.82 663.82 915.1Z"/>
+   <path id="q-light-core" d="M663.82 871.26C682.9 871.26 698.36 886.72 698.36 905.8C698.36 924.87 682.9 940.34 663.82 940.34C644.75 940.34 629.28 924.87 629.28 905.8C629.28 886.72 644.75 871.26 663.82 871.26Z"/>
+  </g>
+  <radialGradient id="halo-q" gradientUnits="userSpaceOnUse" cx="663.82" cy="905.8" r="324.57">
+   <stop offset="0" stop-color="#F8EFCC" stop-opacity="0"/>
+   <stop offset="0.0846" stop-color="#F8EFCC" stop-opacity="0"/>
+   <stop offset="0.0955" stop-color="#F6E3AE" stop-opacity="0.45"/>
+   <stop offset="0.1092" stop-color="#F0D597" stop-opacity="1"/>
+   <stop offset="0.1364" stop-color="#E4A171" stop-opacity="1"/>
+   <stop offset="0.1637" stop-color="#CD834D" stop-opacity="1"/>
+   <stop offset="0.191" stop-color="#B66D36" stop-opacity="1"/>
+   <stop offset="0.2183" stop-color="#A05632" stop-opacity="1"/>
+   <stop offset="0.2729" stop-color="#89472B" stop-opacity="1"/>
+   <stop offset="0.3274" stop-color="#6E3920" stop-opacity="1"/>
+   <stop offset="0.4093" stop-color="#4E2A18" stop-opacity="1"/>
+   <stop offset="0.4912" stop-color="#402214" stop-opacity="1"/>
+   <stop offset="0.573" stop-color="#341B0F" stop-opacity="1"/>
+   <stop offset="0.6548" stop-color="#26150C" stop-opacity="1"/>
+   <stop offset="0.7367" stop-color="#1F110B" stop-opacity="1"/>
+   <stop offset="0.8185" stop-color="#150C09" stop-opacity="1"/>
+   <stop offset="1" stop-color="#0A0605" stop-opacity="0"/>
+  </radialGradient>
+  <filter id="stroke-bloom" x="-12%" y="-12%" width="124%" height="124%" color-interpolation-filters="sRGB">
+   <feGaussianBlur stdDeviation="11.07" result="b"/>
+   <feComponentTransfer in="b" result="s"><feFuncA type="linear" slope="0.35"/></feComponentTransfer>
+   <feMerge><feMergeNode in="s"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+ </defs>
+
+ <!-- background: full bleed, conceptually square. No rounded-square shape is
+      baked in; platform masks are applied by the platform, not by this file. -->
+ <rect id="icon-ground" x="0" y="0" width="1024" height="1024" fill="#0A0B0D"/>
+
+ <!-- the approved mark, one uniform placement matrix, geometry untouched -->
+ <g id="q-placement" transform="matrix(0.312622 0 0 0.312622 244.616708 340.621763)">
+  <g id="q-ink" fill="#F4ECDB" filter="url(#stroke-bloom)"><use href="#q-mark"/></g>
+  <g id="q-light-core-tint" fill="#F8EFCC"><use href="#q-light-core"/></g>
+ </g>
+
+ <!-- adaptive halo/bloom, separate from the structural core it surrounds -->
+ <g id="q-halo" transform="matrix(0.312622 0 0 0.312622 244.616708 340.621763)" style="mix-blend-mode:screen" opacity="1.00">
+  <circle cx="663.82" cy="905.8" r="324.57" fill="url(#halo-q)"/>
+ </g>
+</svg>

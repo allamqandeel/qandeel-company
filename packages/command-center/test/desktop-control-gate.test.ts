@@ -71,12 +71,13 @@ describe('the controller request gate', () => {
     assert.equal(secretMatches(a.secret, null), false);
   });
 
-  test('it serves only its own page, the stylesheet, the font and its script', () => {
+  test('it serves only its own page, the stylesheet, the font, its script and the icon', () => {
     assert.equal(controllerStaticPath('/desktop'), '/desktop.html');
     assert.equal(controllerStaticPath('/styles.css'), '/styles.css');
     assert.equal(controllerStaticPath('/app/app/desktop.js'), '/app/app/desktop.js');
+    assert.equal(controllerStaticPath('/qandeel-icon.svg'), '/qandeel-icon.svg');
     assert.equal(controllerStaticPath('/fonts/IBMPlexSansArabic-Regular.woff2'), '/fonts/IBMPlexSansArabic-Regular.woff2');
-    for (const p of ['/', '/index.html', '/launch', '/launch.html', '/app/app/main.js', '/app/app/api.js', '/api/universe', '/fonts/../index.html', '/desktop.html', '/fonts/x.ttf']) assert.equal(controllerStaticPath(p), null, p);
+    for (const p of ['/', '/index.html', '/launch', '/launch.html', '/app/app/main.js', '/app/app/api.js', '/api/universe', '/fonts/../index.html', '/desktop.html', '/fonts/x.ttf', '/qandeel-icon.png', '/icons/qandeel-icon.svg']) assert.equal(controllerStaticPath(p), null, p);
   });
 });
 

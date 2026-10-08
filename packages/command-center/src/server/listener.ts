@@ -107,6 +107,8 @@ const ROUTES: readonly Route[] = [
   route('GET', '/api/activation', 'activation', (ctx) => api.activation(ctx)),
   // L1-02: one attempt's durable answer (an explicit Founder read; the session gate below applies like every /api route).
   route('GET', '/api/academy/attempts/:id/answer', 'attemptAnswer', (ctx, p) => api.attemptAnswer(ctx, p[0] as string)),
+  // D2-UX-01: the company-wide Academy overview (a read; no Academy act is reachable from it).
+  route('GET', '/api/academy', 'academy', (ctx) => api.academy(ctx)),
   route('GET', '/api/providers', 'providers', (ctx) => api.providers(ctx)),
   // C7-D Digital Workshop: reads, and opening an internal Preview on the isolated preview host (session + CSRF). A promotion
   // is decided through the existing governed APPROVAL_DECIDE confirmation, never here.
