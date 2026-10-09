@@ -6,7 +6,7 @@
  * raw answer or error object is never read again, so a changing, throwing or trick-valued field cannot
  * make one decision see a different provider than another.
  */
-import { PROVIDER_FAILURE_CLASSES, ProviderError, costOf, normalizeUsage, type PriceCard, type ProviderFailureClass } from '@qandeel-company/governance';
+import { PROVIDER_FAILURE_CLASSES, ProviderError, costOf, normalizeUsage, type PriceCard, type ProviderFailureClass, type ProviderFinishReason } from '@qandeel-company/governance';
 
 export type SnapshotUsage =
   | { readonly state: 'NONE' }
@@ -23,6 +23,12 @@ export interface ProviderSnapshot {
   readonly usage: SnapshotUsage;
   /** The provider's own data broke the contract — decided once, here, from the captured values alone. */
   readonly providerFault: boolean;
+  /**
+   * P1-REASON-AUTO-RECOVERY-01: why the provider stopped (null = not reported: unknown, never assumed complete) and the
+   * reasoning-token count inside the output tokens (null = not reported). Plain values read once, like everything here.
+   */
+  readonly finishReason: ProviderFinishReason | null;
+  readonly reasoningTokens: number | null;
 }
 
 export interface SnapshotBounds {
@@ -42,24 +48,31 @@ export function listedFailureClass(value: unknown): ProviderFailureClass | null 
 
 /** A failure that no provider data can argue with (timeout, abort). */
 export function failureSnapshot(failure: ProviderFailureClass): ProviderSnapshot {
-  return Object.freeze({ answered: false, outputText: '', failure, usage: NONE, providerFault: failure === 'CONTRACT_VIOLATION' });
+  return Object.freeze({ answered: false, outputText: '', failure, usage: NONE, providerFault: failure === 'CONTRACT_VIOLATION', finishReason: null, reasoningTokens: null });
 }
 
 /** Snapshot of what `adapter.generate` resolved with. */
 export function answerSnapshot(result: unknown, bounds: SnapshotBounds): ProviderSnapshot {
   let outputText: unknown;
   let usage: unknown;
+  let finish: unknown;
+  let reasoning: unknown;
   try {
-    const r = result as { outputText?: unknown; usage?: unknown } | null | undefined;
+    const r = result as { outputText?: unknown; usage?: unknown; finishReason?: unknown; reasoningTokens?: unknown } | null | undefined;
     outputText = r?.outputText;
     usage = captureUsage(r?.usage);
+    finish = r?.finishReason;
+    reasoning = r?.reasoningTokens;
   } catch {
     return failureSnapshot('CONTRACT_VIOLATION');
   }
   // A malformed answer is the provider's contract violation (possibly billed, spend unknown).
   if (typeof outputText !== 'string') return failureSnapshot('CONTRACT_VIOLATION');
   const u = usageOf(usage, bounds, true);
-  return Object.freeze({ answered: true, outputText, failure: null, usage: u, providerFault: brokeUsage(u, bounds) });
+  // Only the closed values count; anything else is "not reported" (a count above the output tokens is not a count).
+  const finishReason: ProviderFinishReason | null = finish === 'stop' || finish === 'length' ? finish : null;
+  const reasoningTokens = typeof reasoning === 'number' && Number.isSafeInteger(reasoning) && reasoning >= 0 && u.state === 'REPORTED' && reasoning <= u.outputTokens ? reasoning : null;
+  return Object.freeze({ answered: true, outputText, failure: null, usage: u, providerFault: brokeUsage(u, bounds), finishReason, reasoningTokens });
 }
 
 /** Snapshot of what `adapter.generate` threw. */
@@ -77,7 +90,7 @@ export function errorSnapshot(error: unknown, bounds: SnapshotBounds): ProviderS
   }
   const cls = listedFailureClass(failure) ?? 'UNKNOWN';
   const u = usageOf(usage, bounds, false);
-  return Object.freeze({ answered: false, outputText: '', failure: cls, usage: u, providerFault: cls === 'CONTRACT_VIOLATION' || brokeUsage(u, bounds) });
+  return Object.freeze({ answered: false, outputText: '', failure: cls, usage: u, providerFault: cls === 'CONTRACT_VIOLATION' || brokeUsage(u, bounds), finishReason: null, reasoningTokens: null });
 }
 
 /** Reads each field of a usage report exactly once, into a plain object (anything else as it is). */

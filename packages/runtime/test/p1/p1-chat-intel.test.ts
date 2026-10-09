@@ -50,7 +50,7 @@ function seed(root: string, w: C2World): EmployeeRecord {
     const org = OrganizationStore.for(store);
     const seat = org.positionByCode('company.ceo');
     if (!seat) throw new Error('the CEO seat is release-seeded');
-    const e = gov.createEmployee(w.founder, { name: nextName(), profile: { personality: 'steady' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' }, roleRef: seat.roleRef, positionRef: 'position:p1', departmentId: w.departmentId, managerRef: w.founder });
+    const e = gov.createEmployee(w.founder, { name: nextName(), profile: { personality: 'steady' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED', selection: 'DEFAULT' }, roleRef: seat.roleRef, positionRef: 'position:p1', departmentId: w.departmentId, managerRef: w.founder });
     gov.transitionEmployee(w.founder, e.id, { to: 'TRAINING', reasonCode: 'onboarding' });
     gov.transitionEmployee(w.founder, e.id, { to: 'PROBATION', reasonCode: 'trained' });
     activateEmployeeForTest(gov, w.founder, e.id);

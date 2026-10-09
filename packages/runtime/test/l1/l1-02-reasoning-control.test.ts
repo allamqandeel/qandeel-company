@@ -123,18 +123,29 @@ describe('D-L1-44 runtime: reasoning precedence for one model step', () => {
       assert.deepEqual(usedClasses(x, d), ['E4']);
     }));
 
-  test('bounded technical escalation starts from the override (E2 → E3 on observed context overflow), never from the default, and stays within the ceiling', () =>
+  // D-P1-04 (P1-REASON-AUTO-RECOVERY-01, Founder decision) amends the D-L1-44 escalation rule for a Founder-pinned level:
+  // the level the Founder chose is pinned — never raised (nor lowered). An unpinned start keeps the bounded escalation.
+  test('D-P1-04: a Founder-pinned level is never escalated — a context overflow at the pinned E2 ends the run with its own code and nothing is reserved above it; an unpinned start still escalates one class', () =>
     withWorld('l1-rc-escalate', async (x) => {
       setProfile(x, 'E1', 'E3');
       x.f.local.failNext('deep-e2', 'CONTEXT_OVERFLOW');
       const id = submit(x, { override: 'E2' });
-      assert.equal(await settled(x.rt, id), 'COMPLETED');
+      assert.equal(await settled(x.rt, id), 'FAILED');
       assert.equal(x.f.local.calls.get('deep-e1') ?? 0, 0, 'the default E1 was never used for this Work Item');
       assert.equal(x.f.local.calls.get('deep-e2'), 1);
-      assert.deepEqual(usedClasses(x, id).at(-1), 'E3', 'escalated one class above the override');
+      assert.equal(x.f.local.calls.get('deep-e3') ?? 0, 0, 'the pinned level was never raised');
       const run = x.rt.view.runsForWorkItem(id).at(-1);
       assert.ok(run);
-      assert.deepEqual(x.rt.governance.reservations(run.id).map((r) => r.attemptKind), ['PRIMARY', 'ESCALATION']);
+      assert.equal(run.failureCode, 'PROVIDER_CONTEXT_OVERFLOW');
+      assert.deepEqual(x.rt.governance.reservations(run.id).map((r) => r.attemptKind), ['PRIMARY']);
+      // The same observed failure at an unpinned (default) start: one evidence-based escalation (D13-C.3), unchanged.
+      x.f.local.failNext('deep-e1', 'CONTEXT_OVERFLOW');
+      const free = submit(x);
+      assert.equal(await settled(x.rt, free), 'COMPLETED');
+      assert.deepEqual(usedClasses(x, free).at(-1), 'E2', 'escalated one class above the default');
+      const freeRun = x.rt.view.runsForWorkItem(free).at(-1);
+      assert.ok(freeRun);
+      assert.deepEqual(x.rt.governance.reservations(freeRun.id).map((r) => r.attemptKind), ['PRIMARY', 'ESCALATION']);
     }));
 
   test('ceiling protection at run time: an override whose class is now above a lowered ceiling never reaches a provider and reserves nothing', () =>

@@ -38,9 +38,20 @@ export interface ProviderUsage {
   readonly cachedInputTokens?: number;
 }
 
+/**
+ * P1-REASON-AUTO-RECOVERY-01: why the provider stopped writing, normalized. `length` = the output allowance was exhausted
+ * (the answer is incomplete and is never accepted as a complete proposal). Absent = the adapter does not report it
+ * (unknown, never assumed complete or truncated).
+ */
+export const PROVIDER_FINISH_REASONS = ['stop', 'length'] as const;
+export type ProviderFinishReason = (typeof PROVIDER_FINISH_REASONS)[number];
+
 export interface ProviderResponse {
   readonly outputText: string;
   readonly usage: ProviderUsage;
+  readonly finishReason?: ProviderFinishReason;
+  /** Reasoning (thinking) tokens inside `usage.outputTokens`, when the provider reports the count (a number only). */
+  readonly reasoningTokens?: number;
 }
 
 /**

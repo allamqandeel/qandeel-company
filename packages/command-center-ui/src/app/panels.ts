@@ -287,7 +287,7 @@ export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost,
   const budgetOpen = same && root.querySelector('.budget-editor') !== null;
   const budgetDraft = same ? (root.querySelector<HTMLInputElement>('.budget-editor input')?.value ?? '') : '';
   const intelOpen = same && root.querySelector('.intel-editor') !== null;
-  const intelDraft = { defaultClass: root.querySelector<HTMLSelectElement>('#intel-default')?.value ?? '', ceilingClass: root.querySelector<HTMLSelectElement>('#intel-ceiling')?.value ?? '' };
+  const intelDraft = { defaultClass: root.querySelector<HTMLSelectElement>('#intel-default')?.value ?? '', ceilingClass: root.querySelector<HTMLSelectElement>('#intel-ceiling')?.value ?? '', selection: root.querySelector<HTMLSelectElement>('#intel-selection')?.value ?? '' };
   const scroll = same ? root.scrollTop : 0;
   const kept = same ? keepFocus(root) : null;
   root.replaceChildren();
@@ -417,14 +417,17 @@ export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost,
  * the existing EMPLOYEE_REASONING_PROFILE governed preview (its confirmation names the certifications that become due for
  * review). A per-message level is chosen in the Chat, never here.
  */
-function intelligenceSection(full: string, given: string, employeeId: string, intel: Json, host: PanelHost, draft: { defaultClass: string; ceilingClass: string } | null): HTMLElement {
+function intelligenceSection(full: string, given: string, employeeId: string, intel: Json, host: PanelHost, draft: { defaultClass: string; ceilingClass: string; selection: string } | null): HTMLElement {
   const def = String(intel.defaultClass);
   const max = String(intel.ceilingClass);
+  // P1-REASON-AUTO-RECOVERY-01: AUTO (the governed policy picks the starting level per task) or DEFAULT.
+  const sel = intel.selection === 'AUTO' ? 'AUTO' : 'DEFAULT';
   const facts = h('dl', { class: 'facts intel-facts' });
   const fact = (k: string, v: Node | string): void => {
     facts.append(h('dt', { text: k }), h('dd', {}, v));
   };
   fact('Model', modelLabel(intel));
+  fact('Level selection', sel === 'AUTO' ? `AUTO · by task, up to ${max}` : 'Default · every task starts at the default');
   fact('Default level', `${def} · ${isLevel(def) ? LEVEL_THINKING[def] : ''}`);
   fact('Maximum level', `${max} · ${isLevel(max) ? LEVEL_THINKING[max] : ''}`);
   const levels = h('ul', { class: 'intel-levels', 'aria-label': `Reasoning levels for conversation with ${full}` });
@@ -445,12 +448,12 @@ function intelligenceSection(full: string, given: string, employeeId: string, in
   }
   const money = env ? h('p', { class: 'muted small', text: `Envelope: cap ${fmtMoneyMicros(Number(env.capMoney), currency)} (a hard ceiling) · held for calls in flight ${fmtMoneyMicros(Number(env.reservedMoney), currency)} · actually spent ${fmtMoneyMicros(Number(env.spentMoney), currency)}.` }) : h('p', { class: 'muted small', text: 'No budget envelope: no model call can be made.' });
   const slot = h('div', { class: 'intel-slot' });
-  const change = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Change default or maximum', 'aria-expanded': 'false', 'data-keep': 'intel-change' });
+  const change = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Change selection, default or maximum', 'aria-expanded': 'false', 'data-keep': 'intel-change' });
   const close = (): void => {
     slot.replaceChildren();
     change.setAttribute('aria-expanded', 'false');
   };
-  const open = (values: { defaultClass: string; ceilingClass: string }, focus: boolean): void => {
+  const open = (values: { defaultClass: string; ceilingClass: string; selection: string }, focus: boolean): void => {
     const box = h('form', { class: 'intel-editor', 'aria-label': `Standing reasoning levels of ${full}` }) as HTMLFormElement;
     const select = (id: string, label: string, value: string): HTMLSelectElement => {
       const s = h('select', { id, 'data-keep': id }) as HTMLSelectElement;
@@ -459,7 +462,10 @@ function intelligenceSection(full: string, given: string, employeeId: string, in
       box.append(h('label', { for: id, class: 'budget-label', text: label }), s);
       return s;
     };
-    const ds = select('intel-default', 'Default level (every reply starts here)', values.defaultClass || def);
+    const ss = h('select', { id: 'intel-selection', 'data-keep': 'intel-selection' }, h('option', { value: 'AUTO', text: 'AUTO · the governed policy picks per task' }), h('option', { value: 'DEFAULT', text: 'Default · every task starts at the default' })) as HTMLSelectElement;
+    ss.value = values.selection === 'AUTO' || values.selection === 'DEFAULT' ? values.selection : sel;
+    box.append(h('label', { for: 'intel-selection', class: 'budget-label', text: 'Level selection (AUTO is not a fifth level)' }), ss);
+    const ds = select('intel-default', 'Default level (where every task starts when AUTO is off)', values.defaultClass || def);
     const cs = select('intel-ceiling', 'Maximum level (the highest any reply may use)', values.ceilingClass || max);
     const error = h('p', { class: 'budget-error', role: 'alert' });
     const cancel = h('button', { type: 'button', class: 'btn btn-ghost', text: 'Cancel', 'data-keep': 'intel-cancel' });
@@ -481,18 +487,18 @@ function intelligenceSection(full: string, given: string, employeeId: string, in
         error.textContent = 'The maximum must be at or above the default.';
         return;
       }
-      if (ds.value === def && cs.value === max) {
+      if (ds.value === def && cs.value === max && ss.value === sel) {
         error.textContent = 'That is already the standing profile.';
         return;
       }
       error.textContent = '';
-      void host.previewAction('EMPLOYEE_REASONING_PROFILE', { employeeId, defaultClass: ds.value, ceilingClass: cs.value, reasonCode: 'founder.reasoning_profile' });
+      void host.previewAction('EMPLOYEE_REASONING_PROFILE', { employeeId, defaultClass: ds.value, ceilingClass: cs.value, selection: ss.value, reasonCode: 'founder.reasoning_profile' });
     });
     slot.replaceChildren(box);
     change.setAttribute('aria-expanded', 'true');
-    if (focus) ds.focus();
+    if (focus) ss.focus();
   };
-  change.addEventListener('click', () => (slot.childElementCount ? close() : open({ defaultClass: def, ceilingClass: max }, true)));
+  change.addEventListener('click', () => (slot.childElementCount ? close() : open({ defaultClass: def, ceilingClass: max, selection: sel }, true)));
   if (draft) open(draft, false);
   return sectionEl('Employee Intelligence', facts, levels, h('p', { class: 'muted small', text: 'In the Chat a level can be chosen for one message; it never changes these standing levels.' }), usageEl, money, change, slot);
 }

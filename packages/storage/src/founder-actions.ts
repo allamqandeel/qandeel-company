@@ -181,11 +181,12 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
     }
     // --- D-L1-44: Employee Reasoning Control (reasoning is never authority; nothing here grants, spends or calls a model) ---
     case 'EMPLOYEE_REASONING_PROFILE': {
-      const plan = txPlanReasoningProfile(ctx, { employeeId: assertId(raw.employeeId, 'employeeId'), defaultClass: raw.defaultClass, ceilingClass: raw.ceilingClass, costDiscipline: raw.costDiscipline });
+      const plan = txPlanReasoningProfile(ctx, { employeeId: assertId(raw.employeeId, 'employeeId'), defaultClass: raw.defaultClass, ceilingClass: raw.ceilingClass, costDiscipline: raw.costDiscipline, selection: raw.selection });
       const e = plan.employee;
       return {
         employeeId: e.id, name: `${e.name.given} ${e.name.family}`, roleRef: e.roleRef, employeeState: e.state, employeeVersion: e.version,
         previousDefault: plan.previousDefault, newDefault: plan.newDefault, previousCeiling: plan.previousCeiling, newCeiling: plan.newCeiling,
+        previousSelection: plan.previousSelection, newSelection: plan.newSelection,
         costDiscipline: plan.costDiscipline, costDisciplineChange: 'UNCHANGED',
         certificationsReviewDue: [...plan.certificationsReviewDue],
         authorityChange: 'NONE', budgetChange: 'NONE', providerCall: 'NONE',
@@ -589,7 +590,7 @@ export class FounderActionStore {
       }
       case 'EMPLOYEE_REASONING_PROFILE': {
         // The store re-plans inside the confirm and refuses a profile that changed since the preview (version-safe).
-        const e = GovernanceStore.for(this.#store).changeReasoningProfile(founderRef, str('employeeId'), { defaultClass: pl.newDefault as 'E1', ceilingClass: pl.newCeiling as 'E1', expectedVersion: Number(pl.employeeVersion), reasonCode: str('reasonCode') });
+        const e = GovernanceStore.for(this.#store).changeReasoningProfile(founderRef, str('employeeId'), { defaultClass: pl.newDefault as 'E1', ceilingClass: pl.newCeiling as 'E1', ...(pl.newSelection === 'AUTO' || pl.newSelection === 'DEFAULT' ? { selection: pl.newSelection } : {}), expectedVersion: Number(pl.employeeVersion), reasonCode: str('reasonCode') });
         return `employee:${e.id}`;
       }
       case 'WORK_ITEM_REASONING_OVERRIDE': {

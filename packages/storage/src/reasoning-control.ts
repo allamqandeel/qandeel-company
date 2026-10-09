@@ -16,7 +16,7 @@
  * provider call, and records the class that actually answered on the usage record.
  */
 import { QandeelError, canonicalJson, type Id } from '@qandeel-company/domain';
-import { assertCognitiveProfile, effectiveClass, isReasoningClass, reasoningRank, type ReasoningClass } from '@qandeel-company/governance';
+import { assertCognitiveProfile, effectiveClass, isReasoningClass, isReasoningSelection, reasoningRank, reasoningSelectionOf, type ReasoningClass, type ReasoningSelection } from '@qandeel-company/governance';
 
 import { employeeIdFromRef, getEmployeeRow, writeEmployeeHistory } from './governance-core.js';
 import type { EmployeeRecord } from './governance-records.js';
@@ -53,13 +53,16 @@ export interface ReasoningProfilePlan {
   readonly previousCeiling: ReasoningClass;
   readonly newDefault: ReasoningClass;
   readonly newCeiling: ReasoningClass;
+  /** P1-REASON-AUTO-RECOVERY-01: how the starting class is chosen (AUTO / DEFAULT), before and after. */
+  readonly previousSelection: ReasoningSelection;
+  readonly newSelection: ReasoningSelection;
   readonly costDiscipline: string;
   /** The Employee's VALID certifications this material change marks REVIEW_DUE (Stage 6 §14). */
   readonly certificationsReviewDue: readonly Id[];
 }
 
 /** Validates a persistent profile change against durable state (the preview and the confirm run the same check). */
-export function txPlanReasoningProfile(ctx: StoreContext, input: { employeeId: Id; defaultClass?: unknown; ceilingClass?: unknown; costDiscipline?: unknown }): ReasoningProfilePlan {
+export function txPlanReasoningProfile(ctx: StoreContext, input: { employeeId: Id; defaultClass?: unknown; ceilingClass?: unknown; costDiscipline?: unknown; selection?: unknown }): ReasoningProfilePlan {
   const e = getEmployeeRow(ctx, input.employeeId);
   if (e.state === 'RETIRED') transition('RETIRED', 'a retired Employee has no reasoning profile to change');
   const current = assertCognitiveProfile(e.cognitiveProfile);
@@ -68,28 +71,37 @@ export function txPlanReasoningProfile(ctx: StoreContext, input: { employeeId: I
   if (above(newDefault, newCeiling)) refuse('CEILING_BELOW_DEFAULT', 'the ceiling is at or above the default', { field: 'ceilingClass', defaultClass: newDefault, ceilingClass: newCeiling });
   // Cost discipline is not a reasoning control: it is kept exactly as it is.
   if (input.costDiscipline !== undefined && input.costDiscipline !== null && input.costDiscipline !== current.costDiscipline) refuse('COST_DISCIPLINE_UNCHANGED', 'cost discipline is not changed by a reasoning control', { field: 'costDiscipline' });
-  if (newDefault === current.defaultClass && newCeiling === current.ceilingClass) transition('PROFILE_UNCHANGED', 'the reasoning profile already is this');
+  // AUTO / DEFAULT is part of the reasoning profile: turning it on or off is the same governed, material profile act (it
+  // changes how every future starting class is chosen), so it takes the canonical REVIEW_DUE path below — no exemption.
+  const previousSelection = reasoningSelectionOf(current);
+  if (input.selection !== undefined && input.selection !== null && !isReasoningSelection(input.selection)) refuse('REASONING_SELECTION', 'the selection is AUTO or DEFAULT', { field: 'selection' });
+  const newSelection = input.selection === undefined || input.selection === null ? previousSelection : (input.selection as ReasoningSelection);
+  if (newDefault === current.defaultClass && newCeiling === current.ceilingClass && newSelection === previousSelection) transition('PROFILE_UNCHANGED', 'the reasoning profile already is this');
   const certificationsReviewDue = ctx.db.all<{ id: string }>(`SELECT id FROM certifications WHERE employee_id = ? AND status = 'VALID' ORDER BY id`, e.id).map((r) => r.id as Id);
-  return { employee: e, previousDefault: current.defaultClass, previousCeiling: current.ceilingClass, newDefault, newCeiling, costDiscipline: current.costDiscipline, certificationsReviewDue };
+  return { employee: e, previousDefault: current.defaultClass, previousCeiling: current.ceilingClass, newDefault, newCeiling, previousSelection, newSelection, costDiscipline: current.costDiscipline, certificationsReviewDue };
 }
 
 /**
  * Writes a persistent profile change (inside a Founder-authority write): version-safe against the version the Founder
  * previewed, Employee history PROFILE, the material-change REVIEW_DUE of each VALID certification and the audit row.
  */
-export function txChangeReasoningProfile(ctx: StoreContext, actorRef: string, input: { employeeId: Id; defaultClass: ReasoningClass; ceilingClass: ReasoningClass; expectedVersion: number; reasonCode: string }): EmployeeRecord {
-  const plan = txPlanReasoningProfile(ctx, { employeeId: input.employeeId, defaultClass: input.defaultClass, ceilingClass: input.ceilingClass });
+export function txChangeReasoningProfile(ctx: StoreContext, actorRef: string, input: { employeeId: Id; defaultClass: ReasoningClass; ceilingClass: ReasoningClass; selection?: ReasoningSelection; expectedVersion: number; reasonCode: string }): EmployeeRecord {
+  const plan = txPlanReasoningProfile(ctx, { employeeId: input.employeeId, defaultClass: input.defaultClass, ceilingClass: input.ceilingClass, ...(input.selection !== undefined ? { selection: input.selection } : {}) });
   const e = plan.employee;
   if (e.version !== input.expectedVersion) throw new QandeelError('VERSION_CONFLICT', 'the Employee changed since the preview', { employeeId: e.id, expected: input.expectedVersion, actual: e.version });
-  const profile = { defaultClass: plan.newDefault, ceilingClass: plan.newCeiling, costDiscipline: plan.costDiscipline };
+  // A profile that never carried a selection keeps that exact stored form while it stays DEFAULT.
+  const keepsForm = plan.newSelection === 'DEFAULT' && assertCognitiveProfile(e.cognitiveProfile).selection === undefined;
+  const profile = { defaultClass: plan.newDefault, ceilingClass: plan.newCeiling, costDiscipline: plan.costDiscipline, ...(keepsForm ? {} : { selection: plan.newSelection }) };
   const changed = ctx.db.run(`UPDATE employees SET cognitive_profile_json = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, canonicalJson(assertCognitiveProfile(profile)), ts(ctx), e.id, e.version).changes;
   if (changed !== 1) throw new QandeelError('VERSION_CONFLICT', 'the Employee changed concurrently', { employeeId: e.id });
   const next = getEmployeeRow(ctx, e.id);
   let reviewDue = 0;
   for (const id of plan.certificationsReviewDue) if (markReviewDue(ctx, id, 'REASONING_PROFILE_CHANGED', actorRef)) reviewDue++;
-  const from = `${plan.previousDefault}/${plan.previousCeiling}`;
-  const to = `${plan.newDefault}/${plan.newCeiling}`;
-  writeEmployeeHistory(ctx, next, 'PROFILE', from, to, input.reasonCode, actorRef, { previousDefault: plan.previousDefault, newDefault: plan.newDefault, previousCeiling: plan.previousCeiling, newCeiling: plan.newCeiling, costDiscipline: plan.costDiscipline, certificationsReviewDue: reviewDue });
+  // The selection appears in the history line only when it changes (a class-only change keeps the D-L1-44 form).
+  const mode = (sel: string): string => (plan.previousSelection === plan.newSelection ? '' : `/${sel}`);
+  const from = `${plan.previousDefault}/${plan.previousCeiling}${mode(plan.previousSelection)}`;
+  const to = `${plan.newDefault}/${plan.newCeiling}${mode(plan.newSelection)}`;
+  writeEmployeeHistory(ctx, next, 'PROFILE', from, to, input.reasonCode, actorRef, { previousDefault: plan.previousDefault, newDefault: plan.newDefault, previousCeiling: plan.previousCeiling, newCeiling: plan.newCeiling, previousSelection: plan.previousSelection, newSelection: plan.newSelection, costDiscipline: plan.costDiscipline, certificationsReviewDue: reviewDue });
   appendAudit(ctx, 'employee.reasoning_profile_changed', 'employee', e.id, { actorRef }, 'OK', input.reasonCode, { from, to, certificationsReviewDue: reviewDue });
   return next;
 }
@@ -152,6 +164,7 @@ export interface ReasoningControlView {
   readonly employeeId: Id;
   readonly defaultClass: ReasoningClass;
   readonly ceilingClass: ReasoningClass;
+  readonly selection: ReasoningSelection;
   readonly costDiscipline: string;
   /** Founder one-task overrides on this Employee's Work Items (newest first, bounded). */
   readonly overrides: readonly { readonly workItemId: Id; readonly reasoningClass: ReasoningClass; readonly workItemState: string; readonly setByRef: string; readonly createdAt: string }[];
@@ -176,7 +189,7 @@ export function txReasoningControlView(ctx: StoreContext, employeeId: Id): Reaso
       e.id,
     )
     .map((r) => ({ workItemId: r.work_item_id as Id, reasoningClass: r.c, calls: Number(r.n) }));
-  return { employeeId: e.id, defaultClass: p.defaultClass, ceilingClass: p.ceilingClass, costDiscipline: p.costDiscipline, overrides, modelCalls };
+  return { employeeId: e.id, defaultClass: p.defaultClass, ceilingClass: p.ceilingClass, selection: reasoningSelectionOf(p), costDiscipline: p.costDiscipline, overrides, modelCalls };
 }
 
 /** P1-CHAT-INTEL-01: why one reasoning level can or cannot answer the Employee's conversation now (codes only). */
@@ -190,6 +203,8 @@ export interface EmployeeIntelligenceView {
   readonly model: { readonly providerCode: string; readonly modelCode: string; readonly publicName: string | null } | null;
   readonly defaultClass: ReasoningClass;
   readonly ceilingClass: ReasoningClass;
+  /** AUTO (the governed Reasoning Demand picks the starting class) or DEFAULT (the standing default). */
+  readonly selection: ReasoningSelection;
   readonly routeMinClass: ReasoningClass | null;
   readonly routeMaxClass: ReasoningClass | null;
   readonly levels: readonly { readonly reasoningClass: ReasoningClass; readonly availability: LevelAvailability; readonly deploymentProvisioned: boolean }[];
@@ -230,7 +245,7 @@ export function txEmployeeIntelligence(ctx: StoreContext, employeeId: Id, taskCl
   return {
     employeeId: e.id, employeeState: e.state, taskClass,
     model: first ? { providerCode: first.providerCode, modelCode: first.modelCode, publicName } : null,
-    defaultClass: p.defaultClass, ceilingClass: p.ceilingClass, routeMinClass: policy?.minClass ?? null, routeMaxClass: policy?.maxClass ?? null,
+    defaultClass: p.defaultClass, ceilingClass: p.ceilingClass, selection: reasoningSelectionOf(p), routeMinClass: policy?.minClass ?? null, routeMaxClass: policy?.maxClass ?? null,
     levels, usage,
     envelope: env ? { currency: env.currency, capMoney: Number(env.cap_money), reservedMoney: Number(env.reserved_money), spentMoney: Number(env.spent_money) } : null,
   };

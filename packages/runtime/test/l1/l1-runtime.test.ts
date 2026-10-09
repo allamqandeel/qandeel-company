@@ -61,7 +61,7 @@ function seedL1(root: string, w: C2World): { ceo: EmployeeRecord; deployments: I
     const org = OrganizationStore.for(store);
     const seat = org.positionByCode('company.ceo');
     if (!seat) throw new Error('the CEO seat is release-seeded');
-    const e = gov.createEmployee(w.founder, { name: nextName(), profile: { personality: 'steady' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' }, roleRef: seat.roleRef, positionRef: 'position:p1', departmentId: w.departmentId, managerRef: w.founder });
+    const e = gov.createEmployee(w.founder, { name: nextName(), profile: { personality: 'steady' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED', selection: 'DEFAULT' }, roleRef: seat.roleRef, positionRef: 'position:p1', departmentId: w.departmentId, managerRef: w.founder });
     gov.transitionEmployee(w.founder, e.id, { to: 'TRAINING', reasonCode: 'onboarding' });
     gov.transitionEmployee(w.founder, e.id, { to: 'PROBATION', reasonCode: 'trained' });
     activateEmployeeForTest(gov, w.founder, e.id);
@@ -105,7 +105,8 @@ describe('L1 runtime: the Founder ↔ CEO path thinks through DeepSeek inside th
       assert.deepEqual(body.thinking, { type: 'disabled' }, 'E1 → no thinking');
       assert.equal('reasoning_effort' in body, false, 'E1 → no reasoning_effort field');
       assert.equal(body.model, 'deepseek-flash');
-      assert.equal(body.max_tokens, 1_024, 'the Founder reply ceiling bounds max_tokens');
+      // D-P1-04: the per-class reply allowance (E1 2,048 since P1-REASON-AUTO-RECOVERY-01) bounds max_tokens.
+      assert.equal(body.max_tokens, 2_048, 'the Founder reply ceiling bounds max_tokens');
       assert.ok(body.messages[0]?.content.includes('"type":"MESSAGE"'), 'the stable prefix tells a real model how to answer the Founder');
       const prompt = body.messages.reduce((n, m) => n + m.content.length, 0);
       const answer = fakeChatAnswer(alwaysMessage(request), { prompt: Math.ceil(prompt / 4), completion: 60, hit: 16 });
@@ -138,7 +139,7 @@ describe('L1 runtime: the Founder ↔ CEO path thinks through DeepSeek inside th
       const reserved = rt.governance.reservations(u.runId).find((r) => r.id === u.reservationId);
       assert.ok(reserved && reserved.state === 'SETTLED');
       assert.ok(u.economicMicros <= reserved.money, 'actual never exceeds the reservation');
-      assert.equal(reserved.money, worstCase(card, reserved.tokens - 1_024, 1_024).economicMicros, 'the reservation is the peak, all-cache-miss worst case of the context bound + the output ceiling');
+      assert.equal(reserved.money, worstCase(card, reserved.tokens - 2_048, 2_048).economicMicros, 'the reservation is the peak, all-cache-miss worst case of the context bound + the output ceiling');
       assert.ok(u.billedMicros <= u.economicMicros, 'the truthful bill never exceeds the governed cost');
       assert.equal(rt.governance.accountingInvariants().length, 0);
       // Nothing durable holds the chain-of-thought marker or the credential: the database, the logs, the audit.

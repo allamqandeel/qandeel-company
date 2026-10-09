@@ -4,7 +4,7 @@
  * routing, budgets and fencing on every call (Stage 12 §11, Stage 13 D13-D).
  */
 import type { JsonObject, Processor, ProcessorContext, ProcessorResult } from '@qandeel-company/domain';
-import type { EscalationEvidence, OutputDiagnosticCode, ModelProposal, ProviderFailureClass, ProviderUsage, ReasoningClass } from '@qandeel-company/governance';
+import type { AutoConstraint, EscalationEvidence, MalformedReason, OutputDiagnosticCode, ModelProposal, ProviderFailureClass, ProviderFinishReason, ProviderUsage, ReasoningClass, ReasoningDemand } from '@qandeel-company/governance';
 import type { GovernedRunContext } from '@qandeel-company/storage/runtime-authority';
 
 /**
@@ -21,20 +21,58 @@ export interface ModelCallRequest {
    */
   readonly step: number;
   readonly maxOutputTokens: number;
+  /**
+   * P1-REASON-AUTO-RECOVERY-01 (B1): the output allowance per reasoning class. When present, every call's allowance is
+   * the one of the class it ACTUALLY routes at (an escalation never inherits the starting class's allowance); absent,
+   * `maxOutputTokens` applies to every class (every Work Item created before this change keeps its exact behaviour).
+   */
+  readonly maxOutputTokensByClass?: Readonly<Partial<Record<'E1' | 'E2' | 'E3' | 'E4', number>>>;
+  /** The AUTO Reasoning Demand recorded on the Work Item (used only when nothing fixes the class and AUTO is on). */
+  readonly reasoningDemand?: ReasoningDemand;
   /** Evidence-based escalation of this step to the next class (never on self-reported uncertainty alone). */
   readonly escalation?: { readonly fromClass: ReasoningClass; readonly evidence: EscalationEvidence };
+  /**
+   * The one same-class continuation of a step whose output exhausted its allowance: the same class, a larger allowance
+   * (bounded), a separately reserved RETRY attempt. Never an escalation.
+   */
+  readonly continuation?: { readonly reasoningClass: ReasoningClass; readonly exhaustedTokens: number };
+}
+
+/** How the starting class of a model step was chosen (P1-REASON-AUTO-RECOVERY-01; content-free). */
+export interface ReasoningSelectionRecord {
+  readonly mode: 'SYSTEM_PINNED' | 'MANUAL' | 'AUTO' | 'DEFAULT';
+  readonly startClass: ReasoningClass;
+  /** AUTO only: the ideal the policy chose, and why it runs lower (null = it runs at the ideal). */
+  readonly idealClass: ReasoningClass | null;
+  readonly constraint: AutoConstraint | null;
 }
 
 export type ModelCallOutcome =
   | { readonly kind: 'NO_LLM' }
-  | { readonly kind: 'OK'; readonly proposal: ModelProposal; readonly usage: ProviderUsage; readonly deploymentId: string; readonly reasoningClass: ReasoningClass; readonly attempts: number; readonly manifestId: string }
+  | {
+      readonly kind: 'OK';
+      readonly proposal: ModelProposal;
+      readonly usage: ProviderUsage;
+      readonly deploymentId: string;
+      readonly reasoningClass: ReasoningClass;
+      readonly attempts: number;
+      readonly manifestId: string;
+      /** The allowance this call actually had, and the provider's finish reason (null = not reported). */
+      readonly maxOutputTokens: number;
+      readonly finishReason: ProviderFinishReason | null;
+      /** The parser's content-free MALFORMED sub-reason, when the proposal is MALFORMED. */
+      readonly invalidReason: MalformedReason | null;
+    }
+  /** Every eligible route is held only by an open circuit: a timed wait until it may be tried, never a spent attempt. */
+  | { readonly kind: 'CIRCUIT_OPEN'; readonly until: string }
   /** No context could be assembled for this step (typed; never a silent truncation). */
   | { readonly kind: 'CONTEXT'; readonly code: 'CONTEXT_BUDGET_EXHAUSTED' | 'CONFLICT_HOLD' | 'SKILL_CONFLICT' | 'INTEGRITY_FAILURE' | 'CONTEXT_NOT_ASSEMBLED' }
   | { readonly kind: 'DENIED'; readonly code: string }
   | { readonly kind: 'BUDGET'; readonly code: string; readonly detail: string }
   | { readonly kind: 'ESCALATION_REFUSED'; readonly code: string }
   | { readonly kind: 'UNAVAILABLE'; readonly code: string }
-  | { readonly kind: 'FAILED'; readonly failure: ProviderFailureClass }
+  /** The class of the call that failed (an escalation starts from it, never from a class that did not run). */
+  | { readonly kind: 'FAILED'; readonly failure: ProviderFailureClass; readonly reasoningClass?: ReasoningClass }
   | { readonly kind: 'UNCERTAIN'; readonly failure: ProviderFailureClass };
 
 export interface ToolRequest {
@@ -129,7 +167,7 @@ export interface GovernedRunServices {
    * (the output text is never stored, and nothing reads it back into a context). D-L1-24: or the output-contract code of a
    * valid proposal an answer-only Work Item refuses, with the recognized proposal type or the answer refusal code.
    */
-  noteInvalidOutput(step: number, code: OutputDiagnosticCode, reasoningClass: string, detail?: { readonly proposalType?: string; readonly refusalCode?: string }): void;
+  noteInvalidOutput(step: number, code: OutputDiagnosticCode, reasoningClass: string, detail?: { readonly proposalType?: string; readonly refusalCode?: string; readonly malformedReason?: string }): void;
   /** C5: the Employee's message into the Founder thread its Work Item answers (fenced; never authority). */
   sendMessage(proposal: MessageProposal, step: number): MessageOutcome;
   /** C5: a Director's goal derivation / link from inside its run (fenced). */

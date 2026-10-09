@@ -133,7 +133,8 @@ export function parseChatResponse(res: DeepSeekResponse): ProviderResponse {
   if (usage === 'INVALID' || usage === null) throw new ProviderError('CONTRACT_VIOLATION');
   const choice = Array.isArray(body.choices) ? (body.choices[0] as { message?: { content?: unknown } | null; finish_reason?: unknown } | undefined) : undefined;
   if (!choice || typeof choice !== 'object') throw new ProviderError('CONTRACT_VIOLATION', usage);
-  switch (choice.finish_reason) {
+  const finish = choice.finish_reason;
+  switch (finish) {
     case 'content_filter':
       throw new ProviderError('CONTENT_POLICY', usage);
     case 'insufficient_system_resource':
@@ -154,7 +155,12 @@ export function parseChatResponse(res: DeepSeekResponse): ProviderResponse {
   // proposal layer refuses as invalid output; a non-string is a broken contract.
   const outputText = typeof content === 'string' ? content : content === null ? '' : undefined;
   if (outputText === undefined) throw new ProviderError('CONTRACT_VIOLATION', usage);
-  return { outputText, usage };
+  // P1-REASON-AUTO-RECOVERY-01: the finish reason travels with the answer (`length` = the allowance ran out: the Model
+  // Runtime never accepts that text as a complete proposal), and so does the reasoning-token COUNT when the provider
+  // reports one — a number only; no reasoning text is ever read.
+  const reasoning = (res.body as { usage?: { completion_tokens_details?: { reasoning_tokens?: unknown } | null } } | null)?.usage?.completion_tokens_details?.reasoning_tokens;
+  const reasoningTokens = tokens(reasoning);
+  return { outputText, usage, finishReason: finish === 'length' ? 'length' : 'stop', ...(reasoningTokens !== null && reasoningTokens <= usage.outputTokens ? { reasoningTokens } : {}) };
 }
 
 export type IdentityCheckResult = 'MATCH' | 'DRIFT' | 'MODEL_MISSING' | 'UNREACHABLE' | 'AUTH' | 'BILLING' | 'RATE_LIMITED' | 'PROVIDER_ERROR' | 'CONTRACT_VIOLATION' | 'CREDENTIAL_UNAVAILABLE';

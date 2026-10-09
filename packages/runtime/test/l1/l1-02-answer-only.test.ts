@@ -51,7 +51,7 @@ async function drive(outputs: ModelProposal[], opts: { input?: Record<string, un
     t.effects.push(name);
     return value;
   };
-  const ok = (proposal: ModelProposal): ModelCallOutcome => ({ kind: 'OK', proposal, usage: { inputTokens: 1, outputTokens: 1 }, deploymentId: 'd', reasoningClass: 'E1', attempts: 1, manifestId: 'm' });
+  const ok = (proposal: ModelProposal): ModelCallOutcome => ({ kind: 'OK', proposal, usage: { inputTokens: 1, outputTokens: 1 }, deploymentId: 'd', reasoningClass: 'E1', attempts: 1, manifestId: 'm', maxOutputTokens: 512, finishReason: null, invalidReason: null });
   const services: GovernedRunServices = {
     context: { cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2' } } as unknown as GovernedRunServices['context'],
     invokeModel: (req) => {

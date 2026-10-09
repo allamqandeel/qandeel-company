@@ -620,7 +620,7 @@ describe('D-L1-20: pre-run corrections for package v2', () => {
         if (r.arm === 'WITH_SKILL') {
           assert.equal(r.workItemState, 'COMPLETED', 'the escalation answered');
           assert.ok(r.answer && !r.answer.body.includes(INVALID_CANARY));
-          assert.deepEqual(invalidRows(r.workItemId), [{ reason: 'MALFORMED', details: { step: 0, reasoningClass: 'E1' } }]);
+          assert.deepEqual(invalidRows(r.workItemId), [{ reason: 'MALFORMED', details: { step: 0, reasoningClass: 'E1', malformedReason: 'FIELD_SET' } }]);
         } else {
           assert.equal(r.workItemState, 'FAILED');
           assert.equal(x.rt.view.runsForWorkItem(r.workItemId)[0]?.failureCode, 'MODEL_OUTPUT_INVALID', 'two invalid outputs still fail the run');

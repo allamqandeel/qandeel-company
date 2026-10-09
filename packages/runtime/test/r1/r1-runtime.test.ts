@@ -758,7 +758,7 @@ describe('R2-12: one run-failure vocabulary — the runtime records the real cau
     checkpoint: () => Promise.resolve(),
     putArtifact: () => Promise.reject(new Error('not used')),
   });
-  const answer = (proposal: ModelProposal): ModelCallOutcome => ({ kind: 'OK', proposal, usage: { inputTokens: 1, outputTokens: 1 }, deploymentId: 'd', reasoningClass: 'E1', attempts: 1, manifestId: 'm' });
+  const answer = (proposal: ModelProposal): ModelCallOutcome => ({ kind: 'OK', proposal, usage: { inputTokens: 1, outputTokens: 1 }, deploymentId: 'd', reasoningClass: 'E1', attempts: 1, manifestId: 'm', maxOutputTokens: 512, finishReason: null, invalidReason: null });
   const tool: ModelProposal = { type: 'TOOL_REQUEST', tool: 'notes', action: 'append', args: {} };
   const INPUT = { taskClass: 'draft.memo', instructions: 'Write the memo.' };
   /** Drives the real employee loop with scripted governed services; returns the code the run would record. */
@@ -786,7 +786,7 @@ describe('R2-12: one run-failure vocabulary — the runtime records the real cau
   const CONTEXT_CODES: Extract<ModelCallOutcome, { kind: 'CONTEXT' }>['code'][] = ['CONTEXT_BUDGET_EXHAUSTED', 'CONFLICT_HOLD', 'SKILL_CONFLICT', 'INTEGRITY_FAILURE', 'CONTEXT_NOT_ASSEMBLED'];
   const BEGIN_CODES: Extract<BeginResult, { ok: false }>['code'][] = ['EMPLOYEE_NOT_ELIGIBLE', 'NOT_EMPLOYEE_OWNED', 'CAPABILITY_GAP_CANCELLED', 'STEP_RANGE_EXHAUSTED', 'CAPABILITY_GAP'];
   // The model runtime's UNAVAILABLE codes: configuration, route, local and provider causes.
-  const UNAVAILABLE = ['NO_ROUTE_POLICY', 'NO_ELIGIBLE_DEPLOYMENT', 'REASONING_ABOVE_CEILING', 'FALLBACK_REFUSED_COST', 'ABORTED', 'SETTLEMENT_FAILED', 'ATTEMPTS_EXHAUSTED', ...PROVIDER_FAILURE_CLASSES.map((c) => `PROVIDER_${c}`)];
+  const UNAVAILABLE = ['NO_ROUTE_POLICY', 'NO_ELIGIBLE_DEPLOYMENT', 'REASONING_ABOVE_CEILING', 'FALLBACK_REFUSED_COST', 'ABORTED', 'SETTLEMENT_FAILED', 'ATTEMPTS_EXHAUSTED', 'REASONING_LEVEL_UNAVAILABLE', ...PROVIDER_FAILURE_CLASSES.map((c) => `PROVIDER_${c}`)];
   // The runtime's own settle overrides (runtime.ts) and the governed-run refusal the plain entry point returns.
   const RUNTIME_CODES = ['PROCESSOR_ERROR', 'PROCESSOR_STOPPED_UNPROMPTED', 'INVALID_WAIT', 'RUN_TIMEOUT'];
 
@@ -804,6 +804,10 @@ describe('R2-12: one run-failure vocabulary — the runtime records the real cau
       add(`tool budget ${c}`, await codeOf([answer(tool)], { executeTool: () => Promise.resolve({ kind: 'BUDGET', code: c }) }));
     }
     add('escalation refused', await codeOf([{ kind: 'ESCALATION_REFUSED', code: 'X' }]));
+    // P1-REASON-AUTO-RECOVERY-01: a continuation that cannot grow, an exhausted output twice, and an open circuit (a timed wait).
+    add('continuation not larger', await codeOf([{ kind: 'ESCALATION_REFUSED', code: 'CONTINUATION_NOT_LARGER' }]));
+    add('truncated twice', await codeOf([answer({ type: 'INVALID', code: 'OUTPUT_TRUNCATED' }), answer({ type: 'INVALID', code: 'OUTPUT_TRUNCATED' })]));
+    add('circuit open', await codeOf([{ kind: 'CIRCUIT_OPEN', until: '2999-01-01T00:00:00.000Z' }]));
     for (const c of CONTEXT_CODES) add(`context ${c}`, await codeOf([{ kind: 'CONTEXT', code: c }]));
     const toolOutcomes: ToolOutcome[] = [
       { kind: 'DENIED', code: 'NO_GRANT', paused: true },

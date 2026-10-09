@@ -58,8 +58,12 @@ export type ModelProposal =
   | ({ readonly type: 'ANSWER'; readonly body: string } & AnswerFacets)
   | { readonly type: 'INVALID'; readonly code: InvalidOutputCode };
 
-/** The parser's content-free classification of an output that is not a valid proposal (D-L1-20). */
-export const INVALID_OUTPUT_CODES = ['NOT_JSON', 'UNKNOWN_TYPE', 'MALFORMED'] as const;
+/**
+ * The content-free classification of an output that is not a valid proposal (D-L1-20). OUTPUT_TRUNCATED
+ * (P1-REASON-AUTO-RECOVERY-01) is set by the Model Runtime, not the parser: the provider reported that the output
+ * allowance ran out (`finish_reason=length`), so the text is incomplete and is never parsed as a proposal at all.
+ */
+export const INVALID_OUTPUT_CODES = ['NOT_JSON', 'UNKNOWN_TYPE', 'MALFORMED', 'OUTPUT_TRUNCATED'] as const;
 export type InvalidOutputCode = (typeof INVALID_OUTPUT_CODES)[number];
 
 /**
@@ -169,85 +173,123 @@ const CODE_SHAPE = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+){0,7}$/;
 const CODE = { test: (s: string): boolean => s.length <= 64 && CODE_SHAPE.test(s) };
 const KEY = { test: (s: string): boolean => s.length <= 96 && CODE_SHAPE.test(s) };
 
+/**
+ * P1-REASON-AUTO-RECOVERY-01 — the content-free sub-reason of a MALFORMED output: which closed rule of the proposal shape
+ * the output broke (never a field value or any text). Recorded with the D-L1-20 diagnosis so a failed reply is
+ * diagnosable; the proposal itself (and every caller of `parseProposal`) is unchanged.
+ */
+export const MALFORMED_REASONS = [
+  'NOT_OBJECT', 'FIELD_SET', 'CODE_FORMAT', 'ARGS_SHAPE', 'CONTENT_BOUNDS', 'CONFIDENCE_RANGE', 'PURPOSE_INVALID', 'ATTENTION_INVALID',
+  'BODY_EMPTY', 'BODY_TOO_LONG', 'BRIEF_MISMATCH', 'BRIEF_INVALID', 'REFS_INVALID', 'ACTION_UNKNOWN', 'OUTCOME_INVALID', 'RATIONALE_BOUNDS',
+  'JUDGMENT_INVALID', 'FACETS_INVALID',
+] as const;
+export type MalformedReason = (typeof MALFORMED_REASONS)[number];
+
+export interface ParsedProposal {
+  readonly proposal: ModelProposal;
+  /** Set only for a MALFORMED output: the closed rule it broke. */
+  readonly reason: MalformedReason | null;
+}
+
+const malformed = (reason: MalformedReason): ParsedProposal => ({ proposal: { type: 'INVALID', code: 'MALFORMED' }, reason });
+const ok = (proposal: ModelProposal): ParsedProposal => ({ proposal, reason: null });
+const isArgs = (v: unknown): boolean => typeof v === 'object' && v !== null && !Array.isArray(v);
+
 export function parseProposal(outputText: string): ModelProposal {
+  return parseProposalDetailed(outputText).proposal;
+}
+
+/** The parser with its content-free MALFORMED sub-reason (the proposal is exactly what `parseProposal` returns). */
+export function parseProposalDetailed(outputText: string): ParsedProposal {
   let raw: unknown;
   try {
     raw = JSON.parse(boundedText(outputText, 'output', 65_536, { allowEmpty: true }));
   } catch {
-    return { type: 'INVALID', code: 'NOT_JSON' };
+    return ok({ type: 'INVALID', code: 'NOT_JSON' });
   }
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { type: 'INVALID', code: 'MALFORMED' };
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return malformed('NOT_OBJECT');
   const o = raw as Record<string, unknown>;
   const keys = Object.keys(o).sort().join(',');
   if (o.type === 'FINAL') {
-    if (keys !== 'summaryCode,type' || typeof o.summaryCode !== 'string' || !CODE.test(o.summaryCode)) return { type: 'INVALID', code: 'MALFORMED' };
-    return { type: 'FINAL', summaryCode: o.summaryCode };
+    if (keys !== 'summaryCode,type') return malformed('FIELD_SET');
+    if (typeof o.summaryCode !== 'string' || !CODE.test(o.summaryCode)) return malformed('CODE_FORMAT');
+    return ok({ type: 'FINAL', summaryCode: o.summaryCode });
   }
   if (o.type === 'TOOL_REQUEST') {
-    if (keys !== 'action,args,tool,type' || typeof o.tool !== 'string' || !CODE.test(o.tool) || typeof o.action !== 'string' || !CODE.test(o.action)) return { type: 'INVALID', code: 'MALFORMED' };
-    if (typeof o.args !== 'object' || o.args === null || Array.isArray(o.args)) return { type: 'INVALID', code: 'MALFORMED' };
-    return { type: 'TOOL_REQUEST', tool: o.tool, action: o.action, args: o.args as JsonObject };
+    if (keys !== 'action,args,tool,type') return malformed('FIELD_SET');
+    if (typeof o.tool !== 'string' || !CODE.test(o.tool) || typeof o.action !== 'string' || !CODE.test(o.action)) return malformed('CODE_FORMAT');
+    if (!isArgs(o.args)) return malformed('ARGS_SHAPE');
+    return ok({ type: 'TOOL_REQUEST', tool: o.tool, action: o.action, args: o.args as JsonObject });
   }
   if (o.type === 'MEMORY_CANDIDATE') {
     const allowed = new Set(['type', 'memoryClass', 'topic', 'claimKey', 'claimValue', 'content', 'confidencePct']);
-    if (Object.keys(o).some((k) => !allowed.has(k))) return { type: 'INVALID', code: 'MALFORMED' };
-    if (typeof o.memoryClass !== 'string' || typeof o.topic !== 'string' || !KEY.test(o.topic) || typeof o.content !== 'string' || o.content.length === 0 || o.content.length > 2_000) return { type: 'INVALID', code: 'MALFORMED' };
-    if (typeof o.confidencePct !== 'number' || !Number.isInteger(o.confidencePct) || o.confidencePct < 0 || o.confidencePct > 100) return { type: 'INVALID', code: 'MALFORMED' };
+    if (Object.keys(o).some((k) => !allowed.has(k))) return malformed('FIELD_SET');
+    if (typeof o.memoryClass !== 'string' || typeof o.topic !== 'string' || !KEY.test(o.topic)) return malformed('CODE_FORMAT');
+    if (typeof o.content !== 'string' || o.content.length === 0 || o.content.length > 2_000) return malformed('CONTENT_BOUNDS');
+    if (typeof o.confidencePct !== 'number' || !Number.isInteger(o.confidencePct) || o.confidencePct < 0 || o.confidencePct > 100) return malformed('CONFIDENCE_RANGE');
     const claimKey = o.claimKey === undefined || o.claimKey === null ? null : o.claimKey;
     const claimValue = o.claimValue === undefined || o.claimValue === null ? null : o.claimValue;
-    if ((claimKey !== null && (typeof claimKey !== 'string' || !KEY.test(claimKey))) || (claimValue !== null && (typeof claimValue !== 'string' || !KEY.test(claimValue)))) return { type: 'INVALID', code: 'MALFORMED' };
-    return { type: 'MEMORY_CANDIDATE', memoryClass: o.memoryClass, topic: o.topic, claimKey: claimKey as string | null, claimValue: claimValue as string | null, content: o.content, confidencePct: o.confidencePct };
+    if ((claimKey !== null && (typeof claimKey !== 'string' || !KEY.test(claimKey))) || (claimValue !== null && (typeof claimValue !== 'string' || !KEY.test(claimValue)))) return malformed('CODE_FORMAT');
+    return ok({ type: 'MEMORY_CANDIDATE', memoryClass: o.memoryClass, topic: o.topic, claimKey: claimKey as string | null, claimValue: claimValue as string | null, content: o.content, confidencePct: o.confidencePct });
   }
   if (o.type === 'OBSERVATION') {
-    if (keys !== 'content,topic,type' || typeof o.topic !== 'string' || !KEY.test(o.topic) || typeof o.content !== 'string' || o.content.length === 0 || o.content.length > 2_000) return { type: 'INVALID', code: 'MALFORMED' };
-    return { type: 'OBSERVATION', topic: o.topic, content: o.content };
+    if (keys !== 'content,topic,type') return malformed('FIELD_SET');
+    if (typeof o.topic !== 'string' || !KEY.test(o.topic)) return malformed('CODE_FORMAT');
+    if (typeof o.content !== 'string' || o.content.length === 0 || o.content.length > 2_000) return malformed('CONTENT_BOUNDS');
+    return ok({ type: 'OBSERVATION', topic: o.topic, content: o.content });
   }
   if (o.type === 'ORG_ACTION') {
-    if (keys !== 'action,args,type' || !isOrgAction(o.action)) return { type: 'INVALID', code: 'MALFORMED' };
-    if (typeof o.args !== 'object' || o.args === null || Array.isArray(o.args)) return { type: 'INVALID', code: 'MALFORMED' };
-    return { type: 'ORG_ACTION', action: o.action, args: o.args as JsonObject };
+    if (keys !== 'action,args,type') return malformed('FIELD_SET');
+    if (!isOrgAction(o.action)) return malformed('ACTION_UNKNOWN');
+    if (!isArgs(o.args)) return malformed('ARGS_SHAPE');
+    return ok({ type: 'ORG_ACTION', action: o.action, args: o.args as JsonObject });
   }
   if (o.type === 'REVIEW_DECISION') {
     const allowed = new Set(['type', 'outcome', 'reasonCode', 'rationale', 'evidenceRefs', 'outcomeVerdict', 'outcomeEvidence']);
-    if (Object.keys(o).some((k) => !allowed.has(k))) return { type: 'INVALID', code: 'MALFORMED' };
-    if (!isReviewOutcome(o.outcome) || typeof o.reasonCode !== 'string' || !CODE.test(o.reasonCode)) return { type: 'INVALID', code: 'MALFORMED' };
+    if (Object.keys(o).some((k) => !allowed.has(k))) return malformed('FIELD_SET');
+    if (!isReviewOutcome(o.outcome)) return malformed('OUTCOME_INVALID');
+    if (typeof o.reasonCode !== 'string' || !CODE.test(o.reasonCode)) return malformed('CODE_FORMAT');
     const rationale = o.rationale === undefined || o.rationale === null ? null : o.rationale;
-    if (rationale !== null && (typeof rationale !== 'string' || rationale.length === 0 || rationale.length > 4_000)) return { type: 'INVALID', code: 'MALFORMED' };
+    if (rationale !== null && (typeof rationale !== 'string' || rationale.length === 0 || rationale.length > 4_000)) return malformed('RATIONALE_BOUNDS');
     const refs = o.evidenceRefs === undefined ? [] : o.evidenceRefs;
-    if (!Array.isArray(refs) || refs.length > 16 || refs.some((r) => typeof r !== 'string' || r.length === 0 || r.length > 128 || !/^[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9._:-]{1,95}$/.test(r))) return { type: 'INVALID', code: 'MALFORMED' };
+    if (!Array.isArray(refs) || refs.length > 16 || refs.some((r) => typeof r !== 'string' || r.length === 0 || r.length > 128 || !/^[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9._:-]{1,95}$/.test(r))) return malformed('REFS_INVALID');
     // C6: the reviewer's outcome judgment travels with the review decision (both fields or neither).
-    if ((o.outcomeVerdict === undefined) !== (o.outcomeEvidence === undefined)) return { type: 'INVALID', code: 'MALFORMED' };
+    if ((o.outcomeVerdict === undefined) !== (o.outcomeEvidence === undefined)) return malformed('JUDGMENT_INVALID');
     let outcomeJudgment: OutcomeJudgment | null = null;
     if (o.outcomeVerdict !== undefined) {
       const classes = o.outcomeEvidence;
-      if (!isOutcomeVerdict(o.outcomeVerdict) || !Array.isArray(classes) || classes.length === 0 || classes.length > 8 || classes.some((c) => typeof c !== 'string' || !/^[A-Z][A-Z_]{1,31}$/.test(c))) return { type: 'INVALID', code: 'MALFORMED' };
+      if (!isOutcomeVerdict(o.outcomeVerdict) || !Array.isArray(classes) || classes.length === 0 || classes.length > 8 || classes.some((c) => typeof c !== 'string' || !/^[A-Z][A-Z_]{1,31}$/.test(c))) return malformed('JUDGMENT_INVALID');
       outcomeJudgment = { verdict: o.outcomeVerdict, evidenceClasses: classes as string[] };
     }
-    return { type: 'REVIEW_DECISION', outcome: o.outcome, reasonCode: o.reasonCode, rationale: rationale as string | null, evidenceRefs: refs as string[], outcomeJudgment };
+    return ok({ type: 'REVIEW_DECISION', outcome: o.outcome, reasonCode: o.reasonCode, rationale: rationale as string | null, evidenceRefs: refs as string[], outcomeJudgment });
   }
   if (o.type === 'MESSAGE') {
     const allowed = new Set(['type', 'purpose', 'attentionLevel', 'body', 'brief', 'contextRefs']);
-    if (Object.keys(o).some((k) => !allowed.has(k))) return { type: 'INVALID', code: 'MALFORMED' };
-    if (!isMessagePurpose(o.purpose) || !isAttentionLevel(o.attentionLevel)) return { type: 'INVALID', code: 'MALFORMED' };
-    if (typeof o.body !== 'string' || o.body.trim().length === 0 || o.body.length > 4_000) return { type: 'INVALID', code: 'MALFORMED' };
+    if (Object.keys(o).some((k) => !allowed.has(k))) return malformed('FIELD_SET');
+    if (!isMessagePurpose(o.purpose)) return malformed('PURPOSE_INVALID');
+    if (!isAttentionLevel(o.attentionLevel)) return malformed('ATTENTION_INVALID');
+    if (typeof o.body !== 'string' || o.body.trim().length === 0) return malformed('BODY_EMPTY');
+    if (o.body.length > 4_000) return malformed('BODY_TOO_LONG');
     const brief = o.brief === undefined || o.brief === null ? null : o.brief;
-    if ((o.purpose === 'BRIEF') !== (brief !== null)) return { type: 'INVALID', code: 'MALFORMED' };
-    if (brief !== null && !isFounderBrief(brief)) return { type: 'INVALID', code: 'MALFORMED' };
+    if ((o.purpose === 'BRIEF') !== (brief !== null)) return malformed('BRIEF_MISMATCH');
+    if (brief !== null && !isFounderBrief(brief)) return malformed('BRIEF_INVALID');
     const refs = o.contextRefs === undefined ? [] : o.contextRefs;
-    if (!Array.isArray(refs) || refs.length > 8 || refs.some((r) => typeof r !== 'string' || !/^[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9._:-]{1,95}$/.test(r))) return { type: 'INVALID', code: 'MALFORMED' };
-    return { type: 'MESSAGE', purpose: o.purpose, attentionLevel: o.attentionLevel, body: o.body, brief: brief as FounderBrief | null, contextRefs: refs as string[] };
+    if (!Array.isArray(refs) || refs.length > 8 || refs.some((r) => typeof r !== 'string' || !/^[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9._:-]{1,95}$/.test(r))) return malformed('REFS_INVALID');
+    return ok({ type: 'MESSAGE', purpose: o.purpose, attentionLevel: o.attentionLevel, body: o.body, brief: brief as FounderBrief | null, contextRefs: refs as string[] });
   }
   if (o.type === 'GOAL_ACTION') {
-    if (keys !== 'action,args,type' || !isGoalAction(o.action)) return { type: 'INVALID', code: 'MALFORMED' };
-    if (typeof o.args !== 'object' || o.args === null || Array.isArray(o.args)) return { type: 'INVALID', code: 'MALFORMED' };
-    return { type: 'GOAL_ACTION', action: o.action, args: o.args as JsonObject };
+    if (keys !== 'action,args,type') return malformed('FIELD_SET');
+    if (!isGoalAction(o.action)) return malformed('ACTION_UNKNOWN');
+    if (!isArgs(o.args)) return malformed('ARGS_SHAPE');
+    return ok({ type: 'GOAL_ACTION', action: o.action, args: o.args as JsonObject });
   }
   if (o.type === 'ANSWER') {
-    if (keys !== 'authority,body,confidence,decision,evidence,founderDecisionNeeded,reversible,spendMicros,type') return { type: 'INVALID', code: 'MALFORMED' };
-    if (typeof o.body !== 'string' || o.body.trim().length === 0 || o.body.length > ANSWER_BODY_MAX) return { type: 'INVALID', code: 'MALFORMED' };
+    if (keys !== 'authority,body,confidence,decision,evidence,founderDecisionNeeded,reversible,spendMicros,type') return malformed('FIELD_SET');
+    if (typeof o.body !== 'string' || o.body.trim().length === 0) return malformed('BODY_EMPTY');
+    if (o.body.length > ANSWER_BODY_MAX) return malformed('BODY_TOO_LONG');
     const facets = answerFacetsOf(o);
-    if (facets === null) return { type: 'INVALID', code: 'MALFORMED' };
-    return { type: 'ANSWER', body: o.body, ...facets };
+    if (facets === null) return malformed('FACETS_INVALID');
+    return ok({ type: 'ANSWER', body: o.body, ...facets });
   }
-  return { type: 'INVALID', code: 'UNKNOWN_TYPE' };
+  return ok({ type: 'INVALID', code: 'UNKNOWN_TYPE' });
 }

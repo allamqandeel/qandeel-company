@@ -10,17 +10,26 @@
  */
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { newId, type Id } from '@qandeel-company/domain';
+import { newId, parseTimestamp, toTimestamp, type Id, type Timestamp } from '@qandeel-company/domain';
 import {
+  continuationAllowance,
+  effectiveClass,
   failureDisposition,
+  hardGate,
+  isReasoningDemand,
   maxDataClass,
   mayRetry,
-  parseProposal,
+  parseProposalDetailed,
   planEscalation,
   planFallback,
+  reasoningSelectionOf,
+  resolveAutoClass,
   route,
   utf8TokenUpperBound,
   type AttemptKind,
+  type DeploymentView,
+  type ReasoningClass,
+  type RoutePolicy,
   type PriceCard,
   type ProviderAdapter,
   type ProviderFailureClass,
@@ -28,11 +37,11 @@ import {
   type RouteRequest,
 } from '@qandeel-company/governance';
 import { GovernanceStore, type CompanyStore, type Fence } from '@qandeel-company/storage';
-import { authorizeModelCall, containProviderFault, holdReservation, recordDeploymentOutcome, releaseReservation, reserveBudget, settleReservation, type GovernedRunContext } from '@qandeel-company/storage/runtime-authority';
+import { authorizeModelCall, containProviderFault, holdReservation, recordDeploymentOutcome, recordModelCallObservation, recordReasoningSelection, releaseReservation, reserveBudget, settleReservation, type GovernedRunContext } from '@qandeel-company/storage/runtime-authority';
 
 import { isAssembledContext, type AssembledContext } from '../c3/context-assembler.js';
 import { answerSnapshot, errorSnapshot, failureSnapshot, type ProviderSnapshot, type SnapshotBounds } from './provider-boundary.js';
-import type { ModelCallOutcome, ModelCallRequest } from './types.js';
+import type { ModelCallOutcome, ModelCallRequest, ReasoningSelectionRecord } from './types.js';
 
 export const DEFAULT_MODEL_CALL_TIMEOUT_MS = 120_000;
 
@@ -108,34 +117,70 @@ export class GovernedModelRuntime {
     const snapshot = governance.routingSnapshot(req.taskClass);
     const policy = snapshot.policy;
     if (!policy) return { kind: 'UNAVAILABLE', code: 'NO_ROUTE_POLICY' };
+    // The deployments this process may route to for this Work Item (uncontained and charged-excluded ones removed).
+    const eligible = routable(snapshot.deployments);
     const profile = run.cognitiveProfile;
-    // D-L1-44 precedence of the starting class: the Founder's one-task override (durable, read at the run's begin), else
-    // the processor's pinned class, else the Employee default. Bounded escalation may raise it; the Employee ceiling, the
-    // route policy, qualified deployments and the reservation still bind (route() and txReserve re-check them).
-    let requested = run.reasoningOverride ?? req.reasoningClass ?? profile.defaultClass;
+    const now = store.now();
+    // P1-REASON-AUTO-RECOVERY-01 precedence of the starting class (D-L1-44 amended, D-P1-04): the Founder's one-task level
+    // (durable, read at the run's begin) — PINNED, never raised or lowered; else the processor's pinned class (a method
+    // pin such as an Academy observation); else, with AUTO on, the governed Reasoning Demand bounded by the ceiling, the
+    // route policy and what is provisioned; else the Employee default. Bounded evidence escalation may raise an AUTO or
+    // DEFAULT start only; the Employee ceiling, the route policy, qualified deployments and the reservation still bind.
+    let requested: ReasoningClass | undefined;
     let firstKind: AttemptKind = 'PRIMARY';
+    let selection: ReasoningSelectionRecord | null = null;
     if (req.escalation) {
+      if (run.reasoningOverride !== null) return { kind: 'ESCALATION_REFUSED', code: 'CLASS_PINNED_BY_FOUNDER' };
       const done = governance.reservations(run.runId).filter((r) => r.attemptKind === 'ESCALATION').length;
       const plan = planEscalation(req.escalation.fromClass, req.escalation.evidence, done, policy, profile.ceilingClass);
       if (!plan.ok) return { kind: 'ESCALATION_REFUSED', code: plan.code };
       requested = plan.toClass;
       firstKind = 'ESCALATION';
+    } else if (req.continuation) {
+      // The same class again with a larger allowance (a separately reserved RETRY attempt), never another class.
+      requested = req.continuation.reasoningClass;
+      firstKind = 'RETRY';
     }
     const currency = governance.budgetFor('COMPANY', 'company')?.currency ?? 'XXX';
+    // The request without its class: the context's effective data class comes from durable state (declared class raised
+    // by tool results already in context): neither the model nor the processor can lower it.
+    const base = { taskClass: req.taskClass, dataClass: auth.dataClass, inputTokensUpperBound: Math.max(utf8TokenUpperBound(context.messages), context.estimatedInputTokens), employeeCeiling: profile.ceilingClass, currency };
+    // The deployments that serve this task class now (the continuation ceiling and the pinned-level check read only these).
+    const serving = eligible.filter((x) => x.taskClasses.includes(req.taskClass) && x.status === 'ACTIVE' && x.providerStatus === 'ACTIVE');
+    if (selection === null && !req.escalation && !req.continuation) {
+      // AUTO only offers a class that some eligible deployment could take for THIS request with that class's own allowance
+      // (every hard gate but a temporary circuit): a class that would only fail to route is never selected.
+      const fits = (c: ReasoningClass): boolean => {
+        const max = outputAllowance(req, c, serving);
+        return max !== null && eligible.some((x) => hardGate(x, { ...base, reasoningClass: c, maxOutputTokens: max }, policy, effectiveClass({ reasoningClass: c }, policy), NEVER) === null);
+      };
+      selection = startSelection(run, req, policy, (['E1', 'E2', 'E3', 'E4'] as const).filter(fits));
+      requested = selection.startClass;
+    }
+    // Every branch above set it; the default is only the type checker’s fallback.
+    const asked: ReasoningClass = requested ?? profile.defaultClass;
+    const startClass = effectiveClass({ reasoningClass: asked }, policy);
+    const maxOutputTokens = outputAllowance(req, startClass, serving);
+    if (maxOutputTokens === null) return { kind: 'ESCALATION_REFUSED', code: 'CONTINUATION_NOT_LARGER' };
     const routeReq: RouteRequest = {
-      taskClass: req.taskClass,
-      reasoningClass: requested,
-      // The context's effective data class comes from durable state (declared class raised by tool
-      // results already in context): neither the model nor the processor can lower it.
-      dataClass: auth.dataClass,
-      inputTokensUpperBound: Math.max(utf8TokenUpperBound(context.messages), context.estimatedInputTokens),
-      maxOutputTokens: req.maxOutputTokens,
-      employeeCeiling: profile.ceilingClass,
-      currency,
+      ...base,
+      reasoningClass: asked,
+      // B1: the allowance of the class this call routes at (never the starting class's when it escalated).
+      maxOutputTokens,
     };
-    let decision: RouteDecision = route(routeReq, policy, routable(snapshot.deployments), store.now());
+    let decision: RouteDecision = route(routeReq, policy, eligible, now);
     if (decision.kind === 'NO_LLM') return { kind: 'NO_LLM' };
-    if (decision.kind === 'NONE') return { kind: 'UNAVAILABLE', code: decision.code };
+    if (decision.kind === 'NONE') {
+      // B3: a route that only an open circuit holds is a timed wait until the circuit may be tried, never a spent attempt.
+      if (decision.code === 'NO_ELIGIBLE_DEPLOYMENT') {
+        const until = circuitReopen(routeReq, policy, eligible, now);
+        if (until !== null) return { kind: 'CIRCUIT_OPEN', until };
+        // A Founder-pinned class with no deployment of that class at all is never substituted by another class.
+        if (run.reasoningOverride !== null && !snapshot.deployments.some((x) => x.reasoningClass === decision.reasoningClass && x.taskClasses.includes(req.taskClass))) return { kind: 'UNAVAILABLE', code: 'REASONING_LEVEL_UNAVAILABLE' };
+      }
+      return { kind: 'UNAVAILABLE', code: decision.code };
+    }
+    if (selection !== null) recordSelection(store, fence, run, req, selection);
     let attemptKind: AttemptKind = firstKind;
     let retries = 0;
     const failed: string[] = [];
@@ -179,8 +224,8 @@ export class GovernedModelRuntime {
           const provided = await this.#call(
             adapter,
             // The route's reasoning class travels with the request (L1-01): the adapter maps it to its bounded profile.
-            { providerCode: d.deployment.providerCode, modelCode: d.deployment.modelCode, deploymentCode: d.deployment.code, reasoningClass: d.reasoningClass, messages: context.messages, maxOutputTokens: req.maxOutputTokens },
-            { inputUpperBound: routeReq.inputTokensUpperBound, maxOutputTokens: req.maxOutputTokens, priceCard: (d.deployment.priceCard as PriceCard | undefined) ?? null },
+            { providerCode: d.deployment.providerCode, modelCode: d.deployment.modelCode, deploymentCode: d.deployment.code, reasoningClass: d.reasoningClass, messages: context.messages, maxOutputTokens: routeReq.maxOutputTokens },
+            { inputUpperBound: routeReq.inputTokensUpperBound, maxOutputTokens: routeReq.maxOutputTokens, priceCard: (d.deployment.priceCard as PriceCard | undefined) ?? null },
             signal,
           );
           // From here on the call may have been billed. Bookkeeping that fails (an out-of-range usage
@@ -189,12 +234,15 @@ export class GovernedModelRuntime {
           // (R1-09, D13-F.1/.8, D-C2-07). The run-settle backstop holds anything still reserved.
           let settled: { readonly done: ModelCallOutcome } | AttemptFailure;
           try {
-            settled = this.#account(store, fence, d, reservationId, sessionId, provided, attempt, context.manifestId);
+            settled = this.#account(store, fence, d, reservationId, sessionId, provided, attempt, context.manifestId, routeReq.maxOutputTokens);
           } catch {
             // Whether the PROVIDER broke the contract was decided at the boundary, never inferred from
             // whichever local error the store threw (R1 re-review).
+            observe(store, fence, run, req, { attemptKind, d, maxOutputTokens: routeReq.maxOutputTokens, s: provided, outcome: null });
             return this.#containAccountingFailure(store, fence, reservationId, d.deployment.id, provided.providerFault);
           }
+          // B2: one content-free observation per sent call (class, allowance, tokens, finish reason, validation).
+          observe(store, fence, run, req, { attemptKind, d, maxOutputTokens: routeReq.maxOutputTokens, s: provided, outcome: 'done' in settled ? settled.done : null, failure: 'done' in settled ? null : settled.failure });
           if ('done' in settled) return settled.done;
           const failure = settled.failure;
           lastFailure = failure;
@@ -208,7 +256,7 @@ export class GovernedModelRuntime {
             await sleep(Math.min(2_000, 50 * 2 ** retries), undefined, { signal }).catch(() => undefined);
             continue;
           }
-          if (!disp.fallback) return disp.sent === 'UNKNOWN' ? { kind: 'UNCERTAIN', failure } : { kind: 'FAILED', failure };
+          if (!disp.fallback) return disp.sent === 'UNKNOWN' ? { kind: 'UNCERTAIN', failure } : { kind: 'FAILED', failure, reasoningClass: d.reasoningClass };
           failed.push(d.deployment.id);
         }
       }
@@ -237,6 +285,7 @@ export class GovernedModelRuntime {
     s: ProviderSnapshot,
     attempt: number,
     manifestId: Id,
+    maxOutputTokens: number,
   ): { readonly done: ModelCallOutcome } | AttemptFailure {
     const deploymentId = d.deployment.id as Id;
     const usage = s.usage;
@@ -252,7 +301,10 @@ export class GovernedModelRuntime {
       // inside this same settle transaction; only a healthy answer's health is best effort.
       settleReservation(store, fence, reservationId, { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens: usage.cachedInputTokens, withinBounds: usage.withinBounds, sessionId, outcome: 'OK' }, s.providerFault);
       if (!s.providerFault) recordHealth(store, fence, deploymentId, null);
-      return { done: { kind: 'OK', proposal: parseProposal(s.outputText), usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens: usage.cachedInputTokens }, deploymentId: d.deployment.id, reasoningClass: d.reasoningClass, attempts: attempt, manifestId } };
+      // B2: an answer the provider cut at the allowance (`length`) is incomplete: it is charged as the provider accepted
+      // and billed it, but its text never becomes a proposal (provider acceptance ≠ valid output ≠ completed work).
+      const parsed = s.finishReason === 'length' ? { proposal: { type: 'INVALID', code: 'OUTPUT_TRUNCATED' } as const, reason: null } : parseProposalDetailed(s.outputText);
+      return { done: { kind: 'OK', proposal: parsed.proposal, usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens: usage.cachedInputTokens }, deploymentId: d.deployment.id, reasoningClass: d.reasoningClass, attempts: attempt, manifestId, maxOutputTokens, finishReason: s.finishReason, invalidReason: parsed.reason } };
     }
     const failure = s.failure ?? 'UNKNOWN';
     const disp = failureDisposition(failure);
@@ -355,5 +407,89 @@ function recordHealth(store: CompanyStore, fence: Fence, deploymentId: Id, failu
     recordDeploymentOutcome(store, fence, deploymentId, failure);
   } catch {
     // Best effort by design (see above).
+  }
+}
+/** A routing instant no circuit reaches: AUTO asks what a class could take, never whether its circuit is open right now. */
+const NEVER = '9999-12-31T23:59:59.999Z' as Timestamp;
+
+/**
+ * The starting class of a step and how it was chosen (D-P1-04 precedence): the Founder's one-task level, else the
+ * processor's method pin, else AUTO (when the Employee's profile selects it and the Work Item carries a governed Reasoning
+ * Demand), else the Employee default.
+ */
+function startSelection(run: GovernedRunContext, req: ModelCallRequest, policy: RoutePolicy, available: readonly ReasoningClass[]): ReasoningSelectionRecord {
+  const profile = run.cognitiveProfile;
+  if (run.reasoningOverride !== null) return { mode: 'MANUAL', startClass: run.reasoningOverride, idealClass: null, constraint: null };
+  if (req.reasoningClass !== undefined) return { mode: 'SYSTEM_PINNED', startClass: req.reasoningClass, idealClass: null, constraint: null };
+  if (reasoningSelectionOf(profile) === 'AUTO' && isReasoningDemand(req.reasoningDemand)) {
+    const r = resolveAutoClass(req.reasoningDemand.level, { ceiling: profile.ceilingClass, policyMin: policy.minClass, policyMax: policy.maxClass, available });
+    return { mode: 'AUTO', startClass: r.selected, idealClass: r.ideal, constraint: r.constraint };
+  }
+  return { mode: 'DEFAULT', startClass: profile.defaultClass, idealClass: null, constraint: null };
+}
+
+/**
+ * B1: the output allowance of a call at `cls` — the Work Item's per-class allowance when it declares one, else its single
+ * allowance; a continuation doubles the exhausted allowance within the deployment maximum (null = it would not grow).
+ */
+function outputAllowance(req: ModelCallRequest, cls: ReasoningClass, deployments: readonly DeploymentView[]): number | null {
+  if (req.continuation) {
+    const deploymentMax = Math.max(0, ...deployments.filter((x) => x.reasoningClass === cls).map((x) => x.maxOutputTokens));
+    return continuationAllowance(req.continuation.exhaustedTokens, deploymentMax);
+  }
+  const byClass = cls === 'E0' ? undefined : req.maxOutputTokensByClass?.[cls];
+  return typeof byClass === 'number' ? byClass : req.maxOutputTokens;
+}
+
+/**
+ * B3: when no deployment is eligible NOW, the earliest instant at which an open circuit's reopening alone makes the same
+ * request routable (every other hard gate unchanged), or null when the route is unavailable for any other reason.
+ */
+function circuitReopen(req: RouteRequest, policy: RoutePolicy, deployments: readonly DeploymentView[], now: Timestamp): Timestamp | null {
+  const reopenings = [...new Set(deployments.map((x) => x.circuitOpenUntil).filter((t): t is Timestamp => t !== null && t > now))].sort();
+  // Five seconds past the later of the reopening and now, so the timed wait still names a future instant when the run
+  // settles after a slow (busy-store) commit — an expired WAIT would cost an attempt (INVALID_WAIT).
+  for (const at of reopenings) if (route(req, policy, deployments, at).kind === 'ROUTE') return toTimestamp(Math.max(parseTimestamp(at), parseTimestamp(now)) + 5_000);
+  return null;
+}
+
+/** The step's class selection, as one content-free audit row of the run (observability: never blocks the call). */
+function recordSelection(store: CompanyStore, fence: Fence, run: GovernedRunContext, req: ModelCallRequest, sel: ReasoningSelectionRecord): void {
+  try {
+    const demand = sel.mode === 'AUTO' && isReasoningDemand(req.reasoningDemand) ? req.reasoningDemand : null;
+    recordReasoningSelection(store, fence, { step: run.stepBase + req.step, mode: sel.mode, startClass: sel.startClass, idealClass: sel.idealClass, constraint: sel.constraint, demand });
+  } catch {
+    // Best effort by design: a busy store never blocks or fails the governed call it describes.
+  }
+}
+
+/** One content-free observation of a sent call (B2): class, allowance, token counts, finish reason, validation codes. */
+function observe(
+  store: CompanyStore,
+  fence: Fence,
+  run: GovernedRunContext,
+  req: ModelCallRequest,
+  o: { attemptKind: AttemptKind; d: Extract<RouteDecision, { kind: 'ROUTE' }>; maxOutputTokens: number; s: ProviderSnapshot; outcome: ModelCallOutcome | null; failure?: ProviderFailureClass | null },
+): void {
+  try {
+    const u = o.s.usage;
+    const ok = o.outcome?.kind === 'OK' ? o.outcome : null;
+    recordModelCallObservation(store, fence, {
+      step: run.stepBase + req.step,
+      attemptKind: o.attemptKind,
+      reasoningClass: o.d.reasoningClass,
+      deploymentCode: o.d.deployment.code,
+      maxOutputTokens: o.maxOutputTokens,
+      inputTokens: u.state === 'REPORTED' ? u.inputTokens : null,
+      outputTokens: u.state === 'REPORTED' ? u.outputTokens : null,
+      reasoningTokens: o.s.reasoningTokens,
+      finishReason: o.s.finishReason,
+      result: ok ? 'ANSWERED' : (o.failure ?? o.s.failure ?? (o.outcome?.kind === 'UNCERTAIN' ? o.outcome.failure : 'UNKNOWN')),
+      proposalType: ok ? ok.proposal.type : null,
+      invalidCode: ok && ok.proposal.type === 'INVALID' ? ok.proposal.code : null,
+      malformedReason: ok ? ok.invalidReason : null,
+    });
+  } catch {
+    // Best effort by design (observability never changes the money or the outcome of the call).
   }
 }

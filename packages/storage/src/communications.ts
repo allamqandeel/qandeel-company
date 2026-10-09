@@ -11,7 +11,7 @@
  * message bodies are company content under the FOUNDER_ONLY scope and never enter audit, events or logs.
  */
 import { QandeelError, assertCode, assertId, boundedJson, boundedText, canonicalJson, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { assertCognitiveProfile, assertTaskClass, briefAttentionLevel, effectiveClass, isAttentionLevel, isContextKind, isMessagePurpose, isReasoningClass, type AttentionLevel, type ContextKind, type FounderBrief, type MessagePurpose, type ReasoningClass, type ThreadKind } from '@qandeel-company/governance';
+import { OUTPUT_ALLOWANCE_BY_CLASS, assessReasoningDemand, assertCognitiveProfile, isReasoningDemand, reasoningSelectionOf, assertTaskClass, briefAttentionLevel, effectiveClass, isAttentionLevel, isContextKind, isMessagePurpose, isReasoningClass, type AttentionLevel, type ContextKind, type FounderBrief, type MessagePurpose, type ReasoningClass, type ThreadKind } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
 import { budgetFor, employeeIdFromRef, getEmployeeRow, txAllocateWorkItemBudget } from './governance-core.js';
@@ -74,7 +74,13 @@ export interface FounderSendInput {
  */
 export const CHAT_REPLY_MAX_MODEL_CALLS = 3;
 export const CHAT_REPLY_MAX_TURNS = 3;
-export const CHAT_REPLY_OUTPUT_TOKENS: Readonly<Record<'E1' | 'E2' | 'E3' | 'E4', number>> = Object.freeze({ E1: 1024, E2: 2048, E3: 4096, E4: 8192 });
+/**
+ * The output allowance per class of a conversation reply (and of a CEO brief). P1-REASON-AUTO-RECOVERY-01 (D-P1-04): the
+ * Work Item carries the whole table, so every call gets the allowance of the class it ACTUALLY routes at — the D-P1-01
+ * table bound only the starting class, and an E1 → E2 escalation of reply 86ff7a28 ran out at E1's 1,024. Values and
+ * evidence: `OUTPUT_ALLOWANCE_BY_CLASS` (governance). Work Items created before keep their recorded input unchanged.
+ */
+export const CHAT_REPLY_OUTPUT_TOKENS: Readonly<Record<'E1' | 'E2' | 'E3' | 'E4', number>> = OUTPUT_ALLOWANCE_BY_CLASS;
 const CLIENT_KEY = /^[A-Za-z0-9-]{8,64}$/;
 /** The canonical idempotency scope of a Founder chat send: the key binds the MESSAGE itself, with or without a reply. */
 export const IDEMPOTENCY_SCOPE_FOUNDER_SEND = 'communication.founder_send';
@@ -206,7 +212,9 @@ export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSen
         processorKind: EMPLOYEE_TASK,
         // The Founder's words reach the model as this task's instructions (context payload), never as authority. The class
         // is never pinned here (that would be a method pin): a per-message level is the durable override below.
-        processorInput: { taskClass, dataClass: 'D2', maxOutputTokens: CHAT_REPLY_OUTPUT_TOKENS[replyClass(ctx, e, taskClass, chosen)], maxTurns: CHAT_REPLY_MAX_TURNS, maxModelCalls: CHAT_REPLY_MAX_MODEL_CALLS, instructions: `Founder message (${input.purpose}): ${body}\n\nAnswer as a MESSAGE proposal in the Founder Communication Standard when a decision is involved. Communication grants no authority.`, founderThreadId: t.id, founderMessageId: messageId },
+        // P1-REASON-AUTO-RECOVERY-01: the per-class allowance table (B1) and the governed Reasoning Demand of the message
+        // (C1: content-free codes from RD-1, used only when the Employee's profile selects AUTO and nothing fixes the class).
+        processorInput: { taskClass, dataClass: 'D2', maxOutputTokens: CHAT_REPLY_OUTPUT_TOKENS[replyClass(ctx, e, taskClass, chosen)], maxOutputTokensByClass: CHAT_REPLY_OUTPUT_TOKENS, reasoningDemand: assessReasoningDemand({ text: body, purpose: input.purpose, attentionLevel: level, executive: e.orgScope === 'COMPANY' }), maxTurns: CHAT_REPLY_MAX_TURNS, maxModelCalls: CHAT_REPLY_MAX_MODEL_CALLS, instructions: `Founder message (${input.purpose}): ${body}\n\nAnswer as a MESSAGE proposal in the Founder Communication Standard when a decision is involved. Communication grants no authority.`, founderThreadId: t.id, founderMessageId: messageId },
         dedupeKey: `founder-reply:${messageId}`,
         initialState: 'PROPOSED',
       },
@@ -275,7 +283,8 @@ export function txRequestCeoBrief(ctx: StoreContext, input: { subject: string; c
       ownerRef: ceo.ref,
       riskLevel: 'R1',
       processorKind: EMPLOYEE_TASK,
-      processorInput: { taskClass: assertTaskClass(input.taskClass ?? FOUNDER_BRIEF_TASK_CLASS), dataClass: 'D2', maxOutputTokens: 1024, instructions, founderThreadId: thread.id, founderMessageId: null },
+      // A brief keeps its single 1,024 starting allowance; an escalated brief call gets its own class's allowance (B1).
+      processorInput: { taskClass: assertTaskClass(input.taskClass ?? FOUNDER_BRIEF_TASK_CLASS), dataClass: 'D2', maxOutputTokens: 1024, maxOutputTokensByClass: { E2: CHAT_REPLY_OUTPUT_TOKENS.E2, E3: CHAT_REPLY_OUTPUT_TOKENS.E3, E4: CHAT_REPLY_OUTPUT_TOKENS.E4 }, instructions, founderThreadId: thread.id, founderMessageId: null },
       // One open brief per context: a repeated signal within the same open thread does not spawn a second run.
       dedupeKey: `ceo-brief:${thread.id}`,
       initialState: 'PROPOSED',
@@ -369,9 +378,68 @@ export interface ReplyState {
   readonly spentMoney: number;
   readonly billedMicros: number;
   readonly updatedAt: string;
+  /**
+   * P1-REASON-AUTO-RECOVERY-01 (D): how the reply's starting class was chosen. MANUAL = the Founder's per-message level
+   * (pinned); AUTO = the governed Reasoning Demand (ideal, reason codes, and what holds it lower); DEFAULT = the standing
+   * default. Before the first run it is the mode that WILL apply; after, the recorded selection of the first call.
+   */
+  readonly selection: ReplySelection;
+  /** Every sent call, oldest first: the class that answered, the attempt kind, the allowance, tokens and the result codes. */
+  readonly callDetails: readonly ReplyCall[];
+}
+
+export interface ReplySelection {
+  /** NOT_RECORDED: the reply ran before selections were recorded (P1-REASON-AUTO-RECOVERY-01); its mode is never guessed. */
+  readonly mode: 'MANUAL' | 'AUTO' | 'DEFAULT' | 'SYSTEM_PINNED' | 'NOT_RECORDED';
+  readonly recorded: boolean;
+  readonly startClass: string | null;
+  readonly idealClass: string | null;
+  readonly constraint: string | null;
+  readonly confidence: string | null;
+  readonly consequence: string | null;
+  readonly reasons: readonly string[];
+}
+
+export interface ReplyCall {
+  readonly reasoningClass: string;
+  readonly attemptKind: string;
+  readonly maxOutputTokens: number | null;
+  readonly outputTokens: number | null;
+  readonly reasoningTokens: number | null;
+  readonly finishReason: string | null;
+  readonly result: string;
+  readonly invalidCode: string | null;
+  readonly malformedReason: string | null;
+}
+
+/** The content-free selection and per-call observations recorded on a reply's runs (codes and counts only). */
+function replyEvidence(ctx: StoreContext, workItemId: Id, profileSelection: string, hasDemand: boolean, requested: string | null): { selection: ReplySelection; calls: ReplyCall[] } {
+  const rows = ctx.db.all<{ action: string; details_json: string }>(
+    `SELECT a.action, a.details_json FROM audit_events a JOIN runs r ON r.id = a.entity_id
+      WHERE a.entity_type = 'run' AND r.work_item_id = ? AND a.action IN ('run.reasoning_selected', 'run.model_call_observed') ORDER BY a.id`,
+    workItemId,
+  );
+  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null);
+  let selection: ReplySelection | null = null;
+  const calls: ReplyCall[] = [];
+  for (const r of rows) {
+    const d = JSON.parse(r.details_json) as Record<string, unknown>;
+    if (r.action === 'run.reasoning_selected') {
+      if (selection === null) selection = { mode: (str(d.mode) ?? 'DEFAULT') as ReplySelection['mode'], recorded: true, startClass: str(d.startClass), idealClass: str(d.idealClass), constraint: str(d.constraint), confidence: str(d.confidence), consequence: str(d.consequence), reasons: Object.keys(d).filter((k) => k.startsWith('reason:') && d[k] === true).map((k) => k.slice('reason:'.length)) };
+    } else calls.push({ reasoningClass: str(d.reasoningClass) ?? '', attemptKind: str(d.attemptKind) ?? '', maxOutputTokens: num(d.maxOutputTokens), outputTokens: num(d.outputTokens), reasoningTokens: num(d.reasoningTokens), finishReason: str(d.finishReason), result: str(d.result) ?? 'UNKNOWN', invalidCode: str(d.invalidCode), malformedReason: str(d.malformedReason) });
+  }
+  // Not yet run: the mode that WILL apply. Ran without a recorded selection (history): only the durable Founder level is
+  // known; the current profile never relabels past work.
+  const ran = ctx.db.get('SELECT 1 AS x FROM runs WHERE work_item_id = ? LIMIT 1', workItemId) !== undefined;
+  const mode: ReplySelection['mode'] = requested !== null ? 'MANUAL' : ran ? 'NOT_RECORDED' : profileSelection === 'AUTO' && hasDemand ? 'AUTO' : 'DEFAULT';
+  return { selection: selection ?? { mode, recorded: false, startClass: requested, idealClass: null, constraint: null, confidence: null, consequence: null, reasons: [] }, calls };
 }
 
 export function txReplyStates(ctx: StoreContext, threadId: Id, messageIds: readonly Id[] | null = null): ReplyState[] {
+  const thread = getThread(ctx, threadId);
+  const employee = thread.employeeId ? ctx.db.get<{ p: string }>('SELECT cognitive_profile_json AS p FROM employees WHERE id = ?', thread.employeeId) : undefined;
+  const profileSelection = employee ? reasoningSelectionOf(assertCognitiveProfile(JSON.parse(employee.p))) : 'DEFAULT';
   const rows = ctx.db.all<{ id: string; seq: number; reply_work_item_id: string; state: string; blocked_reason: string | null; updated_at: string }>(
     `SELECT m.id, m.seq, m.reply_work_item_id, w.state, w.blocked_reason, w.updated_at FROM communication_messages m JOIN work_items w ON w.id = m.reply_work_item_id
       WHERE m.thread_id = ? AND m.sender_kind = 'FOUNDER' AND m.reply_work_item_id IS NOT NULL ORDER BY m.seq`,
@@ -400,11 +468,16 @@ export function txReplyStates(ctx: StoreContext, threadId: Id, messageIds: reado
     const answered = ctx.db.all<{ c: string }>('SELECT d.reasoning_class AS c FROM usage_records u JOIN deployments d ON d.id = u.deployment_id WHERE u.work_item_id = ? ORDER BY u.created_at, u.id', wi).map((x) => x.c);
     const usage = ctx.db.get<{ n: number; billed: number }>('SELECT COUNT(*) AS n, COALESCE(SUM(billed_micros), 0) AS billed FROM usage_records WHERE work_item_id = ?', wi);
     const budget = ctx.db.get<{ currency: string; cap_money: number; reserved_money: number; spent_money: number }>(`SELECT currency, cap_money, reserved_money, spent_money FROM budgets WHERE scope = 'WORK_ITEM' AND scope_id = ? ORDER BY created_at DESC LIMIT 1`, wi);
+    const input = ctx.db.get<{ i: string }>('SELECT processor_input_json AS i FROM work_items WHERE id = ?', wi);
+    const hasDemand = input ? isReasoningDemand((JSON.parse(input.i) as { reasoningDemand?: unknown }).reasoningDemand) : false;
+    const evidence = replyEvidence(ctx, wi, profileSelection, hasDemand, requested);
     return {
       messageId: r.id as Id, replyWorkItemId: wi, status, reasonCode, workItemState: r.state, jobState: job?.state ?? null, attempts: Number(job?.attempt_count ?? 0),
       replyMessageId: reply ? (reply.id as Id) : null, requestedClass: requested, answeredClasses: answered, calls: Number(usage?.n ?? 0),
       currency: budget?.currency ?? null, capMoney: Number(budget?.cap_money ?? 0), reservedMoney: Number(budget?.reserved_money ?? 0), spentMoney: Number(budget?.spent_money ?? 0), billedMicros: Number(usage?.billed ?? 0),
       updatedAt: r.updated_at,
+      selection: evidence.selection,
+      callDetails: evidence.calls,
     };
   });
 }

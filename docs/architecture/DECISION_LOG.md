@@ -5400,3 +5400,182 @@ impact map.
 Company: read-only, invalid values, Cancel, stale fingerprint, parent refusal at confirmation, 0.59 → 5.00 on the
 COMPANY envelope alone, the CEO's own ceiling still changes, durable record after stop) and
 `command-center-ui/test/p1-ux-budget-dark.test.ts` (headroom, refusal texts, the dark stylesheet contract).
+
+## D-P1-04 — Reliable replies and company-wide Adaptive Intelligence (AUTO) on the existing reasoning seams; D-L1-44 amended for a Founder-pinned level (P1-REASON-AUTO-RECOVERY-01; Founder-approved Task Contract, executor)
+
+**Context (evidence, content-free).** The Founder's message to Salim of 2026-10-09 21:19Z (reply Work Item `86ff7a28`) was
+diagnosed on an isolated restore of the Founder-approved online backup `5825aefd`, reading codes and counts only:
+- It started at the Default E1 (no per-message level) with `maxOutputTokens` 1,024.
+- E1 answered in 804 output tokens and broke the MESSAGE contract (`MALFORMED`). The parser stored no sub-reason, so the
+  exact rule is unknown.
+- The one evidence escalation went to E2 with the same 1,024 allowance. E2 used exactly 1,024 output tokens and the
+  text was not JSON (`NOT_JSON`). The run ended `MODEL_OUTPUT_INVALID`, billed 2,232 µUSD.
+- The finish reason and the reasoning-token count were not persisted. Reaching the allowance exactly is strong evidence
+  of exhaustion by thinking, but is not recorded as proven.
+- The budgets (Company USD 5, Salim USD 2) were not the cause.
+
+Root cause of the escalation failure: D-P1-01 bound the output allowance to the STARTING class, and the adapter
+accepted `finish_reason=length` as an answer. Earlier (D-P1-02 context), a temporarily open circuit had spent a reply's
+retries.
+
+**Decision B1 — the allowance follows the class actually routed.**
+- A Work Item may carry `maxOutputTokensByClass`. The Model Runtime computes each call's allowance from the class the
+  call routes at, and the worst case of that allowance is reserved before the call. A Work Item without the table
+  keeps `maxOutputTokens` for every class, so historical inputs (hash-bound) are never rewritten.
+- Founder replies carry the table `OUTPUT_ALLOWANCE_BY_CLASS` (E1 2,048 · E2 4,096 · E3 8,192 · E4 16,384), set against
+  the deployment limits (E1 4,096 · E2 16,384 · E3 32,768 · E4 65,536).
+  - E1 has thinking off, and 2,048 holds the longest legal MESSAGE body (4,000 characters) with its envelope.
+  - The deeper classes leave thinking room inside `max_tokens`, as DeepSeek counts reasoning inside completion tokens.
+  - A CEO brief keeps its 1,024 start, and an escalated brief call gets its class allowance.
+
+**Decision B2 — an incomplete output is never an answer; diagnosis is content-free.**
+- The provider contract carries `finishReason` (`stop` | `length`, absent = unknown) and the reasoning-token COUNT (a
+  number only; never text).
+- `length` becomes the closed invalid-output code `OUTPUT_TRUNCATED`. The call is charged as the provider billed it,
+  but its text never becomes a proposal (provider acceptance ≠ valid output ≠ completed work).
+- It gets one same-class continuation with a larger allowance: double, bounded by the deployment maximum and 32,768.
+  The continuation is a separately reserved RETRY, never an escalation.
+- A second exhaustion ends the run with `MODEL_OUTPUT_TRUNCATED`.
+- A method-pinned Academy observation keeps its fixed BQM-2 method (it is treated as an invalid output).
+- `parseProposalDetailed` names the closed rule a MALFORMED output broke (`MALFORMED_REASONS`, e.g. `FIELD_SET`,
+  `BODY_TOO_LONG`), recorded on the D-L1-20 audit row. `parseProposal` is unchanged.
+- Every sent call leaves one audit row `run.model_call_observed`, holding:
+  - the attempt kind, the class and the deployment code;
+  - the allowance;
+  - input / output / reasoning tokens, with null meaning not reported (never a zero);
+  - the finish reason;
+  - the result;
+  - the proposal type and the invalid code / sub-reason.
+
+  There are no bodies or text (Rule A), and nothing reads these rows back into a context. Observation rows are best
+  effort (they never change the money or the outcome), and the proofs show they are written.
+
+**Decision B3 — an open circuit is a timed wait.**
+- When no deployment is eligible now, the runtime asks whether the same request would route once an open circuit
+  reopens, with every other gate unchanged. If it would, the call returns `CIRCUIT_OPEN`.
+- The processor parks a durable timed WAIT (`PROVIDER_CIRCUIT_OPEN`, until five seconds past the later of the reopening
+  and now, so a slow commit never turns it into an attempt-spending `INVALID_WAIT`). The job is re-queued for that
+  instant, survives a restart and spends no attempt and no call.
+- The call that was due is checkpointed with the wait (a pending escalation or continuation, and whether the step
+  already escalated). The resumed run makes exactly that call, never a plain call at the starting class. A truncation's
+  continuation is checkpointed the same way, so a crash cannot drop it.
+- It waits at most 3 times per job (`MAX_CIRCUIT_WAITS`, each wait ≤ the 5-minute window). After that the bounded C1
+  retry reports `PROVIDER_CIRCUIT_OPEN` as the real cause.
+- Eligibility, credentials, budget and route are all re-checked at wake, because it is an ordinary run.
+- A waiting item is WAITING, not BLOCKED, so it requests no CEO brief (D-P1-02 stays).
+- Historical FAILED / BLOCKED / DEAD_LETTER work is never retried.
+
+**Decision C1 — AUTO, a governed selection policy (not a fifth level).**
+- `assessReasoningDemand` (governance, policy RD-1) is deterministic and testable, and makes no model call.
+- It reads the request on two axes:
+  - complexity: strategy, comparison / trade-off, analysis, organization design, several decisions, multi-part
+    structure;
+  - consequence: money / legal stakes, market scope, staffing, urgency / irreversibility, an executive decision, a Founder
+    decision purpose.
+- Cues are bilingual (English, MSA, Egyptian), normalized, and count only when the message asks for work. Transformation
+  requests are scored on their own instruction, so pasted content cannot raise them. Length is never a level by itself.
+- It returns an ideal class, tiers, a policy confidence and closed reason codes.
+- Uncertainty policy: UNCERTAIN + high consequence → at least E3; low consequence stays economical (a substantial
+  unclear request → E2); E4 only on clear breadth on both axes.
+- `resolveAutoClass` bounds the ideal by the Employee ceiling, then the route policy, then the classes that some
+  eligible deployment could take for this request with that class's own allowance (every hard gate but a temporary
+  circuit).
+  A constrained result names its constraint (`EMPLOYEE_CEILING` / `ROUTE_POLICY` / `NOT_PROVISIONED`) and is never
+  shown as the ideal.
+- The demand is computed when the Founder's message is sent and stored, content-free, in the reply's processor input.
+  The bounding happens at run time, so once E3 / E4 are provisioned and permitted, AUTO uses them with no further code
+  change.
+- The selection is recorded as `run.reasoning_selected` at each starting call of a step (a same-class retry records it
+  again; the reply state reads the first): mode, start, ideal, constraint, tiers, confidence, and one `reason:<CODE>` key
+  per reason. A reply that ran before selections were recorded reads NOT_RECORDED; the current profile never relabels
+  past work.
+- The frozen BQM-2 method text (`benchmark-method.ts`) names the invalid codes of its time. A method-pinned observation
+  can now also receive `OUTPUT_TRUNCATED` and handles it exactly as an invalid output (one same-class retry). The method
+  text is not edited.
+- Limits: a lexical-structural policy can misjudge an unforeseen task. Evidence escalation and the Founder's level remain
+  the corrections. The 33-case expectation set measures it and does not guarantee it.
+
+**Decision C2 — precedence; D-L1-44 amended (scoped).** The starting class is decided in this order:
+1. The Founder's one-task level (`WORK_ITEM_REASONING_OVERRIDE`, also set by a per-message chat level).
+2. Else the processor's method pin (e.g. an Academy observation).
+3. Else AUTO, when the Employee's profile selects it and the Work Item carries a demand.
+4. Else the Employee default.
+
+Ceilings, route policy, qualification, reservation, authority and budget bind in every case.
+
+**Amendment to D-L1-44:** a Founder-pinned level is PINNED. It is never escalated, neither on invalid output nor on
+context overflow. The amendment covers only that pinned level:
+- Its retries, continuation and fallbacks stay at exactly that class.
+- `txReserve` refuses a reservation above it (`ABOVE_REASONING_OVERRIDE`) as it always refused one below.
+- A level with no deployment at all ends `REASONING_LEVEL_UNAVAILABLE`, never substituted.
+- AUTO and DEFAULT starts keep the bounded evidence escalation (D13-C.3). The D-L1-44 datastore rules and the Academy
+  method-pin protections are unchanged.
+
+**Decision C3 — AUTO activation and certification.**
+- The Cognitive Profile gains an optional `selection` (`AUTO` | `DEFAULT`).
+- Every profile stored before this change has no key, means DEFAULT, and keeps its exact stored form, including through
+  a class-only change. No existing Employee (Salim included) is switched by an upgrade or an install.
+- A newly created Employee is written with AUTO. It is still a CANDIDATE that runs nothing until the Academy activates
+  it: hiring, training, certification and activation are unchanged.
+- Turning AUTO on or off is the existing `EMPLOYEE_REASONING_PROFILE` preview → fingerprint → confirm. Tracing the
+  canonical rule (Stage 6 §14 / `requireRecertification`: a Cognitive / Reasoning Profile change is material), the
+  selection is part of the reasoning profile. It therefore takes the canonical `markReviewDue` path, and the preview
+  names the certifications that become REVIEW_DUE. No exemption was added.
+- History adds `/AUTO` or `/DEFAULT` only when the selection changes.
+
+**Decision C4 — four operations, separately evidenced.** These are:
+- the selection (recorded once per step);
+- an escalation (ESCALATION reservation, evidence code);
+- a same-level retry or continuation (RETRY);
+- a fallback (FALLBACK).
+
+Each is reserved and attributed on its own, within the existing per-run caps (calls, escalation depth, overhead).
+
+**Decision D — the surface.**
+- The chat's reply line says who chose the starting level (you / AUTO / default / the task) and why (AUTO reason labels;
+  a constrained ideal and its constraint). It also shows every further call (escalated, retried at the same level, the
+  output limit), the calls, the cost and the real failure or wait reason. An escalated default is never shown as a
+  Founder choice.
+- The composer offers AUTO (when the profile selects it) or Default, then the eligible E1..E4. E1 is "Thinking off", and
+  AUTO is explained as a policy, not a fifth level.
+- The profile's Employee Intelligence adds the selection to the same governed editor. The Dark Executive styles are
+  unchanged.
+
+**Coverage.** Task classes and route policies on the DeepSeek profiles:
+- `founder.reply`: AUTO now (demand set at send). E1–E2 on the Academy profile; E1–E4 once the additive
+  `deepseek-v4-1-flash-reasoning` profile is provisioned (route v2 max E4).
+- `founder.brief`: no demand yet, so it runs at the default (E1–E2). The per-class allowance applies to its escalation.
+- `academy.attempt`, `academy.shadow`, `skill.benchmark`: E1–E2. Method-pinned observations are never AUTO.
+- Any future task class reuses the selector by putting `assessReasoningDemand(...)` in its Work Item input. Its route
+  policy and qualified deployments decide which classes it may use. The reasoning profile does NOT provision E3 / E4
+  for any task class other than `founder.reply`.
+
+**E3 / E4 readiness (not availability).**
+1. Code support: E1–E4 wire contract, routing, allowances, reservation, truncation handling (done).
+2. Engineering proof: fake-transport proofs below (done).
+3. LIVE provisioning: the reasoning profile, a separate Founder approval (NOT done).
+4. Salim's ceiling: `EMPLOYEE_REASONING_PROFILE`, which makes his certifications REVIEW_DUE (NOT done).
+5. Real operational availability: only after 3 and 4, verified (NOT claimed).
+
+**Not changed.** No migration (JSON columns and audit rows only); no new Founder intent; no budget, grant, egress,
+authority or provider change; no historical Work Item, message or run rewritten or replayed; no LIVE change.
+
+**Proof.**
+- `governance/test/p1-reasoning-demand.test.ts`: the expectation set, ≥90% exact and 100% in band, with Arabic / Egyptian /
+  English and adversarial cases; invariants; bounding; allowances; MALFORMED sub-reasons.
+- `runtime/test/p1/p1-reason-auto-recovery.test.ts`, through the real runtime and the real adapter on a fake transport:
+  - E1 → E2 allowance and reservation;
+  - truncation continuation and its typed failure;
+  - BODY_TOO_LONG and content-free telemetry;
+  - a circuit wait that survives a restart, with no brief;
+  - the budget wait;
+  - AUTO E1 / E1 / E3 / E4;
+  - AUTO bounded by ceiling and route;
+  - Founder E3 pinned;
+  - Academy pin kept;
+  - DEFAULT unchanged.
+- `storage/test/p1-reason-auto-recovery.test.ts`: legacy profile form; the governed AUTO toggle with REVIEW_DUE; a new
+  Employee AUTO but CANDIDATE; the pin enforced above.
+- `command-center-ui/test/p1-reason-auto.test.ts`: the reply story never shows an AUTO start or an escalation as the
+  Founder's choice.
+- The superseded D-L1-44 test (`runtime/test/l1/l1-02-reasoning-control.test.ts`) now proves the amended rule.

@@ -101,10 +101,24 @@ export type CostDiscipline = (typeof COST_DISCIPLINES)[number];
  * intended minimum-sufficient starting point; `ceilingClass` is the highest class this employee's
  * work may ever reach (escalation and routing can never exceed it).
  */
+/**
+ * P1-REASON-AUTO-RECOVERY-01 — how an Employee's starting reasoning class is chosen when nothing fixes it: AUTO (the
+ * governed, deterministic Reasoning Demand selector, bounded by the ceiling, the route policy and what is provisioned)
+ * or DEFAULT (the standing default class). AUTO is a selection policy, never a fifth reasoning level.
+ */
+export const REASONING_SELECTIONS = ['AUTO', 'DEFAULT'] as const;
+export type ReasoningSelection = (typeof REASONING_SELECTIONS)[number];
+export const isReasoningSelection = (v: unknown): v is ReasoningSelection => typeof v === 'string' && (REASONING_SELECTIONS as readonly string[]).includes(v);
+
 export interface CognitiveProfile {
   readonly defaultClass: ReasoningClass;
   readonly ceilingClass: ReasoningClass;
   readonly costDiscipline: CostDiscipline;
+  /**
+   * Absent = DEFAULT: every profile written before P1-REASON-AUTO-RECOVERY-01 keeps its exact stored form and meaning
+   * (no Employee is switched to AUTO by an upgrade). A newly hired Employee is written with AUTO.
+   */
+  readonly selection?: ReasoningSelection;
 }
 
 export function assertCognitiveProfile(v: unknown): CognitiveProfile {
@@ -114,8 +128,12 @@ export function assertCognitiveProfile(v: unknown): CognitiveProfile {
   const ceilingClass = assertReasoningClass(p.ceilingClass, 'cognitiveProfile.ceilingClass');
   if (reasoningRank(ceilingClass) < reasoningRank(defaultClass)) throw new QandeelError('VALIDATION_FAILED', 'ceilingClass must be at or above defaultClass', { field: 'cognitiveProfile.ceilingClass' });
   if (!(COST_DISCIPLINES as readonly string[]).includes(String(p.costDiscipline))) throw new QandeelError('VALIDATION_FAILED', 'unknown cost discipline', { field: 'cognitiveProfile.costDiscipline' });
-  return { defaultClass, ceilingClass, costDiscipline: p.costDiscipline as CostDiscipline };
+  if (p.selection !== undefined && !isReasoningSelection(p.selection)) throw new QandeelError('VALIDATION_FAILED', 'unknown reasoning selection', { field: 'cognitiveProfile.selection' });
+  return { defaultClass, ceilingClass, costDiscipline: p.costDiscipline as CostDiscipline, ...(p.selection !== undefined ? { selection: p.selection } : {}) };
 }
+
+/** The selection a stored profile carries (absent = DEFAULT, the pre-AUTO meaning). */
+export const reasoningSelectionOf = (p: Pick<CognitiveProfile, 'selection'>): ReasoningSelection => p.selection ?? 'DEFAULT';
 
 export const DEFAULT_COGNITIVE_PROFILE: CognitiveProfile = Object.freeze({ defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' });
 

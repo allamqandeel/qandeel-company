@@ -7,8 +7,8 @@
  * resumed run continues the same step with the same idempotency key. Waiting (approval, budget,
  * review) is an event-driven WAIT that consumes no tokens.
  */
-import { assertIntInRange, boundedText, type JsonValue, type ProcessorContext, type ProcessorResult } from '@qandeel-company/domain';
-import { assertTaskClass, isDataClass, isReasoningClass, providerFailedRunCode, unavailableRunCode, type ModelProposal, type ReasoningClass } from '@qandeel-company/governance';
+import { assertIntInRange, boundedText, type JsonValue, type ProcessorContext, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
+import { assertTaskClass, isDataClass, isReasoningClass, isReasoningDemand, providerFailedRunCode, unavailableRunCode, type ModelProposal, type ReasoningClass, type ReasoningDemand } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
 import type { GovernedProcessor, GovernedRunServices, OrgActProposal, ReviewDecisionProposal, ToolRequest } from './types.js';
@@ -37,7 +37,17 @@ export interface EmployeeTaskInput {
   readonly answerOnly?: boolean;
   /** D-L1-24: a hard bound on the Work Item's model calls (the store enforces it again at every reservation). */
   readonly maxModelCalls?: number;
+  /**
+   * P1-REASON-AUTO-RECOVERY-01 (B1): the output allowance per class. With it, each call gets the allowance of the class it
+   * actually routes at; without it (every Work Item created before), `maxOutputTokens` binds every class, as before.
+   */
+  readonly maxOutputTokensByClass?: Readonly<Partial<Record<'E1' | 'E2' | 'E3' | 'E4', number>>>;
+  /** P1-REASON-AUTO-RECOVERY-01 (C1): the governed Reasoning Demand of the request, set by the submitter (never the model). */
+  readonly reasoningDemand?: ReasoningDemand;
 }
+
+/** B3: timed waits for an open circuit per job before the run reports it (each wait lasts at most one circuit window). */
+export const MAX_CIRCUIT_WAITS = 3;
 
 interface LoopState {
   readonly turn: number;
@@ -49,10 +59,22 @@ interface LoopState {
   readonly pendingOrg?: OrgActProposal | ReviewDecisionProposal | null;
   readonly modelCalls: number;
   readonly invalid: number;
+  /** B2: same-class continuations used after an exhausted output (one per job). */
+  readonly truncations?: number;
+  /** B3: timed waits used for an open circuit (bounded by MAX_CIRCUIT_WAITS). */
+  readonly circuitWaits?: number;
+  /**
+   * The next call this step had decided on but not yet made (an escalation or a same-class continuation), and whether
+   * the step already escalated. Checkpointed so a circuit wait or a crash never forgets it: the resumed run makes exactly
+   * the call that was due, never a plain call at the starting class.
+   */
+  readonly pendingEscalation?: { readonly fromClass: ReasoningClass; readonly evidence: 'OUTPUT_FAILED_VALIDATION' | 'CONTEXT_OVERFLOW' } | null;
+  readonly pendingContinuation?: { readonly reasoningClass: ReasoningClass; readonly exhaustedTokens: number } | null;
+  readonly escalated?: boolean;
 }
 
 
-function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasoningClass' | 'dataClass' | 'maxModelCalls'>> & { reasoningClass: ReasoningClass | null; maxModelCalls: number | null } {
+function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasoningClass' | 'dataClass' | 'maxModelCalls' | 'maxOutputTokensByClass' | 'reasoningDemand'>> & { reasoningClass: ReasoningClass | null; maxModelCalls: number | null; maxOutputTokensByClass: Readonly<Partial<Record<'E1' | 'E2' | 'E3' | 'E4', number>>> | null; reasoningDemand: ReasoningDemand | null } {
   const o = (input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}) as Record<string, JsonValue>;
   // An invalid data class is refused outright (classification never fails open).
   if (o.dataClass !== undefined && !isDataClass(o.dataClass)) throw new Error('invalid dataClass');
@@ -65,6 +87,15 @@ function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasonin
   // C3 context controls are validated up front (a typed refusal, never a failure inside assembly).
   if (o.contextDataClassCeiling !== undefined && !isDataClass(o.contextDataClassCeiling)) throw new Error('invalid contextDataClassCeiling');
   if (o.contextBudgetTokens !== undefined) assertIntInRange(o.contextBudgetTokens, 'contextBudgetTokens', 1_024, 64_000);
+  let byClass: Partial<Record<'E1' | 'E2' | 'E3' | 'E4', number>> | null = null;
+  if (o.maxOutputTokensByClass !== undefined) {
+    const m = o.maxOutputTokensByClass;
+    if (m === null || typeof m !== 'object' || Array.isArray(m) || Object.keys(m).some((k) => !['E1', 'E2', 'E3', 'E4'].includes(k))) throw new Error('invalid maxOutputTokensByClass');
+    byClass = {};
+    for (const [k, v] of Object.entries(m)) byClass[k as 'E1'] = assertIntInRange(v, 'maxOutputTokensByClass', 1, 32_768);
+  }
+  // A demand is the closed RD-1 shape or the input is refused (a selection never runs on an unvalidated value).
+  if (o.reasoningDemand !== undefined && !isReasoningDemand(o.reasoningDemand)) throw new Error('invalid reasoningDemand');
   const instructions = boundedText(o.instructions, 'instructions', 12_000);
   // Instructions are sent to a provider: secret material never enters a prompt (Stage 14, R1-01).
   if (containsSecretMaterial(instructions)) throw new Error('instructions carry secret material');
@@ -77,14 +108,26 @@ function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasonin
     invalidOutputPolicy: o.invalidOutputPolicy === 'SAME_CLASS_RETRY' ? 'SAME_CLASS_RETRY' : 'ESCALATE',
     answerOnly: o.answerOnly === true,
     maxModelCalls: typeof o.maxModelCalls === 'number' ? o.maxModelCalls : null,
+    maxOutputTokensByClass: byClass,
+    reasoningDemand: o.reasoningDemand !== undefined && isReasoningDemand(o.reasoningDemand) ? o.reasoningDemand : null,
   };
+}
+
+function pendingEscalationOf(v: unknown): NonNullable<LoopState['pendingEscalation']> | null {
+  const p = v as { fromClass?: unknown; evidence?: unknown } | null | undefined;
+  return p && isReasoningClass(p.fromClass) && (p.evidence === 'OUTPUT_FAILED_VALIDATION' || p.evidence === 'CONTEXT_OVERFLOW') ? { fromClass: p.fromClass, evidence: p.evidence } : null;
+}
+
+function pendingContinuationOf(v: unknown): NonNullable<LoopState['pendingContinuation']> | null {
+  const p = v as { reasoningClass?: unknown; exhaustedTokens?: unknown } | null | undefined;
+  return p && isReasoningClass(p.reasoningClass) && typeof p.exhaustedTokens === 'number' && Number.isSafeInteger(p.exhaustedTokens) && p.exhaustedTokens > 0 ? { reasoningClass: p.reasoningClass, exhaustedTokens: p.exhaustedTokens } : null;
 }
 
 function readState(ctx: ProcessorContext): LoopState {
   const s = ctx.resumeFrom?.state as Partial<LoopState> | null | undefined;
   if (ctx.resumeFrom?.kind !== 'employee-loop' || typeof s !== 'object' || s === null || typeof s.turn !== 'number') return { turn: 0, phase: 'MODEL', pending: null, modelCalls: 0, invalid: 0 };
   const phase = s.phase === 'TOOL' ? 'TOOL' : s.phase === 'ORG' ? 'ORG' : s.phase === 'FINAL' ? 'FINAL' : 'MODEL';
-  return { turn: s.turn, phase, pending: (s.pending ?? null) as ToolRequest | null, pendingOrg: (s.pendingOrg ?? null) as OrgActProposal | ReviewDecisionProposal | null, modelCalls: Number(s.modelCalls ?? 0), invalid: Number(s.invalid ?? 0), summaryCode: typeof s.summaryCode === 'string' ? s.summaryCode : null };
+  return { turn: s.turn, phase, pending: (s.pending ?? null) as ToolRequest | null, pendingOrg: (s.pendingOrg ?? null) as OrgActProposal | ReviewDecisionProposal | null, modelCalls: Number(s.modelCalls ?? 0), invalid: Number(s.invalid ?? 0), summaryCode: typeof s.summaryCode === 'string' ? s.summaryCode : null, truncations: Number(s.truncations ?? 0), circuitWaits: Number(s.circuitWaits ?? 0), pendingEscalation: pendingEscalationOf(s.pendingEscalation), pendingContinuation: pendingContinuationOf(s.pendingContinuation), escalated: s.escalated === true };
 }
 
 const save = (ctx: ProcessorContext, s: LoopState): Promise<void> => ctx.checkpoint('employee-loop', s as unknown as JsonValue);
@@ -95,10 +138,12 @@ const save = (ctx: ProcessorContext, s: LoopState): Promise<void> => ctx.checkpo
  * ends the run. D-L1-23: a pinned qualification observation retries once at the SAME class (the pinned class is
  * requested again); it never escalates, so both arms of a comparison are always answered by the same class.
  */
-function outputFailed(cfg: ReturnType<typeof readInput>, s: LoopState, escalated: boolean, reasoningClass: ReasoningClass): { s: LoopState; end: ProcessorResult | null; escalateFrom: { fromClass: ReasoningClass; evidence: 'OUTPUT_FAILED_VALIDATION' } | null } {
+function outputFailed(cfg: ReturnType<typeof readInput>, s: LoopState, escalated: boolean, reasoningClass: ReasoningClass, founderPinned: boolean): { s: LoopState; end: ProcessorResult | null; escalateFrom: { fromClass: ReasoningClass; evidence: 'OUTPUT_FAILED_VALIDATION' } | null } {
   const next = { ...s, invalid: s.invalid + 1 };
   if (next.invalid >= 2 || escalated) return { s: next, end: { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_INVALID' }, escalateFrom: null };
   if (cfg.invalidOutputPolicy === 'SAME_CLASS_RETRY') return { s: next, end: null, escalateFrom: null };
+  // D-P1-04: a Founder-pinned level is never raised: one bounded retry at the SAME class, like a method pin.
+  if (founderPinned) return { s: next, end: null, escalateFrom: null };
   return { s: next, end: null, escalateFrom: { fromClass: reasoningClass, evidence: 'OUTPUT_FAILED_VALIDATION' } };
 }
 
@@ -122,8 +167,13 @@ export const employeeTaskProcessor: GovernedProcessor = {
     } catch {
       return { type: 'PERMANENT_FAILURE', code: 'INVALID_TASK_INPUT' };
     }
-    let escalateFrom: { fromClass: ReasoningClass; evidence: 'OUTPUT_FAILED_VALIDATION' | 'CONTEXT_OVERFLOW' } | null = null;
-    let escalated = false;
+    // A call that was due when the previous run parked (a circuit wait) or stopped is the one made now.
+    let escalateFrom: { fromClass: ReasoningClass; evidence: 'OUTPUT_FAILED_VALIDATION' | 'CONTEXT_OVERFLOW' } | null = s.pendingEscalation ?? null;
+    let continuation: { reasoningClass: ReasoningClass; exhaustedTokens: number } | null = s.pendingContinuation ?? null;
+    let escalated = s.escalated === true;
+    s = { ...s, pendingEscalation: null, pendingContinuation: null };
+    // D-P1-04: the Founder's one-task level is pinned — never escalated, retried only at the same class.
+    const founderPinned = (gov.context.reasoningOverride ?? null) !== null;
     while (s.turn < cfg.maxTurns) {
       if (ctx.signal.aborted) return { type: 'CANCELLED' };
       if (s.phase === 'ORG' && s.pendingOrg) {
@@ -174,11 +224,15 @@ export const employeeTaskProcessor: GovernedProcessor = {
       }
       // D-L1-24: a declared model-call bound is never exceeded (the store's reservation refuses past it too, durably).
       if (cfg.maxModelCalls !== null && s.modelCalls >= cfg.maxModelCalls) return { type: 'PERMANENT_FAILURE', code: 'RUN_LIMIT' };
-      const requested = escalateFrom === null ? (cfg.reasoningClass ?? undefined) : undefined;
+      const requested = escalateFrom === null && continuation === null ? (cfg.reasoningClass ?? undefined) : undefined;
+      const due = { escalateFrom, continuation, escalated };
       const out = await gov.invokeModel({
         taskClass: cfg.taskClass,
         ...(requested !== undefined ? { reasoningClass: requested } : {}),
         ...(escalateFrom !== null ? { escalation: escalateFrom } : {}),
+        ...(continuation !== null ? { continuation } : {}),
+        ...(cfg.maxOutputTokensByClass !== null ? { maxOutputTokensByClass: cfg.maxOutputTokensByClass } : {}),
+        ...(cfg.reasoningDemand !== null ? { reasoningDemand: cfg.reasoningDemand } : {}),
         // No messages: the runtime assembles this step's context (C3 Context Assembler) from durable state —
         // instructions, skills, knowledge, memory and the results its own services recorded for earlier steps.
         step: s.turn,
@@ -186,6 +240,7 @@ export const employeeTaskProcessor: GovernedProcessor = {
       });
       if (escalateFrom !== null) escalated = true;
       escalateFrom = null;
+      continuation = null;
       switch (out.kind) {
         case 'NO_LLM':
           // E0: deterministic work, no model call at all.
@@ -195,8 +250,22 @@ export const employeeTaskProcessor: GovernedProcessor = {
         case 'BUDGET':
           return out.code === 'BUDGET_EXHAUSTED' ? { type: 'WAIT', reasonCode: 'BUDGET_EXHAUSTED' } : { type: 'PERMANENT_FAILURE', code: out.code === 'RUN_LIMIT' ? 'RUN_LIMIT' : out.code };
         case 'ESCALATION_REFUSED':
-          return { type: 'PERMANENT_FAILURE', code: 'ESCALATION_REFUSED' };
+          // A continuation that could not get a larger allowance: the output stays exhausted (never a silent success).
+          return { type: 'PERMANENT_FAILURE', code: out.code === 'CONTINUATION_NOT_LARGER' ? 'MODEL_OUTPUT_TRUNCATED' : 'ESCALATION_REFUSED' };
+        case 'CIRCUIT_OPEN': {
+          // B3: every eligible route is only held by an open circuit. A durable timed wait (the job is re-queued for that
+          // instant; it survives a restart) costs no call and no attempt; after MAX_CIRCUIT_WAITS the run reports the real
+          // cause through the bounded C1 retry instead. Waiting never creates a brief (the item waits, it is not blocked).
+          const waits = s.circuitWaits ?? 0;
+          if (waits >= MAX_CIRCUIT_WAITS) return { type: 'RETRYABLE_FAILURE', code: 'PROVIDER_CIRCUIT_OPEN' };
+          // The call that could not be made is kept: the resumed run makes it (the same escalation or continuation).
+          s = { ...s, circuitWaits: waits + 1, pendingEscalation: due.escalateFrom, pendingContinuation: due.continuation, escalated: due.escalated };
+          await save(ctx, s);
+          return { type: 'WAIT', reasonCode: 'PROVIDER_CIRCUIT_OPEN', until: out.until as Timestamp };
+        }
         case 'UNAVAILABLE':
+          // A Founder-pinned level with no deployment of that class is reported, never retried into another class.
+          if (out.code === 'REASONING_LEVEL_UNAVAILABLE') return { type: 'PERMANENT_FAILURE', code: 'REASONING_LEVEL_UNAVAILABLE' };
           // No answer never crashes the Company: bounded C1 retry, then dead letter. The run records the real
           // cause from the shared run-failure vocabulary (R2-12): a missing route policy, a local settlement
           // failure or an abort is never blamed on the provider.
@@ -207,8 +276,8 @@ export const employeeTaskProcessor: GovernedProcessor = {
         case 'FAILED': {
           // One evidence-based escalation per run step; never re-escalate from the class that just failed.
           // D-L1-44: the step started from the Founder override when one exists (the same precedence as the model runtime).
-          const startClass = gov.context.reasoningOverride ?? cfg.reasoningClass ?? gov.context.cognitiveProfile.defaultClass;
-          if (out.failure === 'CONTEXT_OVERFLOW' && !escalated && startClass !== 'E4' && cfg.invalidOutputPolicy !== 'SAME_CLASS_RETRY') {
+          const startClass = out.reasoningClass ?? gov.context.reasoningOverride ?? cfg.reasoningClass ?? gov.context.cognitiveProfile.defaultClass;
+          if (out.failure === 'CONTEXT_OVERFLOW' && !escalated && !founderPinned && startClass !== 'E4' && cfg.invalidOutputPolicy !== 'SAME_CLASS_RETRY') {
             escalateFrom = { fromClass: startClass, evidence: 'CONTEXT_OVERFLOW' };
             continue;
           }
@@ -225,11 +294,23 @@ export const employeeTaskProcessor: GovernedProcessor = {
       }
       s = { ...s, modelCalls: s.modelCalls + 1 };
       const proposal: ModelProposal = out.proposal;
+      if (proposal.type === 'INVALID' && proposal.code === 'OUTPUT_TRUNCATED' && cfg.invalidOutputPolicy !== 'SAME_CLASS_RETRY') {
+        // B2: the output allowance ran out: the text is incomplete and never a reply. One same-class continuation with a
+        // larger, separately reserved allowance (never an escalation: more thinking would only spend more of it); a
+        // second exhaustion ends the run with its own code. A method-pinned Academy observation keeps its fixed method.
+        gov.noteInvalidOutput(s.turn, 'OUTPUT_TRUNCATED', out.reasoningClass);
+        if ((s.truncations ?? 0) >= 1) return { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_TRUNCATED' };
+        s = { ...s, truncations: (s.truncations ?? 0) + 1 };
+        continuation = { reasoningClass: out.reasoningClass, exhaustedTokens: out.maxOutputTokens };
+        // Checkpointed with the continuation it decided on, so a resume after a crash makes that call, not a plain one.
+        await save(ctx, { ...s, pendingContinuation: continuation, escalated });
+        continue;
+      }
       if (cfg.answerOnly && proposal.type !== 'ANSWER' && proposal.type !== 'INVALID') {
         // D-L1-24: the answer-only fence. The proposal was recognized, but this Work Item delivers only an ANSWER: it is
         // never executed (no memory, tool, organizational, message or goal effect, no completion) — an output failure.
         gov.noteInvalidOutput(s.turn, 'WRONG_PROPOSAL_TYPE', out.reasoningClass, { proposalType: proposal.type });
-        const f = outputFailed(cfg, s, escalated, out.reasoningClass);
+        const f = outputFailed(cfg, s, escalated, out.reasoningClass, founderPinned);
         if (f.end) return f.end;
         s = f.s;
         await save(ctx, s);
@@ -299,7 +380,7 @@ export const employeeTaskProcessor: GovernedProcessor = {
           // failure (the one same-class retry applies); any other refusal means the item cannot take an answer at all.
           if (rec.code !== 'INVALID_ARGS' && rec.code !== 'SECRET_MATERIAL') return { type: 'PERMANENT_FAILURE', code: 'INVALID_TASK_INPUT' };
           gov.noteInvalidOutput(s.turn, 'ANSWER_REFUSED', out.reasoningClass, { refusalCode: rec.code });
-          const f = outputFailed(cfg, s, escalated, out.reasoningClass);
+          const f = outputFailed(cfg, s, escalated, out.reasoningClass, founderPinned);
           if (f.end) return f.end;
           s = f.s;
           await save(ctx, s);
@@ -313,8 +394,10 @@ export const employeeTaskProcessor: GovernedProcessor = {
       if (proposal.type === 'INVALID') {
         // Observable evidence (the output failed validation) may justify one escalation. D-L1-20: its content-free
         // classification is recorded first (never the output), so a run that ends without an answer is diagnosable.
-        gov.noteInvalidOutput(s.turn, proposal.code, out.reasoningClass);
-        const f = outputFailed(cfg, s, escalated, out.reasoningClass);
+        // P1-REASON-AUTO-RECOVERY-01: a MALFORMED output also names the closed rule it broke (content-free).
+        if (out.invalidReason !== null) gov.noteInvalidOutput(s.turn, proposal.code, out.reasoningClass, { malformedReason: out.invalidReason });
+        else gov.noteInvalidOutput(s.turn, proposal.code, out.reasoningClass);
+        const f = outputFailed(cfg, s, escalated, out.reasoningClass, founderPinned);
         if (f.end) return f.end;
         s = f.s;
         // D-L1-24: an answer-only item checkpoints its failure count, so a resumed run never gets a fresh retry.
