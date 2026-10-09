@@ -126,12 +126,14 @@ The FULL GitHub gate runs on the PR head. The local results:
 | Check | Result |
 |---|---|
 | `runtime/test/p1/p1-chat-intel.test.ts` (real DeepSeek adapter, fake transport, LIVE-shaped provisioning) | 9 / 9 |
-| Runtime suite (including the updated C5 method census) | 191 / 191 after the census update |
+| Runtime suite (including the updated C5 method census) | 192 / 192 |
 | Storage suite | 546 / 546 |
 | Governance | 113 / 113 |
 | Mind | 132 / 132 |
 | Model-providers | 8 / 8 |
 | Command-center-ui | 19 / 19 |
+| Command-center (including surface proofs) | 72 / 72 |
+| `npm ci && npm run ci` (proportional, FULL plan) | 15 / 15 steps passed, exit 0 |
 | Command-center surface proofs (chat API and existing thread) | pass |
 | `c5:spike` with `spike-chat-screen` (real headless Edge, disposable fake-provider Company) | PASS, 6 consecutive runs after one harness race was fixed |
 | `verify-bootstrap` | 110 / 110 rules |
