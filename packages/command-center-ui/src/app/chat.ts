@@ -16,6 +16,7 @@
  */
 import { dirOf, fmtDate, fmtDateTime, fmtMoneyMicros, fmtTime, hasArabic, humanize, PURPOSE_LABEL, STATE_LABEL, t } from '../model/format.js';
 import type { CompanyUniverse } from '../model/types.js';
+import { beginSend, editDraft, sendState, settleFailed, settleSent, type DraftStore, type SendState, type StoredDraft } from '../model/chat-send.js';
 import { LEVEL_SHORT, LEVEL_THINKING, LEVELS, levelState, modelLabel, reasonText, REPLY_LABEL, type Level } from '../model/intelligence.js';
 import { api, ApiError } from './api.js';
 import { h } from './panels.js';
@@ -40,23 +41,26 @@ export interface ChatHost {
 }
 
 const DRAFT_KEY = (threadId: string): string => `qandeel.chat.draft.${threadId}`;
-function draftGet(threadId: string): { text: string; key: string | null } {
-  try {
-    const raw = sessionStorage.getItem(DRAFT_KEY(threadId));
-    const v = raw ? (JSON.parse(raw) as { text?: unknown; key?: unknown }) : null;
-    return { text: typeof v?.text === 'string' ? v.text : '', key: typeof v?.key === 'string' ? v.key : null };
-  } catch {
-    return { text: '', key: null };
-  }
-}
-function draftSet(threadId: string, text: string, key: string | null): void {
-  try {
-    if (text === '') sessionStorage.removeItem(DRAFT_KEY(threadId));
-    else sessionStorage.setItem(DRAFT_KEY(threadId), JSON.stringify({ text, key }));
-  } catch {
-    // a per-viewer convenience only: the in-memory draft still survives refreshes and navigation in this page
-  }
-}
+/** Drafts per conversation for this browser session (with the key of the request being sent and the request it belongs to). */
+const sessionDrafts: DraftStore = {
+  get(threadId: string): StoredDraft {
+    try {
+      const raw = sessionStorage.getItem(DRAFT_KEY(threadId));
+      const v = raw ? (JSON.parse(raw) as { text?: unknown; key?: unknown; sig?: unknown }) : null;
+      return { text: typeof v?.text === 'string' ? v.text : '', key: typeof v?.key === 'string' ? v.key : null, sig: typeof v?.sig === 'string' ? v.sig : null };
+    } catch {
+      return { text: '', key: null, sig: null };
+    }
+  },
+  set(threadId: string, d: StoredDraft): void {
+    try {
+      if (d.text === '') sessionStorage.removeItem(DRAFT_KEY(threadId));
+      else sessionStorage.setItem(DRAFT_KEY(threadId), JSON.stringify(d));
+    } catch {
+      // a per-viewer convenience only: the in-memory draft still survives refreshes and navigation in this page
+    }
+  },
+};
 
 const newKey = (): string => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`);
 
@@ -79,29 +83,29 @@ interface Identity {
   readonly isCeo: boolean;
 }
 
-interface Conversation {
-  threadId: string;
-  employeeId: string;
+/**
+ * One conversation's state. Every async result (a send, a refresh, an older page) settles the conversation it started from
+ * and touches the shared screen only while that conversation is the one shown (CORR-02).
+ */
+interface Conversation extends SendState {
+  readonly employeeId: string;
   /** Every message loaded so far, by seq (history is append-only: an older page is never re-fetched on refresh). */
   messages: Map<number, Json>;
   replies: Map<string, Json>;
   hasOlder: boolean;
   intel: Json | null;
   thread: Json | null;
-  /** The level chosen for the NEXT message (null = the Employee's default). Reset after each send. */
-  level: Level | null;
-  /** Ask for a reply, or leave a note without one. */
-  mode: 'ASK' | 'NOTE';
-  /** The idempotency key of the draft being sent (kept until the server confirms it, so a retry never duplicates). */
-  key: string | null;
-  sending: boolean;
-  error: string | null;
+  loadingOlder: boolean;
+  /** The newest refresh started; an older response that lands later never overwrites a newer one. */
+  refreshGen: number;
 }
 
 export class ChatScreen {
   readonly #root: HTMLElement;
   readonly #host: ChatHost;
   #c: Conversation | null = null;
+  /** Conversations opened in this page, by thread (their drafts and in-flight sends survive switching between people). */
+  readonly #convs = new Map<string, Conversation>();
   // Persistent skeleton.
   readonly #head = h('header', { class: 'chat-head' });
   readonly #scroller = h('div', { class: 'chat-scroll', tabindex: -1 });
@@ -116,7 +120,6 @@ export class ChatScreen {
   readonly #error = h('p', { class: 'chat-error', role: 'alert' });
   readonly #send = h('button', { type: 'submit', class: 'btn btn-primary chat-send', text: 'Send', 'data-keep': 'chat-send' });
   readonly #restriction = h('p', { class: 'chat-restriction' });
-  #loadingOlder = false;
 
   constructor(root: HTMLElement, host: ChatHost) {
     this.#root = root;
@@ -129,7 +132,7 @@ export class ChatScreen {
     const foot = h('div', { class: 'chat-foot' }, h('span', { class: 'hint', text: 'Enter sends · Shift+Enter for a new line' }), this.#send);
     this.#form.append(this.#restriction, h('div', { class: 'chat-controls' }, this.#modes, this.#levels), this.#levelNote, this.#text, this.#error, foot);
     this.#text.addEventListener('input', () => {
-      if (this.#c) draftSet(this.#c.threadId, this.#text.value, this.#c.key);
+      if (this.#c && !this.#c.sending) editDraft(this.#c, this.#text.value, sessionDrafts);
     });
     this.#text.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -152,7 +155,7 @@ export class ChatScreen {
       }
     });
     this.#scroller.addEventListener('scroll', () => {
-      if (this.#scroller.scrollTop < 24 && this.#c?.hasOlder && !this.#loadingOlder) void this.#loadOlder();
+      if (this.#scroller.scrollTop < 24 && this.#c?.hasOlder && !this.#c.loadingOlder) void this.#loadOlder();
     });
   }
 
@@ -165,10 +168,19 @@ export class ChatScreen {
   /** Opens (or re-opens) the conversation: the same thread, its history, and the draft left in it. */
   async open(threadId: string, employeeId: string): Promise<void> {
     if (this.#c?.threadId !== threadId) {
-      const draft = draftGet(threadId);
-      this.#c = { threadId, employeeId, messages: new Map(), replies: new Map(), hasOlder: false, intel: null, thread: null, level: null, mode: 'ASK', key: draft.key, sending: false, error: null };
-      this.#text.value = draft.text;
-      this.#list.replaceChildren(h('li', { class: 'chat-empty', text: 'Opening the conversation…' }));
+      let c = this.#convs.get(threadId);
+      if (!c) {
+        c = { ...sendState(threadId, sessionDrafts.get(threadId)), employeeId, messages: new Map(), replies: new Map(), hasOlder: false, intel: null, thread: null, loadingOlder: false, refreshGen: 0 };
+        this.#convs.set(threadId, c);
+      }
+      this.#c = c;
+      this.#text.value = c.draft;
+      this.#levelNote.textContent = '';
+      if (c.messages.size === 0) {
+        this.#list.replaceChildren(h('li', { class: 'chat-empty', text: 'Opening the conversation…' }));
+        // The composer belongs to this conversation at once (another one's send in flight never locks or labels it).
+        this.#renderControls(this.#identity());
+      } else this.#render();
     }
     this.#root.hidden = false;
     await this.refresh(true);
@@ -185,9 +197,11 @@ export class ChatScreen {
     if (!c || this.#root.hidden) return;
     const atBottom = stick || this.#scroller.scrollHeight - this.#scroller.scrollTop - this.#scroller.clientHeight < 64;
     const anchor = atBottom ? null : this.#anchor();
+    const gen = ++c.refreshGen;
     try {
       const d = await api.get<{ thread: Json; messages: Json[]; hasOlder: boolean; replies: Json[]; intelligence: Json | null }>(`/api/threads/${c.threadId}/messages?limit=50`);
-      if (this.#c !== c) return;
+      // A newer refresh of this conversation started meanwhile: it carries the newer state.
+      if (gen !== c.refreshGen) return;
       c.thread = d.thread;
       c.intel = d.intelligence;
       const newest = d.messages.map((m) => Number(m.seq));
@@ -196,36 +210,38 @@ export class ChatScreen {
       if (c.messages.size === 0 || [...c.messages.keys()].every((s) => s >= lowest)) c.hasOlder = d.hasOlder;
       for (const m of d.messages) c.messages.set(Number(m.seq), m);
       for (const r of d.replies) c.replies.set(String(r.messageId), r);
+      // The data is this conversation's own; the shared screen changes only while it is the one shown.
+      if (this.#c !== c || this.#root.hidden) return;
       this.#render();
       if (atBottom) this.#scroller.scrollTop = this.#scroller.scrollHeight;
       else if (anchor) this.#restoreAnchor(anchor);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) return this.#host.lock(e.code);
-      if (c.messages.size === 0) this.#list.replaceChildren(h('li', { class: 'chat-empty chat-failed', text: `The conversation could not be opened (${e instanceof ApiError ? humanize(e.code) : 'connection error'}). Nothing was changed.` }));
+      if (this.#c === c && c.messages.size === 0) this.#list.replaceChildren(h('li', { class: 'chat-empty chat-failed', text: `The conversation could not be opened (${e instanceof ApiError ? humanize(e.code) : 'connection error'}). Nothing was changed.` }));
     }
   }
 
   async #loadOlder(): Promise<void> {
     const c = this.#c;
-    if (!c || !c.hasOlder || this.#loadingOlder) return;
-    this.#loadingOlder = true;
+    if (!c || !c.hasOlder || c.loadingOlder) return;
+    c.loadingOlder = true;
     this.#older.setAttribute('aria-busy', 'true');
     const first = Math.min(...c.messages.keys());
     const before = this.#scroller.scrollHeight - this.#scroller.scrollTop;
     try {
       const d = await api.get<{ messages: Json[]; hasOlder: boolean; replies: Json[] }>(`/api/threads/${c.threadId}/messages?before=${first}&limit=50`);
-      if (this.#c !== c) return;
       for (const m of d.messages) c.messages.set(Number(m.seq), m);
       for (const r of d.replies) c.replies.set(String(r.messageId), r);
       c.hasOlder = d.hasOlder;
+      if (this.#c !== c || this.#root.hidden) return;
       this.#render();
       // Keep the message the Founder was reading where it was.
       this.#scroller.scrollTop = this.#scroller.scrollHeight - before;
     } catch (e) {
-      this.#host.note(`Earlier messages could not load (${e instanceof ApiError ? humanize(e.code) : 'connection error'})`, 'system');
+      if (this.#c === c) this.#host.note(`Earlier messages could not load (${e instanceof ApiError ? humanize(e.code) : 'connection error'})`, 'system');
     } finally {
-      this.#loadingOlder = false;
-      this.#older.removeAttribute('aria-busy');
+      c.loadingOlder = false;
+      if (this.#c === c) this.#older.removeAttribute('aria-busy');
     }
   }
 
@@ -452,36 +468,34 @@ export class ChatScreen {
 
   async #submit(): Promise<void> {
     const c = this.#c;
-    if (!c || c.sending) return;
-    const body = this.#text.value.trim();
-    if (!body) return;
-    c.key ??= newKey();
-    draftSet(c.threadId, this.#text.value, c.key);
-    c.sending = true;
-    c.error = null;
-    const id = this.#identity();
-    this.#renderControls(id);
-    const ask = c.mode === 'ASK';
+    if (!c) return;
+    // The send is bound to this conversation, its draft, its key and its level (CORR-02).
+    const ticket = beginSend(c, sessionDrafts, newKey);
+    if (!ticket) return;
+    const shown = (): boolean => this.#c === c;
+    this.#renderControls(this.#identity());
     try {
-      await api.post(`/api/threads/${c.threadId}/messages`, { purpose: ask ? 'QUESTION' : 'FYI', body, responseRequired: ask, clientKey: c.key, ...(ask && c.level !== null ? { reasoningClass: c.level } : {}) });
-      // Only now is the draft gone: the server holds the message.
-      this.#text.value = '';
-      c.key = null;
-      c.level = null;
-      this.#levelNote.textContent = '';
-      draftSet(c.threadId, '', null);
-      c.sending = false;
-      await this.refresh(true);
+      const ask = ticket.mode === 'ASK';
+      await api.post(`/api/threads/${ticket.threadId}/messages`, { purpose: ask ? 'QUESTION' : 'FYI', body: ticket.body, responseRequired: ask, clientKey: ticket.key, ...(ticket.level !== null ? { reasoningClass: ticket.level } : {}) });
+      // Only now is the draft gone, and only this conversation's: the server holds the message.
+      settleSent(c, ticket, sessionDrafts);
+      if (shown()) {
+        this.#text.value = c.draft;
+        this.#levelNote.textContent = '';
+        this.#renderControls(this.#identity());
+        await this.refresh(true);
+      }
     } catch (e) {
-      c.sending = false;
-      if (e instanceof ApiError && e.status === 401) return this.#host.lock(e.code);
+      if (e instanceof ApiError && e.status === 401) {
+        settleFailed(c, ticket, sessionDrafts, { refused: false, message: 'Not confirmed — the session ended. Your message is kept.' });
+        return this.#host.lock(e.code);
+      }
       const why = e instanceof ApiError ? reason(typeof e.details.reason === 'string' ? e.details.reason : e.code) : 'the connection failed';
-      // A refusal keeps the draft and its key: sending again is safe (a duplicate is impossible).
-      c.error = `Not sent — ${why}. Your message is kept here.`;
-      if (!(e instanceof ApiError)) c.error = 'Not confirmed — the connection failed. Your message is kept; sending again cannot create a duplicate.';
-      if (e instanceof ApiError && e.status >= 400 && e.status < 500) c.key = null;
-    } finally {
-      this.#renderControls(this.#identity());
+      // The draft always stays. A refusal recorded nothing: its key goes. A lost connection keeps the key, so sending
+      // again replays the message if it was recorded instead of duplicating it.
+      const refused = e instanceof ApiError && e.status >= 400 && e.status < 500;
+      settleFailed(c, ticket, sessionDrafts, { refused, message: e instanceof ApiError ? `Not sent — ${why}. Your message is kept here.` : 'Not confirmed — the connection failed. Your message is kept; sending again cannot create a duplicate.' });
+      if (shown()) this.#renderControls(this.#identity());
     }
   }
 }

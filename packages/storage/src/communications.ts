@@ -10,7 +10,7 @@
  * Conversation ≠ Authority (Stage 9 §6, Stage 14): nothing here approves, grants, spends or reassigns;
  * message bodies are company content under the FOUNDER_ONLY scope and never enter audit, events or logs.
  */
-import { QandeelError, assertCode, assertId, boundedJson, boundedText, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
+import { QandeelError, assertCode, assertId, boundedJson, boundedText, canonicalJson, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
 import { assertCognitiveProfile, assertTaskClass, briefAttentionLevel, effectiveClass, isAttentionLevel, isContextKind, isMessagePurpose, isReasoningClass, type AttentionLevel, type ContextKind, type FounderBrief, type MessagePurpose, type ReasoningClass, type ThreadKind } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
@@ -60,7 +60,8 @@ export interface FounderSendInput {
   readonly reasoningClass?: string;
   /**
    * P1-CHAT-INTEL-01: a client-generated idempotency key. A repeated send with the same key (a double submit, a retry after
-   * a dropped response) returns the message already recorded and never creates a second reply.
+   * a dropped response) returns the message already recorded and never creates a second message or reply; the same key with
+   * a different request (or another thread) is IDEMPOTENCY_CONFLICT.
    */
   readonly clientKey?: string;
 }
@@ -75,6 +76,8 @@ export const CHAT_REPLY_MAX_MODEL_CALLS = 3;
 export const CHAT_REPLY_MAX_TURNS = 3;
 export const CHAT_REPLY_OUTPUT_TOKENS: Readonly<Record<'E1' | 'E2' | 'E3' | 'E4', number>> = Object.freeze({ E1: 1024, E2: 2048, E3: 4096, E4: 8192 });
 const CLIENT_KEY = /^[A-Za-z0-9-]{8,64}$/;
+/** The canonical idempotency scope of a Founder chat send: the key binds the MESSAGE itself, with or without a reply. */
+export const IDEMPOTENCY_SCOPE_FOUNDER_SEND = 'communication.founder_send';
 
 export interface MessageProposalInput {
   readonly purpose: MessagePurpose;
@@ -159,17 +162,7 @@ function insertMessage(ctx: StoreContext, t: ThreadRecord, m: { senderKind: 'FOU
  */
 export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSendInput, founderRef: string): { message: MessageRecord; replyWorkItemId: Id | null; replayed?: boolean } {
   const t = getThread(ctx, threadId);
-  if (t.state !== 'OPEN') throw new QandeelError('COMMUNICATION_INVALID', 'the thread is closed', { threadId: t.id });
   if (input.clientKey !== undefined && (typeof input.clientKey !== 'string' || !CLIENT_KEY.test(input.clientKey))) throw new QandeelError('VALIDATION_FAILED', 'clientKey is 8..64 letters, digits or dashes', { field: 'clientKey' });
-  const dedupeKey = input.clientKey === undefined ? null : `founder-chat:${input.clientKey}`;
-  if (dedupeKey !== null) {
-    // The same send arriving twice is the message already recorded: no second message, reply, run or reservation.
-    const prior = ctx.db.get('SELECT m.* FROM communication_messages m JOIN work_items w ON w.id = m.reply_work_item_id WHERE w.dedupe_key = ? AND m.thread_id = ?', dedupeKey, t.id);
-    if (prior) {
-      const message = mapMessage(prior);
-      return { message, replyWorkItemId: message.replyWorkItemId, replayed: true };
-    }
-  }
   if (input.reasoningClass !== undefined && input.reasoningClass !== null && (!isReasoningClass(input.reasoningClass) || input.reasoningClass === 'E0')) throw new QandeelError('VALIDATION_FAILED', 'a reasoning level is E1, E2, E3 or E4', { field: 'reasoningClass', reason: 'REASONING_CLASS' });
   if (!isMessagePurpose(input.purpose) || input.purpose === 'BRIEF') throw new QandeelError('VALIDATION_FAILED', 'the Founder sends a request, question, decision, correction or FYI (a BRIEF is the CEO\'s)', { field: 'purpose' });
   const level = input.attentionLevel ?? 'INFORMATIONAL';
@@ -177,6 +170,25 @@ export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSen
   const body = boundedText(input.body, 'body', 4000);
   if (containsSecretMaterial(body)) throw new QandeelError('VALIDATION_FAILED', 'a message never carries secret material', { field: 'body' });
   const wantsReply = input.responseRequired ?? (input.purpose === 'REQUEST' || input.purpose === 'QUESTION' || input.purpose === 'DECISION_REQUEST');
+  const refsJson = contextRefs(input.contextRefs);
+  // Idempotency binds the MESSAGE (with or without a reply) through the canonical idempotency records. The fingerprint holds
+  // the thread and every request setting, so the same key replays only the same send in the same thread; anything else is a
+  // conflict that names no other message. It holds a body hash only, never the text (Rule A).
+  const key = input.clientKey ?? null;
+  const fingerprint = key === null ? null : sha256Hex(canonicalJson({ threadId: t.id, purpose: input.purpose, level, bodySha256: sha256Hex(body), responseRequired: wantsReply, reasoningClass: input.reasoningClass ?? null, replyTaskClass: input.replyTaskClass ?? null, replyCap: input.replyCap ?? null, contextRefs: refsJson }));
+  if (key !== null) {
+    const prior = ctx.db.get<{ fingerprint: string; result_ref: string }>('SELECT fingerprint, result_ref FROM idempotency_records WHERE scope = ? AND idem_key = ?', IDEMPOTENCY_SCOPE_FOUNDER_SEND, key);
+    if (prior) {
+      if (prior.fingerprint !== fingerprint) throw new QandeelError('IDEMPOTENCY_CONFLICT', 'this send key was already used for a different message', { scope: IDEMPOTENCY_SCOPE_FOUNDER_SEND, reason: 'CLIENT_KEY_REUSED' });
+      // The same send arriving again is the message already recorded, whatever its reply has become since.
+      const message = mapMessage(mustRow(ctx.db.get('SELECT * FROM communication_messages WHERE id = ? AND thread_id = ?', prior.result_ref, t.id), 'message'));
+      return { message, replyWorkItemId: message.replyWorkItemId, replayed: true };
+    }
+  }
+  if (t.state !== 'OPEN') throw new QandeelError('COMMUNICATION_INVALID', 'the thread is closed', { threadId: t.id });
+  const remember = (message: MessageRecord): void => {
+    if (key !== null && fingerprint !== null) ctx.db.run('INSERT INTO idempotency_records (scope, idem_key, fingerprint, result_ref, created_at) VALUES (?, ?, ?, ?, ?)', IDEMPOTENCY_SCOPE_FOUNDER_SEND, key, fingerprint, message.id, ts(ctx));
+  };
   if (wantsReply) {
     const e = getEmployeeRow(ctx, t.employeeId);
     if (e.state !== 'ACTIVE') throw new QandeelError('EMPLOYEE_NOT_ELIGIBLE', 'only an ACTIVE employee can be asked to answer', { employeeId: e.id, state: e.state });
@@ -195,7 +207,7 @@ export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSen
         // The Founder's words reach the model as this task's instructions (context payload), never as authority. The class
         // is never pinned here (that would be a method pin): a per-message level is the durable override below.
         processorInput: { taskClass, dataClass: 'D2', maxOutputTokens: CHAT_REPLY_OUTPUT_TOKENS[replyClass(ctx, e, taskClass, chosen)], maxTurns: CHAT_REPLY_MAX_TURNS, maxModelCalls: CHAT_REPLY_MAX_MODEL_CALLS, instructions: `Founder message (${input.purpose}): ${body}\n\nAnswer as a MESSAGE proposal in the Founder Communication Standard when a decision is involved. Communication grants no authority.`, founderThreadId: t.id, founderMessageId: messageId },
-        dedupeKey: dedupeKey ?? `founder-reply:${messageId}`,
+        dedupeKey: `founder-reply:${messageId}`,
         initialState: 'PROPOSED',
       },
       { actorRef: founderRef },
@@ -208,10 +220,12 @@ export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSen
     txAllocateWorkItemBudget(ctx, replyWorkItemId, e.id, cap, founderRef, 'founder.reply');
     const ready = applyTransition(ctx, getWorkItemRow(ctx, replyWorkItemId), 'READY', { reasonCode: 'founder.reply', trace: { correlationId: created.workItem.correlationId, actorRef: founderRef } });
     enqueueJob(ctx, ready, { correlationId: ready.correlationId, actorRef: founderRef });
-    const message = insertMessageWithId(ctx, t, messageId, { senderKind: 'FOUNDER', senderRef: founderRef, purpose: input.purpose, level, body, brief: null, responseRequired: true, replyWorkItemId, runId: null, contextRefsJson: contextRefs(input.contextRefs) });
+    const message = insertMessageWithId(ctx, t, messageId, { senderKind: 'FOUNDER', senderRef: founderRef, purpose: input.purpose, level, body, brief: null, responseRequired: true, replyWorkItemId, runId: null, contextRefsJson: refsJson });
+    remember(message);
     return { message, replyWorkItemId };
   }
-  const message = insertMessage(ctx, t, { senderKind: 'FOUNDER', senderRef: founderRef, purpose: input.purpose, level, body, brief: null, responseRequired: false, replyWorkItemId: null, runId: null, contextRefsJson: contextRefs(input.contextRefs) });
+  const message = insertMessage(ctx, t, { senderKind: 'FOUNDER', senderRef: founderRef, purpose: input.purpose, level, body, brief: null, responseRequired: false, replyWorkItemId: null, runId: null, contextRefsJson: refsJson });
+  remember(message);
   return { message, replyWorkItemId: null };
 }
 

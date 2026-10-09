@@ -153,7 +153,65 @@ describe('P1-CHAT-INTEL-01: persistent chat with bounded history and fast defaul
       assert.equal(comm.messages(thread.id).filter((m) => m.senderKind === 'FOUNDER').length, 1);
       assert.equal(comm.messages(thread.id).filter((m) => m.senderKind === 'EMPLOYEE').length, 1, 'no duplicate response');
       assert.equal(chatCalls(transport), 1);
+      // A retry after the reply ENDED (a response lost long ago) still replays the same message and starts nothing.
+      const late = comm.send(w.founder, thread.id, { purpose: 'QUESTION', body: 'Once only?', clientKey: 'client-key-0001' });
+      assert.deepEqual([late.replayed, late.message.id, late.replyWorkItemId], [true, a.message.id, a.replyWorkItemId]);
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(chatCalls(transport), 1, 'a replay never starts another run');
+      assert.equal(comm.messages(thread.id).length, 2);
       assert.equal(refusal(() => comm.send(w.founder, thread.id, { purpose: 'QUESTION', body: 'x', clientKey: 'bad key!' })).code, 'VALIDATION_FAILED');
+    }));
+
+  test('CORR-01: a note (no reply) is idempotent by its own key: one note, no Work Item, no reservation, no call', () =>
+    withWorld('p1-idem-note', answer('never'), async ({ rt, w, transport }) => {
+      const comm = rt.founder.communications;
+      const thread = comm.directThread(w.founder, null);
+      const items = rt.view.listWorkItems({ limit: 1000 }).length;
+      const a = comm.send(w.founder, thread.id, { purpose: 'FYI', body: 'For the record.', responseRequired: false, clientKey: 'note-key-0001' });
+      const b = comm.send(w.founder, thread.id, { purpose: 'FYI', body: 'For the record.', responseRequired: false, clientKey: 'note-key-0001' });
+      assert.deepEqual([a.replayed ?? false, b.replayed, b.message.id, b.replyWorkItemId], [false, true, a.message.id, null]);
+      assert.equal(comm.messages(thread.id).length, 1, 'one note, never a duplicate');
+      assert.equal(rt.view.listWorkItems({ limit: 1000 }).length, items, 'a note creates no Work Item (so no budget reservation)');
+      assert.equal(chatCalls(transport), 0);
+    }));
+
+  test('CORR-01: the same key with a different request is IDEMPOTENCY_CONFLICT, records nothing, and never returns another message', () =>
+    withWorld('p1-idem-conflict', answer('Noted.'), async ({ rt, w }) => {
+      const comm = rt.founder.communications;
+      const thread = comm.directThread(w.founder, null);
+      const a = comm.send(w.founder, thread.id, { purpose: 'FYI', body: 'Original.', responseRequired: false, clientKey: 'conflict-key-01' });
+      const items = rt.view.listWorkItems({ limit: 1000 }).length;
+      for (const changed of [
+        { purpose: 'FYI', body: 'Edited.', responseRequired: false },
+        { purpose: 'QUESTION', body: 'Original.', responseRequired: true },
+        { purpose: 'FYI', body: 'Original.', responseRequired: false, attentionLevel: 'NEEDS_ATTENTION' },
+      ] as const) {
+        const r = refusal(() => comm.send(w.founder, thread.id, { ...changed, clientKey: 'conflict-key-01' }));
+        assert.deepEqual([r.code, r.reason], ['IDEMPOTENCY_CONFLICT', 'CLIENT_KEY_REUSED'], JSON.stringify(changed));
+        assert.equal(JSON.stringify(r).includes(a.message.id), false, 'the conflict names no message');
+      }
+      // A level differs too: the ASK with E1 replays only an ASK with E1.
+      const q = comm.send(w.founder, thread.id, { purpose: 'QUESTION', body: 'Level?', reasoningClass: 'E1', clientKey: 'conflict-key-02' });
+      assert.equal(refusal(() => comm.send(w.founder, thread.id, { purpose: 'QUESTION', body: 'Level?', reasoningClass: 'E2', clientKey: 'conflict-key-02' })).code, 'IDEMPOTENCY_CONFLICT');
+      assert.equal(comm.send(w.founder, thread.id, { purpose: 'QUESTION', body: 'Level?', reasoningClass: 'E1', clientKey: 'conflict-key-02' }).message.id, q.message.id);
+      assert.equal(comm.messages(thread.id).filter((m) => m.senderKind === 'FOUNDER').length, 2, 'no conflicting send was recorded');
+      assert.equal(rt.view.listWorkItems({ limit: 1000 }).length, items + 1, 'only the one question made a reply');
+    }));
+
+  test('CORR-01: a key is never shared across conversations: reusing it in another Employee\'s thread is a conflict, never their message', () =>
+    withWorld('p1-idem-threads', answer('never'), async ({ rt, w }) => {
+      const gov = rt.governance;
+      const other = gov.createEmployee(w.founder, { name: nextName(), profile: { personality: 'curious' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' }, roleRef: 'role:content-strategist', positionRef: 'position:p3', departmentId: w.departmentId, managerRef: w.founder });
+      const comm = rt.founder.communications;
+      const ceoThread = comm.directThread(w.founder, null);
+      const otherThread = comm.directThread(w.founder, other.id);
+      const a = comm.send(w.founder, ceoThread.id, { purpose: 'FYI', body: 'Same words.', responseRequired: false, clientKey: 'shared-key-0001' });
+      const r = refusal(() => comm.send(w.founder, otherThread.id, { purpose: 'FYI', body: 'Same words.', responseRequired: false, clientKey: 'shared-key-0001' }));
+      assert.equal(r.code, 'IDEMPOTENCY_CONFLICT');
+      assert.equal(JSON.stringify(r).includes(a.message.id), false);
+      assert.deepEqual([comm.messages(otherThread.id).length, comm.messages(ceoThread.id).length], [0, 1], 'nothing crossed between conversations');
+      // Distinct keys in two conversations are independent.
+      assert.equal(comm.send(w.founder, otherThread.id, { purpose: 'FYI', body: 'Same words.', responseRequired: false, clientKey: 'shared-key-0002' }).message.threadId, otherThread.id);
     }));
 });
 
@@ -272,8 +330,11 @@ describe('P1-CHAT-INTEL-01: truthful reply states, no silent retry', () => {
     withWorld('p1-failed', () => fakeChatAnswer('not json at all', { prompt: 50, completion: 5 }), async ({ rt, w, transport }) => {
       const comm = rt.founder.communications;
       const thread = comm.directThread(w.founder, null);
-      const sent = comm.send(w.founder, thread.id, { purpose: 'QUESTION', body: 'Will this fail?' });
+      const sent = comm.send(w.founder, thread.id, { purpose: 'QUESTION', body: 'Will this fail?', clientKey: 'failed-key-0001' });
       assert.equal(await settled(rt, sent.replyWorkItemId as Id), 'FAILED');
+      // CORR-01: a retry of the same send after its reply FAILED replays the message; it never re-asks.
+      const again = comm.send(w.founder, thread.id, { purpose: 'QUESTION', body: 'Will this fail?', clientKey: 'failed-key-0001' });
+      assert.deepEqual([again.replayed, again.message.id, again.replyWorkItemId], [true, sent.message.id, sent.replyWorkItemId]);
       const calls = chatCalls(transport);
       assert.ok(calls >= 1 && calls <= 3, 'bounded by the reply\'s own call limit');
       const [s] = comm.replyStates(thread.id);

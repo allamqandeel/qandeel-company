@@ -53,7 +53,7 @@ network code.
   on the profile closes it to the company. Nothing stops and nothing is lost.
 - **Drafts.** An unsent draft stays per conversation, across close, reopen and page refresh, for the browser session. A
   send that failed keeps the draft. A retry after a lost response never creates a duplicate, because the server replays by
-  idempotency key.
+  idempotency key (a question or a note), and a send settles only the conversation it came from (CORR-01, CORR-02).
 - **Employee Intelligence on the profile.** It shows:
   - the model (from the qualified identity: DeepSeek V4.1 Flash);
   - the default and maximum levels;
@@ -125,17 +125,17 @@ The FULL GitHub gate runs on the PR head. The local results:
 
 | Check | Result |
 |---|---|
-| `runtime/test/p1/p1-chat-intel.test.ts` (real DeepSeek adapter, fake transport, LIVE-shaped provisioning) | 9 / 9 |
-| Runtime suite (including the updated C5 method census) | 192 / 192 |
+| `runtime/test/p1/p1-chat-intel.test.ts` (real DeepSeek adapter, fake transport, LIVE-shaped provisioning) | 12 / 12 (includes CORR-01) |
+| Runtime suite (including the updated C5 method census) | 195 / 195 |
 | Storage suite | 546 / 546 |
 | Governance | 113 / 113 |
 | Mind | 132 / 132 |
 | Model-providers | 8 / 8 |
-| Command-center-ui | 19 / 19 |
+| Command-center-ui (includes CORR-02) | 25 / 25 |
 | Command-center (including surface proofs) | 72 / 72 |
-| `npm ci && npm run ci` (proportional, FULL plan) | 15 / 15 steps passed, exit 0 |
+| `npm ci && npm run ci` (proportional, FULL plan), after the corrections | 15 / 15 steps passed, exit 0 |
 | Command-center surface proofs (chat API and existing thread) | pass |
-| `c5:spike` with `spike-chat-screen` (real headless Edge, disposable fake-provider Company) | PASS, 6 consecutive runs after one harness race was fixed |
+| `c5:spike` with `spike-chat-screen` (real headless Edge, disposable fake-provider Company) | PASS (6 runs before the corrections); with `spike-chat-race` added, PASS on 2 runs |
 | `verify-bootstrap` | 110 / 110 rules |
 | impact-map self-test | ok |
 | eslint (whole repository) | 0 warnings |
@@ -153,7 +153,64 @@ Wire evidence for each level, from the real adapter request body:
 Measured read path on a disposable Company: the newest page takes 0.05 ms, reply states 0.05 ms, and intelligence
 0.08 ms per call (median of 200).
 
-## 7. Remaining blockers and risks
+## 7. Review corrections (CORR-01, CORR-02)
+
+These were raised in the Founder's review of PR #27 at `a62cf1c` and fixed on the same branch and PR. The decision is in D-P1-01
+under "Review corrections".
+
+### CORR-01: idempotency covers every chat message
+
+**Root cause.** A replay was found by joining the message to its reply Work Item's dedupe key. A note (FYI, no reply) has
+no Work Item, so it was never deduplicated. The request was also never compared.
+
+**Fix** (`packages/storage/src/communications.ts`, one HTTP status line in `packages/command-center/src/security.ts`):
+- **Storage.** The key is recorded in the canonical `idempotency_records` table (scope `communication.founder_send`),
+  pointing at the message itself, in the send's own transaction. There is no migration and no new table.
+- **Fingerprint.** It covers the thread, purpose, attention level, body hash, reply flag, level, reply task class, cap and
+  context refs.
+- **Same request.** It replays the original message, even after its reply has completed or failed. Nothing new is created:
+  no message, Work Item, override, reservation or run.
+- **Different request or different thread.** It is refused as `IDEMPOTENCY_CONFLICT` (409, `CLIENT_KEY_REUSED`). The
+  refusal names no message and records nothing.
+- **Notes.** A note still creates no Work Item and no reservation.
+- **Privacy.** Nothing is logged beyond the existing content-free audit; the fingerprint holds hashes only.
+
+### CORR-02: a chat send settles only its own conversation
+
+**Root cause.** The Chat screen had one shared composer. After `await api.post(...)`, `#submit` wrote to that shared text,
+level note, button and error, whichever conversation was shown by then. Late `refresh` errors and the single
+`#loadingOlder` flag were shared the same way.
+
+**Fix** (`packages/command-center-ui/src/model/chat-send.ts` is new and pure; `packages/command-center-ui/src/app/chat.ts`):
+- **Bound sends.** Each conversation keeps its own draft, key, the request that key belongs to, level, mode, sending flag
+  and error. A send is a ticket bound to its conversation.
+- **Settling.** Success clears only that conversation. A connection failure keeps its draft and key, so a retry replays
+  instead of duplicating. A refusal keeps the draft and drops the key. An edited request gets a new key.
+- **Shared screen.** The screen applies a settled send, a refresh or an older page only while that conversation is the one
+  shown.
+- **Refresh order.** Refreshes are numbered in order, so a late, older response never overwrites a newer one.
+- **Loading older.** It is tracked per conversation.
+
+### Correction proofs
+
+| Proof | Covers | Result |
+|---|---|---|
+| `runtime/test/p1/p1-chat-intel.test.ts` | ASK replay (also after COMPLETED and FAILED); note replay with no Work Item; conflict on body, mode, attention and level; no crossing between threads or Employees | 12 / 12 |
+| `command-center/test/surface.test.ts` (HTTP) | Note replay; 409 conflict that names no message; no duplicate | 72 / 72 (package) |
+| `command-center-ui/test/p1-chat-send.test.ts` | A → B races on success and failure; return to A; overlapping sends for two Employees; close and reopen while sending; request-bound key | 6 / 6 (UI package 25 / 25) |
+| `c5:spike`, step `spike-chat-race`, real headless Edge | CDP Fetch holds A's POST while the Founder opens B, then the POST succeeds, and later fails | PASS on 2 runs |
+
+In the `spike-chat-race` runs:
+- B's composer was unchanged both times.
+- A's message appeared once.
+- A's failed draft and its error were kept.
+- The retry sent the message once.
+
+The frames are `p1-06-race-b-intact` and `p1-07-race-a-kept`.
+
+**Unchanged:** Flash E1–E4, screen design, permissions, budgets and the Academy. LIVE was not touched and nothing was spent.
+
+## 8. Remaining blockers and risks
 
 - **LIVE diagnosis.** The diagnosis of Salim's historical reply needs the Founder to run the script, or to approve a
   read-only run.

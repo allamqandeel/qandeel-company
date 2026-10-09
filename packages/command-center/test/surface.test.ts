@@ -306,5 +306,13 @@ describe('Founder surface over loopback HTTP', () => {
       const detail = await c.get(`/api/employees/${world.analystId}`);
       assert.equal((detail.body.intelligence as { employeeId: string }).employeeId, world.analystId);
       assert.equal(surface.runtime.governance.reasoningControl(world.analystId as never).overrides.length, 0, 'no override was recorded by the refused send');
+      // CORR-01 over HTTP: a note replays by its key too; a reused key with another message is a 409 that names nothing.
+      const note = await c.post(`/api/threads/${thread.id}/messages`, { purpose: 'FYI', body: 'ملاحظة', responseRequired: false, clientKey: 'p1-surface-key-02' });
+      const noteAgain = await c.post(`/api/threads/${thread.id}/messages`, { purpose: 'FYI', body: 'ملاحظة', responseRequired: false, clientKey: 'p1-surface-key-02' });
+      assert.deepEqual([noteAgain.status, noteAgain.body.replayed, (noteAgain.body.message as { id: string }).id, noteAgain.body.replyWorkItemId], [200, true, (note.body.message as { id: string }).id, null]);
+      const conflict = await c.post(`/api/threads/${thread.id}/messages`, { purpose: 'FYI', body: 'another note', responseRequired: false, clientKey: 'p1-surface-key-02' });
+      assert.deepEqual([conflict.status, conflict.body.code, (conflict.body.details as { reason?: string }).reason], [409, 'IDEMPOTENCY_CONFLICT', 'CLIENT_KEY_REUSED']);
+      assert.equal(JSON.stringify(conflict.body).includes((note.body.message as { id: string }).id), false, 'a conflict never names the recorded message');
+      assert.equal(((await c.get(`/api/threads/${thread.id}/messages?limit=50`)).body.messages as unknown[]).length, 5, 'one note, never a duplicate or the conflicting one');
     }));
 });

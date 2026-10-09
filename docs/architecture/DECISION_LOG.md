@@ -5240,6 +5240,48 @@ four gaps:
 9. **Trainees.** A non-ACTIVE Employee's conversation opens and keeps notes. An AI reply needs ACTIVE, as before. No
    interactive Academy chat is added, and a conversation is never certification evidence or authority.
 
+**Review corrections (Founder review of PR #27, CORR-01 / CORR-02).**
+
+- **CORR-01 — an idempotency key binds the message itself.**
+  - **The problem.** The first cut found a replay through the reply Work Item's dedupe key. That covered an ASK only: a note
+    (FYI, no reply) sent twice became two notes. It also replayed without comparing the request.
+  - **The fix.** A Founder send with a `clientKey` now uses the canonical `idempotency_records` table under the scope
+    `communication.founder_send`, in the same transaction as the message. No new table, migration or store was added.
+  - **The fingerprint** covers the thread, purpose, attention level, body hash, reply flag, per-message level, reply task
+    class, reply cap and context refs.
+  - **The same key with the same request** returns the recorded message, whatever its reply has become since (completed,
+    failed). It creates no second message, Work Item, override, reservation or run.
+  - **The same key with anything else** is `IDEMPOTENCY_CONFLICT` (reason `CLIENT_KEY_REUSED`, HTTP 409). This covers
+    another body, mode or level, and another thread or Employee. The refusal names no message and records nothing.
+  - **A note** still creates no Work Item and no reservation.
+  - **The reply Work Item's dedupe key** is again `founder-reply:<messageId>`.
+  - **No content leaves the store.** Nothing beyond the existing content-free audit is written (Rule A). The fingerprint
+    holds hashes only.
+- **CORR-02 — an async result settles only its own conversation.**
+  - **The problem.** The Chat screen kept one shared composer. After `await`, a send wrote to it, so a send from A that
+    finished while B was shown could clear B's draft, or change its level, mode, button or error.
+  - **The fix.** `model/chat-send.ts` (pure, no DOM) holds each conversation's send state: its draft, its key with the
+    exact request that key belongs to, its level, mode, sending flag and error. A send is a ticket bound to its conversation:
+    - Success clears that conversation only.
+    - A connection failure keeps its draft and key, so a retry replays and never duplicates.
+    - A refusal keeps the draft and drops the key.
+    - A changed request gets a new key, never a conflict.
+  - **The screen** keeps conversations per thread for the page. It applies a settled send, a refresh or an older page to
+    the shared composer and list only while that conversation is the one shown. Refreshes are generation-ordered, so an
+    older response that lands late never overwrites a newer one. "Loading older" is per conversation.
+- **Proofs.**
+  - **Runtime P1 test (CORR-01, the real store).** It covers:
+    - an ASK replayed, including after its reply completed or failed;
+    - a note replayed with no Work Item;
+    - a conflict on body, mode, attention and level;
+    - no crossing between threads.
+  - **Surface HTTP test.** It covers a note replay and a 409 conflict.
+  - **`command-center-ui/test/p1-chat-send.test.ts`.** It covers A → B races on success and on failure, overlapping sends,
+    close and reopen while sending, and the request-bound key.
+  - **The `spike-chat-race` step of `c5:spike`.** It runs in real headless Edge and holds A's POST through CDP Fetch while
+    the Founder opens B, then succeeds and then fails it. B's composer is unchanged. A's message appears once. A's draft and
+    error are kept after the failure, and the retry sends once.
+
 **Not decided / not done.**
 - LIVE was not read, changed or provisioned. The auto-mode classifier refused a read-only copy of the LIVE database.
   `scripts/p1-chat-reply-diagnosis.mjs` is the content-free, read-only diagnosis, for the Founder to run (D-L1-16

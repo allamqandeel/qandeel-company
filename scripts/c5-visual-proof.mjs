@@ -676,6 +676,97 @@ try {
     await waitReady();
     return detail;
   });
+  await step('spike-chat-race', async () => {
+    // CORR-02: a send settles only the conversation it started from. The browser holds A's POST (CDP Fetch) while the
+    // Founder closes A and opens B's chat: A's success, then A's failure, never touch B's draft, composer or error; A
+    // keeps its own message (once) or its own draft and retry key.
+    const lead = world.employees['product.lead-1'].id;
+    const held = [];
+    let holding = false;
+    page.on('Fetch.requestPaused', (p) => {
+      if (holding && p.request.method === 'POST' && /\/api\/threads\/[^/]+\/messages/.test(p.request.url)) held.push(p.requestId);
+      else void page.send('Fetch.continueRequest', { requestId: p.requestId }).catch(() => undefined);
+    });
+    await page.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/threads/*', requestStage: 'Request' }] });
+    const openChat = async (employeeId) => {
+      await page.navigate(`${surface.origin}/`);
+      await waitReady();
+      await click(`.card[data-id="employee:${employeeId}"]`);
+      await waitUntil(`document.querySelector('#focus .sheet-primary .btn-primary')`, 10_000);
+      await click('#focus .sheet-primary .btn-primary');
+      await waitUntil(`!document.getElementById('chat').hidden && document.querySelector('#chat .chat-list li')`, 15_000);
+    };
+    // In-page navigation keeps the screen (and A's send in flight): × back to the profile, × to the company, B's Talk.
+    const switchTo = async (employeeId) => {
+      await click('#chat .chat-close');
+      await waitUntil(`document.getElementById('chat').hidden && document.querySelector('#focus .sheet-close')`, 10_000);
+      await click('#focus .sheet-close');
+      await waitUntil(`document.getElementById('focus').hidden`, 10_000);
+      await click(`.card[data-id="employee:${employeeId}"]`);
+      await waitUntil(`document.querySelector('#focus .sheet-primary .btn-primary')`, 10_000);
+      await click('#focus .sheet-primary .btn-primary');
+      await waitUntil(`!document.getElementById('chat').hidden && document.querySelector('#chat .chat-list li')`, 15_000);
+    };
+    const composer = () => page.evaluate(`({ title: document.getElementById('chat-title').textContent, text: document.querySelector('#chat .chat-composer textarea').value, readOnly: document.querySelector('#chat .chat-composer textarea').readOnly, send: document.querySelector('#chat .chat-send').textContent, error: document.querySelector('#chat .chat-error').textContent, mode: document.querySelector('#chat .chat-modes [aria-checked="true"]')?.dataset.keep ?? null })`);
+    const founderCount = (text) => page.evaluate(`[...document.querySelectorAll('#chat .chat-msg.from-founder .chat-text')].filter((b) => b.textContent === ${JSON.stringify(text)}).length`);
+    try {
+      await openChat(ceo);
+      const aTitle = (await composer()).title;
+      // 1. A succeeds while B is shown.
+      await type('#chat .chat-composer textarea', 'سؤال أ أثناء التنقل');
+      holding = true;
+      await submit('#chat .chat-composer');
+      await waitUntil(`document.querySelector('#chat .chat-send').textContent === 'Sending…'`, 10_000);
+      for (let i = 0; i < 50 && held.length === 0; i++) await sleep(100);
+      if (held.length !== 1) throw new Error(`A's send was not held (${held.length})`);
+      await switchTo(lead);
+      await type('#chat .chat-composer textarea', 'مسودة ب');
+      await click('#chat .chat-modes [data-keep="chat-mode-NOTE"]');
+      const bBefore = await composer();
+      holding = false;
+      await page.send('Fetch.continueRequest', { requestId: held.shift() });
+      await settle(1500);
+      const bAfter = await composer();
+      if (JSON.stringify(bAfter) !== JSON.stringify(bBefore) || bAfter.text !== 'مسودة ب' || bAfter.readOnly || bAfter.title === aTitle) throw new Error(`A's success changed B: ${JSON.stringify({ bBefore, bAfter })}`);
+      await shot('p1-06-race-b-intact');
+      await switchTo(ceo);
+      await waitUntil(`[...document.querySelectorAll('#chat .chat-msg.from-founder .chat-text')].some((b) => b.textContent === 'سؤال أ أثناء التنقل')`, 15_000);
+      const aBack = await composer();
+      const aOnce = await founderCount('سؤال أ أثناء التنقل');
+      if (aBack.text !== '' || aOnce !== 1) throw new Error(`A after success: ${JSON.stringify({ aBack, aOnce })}`);
+      // 2. A fails (connection) while B is shown: A keeps its draft and key; B is untouched.
+      await type('#chat .chat-composer textarea', 'رسالة أ ستفشل');
+      holding = true;
+      await submit('#chat .chat-composer');
+      for (let i = 0; i < 50 && held.length === 0; i++) await sleep(100);
+      if (held.length !== 1) throw new Error(`A's second send was not held (${held.length})`);
+      await switchTo(lead);
+      const b2Before = await composer();
+      holding = false;
+      await page.send('Fetch.failRequest', { requestId: held.shift(), errorReason: 'ConnectionFailed' });
+      await settle(1200);
+      const b2After = await composer();
+      if (JSON.stringify(b2After) !== JSON.stringify(b2Before) || b2After.text !== 'مسودة ب') throw new Error(`A's failure changed B: ${JSON.stringify({ b2Before, b2After })}`);
+      await switchTo(ceo);
+      const aFailed = await composer();
+      if (aFailed.text !== 'رسالة أ ستفشل' || !/Not confirmed/.test(aFailed.error) || aFailed.readOnly) throw new Error(`A after failure: ${JSON.stringify(aFailed)}`);
+      await shot('p1-07-race-a-kept');
+      // The retry with A's kept key sends once.
+      await submit('#chat .chat-composer');
+      await waitUntil(`[...document.querySelectorAll('#chat .chat-msg.from-founder .chat-text')].some((b) => b.textContent === 'رسالة أ ستفشل') && document.querySelector('#chat .chat-composer textarea').value === ''`, 15_000);
+      const retried = await founderCount('رسالة أ ستفشل');
+      if (retried !== 1) throw new Error(`the retry duplicated: ${retried}`);
+      const detail = { bIntactAfterASuccess: true, aSentOnce: aOnce, bIntactAfterAFailure: true, aDraftKept: aFailed.text, aError: aFailed.error, retrySentOnce: retried };
+      results.spike.chatRace = detail;
+      return detail;
+    } finally {
+      holding = false;
+      for (const id of held.splice(0)) await page.send('Fetch.continueRequest', { requestId: id }).catch(() => undefined);
+      await page.send('Fetch.disable').catch(() => undefined);
+      await page.navigate(`${surface.origin}/`);
+      await waitReady();
+    }
+  });
   if (values.spike) {
     console.log(JSON.stringify({ verdict: 'C5 TECHNICAL SPIKE — PASS', spike: results.spike }));
   } else {
