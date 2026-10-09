@@ -22,14 +22,14 @@ import { fmtDate, LEVEL_LABEL, SOURCE_LABEL, STATE_LABEL, deptName, dirOf, plura
 import type { CompanyUniverse, Emphasis, Layout, LayoutNode } from '../model/types.js';
 
 /**
- * Department accents in canonical column order, validated with the dataviz palette checker on the light
- * executive surface (#f4f2ec): L 0.43–0.77, ≥ 3:1 against the surface, adjacent pairs around the set ΔE ≥ 7.8
- * under CVD with the column's name as the secondary encoding. Assigned by entity, fixed order, never cycled.
+ * Department accents in canonical column order, lifted for the dark executive surface (P1-UX-BUDGET-DARK-01): each
+ * ≥ 5:1 against a card (#1a2236) and ≥ 6:1 against the ground (#0b1020), the same five hues in the same order as the
+ * light set, with the column's name as the secondary encoding. Assigned by entity, fixed order, never cycled.
  */
-export const DEPARTMENT_COLORS = ['#2a78d6', '#178a63', '#b57a12', '#7a6fd6', '#c8501f'] as const;
-export const departmentColor = (column: number | null): string => (column === null ? '#6f6b86' : (DEPARTMENT_COLORS[column % DEPARTMENT_COLORS.length] ?? '#6f6b86'));
-const RELATION_COLORS: Readonly<Record<string, string>> = { DELEGATION: '#2f9bd6', SUPPORT: '#2a9d8f', REVIEW: '#8a6fd6', APPROVAL: '#c48a1f', HANDOFF: '#d0862b', ESCALATION: '#d64545' };
-const GOLD = '#c48a1f';
+export const DEPARTMENT_COLORS = ['#4f93ea', '#2fb183', '#d39a2e', '#9488ee', '#e2733f'] as const;
+export const departmentColor = (column: number | null): string => (column === null ? '#8a87a6' : (DEPARTMENT_COLORS[column % DEPARTMENT_COLORS.length] ?? '#8a87a6'));
+const RELATION_COLORS: Readonly<Record<string, string>> = { DELEGATION: '#4fb3e8', SUPPORT: '#33b7a8', REVIEW: '#a08af0', APPROVAL: '#d8a84a', HANDOFF: '#e69a48', ESCALATION: '#f06a6a' };
+const GOLD = '#d8a84a';
 /** Turn radius of the orthogonal lines, in CSS pixels. */
 const R = 12;
 
@@ -662,7 +662,7 @@ export class TreeView {
         }
         add(d, 'exec', { stroke: GOLD, 'stroke-width': n2(width) }, { a: p.departmentId, b: g.id, goal: g.id, column: p.column, count: p.count });
         // Work running now: one light travels along the line (a real state; a still highlight in reduced motion).
-        if (p.flowing) add(d, 'exec', { stroke: '#fff1cf', 'stroke-width': n2(width + 1.5), pathLength: '1000', class: 'line line-exec line-flow' }, { a: p.departmentId, b: g.id, goal: g.id, column: p.column, count: p.count });
+        if (p.flowing) add(d, 'exec', { stroke: '#ffe7b3', 'stroke-width': n2(width + 1.5), pathLength: '1000', class: 'line line-exec line-flow' }, { a: p.departmentId, b: g.id, goal: g.id, column: p.column, count: p.count });
       }
       // The bundle: everything the goal collects enters it as one line, weighted by all the people serving.
       add(`M ${n2(tx)} ${n2(railY)} L ${n2(tx)} ${n2(target.top)}`, 'bundle', { stroke: GOLD, 'stroke-width': n2(1.6 + Math.min(total, 8) * 0.45) }, { a: '', b: g.id, goal: g.id, count: total });
