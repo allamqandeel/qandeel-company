@@ -40,7 +40,7 @@
  *   release-status --workspace <dir>      the pin, the pinned release's integrity, and whether THIS build is admitted.
  *   release-check --workspace <dir>       (the activation's dry run, run from the staged release itself)
  *   Without --workspace these read the launcher configuration (`--config <file>` names another one).
- *   provider-check --workspace <dir> --provider deepseek [--probe] [--probe-class E1|E2|E3|E4]
+ *   provider-check --workspace <dir> --provider deepseek [--probe] [--probe-class E1|E2|E3|E4] [--probe-chat-bound]
  *         the operator's content-free identity check (L1-01, D-L1-05): resolves the vault reference, asks
  *         the provider what the model alias currently names, records the verdict in the workspace (a system
  *         fact, never Founder authority) and prints it. `--probe` adds one tiny bounded call (non-thinking by
@@ -74,11 +74,11 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { isQandeelError } from '@qandeel-company/domain';
-import { worstCase, type ProviderAdapter, type ProviderProvisioningProfile } from '@qandeel-company/governance';
+import { actualCost, worstCase, type ProviderAdapter, type ProviderProvisioningProfile } from '@qandeel-company/governance';
 import { DEEPSEEK_FLASH_PRICE_CARD, DEEPSEEK_MODEL_CODE, DEEPSEEK_PROVIDER_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_PROFILE, DEEPSEEK_V41_FLASH_REASONING_PROFILE, DeepSeekHttpsTransport, DeepSeekProviderAdapter, PROBE_MAX_TOKENS, PROBE_THINKING_MAX_TOKENS } from '@qandeel-company/model-providers';
 import { Logger, admitRuntimeRelease, jsonLinesSink, selfReleaseRoot, verifyReleaseTree } from '@qandeel-company/runtime';
 import { VaultError, WindowsUserVault } from '@qandeel-company/secret-vault';
-import { CompanyStore, FounderAuthStore, GovernanceStore } from '@qandeel-company/storage';
+import { CHAT_REPLY_OUTPUT_TOKENS, CompanyStore, FounderAuthStore, GovernanceStore } from '@qandeel-company/storage';
 
 import { hostPaths, readDescriptor } from './host/descriptor.js';
 import { discoverHost, installShortcuts, launcherConfigDir, launcherConfigPath, noticeFor, notify, openCompany, readLauncherConfig, restartHost, statusNotice, stopHost, writeLauncherConfig } from './host/lifecycle.js';
@@ -88,7 +88,7 @@ import { activateRelease, releaseCli, releaseStatus, releasesDir, resolveRelease
 import { defaultStaticRoots } from './static.js';
 import { FounderSurface } from './surface.js';
 
-const USAGE = 'usage: qandeel-founder <serve|launch|provider-check|open|status|stop|restart|install-shortcuts|release-stage|release-activate|release-status|release-check|desktop-local-install|desktop-local-uninstall|desktop-install|desktop-uninstall|desktop-control> [--workspace <dir>] [--port <n>] [--fake-provider <code>] [--provider deepseek] [--probe] [--probe-class E1|E2|E3|E4] [--background] [--no-browser] [--notify] [--force] [--config <file>] [--release <id|dir>] [--releases-dir <dir>] [--no-shortcuts] [--bundle <dir>] [--shortcut-root <dir>] [--uninstall-key <HKCU key>]';
+const USAGE = 'usage: qandeel-founder <serve|launch|provider-check|open|status|stop|restart|install-shortcuts|release-stage|release-activate|release-status|release-check|desktop-local-install|desktop-local-uninstall|desktop-install|desktop-uninstall|desktop-control> [--workspace <dir>] [--port <n>] [--fake-provider <code>] [--provider deepseek] [--probe] [--probe-class E1|E2|E3|E4] [--probe-chat-bound] [--background] [--no-browser] [--notify] [--force] [--config <file>] [--release <id|dir>] [--releases-dir <dir>] [--no-shortcuts] [--bundle <dir>] [--shortcut-root <dir>] [--uninstall-key <HKCU key>]';
 const DESKTOP_COMMANDS = ['desktop-local-install', 'desktop-local-uninstall', 'desktop-install', 'desktop-uninstall'];
 const LAUNCHER_COMMANDS = ['open', 'status', 'stop', 'restart'];
 /** A host for this workspace already exists (or is coming up): a second `serve` never starts beside it. */
@@ -251,7 +251,7 @@ async function desktopControl(workspace: string): Promise<void> {
 
 export async function main(argv: readonly string[]): Promise<void> {
   const [command, ...rest] = argv;
-  const { values } = parseArgs({ args: rest, strict: true, options: { workspace: { type: 'string' }, port: { type: 'string' }, 'fake-provider': { type: 'string', multiple: true }, 'fake-driver': { type: 'string', multiple: true }, provider: { type: 'string', multiple: true }, probe: { type: 'boolean', default: false }, 'probe-class': { type: 'string', default: 'E1' }, background: { type: 'boolean', default: false }, 'no-browser': { type: 'boolean', default: false }, notify: { type: 'boolean', default: false }, force: { type: 'boolean', default: false }, config: { type: 'string' }, release: { type: 'string' }, 'releases-dir': { type: 'string' }, 'no-shortcuts': { type: 'boolean', default: false }, bundle: { type: 'string' }, 'shortcut-root': { type: 'string' }, 'uninstall-key': { type: 'string' } } });
+  const { values } = parseArgs({ args: rest, strict: true, options: { workspace: { type: 'string' }, port: { type: 'string' }, 'fake-provider': { type: 'string', multiple: true }, 'fake-driver': { type: 'string', multiple: true }, provider: { type: 'string', multiple: true }, probe: { type: 'boolean', default: false }, 'probe-class': { type: 'string', default: 'E1' }, 'probe-chat-bound': { type: 'boolean', default: false }, background: { type: 'boolean', default: false }, 'no-browser': { type: 'boolean', default: false }, notify: { type: 'boolean', default: false }, force: { type: 'boolean', default: false }, config: { type: 'string' }, release: { type: 'string' }, 'releases-dir': { type: 'string' }, 'no-shortcuts': { type: 'boolean', default: false }, bundle: { type: 'string' }, 'shortcut-root': { type: 'string' }, 'uninstall-key': { type: 'string' } } });
   if (!['E1', 'E2', 'E3', 'E4'].includes(values['probe-class'] as string)) fail('USAGE', '--probe-class takes E1, E2, E3 or E4', 2);
   if (command !== undefined && LAUNCHER_COMMANDS.includes(command)) return launcher(command, values);
   if (command === 'release-stage') {
@@ -397,10 +397,19 @@ export async function main(argv: readonly string[]): Promise<void> {
         const result: Record<string, unknown> = { ok: check.result === 'MATCH', command, provider: profile.provider.code, model: DEEPSEEK_MODEL_CODE, credentialRef: adapter.credentialRef, result: check.result, expectedName: check.expectedName, observedName: check.observedName, observedContextWindow: check.observedContextWindow, observedMaxOutputTokens: check.observedMaxOutputTokens, checkId: record.id, checkedAt: record.checkedAt };
         if (values.probe && check.result === 'MATCH') {
           const probeClass = values['probe-class'] as 'E1' | 'E2' | 'E3' | 'E4';
-          const probe = await adapter.probe(undefined, probeClass);
+          // P1-CHAT-OPS-01: `--probe-chat-bound` probes the class at the conversation reply's own output bound.
+          const max = values['probe-chat-bound'] ? CHAT_REPLY_OUTPUT_TOKENS[probeClass] : probeClass === 'E1' ? PROBE_MAX_TOKENS : PROBE_THINKING_MAX_TOKENS;
           const card = { id: 'profile', version: 0, ...DEEPSEEK_FLASH_PRICE_CARD };
-          const reserved = worstCase(card, 64, probeClass === 'E1' ? PROBE_MAX_TOKENS : PROBE_THINKING_MAX_TOKENS);
-          result.probe = { reasoningClass: probeClass, usage: probe.usage, outputChars: probe.outputChars, peakWorstCaseMicros: reserved.billedMicros, note: 'metering only; the answer text is never printed or stored' };
+          const reserved = worstCase(card, 64, max);
+          try {
+            const probe = await adapter.probe(undefined, probeClass, max);
+            const cost = actualCost(card, probe.usage, new Date().toISOString());
+            result.probe = { reasoningClass: probeClass, maxOutputTokens: probe.maxOutputTokens, finishReason: probe.finishReason, latencyMs: probe.latencyMs, usage: probe.usage, reasoningTokens: probe.reasoningTokens, outputChars: probe.outputChars, billedMicros: cost.billedMicros, peakWorstCaseMicros: reserved.billedMicros, note: 'metering only; the answer text is never printed or stored' };
+          } catch (error) {
+            // A failed probe is reported by its normalized class (never retried here).
+            result.probe = { reasoningClass: probeClass, maxOutputTokens: max, failure: (error as { failure?: string }).failure ?? 'UNCLASSIFIED', peakWorstCaseMicros: reserved.billedMicros };
+            process.exitCode = 1;
+          }
         }
         out(result);
         // The exit status is set, never forced: the vault's PowerShell child and the HTTPS socket close on their own

@@ -1,7 +1,74 @@
 # P1-CHAT-OPS-01 — CEO Reply Recovery and DeepSeek Flash E1–E4 Operational Readiness
 
-**Status:** PARTIALLY VERIFIED. Three things need Founder approval: the backup diagnosis (B), the paid probes (C2) and the
-install (D).
+**Status:** B and C2 (P-b) are DONE under the Founder's approval of 2026-10-09. Install (D) still needs its own approval.
+
+## Results of the approved B and P-b (2026-10-09)
+
+### B — Salim's reply: root cause (durable evidence)
+
+**How the evidence was taken.**
+- Verified backup `b293e68d` was restored by `restoreToIsolatedWorkspace` into a scratch directory, held as
+  RESTORE_CHECK_COPY.
+- The restore passed quick_check `ok` at schema 21. The LIVE store was never opened.
+- The diagnosis read only IDs, states, codes, tokens and money.
+- The copy was deleted afterwards.
+
+| Evidence | Value |
+|---|---|
+| Reply Work Item `4589b13f` | BLOCKED, `RETRIES_EXHAUSTED`; job DEAD_LETTER, 3 attempts, last code `NO_ELIGIBLE_ROUTE` |
+| Attempts 1 and 2 (24 s, 11 s) | `PROVIDER_UNAVAILABLE`; **no usage record**: nothing reached a billed answer |
+| Attempt 3 (20 ms) | `NO_ELIGIBLE_ROUTE` |
+| Deployment `deepseek-flash-e1` catalog history | `CIRCUIT_OPENED` **reason `TRANSIENT`**, open until 2026-10-07T11:08:55.456Z (system:runtime) |
+| Reply money | cap USD 0.50, spent 0, held 0 |
+| Brief cascade | 97 briefs (96 BLOCKED, 1 FAILED); 290 runs `NO_ELIGIBLE_ROUTE`; 2 provider calls, USD 0.001791 |
+| The one brief that reached the provider | E1: 402 output tokens, then E2 escalation: **1,024 of 1,024 output tokens** → `MODEL_OUTPUT_INVALID` |
+| Identity | last check MATCH "DeepSeek-V4.1-Flash", 2026-10-06 |
+| Salim | ACTIVE, E1 default / E2 maximum; envelope USD 0.553947 spent of USD 0.59 (headroom about USD 0.036) |
+
+**Root cause.**
+1. **Three consecutive `TRANSIENT` provider failures** on the E1 route, with nothing sent or billed. `TRANSIENT` is the
+   class for a failure before the request is sent (DNS, refused or timed-out connection) or a provider HTTP 500. Each
+   failing call took about 10–12 s, which fits a connection timeout.
+2. **The circuit opened for 5 minutes** (`CIRCUIT_THRESHOLD` 3, `CIRCUIT_OPEN_MS` 5 min).
+3. **The reply's retry budget ran out inside the circuit window.** The job's attempts are 1–2 s apart, so attempt 3 found
+   no eligible route, and the job dead-lettered at 11:03:57. Had it waited, the circuit would have closed at 11:08:55 and
+   the reply could have run.
+4. **The cascade then multiplied the failure.** The brief-about-brief chain (fixed by D-P1-02) turned one blocked reply
+   into 97 BLOCKED items.
+
+**Remedy.**
+- No historical retry.
+- A new message works once the provider is reachable: live calls succeed today, see the probes below.
+- **Recommended follow-up fix (not done, needs a decision):** a run that finds no route *because a circuit is open* should
+  wait until the circuit closes. It should not consume a retry attempt and dead-letter.
+
+### C3 — Flash E1–E4 live probes (P-b)
+
+**How the probes ran.**
+- Command: `provider-check --probe --probe-class Ex --probe-chat-bound`, on a disposable workspace that has since been
+  deleted.
+- The key came from the existing vault reference.
+- 4 paid calls, no retries. The fixed probe prompt was used; no Company content.
+- The calls ran at 2026-10-09 ~09:03Z, which is the peak band.
+
+| Level | `max_tokens` | Identity | finish | Latency | Output tokens (reasoning) | Answer | Cost (USD) |
+|---|---|---|---|---|---|---|---|
+| E1 (thinking off) | 1,024 | MATCH | stop | 1,049 ms | 5 (—) | complete | 0.000019 |
+| E2 (low) | 2,048 | MATCH | stop | 1,588 ms | 112 (106) | complete | 0.000156 |
+| E3 (high) | 4,096 | MATCH | stop | 942 ms | 43 (37) | complete | 0.000073 |
+| E4 (max) | 8,192 | MATCH | stop | 854 ms | 26 (20) | complete | 0.000053 |
+| **Total** | | | | | | | **0.000301** of the approved 0.05 |
+
+**Findings.**
+- **All four levels work.** The API accepts every one, and each returns a complete answer with the expected thinking
+  behaviour: E1 reports no reasoning tokens; E2–E4 report them.
+- **Reasoning is counted inside `completion_tokens`, and so inside the output allowance and its billing.** E2 shows this:
+  112 completion tokens, 106 of them reasoning.
+- **The probe prompt is trivial.** It shows that the bounds accept a short answer. It does not show that a real
+  conversation fits.
+- **Real conversations can hit the bound.** The 2026-10-07 brief at E2 with 1,024 output tokens exhausted its allowance
+  and failed as `MODEL_OUTPUT_INVALID`. The PR #27 bounds are 2× to 8× larger (E2 2,048, E3 4,096, E4 8,192). They are
+  untested on real conversations, and an exhausted bound ends visibly as Failed.
 
 **Canonical main:** `ea7fc6d611993cd7c03e9aadbcb0ca1ec8bb2fda`. PR #27 is MERGED; its FULL gate was green on tree
 `8025b2d3`, which is the same tree as main.

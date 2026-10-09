@@ -251,18 +251,27 @@ export class DeepSeekProviderAdapter implements ProviderAdapter {
    * non-thinking at 32 output tokens; a thinking class sends the official thinking fields with a small ceiling that
    * also bounds the thinking tokens (`PROBE_THINKING_MAX_TOKENS`), so a wire-contract check costs a known maximum.
    */
-  async probe(signal: AbortSignal = new AbortController().signal, reasoningClass: Exclude<ReasoningClass, 'E0'> = 'E1'): Promise<{ usage: ProviderResponse['usage']; outputChars: number }> {
+  async probe(signal: AbortSignal = new AbortController().signal, reasoningClass: Exclude<ReasoningClass, 'E0'> = 'E1', maxOutputTokens?: number): Promise<{ usage: ProviderResponse['usage']; outputChars: number; maxOutputTokens: number; finishReason: string | null; reasoningTokens: number | null; latencyMs: number }> {
+    // P1-CHAT-OPS-01: an explicit allowance probes a class at a real bound (the chat bound); the default stays tiny.
+    const max = maxOutputTokens ?? (reasoningClass === 'E1' ? PROBE_MAX_TOKENS : PROBE_THINKING_MAX_TOKENS);
     const request: ProviderRequest = {
       providerCode: DEEPSEEK_PROVIDER_CODE,
       modelCode: DEEPSEEK_MODEL_CODE,
       deploymentCode: 'probe',
       reasoningClass,
       messages: [{ role: 'user', content: 'Reply with exactly this json object and nothing else: {"ok":true}' }],
-      maxOutputTokens: reasoningClass === 'E1' ? PROBE_MAX_TOKENS : PROBE_THINKING_MAX_TOKENS,
+      maxOutputTokens: max,
     };
-    const answer = parseChatResponse(await this.#send('POST', DEEPSEEK_CHAT_COMPLETIONS_PATH, buildChatBody(request), signal));
+    const started = performance.now();
+    const res = await this.#send('POST', DEEPSEEK_CHAT_COMPLETIONS_PATH, buildChatBody(request), signal);
+    const latencyMs = Math.round(performance.now() - started);
+    const answer = parseChatResponse(res);
     this.#calls++;
-    return { usage: answer.usage, outputChars: answer.outputText.length };
+    // Metering only: the finish reason and the reasoning-token COUNT (never any reasoning or answer text).
+    const body = res.body as { choices?: { finish_reason?: unknown }[]; usage?: { completion_tokens_details?: { reasoning_tokens?: unknown } | null } } | null;
+    const finish = body?.choices?.[0]?.finish_reason;
+    const reasoning = body?.usage?.completion_tokens_details?.reasoning_tokens;
+    return { usage: answer.usage, outputChars: answer.outputText.length, maxOutputTokens: max, finishReason: typeof finish === 'string' ? finish : null, reasoningTokens: typeof reasoning === 'number' && Number.isSafeInteger(reasoning) && reasoning >= 0 ? reasoning : null, latencyMs };
   }
 
   async generate(request: ProviderRequest, signal: AbortSignal): Promise<ProviderResponse> {
