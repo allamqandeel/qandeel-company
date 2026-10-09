@@ -35,9 +35,9 @@ governed and auditable.
 | `OPS` Operational / Desktop Packaging (open / reopen / close / stop / restart / recover the Company from Windows, no terminal) | CLOSED / MERGED / CANONICAL (PR #19, `d86be37`; `docs/OPS_FOUNDER_DESKTOP_PACKAGING_REPORT.md`) |
 | `C5-CORR-01` / `C5-CORR-02` English application chrome; Goal Focus leader geometry | CLOSED / MERGED / CANONICAL (PR #20, `cf1578e`; PR #21, `c88afbc`) |
 | `D0` Final Engineering & Validation Closure (proportional validation, D-D0-01) | CLOSED / MERGED / CANONICAL (PR #22, `074673b`) |
-| `D1` Desktop v1 Productization Mega Stage (the former D1 + D2 + D3: `QANDEEL-COMPANY-Setup.exe`, private runtime, update / rollback / repair / uninstall; D-D1-01 … D-D1-07) | ACTIVE — not closed |
-| `D2` Founder Laptop Acceptance (the former D4) | Not started — QANDEEL COMPANY Desktop v1 closes only when the signed Founder RC is installed, running and accepted |
-| `P1` First Production Staffing under Salim | **PAUSED** by Founder decision until Desktop v1 is installed and accepted (`docs/architecture/IMPLEMENTATION_MAP.md`) |
+| `D1` Desktop v1 Productization Mega Stage (the former D1 + D2 + D3: Founder-local Desktop bundle, private runtime, update / rollback / repair / uninstall; D-D1-01 … D-D1-08) | CLOSED / MERGED / CANONICAL (PR #23, `413b3bd`; `docs/D2_CLOSURE_RECORD.md`) |
+| `D2` Founder Laptop Acceptance (the former D4; D2-CTRL-01 PR #24, `72b5d62`; D2-UX-01 PR #25, `0c32019`) | FOUNDER ACCEPTED / CLOSED (2026-10-09; `docs/D2_CLOSURE_RECORD.md`) — QANDEEL COMPANY Desktop v1 is installed and accepted, last verified READY |
+| `P1` First Production Staffing under Salim | NEXT — approved planning stage: research and discussion first; no staffing, hiring or spending authorized yet (`docs/architecture/IMPLEMENTATION_MAP.md`) |
 
 **C1 builds the durable runtime foundation, not the intelligent Company.** It adds:
 - Work Items, a durable queue, Runs and checkpoints on SQLite/WAL, with atomic claims, lease fencing
