@@ -12,7 +12,7 @@ import { ChatScreen } from './chat.js';
 import { CompanyControl } from './company-control.js';
 import { renderAcademy, renderMeetingRoom } from './halls.js';
 import { keepFocus, restoreFocus } from './keep-focus.js';
-import { h, renderActivity, renderAttentionRail, renderCalendar, renderEmployeeFocus, renderGoalFocus, renderHealthLine, renderPalette, renderPreview, renderTimeline, type PanelHost } from './panels.js';
+import { h, refusalText, renderActivity, renderAttentionRail, renderCalendar, renderEmployeeFocus, renderGoalFocus, renderHealthLine, renderPalette, renderPreview, renderTimeline, type PanelHost } from './panels.js';
 import { departmentColor, TreeView } from './view.js';
 
 type Json = Record<string, unknown>;
@@ -37,6 +37,7 @@ class App implements PanelHost {
   paletteResult: Json | null = null;
   timelineBounds = { earliest: new Date(Date.now() - 86_400_000).toISOString(), now: new Date().toISOString() };
   #refreshing = false;
+  #company: CompanyControl | null = null;
   #dirty = false;
   #previousRelationIds = new Set<string>();
   #previousAttentionIds = new Set<string>();
@@ -96,8 +97,12 @@ class App implements PanelHost {
     document.addEventListener('pointerdown', (e) => this.#outside(e), true);
     $('legend-toggle').addEventListener('click', () => $('legend').toggleAttribute('hidden'));
     $('attention-toggle').addEventListener('click', () => (this.#railOpen ? this.closeRail() : this.showLane(null)));
-    // D2-CTRL-01: Status / Stop Company / Restart Company inside this window.
-    new CompanyControl($('company-toggle'), $('company-panel'));
+    // D2-CTRL-01: Status / Stop Company / Restart Company inside this window; P1-UX-BUDGET-DARK-01: the Company budget
+    // beside them, changed only through the governed BUDGET_CEILING preview and the confirmation dialog.
+    this.#company = new CompanyControl($('company-toggle'), $('company-panel'), {
+      previewAction: (intent, payload) => this.previewAction(intent, payload),
+      lock: (code) => this.lock(code),
+    });
     const universeOf = (): CompanyUniverse | null => this.universe;
     this.#chat = new ChatScreen($('chat'), {
       get universe() {
@@ -190,6 +195,8 @@ class App implements PanelHost {
         this.#paletteInput(false);
       }
       if (this.#hall === 'academy') await this.#loadAcademy();
+      // P1-UX-BUDGET-DARK-01: an open Company panel shows the envelope as it is now (after a confirmation or a change).
+      if (this.#company?.isOpen) await this.#company.refreshBudget();
       if (this.lens.kind === 'EMPLOYEE' || this.lens.kind === 'GOAL') {
         await this.#renderFocus();
         this.#applyTether();
@@ -270,7 +277,7 @@ class App implements PanelHost {
   }
 
   colorOf(ref: string): string {
-    if (ref === 'founder' || (this.layout && ref === this.layout.ceoId)) return '#c48a1f';
+    if (ref === 'founder' || (this.layout && ref === this.layout.ceoId)) return '#d8a84a';
     return departmentColor(this.layout?.byId.get(ref)?.column ?? null);
   }
 
@@ -282,6 +289,8 @@ class App implements PanelHost {
    */
   spotlightAttention(itemId: string | null, itemEl: HTMLElement | null): void {
     if (!this.universe || !this.layout) return;
+    // P1-UX-BUDGET-DARK-01: presentation only — a spotlight quiets the company more firmly than a person's sheet does.
+    document.documentElement.toggleAttribute('data-spotlight', itemId !== null);
     if (itemId === null) {
       this.#spotlight = null;
       if (this.emphasis) this.view.setEmphasis(this.emphasis);
@@ -542,14 +551,20 @@ class App implements PanelHost {
   }
 
   /** A rail / sheet decision: the structured act it shows becomes a governed preview (R2-24); nothing changes until Confirm. */
-  async previewAction(intent: string, payload: Json): Promise<void> {
+  async previewAction(intent: string, payload: Json): Promise<string | null> {
     try {
       const r = await api.post<{ preview: Json }>('/api/previews', { intent, payload });
       this.showPreview(r.preview);
+      return null;
     } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        this.lock(e.code);
+        return 'The Founder session has ended. Nothing changed.';
+      }
       const reason = e instanceof ApiError && typeof e.details.reason === 'string' ? `: ${humanize(e.details.reason)}` : '';
       this.note(`No preview (${e instanceof ApiError ? e.code : 'error'}${reason}). Nothing changed.`, 'system');
       await this.refresh(false);
+      return e instanceof ApiError ? refusalText(intent, e.code, typeof e.details.reason === 'string' ? e.details.reason : null).replace('Not executed', 'No preview') : 'No preview could be made. Nothing changed.';
     }
   }
 
@@ -578,7 +593,17 @@ class App implements PanelHost {
       this.note(`Executed at the real boundary: ${t(RESULT_LABEL, kind)}`, 'semantic');
       await this.refresh(false);
     } catch (e) {
-      this.note(`Not executed (${e instanceof ApiError ? e.code : 'error'})`, 'system');
+      if (e instanceof ApiError && e.status === 401) {
+        $('preview').hidden = true;
+        this.lock(e.code);
+        return;
+      }
+      const code = e instanceof ApiError ? e.code : 'error';
+      // P1-UX-BUDGET-DARK-01: the refusal in words, in the dialog itself (it stays open: Cancel closes it).
+      const text = refusalText($('preview').dataset.intent ?? '', code, e instanceof ApiError && typeof e.details.reason === 'string' ? e.details.reason : null);
+      const line = $('preview').querySelector('.preview-error');
+      if (line) line.textContent = text;
+      this.note(text, 'system');
     }
   }
 

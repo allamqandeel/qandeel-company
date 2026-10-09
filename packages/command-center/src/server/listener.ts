@@ -105,6 +105,8 @@ const ROUTES: readonly Route[] = [
   route('GET', '/api/pilots/:id/inspect', 'pilotInspect', (ctx, p, _b, q) => api.pilotInspect(ctx, p[0] as string, { workItemId: q.get('workItemId') ?? undefined })),
   // L1-01 model providers: a read (profiles, identity checks, what is provisioned); provisioning goes through /api/previews.
   route('GET', '/api/activation', 'activation', (ctx) => api.activation(ctx)),
+  // P1-UX-BUDGET-DARK-01: the Company envelope (a read; its ceiling changes only through /api/previews BUDGET_CEILING).
+  route('GET', '/api/company/budget', 'companyBudget', (ctx) => api.companyBudget(ctx)),
   // L1-02: one attempt's durable answer (an explicit Founder read; the session gate below applies like every /api route).
   route('GET', '/api/academy/attempts/:id/answer', 'attemptAnswer', (ctx, p) => api.attemptAnswer(ctx, p[0] as string)),
   // D2-UX-01: the company-wide Academy overview (a read; no Academy act is reachable from it).

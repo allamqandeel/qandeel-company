@@ -389,6 +389,17 @@ export function activation(ctx: ApiContext): Json {
 }
 
 /**
+ * P1-UX-BUDGET-DARK-01: the Company envelope for the Company panel — a Founder read of the canonical COMPANY budget,
+ * in the shape the person sheet already reads for an Employee (ceiling, spent, reserved, currency and the envelope id a
+ * BUDGET_CEILING preview addresses). It changes nothing: the ceiling moves only through the existing governed
+ * BUDGET_CEILING preview, its fingerprint and the Founder's confirmation.
+ */
+export function companyBudget(ctx: ApiContext): Json {
+  const b = ctx.runtime.governance.budgetFor('COMPANY', 'company');
+  return { budget: b ? { id: b.id, currency: b.currency, capMoney: b.capMoney, spentMoney: b.spentMoney, reservedMoney: b.reservedMoney } : null };
+}
+
+/**
  * D2-UX-01: the company-wide Academy overview — a Founder read of the canonical Academy, Skills and Employee records
  * (codes, states, scores, dates; never an answer or a scenario's content). It starts no training, qualification,
  * certification or shadow work, calls no model and changes no budget or lifecycle: every Academy act stays a governed
@@ -694,8 +705,16 @@ export function structuredSummary(ctx: ApiContext, preview: { intentKind: string
       return `${p.decision === 'REJECT' ? 'Reject' : 'Approve'} the staffing request`;
     case 'CONFLICT_RESOLVE':
       return `Resolve the review conflict ${p.resolution === 'REWORK' ? 'with rework' : 'as passed'}`;
-    case 'BUDGET_CEILING':
-      return 'Change the budget ceiling';
+    case 'BUDGET_CEILING': {
+      // P1-UX-BUDGET-DARK-01: the envelope is named and the change stated from → to, so a Company ceiling can never be
+      // mistaken for a person's.
+      const b = ctx.runtime.governance.budget(s('budgetId') as Id);
+      const money = (m: number): string => `${b.currency} ${(m / 1_000_000).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      const change = `from ${money(b.capMoney)} to ${money(Number(p.capMoney))}`;
+      if (b.scope === 'COMPANY') return `Change the COMPANY budget ceiling ${change}. Only the Company envelope changes: its token ceiling, what is spent and reserved, and every other envelope stay as they are`;
+      if (b.scope === 'EMPLOYEE') return `Change the budget ceiling of ${nameOf(ctx.runtime.founder.universe(), b.scopeId as Id)} ${change}`;
+      return `Change the ${b.scope === 'DEPARTMENT' ? 'Department' : 'Work Item'} budget ceiling ${change}`;
+    }
     case 'DELEGATE_WORK':
       return 'Delegate authority for a bounded time';
     case 'TOOL_RECONCILE':

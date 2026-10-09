@@ -45,7 +45,7 @@ const content = (tag: string, text: string, cls = ''): HTMLElement => {
   return e;
 };
 const initials = (name: string): string => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w.charAt(0)).join('').toUpperCase();
-const GOLD = '#c48a1f';
+const GOLD = '#d8a84a';
 
 export interface PanelHost {
   openEmployee(id: string): void;
@@ -58,8 +58,11 @@ export interface PanelHost {
   /** D2-UX-01: closes the command panel (and the activation view in it); never touches a pending confirmation. */
   closePalette(): void;
   runCommand(text: string): Promise<void>;
-  /** A structured act the surface already knows (IDs / codes): posted as a governed preview, never re-typed as text. */
-  previewAction(intent: string, payload: Json): Promise<void>;
+  /**
+   * A structured act the surface already knows (IDs / codes): posted as a governed preview, never re-typed as text.
+   * Resolves to null once the confirmation dialog shows the preview, or to the refusal in words (nothing changed).
+   */
+  previewAction(intent: string, payload: Json): Promise<string | null>;
   /** C7-D: opens an internal Preview on its isolated host in a new tab without an opener (never in this page). */
   openDigitalPreview(previewId: string): Promise<void>;
   confirmPreview(previewId: string, fingerprint: string): Promise<void>;
@@ -516,11 +519,40 @@ export function budgetCeilingMicros(raw: string): number | null {
 }
 
 /**
- * The budget ceiling, stated explicitly: no default amount. A valid entry becomes the existing BUDGET_CEILING governed
- * preview (fingerprinted, confirmed by the Founder in the confirmation dialog) and nothing else.
+ * P1-UX-BUDGET-DARK-01: a governed act the boundary refused, in words. In every case nothing changed. A budget ceiling
+ * is checked against the envelope above it and the envelopes beneath it only at confirmation, so those refusals are
+ * named here; any other act keeps the typed code.
  */
-function budgetEditor(full: string, budget: Json | null, host: PanelHost, draft: string, close: () => void): HTMLElement {
-  const box = h('section', { class: 'budget-editor', id: 'budget-editor', 'aria-label': `Budget ceiling of ${full}` });
+export function refusalText(intent: string, code: string, reason: string | null): string {
+  if (code === 'FOUNDER_CONFIRMATION_REQUIRED') {
+    if (reason === 'ALREADY_EXPIRED') return 'This preview expired before it was confirmed. Nothing changed — preview the change again.';
+    if (reason === 'FINGERPRINT_MISMATCH') return 'This preview no longer matches the record. Nothing changed — preview the change again.';
+    if (reason === 'SESSION_MISMATCH') return 'This preview belongs to an earlier session. Nothing changed — preview the change again.';
+    if (reason !== null && reason.startsWith('ALREADY_')) return 'This preview was already decided. Nothing changed by this confirmation.';
+  }
+  if (intent === 'BUDGET_CEILING') {
+    if (code === 'BUDGET_EXHAUSTED') return 'A ceiling cannot be higher than the ceiling of the envelope above it (the Company’s, or the Department’s). Raise that one first. Nothing changed.';
+    if (code === 'VALIDATION_FAILED') return 'A ceiling cannot drop below what is already spent and reserved, or below the ceiling of an envelope beneath it that can still spend. Nothing changed.';
+    if (code === 'CURRENCY_MISMATCH') return 'The amount must be in the envelope’s own currency. Nothing changed.';
+    if (code === 'NOT_FOUND') return 'That budget envelope is no longer on record. Nothing changed.';
+  }
+  return `Not executed (${code}). Nothing changed.`;
+}
+
+/** P1-UX-BUDGET-DARK-01: what an envelope can still admit — its ceiling less what is spent and reserved, never below zero. */
+export function budgetHeadroomMicros(budget: Json): number {
+  return Math.max(0, Number(budget.capMoney) - Number(budget.spentMoney) - Number(budget.reservedMoney ?? 0));
+}
+
+/**
+ * The budget ceiling, stated explicitly: no default amount. A valid entry becomes the existing BUDGET_CEILING governed
+ * preview (fingerprinted, confirmed by the Founder in the confirmation dialog) and nothing else. One editor for every
+ * envelope the Founder sets by hand — a person's (the sheet) and the Company's (the Company panel, P1-UX-BUDGET-DARK-01);
+ * `idPrefix` keeps the two apart when both are open. The token cap is never sent, so it stays as it is.
+ */
+export function budgetEditor(full: string, budget: Json | null, host: Pick<PanelHost, 'previewAction'>, draft: string, close: () => void, idPrefix = 'budget'): HTMLElement {
+  const id = (part: string): string => `${idPrefix}-${part}`;
+  const box = h('section', { class: 'budget-editor', id: id('editor'), 'aria-label': `Budget ceiling of ${full}` });
   const cancel = h('button', { type: 'button', class: 'btn btn-ghost', text: budget ? 'Cancel' : 'Close', 'aria-label': budget ? 'Cancel the budget change' : 'Close the budget panel', 'data-keep': 'budget-cancel' });
   cancel.addEventListener('click', close);
   box.addEventListener('keydown', (ev) => {
@@ -530,21 +562,21 @@ function budgetEditor(full: string, budget: Json | null, host: PanelHost, draft:
     }
   });
   if (!budget) {
-    box.append(h('p', { class: 'muted', text: `${full} has no budget envelope yet. A ceiling can only be set on an existing envelope, so nothing can be changed here.` }), h('div', { class: 'budget-actions' }, cancel));
+    box.append(h('p', { class: 'muted', text: `${full.charAt(0).toUpperCase()}${full.slice(1)} has no budget envelope yet. A ceiling can only be set on an existing envelope, so nothing can be changed here.` }), h('div', { class: 'budget-actions' }, cancel));
     return box;
   }
   const currency = String(budget.currency);
   const current = Number(budget.capMoney);
   box.append(h('p', { class: 'budget-now' }, h('span', { text: 'Current ceiling ' }), h('strong', { text: fmtMoneyMicros(current, currency) }), h('span', { class: 'muted', text: ` · spent ${fmtMoneyMicros(Number(budget.spentMoney), currency)} · reserved ${fmtMoneyMicros(Number(budget.reservedMoney ?? 0), currency)}` })));
   const form = h('form', { class: 'budget-form', novalidate: true }) as HTMLFormElement;
-  const input = h('input', { id: 'budget-amount', type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: 'Amount', 'aria-describedby': 'budget-hint budget-error', maxlength: 18 }) as HTMLInputElement;
+  const input = h('input', { id: id('amount'), type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: 'Amount', 'aria-describedby': `${id('hint')} ${id('error')}`, maxlength: 18 }) as HTMLInputElement;
   input.value = draft;
-  const error = h('p', { id: 'budget-error', class: 'budget-error', role: 'alert' });
+  const error = h('p', { id: id('error'), class: 'budget-error', role: 'alert' });
   const submit = h('button', { type: 'submit', class: 'btn btn-primary', text: 'Preview the new ceiling', 'data-keep': 'budget-preview' });
   form.append(
-    h('label', { for: 'budget-amount', class: 'budget-label', text: `New ceiling (${currency})` }),
+    h('label', { for: id('amount'), class: 'budget-label', text: `New ceiling (${currency})` }),
     h('div', { class: 'budget-row' }, h('span', { class: 'budget-currency', 'aria-hidden': 'true', text: currency }), input),
-    h('p', { id: 'budget-hint', class: 'muted small', text: 'Up to two decimals. Nothing changes until you confirm the preview.' }),
+    h('p', { id: id('hint'), class: 'muted small', text: 'Up to two decimals. Nothing changes until you confirm the preview.' }),
     error,
     h('div', { class: 'budget-actions' }, cancel, submit),
   );
@@ -560,7 +592,9 @@ function budgetEditor(full: string, budget: Json | null, host: PanelHost, draft:
     if (micros === current) return refuse('That is already the current ceiling.');
     error.textContent = '';
     input.removeAttribute('aria-invalid');
-    void host.previewAction('BUDGET_CEILING', { budgetId: String(budget.id), capMoney: micros, currency, reasonCode: 'founder.ceiling' });
+    void host.previewAction('BUDGET_CEILING', { budgetId: String(budget.id), capMoney: micros, currency, reasonCode: 'founder.ceiling' }).then((refused) => {
+      if (refused !== null && error.isConnected) refuse(refused);
+    });
   });
   box.append(form);
   return box;
@@ -857,7 +891,9 @@ export function renderPreview(root: HTMLElement, preview: Json, host: PanelHost)
   const cancel = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Cancel' });
   confirm.addEventListener('click', () => void host.confirmPreview(String(preview.id), String(preview.fingerprint)));
   cancel.addEventListener('click', () => void host.rejectPreview(String(preview.id)));
-  root.append(h('div', { class: 'preview-actions' }, cancel, confirm));
+  // P1-UX-BUDGET-DARK-01: a refused confirmation is stated here, in the dialog the Founder is looking at.
+  root.dataset.intent = String(preview.intentKind);
+  root.append(h('p', { class: 'preview-error', role: 'alert' }), h('div', { class: 'preview-actions' }, cancel, confirm));
   // The safe choice has the focus (m-43): an Enter pressed out of habit cancels, it never executes.
   cancel.focus();
 }

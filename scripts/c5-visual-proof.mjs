@@ -343,9 +343,10 @@ try {
     const title = await page.evaluate(`document.querySelector('#focus .sheet-title').textContent`);
     const lens = await page.evaluate(`document.documentElement.dataset.lens`);
     const quiet = await count('.card.is-quiet');
-    // The quieting must be visible, not only a class; and a live refresh never rebuilds an unchanged surface.
+    // The quieting must be visible, not only a class — and, behind a person's sheet, gentle (P1-UX-BUDGET-DARK-01: the
+    // company stays readable; the sheet carries the focus) — and a live refresh never rebuilds an unchanged surface.
     const builds0 = await page.evaluate(`document.querySelector('.company').dataset.builds`);
-    await untilPainted(`Number(getComputedStyle(document.querySelector('.card.is-quiet')).opacity) < 0.6`);
+    await untilPainted(`(o => o < 0.85 && o >= 0.75)(Number(getComputedStyle(document.querySelector('.card.is-quiet')).opacity))`);
     const quietOpacity = await page.evaluate(`Number(getComputedStyle(document.querySelector('.card.is-quiet')).opacity)`);
     await settle(800);
     const builds1 = await page.evaluate(`document.querySelector('.company').dataset.builds`);
@@ -786,7 +787,8 @@ try {
       const seo = world.employees['growth.seo-1'].id;
       await click(`.card[data-id="employee:${seo}"]`);
       await waitUntil(`!document.getElementById('focus').hidden && document.querySelector('#focus .chain li')`, 10_000);
-      await untilPainted(`Number(getComputedStyle(document.querySelector('.card.is-quiet')).opacity) < 0.6`);
+      // P1-UX-BUDGET-DARK-01: the company behind a person's sheet recedes only slightly and stays readable.
+      await untilPainted(`(o => o < 0.85 && o >= 0.75)(Number(getComputedStyle(document.querySelector('.card.is-quiet')).opacity))`);
       await settle(600);
       await shot('02-employee-focus');
       const chain = await page.evaluate(`document.querySelectorAll('#focus .chain li').length`);

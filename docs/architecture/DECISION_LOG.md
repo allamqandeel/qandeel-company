@@ -5354,3 +5354,49 @@ durable, so it also holds across restarts, which the in-memory cooldown does not
   content-free diagnosis of a verified backup, which is a Founder approval gate (P1-CHAT-OPS-01 report).
 
 **Proof.** `storage/test/c5-founder-surface.test.ts` "P1-CHAT-OPS-01: a blocked brief is never briefed about".
+
+## D-P1-03 — Company budget self-service on the existing BUDGET_CEILING path, and the dark executive surface (P1-UX-BUDGET-DARK-01; executor)
+
+**Context.** The Founder could raise a person's budget ceiling from the person sheet (D-D2-02) but not the Company's: the
+Company panel held lifecycle controls only, and the COMPANY envelope reached the UI only inside the Activation read,
+without the envelope id a `BUDGET_CEILING` preview addresses. The Founder also chose a dark default design for this
+version (Dark Executive / Living Company), and asked that a person's sheet stop washing out the company behind it.
+
+**Decision — budget.**
+- The Company panel gains a **Company Budget** section, separate from Status / Stop / Restart. It shows the ceiling,
+  actually spent, currently reserved, available headroom (ceiling − spent − reserved, never below zero) and the currency.
+  **Change Budget** opens the person sheet's own `budgetEditor` (exported; an id prefix keeps the two editors apart).
+  The validation (`budgetCeilingMicros`) and the payload are therefore the same. The token cap is never sent, so
+  `BUDGET_CEILING` keeps it.
+- The host adds one narrow read, `GET /api/company/budget`. It returns the COMPANY envelope in the shape the person sheet
+  already reads (id, currency, cap, spent, reserved), behind the same Founder session gate. The heavy Activation payload
+  was not reused or widened. There is no new write route: the change still goes `/api/previews` → fingerprint →
+  `/api/previews/:id/confirm`. Storage is unchanged.
+- The `BUDGET_CEILING` preview summary now names the envelope and states the change from → to. For the Company: "Change
+  the COMPANY budget ceiling from USD 0.59 to USD 5.00. Only the Company envelope changes…".
+- Refusals are stated in words, in the editor (preview) or in the dialog (confirmation). They cover: expired, stale
+  fingerprint, other session, already decided; and, for `BUDGET_CEILING`, the parent and children limits, which the
+  boundary checks only at confirmation. A 401 locks the window. The panel re-reads the envelope on every live refresh
+  while open, so a confirmed ceiling shows without a restart.
+
+**Decision — surface.**
+- Dark is the only design of this version. `color-scheme: dark` covers the pages and native controls, with no toggle.
+- Tokens: a charcoal-navy ground under a fixed navy / petrol / dark-violet gradient; surfaces in measured steps (field <
+  paper < card < raised); pale ink with every text tone at least 4.5:1 on its surface.
+- The five Department accents are lifted (same hues, same order; each at least 5:1 on a card).
+- Gold marks authority and direction as an edge, line or mark, never a large field. Gold mixed into navy reads grey, so
+  the Founder's chat turns, the CEO card and company goals use explicit warm dark tones.
+- A person's sheet takes the focus by its own elevation, edge (the person's Department accent) and shadow. In the
+  Employee lens the rest of the company recedes only slightly: cards 0.8, columns 0.9, goals 0.8, quiet lines 0.28.
+  There is no blur and no wash-out.
+- Resting on an attention item (`data-spotlight`) and the goal lens keep their stronger quieting, because there the point
+  is to find one place. The C5 visual proof's two Employee-lens assertions follow the new rule (quiet but ≥ 0.75).
+
+**Not changed.** Geometry of the Tree of Light, fonts, copy of existing text (except the panel's accessible name,
+"Company", which now covers the budget too), the chat's behaviour, RTL, reduced motion, storage, migrations, the
+impact map.
+
+**Proof.** `command-center/test/p1-ux-budget-dark-surface.test.ts` (isolated USD workspace shaped like the live
+Company: read-only, invalid values, Cancel, stale fingerprint, parent refusal at confirmation, 0.59 → 5.00 on the
+COMPANY envelope alone, the CEO's own ceiling still changes, durable record after stop) and
+`command-center-ui/test/p1-ux-budget-dark.test.ts` (headroom, refusal texts, the dark stylesheet contract).
