@@ -150,6 +150,8 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
   if (company) prov.append(h('p', { class: 'muted small', text: `Company cap ${fmtMoneyMicros(Number(company.capMoney), str(company.currency))} · spent ${fmtMoneyMicros(Number(company.spentMoney), str(company.currency))} · reserved ${fmtMoneyMicros(Number(company.reservedMoney), str(company.currency))} · routed task classes: ${arr(provider.routedTaskClasses).join(', ')}` }));
   if (!provider.provisioned) {
     for (const p of arr((reg.providers as Json | undefined)?.profiles)) {
+      // P1-CHAT-INTEL-01: an additive profile only extends a provisioned provider (it is offered in Model providers).
+      if (p.extendsProvider === true) continue;
       const check = (p.latestCheck as Json | null) ?? null;
       const line = h('p', { class: 'muted small', text: `${str(p.code)}: ${str(p.deployments)} deployments, task classes ${arr(p.taskClasses).join(', ')}. Identity check: ${check ? `${str(check.result)} (${str(check.observedName)})` : 'none yet — run “qandeel-founder provider-check --provider deepseek” on the host'}.` });
       prov.append(line);

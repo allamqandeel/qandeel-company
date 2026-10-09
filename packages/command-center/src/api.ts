@@ -59,6 +59,8 @@ export function employeeDetail(ctx: ApiContext, employeeId: string): Json {
     grants,
     // D-L1-44: the standing reasoning default / ceiling, Founder one-task overrides and the classes actually used.
     reasoning: gov.reasoningControl(id) as unknown as Json,
+    // P1-CHAT-INTEL-01: Employee Intelligence — the fixed model, the per-level availability for conversation, usage and money.
+    intelligence: gov.employeeIntelligence(id) as unknown as Json,
     // D2-UX-01: the record's own "About" facts and training summary (the Academy overview narrowed to this Employee).
     profile: (ctx.runtime.founder.academy({ employeeId: id }).employees[0] ?? null) as unknown as Json,
     threads,
@@ -161,10 +163,32 @@ export function threads(ctx: ApiContext): Json {
   return { threads: c.threads({ state: 'OPEN' }).map((t) => ({ ...t, last: c.messages(t.id).at(-1) ?? null })), health: c.health() };
 }
 
-export function messages(ctx: ApiContext, threadId: string): Json {
+/**
+ * P1-CHAT-INTEL-01: one page of a conversation (the newest page, or the page before `before`), the truthful state of the
+ * replies on that page, and — on the newest page — the Employee's intelligence for the conversation (the levels a next
+ * message may use and why the others may not). Founder-scoped content; nothing here writes.
+ */
+export function messages(ctx: ApiContext, threadId: string, query: { before?: string | undefined; limit?: string | undefined } = {}): Json {
   const c = ctx.runtime.founder.communications;
   const id = str(threadId, 'threadId', 36) as Id;
-  return { thread: c.thread(id), messages: c.messages(id), pending: c.pendingReplies().filter((p) => p.threadId === id) };
+  const int = (v: string | undefined, field: string, max: number): number | null => {
+    if (v === undefined) return null;
+    if (!/^\d{1,9}$/.test(v) || Number(v) < 1 || Number(v) > max) throw new QandeelError('VALIDATION_FAILED', `${field} is a positive integer`, { field });
+    return Number(v);
+  };
+  const before = int(query.before, 'before', 1_000_000_000);
+  const thread = c.thread(id);
+  const page = c.messagesPage(id, { beforeSeq: before, limit: int(query.limit, 'limit', 200) ?? 50 });
+  const founderIds = page.messages.filter((m) => m.senderKind === 'FOUNDER' && m.replyWorkItemId !== null).map((m) => m.id);
+  return {
+    thread,
+    messages: page.messages,
+    hasOlder: page.hasOlder,
+    replies: c.replyStates(id, founderIds),
+    // Kept for older views: the Founder messages without a reply yet (durable pending requests, whatever their state).
+    pending: before === null ? c.pendingReplies().filter((p) => p.threadId === id) : [],
+    intelligence: before === null ? (ctx.runtime.governance.employeeIntelligence(thread.employeeId) as unknown as Json) : null,
+  };
 }
 
 export function calendar(ctx: ApiContext, query: { from?: string | undefined; to?: string | undefined }): Json {
@@ -312,7 +336,11 @@ function providersView(ctx: ApiContext): Json {
       currency: p.currency,
       deployments: p.deployments,
       taskClasses: p.taskClasses,
-      provisioned: provider !== null,
+      // P1-CHAT-INTEL-01: an additive profile is provisioned once its own deployments exist (its base provider already does).
+      provisioned: p.extendsProvider ? gov.hasDeployments(p.deploymentCodes) : provider !== null,
+      extendsProvider: p.extendsProvider,
+      baseProvisioned: provider !== null,
+      reasoningClasses: p.reasoningClasses,
       providerStatus: provider?.status ?? null,
       latestCheck: check ? { result: check.result, observedName: check.observedName, checkedAt: check.checkedAt } : null,
     };
@@ -711,6 +739,11 @@ export function structuredSummary(ctx: ApiContext, preview: { intentKind: string
       // the first bounded cap — everything the confirm registers, nothing more.
       const deployments = Array.isArray(p.deploymentCodes) ? (p.deploymentCodes as string[]).join(', ') : '';
       const cap = p.companyBudgetExists === true ? `the existing Company cap stays ${s('existingCapMoney')} micro-${s('currency')}` : `first Company cap ${s('capMoney')} micro-${s('currency')} / ${s('capTokens')} tokens (hard; no automatic top-up)`;
+      // P1-CHAT-INTEL-01: an additive profile adds deployments and route policy versions to the provisioned provider only.
+      if (p.extendsProvider === true) {
+        const routes = Array.isArray(p.routePolicies) ? (p.routePolicies as string[]).join(', ') : '';
+        return `Add to the provisioned provider ${s('providerCode')} (${s('modelCode')} = ${s('observedPublicName')}, identity checked) the new deployments ${deployments} at ${s('qualificationTarget')}, egress up to ${s('egressMaxDataClass')}, and the route policy versions ${routes} (previous versions superseded, kept as history). No existing deployment, budget, Employee profile or authority changes; reservation rates (peak, cache miss) ${s('peakInputPerMTok')} in / ${s('peakOutputPerMTok')} out micro-${s('currency')} per MTok; ${cap}`;
+      }
       return `Provision the model provider ${s('providerCode')} (${s('modelCode')} = ${s('observedPublicName')}, identity checked) with deployments ${deployments} at ${s('qualificationTarget')}, egress up to ${s('egressMaxDataClass')}; reservation rates (peak, cache miss) ${s('peakInputPerMTok')} in / ${s('peakOutputPerMTok')} out micro-${s('currency')} per MTok (cached input ${s('peakCachedInputPerMTok')}; off-peak ${s('offPeakInputPerMTok')} / ${s('offPeakOutputPerMTok')}; basis ${s('pricingBasisDate')}); ${cap}`;
     }
     // --- L1-02: the activation acts, stated as exactly what the canonical store will do (nothing more) ---
@@ -797,8 +830,17 @@ export function sendMessage(ctx: ApiContext, threadId: string, body: Json): Json
   const purpose = str(body.purpose, 'purpose', 32);
   const text = str(body.body, 'body', 4000);
   return ctx.runtime.founder.auth.withSession(ctx.session, (founderRef) => {
-    const out = ctx.runtime.founder.communications.send(founderRef, str(threadId, 'threadId', 36), { purpose: purpose as never, body: text, ...(typeof body.responseRequired === 'boolean' ? { responseRequired: body.responseRequired } : {}), ...(optStr(body.attentionLevel) ? { attentionLevel: body.attentionLevel as never } : {}) });
-    return { message: out.message, replyWorkItemId: out.replyWorkItemId };
+    // P1-CHAT-INTEL-01: the level for this message's reply only (a durable one-task override, refused above the ceiling or
+    // the route policy) and the client's idempotency key (a repeated send returns the recorded message, never a second one).
+    const out = ctx.runtime.founder.communications.send(founderRef, str(threadId, 'threadId', 36), {
+      purpose: purpose as never,
+      body: text,
+      ...(typeof body.responseRequired === 'boolean' ? { responseRequired: body.responseRequired } : {}),
+      ...(optStr(body.attentionLevel) ? { attentionLevel: body.attentionLevel as never } : {}),
+      ...(body.reasoningClass !== undefined && body.reasoningClass !== null ? { reasoningClass: str(body.reasoningClass, 'reasoningClass', 2) } : {}),
+      ...(body.clientKey !== undefined && body.clientKey !== null ? { clientKey: str(body.clientKey, 'clientKey', 64) } : {}),
+    });
+    return { message: out.message, replyWorkItemId: out.replyWorkItemId, replayed: out.replayed === true };
   });
 }
 

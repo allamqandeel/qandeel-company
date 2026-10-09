@@ -146,7 +146,7 @@ import { appendAudit, appendEvent, getWorkItemRow, ts, type StoreContext } from 
 import { liveCertifications } from './mind-core.js';
 import { wakeCapabilityGaps } from './mind-writes.js';
 import { isOrgManaged } from './org-core.js';
-import { txChangeReasoningProfile, txReasoningControlView, txSetReasoningOverride, type ReasoningControlView, type ReasoningOverridePlan } from './reasoning-control.js';
+import { txChangeReasoningProfile, txEmployeeIntelligence, txReasoningControlView, txSetReasoningOverride, type EmployeeIntelligenceView, type ReasoningControlView, type ReasoningOverridePlan } from './reasoning-control.js';
 import { storeContext, type CompanyStore } from './store.js';
 import { applyTransition, dependencyStatus, enqueueJob, reevaluateDependencyBlock } from './work-core.js';
 
@@ -676,6 +676,11 @@ export class GovernanceStore {
     return this.#read((ctx) => txReasoningControlView(ctx, assertId(employeeId, 'employeeId')));
   }
 
+  /** P1-CHAT-INTEL-01: the Employee's intelligence for one task class (default: the conversation reply). A read. */
+  employeeIntelligence(employeeId: Id, taskClass = 'founder.reply'): EmployeeIntelligenceView {
+    return this.#read((ctx) => txEmployeeIntelligence(ctx, assertId(employeeId, 'employeeId'), assertTaskClass(taskClass)));
+  }
+
   /**
    * Role / Position / Department / Manager change: same Employee ID, history recorded (Stage 4 §9). An
    * Employee that holds a C4 PRIMARY seat is organization-managed: its placement (Position / Department /
@@ -911,6 +916,11 @@ export class GovernanceStore {
     return this.#read((ctx) => getPriceCard(ctx, id));
   }
 
+  /** P1-CHAT-INTEL-01: whether every one of these deployment codes is registered (an additive profile's "provisioned"). */
+  hasDeployments(codes: readonly string[]): boolean {
+    return this.#read((ctx) => codes.length > 0 && codes.every((c) => ctx.db.get('SELECT 1 AS x FROM deployments WHERE code = ?', c) !== undefined));
+  }
+
   providerByCode(code: string): ProviderRecord | null {
     return this.#read((ctx) => {
       const r = ctx.db.get('SELECT * FROM model_providers WHERE code = ?', code);
@@ -954,15 +964,18 @@ export class GovernanceStore {
    * the profile's qualification target and approved for the profile's egress ceiling; the route policies the pilot
    * needs; and the first bounded Company budget when none exists. Founder authority (the armed C5 session, or the
    * test seam) is checked by every step. Fails closed without a fresh MATCH identity check for the model alias
-   * (alias drift, D-L1-05) and never re-provisions an existing provider.
+   * (alias drift, D-L1-05) and never re-provisions an existing provider. P1-CHAT-INTEL-01: an additive profile
+   * (`extendsProvider`) adds only its own new deployments and route policy versions to that provider, never a budget.
    */
   provisionProviderProfile(actorRef: string, input: ProviderProvisioningProfile, options: ProvisionOptions): ProvisionResult {
     const profile = assertProvisioningProfile(input);
     const reason = assertCode(options.reasonCode, 'reasonCode');
     // Inside a Founder confirm the pre-check joins the open write transaction (a snapshot would nest); otherwise it
     // is an ordinary consistent read.
+    const extend = profile.extendsProvider === true;
     const preCheck = (ctx: StoreContext) => {
-      if (ctx.db.get('SELECT 1 AS x FROM model_providers WHERE code = ?', profile.provider.code)) throw new QandeelError('INVALID_TRANSITION', 'this provider is already provisioned (re-provisioning is a requalification, not a repeat)', { providerCode: profile.provider.code });
+      const ext = extend ? txCheckProviderExtension(ctx, profile) : null;
+      if (!extend && ctx.db.get('SELECT 1 AS x FROM model_providers WHERE code = ?', profile.provider.code)) throw new QandeelError('INVALID_TRANSITION', 'this provider is already provisioned (re-provisioning is a requalification, not a repeat)', { providerCode: profile.provider.code });
       const latest = ctx.db.get('SELECT * FROM model_identity_checks WHERE provider_code = ? AND model_code = ? ORDER BY checked_at DESC, rowid DESC LIMIT 1', profile.provider.code, profile.model.code);
       const c = latest ? mapIdentityCheck(latest) : null;
       if (!c || c.result !== 'MATCH' || c.expectedName !== profile.model.expectedPublicName || Date.parse(ts(ctx)) - Date.parse(c.checkedAt) > IDENTITY_CHECK_MAX_AGE_MS) {
@@ -970,13 +983,16 @@ export class GovernanceStore {
       }
       const company = budgetFor(ctx, 'COMPANY', 'company');
       if (company && company.currency !== profile.priceCard.currency) throw new QandeelError('CURRENCY_MISMATCH', 'the profile is priced in another currency than the Company budget', { currency: profile.priceCard.currency });
-      return { id: c.id, companyBudgetId: company ? (company.id as Id) : null };
+      return { id: c.id, companyBudgetId: company ? (company.id as Id) : null, ext };
     };
     const live = storeContext(this.#store);
     const check = live.db.inTransaction ? preCheck(live) : this.#read(preCheck);
+    // An extension never creates a budget: the Company cap the Founder already set stays exactly as it is.
+    if (extend && check.companyBudgetId === null) throw new QandeelError('BUDGET_MISSING', 'an additive profile needs the existing Company budget', { providerCode: profile.provider.code });
     const companyBudgetId = check.companyBudgetId ?? this.createBudget(actorRef, { scope: 'COMPANY', scopeId: 'company', capMoney: assertMoney(options.capMoney, 'capMoney'), capTokens: assertTokens(options.capTokens, 'capTokens'), currency: profile.priceCard.currency, reasonCode: reason }).id;
-    const provider = this.registerProvider(actorRef, { code: profile.provider.code, locality: profile.provider.locality, ...(profile.provider.credentialRef !== null ? { credentialRef: profile.provider.credentialRef } : {}) });
-    const model = this.registerModel(actorRef, { providerId: provider.id, code: profile.model.code });
+    const existing = check.ext;
+    const provider = existing ? { id: existing.providerId } : this.registerProvider(actorRef, { code: profile.provider.code, locality: profile.provider.locality, ...(profile.provider.credentialRef !== null ? { credentialRef: profile.provider.credentialRef } : {}) });
+    const model = existing ? { id: existing.modelId } : this.registerModel(actorRef, { providerId: provider.id, code: profile.model.code });
     const deploymentIds: Id[] = [];
     const priceCardIds: Id[] = [];
     for (const d of profile.deployments) {
@@ -1608,6 +1624,23 @@ function budgetSubjectRef(ctx: StoreContext, b: BudgetRecord): string | null {
     return a ? `employee:${a.employee_id}` : null;
   }
   return null;
+}
+
+/**
+ * P1-CHAT-INTEL-01: what an ADDITIVE provider profile may extend — the already provisioned provider (same locality and
+ * credential reference, ACTIVE) and its model identity — and the proof that none of its deployments exists yet (it adds,
+ * never re-registers or rewrites). The preview and the confirm run this same check against durable state.
+ */
+export function txCheckProviderExtension(ctx: StoreContext, profile: ProviderProvisioningProfile): { providerId: Id; modelId: Id } {
+  const p = ctx.db.get<{ id: string; locality: string; status: string; credential_ref: string | null }>('SELECT id, locality, status, credential_ref FROM model_providers WHERE code = ?', profile.provider.code);
+  if (!p) throw new QandeelError('INVALID_TRANSITION', 'an additive profile extends a provider that is already provisioned (provision its base profile first)', { reason: 'PROVIDER_NOT_PROVISIONED', providerCode: profile.provider.code });
+  if (p.locality !== profile.provider.locality || p.credential_ref !== profile.provider.credentialRef) throw new QandeelError('VALIDATION_FAILED', 'an additive profile keeps the provider identity it extends', { reason: 'PROVIDER_IDENTITY_MISMATCH', providerCode: profile.provider.code });
+  if (p.status !== 'ACTIVE') throw new QandeelError('INVALID_TRANSITION', 'the provider is not ACTIVE: nothing is added to a held or retired provider', { reason: 'PROVIDER_NOT_ACTIVE', status: p.status });
+  const m = ctx.db.get<{ id: string }>('SELECT id FROM models WHERE provider_id = ? AND code = ?', p.id, profile.model.code);
+  if (!m) throw new QandeelError('INVALID_TRANSITION', 'an additive profile extends a model identity that is already registered', { reason: 'MODEL_NOT_REGISTERED', modelCode: profile.model.code });
+  const existing = profile.deployments.filter((d) => ctx.db.get('SELECT 1 AS x FROM deployments WHERE code = ?', d.code)).map((d) => d.code);
+  if (existing.length > 0) throw new QandeelError('INVALID_TRANSITION', 'this additive profile is already provisioned (a deployment is never re-registered)', { reason: 'ALREADY_PROVISIONED', deploymentCode: existing[0] ?? '' });
+  return { providerId: p.id as Id, modelId: m.id as Id };
 }
 
 /** Builds the routing inputs (policy + deployment views) for one task class. */

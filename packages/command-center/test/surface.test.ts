@@ -269,4 +269,42 @@ describe('Founder surface over loopback HTTP', () => {
       // Direct communication changed no authority: the CEO holds no new grant, no approval moved.
       assert.equal(surface.runtime.governance.grants(world.ceoId as never).length, 0);
     }));
+
+  test('P1-CHAT-INTEL-01: the chat API pages history, reports each reply\'s state and the Employee\'s intelligence, sends idempotently, and refuses an unroutable level before anything is recorded', () =>
+    withSurface(async ({ surface, origin, world }) => {
+      const c = client(origin);
+      await c.post('/api/session/launch', { token: surface.launchUrl().split('#')[1] }, {}, { noCsrf: true });
+      const thread = (await c.post('/api/threads', { employeeId: world.analystId })).body.thread as { id: string; employeeId: string };
+      assert.equal(thread.employeeId, world.analystId);
+      // Talk again returns the same conversation, never a new empty one.
+      assert.equal(((await c.post('/api/threads', { employeeId: world.analystId })).body.thread as { id: string }).id, thread.id);
+      const first = await c.post(`/api/threads/${thread.id}/messages`, { purpose: 'QUESTION', body: 'أول سؤال', responseRequired: true, clientKey: 'p1-surface-key-01' });
+      assert.equal(first.status, 200, JSON.stringify(first.body));
+      const again = await c.post(`/api/threads/${thread.id}/messages`, { purpose: 'QUESTION', body: 'أول سؤال', responseRequired: true, clientKey: 'p1-surface-key-01' });
+      assert.deepEqual([again.body.replayed, (again.body.message as { id: string }).id], [true, (first.body.message as { id: string }).id], 'a repeated send is the same message');
+      for (let i = 0; i < 3; i++) assert.equal((await c.post(`/api/threads/${thread.id}/messages`, { purpose: 'FYI', body: `note ${i}`, responseRequired: false })).status, 200);
+      // No conversation route is provisioned in this Company: an explicit level is refused, and nothing is recorded.
+      const refused = await c.post(`/api/threads/${thread.id}/messages`, { purpose: 'QUESTION', body: 'E2 please', reasoningClass: 'E2' });
+      assert.equal(refused.status >= 400 && refused.status < 500, true, JSON.stringify(refused.body));
+      assert.equal((refused.body.details as { reason?: string } | undefined)?.reason, 'NO_ROUTE_POLICY');
+      const newest = await c.get(`/api/threads/${thread.id}/messages?limit=2`);
+      assert.equal(newest.status, 200);
+      assert.deepEqual((newest.body.messages as { seq: number }[]).map((m) => m.seq), [3, 4]);
+      assert.equal(newest.body.hasOlder, true);
+      const intel = newest.body.intelligence as { levels: { availability: string }[]; defaultClass: string; ceilingClass: string };
+      assert.deepEqual([intel.defaultClass, intel.ceilingClass, intel.levels.map((l) => l.availability)], ['E1', 'E2', ['NO_ROUTE_POLICY', 'NO_ROUTE_POLICY', 'NO_ROUTE_POLICY', 'NO_ROUTE_POLICY']]);
+      const older = await c.get(`/api/threads/${thread.id}/messages?before=3&limit=2`);
+      assert.deepEqual((older.body.messages as { seq: number }[]).map((m) => m.seq), [1, 2]);
+      assert.equal(older.body.hasOlder, false);
+      assert.equal(older.body.intelligence, null, 'intelligence only with the newest page');
+      const replies = older.body.replies as { messageId: string; status: string; replyWorkItemId: string }[];
+      assert.deepEqual(replies.map((r) => r.messageId), [(first.body.message as { id: string }).id], 'the reply state of the Founder question on that page');
+      assert.ok(['QUEUED', 'RUNNING', 'FAILED', 'BLOCKED', 'WAITING', 'WAITING_FOR_BUDGET'].includes(replies[0]?.status ?? ''), replies[0]?.status);
+      assert.equal((await c.get(`/api/threads/${thread.id}/messages?limit=0`)).status, 400);
+      assert.equal((await c.get(`/api/threads/${thread.id}/messages?before=x`)).status, 400);
+      // The profile carries Employee Intelligence (a read; no route → no level is offered).
+      const detail = await c.get(`/api/employees/${world.analystId}`);
+      assert.equal((detail.body.intelligence as { employeeId: string }).employeeId, world.analystId);
+      assert.equal(surface.runtime.governance.reasoningControl(world.analystId as never).overrides.length, 0, 'no override was recorded by the refused send');
+    }));
 });

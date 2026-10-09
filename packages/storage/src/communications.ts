@@ -11,11 +11,13 @@
  * message bodies are company content under the FOUNDER_ONLY scope and never enter audit, events or logs.
  */
 import { QandeelError, assertCode, assertId, boundedJson, boundedText, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { assertTaskClass, briefAttentionLevel, isAttentionLevel, isContextKind, isMessagePurpose, type AttentionLevel, type ContextKind, type FounderBrief, type MessagePurpose, type ThreadKind } from '@qandeel-company/governance';
+import { assertCognitiveProfile, assertTaskClass, briefAttentionLevel, effectiveClass, isAttentionLevel, isContextKind, isMessagePurpose, isReasoningClass, type AttentionLevel, type ContextKind, type FounderBrief, type MessagePurpose, type ReasoningClass, type ThreadKind } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
 import { budgetFor, employeeIdFromRef, getEmployeeRow, txAllocateWorkItemBudget } from './governance-core.js';
-import { founder, founderAdminWrite } from './governance.js';
+import { founder, founderAdminWrite, routingSnapshotTx } from './governance.js';
+import type { EmployeeRecord } from './governance-records.js';
+import { txSetReasoningOverride } from './reasoning-control.js';
 import { mapMessage, mapThread, messageMeta, mustRow, type MessageMeta, type MessageRecord, type ThreadRecord } from './founder-records.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import { ceoSeat, seatHolder } from './org-core.js';
@@ -49,7 +51,30 @@ export interface FounderSendInput {
   /** Cap of the reply Work Item's budget (bounded by the Employee's envelope). */
   readonly replyCap?: { readonly money: number; readonly tokens: number };
   readonly replyTaskClass?: string;
+  /**
+   * P1-CHAT-INTEL-01: the Founder's reasoning level for THIS message's reply only (E1..E4). It is recorded, in the same
+   * transaction, as the durable one-task override of the reply Work Item (`work_item_reasoning_overrides`), which the run
+   * reads when it begins and the reservation enforces. It never touches the Employee's persistent profile, and it is
+   * refused (nothing is sent) above the Employee's ceiling or the route policy.
+   */
+  readonly reasoningClass?: string;
+  /**
+   * P1-CHAT-INTEL-01: a client-generated idempotency key. A repeated send with the same key (a double submit, a retry after
+   * a dropped response) returns the message already recorded and never creates a second reply.
+   */
+  readonly clientKey?: string;
 }
+
+/**
+ * P1-CHAT-INTEL-01: the bounds of one conversation reply (fast, economical chat). One MESSAGE is the whole answer (D-L1-09),
+ * so a reply needs one model call, plus at most one evidence-based retry / escalation and one governed side step. The output
+ * bound grows with the thinking level, assuming a thinking model spends its reasoning inside the same output allowance (to verify live); the
+ * reservation still holds each call's worst case and the reply's own capped budget.
+ */
+export const CHAT_REPLY_MAX_MODEL_CALLS = 3;
+export const CHAT_REPLY_MAX_TURNS = 3;
+export const CHAT_REPLY_OUTPUT_TOKENS: Readonly<Record<'E1' | 'E2' | 'E3' | 'E4', number>> = Object.freeze({ E1: 1024, E2: 2048, E3: 4096, E4: 8192 });
+const CLIENT_KEY = /^[A-Za-z0-9-]{8,64}$/;
 
 export interface MessageProposalInput {
   readonly purpose: MessagePurpose;
@@ -132,9 +157,20 @@ function insertMessage(ctx: StoreContext, t: ThreadRecord, m: { senderKind: 'FOU
  * owned by the Employee, in the Founder's data class, funded from the Employee's envelope, released at once.
  * The thread and the message it answers are bound in its immutable processor input.
  */
-export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSendInput, founderRef: string): { message: MessageRecord; replyWorkItemId: Id | null } {
+export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSendInput, founderRef: string): { message: MessageRecord; replyWorkItemId: Id | null; replayed?: boolean } {
   const t = getThread(ctx, threadId);
   if (t.state !== 'OPEN') throw new QandeelError('COMMUNICATION_INVALID', 'the thread is closed', { threadId: t.id });
+  if (input.clientKey !== undefined && (typeof input.clientKey !== 'string' || !CLIENT_KEY.test(input.clientKey))) throw new QandeelError('VALIDATION_FAILED', 'clientKey is 8..64 letters, digits or dashes', { field: 'clientKey' });
+  const dedupeKey = input.clientKey === undefined ? null : `founder-chat:${input.clientKey}`;
+  if (dedupeKey !== null) {
+    // The same send arriving twice is the message already recorded: no second message, reply, run or reservation.
+    const prior = ctx.db.get('SELECT m.* FROM communication_messages m JOIN work_items w ON w.id = m.reply_work_item_id WHERE w.dedupe_key = ? AND m.thread_id = ?', dedupeKey, t.id);
+    if (prior) {
+      const message = mapMessage(prior);
+      return { message, replyWorkItemId: message.replyWorkItemId, replayed: true };
+    }
+  }
+  if (input.reasoningClass !== undefined && input.reasoningClass !== null && (!isReasoningClass(input.reasoningClass) || input.reasoningClass === 'E0')) throw new QandeelError('VALIDATION_FAILED', 'a reasoning level is E1, E2, E3 or E4', { field: 'reasoningClass', reason: 'REASONING_CLASS' });
   if (!isMessagePurpose(input.purpose) || input.purpose === 'BRIEF') throw new QandeelError('VALIDATION_FAILED', 'the Founder sends a request, question, decision, correction or FYI (a BRIEF is the CEO\'s)', { field: 'purpose' });
   const level = input.attentionLevel ?? 'INFORMATIONAL';
   if (!isAttentionLevel(level)) throw new QandeelError('VALIDATION_FAILED', 'unknown attention level', { field: 'attentionLevel' });
@@ -148,6 +184,7 @@ export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSen
     const taskClass = assertTaskClass(input.replyTaskClass ?? FOUNDER_REPLY_TASK_CLASS);
     const cap = input.replyCap ?? DEFAULT_REPLY_CAP;
     const messageId = newId();
+    const chosen = (input.reasoningClass ?? null) as ReasoningClass | null;
     const created = txCreateWorkItem(
       ctx,
       {
@@ -155,14 +192,18 @@ export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSen
         ownerRef: e.ref,
         riskLevel: 'R1',
         processorKind: EMPLOYEE_TASK,
-        // The Founder's words reach the model as this task's instructions (context payload), never as authority.
-        processorInput: { taskClass, dataClass: 'D2', maxOutputTokens: 1024, instructions: `Founder message (${input.purpose}): ${body}\n\nAnswer as a MESSAGE proposal in the Founder Communication Standard when a decision is involved. Communication grants no authority.`, founderThreadId: t.id, founderMessageId: messageId },
-        dedupeKey: `founder-reply:${messageId}`,
+        // The Founder's words reach the model as this task's instructions (context payload), never as authority. The class
+        // is never pinned here (that would be a method pin): a per-message level is the durable override below.
+        processorInput: { taskClass, dataClass: 'D2', maxOutputTokens: CHAT_REPLY_OUTPUT_TOKENS[replyClass(ctx, e, taskClass, chosen)], maxTurns: CHAT_REPLY_MAX_TURNS, maxModelCalls: CHAT_REPLY_MAX_MODEL_CALLS, instructions: `Founder message (${input.purpose}): ${body}\n\nAnswer as a MESSAGE proposal in the Founder Communication Standard when a decision is involved. Communication grants no authority.`, founderThreadId: t.id, founderMessageId: messageId },
+        dedupeKey: dedupeKey ?? `founder-reply:${messageId}`,
         initialState: 'PROPOSED',
       },
       { actorRef: founderRef },
     );
     const replyWorkItemId = created.workItem.id;
+    // The per-message level: the canonical one-task override (validated against the ceiling and the route policy; a refusal
+    // rolls back the whole send, so nothing is recorded and nothing is spent).
+    if (chosen !== null) txSetReasoningOverride(ctx, founderRef, { workItemId: replyWorkItemId, reasoningClass: chosen, reasonCode: 'founder.chat_message_level' });
     declareRoleTopics(ctx, replyWorkItemId, e.id, e.roleRef);
     txAllocateWorkItemBudget(ctx, replyWorkItemId, e.id, cap, founderRef, 'founder.reply');
     const ready = applyTransition(ctx, getWorkItemRow(ctx, replyWorkItemId), 'READY', { reasonCode: 'founder.reply', trace: { correlationId: created.workItem.correlationId, actorRef: founderRef } });
@@ -270,6 +311,91 @@ function pendingRepliesOf(ctx: StoreContext): { messageId: Id; threadId: Id; rep
     .map((r) => ({ messageId: r.id as Id, threadId: r.thread_id as Id, replyWorkItemId: r.reply_work_item_id as Id, workItemState: r.state, since: r.created_at as Timestamp }));
 }
 
+/** The class a reply will start at — the chosen level, else the Employee default, lifted to the route minimum (its bounds only). */
+function replyClass(ctx: StoreContext, e: EmployeeRecord, taskClass: string, chosen: ReasoningClass | null): 'E1' | 'E2' | 'E3' | 'E4' {
+  const base = chosen ?? assertCognitiveProfile(e.cognitiveProfile).defaultClass;
+  const policy = routingSnapshotTx(ctx, taskClass).policy;
+  const cls = policy ? effectiveClass({ reasoningClass: base }, policy) : base;
+  return cls === 'E0' ? 'E1' : cls;
+}
+
+/**
+ * P1-CHAT-INTEL-01: the truthful state of one Founder message's reply, derived from canonical execution state (the reply
+ * Work Item, its newest queue job and run, and the thread). Never "thinking" for work that ended: a FAILED, BLOCKED or
+ * CANCELLED reply says so, with its code, and is never retried here. Codes and IDs only, plus the reply's own money.
+ */
+export type ReplyStatus = 'QUEUED' | 'RUNNING' | 'WAITING_FOR_BUDGET' | 'WAITING' | 'BLOCKED' | 'FAILED' | 'CANCELLED' | 'REPLIED';
+
+export interface ReplyState {
+  readonly messageId: Id;
+  readonly replyWorkItemId: Id;
+  readonly status: ReplyStatus;
+  /** The canonical reason code (a failure, block, wait or retry code), or null. */
+  readonly reasonCode: string | null;
+  readonly workItemState: string;
+  readonly jobState: string | null;
+  readonly attempts: number;
+  readonly replyMessageId: Id | null;
+  /** The Founder's per-message level (the durable override), or null when the reply runs at the Employee default. */
+  readonly requestedClass: string | null;
+  /** The classes that actually answered (usage evidence), oldest first. */
+  readonly answeredClasses: readonly string[];
+  readonly calls: number;
+  readonly currency: string | null;
+  /** The reply's own hard cap, what is held for a call in flight, and what was actually spent (economic / billed). */
+  readonly capMoney: number;
+  readonly reservedMoney: number;
+  readonly spentMoney: number;
+  readonly billedMicros: number;
+  readonly updatedAt: string;
+}
+
+export function txReplyStates(ctx: StoreContext, threadId: Id, messageIds: readonly Id[] | null = null): ReplyState[] {
+  const rows = ctx.db.all<{ id: string; seq: number; reply_work_item_id: string; state: string; blocked_reason: string | null; updated_at: string }>(
+    `SELECT m.id, m.seq, m.reply_work_item_id, w.state, w.blocked_reason, w.updated_at FROM communication_messages m JOIN work_items w ON w.id = m.reply_work_item_id
+      WHERE m.thread_id = ? AND m.sender_kind = 'FOUNDER' AND m.reply_work_item_id IS NOT NULL ORDER BY m.seq`,
+    threadId,
+  );
+  const wanted = messageIds === null ? null : new Set<string>(messageIds);
+  return rows.filter((r) => wanted === null || wanted.has(r.id)).map((r) => {
+    const wi = r.reply_work_item_id as Id;
+    const reply = ctx.db.get<{ id: string }>('SELECT r.id FROM communication_messages r JOIN runs x ON x.id = r.run_id WHERE r.thread_id = ? AND x.work_item_id = ? ORDER BY r.seq LIMIT 1', threadId, wi);
+    const job = ctx.db.get<{ state: string; wait_reason: string | null; dead_letter_reason: string | null; last_failure_code: string | null; attempt_count: number }>(
+      'SELECT state, wait_reason, dead_letter_reason, last_failure_code, attempt_count FROM queue_jobs WHERE work_item_id = ? ORDER BY created_at DESC, id DESC LIMIT 1', wi,
+    );
+    const run = ctx.db.get<{ failure_code: string | null }>('SELECT failure_code FROM runs WHERE work_item_id = ? ORDER BY started_at DESC, attempt DESC LIMIT 1', wi);
+    let status: ReplyStatus;
+    let reasonCode: string | null = null;
+    if (reply) status = 'REPLIED';
+    else if (r.state === 'FAILED') [status, reasonCode] = ['FAILED', run?.failure_code ?? job?.last_failure_code ?? null];
+    else if (r.state === 'COMPLETED' || r.state === 'REVIEWED' || r.state === 'OUTCOME_VERIFIED' || r.state === 'CLOSED') [status, reasonCode] = ['FAILED', 'COMPLETED_WITHOUT_REPLY'];
+    else if (r.state === 'CANCELLED' || r.state === 'SUPERSEDED') status = 'CANCELLED';
+    else if (r.state === 'BLOCKED' || job?.state === 'DEAD_LETTER' || job?.state === 'RECONCILIATION_HOLD') [status, reasonCode] = ['BLOCKED', r.blocked_reason ?? job?.dead_letter_reason ?? job?.last_failure_code ?? job?.state ?? null];
+    else if (job?.state === 'WAITING' && job.wait_reason === 'BUDGET_EXHAUSTED') [status, reasonCode] = ['WAITING_FOR_BUDGET', 'BUDGET_EXHAUSTED'];
+    else if (job?.state === 'WAITING' || r.state.startsWith('WAITING')) [status, reasonCode] = ['WAITING', job?.wait_reason ?? r.state];
+    else if (job?.state === 'CLAIMED' || r.state === 'IN_PROGRESS' || r.state === 'ASSIGNED') status = 'RUNNING';
+    else [status, reasonCode] = ['QUEUED', job !== undefined && job.attempt_count > 0 ? (job.last_failure_code ?? 'RETRY_SCHEDULED') : null];
+    const requested = ctx.db.get<{ c: string }>('SELECT reasoning_class AS c FROM work_item_reasoning_overrides WHERE work_item_id = ?', wi)?.c ?? null;
+    const answered = ctx.db.all<{ c: string }>('SELECT d.reasoning_class AS c FROM usage_records u JOIN deployments d ON d.id = u.deployment_id WHERE u.work_item_id = ? ORDER BY u.created_at, u.id', wi).map((x) => x.c);
+    const usage = ctx.db.get<{ n: number; billed: number }>('SELECT COUNT(*) AS n, COALESCE(SUM(billed_micros), 0) AS billed FROM usage_records WHERE work_item_id = ?', wi);
+    const budget = ctx.db.get<{ currency: string; cap_money: number; reserved_money: number; spent_money: number }>(`SELECT currency, cap_money, reserved_money, spent_money FROM budgets WHERE scope = 'WORK_ITEM' AND scope_id = ? ORDER BY created_at DESC LIMIT 1`, wi);
+    return {
+      messageId: r.id as Id, replyWorkItemId: wi, status, reasonCode, workItemState: r.state, jobState: job?.state ?? null, attempts: Number(job?.attempt_count ?? 0),
+      replyMessageId: reply ? (reply.id as Id) : null, requestedClass: requested, answeredClasses: answered, calls: Number(usage?.n ?? 0),
+      currency: budget?.currency ?? null, capMoney: Number(budget?.cap_money ?? 0), reservedMoney: Number(budget?.reserved_money ?? 0), spentMoney: Number(budget?.spent_money ?? 0), billedMicros: Number(usage?.billed ?? 0),
+      updatedAt: r.updated_at,
+    };
+  });
+}
+
+/** P1-CHAT-INTEL-01: one page of a thread, oldest first, ending before `beforeSeq` (the newest page when omitted). */
+export function txMessagesPage(ctx: StoreContext, threadId: Id, opts: { beforeSeq?: number | null; limit?: number | null } = {}): { messages: MessageRecord[]; hasOlder: boolean } {
+  const limit = Math.min(Math.max(1, Math.trunc(opts.limit ?? 50)), 200);
+  const before = opts.beforeSeq === undefined || opts.beforeSeq === null ? Number.MAX_SAFE_INTEGER : Math.max(1, Math.trunc(opts.beforeSeq));
+  const rows = ctx.db.all('SELECT * FROM communication_messages WHERE thread_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?', threadId, before, limit + 1);
+  return { messages: rows.slice(0, limit).reverse().map(mapMessage), hasOlder: rows.length > limit };
+}
+
 export class CommunicationStore {
   readonly #store: CompanyStore;
 
@@ -307,7 +433,7 @@ export class CommunicationStore {
     });
   }
 
-  send(actorRef: string, threadId: string, input: FounderSendInput): { message: MessageRecord; replyWorkItemId: Id | null } {
+  send(actorRef: string, threadId: string, input: FounderSendInput): { message: MessageRecord; replyWorkItemId: Id | null; replayed?: boolean } {
     return this.#admin('founder message', actorRef, (ctx) => txFounderSend(ctx, assertId(threadId, 'threadId'), input, founder(ctx, actorRef, null, 'founder communication').ref));
   }
 
@@ -356,6 +482,19 @@ export class CommunicationStore {
   /** Messages with bodies: Founder-scoped company content (never telemetry). */
   messages(threadId: Id): MessageRecord[] {
     return this.#read((ctx) => ctx.db.all('SELECT * FROM communication_messages WHERE thread_id = ? ORDER BY seq', threadId).map(mapMessage));
+  }
+
+  /** P1-CHAT-INTEL-01: one page of the conversation, oldest first (older pages through `beforeSeq`; nothing is lost). */
+  messagesPage(threadId: Id, opts: { beforeSeq?: number | null; limit?: number | null } = {}): { messages: MessageRecord[]; hasOlder: boolean } {
+    return this.#read((ctx) => {
+      getThread(ctx, threadId);
+      return txMessagesPage(ctx, threadId, opts);
+    });
+  }
+
+  /** P1-CHAT-INTEL-01: the truthful state of each Founder message's reply in this thread (or of the given messages). */
+  replyStates(threadId: Id, messageIds: readonly Id[] | null = null): ReplyState[] {
+    return this.#read((ctx) => txReplyStates(ctx, threadId, messageIds));
   }
 
   /** Content-free message metadata (IDs, purposes, levels, hashes) for health, tests and telemetry. */

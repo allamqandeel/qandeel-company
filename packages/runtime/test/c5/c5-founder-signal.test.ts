@@ -207,7 +207,7 @@ describe('C5 runtime: the Founder change-signalling contract', () => {
       const f = rt.founder;
       const publicMethods = (o: object): string[] => Object.keys(o).filter((k) => typeof (o as Record<string, unknown>)[k] === 'function').sort();
       assert.deepEqual(publicMethods(f.goals), ['get', 'history', 'linkWork', 'links', 'list', 'propose', 'stateAt', 'transition', 'unlinkWork']);
-      assert.deepEqual(publicMethods(f.communications), ['closeThread', 'directThread', 'health', 'message', 'messageMeta', 'messages', 'openThread', 'pendingReplies', 'requestCeoBrief', 'send', 'thread', 'threads']);
+      assert.deepEqual(publicMethods(f.communications), ['closeThread', 'directThread', 'health', 'message', 'messageMeta', 'messages', 'messagesPage', 'openThread', 'pendingReplies', 'replyStates', 'requestCeoBrief', 'send', 'thread', 'threads']);
       assert.deepEqual(publicMethods(f.attention), ['dismiss', 'health', 'list', 'openAt', 'sync']);
       assert.deepEqual(publicMethods(f.actions), ['activationEnv', 'confirm', 'employeeBudgetId', 'expireStale', 'get', 'list', 'packageDigest', 'preview', 'provisioningProfiles', 'reject']);
       assert.ok(Object.isFrozen(f.goals) && Object.isFrozen(f.attention), 'the contract objects are frozen');

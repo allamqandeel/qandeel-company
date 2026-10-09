@@ -592,6 +592,90 @@ try {
     results.spike.refreshKeepsFocus = detail;
     return detail;
   });
+  await step('spike-chat-screen', async () => {
+    // P1-CHAT-INTEL-01: Talk opens a dedicated Chat screen (not a sheet), the reply comes from the governed run with its
+    // state under the message, no work card enters the transcript, × and Escape close without stopping anything, an
+    // unsent draft survives close / reopen and a page refresh, and the history is the same conversation every time.
+    const lead = world.employees['product.lead-1'].id;
+    await page.navigate(`${surface.origin}/`);
+    await waitReady();
+    await click(`.card[data-id="employee:${ceo}"]`);
+    await waitUntil(`document.querySelector('#focus .sheet-primary .btn-primary') && document.querySelector('#focus .sheet-close')`, 10_000);
+    const profileClose = await page.evaluate(`(() => { const b = document.querySelector('#focus .sheet-close'); const r = b.getBoundingClientRect(); return { text: b.textContent.trim(), label: b.getAttribute('aria-label'), visible: r.width > 0 && r.height > 0 }; })()`);
+    if (profileClose.text !== '×' || !profileClose.visible) throw new Error(`the profile has no visible ×: ${JSON.stringify(profileClose)}`);
+    const intelligence = await page.evaluate(`[...document.querySelectorAll('#focus .sheet-section h3')].some((h) => h.textContent === 'Employee Intelligence') && document.querySelectorAll('#focus .intel-level').length === 4`);
+    if (!intelligence) throw new Error('the profile does not show Employee Intelligence with four levels');
+    await shot('p1-01-profile-intelligence');
+    await page.evaluate(`(() => { const s = [...document.querySelectorAll('#focus .sheet-section')].find((x) => x.querySelector('h3')?.textContent === 'Employee Intelligence'); s.dataset.proof = 'intelligence'; s.scrollIntoView({ block: 'center' }); return true; })()`);
+    await settle(300);
+    await closeUp('p1-01b-employee-intelligence', '#focus [data-proof="intelligence"]', 12);
+    await click('#focus .sheet-primary .btn-primary');
+    await waitUntil(`document.documentElement.dataset.lens === 'CONVERSATION' && !document.getElementById('chat').hidden && document.querySelectorAll('#chat .chat-msg').length >= 2`, 15_000);
+    const screen = await page.evaluate(`(() => { const c = document.getElementById('chat').getBoundingClientRect(); const s = document.querySelector('.stage').getBoundingClientRect(); return { focusHidden: document.getElementById('focus').hidden, cover: Math.round(c.width) === Math.round(s.width) && Math.round(c.height) === Math.round(s.height), title: document.getElementById('chat-title')?.textContent ?? null, close: document.querySelector('#chat .chat-close')?.textContent.trim() ?? null }; })()`);
+    if (!screen.focusHidden || !screen.cover || screen.close !== '×') throw new Error(`Talk did not open a dedicated chat screen: ${JSON.stringify(screen)}`);
+    const historyBefore = await count('#chat .chat-msg');
+    // Send in Arabic; the reply comes from the CEO's governed run and its state shows under the message.
+    await type('#chat .chat-composer textarea', 'ما الذي تحتاجه مني هذا الأسبوع؟');
+    await submit('#chat .chat-composer');
+    await waitUntil(`document.querySelectorAll('#chat .chat-msg').length >= ${historyBefore + 2} && document.querySelector('#chat .chat-msg.from-founder:last-of-type .chat-status.status-replied, #chat .chat-status.status-replied')`, 60_000);
+    await settle(800);
+    await shot('p1-02-chat-replied');
+    const transcript = await page.evaluate(`({ cards: document.querySelectorAll('#chat .work, #chat .card, #chat .chip-state, #chat .work-list').length, statuses: [...document.querySelectorAll('#chat .chat-status')].map((s) => s.className.replace('chat-status ', '')), dirs: [...document.querySelectorAll('#chat .chat-text')].map((b) => getComputedStyle(b).direction + ':' + (/[\\u0600-\\u06FF]/.test(b.textContent) ? 'ar' : 'en')), chrome: getComputedStyle(document.querySelector('#chat .chat-composer')).direction, writing: document.querySelectorAll('#chat .chat-typing').length })`);
+    if (transcript.cards !== 0) throw new Error(`work cards appear in the chat: ${transcript.cards}`);
+    if (!transcript.dirs.includes('rtl:ar') || transcript.chrome !== 'ltr') throw new Error(`directions ${JSON.stringify(transcript)}`);
+    // Levels: the fixture's CEO tops out at E2, so E3 / E4 are shown, explained and never sendable.
+    const levels = await page.evaluate(`[...document.querySelectorAll('#chat .chat-level')].map((b) => [b.querySelector('.chat-level-name').textContent, b.getAttribute('aria-disabled') === 'true'])`);
+    await click('#chat .chat-level[data-keep="chat-level-E3"]');
+    const explained = await page.evaluate(`document.querySelector('#chat .chat-level-note').textContent`);
+    if (!/maximum|provisioned|route/.test(explained)) throw new Error(`an unavailable level is not explained: "${explained}"`);
+    await shot('p1-03-level-explained');
+    // An unsent draft, then × — back to the profile; the Company is still running; nothing was sent.
+    const messagesBeforeDraft = await count('#chat .chat-msg');
+    await type('#chat .chat-composer textarea', 'مسودة لم تُرسل بعد');
+    await click('#chat .chat-close');
+    await waitUntil(`document.getElementById('chat').hidden && document.documentElement.dataset.lens === 'EMPLOYEE' && !document.getElementById('focus').hidden && document.querySelector('#focus .sheet-primary .btn-primary')`, 10_000);
+    const running = await page.evaluate(`fetch('/api/session', { credentials: 'same-origin' }).then((r) => r.status)`);
+    if (running !== 200) throw new Error(`closing the chat stopped something: session ${running}`);
+    await click('#focus .sheet-primary .btn-primary');
+    await waitUntil(`!document.getElementById('chat').hidden && document.querySelectorAll('#chat .chat-msg').length >= ${messagesBeforeDraft}`, 15_000);
+    const reopened = await page.evaluate(`({ draft: document.querySelector('#chat .chat-composer textarea').value, msgs: document.querySelectorAll('#chat .chat-msg').length })`);
+    if (reopened.draft !== 'مسودة لم تُرسل بعد' || reopened.msgs !== messagesBeforeDraft) throw new Error(`reopening lost the draft or the history: ${JSON.stringify(reopened)}`);
+    // A page refresh: the same conversation and the same draft come back.
+    await page.navigate(`${surface.origin}/`);
+    await waitReady();
+    await click(`.card[data-id="employee:${ceo}"]`);
+    await waitUntil(`document.querySelector('#focus .sheet-primary .btn-primary')`, 10_000);
+    await click('#focus .sheet-primary .btn-primary');
+    await waitUntil(`!document.getElementById('chat').hidden && document.querySelectorAll('#chat .chat-msg').length >= ${messagesBeforeDraft}`, 15_000);
+    const refreshed = await page.evaluate(`({ draft: document.querySelector('#chat .chat-composer textarea').value, msgs: document.querySelectorAll('#chat .chat-msg').length })`);
+    if (refreshed.draft !== 'مسودة لم تُرسل بعد' || refreshed.msgs !== messagesBeforeDraft) throw new Error(`a refresh lost the draft or the history: ${JSON.stringify(refreshed)}`);
+    // Escape closes the chat back to the profile; the profile's × closes to the company.
+    await page.evaluate(`document.querySelector('#chat .chat-composer textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+    await waitUntil(`document.getElementById('chat').hidden && document.documentElement.dataset.lens === 'EMPLOYEE' && document.querySelector('#focus .sheet-close')`, 10_000);
+    await click('#focus .sheet-close');
+    await waitUntil(`document.getElementById('focus').hidden && document.documentElement.dataset.lens === 'LIVE'`, 10_000);
+    // Another person's chat: their own conversation, its own identity.
+    await click(`.card[data-id="employee:${lead}"]`);
+    await waitUntil(`document.querySelector('#focus .sheet-primary .btn-primary')`, 10_000);
+    await click('#focus .sheet-primary .btn-primary');
+    await waitUntil(`!document.getElementById('chat').hidden && document.querySelectorAll('#chat .chat-msg').length >= 1`, 15_000);
+    const other = await page.evaluate(`({ draft: document.querySelector('#chat .chat-composer textarea').value, title: document.getElementById('chat-title').textContent })`);
+    if (other.draft !== '') throw new Error('a draft leaked into another conversation');
+    // A narrow window keeps the conversation usable (the side panel folds away).
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 760, height: 820, deviceScaleFactor: 1, mobile: false });
+    await settle(500);
+    const narrow = await page.evaluate(`({ side: getComputedStyle(document.querySelector('#chat .chat-side')).display, overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth })`);
+    await shot('p1-04-chat-narrow');
+    await page.send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 1, mobile: false });
+    await settle(500);
+    await shot('p1-05-chat-employee');
+    if (narrow.side !== 'none' || narrow.overflow) throw new Error(`narrow layout ${JSON.stringify(narrow)}`);
+    const detail = { dedicatedScreen: true, profileClose: profileClose.text, statuses: transcript.statuses, workCardsInChat: transcript.cards, directions: transcript.dirs, levels, draftKept: { close: true, refresh: true }, runtimeAfterClose: running, otherConversation: other.title, narrow };
+    results.spike.chatScreen = detail;
+    await page.navigate(`${surface.origin}/`);
+    await waitReady();
+    return detail;
+  });
   if (values.spike) {
     console.log(JSON.stringify({ verdict: 'C5 TECHNICAL SPIKE — PASS', spike: results.spike }));
   } else {
@@ -721,61 +805,59 @@ try {
       return { needsMe, briefs, routineExcluded: true, briefParts: parts, coveragePercent: coverage, founderVisible };
     });
     await step('F-conversation-founder-ceo', async () => {
-      // The CEO's conversation: the Founder's Arabic question and the CEO's Arabic answer already there; the
-      // Founder adds an English question; the reply comes from the CEO's own governed run (in Arabic).
+      // The CEO's conversation on its own Chat screen (P1-CHAT-INTEL-01): the Founder's Arabic question and the CEO's
+      // Arabic answer already there; the Founder adds an English question; the reply comes from the CEO's own governed run.
       await escape();
       await click(`.card[data-id="employee:${ceo}"]`);
-      await waitUntil(`!document.getElementById('focus').hidden && document.querySelector('#focus .sheet-actions .btn-primary')`, 10_000);
-      await click('#focus .sheet-actions .btn-primary');
-      await waitUntil(`document.documentElement.dataset.lens === 'CONVERSATION' && document.querySelectorAll('#focus .entry').length >= 2`, 15_000);
-      // Typed and sent in one breath (a live company may refresh the sheet between the two; the draft survives that too).
-      await page.evaluate(`(() => { const f = document.querySelector('#focus .composer'); const el = f.querySelector('textarea'); el.focus(); el.value = ${JSON.stringify('Good. What is the first thing you need from me this week?')}; el.dispatchEvent(new Event('input', { bubbles: true })); f.requestSubmit(); return true; })()`);
+      await waitUntil(`!document.getElementById('focus').hidden && document.querySelector('#focus .sheet-primary .btn-primary')`, 10_000);
+      await click('#focus .sheet-primary .btn-primary');
+      await waitUntil(`document.documentElement.dataset.lens === 'CONVERSATION' && !document.getElementById('chat').hidden && document.querySelectorAll('#chat .chat-msg').length >= 2`, 15_000);
+      await type('#chat .chat-composer textarea', 'Good. What is the first thing you need from me this week?');
+      await submit('#chat .chat-composer');
       try {
-        await waitUntil(`document.querySelectorAll('#focus .entry:not(.pending)').length >= 4`, 60_000);
+        await waitUntil(`document.querySelectorAll('#chat .chat-msg').length >= 4`, 60_000);
       } catch (error) {
         const comm = surface.runtime.founder.communications;
         const stored = comm.messages(live.ceoThreadId).length;
         const pending = comm.pendingReplies().length;
-        const shown = await count('#focus .entry');
+        const shown = await count('#chat .chat-msg');
         const toast = await page.evaluate(`document.getElementById('activity').textContent`);
-        throw new Error(`${String(error?.message ?? error)} — stored ${stored}, pending replies ${pending}, entries shown ${shown}, note "${toast}"`, { cause: error });
+        throw new Error(`${String(error?.message ?? error)} — stored ${stored}, pending replies ${pending}, messages shown ${shown}, note "${toast}"`, { cause: error });
       }
       await settle(1200);
       await shot('06-conversation-founder-ceo');
-      const dirs = await page.evaluate(`[...document.querySelectorAll('#focus .entry-body')].map((b) => getComputedStyle(b).direction + ':' + (/[\\u0600-\\u06FF]/.test(b.textContent) ? 'ar' : 'en'))`);
-      const layoutDir = await page.evaluate(`getComputedStyle(document.querySelector('#focus')).direction`);
-      const context = await count('#focus .context-chips .chip');
-      // The CEO's sheet docks on the left (the empty desk beside the spine), never over the Founder's chips.
-      const sheetLeft = await page.evaluate(`document.getElementById('focus').classList.contains('is-left')`);
-      const chipsClear = await chipsClearOfSheet();
-      if (layoutDir !== 'ltr') throw new Error(`the sheet is ${layoutDir}`);
+      const dirs = await page.evaluate(`[...document.querySelectorAll('#chat .chat-text')].map((b) => getComputedStyle(b).direction + ':' + (/[\\u0600-\\u06FF]/.test(b.textContent) ? 'ar' : 'en'))`);
+      const layoutDir = await page.evaluate(`getComputedStyle(document.getElementById('chat')).direction`);
+      // The conversation is its own screen: no docked sheet, no work card in the transcript.
+      const own = await page.evaluate(`({ focusHidden: document.getElementById('focus').hidden, cards: document.querySelectorAll('#chat .work, #chat .chip-state').length })`);
+      if (layoutDir !== 'ltr') throw new Error(`the chat is ${layoutDir}`);
       if (!dirs.includes('rtl:ar') || !dirs.includes('ltr:en')) throw new Error(`message directions ${dirs.join(' ')}`);
-      if (!sheetLeft || !chipsClear) throw new Error(`CEO sheet docked left ${sheetLeft}; chips clear of the sheet ${chipsClear}`);
-      return { messages: dirs.length, directions: dirs, contextChips: context, sheetDocked: 'left', chipsClearOfSheet: chipsClear };
+      if (!own.focusHidden || own.cards !== 0) throw new Error(`the chat is not its own screen: ${JSON.stringify(own)}`);
+      return { messages: dirs.length, directions: dirs, dedicatedScreen: true, workCardsInChat: own.cards };
     });
     await step('G-conversation-founder-employee-arabic', async () => {
       // A direct Founder ↔ Employee conversation: the English note already there; the Founder writes in Arabic
       // inside the English application; the reply comes from the employee's own governed run.
       const lead = world.employees['product.lead-1'].id;
       await escape();
+      await escape();
       await click(`.card[data-id="employee:${lead}"]`);
-      await waitUntil(`!document.getElementById('focus').hidden && document.querySelector('#focus .sheet-actions .btn-primary')`, 10_000);
-      await click('#focus .sheet-actions .btn-primary');
-      await waitUntil(`document.documentElement.dataset.lens === 'CONVERSATION' && document.querySelectorAll('#focus .entry').length >= 1`, 15_000);
-      await page.evaluate(`(() => { const f = document.querySelector('#focus .composer'); const el = f.querySelector('textarea'); el.focus(); el.value = ${JSON.stringify('ما أهم ما تحتاجينه مني هذا الأسبوع لإنجاز تقرير الاحتفاظ؟')}; el.dispatchEvent(new Event('input', { bubbles: true })); f.requestSubmit(); return true; })()`);
-      await waitUntil(`document.querySelectorAll('#focus .entry:not(.pending)').length >= 3`, 60_000);
+      await waitUntil(`!document.getElementById('focus').hidden && document.querySelector('#focus .sheet-primary .btn-primary')`, 10_000);
+      await click('#focus .sheet-primary .btn-primary');
+      await waitUntil(`document.documentElement.dataset.lens === 'CONVERSATION' && !document.getElementById('chat').hidden && document.querySelectorAll('#chat .chat-msg').length >= 1`, 15_000);
+      await type('#chat .chat-composer textarea', 'ما أهم ما تحتاجينه مني هذا الأسبوع لإنجاز تقرير الاحتفاظ؟');
+      await submit('#chat .chat-composer');
+      await waitUntil(`document.querySelectorAll('#chat .chat-msg').length >= 3`, 60_000);
       await settle(1200);
       await shot('07-conversation-founder-employee');
-      // The newest entry is in view above the composer (the ledger keeps the latest exchange under the eye).
-      const newestVisible = await page.evaluate(`(() => { const e = [...document.querySelectorAll('#focus .entry')].pop(); const r = e.getBoundingClientRect(); const c = document.querySelector('#focus .composer').getBoundingClientRect(); const s = document.getElementById('focus').getBoundingClientRect(); return r.bottom <= c.top + 1 && r.top >= s.top; })()`);
+      // The newest message is in view above the composer (the conversation keeps the latest exchange under the eye).
+      const newestVisible = await page.evaluate(`(() => { const e = [...document.querySelectorAll('#chat .chat-msg')].pop(); const r = e.getBoundingClientRect(); const c = document.querySelector('#chat .chat-composer').getBoundingClientRect(); const s = document.querySelector('#chat .chat-scroll').getBoundingClientRect(); return r.bottom <= c.top + 1 && r.top >= s.top; })()`);
       if (!newestVisible) throw new Error('the newest message is not in view');
-      const detail = await closeUp('08-arabic-message-in-english-ui', '#focus', 0);
-      const dirs = await page.evaluate(`[...document.querySelectorAll('#focus .entry-body')].map((b) => getComputedStyle(b).direction + ':' + (/[\\u0600-\\u06FF]/.test(b.textContent) ? 'ar' : 'en'))`);
-      const chromeDir = await page.evaluate(`getComputedStyle(document.querySelector('#focus .composer')).direction + ' ' + getComputedStyle(document.querySelector('#focus .entry-meta')).direction`);
-      const sheetLeft = await page.evaluate(`document.getElementById('focus').classList.contains('is-left')`);
+      const detail = await closeUp('08-arabic-message-in-english-ui', '#chat .chat-main', 0);
+      const dirs = await page.evaluate(`[...document.querySelectorAll('#chat .chat-text')].map((b) => getComputedStyle(b).direction + ':' + (/[\\u0600-\\u06FF]/.test(b.textContent) ? 'ar' : 'en'))`);
+      const chromeDir = await page.evaluate(`getComputedStyle(document.querySelector('#chat .chat-composer')).direction + ' ' + getComputedStyle(document.querySelector('#chat .chat-meta')).direction`);
       if (!dirs.includes('rtl:ar') || !dirs.includes('ltr:en') || chromeDir !== 'ltr ltr') throw new Error(`directions ${dirs.join(' ')}; chrome ${chromeDir}`);
-      if (!sheetLeft) throw new Error('a person in a right-hand column should get the sheet on the left');
-      return { messages: dirs.length, directions: dirs, chrome: chromeDir, sheetDocked: 'left', detail: path.basename(detail.file) };
+      return { messages: dirs.length, directions: dirs, chrome: chromeDir, dedicatedScreen: true, detail: path.basename(detail.file) };
     });
     await step('H-governed-action', async () => {
       await escape();

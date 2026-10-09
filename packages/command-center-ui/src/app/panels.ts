@@ -1,13 +1,15 @@
 /**
  * The DOM surfaces around the company: the attention surface (opens beside the Founder on demand), the
- * context sheet (a person, a goal, a conversation — docked beside the company, tethered to what it is about),
+ * context sheet (a person, a goal — docked beside the company, tethered to what it is about; a conversation is its own
+ * Chat screen, `chat.ts`),
  * the command palette, the governed-action confirmation, the time control, the upcoming dock and the activity
  * note. The application speaks English; company content is shown as written (an Arabic message reads
  * right-to-left inside its own block). Every control names its action; no code or identifier reaches the
  * Founder as a code. The sheets share the company's language: the same avatars, Department accents, gold,
  * radii and status grammar as the cards in the columns.
  */
-import { ACTION_LABEL, CALENDAR_LABEL, CAPABILITY_LABEL, DECISION_LABEL, dirOf, EVIDENCE_LABEL, FIELD_LABEL, fmtDate, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, fmtTime, hasArabic, humanize, INTENT_LABEL, KIND_LABEL, LANE_LABEL, MARKET_CLAIM_LABEL, PILOT_DECISION_LABEL, PILOT_MODE_LABEL, plural, PROMOTION_KIND_LABEL, PROMOTION_STATE_LABEL, PURPOSE_LABEL, READINESS_LABEL, RELATION_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATE_LABEL, t } from '../model/format.js';
+import { ACTION_LABEL, CALENDAR_LABEL, CAPABILITY_LABEL, DECISION_LABEL, dirOf, EVIDENCE_LABEL, FIELD_LABEL, fmtDate, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, hasArabic, humanize, INTENT_LABEL, KIND_LABEL, LANE_LABEL, MARKET_CLAIM_LABEL, PILOT_DECISION_LABEL, PILOT_MODE_LABEL, plural, PROMOTION_KIND_LABEL, PROMOTION_STATE_LABEL, PURPOSE_LABEL, READINESS_LABEL, RELATION_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATE_LABEL, t } from '../model/format.js';
+import { isLevel, LEVEL_SHORT, LEVEL_STATE_LABEL, LEVEL_THINKING, LEVELS, levelState, modelLabel, reasonText } from '../model/intelligence.js';
 import type { CompanyUniverse } from '../model/types.js';
 import { renderActivation } from './activation.js';
 import { trainingFacts } from './halls.js';
@@ -20,6 +22,14 @@ export const h = (tag: string, attrs: Record<string, string | number | boolean> 
   for (const [k, v] of Object.entries(attrs)) {
     if (k === 'class') e.className = String(v);
     else if (k === 'text') e.textContent = String(v);
+    // P1-CHAT-INTEL-01: the page's CSP (`style-src 'self'`) drops inline style attributes; declarations go through the
+    // CSSOM instead (allowed), so a person's accent and a meter's fill actually render.
+    else if (k === 'style') {
+      for (const decl of String(v).split(';')) {
+        const at = decl.indexOf(':');
+        if (at > 0) e.style.setProperty(decl.slice(0, at).trim(), decl.slice(at + 1).trim());
+      }
+    }
     else if (typeof v === 'boolean') {
       if (v) e.setAttribute(k, '');
     } else e.setAttribute(k, String(v));
@@ -55,7 +65,6 @@ export interface PanelHost {
   confirmPreview(previewId: string, fingerprint: string): Promise<void>;
   rejectPreview(previewId: string): Promise<void>;
   dismissAttention(itemId: string): Promise<void>;
-  sendMessage(threadId: string, purpose: string, body: string): Promise<void>;
   showLane(lane: 'NEEDS_ME' | 'CEO_BRIEFS' | 'THREADS' | null): void;
   closeRail(): void;
   returnToLive(): void;
@@ -101,8 +110,9 @@ function briefBlock(brief: Json): HTMLElement {
   return h('div', { class: 'brief' }, row('What is happening', String(brief.happening)), row('Why it matters', String(brief.matters)), row('Recommendation', String(brief.recommendation)), row('Decision needed', brief.decisionNeeded ? String(brief.decision ?? 'Yes') : 'No decision needed', brief.decisionNeeded ? 'is-decision' : ''));
 }
 
-function sheetHead(host: PanelHost, title: string, sub: (Node | string | null)[], avatar: HTMLElement | null): HTMLElement {
-  const back = h('button', { type: 'button', class: 'btn btn-ghost sheet-close', 'aria-label': 'Back to Company Live', text: 'Company Live' });
+function sheetHead(host: PanelHost, title: string, sub: (Node | string | null)[], avatar: HTMLElement | null, closeLabel = 'Close and return to the company'): HTMLElement {
+  // P1-CHAT-INTEL-01: a visible × closes the sheet and returns to the company. The Company keeps running; nothing is lost.
+  const back = h('button', { type: 'button', class: 'btn btn-ghost sheet-close', 'aria-label': closeLabel, title: 'Close (Esc)', 'data-keep': 'sheet-close' }, h('span', { 'aria-hidden': 'true', text: '×' }));
   back.addEventListener('click', () => host.returnToLive());
   const identity = h('div', { class: 'identity' }, avatar, h('div', { class: 'identity-text' }, content('h2', title, 'sheet-title'), h('p', { class: 'sheet-sub' }, ...sub)));
   return h('div', { class: 'sheet-head' }, identity, back);
@@ -273,6 +283,8 @@ export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost,
   const same = root.dataset.sheet === 'employee' && root.dataset.employeeId === String((d.employee as Json).id);
   const budgetOpen = same && root.querySelector('.budget-editor') !== null;
   const budgetDraft = same ? (root.querySelector<HTMLInputElement>('.budget-editor input')?.value ?? '') : '';
+  const intelOpen = same && root.querySelector('.intel-editor') !== null;
+  const intelDraft = { defaultClass: root.querySelector<HTMLSelectElement>('#intel-default')?.value ?? '', ceilingClass: root.querySelector<HTMLSelectElement>('#intel-ceiling')?.value ?? '' };
   const scroll = same ? root.scrollTop : 0;
   const kept = same ? keepFocus(root) : null;
   root.replaceChildren();
@@ -289,7 +301,7 @@ export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost,
   const deptLabel = dept ? host.deptNameOf(String(dept.id)) : 'Company';
   const isCeo = seat?.kind === 'CEO';
   const roleTitle = seat ? (isCeo ? 'Chief Executive Officer' : String(seat.title)) : null;
-  const head = sheetHead(host, full, [h('span', { text: roleTitle ?? 'No seat' }), h('span', { class: 'sep' }), h('span', { class: 'sheet-dept', text: deptLabel }), seat && seat.holderKind === 'ACTING' ? h('span', { class: 'pill pill-acting', text: 'Acting cover' }) : null, statePill(String(e.state))], personAvatar(full, deptColor, 'avatar-lg'));
+  const head = sheetHead(host, full, [h('span', { text: roleTitle ?? 'No seat' }), h('span', { class: 'sep' }), h('span', { class: 'sheet-dept', text: deptLabel }), seat && seat.holderKind === 'ACTING' ? h('span', { class: 'pill pill-acting', text: 'Acting cover' }) : null, statePill(String(e.state))], personAvatar(full, deptColor, 'avatar-lg'), `Close the profile of ${full}`);
   // 1. The primary actions live in the sticky head: visible without scrolling past any work, on every window size.
   const budget = d.budget as Json | null;
   const talk = h('button', { type: 'button', class: 'btn btn-primary', text: `Talk to ${name.given}`, 'aria-label': `Talk to ${full}`, 'data-keep': 'talk' });
@@ -350,6 +362,11 @@ export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost,
   training.append(academy);
   root.append(sectionEl('Skills and training', training));
 
+  // 3b. P1-CHAT-INTEL-01: Employee Intelligence — the fixed model, the standing default and maximum, what each level can do
+  // in conversation now, and the actual usage and money. Changing the standing levels is the governed preview (never here).
+  const intel = (d.intelligence as Json | null) ?? null;
+  if (intel) root.append(intelligenceSection(full, name.given, String(e.id), intel, host, intelOpen ? intelDraft : null));
+
   // 4. Reporting line and authority.
   const chainEl = h('ol', { class: 'chain', 'aria-label': 'Reporting line to the Founder' });
   for (const link of chain) {
@@ -390,6 +407,91 @@ export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost,
   }
   restoreFocus(root, kept);
   root.scrollTop = scroll;
+}
+
+/**
+ * P1-CHAT-INTEL-01: Employee Intelligence on the profile. Facts only (codes and numbers from the server); the one act is
+ * the existing EMPLOYEE_REASONING_PROFILE governed preview (its confirmation names the certifications that become due for
+ * review). A per-message level is chosen in the Chat, never here.
+ */
+function intelligenceSection(full: string, given: string, employeeId: string, intel: Json, host: PanelHost, draft: { defaultClass: string; ceilingClass: string } | null): HTMLElement {
+  const def = String(intel.defaultClass);
+  const max = String(intel.ceilingClass);
+  const facts = h('dl', { class: 'facts intel-facts' });
+  const fact = (k: string, v: Node | string): void => {
+    facts.append(h('dt', { text: k }), h('dd', {}, v));
+  };
+  fact('Model', modelLabel(intel));
+  fact('Default level', `${def} · ${isLevel(def) ? LEVEL_THINKING[def] : ''}`);
+  fact('Maximum level', `${max} · ${isLevel(max) ? LEVEL_THINKING[max] : ''}`);
+  const levels = h('ul', { class: 'intel-levels', 'aria-label': `Reasoning levels for conversation with ${full}` });
+  for (const l of LEVELS) {
+    const s = levelState(intel, l);
+    levels.append(h('li', { class: `intel-level ${s.available ? 'is-available' : 'is-unavailable'}`, title: s.available ? `${LEVEL_THINKING[l]}: available for a message` : `${LEVEL_THINKING[l]}: ${reasonText(s.code, humanize)}` }, h('strong', { text: l }), h('span', { text: LEVEL_SHORT[l] }), h('span', { class: 'intel-level-state', text: l === def && s.available ? 'Default' : (LEVEL_STATE_LABEL[s.code] ?? humanize(s.code)) })));
+  }
+  const usage = (intel.usage as Json[]) ?? [];
+  const env = intel.envelope as Json | null;
+  const currency = env ? String(env.currency) : 'USD';
+  const usageEl = h('table', { class: 'intel-usage' });
+  if (usage.length === 0) usageEl.append(h('caption', { class: 'muted small', text: 'No model calls yet.' }));
+  else {
+    usageEl.append(h('thead', {}, h('tr', {}, h('th', { text: 'Level' }), h('th', { text: 'Calls' }), h('th', { text: 'Tokens in / out' }), h('th', { text: 'Cost' }))));
+    const body = h('tbody');
+    for (const u of usage) body.append(h('tr', {}, h('td', { text: String(u.reasoningClass) }), h('td', { text: fmtNumber(Number(u.calls)) }), h('td', { text: `${fmtNumber(Number(u.inputTokens))} / ${fmtNumber(Number(u.outputTokens))}` }), h('td', { text: fmtMoneyMicros(Number(u.economicMicros), currency), title: `Billed by the provider: ${fmtMoneyMicros(Number(u.billedMicros), currency)}` })));
+    usageEl.append(body);
+  }
+  const money = env ? h('p', { class: 'muted small', text: `Envelope: cap ${fmtMoneyMicros(Number(env.capMoney), currency)} (a hard ceiling) · held for calls in flight ${fmtMoneyMicros(Number(env.reservedMoney), currency)} · actually spent ${fmtMoneyMicros(Number(env.spentMoney), currency)}.` }) : h('p', { class: 'muted small', text: 'No budget envelope: no model call can be made.' });
+  const slot = h('div', { class: 'intel-slot' });
+  const change = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Change default or maximum', 'aria-expanded': 'false', 'data-keep': 'intel-change' });
+  const close = (): void => {
+    slot.replaceChildren();
+    change.setAttribute('aria-expanded', 'false');
+  };
+  const open = (values: { defaultClass: string; ceilingClass: string }, focus: boolean): void => {
+    const box = h('form', { class: 'intel-editor', 'aria-label': `Standing reasoning levels of ${full}` }) as HTMLFormElement;
+    const select = (id: string, label: string, value: string): HTMLSelectElement => {
+      const s = h('select', { id, 'data-keep': id }) as HTMLSelectElement;
+      for (const l of LEVELS) s.append(h('option', { value: l, text: `${l} · ${LEVEL_THINKING[l]}` }));
+      s.value = isLevel(value) ? value : def;
+      box.append(h('label', { for: id, class: 'budget-label', text: label }), s);
+      return s;
+    };
+    const ds = select('intel-default', 'Default level (every reply starts here)', values.defaultClass || def);
+    const cs = select('intel-ceiling', 'Maximum level (the highest any reply may use)', values.ceilingClass || max);
+    const error = h('p', { class: 'budget-error', role: 'alert' });
+    const cancel = h('button', { type: 'button', class: 'btn btn-ghost', text: 'Cancel', 'data-keep': 'intel-cancel' });
+    cancel.addEventListener('click', () => {
+      close();
+      change.focus();
+    });
+    box.append(h('p', { class: 'muted small', text: `A permanent change to ${given}’s Cognitive Profile. The preview shows which certifications become due for review; nothing changes until you confirm it. Budgets, authority and the model do not change.` }), error, h('div', { class: 'budget-actions' }, cancel, h('button', { type: 'submit', class: 'btn btn-primary', text: 'Preview the change', 'data-keep': 'intel-preview' })));
+    box.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') {
+        ev.stopPropagation();
+        close();
+        change.focus();
+      }
+    });
+    box.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      if (LEVELS.indexOf(ds.value as never) > LEVELS.indexOf(cs.value as never)) {
+        error.textContent = 'The maximum must be at or above the default.';
+        return;
+      }
+      if (ds.value === def && cs.value === max) {
+        error.textContent = 'That is already the standing profile.';
+        return;
+      }
+      error.textContent = '';
+      void host.previewAction('EMPLOYEE_REASONING_PROFILE', { employeeId, defaultClass: ds.value, ceilingClass: cs.value, reasonCode: 'founder.reasoning_profile' });
+    });
+    slot.replaceChildren(box);
+    change.setAttribute('aria-expanded', 'true');
+    if (focus) ds.focus();
+  };
+  change.addEventListener('click', () => (slot.childElementCount ? close() : open({ defaultClass: def, ceilingClass: max }, true)));
+  if (draft) open(draft, false);
+  return sectionEl('Employee Intelligence', facts, levels, h('p', { class: 'muted small', text: 'In the Chat a level can be chosen for one message; it never changes these standing levels.' }), usageEl, money, change, slot);
 }
 
 const PROFICIENCY_LABEL: Readonly<Record<string, string>> = { LEARNING: 'Learning', QUALIFIED: 'Qualified', PROFICIENT: 'Proficient', EXPERT: 'Expert' };
@@ -523,108 +625,6 @@ export function renderGoalFocus(root: HTMLElement, d: Json, host: PanelHost): vo
   }
 }
 
-// --- context sheet: conversation -----------------------------------------------------------------------
-
-export function renderConversation(root: HTMLElement, d: { thread: Json; messages: Json[]; pending: Json[] }, host: PanelHost, universe: CompanyUniverse | null, deptColor: string): void {
-  // A live company refreshes the thread while the Founder types: the draft and the chosen purpose survive it.
-  const draft = root.querySelector<HTMLTextAreaElement>('.composer textarea')?.value ?? '';
-  const draftPurpose = root.querySelector<HTMLElement>('.chip-choice.is-active')?.dataset.purpose ?? 'QUESTION';
-  // The newest exchange stays under the eye: the ledger opens at its end, and follows it unless the Founder
-  // has scrolled back to read.
-  const wasReading = root.dataset.sheet === 'conversation' && root.scrollHeight - root.scrollTop - root.clientHeight > 48;
-  root.replaceChildren();
-  root.dataset.sheet = 'conversation';
-  const th = d.thread;
-  const employee = universe?.employees.find((e) => e.id === th.employeeId);
-  const name = employee ? `${employee.name.given} ${employee.name.family}` : String(th.subject);
-  const given = employee?.name.given ?? name;
-  const seat = employee ? universe?.seats.find((s) => s.holderEmployeeId === employee.id) : undefined;
-  const isCeo = th.kind === 'FOUNDER_CEO' || th.kind === 'CEO_BRIEF' || seat?.kind === 'CEO';
-  const accent = isCeo ? GOLD : deptColor;
-  root.style.setProperty('--accent', accent);
-  const deptLabel = employee?.departmentId ? host.deptNameOf(employee.departmentId) : 'Company';
-  const manager = employee?.chain?.[1];
-  const reportsTo = isCeo ? 'reports to you' : manager?.kind === 'FOUNDER' ? 'reports to you' : manager?.employeeId ? `reports to ${host.nameOf(`employee:${String(manager.employeeId)}`)}` : null;
-  root.append(sheetHead(host, name, [h('span', { text: seat ? (isCeo ? 'Chief Executive Officer' : seat.title) : 'Direct conversation' }), ...(employee?.departmentId && !isCeo ? [h('span', { class: 'sep' }), h('span', { class: 'sheet-dept', text: deptLabel })] : []), reportsTo ? h('span', { class: 'muted', text: `· ${reportsTo}` }) : null], personAvatar(name, accent, 'avatar-lg')));
-  // Context: the work this person is carrying and the goals it serves — the conversation happens inside the
-  // company, not beside it.
-  const work = employee ? (universe?.work ?? []).filter((w) => w.ownerEmployeeId === employee.id && w.state !== 'COMPLETED' && w.state !== 'CANCELLED') : [];
-  const goalIds = [...new Set(work.flatMap((w) => w.goalIds as readonly string[]))];
-  const context = h('div', { class: 'conv-context' });
-  if (work.length) {
-    const chips = h('div', { class: 'chips context-chips', 'aria-label': `What ${given} is carrying now` });
-    for (const w of work.slice(0, 4)) chips.append(h('span', { class: `chip chip-${String(w.state).toLowerCase()}` }, h('span', { class: 'chip-state', text: t(STATE_LABEL, w.state) }), content('span', w.objective)));
-    context.append(h('p', { class: 'conv-context-title', text: isCeo ? 'Carrying now' : `${given} is carrying now` }), chips);
-  }
-  if (goalIds.length) {
-    const goals = h('div', { class: 'chips context-chips', 'aria-label': 'Goals this work serves' });
-    for (const gid of goalIds) {
-      const b = h('button', { type: 'button', class: 'chip chip-goal' }, h('span', { class: 'serves', 'aria-hidden': 'true' }), content('span', host.nameOf(`goal:${gid}`)));
-      b.addEventListener('click', () => host.openGoal(gid));
-      goals.append(b);
-    }
-    context.append(goals);
-  }
-  if (context.childElementCount) root.append(context);
-  const list = h('ol', { class: 'ledger', 'aria-live': 'polite', 'aria-label': `Conversation with ${name}` });
-  let lastDay = '';
-  for (const m of d.messages) {
-    const at = String(m.createdAt);
-    const day = fmtDate(at);
-    if (day !== lastDay) {
-      lastDay = day;
-      const today = fmtDate(new Date().toISOString()) === day;
-      list.append(h('li', { class: 'ledger-day', 'aria-hidden': 'true' }, h('span', { text: today ? 'Today' : day })));
-    }
-    const mine = m.senderKind === 'FOUNDER';
-    const meta = h('div', { class: 'entry-meta' }, mine ? h('span', { class: 'avatar avatar-founder avatar-sm', text: 'Q', 'aria-hidden': 'true' }) : personAvatar(name, accent, 'avatar-sm'), h('span', { class: 'who', text: mine ? 'You' : name }), h('span', { class: `purpose purpose-${String(m.purpose).toLowerCase()}`, text: t(PURPOSE_LABEL, String(m.purpose)) }), h('time', { class: 'when', text: fmtTime(at), title: fmtDateTime(at) }));
-    const li = h('li', { class: `entry ${mine ? 'from-founder' : 'from-employee'}` }, meta);
-    const brief = m.brief as Json | null;
-    if (brief) li.append(briefBlock(brief));
-    else li.append(content('p', String(m.body), 'entry-body'));
-    list.append(li);
-  }
-  for (const p of d.pending) list.append(h('li', { class: 'entry pending' }, h('span', { class: 'pending-ring', 'aria-hidden': 'true' }), h('span', { class: 'who', text: name }), h('span', { text: ` is working on a reply · ${t(STATE_LABEL, String(p.workItemState))}` })));
-  if (d.messages.length === 0 && d.pending.length === 0) list.append(h('li', { class: 'entry empty' }, h('strong', { text: 'Nothing said yet.' }), h('span', { text: ` Write to ${given} in English or Arabic; the reply comes from ${isCeo ? 'the CEO’s' : 'their'} own governed run.` })));
-  root.append(list);
-  const form = h('form', { class: 'composer' }) as HTMLFormElement;
-  const purposes = ['QUESTION', 'REQUEST', 'DECISION_REQUEST', 'FYI', 'CORRECTION'];
-  let purpose = purposes.includes(draftPurpose) ? draftPurpose : 'QUESTION';
-  const chips = h('div', { class: 'purpose-chips', role: 'radiogroup', 'aria-label': 'Message purpose' });
-  const chipEls = purposes.map((p) => {
-    const b = h('button', { type: 'button', role: 'radio', class: `chip chip-choice${p === purpose ? ' is-active' : ''}`, 'aria-checked': p === purpose ? 'true' : 'false', 'data-purpose': p, text: t(PURPOSE_LABEL, p) });
-    b.addEventListener('click', () => {
-      purpose = p;
-      for (const c of chipEls) {
-        c.classList.toggle('is-active', c === b);
-        c.setAttribute('aria-checked', c === b ? 'true' : 'false');
-      }
-    });
-    return b;
-  });
-  chips.append(...chipEls);
-  const text = h('textarea', { 'aria-label': `Message to ${given}`, name: 'body', rows: 3, placeholder: `Write to ${given} in English or Arabic…`, maxlength: 4000, dir: 'auto' }) as HTMLTextAreaElement;
-  text.value = draft;
-  const send = h('button', { type: 'submit', class: 'btn btn-primary', text: `Send to ${given}` });
-  form.append(h('div', { class: 'composer-head' }, h('span', { class: 'composer-to', text: `To ${given}, as` }), chips), text, h('div', { class: 'composer-foot' }, h('span', { class: 'hint', text: 'Enter sends · Shift+Enter for a new line' }), send), h('p', { class: 'composer-note', text: 'A conversation never grants authority: a budget, an approval or a goal becomes a governed preview you confirm yourself.' }));
-  text.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      form.requestSubmit();
-    }
-  });
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const body = text.value.trim();
-    if (!body) return;
-    send.setAttribute('disabled', '');
-    void host.sendMessage(String(th.id), purpose, body).finally(() => send.removeAttribute('disabled'));
-    text.value = '';
-  });
-  root.append(form);
-  if (!wasReading) root.scrollTop = root.scrollHeight;
-}
-
 // --- command palette and governed confirmation ---------------------------------------------------
 
 export function renderPalette(root: HTMLElement, host: PanelHost, result: Json | null, busy: boolean): HTMLInputElement {
@@ -734,6 +734,17 @@ function renderProviders(data: Json, host: PanelHost): HTMLElement {
     const provisioned = p.provisioned === true;
     const li = h('div', { class: 'pilot' }, h('strong', { text: `${String(p.providerCode)} · ${String(p.modelCode)}` }), ' ', h('span', { class: 'pill', text: provisioned ? 'Provisioned' : 'Not provisioned' }));
     li.append(h('p', { class: 'muted small', text: `Qualified identity: ${String(p.expectedPublicName)}. Latest identity check: ${check ? `${String(check.result)} (${String(check.observedName ?? 'no name')}, ${fmtRelative(String(check.checkedAt))})` : 'none yet (run provider-check on the host)'}.` }));
+    // P1-CHAT-INTEL-01: an additive profile (e.g. E3 / E4 for conversation) extends the provisioned provider: no new cap.
+    if (p.extendsProvider === true) {
+      li.append(h('p', { class: 'muted small', text: `Adds levels ${((p.reasoningClasses as string[]) ?? []).join(', ')} for ${((p.taskClasses as string[]) ?? []).join(', ')} to the provisioned provider. ${p.baseProvisioned === true ? '' : 'Provision the provider first.'}` }));
+      if (!provisioned && p.baseProvisioned === true && check && check.result === 'MATCH') {
+        const add = h('button', { type: 'button', class: 'btn btn-quiet', text: `Preview: add ${((p.reasoningClasses as string[]) ?? []).join(' / ')} (${String(p.code)})` });
+        add.addEventListener('click', () => void host.previewAction('PROVIDER_PROVISION', { profileCode: String(p.code), profileSha256: String(p.sha256) }));
+        li.append(add);
+      }
+      section.append(li);
+      continue;
+    }
     if (!provisioned && check && check.result === 'MATCH') {
       const form = h('form', { class: 'pilot-create' });
       const cap = h('input', { type: 'number', min: '0.01', step: '0.01', value: '2', 'aria-label': `First Company cap in ${String(p.currency ?? 'USD')}`, required: true }) as HTMLInputElement;
