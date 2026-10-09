@@ -8,10 +8,11 @@ import { layoutUniverse } from '../model/layout.js';
 import { applyLens, attentionSpotlight, chainNodeIds, showsRelations } from '../model/lenses.js';
 import type { CompanyUniverse, Emphasis, Layout, LayoutNode, Lens } from '../model/types.js';
 import { api, ApiError, subscribeChanges } from './api.js';
+import { ChatScreen } from './chat.js';
 import { CompanyControl } from './company-control.js';
 import { renderAcademy, renderMeetingRoom } from './halls.js';
 import { keepFocus, restoreFocus } from './keep-focus.js';
-import { h, renderActivity, renderAttentionRail, renderCalendar, renderConversation, renderEmployeeFocus, renderGoalFocus, renderHealthLine, renderPalette, renderPreview, renderTimeline, type PanelHost } from './panels.js';
+import { h, renderActivity, renderAttentionRail, renderCalendar, renderEmployeeFocus, renderGoalFocus, renderHealthLine, renderPalette, renderPreview, renderTimeline, type PanelHost } from './panels.js';
 import { departmentColor, TreeView } from './view.js';
 
 type Json = Record<string, unknown>;
@@ -47,6 +48,8 @@ class App implements PanelHost {
   #hall: 'academy' | 'meeting' | null = null;
   #hallOpener: HTMLElement | null = null;
   #paletteOpener: HTMLElement | null = null;
+  /** P1-CHAT-INTEL-01: the dedicated Chat screen (built once; hidden when no conversation is open). */
+  #chat: ChatScreen | null = null;
 
   constructor() {
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -95,6 +98,20 @@ class App implements PanelHost {
     $('attention-toggle').addEventListener('click', () => (this.#railOpen ? this.closeRail() : this.showLane(null)));
     // D2-CTRL-01: Status / Stop Company / Restart Company inside this window.
     new CompanyControl($('company-toggle'), $('company-panel'));
+    const universeOf = (): CompanyUniverse | null => this.universe;
+    this.#chat = new ChatScreen($('chat'), {
+      get universe() {
+        return universeOf();
+      },
+      nameOf: (ref) => this.nameOf(ref),
+      deptNameOf: (id) => this.deptNameOf(id),
+      accentOf: (employeeId) => this.colorOf(`employee:${employeeId}`),
+      openEmployee: (id) => this.openEmployee(id),
+      runCommand: (text) => this.runCommand(text),
+      note: (text, kind) => this.note(text, kind),
+      closeChat: () => this.closeChat(),
+      lock: (code) => this.lock(code),
+    });
     this.#paletteInput();
     await this.refresh(true);
     subscribeChanges(
@@ -173,10 +190,10 @@ class App implements PanelHost {
         this.#paletteInput(false);
       }
       if (this.#hall === 'academy') await this.#loadAcademy();
-      if (this.lens.kind === 'EMPLOYEE' || this.lens.kind === 'CONVERSATION' || this.lens.kind === 'GOAL') {
+      if (this.lens.kind === 'EMPLOYEE' || this.lens.kind === 'GOAL') {
         await this.#renderFocus();
         this.#applyTether();
-      }
+      } else if (this.lens.kind === 'CONVERSATION') await this.#chat?.refresh();
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) this.lock(e.code);
       else this.note(`Could not refresh (${e instanceof ApiError ? e.code : 'error'})`, 'system');
@@ -284,11 +301,19 @@ class App implements PanelHost {
   #applyTether(): void {
     const focus = $('focus');
     const lens = this.lens;
-    if (focus.hidden || !(lens.kind === 'EMPLOYEE' || lens.kind === 'CONVERSATION' || lens.kind === 'GOAL')) {
+    if (focus.hidden || !(lens.kind === 'EMPLOYEE' || lens.kind === 'GOAL')) {
       this.view.setTether(null, null);
       return;
     }
     this.view.setTether(lens.kind === 'GOAL' ? `goal:${lens.goalId}` : `employee:${lens.employeeId}`, focus);
+  }
+
+  /** P1-CHAT-INTEL-01: × / Escape on the Chat screen returns where the chat was opened from. Nothing is stopped or lost. */
+  closeChat(): void {
+    const lens = this.lens;
+    if (lens.kind !== 'CONVERSATION') return;
+    if (lens.from === 'EMPLOYEE' && this.universe?.employees.some((e) => e.id === lens.employeeId)) this.openEmployee(lens.employeeId);
+    else this.returnToLive();
   }
 
   #applyLens(immediate: boolean): void {
@@ -307,7 +332,15 @@ class App implements PanelHost {
     this.lens = lens;
     this.#applyLens(false);
     const focus = $('focus');
-    if (lens.kind === 'EMPLOYEE' || lens.kind === 'GOAL' || lens.kind === 'CONVERSATION') {
+    // P1-CHAT-INTEL-01: a conversation is its own screen over the company, never a docked sheet.
+    document.documentElement.dataset.chat = lens.kind === 'CONVERSATION' ? 'open' : 'closed';
+    if (lens.kind === 'CONVERSATION') {
+      focus.hidden = true;
+      focus.replaceChildren();
+      this.#applyTether();
+      void this.#chat?.open(lens.threadId, lens.employeeId);
+    } else this.#chat?.hide();
+    if (lens.kind === 'EMPLOYEE' || lens.kind === 'GOAL') {
       // The sheet docks on the side that keeps what it is about in view: a person in the two right-hand
       // columns (or a goal served there) gets the sheet on the left, and so does the CEO (the desk left of the
       // spine is empty; the right holds what needs the Founder). With the attention surface open, right.
@@ -328,7 +361,7 @@ class App implements PanelHost {
         if (desk && sheet.left < desk.right + 8 && sheet.top < desk.bottom + 8) focus.classList.add('is-below-desk');
       }
       void this.#renderFocus().then(() => this.#applyTether());
-    } else {
+    } else if (lens.kind !== 'CONVERSATION') {
       focus.hidden = true;
       focus.replaceChildren();
       this.#applyTether();
@@ -354,7 +387,6 @@ class App implements PanelHost {
     try {
       if (this.lens.kind === 'EMPLOYEE') renderEmployeeFocus(focus, await api.get<Json>(`/api/employees/${this.lens.employeeId}`), this, this.#deptColorOf(this.lens.employeeId));
       else if (this.lens.kind === 'GOAL') renderGoalFocus(focus, await api.get<Json>(`/api/goals/${this.lens.goalId}`), this);
-      else if (this.lens.kind === 'CONVERSATION') renderConversation(focus, await api.get<{ thread: Json; messages: Json[]; pending: Json[] }>(`/api/threads/${this.lens.threadId}/messages`), this, this.universe, this.#deptColorOf(this.lens.employeeId));
     } catch (e) {
       focus.replaceChildren(h('p', { class: 'empty', text: `Could not open the details (${e instanceof ApiError ? e.code : 'error'}).` }));
     }
@@ -387,7 +419,9 @@ class App implements PanelHost {
   }
 
   openThread(threadId: string, employeeId: string): void {
-    this.setLens({ kind: 'CONVERSATION', threadId, employeeId });
+    // × returns to the person's profile when the chat was opened from it, else to the company.
+    const from = this.lens.kind === 'EMPLOYEE' && this.lens.employeeId === employeeId ? 'EMPLOYEE' : this.lens.kind === 'CONVERSATION' ? (this.lens.from ?? 'LIVE') : 'LIVE';
+    this.setLens({ kind: 'CONVERSATION', threadId, employeeId, from });
   }
 
   startConversation(employeeId: string | null): void {
@@ -559,16 +593,6 @@ class App implements PanelHost {
     await this.refresh(false);
   }
 
-  async sendMessage(threadId: string, purpose: string, body: string): Promise<void> {
-    try {
-      await api.post(`/api/threads/${threadId}/messages`, { purpose, body });
-      this.note('Sent. A reply comes from their own governed run.', 'semantic');
-      await this.refresh(false);
-    } catch (e) {
-      this.note(`Not sent (${e instanceof ApiError ? e.code : 'error'})`, 'system');
-    }
-  }
-
   note(text: string, kind: 'semantic' | 'system'): void {
     const line = { at: new Date().toISOString(), text, kind };
     this.activity.push(line);
@@ -675,6 +699,10 @@ class App implements PanelHost {
         this.closePalette();
         return;
       }
+      if (this.lens.kind === 'CONVERSATION') {
+        this.closeChat();
+        return;
+      }
       this.returnToLive();
     }
   }
@@ -693,7 +721,7 @@ function lensTitle(lens: Lens, u: CompanyUniverse, layout: Layout): string {
     case 'EMPLOYEE':
     case 'CONVERSATION': {
       const n = layout.byId.get(`employee:${lens.employeeId}`);
-      return `${lens.kind === 'CONVERSATION' ? 'Conversation' : 'Focus'}: ${n?.label ?? ''}`;
+      return `${lens.kind === 'CONVERSATION' ? 'Chat' : 'Focus'}: ${n?.label ?? ''}`;
     }
     case 'GOAL':
       return `Goal: ${u.goals.find((g) => g.id === lens.goalId)?.title ?? ''}`;

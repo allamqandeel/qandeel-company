@@ -116,7 +116,7 @@ export { ReviewStore, type ReviewHealth } from './review.js';
 export { FounderAuthStore, LAUNCH_TOKEN_TTL_MS, SESSION_IDLE_MS, SESSION_TTL_MS, type FounderSession } from './founder-auth.js';
 export { GoalStore, type ProposeGoalInput } from './goals.js';
 export { PILOT_SCOPE_CAP, PilotStore, type AdvancePilotInput, type BriefingStatus, type CreatePilotInput, type PilotBoard, type PilotHistoryRecord, type PilotPeopleEvidence, type PilotRecord, type PilotScope, type PilotWorkInspection } from './pilots.js';
-export { CommunicationStore, FOUNDER_BRIEF_TASK_CLASS, FOUNDER_REPLY_TASK_CLASS, type FounderSendInput, type OpenThreadInput } from './communications.js';
+export { CHAT_REPLY_MAX_MODEL_CALLS, CHAT_REPLY_MAX_TURNS, CHAT_REPLY_OUTPUT_TOKENS, CommunicationStore, FOUNDER_BRIEF_TASK_CLASS, FOUNDER_REPLY_TASK_CLASS, type FounderSendInput, type OpenThreadInput, type ReplyState, type ReplyStatus } from './communications.js';
 export { AttentionStore, ATTENTION_COOLDOWN_MS, type AttentionSyncReport } from './attention.js';
 export { FounderActionStore, PREVIEW_TTL_MS, type ConfirmResult, type FounderActionOptions } from './founder-actions.js';
 export { CANONICAL_DEPARTMENT_ORDER, projectUniverse, type CompanyUniverse, type RelationKind, type UniverseAttention, type UniverseDepartment, type UniverseEmployee, type UniverseGoal, type UniverseRelation, type UniverseSeat, type UniverseWork } from './universe.js';

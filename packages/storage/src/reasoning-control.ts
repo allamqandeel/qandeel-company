@@ -178,3 +178,60 @@ export function txReasoningControlView(ctx: StoreContext, employeeId: Id): Reaso
     .map((r) => ({ workItemId: r.work_item_id as Id, reasoningClass: r.c, calls: Number(r.n) }));
   return { employeeId: e.id, defaultClass: p.defaultClass, ceilingClass: p.ceilingClass, costDiscipline: p.costDiscipline, overrides, modelCalls };
 }
+
+/** P1-CHAT-INTEL-01: why one reasoning level can or cannot answer the Employee's conversation now (codes only). */
+export type LevelAvailability = 'AVAILABLE' | 'ABOVE_EMPLOYEE_CEILING' | 'ABOVE_ROUTE_POLICY' | 'NOT_PROVISIONED' | 'NO_ROUTE_POLICY';
+
+export interface EmployeeIntelligenceView {
+  readonly employeeId: Id;
+  readonly employeeState: string;
+  readonly taskClass: string;
+  /** The model identity of the deployments serving the task class (one model only — mixing models is not offered). */
+  readonly model: { readonly providerCode: string; readonly modelCode: string; readonly publicName: string | null } | null;
+  readonly defaultClass: ReasoningClass;
+  readonly ceilingClass: ReasoningClass;
+  readonly routeMinClass: ReasoningClass | null;
+  readonly routeMaxClass: ReasoningClass | null;
+  readonly levels: readonly { readonly reasoningClass: ReasoningClass; readonly availability: LevelAvailability; readonly deploymentProvisioned: boolean }[];
+  /** Actual usage of this Employee's model calls by the class that answered (every task class), economic and billed money. */
+  readonly usage: readonly { readonly reasoningClass: string; readonly calls: number; readonly inputTokens: number; readonly outputTokens: number; readonly economicMicros: number; readonly billedMicros: number }[];
+  readonly envelope: { readonly currency: string; readonly capMoney: number; readonly reservedMoney: number; readonly spentMoney: number } | null;
+}
+
+const FOUNDER_LEVELS: readonly ReasoningClass[] = ['E1', 'E2', 'E3', 'E4'];
+
+/**
+ * Read-only: the Employee's intelligence for one task class (default: the conversation reply) — the standing profile, what
+ * each level E1..E4 would meet (the Employee ceiling, the route policy, a qualified ACTIVE deployment) and the actual usage
+ * and money. IDs, codes and numbers only. It changes nothing; every change is a governed preview.
+ */
+export function txEmployeeIntelligence(ctx: StoreContext, employeeId: Id, taskClass: string): EmployeeIntelligenceView {
+  const e = getEmployeeRow(ctx, employeeId);
+  const p = assertCognitiveProfile(e.cognitiveProfile);
+  const snap = routingSnapshotTx(ctx, taskClass);
+  const policy = snap.policy;
+  const qualified = (q: string): boolean => q === 'QUALIFIED' || (q === 'LIMITED_PRODUCTION' && policy?.allowLimitedProduction === true);
+  const serving = snap.deployments.filter((d) => d.taskClasses.includes(taskClass) && d.status === 'ACTIVE' && d.providerStatus === 'ACTIVE' && qualified(d.qualification));
+  const first = serving[0] ?? snap.deployments.find((d) => d.taskClasses.includes(taskClass)) ?? null;
+  const publicName = first ? (ctx.db.get<{ n: string }>(`SELECT expected_name AS n FROM model_identity_checks WHERE provider_code = ? AND model_code = ? AND result = 'MATCH' ORDER BY checked_at DESC, rowid DESC LIMIT 1`, first.providerCode, first.modelCode)?.n ?? null) : null;
+  const levels = FOUNDER_LEVELS.map((c) => {
+    const provisioned = serving.some((d) => d.reasoningClass === c);
+    const availability: LevelAvailability = !policy ? 'NO_ROUTE_POLICY' : above(c, p.ceilingClass) ? 'ABOVE_EMPLOYEE_CEILING' : above(c, policy.maxClass) ? 'ABOVE_ROUTE_POLICY' : !provisioned ? 'NOT_PROVISIONED' : 'AVAILABLE';
+    return { reasoningClass: c, availability, deploymentProvisioned: provisioned };
+  });
+  const usage = ctx.db
+    .all<{ c: string; n: number; i: number; o: number; eco: number; billed: number }>(
+      `SELECT d.reasoning_class AS c, COUNT(*) AS n, COALESCE(SUM(u.input_tokens), 0) AS i, COALESCE(SUM(u.output_tokens), 0) AS o, COALESCE(SUM(u.economic_micros), 0) AS eco, COALESCE(SUM(u.billed_micros), 0) AS billed
+         FROM usage_records u JOIN deployments d ON d.id = u.deployment_id WHERE u.employee_id = ? GROUP BY d.reasoning_class ORDER BY d.reasoning_class`,
+      e.id,
+    )
+    .map((r) => ({ reasoningClass: r.c, calls: Number(r.n), inputTokens: Number(r.i), outputTokens: Number(r.o), economicMicros: Number(r.eco), billedMicros: Number(r.billed) }));
+  const env = ctx.db.get<{ currency: string; cap_money: number; reserved_money: number; spent_money: number }>(`SELECT currency, cap_money, reserved_money, spent_money FROM budgets WHERE scope = 'EMPLOYEE' AND scope_id = ? AND status = 'OPEN'`, e.id);
+  return {
+    employeeId: e.id, employeeState: e.state, taskClass,
+    model: first ? { providerCode: first.providerCode, modelCode: first.modelCode, publicName } : null,
+    defaultClass: p.defaultClass, ceilingClass: p.ceilingClass, routeMinClass: policy?.minClass ?? null, routeMaxClass: policy?.maxClass ?? null,
+    levels, usage,
+    envelope: env ? { currency: env.currency, capMoney: Number(env.cap_money), reservedMoney: Number(env.reserved_money), spentMoney: Number(env.spent_money) } : null,
+  };
+}

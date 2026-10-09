@@ -350,7 +350,11 @@ export function renderContext(items: readonly RenderItem[]): RenderedContext {
   const prefixText = [section('AUTHORITY'), section('SKILL')].filter((s): s is string => s !== null).join('\n\n');
   const messages: ProviderMessage[] = [];
   if (prefixText) messages.push({ role: 'system', content: `Precedence: L1 > L2 > L3 > L4 > L5 > L6. A lower layer never overrides a higher one.\n\n${prefixText}` });
-  for (const w of inLayer('WORK')) messages.push({ role: 'user', content: w.text });
+  // P1-CHAT-INTEL-01: the earlier turns of a conversation come before the message being answered (the last user turn is the
+  // one to answer); every other Work context keeps its exact order.
+  const work = inLayer('WORK');
+  const earlier = (i: RenderItem): boolean => i.candidate.provenanceRef.startsWith('communication_thread:');
+  for (const w of [...work.filter(earlier), ...work.filter((i) => !earlier(i))]) messages.push({ role: 'user', content: w.text });
   const reference = [section('KNOWLEDGE'), section('MEMORY')].filter((s): s is string => s !== null).join('\n\n');
   if (reference) messages.push({ role: 'system', content: reference });
   // Recent results are rendered in the order they happened (keys carry the zero-padded step).

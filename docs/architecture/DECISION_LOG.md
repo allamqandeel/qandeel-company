@@ -5154,3 +5154,166 @@ The research found:
 
 **Not changed.** The paid-by-default conversation behaviour is out of scope by Founder decision and recorded for
 separate review.
+
+## D-P1-01 — P1-CHAT-INTEL-01: a dedicated Employee Chat and DeepSeek V4.1 Flash reasoning control on the existing seams (executor; Founder Task Contract P1-CHAT-INTEL-01)
+
+**Context.** The Founder's conversation with an Employee was a docked sheet that also listed the Employee's work. It had
+four gaps:
+- Its "working on a reply" spinner covered every unanswered Founder message, whatever the reply's real state. A FAILED or
+  BLOCKED reply therefore "thought" forever (R-D2-05).
+- No earlier turn reached the model: each reply saw only the one message it answered.
+- The four DeepSeek reasoning levels existed in the adapter (E1 off, E2 low, E3 high, E4 max, D-L1-10). The LIVE Company
+  was provisioned with the Academy profile only, which registers E1 / E2 (D-L1-14). A provider is never re-provisioned
+  (D-L1-06).
+- No level could be chosen for one message.
+
+**Decision.** Everything reuses the canonical stores. There is no new datastore, router, budget path or migration.
+
+1. **Chat state is the C5 thread.**
+   - History pages through `CommunicationStore.messagesPage`, oldest first, with older pages through `beforeSeq`.
+   - Talk reopens the same direct thread.
+   - The reply Work Item stays governed execution infrastructure. It is never rendered in the transcript.
+2. **Truthful reply state.** `replyStates` derives each Founder message's reply state from the reply Work Item, its newest
+   queue job and run, the thread, the durable override and the usage evidence. The states are QUEUED, RUNNING,
+   WAITING_FOR_BUDGET, WAITING, BLOCKED, FAILED, CANCELLED and REPLIED, each with its canonical reason code.
+   - The reply's own cap, held reservations and actual spend are reported separately.
+   - Only RUNNING shows a "writing" indicator.
+   - Nothing on the surface retries. `pendingReplies` keeps its Stage 9 meaning, because an unanswered request stays
+     unanswered.
+3. **Bounded conversation history.** For a Founder-thread reply, context assembly adds one optional WORK candidate. It
+   holds the thread's turns strictly before the message being answered:
+   - at most 12 messages and 4,800 bytes, filled newest first and shown oldest first;
+   - each turn capped at 1,200 characters;
+   - layer markers neutralized.
+
+   The candidate competes for the WORK share, so it yields to the budget. It renders before the message being answered,
+   because the renderer puts `communication_thread:` WORK items first and every other context keeps its exact order. The
+   manifest records the thread id, the count and a hash only (Rule A).
+4. **Fast, bounded replies.** A reply Work Item carries:
+   - `maxModelCalls` 3 and `maxTurns` 3 (one MESSAGE ends the run, D-L1-09);
+   - an output bound per starting class: E1 1,024 (unchanged), E2 2,048, E3 4,096, E4 8,192. The bounds assume that a
+     thinking model spends its reasoning inside the same output allowance; this is to be verified with live evidence.
+
+   The worst-case reservation and the reply's capped budget are unchanged. Opening or reading the chat spends nothing,
+   and a note (FYI, no reply) creates no Work Item.
+5. **A level for one message.** `FounderSendInput.reasoningClass` is recorded, in the same transaction as the send, as
+   the reply's canonical one-task override (`work_item_reasoning_overrides`, D-L1-44). That override is read when the run
+   begins and enforced by `txReserve`.
+   - It is refused above the Employee ceiling or the route policy, or without a route. The whole send rolls back, so
+     there is no message, run or spend.
+   - It never touches the persistent profile.
+   - It is not a method pin, because the class is not in the processor input.
+6. **Persistent levels.** Employee Intelligence on the profile shows:
+   - the fixed model (from the latest MATCH identity check);
+   - the default and the maximum;
+   - each level's availability for conversation (AVAILABLE / ABOVE_EMPLOYEE_CEILING / ABOVE_ROUTE_POLICY /
+     NOT_PROVISIONED / NO_ROUTE_POLICY);
+   - usage and cost by the class that answered;
+   - the envelope's cap, held and spent amounts.
+
+   A change is the existing `EMPLOYEE_REASONING_PROFILE` preview, fingerprinted and confirmed. Its confirmation marks VALID
+   certifications REVIEW_DUE, as before. The chat explains a blocked level and links to the governed path. It never
+   escalates by itself.
+7. **E3 / E4 by an additive profile.** `ProviderProvisioningProfile.extendsProvider` (the digest of existing profiles is
+   unchanged) defines `deepseek-v4-1-flash-reasoning`, registered on the host:
+   - two NEW deployments, `deepseek-flash-e3-chat` / `-e4-chat`, for `founder.reply` only;
+   - the same model identity, pinned revision, price card, D2 egress ceiling and LIMITED_PRODUCTION target;
+   - route policy `founder.reply` v2, with a maximum of E4 and otherwise the pilot policy. v1 is superseded history.
+
+   The additive path is checked in the preview and again in the confirmation (`txCheckProviderExtension`):
+   - the provider and model exist, are ACTIVE and keep the same locality and credential reference;
+   - none of its deployments exists yet;
+   - a fresh MATCH identity check exists.
+
+   It creates no budget and touches no existing deployment or other route. It is reached only through the
+   `PROVIDER_PROVISION` confirmation, which shows "no new cap".
+8. **The UI.**
+   - **Chat screen.** `chat.ts` covers the stage: identity, transcript, Employee Intelligence and composer. Its skeleton is
+     built once, so a live refresh never rebuilds the composer.
+   - **Drafts.** A draft is kept per thread for the browser session. It is cleared only when the server confirms the send.
+     The idempotency key is kept until then, so a retry never duplicates a message (the server replays by key).
+   - **Close.** × or Escape returns to the profile when the chat was opened from it, otherwise to the company. Nothing
+     stops.
+   - **Profile ×.** The profile's × closes it to the company.
+   - **Inline styles.** The shared `h()` helper now applies `style` declarations through the CSSOM. The page CSP
+     (`style-src 'self'`) had been dropping every inline style attribute, which blanked person accents and meter fills.
+9. **Trainees.** A non-ACTIVE Employee's conversation opens and keeps notes. An AI reply needs ACTIVE, as before. No
+   interactive Academy chat is added, and a conversation is never certification evidence or authority.
+
+**Review corrections (Founder review of PR #27, CORR-01 / CORR-02).**
+
+- **CORR-01 — an idempotency key binds the message itself.**
+  - **The problem.** The first cut found a replay through the reply Work Item's dedupe key. That covered an ASK only: a note
+    (FYI, no reply) sent twice became two notes. It also replayed without comparing the request.
+  - **The fix.** A Founder send with a `clientKey` now uses the canonical `idempotency_records` table under the scope
+    `communication.founder_send`, in the same transaction as the message. No new table, migration or store was added.
+  - **The fingerprint** covers the thread, purpose, attention level, body hash, reply flag, per-message level, reply task
+    class, reply cap and context refs.
+  - **The same key with the same request** returns the recorded message, whatever its reply has become since (completed,
+    failed). It creates no second message, Work Item, override, reservation or run.
+  - **The same key with anything else** is `IDEMPOTENCY_CONFLICT` (reason `CLIENT_KEY_REUSED`, HTTP 409). This covers
+    another body, mode or level, and another thread or Employee. The refusal names no message and records nothing.
+  - **A note** still creates no Work Item and no reservation.
+  - **The reply Work Item's dedupe key** is again `founder-reply:<messageId>`.
+  - **No content leaves the store.** Nothing beyond the existing content-free audit is written (Rule A). The fingerprint
+    holds hashes only.
+- **CORR-02 — an async result settles only its own conversation.**
+  - **The problem.** The Chat screen kept one shared composer. After `await`, a send wrote to it, so a send from A that
+    finished while B was shown could clear B's draft, or change its level, mode, button or error.
+  - **The fix.** `model/chat-send.ts` (pure, no DOM) holds each conversation's send state: its draft, its key with the
+    exact request that key belongs to, its level, mode, sending flag and error. A send is a ticket bound to its conversation:
+    - Success clears that conversation only.
+    - A connection failure keeps its draft and key, so a retry replays and never duplicates.
+    - A refusal keeps the draft and drops the key.
+    - A changed request gets a new key, never a conflict.
+  - **The screen** keeps conversations per thread for the page. It applies a settled send, a refresh or an older page to
+    the shared composer and list only while that conversation is the one shown. Refreshes are generation-ordered, so an
+    older response that lands late never overwrites a newer one. "Loading older" is per conversation.
+- **Proofs.**
+  - **Runtime P1 test (CORR-01, the real store).** It covers:
+    - an ASK replayed, including after its reply completed or failed;
+    - a note replayed with no Work Item;
+    - a conflict on body, mode, attention and level;
+    - no crossing between threads.
+  - **Surface HTTP test.** It covers a note replay and a 409 conflict.
+  - **`command-center-ui/test/p1-chat-send.test.ts`.** It covers A → B races on success and on failure, overlapping sends,
+    close and reopen while sending, and the request-bound key.
+  - **The `spike-chat-race` step of `c5:spike`.** It runs in real headless Edge and holds A's POST through CDP Fetch while
+    the Founder opens B, then succeeds and then fails it. B's composer is unchanged. A's message appears once. A's draft and
+    error are kept after the failure, and the retry sends once.
+
+**Not decided / not done.**
+- LIVE was not read, changed or provisioned. The auto-mode classifier refused a read-only copy of the LIVE database.
+  `scripts/p1-chat-reply-diagnosis.mjs` is the content-free, read-only diagnosis, for the Founder to run (D-L1-16
+  discipline).
+- No historical FAILED / BLOCKED / DEAD_LETTER work was retried (R-D2-05 stands).
+- No live E3 / E4 call or spend was made. The wire shape is proven against the real adapter with a fake transport. A live
+  qualification probe needs the Founder's vault key and a tiny authorized spend.
+- Salim's profile stays E1 / E2.
+- R-D2-06 (a conversation reply is paid from the Employee envelope) is unchanged and remains the Founder's governance
+  review.
+
+**Proofs.**
+- `runtime/test/p1/p1-chat-intel.test.ts` (P1-PROOF: chat-intel). It uses the real adapter on the LIVE-shaped provisioning
+  and covers:
+  - history;
+  - E1 / E2 / E3 / E4 on the wire;
+  - the profile unchanged;
+  - refusal before anything is recorded;
+  - additive provisioning (direct and through the preview);
+  - idempotency;
+  - FAILED with no retry;
+  - WAITING_FOR_BUDGET before network;
+  - trainee notes;
+  - paging.
+- The surface test P1-CHAT-INTEL-01 (HTTP: paging, reply states, intelligence, idempotent send, refused level).
+- `command-center-ui/test/p1-chat-intel.test.ts`.
+- The `spike-chat-screen` step of `c5:spike` (real headless Edge), which covers:
+  - a dedicated screen;
+  - no work card in the transcript;
+  - × / Escape;
+  - the draft kept across close, reopen and page refresh;
+  - per-person identity;
+  - a narrow layout.
+- Scenarios F / G of the full walkthrough moved to the Chat screen. Full mode still stops earlier at C-goal-focus, the
+  same as on `main` (R-D2-01 family).

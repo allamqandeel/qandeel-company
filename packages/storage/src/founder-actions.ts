@@ -27,7 +27,7 @@ import { executeActivation, validateActivationPayload, type ActivationEnv } from
 import { txAssertExternalEvidence } from './external-core.js';
 import { ExternalEvidenceStore, txAssertBindable } from './external-evidence.js';
 import { getBudgetRow, budgetFor } from './governance-core.js';
-import { GovernanceStore, IDENTITY_CHECK_MAX_AGE_MS, founderConfirmInternals, isGovernedJob, resolveGovernedReconciliation } from './governance.js';
+import { GovernanceStore, IDENTITY_CHECK_MAX_AGE_MS, founderConfirmInternals, isGovernedJob, resolveGovernedReconciliation, txCheckProviderExtension } from './governance.js';
 import { mapIdentityCheck } from './governance-records.js';
 import { getGoal, GoalStore } from './goals.js';
 import { mapActionPreview, type ActionPreviewRecord } from './founder-records.js';
@@ -381,17 +381,22 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
       if (!profile) throw new QandeelError('VALIDATION_FAILED', 'unknown provisioning profile (profiles are release-pinned and registered by the host, never typed)', { field: 'profileCode' });
       const digest = provisioningProfileDigest(profile);
       if (raw.profileSha256 !== undefined && raw.profileSha256 !== digest) throw new QandeelError('VALIDATION_FAILED', 'the profile digest does not match the registered profile', { field: 'profileSha256' });
-      if (ctx.db.get('SELECT 1 AS x FROM model_providers WHERE code = ?', profile.provider.code)) throw new QandeelError('INVALID_TRANSITION', 'this provider is already provisioned', { providerCode: profile.provider.code });
+      // P1-CHAT-INTEL-01: an additive profile extends the provisioned provider (new deployments only, no budget).
+      const extend = profile.extendsProvider === true;
+      if (extend) txCheckProviderExtension(ctx, profile);
+      else if (ctx.db.get('SELECT 1 AS x FROM model_providers WHERE code = ?', profile.provider.code)) throw new QandeelError('INVALID_TRANSITION', 'this provider is already provisioned', { providerCode: profile.provider.code });
       // Alias drift fails closed (D-L1-05): the preview exists only on a fresh MATCH identity check of the model alias.
       const latest = ctx.db.get('SELECT * FROM model_identity_checks WHERE provider_code = ? AND model_code = ? ORDER BY checked_at DESC, id DESC LIMIT 1', profile.provider.code, profile.model.code);
       const check = latest ? mapIdentityCheck(latest) : null;
       if (!check || check.result !== 'MATCH' || check.expectedName !== profile.model.expectedPublicName || Date.parse(ts(ctx)) - Date.parse(check.checkedAt) > IDENTITY_CHECK_MAX_AGE_MS) {
         throw new QandeelError('VALIDATION_FAILED', 'provisioning needs a fresh MATCH identity check of the model alias (run the provider check first)', { field: 'identityCheck', reason: 'IDENTITY_CHECK_REQUIRED' });
       }
-      const capMoney = assertMoney(raw.capMoney, 'capMoney');
-      const capTokens = assertTokens(raw.capTokens, 'capTokens');
-      if (capMoney === 0 || capTokens === 0) throw new QandeelError('VALIDATION_FAILED', 'the first Company cap is a bounded positive amount (never zero, never unlimited)', { field: 'capMoney' });
       const company = budgetFor(ctx, 'COMPANY', 'company');
+      // An extension creates no cap: the Company cap the Founder already set is shown and stays exactly as it is.
+      if (extend && !company) throw new QandeelError('BUDGET_MISSING', 'an additive profile needs the existing Company budget', { providerCode: profile.provider.code });
+      const capMoney = extend ? 0 : assertMoney(raw.capMoney, 'capMoney');
+      const capTokens = extend ? 0 : assertTokens(raw.capTokens, 'capTokens');
+      if (!extend && (capMoney === 0 || capTokens === 0)) throw new QandeelError('VALIDATION_FAILED', 'the first Company cap is a bounded positive amount (never zero, never unlimited)', { field: 'capMoney' });
       if (company && company.currency !== profile.priceCard.currency) throw new QandeelError('CURRENCY_MISMATCH', 'the profile is priced in another currency than the Company budget', { currency: profile.priceCard.currency });
       const card = profile.priceCard;
       return {
@@ -404,6 +409,8 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
         identityCheckId: check.id,
         identityCheckedAt: check.checkedAt,
         deploymentCodes: profile.deployments.map((d) => `${d.code} (${d.reasoningClass}, ctx ${d.contextWindowTokens}, out ${d.maxOutputTokens})`),
+        extendsProvider: extend,
+        routePolicies: profile.routePolicies.map((r) => `${r.taskClass} ${r.body.minClass}..${r.body.maxClass}`),
         egressMaxDataClass: profile.egressMaxDataClass,
         qualificationTarget: profile.qualificationTarget,
         currency: card.currency,
@@ -479,8 +486,8 @@ export class FounderActionStore {
   }
 
   /** The release-pinned provisioning profiles this store may offer (codes, digests, display facts; never a credential). */
-  provisioningProfiles(): readonly { code: string; sha256: string; providerCode: string; modelCode: string; expectedPublicName: string; currency: string; deployments: number; taskClasses: readonly string[] }[] {
-    return this.#profiles.map((p) => ({ code: p.code, sha256: provisioningProfileDigest(p), providerCode: p.provider.code, modelCode: p.model.code, expectedPublicName: p.model.expectedPublicName, currency: p.priceCard.currency, deployments: p.deployments.length, taskClasses: p.routePolicies.map((r) => r.taskClass) }));
+  provisioningProfiles(): readonly { code: string; sha256: string; providerCode: string; modelCode: string; expectedPublicName: string; currency: string; deployments: number; taskClasses: readonly string[]; extendsProvider: boolean; deploymentCodes: readonly string[]; reasoningClasses: readonly string[] }[] {
+    return this.#profiles.map((p) => ({ code: p.code, sha256: provisioningProfileDigest(p), providerCode: p.provider.code, modelCode: p.model.code, expectedPublicName: p.model.expectedPublicName, currency: p.priceCard.currency, deployments: p.deployments.length, taskClasses: p.routePolicies.map((r) => r.taskClass), extendsProvider: p.extendsProvider === true, deploymentCodes: p.deployments.map((d) => d.code), reasoningClasses: p.deployments.map((d) => d.reasoningClass) }));
   }
 
   /** One write transaction; an optional `onRefusal` runs (in its own transaction) after a typed refusal rolled back. */

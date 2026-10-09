@@ -130,3 +130,41 @@ export const DEEPSEEK_V41_FLASH_ACADEMY_PROFILE: ProviderProvisioningProfile = O
   qualificationTarget: 'LIMITED_PRODUCTION',
   routePolicies: Object.freeze(DEEPSEEK_ACADEMY_TASK_CLASSES.map((taskClass) => Object.freeze({ taskClass, body: PILOT_ROUTE_POLICY }))),
 });
+
+/** P1-CHAT-INTEL-01: the one task class that may reason at E3 / E4: the Founder ↔ Employee conversation reply. */
+export const DEEPSEEK_CHAT_TASK_CLASSES: readonly string[] = Object.freeze(['founder.reply']);
+
+/**
+ * P1-CHAT-INTEL-01: the conversation route policy at version 2 — identical to the pilot policy (one retry, four calls per
+ * run, one bounded escalation step) except that its maximum class is E4. The route policy is only the upper bound: the
+ * Employee's own ceiling, the per-message choice and the reservation still decide, and the default stays the Employee's
+ * default (E1 for fast chat). Nothing escalates to E3 / E4 by itself: an escalation step is bounded by the ceiling.
+ */
+const CHAT_ROUTE_POLICY: RoutePolicyBody = Object.freeze({ ...PILOT_ROUTE_POLICY, maxClass: 'E4' });
+
+/**
+ * P1-CHAT-INTEL-01: an ADDITIVE profile for an already provisioned DeepSeek provider (the LIVE Company was provisioned with
+ * `DEEPSEEK_V41_FLASH_ACADEMY_PROFILE`, E1 / E2 only). It registers two NEW immutable deployments, E3 (thinking high) and
+ * E4 (thinking max), for the conversation reply only, on the same model identity, pinned revision, price card, D2 egress
+ * ceiling and LIMITED_PRODUCTION qualification, plus version 2 of the `founder.reply` route policy (maximum E4). It never
+ * re-provisions the provider, never touches an existing deployment and creates no budget. The deployment codes are new
+ * (a Company provisioned with the L1-01 profile already holds `deepseek-flash-e3` / `-e4` for other routes).
+ */
+export const DEEPSEEK_V41_FLASH_REASONING_PROFILE: ProviderProvisioningProfile = Object.freeze({
+  code: 'deepseek-v4-1-flash-reasoning',
+  provider: Object.freeze({ code: DEEPSEEK_PROVIDER_CODE, locality: 'EXTERNAL', credentialRef: DEEPSEEK_CREDENTIAL_REF }),
+  model: Object.freeze({ code: DEEPSEEK_MODEL_CODE, expectedPublicName: DEEPSEEK_EXPECTED_PUBLIC_NAME }),
+  deployments: Object.freeze((['E3', 'E4'] as const).map((cls) => Object.freeze({
+    code: `deepseek-flash-${cls.toLowerCase()}-chat`,
+    reasoningClass: cls,
+    pinnedRevision: DEEPSEEK_PINNED_REVISION,
+    contextWindowTokens: DEEPSEEK_CLASS_LIMITS[cls].contextWindowTokens,
+    maxOutputTokens: DEEPSEEK_CLASS_LIMITS[cls].maxOutputTokens,
+    taskClasses: DEEPSEEK_CHAT_TASK_CLASSES,
+  }))),
+  priceCard: DEEPSEEK_FLASH_PRICE_CARD,
+  egressMaxDataClass: 'D2',
+  qualificationTarget: 'LIMITED_PRODUCTION',
+  routePolicies: Object.freeze(DEEPSEEK_CHAT_TASK_CLASSES.map((taskClass) => Object.freeze({ taskClass, body: CHAT_ROUTE_POLICY }))),
+  extendsProvider: true,
+});

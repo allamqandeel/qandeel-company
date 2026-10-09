@@ -12,7 +12,8 @@ export type Lens =
   | { readonly kind: 'GOAL'; readonly goalId: string }
   | { readonly kind: 'DEPARTMENT'; readonly departmentId: string }
   | { readonly kind: 'BLOCKED' }
-  | { readonly kind: 'CONVERSATION'; readonly threadId: string; readonly employeeId: string }
+  // P1-CHAT-INTEL-01: the dedicated Chat screen; `from` is where × returns (the person's profile, or the company).
+  | { readonly kind: 'CONVERSATION'; readonly threadId: string; readonly employeeId: string; readonly from?: 'EMPLOYEE' | 'LIVE' }
   | { readonly kind: 'HISTORY'; readonly at: string };
 
 export type NodeKind = 'founder' | 'employee' | 'seat' | 'goal' | 'attention';

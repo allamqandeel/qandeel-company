@@ -35,6 +35,13 @@ export interface ProviderProvisioningProfile {
   /** The qualification state the deployments are activated at for the pilot (LIMITED_PRODUCTION until requalified). */
   readonly qualificationTarget: QualificationState;
   readonly routePolicies: readonly { readonly taskClass: string; readonly body: RoutePolicyBody }[];
+  /**
+   * P1-CHAT-INTEL-01: an ADDITIVE profile for a provider that is already provisioned. It registers only its own new
+   * deployments (never touching an existing one) with their price cards, qualification steps and egress approvals, and
+   * new versions of its route policies (the previous versions are superseded, never rewritten). It creates no provider,
+   * no model and no Company budget: the provider, the model identity and the Company cap must already exist.
+   */
+  readonly extendsProvider?: boolean;
 }
 
 const VAULT_REF = /^vault:[a-z0-9][a-z0-9.-]{0,57}$/;
@@ -78,6 +85,7 @@ export function assertProvisioningProfile(input: unknown): ProviderProvisioningP
   if (prov.locality === 'EXTERNAL' && (egress === 'D3' || egress === 'D4')) throw new QandeelError('EGRESS_DENIED', 'an external provider profile never exceeds D2 egress', { field: 'egressMaxDataClass' });
   if (!(QUALIFICATION_STATES as readonly string[]).includes(p.qualificationTarget as string) || p.qualificationTarget === 'QUALIFIED') throw new QandeelError('VALIDATION_FAILED', 'qualificationTarget is a pre-QUALIFIED state (QUALIFIED needs the Company\'s own qualification suite)', { field: 'qualificationTarget' });
   if (!Array.isArray(p.routePolicies) || p.routePolicies.length > 16) throw new QandeelError('VALIDATION_FAILED', 'routePolicies is a bounded list', { field: 'routePolicies' });
+  if (p.extendsProvider !== undefined && typeof p.extendsProvider !== 'boolean') throw new QandeelError('VALIDATION_FAILED', 'extendsProvider is a boolean', { field: 'extendsProvider' });
   const routePolicies = p.routePolicies.map((r) => {
     const o = r as Partial<{ taskClass: string; body: unknown }> | null;
     return { taskClass: assertTaskClass(o?.taskClass, 'routePolicies.taskClass'), body: assertRoutePolicyBody(o?.body) };
@@ -102,6 +110,8 @@ export function assertProvisioningProfile(input: unknown): ProviderProvisioningP
     egressMaxDataClass: egress,
     qualificationTarget: p.qualificationTarget as QualificationState,
     routePolicies,
+    // Only an extension carries the flag, so every pre-existing profile keeps its exact digest.
+    ...(p.extendsProvider === true ? { extendsProvider: true } : {}),
   };
 }
 
