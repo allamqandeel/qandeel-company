@@ -5317,3 +5317,40 @@ four gaps:
   - a narrow layout.
 - Scenarios F / G of the full walkthrough moved to the Chat screen. Full mode still stops earlier at C-goal-focus, the
   same as on `main` (R-D2-01 family).
+
+## D-P1-02 — A CEO brief is never requested about another CEO brief (P1-CHAT-OPS-01; executor)
+
+**Context.** On 2026-10-07 the Founder's first Chat message to Salim was written at 11:03:19Z. Its reply Work Item
+(`4589b13f`) ran 3 attempts: 24 s, 11 s and 20 ms. Each ended RETRYABLE_FAILURE, then the job went DEAD_LETTER and the item
+BLOCKED at 11:03:57.
+
+The proactive briefing policy (`BriefingPolicy.signalFor`) treats every transition to BLOCKED as a brief signal. It
+deduplicates and cools down per context only, so each blocked item gets its own brief. The first brief failed and became
+BLOCKED, which requested a brief about that brief, and so on. The chain ran from 11:03:57 to 11:08:53:
+- 97 brief Work Items;
+- 294 runs in total;
+- 96 more BLOCKED items;
+- in the content-free host log, every run in the cascade failed within milliseconds.
+
+It stopped only when the last brief's third attempt made a real provider call (11:08:56 → 11:09:05, about 10 s) that
+ended PERMANENT_FAILURE / FAILED. That call came 5 minutes after the reply's second attempt, the exact length of the
+deployment circuit-breaker window (`CIRCUIT_OPEN_MS`). This is consistent with an open provider circuit making every
+call in between fail fast.
+
+The evidence is the content-free founder host log of the LIVE Company (a copy is under
+`E:\QANDEEL_D2\evidence\ux-01-install\host-absence\`) and the content-free D2 state snapshots. No database was opened.
+
+**Decision.** `txRequestCeoBrief` refuses a WORK_ITEM brief whose context Work Item is itself a CEO brief (dedupe key
+`ceo-brief:`). The refusal is `COMMUNICATION_INVALID` with reason `BRIEF_ABOUT_BRIEF`, raised before any thread, Work
+Item or budget is written. The policy already turns a refusal into a content-free `founder.brief_not_requested` log line.
+
+A blocked ordinary item, a Founder reply included, is still briefed once per context and cooldown. The guard is
+durable, so it also holds across restarts, which the in-memory cooldown does not.
+
+**Not changed.**
+- Historical BLOCKED / FAILED / DEAD_LETTER work is never retried (R-D2-05).
+- No budget, profile, route or provider setting changed.
+- The reply's own failure class (why the provider calls failed) is not established by this decision. It needs the
+  content-free diagnosis of a verified backup, which is a Founder approval gate (P1-CHAT-OPS-01 report).
+
+**Proof.** `storage/test/c5-founder-surface.test.ts` "P1-CHAT-OPS-01: a blocked brief is never briefed about".

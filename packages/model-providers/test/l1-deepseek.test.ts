@@ -230,7 +230,7 @@ describe('L1 DeepSeek adapter: alias drift and identity', () => {
   test('the probe is one tiny non-thinking JSON answer and returns metering only', async () => {
     const t = new FakeDeepSeekTransport().answer(fakeChatAnswer('{"ok":true}', { prompt: 20, completion: 5 }));
     const r = await adapter(t).probe(signal());
-    assert.deepEqual(r, { usage: { inputTokens: 20, outputTokens: 5, cachedInputTokens: 0 }, outputChars: 11 });
+    assert.deepEqual({ ...r, latencyMs: 0 }, { usage: { inputTokens: 20, outputTokens: 5, cachedInputTokens: 0 }, outputChars: 11, maxOutputTokens: 32, finishReason: 'stop', reasoningTokens: null, latencyMs: 0 });
     assert.deepEqual((t.requests[0]?.body as { thinking: unknown; max_tokens: number }).thinking, { type: 'disabled' });
     assert.equal('reasoning_effort' in (t.requests[0]?.body as object), false);
     assert.equal((t.requests[0]?.body as { max_tokens: number }).max_tokens, 32);
@@ -239,11 +239,26 @@ describe('L1 DeepSeek adapter: alias drift and identity', () => {
   test('a thinking-class probe sends the official thinking fields (thinking.enabled + top-level reasoning_effort) under a small ceiling', async () => {
     const t = new FakeDeepSeekTransport().answer(fakeChatAnswer('{"ok":true}', { prompt: 20, completion: 9 }));
     const r = await adapter(t).probe(signal(), 'E2');
-    assert.deepEqual(r, { usage: { inputTokens: 20, outputTokens: 9, cachedInputTokens: 0 }, outputChars: 11 });
+    assert.deepEqual({ ...r, latencyMs: 0 }, { usage: { inputTokens: 20, outputTokens: 9, cachedInputTokens: 0 }, outputChars: 11, maxOutputTokens: 1024, finishReason: 'stop', reasoningTokens: null, latencyMs: 0 });
     const wire = JSON.parse(JSON.stringify(t.requests[0]?.body)) as Record<string, unknown>;
     assert.deepEqual(wire.thinking, { type: 'enabled' });
     assert.equal(wire.reasoning_effort, 'low');
     assert.equal(wire.max_tokens, 1024);
+  });
+
+  test('P1-CHAT-OPS-01: a probe at an explicit bound (the chat bound) reports the finish reason, the reasoning-token count and the latency, never text', async () => {
+    const t = new FakeDeepSeekTransport().answer(
+      fakeChatAnswer('', { prompt: 20, completion: 8192 }, {
+        choices: [{ index: 0, message: { role: 'assistant', content: '', reasoning_content: 'private reasoning' }, finish_reason: 'length' }],
+        usage: { prompt_tokens: 20, completion_tokens: 8192, total_tokens: 8212, prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: 20, completion_tokens_details: { reasoning_tokens: 8192 } },
+      }),
+    );
+    const r = await adapter(t).probe(signal(), 'E4', 8192);
+    assert.deepEqual([r.maxOutputTokens, r.finishReason, r.reasoningTokens, r.outputChars, r.usage.outputTokens], [8192, 'length', 8192, 0, 8192]);
+    assert.ok(Number.isInteger(r.latencyMs) && r.latencyMs >= 0);
+    assert.equal(JSON.stringify(r).includes('private reasoning'), false, 'no reasoning text is ever returned');
+    const wire = t.requests[0]?.body as { max_tokens: number; reasoning_effort: string };
+    assert.deepEqual([wire.max_tokens, wire.reasoning_effort], [8192, 'max']);
   });
 });
 

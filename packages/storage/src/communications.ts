@@ -250,6 +250,13 @@ export function txRequestCeoBrief(ctx: StoreContext, input: { subject: string; c
   const kind = input.contextKind;
   if (!isContextKind(kind)) throw new QandeelError('VALIDATION_FAILED', 'unknown context kind', { field: 'contextKind' });
   const ref = boundedText(input.contextRef, 'contextRef', 161);
+  // P1-CHAT-OPS-01: a brief is never about another brief. A CEO brief that itself ends BLOCKED is a durable signal like
+  // any other, and briefing about it spawned a new brief per blocked brief: on 2026-10-07 one blocked Founder reply
+  // chained 97 brief Work Items while the provider circuit was open. The chain stops here, at its first link.
+  if (kind === 'WORK_ITEM' && ref.startsWith('work_item:')) {
+    const about = ctx.db.get<{ dedupe_key: string | null }>('SELECT dedupe_key FROM work_items WHERE id = ?', ref.slice('work_item:'.length));
+    if (about?.dedupe_key?.startsWith('ceo-brief:')) throw new QandeelError('COMMUNICATION_INVALID', 'a CEO brief is never requested about another CEO brief', { reason: 'BRIEF_ABOUT_BRIEF' });
+  }
   const existing = ctx.db.get(`SELECT * FROM communication_threads WHERE kind = 'CEO_BRIEF' AND context_kind = ? AND context_ref = ? AND state = 'OPEN'`, kind, ref);
   const thread = existing ? mapThread(existing) : txOpenThread(ctx, { kind: 'CEO_BRIEF', subject: input.subject, contextKind: kind, contextRef: ref }, actorRef);
   const ceoId = ceoHolderId(ctx);
