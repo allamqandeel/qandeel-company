@@ -202,6 +202,22 @@ describe('C5 communication', () => {
       settle(h.store, claim.fence, { type: 'COMPLETED' }, { backoff });
     });
   });
+
+  test('P1-CHAT-OPS-01: a blocked brief is never briefed about (no brief cascade); a blocked ordinary item still is', () => {
+    withSeed((h, s) => {
+      const comm = CommunicationStore.for(h.store);
+      placed(h, s, 'company.ceo');
+      const first = comm.requestCeoBrief({ subject: 'عمل متوقف', contextKind: 'WORK_ITEM', contextRef: 'work_item:00000000-0000-4000-8000-0000000000aa', reasonCode: 'brief.work_blocked', instructions: 'brief' });
+      const items = h.store.listWorkItems({ limit: 1000 }).length;
+      const threads = comm.threads().length;
+      // The brief's own Work Item as the context: refused before anything is written.
+      assert.throws(() => comm.requestCeoBrief({ subject: 'عمل متوقف', contextKind: 'WORK_ITEM', contextRef: `work_item:${first.workItemId}`, reasonCode: 'brief.work_blocked', instructions: 'brief' }), (e: unknown) => (e as { code?: string; details?: { reason?: string } }).code === 'COMMUNICATION_INVALID' && (e as { details: { reason?: string } }).details.reason === 'BRIEF_ABOUT_BRIEF');
+      assert.deepEqual([h.store.listWorkItems({ limit: 1000 }).length, comm.threads().length], [items, threads], 'no Work Item, no thread');
+      // An ordinary blocked item is still briefed.
+      const other = comm.requestCeoBrief({ subject: 'عمل متوقف', contextKind: 'WORK_ITEM', contextRef: 'work_item:00000000-0000-4000-8000-0000000000bb', reasonCode: 'brief.work_blocked', instructions: 'brief' });
+      assert.equal(other.replayed, false);
+    });
+  });
 });
 
 describe('C5 Founder Attention', () => {
