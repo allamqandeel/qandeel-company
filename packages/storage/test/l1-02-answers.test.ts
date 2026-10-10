@@ -233,7 +233,7 @@ describe('L1-02: the Academy answer — durable, bound to its exact model call, 
       v16.close();
       const v17 = openStoreForTests(root, { clock: new ManualClock(), liveSchemaUpdate: true });
       try {
-        assert.deepEqual(v17.migration.applied, [17, 18, 19, 20, 21]);
+        assert.deepEqual(v17.migration.applied, [17, 18, 19, 20, 21, 22]);
         const d = storeContext(v17).db;
         assert.deepEqual({ previews: count(d, 'founder_action_previews'), audit: count(d, 'audit_events'), employees: count(d, 'employees') }, before);
         assert.equal(count(d, 'work_answers'), 0, 'the release creates no answer');

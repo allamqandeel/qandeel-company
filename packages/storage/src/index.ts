@@ -223,3 +223,6 @@ export {
   type PromotionView,
   type RegisterTargetInput,
 } from './digital.js';
+// P1-PRODUCT-KNOWLEDGE-01 (D-P1-06): the shared, read-only product knowledge source and the Founder's governed rename.
+export { PRODUCT_KNOWLEDGE_ACTION_DEFINITION, resolveProductSource, type ProductKnowledgeAccessPlan } from './product-knowledge.js';
+export { type EmployeeRenamePlan } from './employee-identity.js';

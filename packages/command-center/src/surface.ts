@@ -9,6 +9,7 @@
 import { CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, CEO_ACADEMY_PACKAGE_V4, CEO_ACADEMY_PACKAGE_V5, CEO_ACADEMY_PACKAGE_V6, CEO_ACADEMY_PACKAGE_V7, CEO_IDENTITY_PROFILE_V1, type AcademyPackage, type EmployeeIdentityProfile } from '@qandeel-company/mind';
 import type { ProviderAdapter, ProviderProvisioningProfile } from '@qandeel-company/governance';
 import { CompanyRuntime, DeterministicFakeProvider, FakeToolDriver, employeeTaskProcessor, type RuntimeOptions } from '@qandeel-company/runtime';
+import { ProductDocsDriver, type GitHubTransport } from '@qandeel-company/tool-drivers';
 
 import { BriefingPolicy } from './briefing.js';
 import { HostIdentity, consumeStopRequest, hostPaths, removeDescriptorIfOwned, writeJsonAtomic, type HostPaths } from './host/descriptor.js';
@@ -29,6 +30,12 @@ export interface FounderSurfaceOptions {
    */
   readonly providers?: readonly ProviderAdapter[];
   readonly provisioningProfiles?: readonly ProviderProvisioningProfile[];
+  /**
+   * P1-PRODUCT-KNOWLEDGE-01 (D-P1-06): the transport of the read-only product documentation reader (production: the one
+   * approved fixed-host GitHub transport, anonymous). With it the host registers the reader as a Tool driver; it reads
+   * nothing until the Founder registers the product source and grants an Employee the read, and then only on request.
+   */
+  readonly productDocsTransport?: GitHubTransport;
   /**
    * L1-02: the release-pinned Academy packages and Employee identity profiles the Founder may install / name through the
    * governed confirmation (default: the first CEO package and identity profile). Content, never authority.
@@ -67,7 +74,7 @@ export class FounderSurface {
     const governance = {
       ...(extra.governance ?? {}),
       providers: [...providers, ...(options.providers ?? []), ...(extra.governance?.providers ?? [])],
-      toolDrivers: [...drivers, ...(extra.governance?.toolDrivers ?? [])],
+      toolDrivers: [...drivers, ...(options.productDocsTransport ? [new ProductDocsDriver({ transport: options.productDocsTransport, source: { productSource: () => this.runtime.productSource().productSource() } })] : []), ...(extra.governance?.toolDrivers ?? [])],
       provisioningProfiles: [...(options.provisioningProfiles ?? []), ...(extra.governance?.provisioningProfiles ?? [])],
       academyPackages: [...(options.academyPackages ?? [CEO_ACADEMY_PACKAGE_V7, CEO_ACADEMY_PACKAGE_V6, CEO_ACADEMY_PACKAGE_V5, CEO_ACADEMY_PACKAGE_V4, CEO_ACADEMY_PACKAGE_V3, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V1]), ...(extra.governance?.academyPackages ?? [])],
       identityProfiles: [...(options.identityProfiles ?? [CEO_IDENTITY_PROFILE_V1]), ...(extra.governance?.identityProfiles ?? [])],

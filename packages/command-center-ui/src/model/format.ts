@@ -124,7 +124,11 @@ export const CAPABILITY_LABEL: Readonly<Record<string, string>> = {
   'tool:notes.append': 'Notes',
   'tool:publisher.publish': 'Publishing',
   'org.work.delegate': 'Delegating work',
+  'tool:product-knowledge.product-docs-read': 'Product knowledge (read-only)',
 };
+
+/** D-P1-06: the shared, read-only product knowledge capability (the governance constant, as the browser sees it). */
+export const PRODUCT_DOCS_CAPABILITY = 'tool:product-knowledge.product-docs-read';
 
 /** Founder command intents in words (the activity note and the preview name the act, never its code). */
 export const INTENT_LABEL: Readonly<Record<string, string>> = {
@@ -182,6 +186,8 @@ export const INTENT_LABEL: Readonly<Record<string, string>> = {
   EMPLOYEE_REASONING_PROFILE: 'Change a reasoning profile',
   WORK_ITEM_REASONING_OVERRIDE: 'Set the reasoning level of one task',
   ACADEMY_FOUNDER_FEEDBACK: 'Give feedback on an Academy attempt',
+  EMPLOYEE_RENAME: 'Rename an Employee',
+  PRODUCT_KNOWLEDGE_ACCESS: 'Product knowledge access (read-only)',
 };
 
 /** Decisions and outcomes in a preview, in words. */

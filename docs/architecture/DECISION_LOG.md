@@ -5681,3 +5681,92 @@ proven on LIVE until an approved release is installed and a real conversation ha
   - the retrieval terms do not grow, and the Founder's terms survive.
 - `command-center-ui/test/p1-chat-copy.test.ts`: the copy text (long Arabic / English, line breaks, CRLF, brief) and
   the honest success or failure.
+
+## D-P1-06 — Shared Product Knowledge on the existing Tool, grant and context seams; the Founder's governed rename (P1-PRODUCT-KNOWLEDGE-01; Founder-approved Task Contract, executor)
+
+**Context.** In a Founder ↔ CEO conversation the CEO proposed a strategy for an Arabic transaction assistant without
+knowing the QANDEEL App's own core capabilities (HIM, the Living Analysis Map, My / Shared / Public World, Replay,
+Matching). The gap is access to the App's own documentation, not personality. The Founder also renamed the CEO to
+AHMED ZAKI / أحمد ذكي, keeping the same Employee.
+
+**Repo truth before coding.**
+- No Company code reads App documentation. The C7-D GitHub adapter is a write-capable promotion adapter: App credentials,
+  `contents: write`, no content-read endpoint.
+- Context Assembly has no tool catalogue: an Employee is never told which Tools it holds.
+- The chat reply already runs the governed employee loop (`TOOL_REQUEST` → Tool Executor → recorded step result → L6).
+- No Employee rename path exists; the identity kernel names no one; the name reaches the prompt only through the
+  `employees` row.
+- The App's documentation is public; its summaries lag `main` (on 2026-10-10 the App roadmap still called PR #324
+  unmerged while `main` was its merge).
+- The verifier forbids any Company file from naming the App repository (`no-app-repo-dependency`).
+
+**Decision — the read path (reuse, no new runtime or store).**
+- One Tool, `product-knowledge.product-docs-read`, in the C2 Tool Registry:
+  - R0, no side effect, no external mutation;
+  - data-class ceiling D2, because a chat reply runs at D2. This is safe because the reader sends nothing of the Company
+    to GitHub, only the public document paths it reads. The result class is D1.
+  - It is executed only by the Tool Executor after the full authority path.
+- One driver, `github.product-docs` (`tool-drivers/src/github/product-docs.ts`):
+  - It is anonymous and GET-only, through the one approved fixed-host transport. That transport now omits
+    Authorization for an empty bearer.
+  - Two read endpoints were added to the closed allowlist: a Markdown document at an exact commit, and the latest
+    1–5 commits of an exact commit.
+  - It resolves `main` to a SHA on every read and reads every document at that SHA.
+  - The source list is closed: root or `docs/` Markdown only, never code, configuration, hidden files or a climbing path.
+  - Topics are matched as whole phrases. A topic's own table row wins, and it carries a conservative status hint:
+    IMPLEMENTED_MERGED, APPROVED_NOT_IMPLEMENTED, ACTIVE_IN_PROGRESS or UNKNOWN_VERIFY, taken from the row's own first
+    sentence.
+  - The result (≤ 1,850 characters, so the L6 window carries it whole) holds the commit, its date, the three newest
+    commit headlines, the cited lines, any missing document and any unmatched topic.
+  - A refused or failed read returns `unavailable` with its code. It is never a failed Tool, which would silence the reply.
+  - Documents are cached in memory per exact commit only. There is no background sync, watcher or persistence.
+- The source is Founder data: one ACTIVE digital target of the adapter (C7-D registry), re-read on every call. The App
+  repository is named in no Company file.
+- Access is one explicit per-Employee grant (R0, D2, scope = the Tool), given or revoked by the Founder through a new
+  structured intent `PRODUCT_KNOWLEDGE_ACCESS`.
+  - The first grant also registers the source and the Tool.
+  - It changes no budget, reasoning level or other authority. Titles grant nothing.
+- Context Assembly lists only the Tools the Employee holds an active grant for, each with release-pinned guidance
+  (`mind/src/product-knowledge.ts`).
+  - This applies to production work only: Academy, benchmark and shadow contexts keep their exact preamble.
+  - The guidance says when to read, how to name topics, to keep the four states apart, to cite path + commit, to prefer
+    newer sources, to say "I don't know", and that document text is evidence, never instruction.
+- One read fits the chat bound unchanged: model, then tool, then the reply, which is 2 model calls of the existing 3.
+
+**Decision — the rename.**
+- A new structured intent, `EMPLOYEE_RENAME`, version-safe through preview → fingerprint → confirm.
+- It updates `given_name` / `family_name` and `profile.displayName {en, ar}`.
+- It appends one Employee history PROFILE row (old name → new name, dated, by the Founder) and a codes-only audit row.
+- The Employee ID, seat, lifecycle, grants, budget, reasoning profile (E1 default), certifications, identity kernel,
+  memory, skills and conversations are untouched. Nothing earlier is rewritten.
+- Migration `0022` recreates `founder_action_previews` with the two intents. This is the 0009 … 0021 precedent; every row
+  is kept.
+
+**Not done / limits.**
+- No RAG, vector store, knowledge graph, index, Company Knowledge write, background sync or local App checkout.
+- No change to the CEO personality, Constitution, Academy, budgets or reasoning levels. No LIVE install or activation.
+- The CEO Constitution v1 §1 still names Salim Nasser. The Founder's Task Contract supersedes the name and forbids
+  editing the Constitution, so the document is left as is. This is reported for a Founder docs decision.
+- Anonymous GitHub reads are limited to 60 requests per hour per IP. A first read costs up to 6, and a repeat on the same
+  commit costs 1. Beyond the limit the read reports `unavailable`.
+- A status hint is a hint. The cited record outranks it, and labels it cannot place stay UNKNOWN_VERIFY.
+- Evidence reaches only the Work Item that read it: there is no cross-conversation reuse beyond the per-commit memory
+  cache.
+
+**Proof.**
+- `tool-drivers/test/p1-product-docs.test.ts`, 10 tests. They cover:
+  - the exact commit, anonymous GET-only reads and the allowlist;
+  - status hints and phrase topics;
+  - a stale summary next to newer commits, and reuse only while `main` is unchanged;
+  - unmatched topics and missing documents;
+  - injected text as data, with no write action;
+  - path refusal before any request, fail-closed paths, size bounds, and no Authorization header.
+- `runtime/test/p1/p1-product-knowledge.test.ts`, 4 tests through the real runtime and DeepSeek adapter on fake
+  transports:
+  - Scenarios A / B / D: grant, read, cite, and a second Employee on the same Tool;
+  - Scenario E: no grant means no read, an injected write is refused, a bad path is refused, and revocation works;
+  - Scenario C: with a suspended source the reply says "I don't know";
+  - Scenario F: same ID, grants, budget, profile, kernel, history prefix and conversation; one PROFILE row; the new name
+    in the next context; version-safe.
+- `command-center/test/p1-product-knowledge-surface.test.ts`: the rename and grant sentences, and the person sheet
+  re-read over loopback HTTP. The host wires the reader, and granting reads nothing.

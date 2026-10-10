@@ -147,6 +147,7 @@ import { liveCertifications } from './mind-core.js';
 import { wakeCapabilityGaps } from './mind-writes.js';
 import { isOrgManaged } from './org-core.js';
 import { txChangeReasoningProfile, txEmployeeIntelligence, txReasoningControlView, txSetReasoningOverride, type EmployeeIntelligenceView, type ReasoningControlView, type ReasoningOverridePlan } from './reasoning-control.js';
+import { txRenameEmployee } from './employee-identity.js';
 import { storeContext, type CompanyStore } from './store.js';
 import { applyTransition, dependencyStatus, enqueueJob, reevaluateDependencyBlock } from './work-core.js';
 
@@ -662,6 +663,15 @@ export class GovernanceStore {
       const id = assertId(employeeId, 'employeeId');
       const p = founder(ctx, actorRef, `employee:${id}`, 'employee reasoning profile');
       return txChangeReasoningProfile(ctx, p.ref, { employeeId: id, defaultClass: input.defaultClass, ceilingClass: input.ceilingClass, ...(input.selection !== undefined ? { selection: input.selection } : {}), expectedVersion: input.expectedVersion, reasonCode: assertCode(input.reasonCode, 'reasonCode') });
+    });
+  }
+
+  /** D-P1-06: the Founder's rename of an Employee's display name (same Employee; history gains a dated PROFILE row). */
+  renameEmployee(actorRef: string, employeeId: string, input: { givenName: string; familyName: string; displayNameAr: string | null; expectedVersion: number; reasonCode: string }): EmployeeRecord {
+    return this.#admin('rename employee', actorRef, (ctx) => {
+      const id = assertId(employeeId, 'employeeId');
+      const p = founder(ctx, actorRef, `employee:${id}`, 'employee rename');
+      return txRenameEmployee(ctx, p.ref, { employeeId: id, givenName: input.givenName, familyName: input.familyName, displayNameAr: input.displayNameAr, expectedVersion: input.expectedVersion, reasonCode: assertCode(input.reasonCode, 'reasonCode') });
     });
   }
 

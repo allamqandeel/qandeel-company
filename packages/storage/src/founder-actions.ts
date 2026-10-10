@@ -16,7 +16,7 @@
  * `BEGIN IMMEDIATE` — the check, the effect, CONFIRMED and the audit commit together or not at all.
  */
 import { QandeelError, assertCode, assertId, boundedJson, canonicalJson, isTimestamp, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { ACTIVATION_INTENTS, APP_CONTROL_APPROVAL_ACTION, BINDING_ROLES, BINDING_SUBJECTS, PILOT_MODES, SOURCE_DECISIONS, assertGoalTransition, assertMoney, assertSourceRegistration, assertTokens, cachedInputRate, isGoalState, isMutatingIntent, nextSourceState, provisioningProfileDigest, type GoalState, type MutatingIntent, type PilotMode, type PilotState, type ProviderProvisioningProfile, type SourceDecision, type SourceState } from '@qandeel-company/governance';
+import { ACTIVATION_INTENTS, APP_CONTROL_APPROVAL_ACTION, PRODUCT_DOCS_CAPABILITY, BINDING_ROLES, BINDING_SUBJECTS, PILOT_MODES, SOURCE_DECISIONS, assertGoalTransition, assertMoney, assertSourceRegistration, assertTokens, cachedInputRate, isGoalState, isMutatingIntent, nextSourceState, provisioningProfileDigest, type GoalState, type MutatingIntent, type PilotMode, type PilotState, type ProviderProvisioningProfile, type SourceDecision, type SourceState } from '@qandeel-company/governance';
 import { academyPackageDigest, assertCauses, containsSecretMaterial, summarizeCauses, type AcademyPackage, type AttributedCause, type EmployeeIdentityProfile } from '@qandeel-company/mind';
 
 import { AcademyStore } from './academy.js';
@@ -40,6 +40,8 @@ import { CONTEST_DECISIONS, assertOutcomeClasses, txContestedVerification, type 
 import { PilotStore, planPilotStep, txBriefingStatus } from './pilots.js';
 import { txResolveReconciliation } from './queue.js';
 import { txPlanReasoningOverride, txPlanReasoningProfile } from './reasoning-control.js';
+import { txPlanEmployeeRename } from './employee-identity.js';
+import { executeProductKnowledgeAccess, txPlanProductKnowledgeAccess } from './product-knowledge.js';
 import { ReviewStore } from './review.js';
 import { storeContext, type CompanyStore } from './store.js';
 import type { FounderAuthStore, FounderSession } from './founder-auth.js';
@@ -214,6 +216,27 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
         feedback: plan.body, feedbackSha256: plan.bodySha256, feedbackBytes: plan.bodyBytes, priorFeedbackOnAttempt: plan.priorOnAttempt,
         reaches: 'LATER_ACADEMY_ATTEMPTS_OF_THIS_EMPLOYEE', historyChange: 'NONE', scoreChange: 'NONE', authorityChange: 'NONE', budgetChange: 'NONE', providerCall: 'NONE',
         reasonCode: assertCode(raw.reasonCode ?? 'academy.founder_feedback', 'reasonCode'),
+      };
+    }
+    // --- D-P1-06: the Founder's rename (same Employee) and the shared, read-only product knowledge Tool (one grant) ---
+    case 'EMPLOYEE_RENAME': {
+      const plan = txPlanEmployeeRename(ctx, { employeeId: raw.employeeId, givenName: raw.givenName, familyName: raw.familyName, displayNameAr: raw.displayNameAr });
+      const e = plan.employee;
+      return {
+        employeeId: e.id, roleRef: e.roleRef, employeeState: e.state, employeeVersion: e.version,
+        previousName: `${plan.previous.given} ${plan.previous.family}`, previousNameAr: plan.previous.ar,
+        givenName: plan.next.given, familyName: plan.next.family, displayNameAr: plan.next.ar,
+        identityChange: 'NONE', historyChange: 'APPENDED', authorityChange: 'NONE', budgetChange: 'NONE', providerCall: 'NONE',
+        reasonCode: assertCode(raw.reasonCode ?? 'founder.rename', 'reasonCode'),
+      };
+    }
+    case 'PRODUCT_KNOWLEDGE_ACCESS': {
+      const plan = txPlanProductKnowledgeAccess(ctx, { employeeId: raw.employeeId, decision: raw.decision, repository: raw.repository });
+      return {
+        employeeId: plan.employee.id, name: `${plan.employee.name.given} ${plan.employee.name.family}`, roleRef: plan.employee.roleRef,
+        decision: plan.decision, source: plan.sourceRef, registerSource: plan.registerSource !== null, registerTool: plan.registerTool, grantIds: [...plan.grantIds],
+        capability: PRODUCT_DOCS_CAPABILITY, risk: 'R0', access: 'READ_ONLY', signIn: 'ANONYMOUS', authorityChange: plan.decision === 'GRANT' ? 'THIS_READ_ONLY_TOOL' : 'REVOKED', budgetChange: 'NONE', providerCall: 'NONE',
+        reasonCode: assertCode(raw.reasonCode ?? (plan.decision === 'GRANT' ? 'founder.product_knowledge' : 'founder.product_knowledge_revoke'), 'reasonCode'),
       };
     }
     case 'DELEGATE_WORK': {
@@ -597,6 +620,17 @@ export class FounderActionStore {
         const o = GovernanceStore.for(this.#store).setWorkItemReasoningOverride(founderRef, str('workItemId'), { reasoningClass: pl.requestedClass as 'E1', reasonCode: str('reasonCode') });
         if (o.employee.id !== str('employeeId') || o.standingCeiling !== pl.employeeCeiling || o.standingDefault !== pl.employeeDefault) throw new QandeelError('INVALID_TRANSITION', 'the Employee profile changed since the preview', { reason: 'PROFILE_CHANGED' });
         return `work_item:${o.workItemId}`;
+      }
+      case 'EMPLOYEE_RENAME': {
+        // The store re-plans inside the confirm and refuses an Employee that changed since the preview (version-safe).
+        const e = GovernanceStore.for(this.#store).renameEmployee(founderRef, str('employeeId'), { givenName: str('givenName'), familyName: str('familyName'), displayNameAr: pl.displayNameAr === null ? null : str('displayNameAr'), expectedVersion: Number(pl.employeeVersion), reasonCode: str('reasonCode') });
+        return `employee:${e.id}`;
+      }
+      case 'PRODUCT_KNOWLEDGE_ACCESS': {
+        // Re-planned inside the confirm: the act executes exactly what was previewed or nothing.
+        const plan = txPlanProductKnowledgeAccess(ctx, { employeeId: pl.employeeId, decision: pl.decision, repository: pl.registerSource === true ? pl.source : undefined });
+        if (plan.sourceRef !== pl.source || plan.registerTool !== pl.registerTool || plan.grantIds.join(',') !== strings('grantIds').join(',')) throw new QandeelError('INVALID_TRANSITION', 'product knowledge access changed since the preview', { reason: 'PREVIEW_STALE' });
+        return executeProductKnowledgeAccess(this.#store, founderRef, plan, str('reasonCode'));
       }
       case 'ACADEMY_FOUNDER_FEEDBACK': {
         // The store re-plans inside the confirm: the answer and the note must be exactly the previewed ones.

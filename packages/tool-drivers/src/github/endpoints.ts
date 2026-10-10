@@ -13,6 +13,8 @@ const REPO = '[A-Za-z0-9._-]{1,100}';
 const BRANCH = '[A-Za-z0-9._/-]{1,100}';
 const SHA = '[0-9a-f]{40}';
 const NUM = '[1-9][0-9]{0,8}';
+// D-P1-06: a product documentation path (a Markdown file at the root or under docs/); `isProductDocPath` narrows it further.
+const DOC = '(?:[A-Za-z0-9][A-Za-z0-9_-]{0,80}|docs/[A-Za-z0-9][A-Za-z0-9._/-]{0,180})\\.md';
 const R = `/repos/${OWNER}/${REPO}`;
 
 const ALLOWED: readonly { readonly method: GitHubMethod; readonly re: RegExp; readonly mutates: boolean }[] = [
@@ -24,6 +26,10 @@ const ALLOWED: readonly { readonly method: GitHubMethod; readonly re: RegExp; re
   { method: 'GET', re: new RegExp(`^${R}/pulls/${NUM}$`), mutates: false },
   { method: 'GET', re: new RegExp(`^${R}/commits/${SHA}/check-runs$`), mutates: false },
   { method: 'GET', re: new RegExp(`^${R}/commits/${SHA}/status$`), mutates: false },
+  // D-P1-06 (read-only product documentation): one document's content at an exact commit, and the latest commits of an
+  // exact commit's history (only headlines and dates are kept). Both are reads.
+  { method: 'GET', re: new RegExp(`^${R}/contents/${DOC}\\?ref=${SHA}$`), mutates: false },
+  { method: 'GET', re: new RegExp(`^${R}/commits\\?sha=${SHA}&per_page=[1-5]$`), mutates: false },
   { method: 'POST', re: new RegExp(`^${R}/git/blobs$`), mutates: true },
   { method: 'POST', re: new RegExp(`^${R}/git/trees$`), mutates: true },
   { method: 'POST', re: new RegExp(`^${R}/git/commits$`), mutates: true },
@@ -40,7 +46,8 @@ const FORBIDDEN = /\/(?:protection|collaborators|hooks|keys|secrets|environments
 export function assertGitHubEndpoint(method: string, path: string): { readonly mutates: boolean } {
   const hit = ALLOWED.find((e) => e.method === method && e.re.test(path));
   // The forbidden-area check reads the endpoint itself: the repository's own name and a branch name are data, not areas.
-  const area = path.replace(/^\/repos\/[^/]+\/[^/?]+/, '').replace(/\/(?:rules\/branches|git\/ref\/heads)\/.*$/, '/branch-ref').replace(/\?.*$/, '');
+  // A document path is data too (D-P1-06): `docs/x/admin.md` names a document, not an administration area.
+  const area = path.replace(/^\/repos\/[^/]+\/[^/?]+/, '').replace(/\/(?:rules\/branches|git\/ref\/heads)\/.*$/, '/branch-ref').replace(/^\/contents\/[^?]*/, '/contents').replace(/\?.*$/, '');
   if (!hit || FORBIDDEN.test(area) || path.includes('..') || path.includes('//')) {
     throw new QandeelError('TOOL_DENIED', 'GitHub endpoint is not allowlisted', { reason: 'GITHUB_ENDPOINT_FORBIDDEN', method: String(method).slice(0, 8) });
   }

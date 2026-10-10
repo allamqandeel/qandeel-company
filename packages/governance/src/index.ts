@@ -16,6 +16,7 @@ export * from './external-evidence.js';
 export * from './founder.js';
 export * from './organization.js';
 export * from './pilot.js';
+export * from './product-knowledge.js';
 export * from './proposals.js';
 export * from './providers.js';
 export * from './reasoning-demand.js';

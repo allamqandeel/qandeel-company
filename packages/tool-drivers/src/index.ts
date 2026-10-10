@@ -9,6 +9,8 @@ export * from './github/driver.js';
 export * from './github/endpoints.js';
 export * from './github/fake-transport.js';
 export * from './github/https-transport.js';
+export * from './github/product-docs.js';
+export * from './github/product-docs-fake.js';
 export * from './github/transport.js';
 export * from './hosting.js';
 export * from './social.js';
