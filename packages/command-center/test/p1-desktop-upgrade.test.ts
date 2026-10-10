@@ -263,7 +263,8 @@ describe('P1-DESKTOP-UPGRADE-CORR-01: cross-version Desktop update', { timeout: 
     assert.equal(businessData(currentStorage, stopped.ws), stopped.data);
 
     const crashed = await olderCompany('crashed', true);
-    process.kill(crashed.pid ?? 0);
+    // A hard crash, never SIGTERM: on Linux SIGTERM is the host's own controlled stop, which releases the lease.
+    process.kill(crashed.pid ?? 0, 'SIGKILL'); // TerminateProcess on Windows, as in founder-host-lifecycle
     const deadline = Date.now() + 15_000;
     while (pidAlive(crashed.pid ?? 0) && Date.now() < deadline) await new Promise((res) => setTimeout(res, 200));
     const stale = await discoverHost(crashed.ws);

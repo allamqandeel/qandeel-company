@@ -689,13 +689,20 @@ try {
       else void page.send('Fetch.continueRequest', { requestId: p.requestId }).catch(() => undefined);
     });
     await page.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/threads/*', requestStage: 'Request' }] });
+    // Talk from the open profile, then wait for THAT Employee's conversation. A first open shows the composer at once
+    // and the placeholder "Opening the conversation…" while the header still names the previous one; only the render
+    // after the history loads draws the header and the list together, so the header's name is the proof.
+    const talk = async () => {
+      const who = await page.evaluate(`document.querySelector('#focus .sheet-title').textContent`);
+      await click('#focus .sheet-primary .btn-primary');
+      await waitUntil(`!document.getElementById('chat').hidden && document.getElementById('chat-title')?.textContent === ${JSON.stringify(who)} && document.querySelector('#chat .chat-list li')`, 15_000);
+    };
     const openChat = async (employeeId) => {
       await page.navigate(`${surface.origin}/`);
       await waitReady();
       await click(`.card[data-id="employee:${employeeId}"]`);
       await waitUntil(`document.querySelector('#focus .sheet-primary .btn-primary')`, 10_000);
-      await click('#focus .sheet-primary .btn-primary');
-      await waitUntil(`!document.getElementById('chat').hidden && document.querySelector('#chat .chat-list li')`, 15_000);
+      await talk();
     };
     // In-page navigation keeps the screen (and A's send in flight): × back to the profile, × to the company, B's Talk.
     const switchTo = async (employeeId) => {
@@ -705,8 +712,7 @@ try {
       await waitUntil(`document.getElementById('focus').hidden`, 10_000);
       await click(`.card[data-id="employee:${employeeId}"]`);
       await waitUntil(`document.querySelector('#focus .sheet-primary .btn-primary')`, 10_000);
-      await click('#focus .sheet-primary .btn-primary');
-      await waitUntil(`!document.getElementById('chat').hidden && document.querySelector('#chat .chat-list li')`, 15_000);
+      await talk();
     };
     const composer = () => page.evaluate(`({ title: document.getElementById('chat-title').textContent, text: document.querySelector('#chat .chat-composer textarea').value, readOnly: document.querySelector('#chat .chat-composer textarea').readOnly, send: document.querySelector('#chat .chat-send').textContent, error: document.querySelector('#chat .chat-error').textContent, mode: document.querySelector('#chat .chat-modes [aria-checked="true"]')?.dataset.keep ?? null })`);
     const founderCount = (text) => page.evaluate(`[...document.querySelectorAll('#chat .chat-msg.from-founder .chat-text')].filter((b) => b.textContent === ${JSON.stringify(text)}).length`);

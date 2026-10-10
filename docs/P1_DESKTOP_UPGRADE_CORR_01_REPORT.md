@@ -108,6 +108,29 @@ into scratch: no Founder install, Apps entry or LIVE file was used.
   exactly as expected in the rebuilt tree. No mutation was run locally.
 - **Genuine predecessor proof** (§4): `e4f2fb2f` upgraded to 22, and `cb3ef342` reproduces the original refusal.
 
+### 5.1 First FULL run (38072295671, head 0594194): two test defects, no product defect
+
+- **tests (ubuntu-latest), the crashed-holder scenario: a test defect.**
+  - It expected `STALE` and read `UPDATE_REQUIRED` after 1.8 s.
+  - The test "crashed" the host with `process.kill(pid)`. On Linux that is `SIGTERM`, which the host handles as its
+    own controlled stop (`command-center/src/cli.ts`), so it released its lease. That is the stopped case, not a crash.
+    On Windows it is `TerminateProcess`, which is why it passed locally.
+  - Correction: `SIGKILL`, the hard crash the existing `founder-host-lifecycle` proof already uses. The scenario now
+    reads `STALE` with a live lease and waits the lease out (about 34 s locally). The controlled stop stays its own case
+    (`STOP:STOPPED`). No product code changed.
+- **acceptance (windows-latest), `spike-chat-race`: a harness wait defect.**
+  - `bBefore.title` was A's name although the harness had clicked B's card (`bAfter` showed B, correctly).
+  - On a first open, `chat.ts` gives the composer to B at once and shows the placeholder "Opening the conversation…";
+    the header is redrawn only when the history loads. The harness waited for any `#chat .chat-list li`, which the
+    placeholder satisfies (11 ms in the failing trace), so it read the header before B's render.
+  - Correction: after Talk, the harness waits until the chat header names the Employee whose profile it opened. No
+    sleep, no assertion relaxed.
+  - Separate observation, not changed here (UI is out of scope): while a first open loads, the chat header still
+    names the previous Employee above the new Employee's composer.
+- **CI infrastructure: none.**
+- Local after the correction: command-center 80/80; `c5:spike` 3 of 3 with `spike-chat-race` PASS; `npm ci` +
+  `npm run ci` (§5). Linux is proven by the FULL gate only (no local Linux).
+
 ## 6. Remaining risk
 
 - **The update path is fixed in the new release only.** The update runs the NEW release's code (the bundle's own), so the
