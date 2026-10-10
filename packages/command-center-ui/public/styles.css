@@ -460,6 +460,19 @@ button.chip:hover { background: var(--card-2); border-color: rgba(205, 214, 240,
 .chat-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; font-size: 14.5px; unicode-bidi: plaintext; }
 .chat-text.is-arabic { line-height: 1.85; font-size: 15.5px; }
 .chat-bubble .brief { margin: 0; }
+/* CHAT-COPY-01: one quiet copy action per message; on a fine pointer it appears on hover or focus, on touch it stays visible. */
+.chat-copy { display: inline-flex; align-items: center; gap: 4px; align-self: center; min-height: 24px; min-width: 24px; justify-content: center; padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--fg-3); font: inherit; font-size: 11.5px; cursor: pointer; opacity: 0.8; transition: opacity 120ms ease, color 120ms ease; }
+.chat-copy svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.4; }
+.chat-copy:hover, .chat-copy:focus-visible { color: var(--fg); background: rgba(205, 214, 240, 0.072); opacity: 1; }
+.chat-copy:focus-visible { outline-offset: 1px; border-radius: 6px; }
+.chat-copy.is-copied { color: var(--good); opacity: 1; }
+.chat-copy.is-failed { color: var(--urgent-ink); opacity: 1; }
+.chat-copy-label:empty { display: none; }
+.chat-copy-buffer { position: fixed; inset-inline-start: -9999px; top: 0; opacity: 0; }
+@media (hover: hover) and (pointer: fine) {
+  .chat-copy { opacity: 0; }
+  .chat-msg:hover .chat-copy, .chat-msg:focus-within .chat-copy, .chat-copy.is-copied, .chat-copy.is-failed { opacity: 1; }
+}
 .chat-status { margin: 0; padding: 0 4px; font-size: 12px; color: var(--fg-2); display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 2px 6px; max-width: 100%; text-align: end; }
 .chat-status strong { font-weight: 600; }
 .chat-status .chat-why, .chat-status .chat-facts { color: var(--fg-3); }

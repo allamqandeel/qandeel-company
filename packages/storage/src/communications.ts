@@ -26,6 +26,7 @@ import { storeContext, type CompanyStore } from './store.js';
 import { applyTransition, enqueueJob } from './work-core.js';
 import { txDeclareRequirements } from './capability.js';
 import { txCreateWorkItem } from './work-items.js';
+import { CEO_DIRECT_CONVERSATION } from './mind-writes.js';
 
 const EMPLOYEE_TASK = 'c2.employee-task';
 /** Founder communication runs are ordinary governed tasks of this class (routed by the Router Policy). */
@@ -214,7 +215,7 @@ export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSen
         // is never pinned here (that would be a method pin): a per-message level is the durable override below.
         // P1-REASON-AUTO-RECOVERY-01: the per-class allowance table (B1) and the governed Reasoning Demand of the message
         // (C1: content-free codes from RD-1, used only when the Employee's profile selects AUTO and nothing fixes the class).
-        processorInput: { taskClass, dataClass: 'D2', maxOutputTokens: CHAT_REPLY_OUTPUT_TOKENS[replyClass(ctx, e, taskClass, chosen)], maxOutputTokensByClass: CHAT_REPLY_OUTPUT_TOKENS, reasoningDemand: assessReasoningDemand({ text: body, purpose: input.purpose, attentionLevel: level, executive: e.orgScope === 'COMPANY' }), maxTurns: CHAT_REPLY_MAX_TURNS, maxModelCalls: CHAT_REPLY_MAX_MODEL_CALLS, instructions: `Founder message (${input.purpose}): ${body}\n\nAnswer as a MESSAGE proposal in the Founder Communication Standard when a decision is involved. Communication grants no authority.`, founderThreadId: t.id, founderMessageId: messageId },
+        processorInput: { taskClass, dataClass: 'D2', maxOutputTokens: CHAT_REPLY_OUTPUT_TOKENS[replyClass(ctx, e, taskClass, chosen)], maxOutputTokensByClass: CHAT_REPLY_OUTPUT_TOKENS, reasoningDemand: assessReasoningDemand({ text: body, purpose: input.purpose, attentionLevel: level, executive: e.orgScope === 'COMPANY' }), maxTurns: CHAT_REPLY_MAX_TURNS, maxModelCalls: CHAT_REPLY_MAX_MODEL_CALLS, instructions: founderReplyInstructions(t.kind, input.purpose, body), founderThreadId: t.id, founderMessageId: messageId, ...(t.kind === 'FOUNDER_CEO' ? { conversation: CEO_DIRECT_CONVERSATION } : {}) },
         dedupeKey: `founder-reply:${messageId}`,
         initialState: 'PROPOSED',
       },
@@ -235,6 +236,17 @@ export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSen
   const message = insertMessage(ctx, t, { senderKind: 'FOUNDER', senderRef: founderRef, purpose: input.purpose, level, body, brief: null, responseRequired: false, replyWorkItemId: null, runId: null, contextRefsJson: refsJson });
   remember(message);
   return { message, replyWorkItemId: null };
+}
+
+/**
+ * P1-CEO-CONVERSATION-UX-01 — the instructions of a Founder reply Work Item: the Founder's words, then how to answer. In the
+ * direct CEO conversation the conversational guidance lives in the governed preamble (these instructions also seed the
+ * context's retrieval terms, so long guidance here would crowd out the Founder's own topic); the line here only names the
+ * reply shape. Every other Employee's reply keeps its exact pre-P1 line.
+ */
+export function founderReplyInstructions(kind: ThreadKind, purpose: MessagePurpose, body: string): string {
+  const how = kind === 'FOUNDER_CEO' ? 'Reply in this conversation as one MESSAGE proposal. Communication grants no authority.' : 'Answer as a MESSAGE proposal in the Founder Communication Standard when a decision is involved. Communication grants no authority.';
+  return `Founder message (${purpose}): ${body}\n\n${how}`;
 }
 
 function insertMessageWithId(ctx: StoreContext, t: ThreadRecord, id: Id, m: Parameters<typeof insertMessage>[2]): MessageRecord {
