@@ -5794,3 +5794,82 @@ AHMED ZAKI / أحمد ذكي, keeping the same Employee.
 - **Decision.** `MUTATION_SHARDS[windows-latest].l1` is `12`. The FULL matrix lists `l1:1/12` … `l1:12/12`, and the
   C5-UI affected-plan expectation follows. The modulo partition, the report schema, the quality-gate parity, the Ubuntu
   shard (`l1:1/1`), the 45-minute ceiling and every other family are unchanged. No product code changed.
+
+## D-P1-07 — A newer release updates an older-schema Company through the existing activation: verified previous release, its own stop, a proven lease release and a truthful recovery state (P1-DESKTOP-UPGRADE-CORR-01; Founder Task Contract, executor; amends D-OPS-08)
+
+**Context.** The Founder's approved LIVE update to `4b8f189` (PR #32, release `cb3ef342`, schema 21 → 22) was refused
+at the activation's dry run, `DRY_RUN_FAILED`, before anything changed. PR #32 is the first release that carries a
+migration through `desktop-local-install`. The defect was latent in every activation across a schema change.
+
+**Root cause (independently confirmed).**
+- `release-check` opens the Company with `migrationMode: 'verify'`. That open refuses a database with pending migrations
+  with `SCHEMA_NOT_READY` (`storage/src/migrations.ts`), but the dry run accepted only `SCHEMA_UPDATE_REQUIRED`, which
+  verify mode never throws.
+- The activation's backup step (`host/release.ts`) and host discovery (`host/lifecycle.ts`) carried the same dead
+  mapping. Discovery reported the Company `UNHEALTHY`.
+- Discovery read the supervisor lease through the same refused open. A newer release therefore lost the running older
+  host: `leaseLive: false`, no instance. Remapping the error code alone would have let an activation skip the controlled
+  stop and reach safe-upgrade with no proof the old host was down. Safe-upgrade's own live-lease preflight would still
+  have refused, so the result would have been a failed start, not data loss.
+- The rollback after a failed start restored the previous pin and reported `ROLLED_BACK` even when safe-upgrade had
+  already migrated the schema forward, which the previous release cannot open (`SCHEMA_FROM_FUTURE`).
+- Reproduced with the genuine predecessor release `e4f2fb2f` and the shipped `cb3ef342`: `DRY_RUN_FAILED`, the running
+  host seen as `UNHEALTHY`, `leaseLive: false`.
+
+**Decision.**
+1. **One cross-version inspection** (`storage/src/inspection.ts`, `inspectCompanySchema`).
+   - It checks the history exactly as every open does: `pendingMigrations`, now shared with `migrate`, unchanged in
+     behaviour. `SCHEMA_FROM_FUTURE`, `STORAGE_INVARIANT` and `MIGRATION_CHECKSUM_DRIFT` keep their codes, and a
+     database without a Company schema is `SCHEMA_NOT_READY`.
+   - It returns CURRENT or UPDATE_REQUIRED and reads the lease holder from the C1 tables of 0001.
+   - It never creates, migrates or writes. A live restore is refused as for every open.
+   - It exports no connection or SQL.
+2. **Discovery** reads the lease through it. A running older host stays RUNNING (`HostStatus.schema` =
+   `UPDATE_REQUIRED`). `UPDATE_REQUIRED` is a state only when nobody holds the Company. The dead
+   `SCHEMA_UPDATE_REQUIRED` mapping is removed.
+3. **The dry run** reports the schema as the release reads it (plus the database and release versions). Every other
+   refusal keeps its own code.
+4. **Activation**, when the dry run reads UPDATE_REQUIRED:
+   - **PREVIOUS.** The pinned previous release is verified byte for byte and bound to the pin. If it is invalid,
+     mismatched or (with a running host) absent, the activation refuses before the stop.
+   - **STOP.** The running host is stopped by the previous release's OWN `stop`: the version that started it and reads
+     its schema.
+   - **LEASE.** This release's own discovery must prove the lease released before anything else runs. A crashed
+     holder's live lease is waited out, bounded at 45 s. Anything else refuses `HOST_NOT_STOPPED`, with nothing backed
+     up, pinned or migrated.
+   - **BACKUP.** `BY_SAFE_UPGRADE` follows the dry run's reading. The upgrade remains the existing safe-upgrade in the
+     new host's start: pre-update snapshot, rehearsal, verification, journal, UPDATE_HOLD.
+   - **HEALTH** also requires the host to read its schema as CURRENT. A `SCHEMA` step records `before->after`.
+   - A same-schema activation is unchanged step for step.
+5. **Truthful failure after the pin.**
+   - **Schema migrated forward.** The pin stays on the new release, the only one that can open the Company. The
+     pre-update snapshot stays, no hold is cleared, no work is discarded, and the outcome is `RECOVERY_HOLD`
+     (`SCHEMA_MIGRATED`). The way back is the existing `rollback-update`, a Founder decision.
+   - **Schema unchanged.** The previous pin is restored. A held Company (`UPDATE_HOLD` from a failed rehearsal) is not
+     started and is `RECOVERY_HOLD`. A previous host that does not come back is `RECOVERY_HOLD`
+     (`PREVIOUS_HOST_NOT_RESTARTED`).
+   - **`ROLLED_BACK`** now means only that the previous release runs the unchanged Company again.
+   - **Desktop install.** It reports `UPDATE_RECOVERY_HOLD`, with a fixed Founder notice.
+
+**Not done.** No second migration, backup or update mechanism. No PID kill on any refusal path: `--force` stays
+operator-only. No migration was changed. No LIVE action.
+
+**Proof.**
+- `storage/test/p1-desktop-upgrade-inspection.test.ts`: UPDATE_REQUIRED with a visible holder, no write, and every
+  refusal code.
+- `command-center/test/p1-desktop-upgrade.test.ts` uses real frozen releases and real hosts. The older release is the
+  staged build with 0022 withdrawn, a genuine schema-21 runtime. It covers:
+  - discovery of the running older host;
+  - an invalid or mismatched previous release;
+  - a squatter on the host port and a missing descriptor, each refused with the host, schema, pin and maintenance
+    untouched;
+  - 21 → 22 with the host running, stopped, or crashed, each ACTIVATED with business data byte-identical;
+  - a future schema and a drifted history, refused at the dry run;
+  - a schema-independent migration failure: a real `ROLLED_BACK`;
+  - a rehearsal failure: `RECOVERY_HOLD`, `UPDATE_HOLD` kept, schema 21, data intact;
+  - a failure after the migration: `RECOVERY_HOLD`, pin kept, snapshot kept.
+- The existing same-schema tests (`founder-host-release`) pass unchanged.
+- **Local, outside CI.** The genuine predecessor `e4f2fb2f` running a Company was upgraded by this branch's release
+  through `release-activate` (the same `activateRelease` that `desktop-local-install` runs): ACTIVATED, 21 → 22, the old
+  host stopped by its own release, one READY host, data identical. The shipped `cb3ef342` reproduces the original refusal
+  on the same setup.

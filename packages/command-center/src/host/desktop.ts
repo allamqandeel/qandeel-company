@@ -250,7 +250,7 @@ export async function desktopInstall(options: DesktopInstallOptions): Promise<De
   const activation = await activateRelease(workspace, imported.root, { providers, shortcuts: false, ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), now });
   for (const s of activation.steps) steps.push({ step: `ACTIVATE.${s.step}`, result: s.result });
   steps.push({ step: 'ACTIVATE', result: activation.outcome });
-  if (!activation.ok) return result(false, activation.outcome === 'ROLLED_BACK' ? 'UPDATE_ROLLED_BACK' : (activation.code ?? 'ACTIVATION_REFUSED'), { code: activation.code, previousReleaseId: activation.previousReleaseId, state: activation.status?.state ?? null });
+  if (!activation.ok) return result(false, activation.outcome === 'ROLLED_BACK' ? 'UPDATE_ROLLED_BACK' : activation.outcome === 'RECOVERY_HOLD' ? 'UPDATE_RECOVERY_HOLD' : (activation.code ?? 'ACTIVATION_REFUSED'), { code: activation.code, previousReleaseId: activation.previousReleaseId, state: activation.status?.state ?? null });
 
   // 5. Already the running release (a repair / same-release reinstall while running): a controlled restart moves the
   //    host onto THIS product's private runtime, so the program files of the previous version are no longer in use.

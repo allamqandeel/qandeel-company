@@ -26,7 +26,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 
 import { isQandeelError } from '@qandeel-company/domain';
-import { CompanyStore, FounderAuthStore, layoutFor, restoreStatus } from '@qandeel-company/storage';
+import { CompanyStore, FounderAuthStore, inspectCompanySchema, layoutFor, restoreStatus } from '@qandeel-company/storage';
 
 import { LOOPBACK_HOST } from '../security.js';
 import { hostPaths, newNonce, readDescriptor, removeStaleDescriptor, verifyIdentityProof, writeJsonAtomic, writeStopRequest, type HostDescriptor, type HostPaths } from './descriptor.js';
@@ -48,6 +48,8 @@ export interface HostStatus {
   readonly descriptor: 'VALID' | 'ABSENT' | 'STALE';
   /** UPDATE_HOLD / RESTORE_IN_PROGRESS / RESTORE_CHECK_COPY when the workspace is held. */
   readonly hold: string | null;
+  /** The schema as THIS release reads it (P1-DESKTOP-UPGRADE-CORR-01): UPDATE_REQUIRED is a verified older history. */
+  readonly schema: 'CURRENT' | 'UPDATE_REQUIRED' | null;
   readonly reason: string | null;
 }
 
@@ -71,21 +73,20 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 export const heldCode = (hold: string | null): string => (hold === 'RESTORE_IN_PROGRESS' || hold === 'RESTORE_CHECK_COPY' ? hold : 'UPDATE_HOLD');
 
 function base(workspace: string, state: HostState, extra: Partial<HostStatus> = {}): HostStatus {
-  return { state, workspace, instanceId: null, pid: null, port: null, origin: null, runtimeState: null, leaseLive: false, descriptor: 'ABSENT', hold: null, reason: null, ...extra };
+  return { state, workspace, instanceId: null, pid: null, port: null, origin: null, runtimeState: null, leaseLive: false, descriptor: 'ABSENT', hold: null, schema: null, reason: null, ...extra };
 }
 
-/** Reads the durable lease and its holder's instance record (never a write, never content). */
-function readLease(root: string): { lease: { holderId: string; expiresAt: string } | null; instance: { id: string; pid: number; state: string; startedAt: string; updatedAt: string } | null } | { error: string } {
-  let store: CompanyStore | null = null;
+/**
+ * Reads the durable lease and its holder's instance record (never a write, never content). P1-DESKTOP-UPGRADE-CORR-01:
+ * through the cross-version inspection, so a Company still on an older schema (a newer release about to upgrade it)
+ * keeps its holder visible — a running previous host is never mistaken for a stopped one.
+ */
+function readLease(root: string): { schema: 'CURRENT' | 'UPDATE_REQUIRED'; lease: { holderId: string; expiresAt: string } | null; instance: { id: string; pid: number; state: string; startedAt: string; updatedAt: string } | null } | { error: string } {
   try {
-    store = CompanyStore.open(root, { create: false, migrationMode: 'verify' });
-    const lease = store.supervisorLease();
-    const instance = lease ? store.instance(lease.holderId) : null;
-    return { lease: lease ? { holderId: lease.holderId, expiresAt: lease.expiresAt } : null, instance: instance ? { id: instance.id, pid: instance.pid, state: instance.state, startedAt: instance.startedAt, updatedAt: instance.updatedAt } : null };
+    const { schema, lease, instance } = inspectCompanySchema(root);
+    return { schema, lease: lease ? { holderId: lease.holderId, expiresAt: lease.expiresAt } : null, instance };
   } catch (error) {
     return { error: isQandeelError(error) ? error.code : 'UNCLASSIFIED_ERROR' };
-  } finally {
-    store?.close();
   }
 }
 
@@ -131,21 +132,21 @@ export async function classifyHost(workspace: string, now: () => number = Date.n
   const descriptorState: HostStatus['descriptor'] = rawDescriptor === null ? 'ABSENT' : rawDescriptor === undefined ? 'STALE' : 'VALID';
   if ('error' in read) {
     if (hold) return base(ws, 'HELD', { hold, reason: read.error, descriptor: descriptorState });
-    // A host that is running has already migrated; a pending schema update means none is (start runs safe-upgrade).
-    if (read.error === 'SCHEMA_UPDATE_REQUIRED') return base(ws, 'UPDATE_REQUIRED', { reason: read.error, descriptor: descriptorState });
     if (read.error === 'UNSAFE_WORKSPACE') return base(ws, 'WORKSPACE_INVALID', { reason: read.error });
     return base(ws, 'UNHEALTHY', { reason: read.error, descriptor: descriptorState });
   }
-  const { lease, instance } = read;
+  const { schema, lease, instance } = read;
   const leaseLive = lease !== null && Date.parse(lease.expiresAt) > now();
   if (!leaseLive) {
-    if (hold) return base(ws, 'HELD', { hold, reason: hold, descriptor: descriptorState });
-    return base(ws, descriptorState === 'ABSENT' ? 'STOPPED' : 'STALE', { descriptor: descriptorState, reason: descriptorState === 'ABSENT' ? null : 'DESCRIPTOR_WITHOUT_LIVE_LEASE', runtimeState: instance?.state ?? null });
+    if (hold) return base(ws, 'HELD', { hold, reason: hold, descriptor: descriptorState, schema });
+    // Nobody holds the Company and its schema is behind this release: the next start from this release upgrades it.
+    if (schema === 'UPDATE_REQUIRED') return base(ws, 'UPDATE_REQUIRED', { descriptor: descriptorState, reason: 'SCHEMA_UPDATE_REQUIRED', runtimeState: instance?.state ?? null, schema });
+    return base(ws, descriptorState === 'ABSENT' ? 'STOPPED' : 'STALE', { descriptor: descriptorState, reason: descriptorState === 'ABSENT' ? null : 'DESCRIPTOR_WITHOUT_LIVE_LEASE', runtimeState: instance?.state ?? null, schema });
   }
   const holder = lease.holderId;
   const pid = instance?.pid ?? null;
   const alive = pid !== null && pidAlive(pid);
-  const common = { leaseLive: true, instanceId: holder, pid, runtimeState: instance?.state ?? null, descriptor: descriptorState, hold } as const;
+  const common = { leaseLive: true, instanceId: holder, pid, runtimeState: instance?.state ?? null, descriptor: descriptorState, hold, schema } as const;
   if (descriptor !== null && descriptor.instanceId === holder) {
     const origin = `http://${LOOPBACK_HOST}:${descriptor.port}`;
     const nonce = newNonce();
@@ -485,6 +486,8 @@ export function noticeFor(command: string, outcome: string): { kind: 'info' | 'w
       return m('error', 'المجلد المضبوط ليس مساحة عمل صالحة للشركة. لن يُنشأ أي شيء جديد.', 'The configured folder is not a valid Company workspace. Nothing new is created.');
     case 'UPDATE_HOLD':
       return m('error', 'الشركة موقوفة بسبب تحديث فشل وأُعيد. تحتاج مراجعة تشغيلية قبل البدء.', 'The Company is held after a failed, rolled-back update. It needs operator review before it starts.');
+    case 'UPDATE_RECOVERY_HOLD':
+      return m('error', 'لم يكتمل التحديث ولم تُستعد الشركة تلقائيًا. لم يُحذف شيء، والخطوة التالية تحتاج قرار المؤسس.', 'The update did not complete and the Company was not recovered automatically. Nothing was discarded; the next step needs a Founder decision.');
     case 'RESTORE_IN_PROGRESS':
       return m('error', 'استعادة نسخة احتياطية جارية أو لم تكتمل في مساحة العمل هذه.', 'A backup restore is in progress or incomplete in this workspace.');
     case 'RESTORE_CHECK_COPY':

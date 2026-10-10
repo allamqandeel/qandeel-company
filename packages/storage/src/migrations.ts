@@ -140,6 +140,28 @@ function hasCompanyHistory(connection: SqliteConnection): boolean {
 }
 
 /**
+ * The migrations a database still needs, after checking its history exactly as every open does: a schema newer than
+ * the release (SCHEMA_FROM_FUTURE), a history that disagrees with `user_version` (STORAGE_INVARIANT) and an applied
+ * migration that no longer matches its source (MIGRATION_CHECKSUM_DRIFT) are refused. Read inside the caller's snapshot.
+ */
+export function pendingMigrations(fromVersion: number, applied: readonly AppliedMigration[], migrations: readonly Migration[]): readonly Migration[] {
+  const known = migrations.length;
+  if (fromVersion > known || applied.some((a) => a.version > known)) {
+    throw new QandeelError('SCHEMA_FROM_FUTURE', 'database schema is newer than this runtime; refusing to run (no automatic downgrade)', { databaseVersion: Math.max(fromVersion, ...applied.map((a) => a.version)), runtimeVersion: known });
+  }
+  if (applied.length !== fromVersion || applied.some((a, i) => a.version !== i + 1)) {
+    throw new QandeelError('STORAGE_INVARIANT', 'schema_migrations and user_version disagree; database is not coherent', { userVersion: fromVersion, appliedCount: applied.length });
+  }
+  for (const a of applied) {
+    const m = migrations[a.version - 1];
+    if (m === undefined || m.sha256 !== a.sha256 || m.name !== a.name) {
+      throw new QandeelError('MIGRATION_CHECKSUM_DRIFT', `applied migration ${a.version} no longer matches its source; refusing to start`, { version: a.version });
+    }
+  }
+  return migrations.slice(fromVersion);
+}
+
+/**
  * Brings the schema to `migrations.length`, or refuses to continue. Never downgrades.
  * `readOnlyCheck` validates without applying (used when opening backup snapshots).
  * `refuseExistingCompany` (the ordinary open path, R2-30): an existing Company with pending migrations is never
@@ -159,20 +181,7 @@ export function migrate(
     return { applied: appliedMigrations(connection), fromVersion: v, existing: refuseExistingCompany && v >= 1 && v < migrations.length && hasCompanyHistory(connection) };
   });
   const known = migrations.length;
-
-  if (fromVersion > known || applied.some((a) => a.version > known)) {
-    throw new QandeelError('SCHEMA_FROM_FUTURE', 'database schema is newer than this runtime; refusing to run (no automatic downgrade)', { databaseVersion: Math.max(fromVersion, ...applied.map((a) => a.version)), runtimeVersion: known });
-  }
-  if (applied.length !== fromVersion || applied.some((a, i) => a.version !== i + 1)) {
-    throw new QandeelError('STORAGE_INVARIANT', 'schema_migrations and user_version disagree; database is not coherent', { userVersion: fromVersion, appliedCount: applied.length });
-  }
-  for (const a of applied) {
-    const m = migrations[a.version - 1];
-    if (m === undefined || m.sha256 !== a.sha256 || m.name !== a.name) {
-      throw new QandeelError('MIGRATION_CHECKSUM_DRIFT', `applied migration ${a.version} no longer matches its source; refusing to start`, { version: a.version });
-    }
-  }
-  const pending = migrations.slice(fromVersion);
+  const pending = pendingMigrations(fromVersion, applied, migrations);
   if (readOnlyCheck) {
     if (pending.length) throw new QandeelError('SCHEMA_NOT_READY', 'database is behind this runtime', { databaseVersion: fromVersion, runtimeVersion: known });
     return { fromVersion, toVersion: fromVersion, applied: [] };

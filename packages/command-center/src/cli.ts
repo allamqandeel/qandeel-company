@@ -79,7 +79,7 @@ import { DEEPSEEK_FLASH_PRICE_CARD, DEEPSEEK_MODEL_CODE, DEEPSEEK_PROVIDER_CODE,
 import { Logger, admitRuntimeRelease, jsonLinesSink, selfReleaseRoot, verifyReleaseTree } from '@qandeel-company/runtime';
 import { VaultError, WindowsUserVault } from '@qandeel-company/secret-vault';
 import { GitHubHttpsTransport } from '@qandeel-company/tool-drivers';
-import { CHAT_REPLY_OUTPUT_TOKENS, CompanyStore, FounderAuthStore, GovernanceStore } from '@qandeel-company/storage';
+import { CHAT_REPLY_OUTPUT_TOKENS, CURRENT_SCHEMA_VERSION, CompanyStore, FounderAuthStore, GovernanceStore, inspectCompanySchema } from '@qandeel-company/storage';
 
 import { hostPaths, readDescriptor } from './host/descriptor.js';
 import { discoverHost, installShortcuts, launcherConfigDir, launcherConfigPath, noticeFor, notify, openCompany, readLauncherConfig, restartHost, statusNotice, stopHost, writeLauncherConfig } from './host/lifecycle.js';
@@ -432,14 +432,20 @@ export async function main(argv: readonly string[]): Promise<void> {
         process.exitCode = 1;
         return;
       }
-      let schema = 'CURRENT';
+      // P1-DESKTOP-UPGRADE-CORR-01: the schema as THIS release reads it. A verified older history is UPDATE_REQUIRED (the
+      // start's safe-upgrade brings it current); a future schema, a drifted or incoherent history, a database that is not
+      // a Company and a live restore keep their own refusal codes.
+      let schema: string;
+      let databaseVersion: number | null = null;
       try {
-        CompanyStore.open(workspace, { create: false, migrationMode: 'verify' }).close();
+        const inspected = inspectCompanySchema(workspace);
+        schema = inspected.schema;
+        databaseVersion = inspected.databaseVersion;
       } catch (error) {
-        schema = isQandeelError(error, 'SCHEMA_UPDATE_REQUIRED') ? 'UPDATE_REQUIRED' : isQandeelError(error) ? error.code : 'UNCLASSIFIED_ERROR';
+        schema = isQandeelError(error) ? error.code : 'UNCLASSIFIED_ERROR';
       }
       const ok = schema === 'CURRENT' || schema === 'UPDATE_REQUIRED';
-      out({ ok, command, releaseId: verified.manifest.releaseId, runtimeVersion: verified.manifest.runtimeVersion, schema });
+      out({ ok, command, releaseId: verified.manifest.releaseId, runtimeVersion: verified.manifest.runtimeVersion, schema, databaseVersion, releaseSchemaVersion: CURRENT_SCHEMA_VERSION });
       if (!ok) process.exitCode = 1;
       return;
     }
