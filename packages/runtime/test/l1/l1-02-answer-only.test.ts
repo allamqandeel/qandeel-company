@@ -51,7 +51,7 @@ async function drive(outputs: ModelProposal[], opts: { input?: Record<string, un
     t.effects.push(name);
     return value;
   };
-  const ok = (proposal: ModelProposal): ModelCallOutcome => ({ kind: 'OK', proposal, usage: { inputTokens: 1, outputTokens: 1 }, deploymentId: 'd', reasoningClass: 'E1', attempts: 1, manifestId: 'm' });
+  const ok = (proposal: ModelProposal): ModelCallOutcome => ({ kind: 'OK', proposal, usage: { inputTokens: 1, outputTokens: 1 }, deploymentId: 'd', reasoningClass: 'E1', attempts: 1, manifestId: 'm', maxOutputTokens: 512, finishReason: null, invalidReason: null });
   const services: GovernedRunServices = {
     context: { cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2' } } as unknown as GovernedRunServices['context'],
     invokeModel: (req) => {
@@ -194,6 +194,10 @@ describe('D-L1-24: a BQM-2 observation is answer-only — a wrong valid proposal
     const inv = await drive([NOT_JSON, parsed(ANSWER)], { input: plain });
     assert.equal(inv.result?.type, 'COMPLETED');
     assert.deepEqual(inv.calls.map((c) => c.escalation), [false, true], 'BQM-1 keeps its one evidence-based escalation');
-    assert.deepEqual(inv.checkpoints.length, 1, 'and checkpoints exactly as before (only the answer)');
+    // P1-REASON-AUTO-RECOVERY-01 (review, D-P1-04): the invalid output is now checkpointed with its count and the escalation
+    // it decided on (a crash before the escalation resumes with it), then the answer.
+    assert.deepEqual(inv.checkpoints.length, 2, 'the invalid output, then the answer');
+    const first = inv.checkpoints[0] as { invalid?: number; pendingEscalation?: { evidence?: string } | null } | undefined;
+    assert.deepEqual([first?.invalid, first?.pendingEscalation?.evidence], [1, 'OUTPUT_FAILED_VALIDATION']);
   });
 });

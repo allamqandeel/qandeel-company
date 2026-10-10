@@ -31,7 +31,6 @@ import {
   maxDataClass,
   reasoningRank,
   decideEmployeeAction,
-  effectiveClass,
   toolCapability,
   validateArgs,
   type AttemptKind,
@@ -350,9 +349,12 @@ export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput):
     const ceiling = assertCognitiveProfile(e.cognitiveProfile).ceilingClass;
     if (!isReasoningClass(d.reasoning_class) || reasoningRank(d.reasoning_class) > reasoningRank(ceiling) || reasoningRank(d.reasoning_class) > reasoningRank(policy.maxClass)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'REASONING_ABOVE_CEILING');
     // D-L1-44: a Founder one-task override is never bypassed downward: no call of this Work Item is reserved below the
-    // class it starts from (bounded escalation, its retries and fallbacks only ever sit at or above it).
+    // class it starts from. D-P1-04 (P1-REASON-AUTO-RECOVERY-01, Founder decision): it is PINNED — never raised either;
+    // its retries, its continuation and its fallbacks all sit at exactly that class.
     const override = txReasoningOverride(ctx, a.workItemId);
-    if (override !== null && reasoningRank(d.reasoning_class) < reasoningRank(effectiveClass({ reasoningClass: override }, policy))) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'BELOW_REASONING_OVERRIDE');
+    // The comparison is with the Founder's exact class, never the class the route minimum would lift it to.
+    if (override !== null && reasoningRank(d.reasoning_class) < reasoningRank(override)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'BELOW_REASONING_OVERRIDE');
+    if (override !== null && reasoningRank(d.reasoning_class) > reasoningRank(override)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'ABOVE_REASONING_OVERRIDE');
     // D-L1-24: a Work Item that declares a hard model-call bound (a BQM-2 benchmark observation: two) never reserves past
     // it, across every run of the item (a retry or a resume after a crash included). Counted from durable reservations;
     // a RELEASED one was never sent, so only possibly-sent calls count.

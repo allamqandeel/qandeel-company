@@ -95,7 +95,7 @@ describe('L1 DeepSeek adapter: the request', () => {
     assert.deepEqual(t.requests.map((r) => `${r.method} ${r.path}`), [`GET ${DEEPSEEK_MODELS_PATH}`, `POST ${DEEPSEEK_CHAT_COMPLETIONS_PATH}`], 'identity first, then the call');
     assert.ok(t.requests.every((r) => r.bearerSha256 === sha(KEY)), 'the vault value is the bearer');
     assert.equal(JSON.stringify(t.requests[1]?.body).includes('deployment'), false, 'the ProviderRequest itself never travels');
-    assert.deepEqual(out, { outputText: '{"type":"FINAL","summaryCode":"ok"}', usage: { inputTokens: 120, outputTokens: 9, cachedInputTokens: 64 } });
+    assert.deepEqual(out, { outputText: '{"type":"FINAL","summaryCode":"ok"}', usage: { inputTokens: 120, outputTokens: 9, cachedInputTokens: 64 }, finishReason: 'stop' });
     assert.equal(a.calls, 1);
   });
 

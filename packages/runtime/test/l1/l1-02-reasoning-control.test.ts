@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import type { Id } from '@qandeel-company/domain';
+import { isQandeelError, type Id } from '@qandeel-company/domain';
 
 import type { CompanyRuntime } from '../../src/index.js';
 import { fakes, final, governedRuntime, script, seedWorld, toolReq, type C2World, type Fakes } from '../c2/c2-seed.js';
@@ -123,18 +123,29 @@ describe('D-L1-44 runtime: reasoning precedence for one model step', () => {
       assert.deepEqual(usedClasses(x, d), ['E4']);
     }));
 
-  test('bounded technical escalation starts from the override (E2 → E3 on observed context overflow), never from the default, and stays within the ceiling', () =>
+  // D-P1-04 (P1-REASON-AUTO-RECOVERY-01, Founder decision) amends the D-L1-44 escalation rule for a Founder-pinned level:
+  // the level the Founder chose is pinned — never raised (nor lowered). An unpinned start keeps the bounded escalation.
+  test('D-P1-04: a Founder-pinned level is never escalated — a context overflow at the pinned E2 ends the run with its own code and nothing is reserved above it; an unpinned start still escalates one class', () =>
     withWorld('l1-rc-escalate', async (x) => {
       setProfile(x, 'E1', 'E3');
       x.f.local.failNext('deep-e2', 'CONTEXT_OVERFLOW');
       const id = submit(x, { override: 'E2' });
-      assert.equal(await settled(x.rt, id), 'COMPLETED');
+      assert.equal(await settled(x.rt, id), 'FAILED');
       assert.equal(x.f.local.calls.get('deep-e1') ?? 0, 0, 'the default E1 was never used for this Work Item');
       assert.equal(x.f.local.calls.get('deep-e2'), 1);
-      assert.deepEqual(usedClasses(x, id).at(-1), 'E3', 'escalated one class above the override');
+      assert.equal(x.f.local.calls.get('deep-e3') ?? 0, 0, 'the pinned level was never raised');
       const run = x.rt.view.runsForWorkItem(id).at(-1);
       assert.ok(run);
-      assert.deepEqual(x.rt.governance.reservations(run.id).map((r) => r.attemptKind), ['PRIMARY', 'ESCALATION']);
+      assert.equal(run.failureCode, 'PROVIDER_CONTEXT_OVERFLOW');
+      assert.deepEqual(x.rt.governance.reservations(run.id).map((r) => r.attemptKind), ['PRIMARY']);
+      // The same observed failure at an unpinned (default) start: one evidence-based escalation (D13-C.3), unchanged.
+      x.f.local.failNext('deep-e1', 'CONTEXT_OVERFLOW');
+      const free = submit(x);
+      assert.equal(await settled(x.rt, free), 'COMPLETED');
+      assert.deepEqual(usedClasses(x, free).at(-1), 'E2', 'escalated one class above the default');
+      const freeRun = x.rt.view.runsForWorkItem(free).at(-1);
+      assert.ok(freeRun);
+      assert.deepEqual(x.rt.governance.reservations(freeRun.id).map((r) => r.attemptKind), ['PRIMARY', 'ESCALATION']);
     }));
 
   test('ceiling protection at run time: an override whose class is now above a lowered ceiling never reaches a provider and reserves nothing', () =>
@@ -151,6 +162,35 @@ describe('D-L1-44 runtime: reasoning precedence for one model step', () => {
       assert.equal(x.rt.governance.usage({ workItemId: workItem.id }).length, 0);
       assert.equal(x.rt.governance.reservations(run.id).length, 0, 'nothing reserved');
       assert.equal(x.rt.governance.getEmployee(x.w.employee.id).cognitiveProfile.ceilingClass, 'E2', 'the override never raised the ceiling');
+    }));
+
+  // D-P1-04 review: a manual level is pinned EXACTLY. The router lifts a class below the route minimum, so a manual class
+  // below it is refused at the preview / confirm, and one recorded before the minimum was raised never runs at all.
+  test('D-P1-04 route minimum: a manual E1 where the route minimum is E2 is refused; an E1 level recorded before the minimum was raised never runs at E2 — REASONING_LEVEL_UNAVAILABLE, nothing reserved, no provider call; an unpinned default still starts at the minimum', () =>
+    withWorld('l1-rc-route-min', async (x) => {
+      setProfile(x, 'E1', 'E3');
+      const item = (): Id => {
+        const { workItem } = x.rt.submitWorkItem({ objective: 'reasoning control task', ownerRef: x.w.employee.ref, processorKind: 'c2.employee-task', processorInput: { taskClass: TASK, maxOutputTokens: 256, instructions: script(final()) } });
+        x.rt.governance.createBudget(x.w.founder, { scope: 'WORK_ITEM', scopeId: workItem.id, capMoney: 1_000_000, capTokens: 1_000_000, reasonCode: 'seed' });
+        return workItem.id;
+      };
+      const pinned = item();
+      x.rt.governance.setWorkItemReasoningOverride(x.w.founder, pinned, { reasoningClass: 'E1', reasonCode: 'founder.one_task' });
+      x.rt.governance.createRoutePolicy(x.w.founder, TASK, { minClass: 'E2', maxClass: 'E4', allowLimitedProduction: false, maxRetriesPerCall: 1, maxCallsPerRun: 10, fallbackCostCeilingMicros: null, escalation: { maxDepth: 1, maxOverheadMicros: 5_000_000 } });
+      const refused = item();
+      assert.throws(() => x.rt.governance.setWorkItemReasoningOverride(x.w.founder, refused, { reasoningClass: 'E1', reasonCode: 'founder.one_task' }), (e: unknown) => isQandeelError(e) && e.details.reason === 'BELOW_ROUTE_POLICY', 'never recorded, never lifted');
+      assert.deepEqual(x.rt.governance.reasoningControl(x.w.employee.id).overrides.map((o) => o.workItemId), [pinned]);
+      x.rt.transitionWorkItem(pinned, { to: 'READY', reasonCode: 'release' });
+      assert.equal(await settled(x.rt, pinned), 'FAILED');
+      const run = x.rt.view.runsForWorkItem(pinned).at(-1);
+      assert.ok(run);
+      assert.equal(run.failureCode, 'REASONING_LEVEL_UNAVAILABLE', 'the pinned level is unavailable — never substituted by the minimum');
+      assert.equal(deepCalls(x), 0, 'zero provider calls');
+      assert.equal(x.rt.governance.reservations(run.id).length, 0, 'nothing reserved');
+      assert.equal(x.rt.governance.usage({ workItemId: pinned }).length, 0);
+      x.rt.transitionWorkItem(refused, { to: 'READY', reasonCode: 'release' });
+      assert.equal(await settled(x.rt, refused), 'COMPLETED');
+      assert.deepEqual(usedClasses(x, refused), ['E2'], 'an unpinned default still starts at the route minimum (unchanged)');
     }));
 });
 

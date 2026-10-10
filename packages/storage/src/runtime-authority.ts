@@ -14,7 +14,7 @@
  * from a worker also present the supervisor fence.
  */
 import { QandeelError, isQandeelError, type Id, type JsonObject, type JsonValue, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
-import { INVALID_OUTPUT_CODES, OUTPUT_CONTRACT_CODES, PROPOSAL_TYPES, type DataClass, type OutputDiagnosticCode, type OutcomeJudgment, type ProviderFailureClass } from '@qandeel-company/governance';
+import { INVALID_OUTPUT_CODES, MALFORMED_REASONS, OUTPUT_CONTRACT_CODES, PROPOSAL_TYPES, isReasoningDemand, type DataClass, type OutputDiagnosticCode, type OutcomeJudgment, type ProviderFailureClass, type ReasoningDemand } from '@qandeel-company/governance';
 
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import {
@@ -409,14 +409,84 @@ export function decideMemoryCandidate(store: CompanyStore, fence: Fence, candida
  * answer-only Work Item also records a VALID proposal that breaks its output contract (WRONG_PROPOSAL_TYPE, naming the
  * recognized proposal type; ANSWER_REFUSED, naming the answer fence's refusal code) — closed codes, never content.
  */
-export function recordInvalidOutput(store: CompanyStore, fence: Fence, input: { step: number; code: OutputDiagnosticCode; reasoningClass: string; proposalType?: string; refusalCode?: string }): void {
+export function recordInvalidOutput(store: CompanyStore, fence: Fence, input: { step: number; code: OutputDiagnosticCode; reasoningClass: string; proposalType?: string; refusalCode?: string; malformedReason?: string }): void {
   fenced(store, 'record invalid model output', fence, (ctx) => {
     verifyFence(ctx, fence);
     if (!(INVALID_OUTPUT_CODES as readonly string[]).includes(input.code) && !(OUTPUT_CONTRACT_CODES as readonly string[]).includes(input.code)) throw new QandeelError('VALIDATION_FAILED', 'an invalid-output code is a closed parser or output-contract classification', { field: 'code' });
     if (!['E1', 'E2', 'E3', 'E4'].includes(input.reasoningClass)) throw new QandeelError('VALIDATION_FAILED', 'unknown reasoning class', { field: 'reasoningClass' });
     if (input.proposalType !== undefined && (input.code !== 'WRONG_PROPOSAL_TYPE' || !(PROPOSAL_TYPES as readonly string[]).includes(input.proposalType))) throw new QandeelError('VALIDATION_FAILED', 'a proposal type is a closed name of a wrong-type diagnosis', { field: 'proposalType' });
     if (input.refusalCode !== undefined && (input.code !== 'ANSWER_REFUSED' || !/^[A-Z][A-Z_]{1,31}$/.test(input.refusalCode))) throw new QandeelError('VALIDATION_FAILED', 'a refusal code is a closed code of a refused answer', { field: 'refusalCode' });
-    appendAudit(ctx, 'run.model_output_invalid', 'run', fence.runId, {}, 'REJECTED', input.code, { step: Math.max(0, Math.trunc(input.step)), reasoningClass: input.reasoningClass, ...(input.proposalType !== undefined ? { proposalType: input.proposalType } : {}), ...(input.refusalCode !== undefined ? { refusalCode: input.refusalCode } : {}) });
+    // P1-REASON-AUTO-RECOVERY-01: a MALFORMED output names the closed proposal rule it broke (a code, never content).
+    if (input.malformedReason !== undefined && (input.code !== 'MALFORMED' || !(MALFORMED_REASONS as readonly string[]).includes(input.malformedReason))) throw new QandeelError('VALIDATION_FAILED', 'a malformed reason is a closed code of a MALFORMED diagnosis', { field: 'malformedReason' });
+    appendAudit(ctx, 'run.model_output_invalid', 'run', fence.runId, {}, 'REJECTED', input.code, { step: Math.max(0, Math.trunc(input.step)), reasoningClass: input.reasoningClass, ...(input.proposalType !== undefined ? { proposalType: input.proposalType } : {}), ...(input.refusalCode !== undefined ? { refusalCode: input.refusalCode } : {}), ...(input.malformedReason !== undefined ? { malformedReason: input.malformedReason } : {}) });
+  });
+}
+
+const OBS_CLASS = /^E[1-4]$/;
+const OBS_CODE = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+){0,7}$/;
+const count = (v: number | null, field: string): number | null => {
+  if (v === null) return null;
+  if (!Number.isSafeInteger(v) || v < 0) throw new QandeelError('VALIDATION_FAILED', `${field} is a non-negative integer or unknown`, { field });
+  return v;
+};
+
+/**
+ * P1-REASON-AUTO-RECOVERY-01 (B2) — one content-free observation of a sent model call, as an audit row of the run (job
+ * fence mandatory): the class that actually answered, the allowance it had, the reported token counts (null = not
+ * reported, never a fabricated zero), the provider's finish reason, and the validation outcome as closed codes. Never a
+ * body, a message, a thinking text or a credential (Rule A). Nothing reads it back into a context.
+ */
+export function recordModelCallObservation(
+  store: CompanyStore,
+  fence: Fence,
+  input: {
+    step: number; attemptKind: string; reasoningClass: string; deploymentCode: string; maxOutputTokens: number;
+    inputTokens: number | null; outputTokens: number | null; reasoningTokens: number | null; finishReason: string | null;
+    result: string; proposalType: string | null; invalidCode: string | null; malformedReason: string | null;
+  },
+): void {
+  fenced(store, 'record model call observation', fence, (ctx) => {
+    verifyFence(ctx, fence);
+    if (!OBS_CLASS.test(input.reasoningClass)) throw new QandeelError('VALIDATION_FAILED', 'unknown reasoning class', { field: 'reasoningClass' });
+    if (!['PRIMARY', 'RETRY', 'FALLBACK', 'ESCALATION'].includes(input.attemptKind)) throw new QandeelError('VALIDATION_FAILED', 'unknown attempt kind', { field: 'attemptKind' });
+    if (!OBS_CODE.test(input.deploymentCode) || input.deploymentCode.length > 64) throw new QandeelError('VALIDATION_FAILED', 'a deployment code', { field: 'deploymentCode' });
+    if (input.finishReason !== null && input.finishReason !== 'stop' && input.finishReason !== 'length') throw new QandeelError('VALIDATION_FAILED', 'a finish reason is stop, length or unknown', { field: 'finishReason' });
+    if (!(input.result === 'ANSWERED' || /^[A-Z][A-Z_]{1,31}$/.test(input.result))) throw new QandeelError('VALIDATION_FAILED', 'a call result is a closed code', { field: 'result' });
+    if (input.proposalType !== null && input.proposalType !== 'INVALID' && !(PROPOSAL_TYPES as readonly string[]).includes(input.proposalType)) throw new QandeelError('VALIDATION_FAILED', 'a proposal type', { field: 'proposalType' });
+    if (input.invalidCode !== null && !(INVALID_OUTPUT_CODES as readonly string[]).includes(input.invalidCode)) throw new QandeelError('VALIDATION_FAILED', 'an invalid-output code', { field: 'invalidCode' });
+    if (input.malformedReason !== null && !(MALFORMED_REASONS as readonly string[]).includes(input.malformedReason)) throw new QandeelError('VALIDATION_FAILED', 'a malformed reason', { field: 'malformedReason' });
+    const details: Record<string, string | number | null> = {
+      step: Math.max(0, Math.trunc(input.step)), attemptKind: input.attemptKind, reasoningClass: input.reasoningClass, deploymentCode: input.deploymentCode,
+      maxOutputTokens: count(input.maxOutputTokens, 'maxOutputTokens'), inputTokens: count(input.inputTokens, 'inputTokens'), outputTokens: count(input.outputTokens, 'outputTokens'),
+      reasoningTokens: count(input.reasoningTokens, 'reasoningTokens'), finishReason: input.finishReason, result: input.result,
+      proposalType: input.proposalType, invalidCode: input.invalidCode, malformedReason: input.malformedReason,
+    };
+    appendAudit(ctx, 'run.model_call_observed', 'run', fence.runId, {}, 'OK', input.result, details);
+  });
+}
+
+/**
+ * P1-REASON-AUTO-RECOVERY-01 (C1) — how a model step's starting class was chosen, as one content-free audit row of the run:
+ * the mode (SYSTEM_PINNED / MANUAL / AUTO / DEFAULT), the class it starts at and, for AUTO, the ideal the governed
+ * Reasoning Demand chose, its closed reason codes, tiers and policy confidence, and the constraint that holds it lower.
+ */
+export function recordReasoningSelection(
+  store: CompanyStore,
+  fence: Fence,
+  input: { step: number; mode: string; startClass: string; idealClass: string | null; constraint: string | null; demand: ReasoningDemand | null },
+): void {
+  fenced(store, 'record reasoning selection', fence, (ctx) => {
+    verifyFence(ctx, fence);
+    if (!['SYSTEM_PINNED', 'MANUAL', 'AUTO', 'DEFAULT'].includes(input.mode)) throw new QandeelError('VALIDATION_FAILED', 'unknown selection mode', { field: 'mode' });
+    if (!OBS_CLASS.test(input.startClass) || (input.idealClass !== null && !OBS_CLASS.test(input.idealClass))) throw new QandeelError('VALIDATION_FAILED', 'unknown reasoning class', { field: 'startClass' });
+    if (input.constraint !== null && !['EMPLOYEE_CEILING', 'ROUTE_POLICY', 'NOT_PROVISIONED'].includes(input.constraint)) throw new QandeelError('VALIDATION_FAILED', 'unknown constraint', { field: 'constraint' });
+    if (input.demand !== null && !isReasoningDemand(input.demand)) throw new QandeelError('VALIDATION_FAILED', 'a reasoning demand is the closed RD-1 shape', { field: 'demand' });
+    const d = input.demand;
+    appendAudit(ctx, 'run.reasoning_selected', 'run', fence.runId, {}, 'OK', input.mode, {
+      step: Math.max(0, Math.trunc(input.step)), mode: input.mode, startClass: input.startClass, idealClass: input.idealClass, constraint: input.constraint,
+      // Each reason is its own closed key (audit values are short codes, Rule A): `reason:STRATEGIC_PLANNING` = true.
+      ...(d ? { policy: d.policy, complexity: d.complexity, consequence: d.consequence, confidence: d.confidence, ...Object.fromEntries(d.reasons.map((r) => [`reason:${r}`, true])) } : {}),
+    });
   });
 }
 

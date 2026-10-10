@@ -183,7 +183,7 @@ const optionalTimestamp = (v: unknown, field: string): Timestamp | null => {
 export interface CreateEmployeeInput {
   readonly name: { readonly given: string; readonly family: string };
   readonly profile?: unknown;
-  readonly cognitiveProfile: { readonly defaultClass: ReasoningClass; readonly ceilingClass: ReasoningClass; readonly costDiscipline: 'STRICT' | 'BALANCED' | 'THOROUGH' };
+  readonly cognitiveProfile: { readonly defaultClass: ReasoningClass; readonly ceilingClass: ReasoningClass; readonly costDiscipline: 'STRICT' | 'BALANCED' | 'THOROUGH'; readonly selection?: 'AUTO' | 'DEFAULT' };
   readonly roleRef: string;
   readonly positionRef: string;
   readonly departmentId: string;
@@ -439,7 +439,11 @@ export function founderAdminWrite<T>(store: CompanyStore, operation: string, act
  */
 export function txCreateEmployee(ctx: StoreContext, actorRef: string, input: Omit<CreateEmployeeInput, 'departmentId'> & { departmentId: Id | null; orgScope: 'DEPARTMENT' | 'COMPANY' }): EmployeeRecord {
   const name = assertEmployeeName(input.name);
-  const cognitive = assertCognitiveProfile(input.cognitiveProfile);
+  // P1-REASON-AUTO-RECOVERY-01 (D-P1-04): a newly created Employee selects its starting class with AUTO unless its creator
+  // states otherwise. It changes no activation, certification or qualification rule: a CANDIDATE still runs nothing until
+  // the Academy activates it, and AUTO stays bounded by the ceiling, the route policy and what is provisioned.
+  const stated = assertCognitiveProfile(input.cognitiveProfile);
+  const cognitive = { ...stated, selection: stated.selection ?? 'AUTO' };
   const dept = input.departmentId;
   if ((input.orgScope === 'DEPARTMENT') !== (dept !== null)) throw new QandeelError('VALIDATION_FAILED', 'a Department member has a Department; a company-scoped seat has none', { field: 'departmentId' });
   if (dept !== null && !ctx.db.get(`SELECT 1 AS ok FROM departments WHERE id = ? AND status = 'ACTIVE'`, dept)) throw new QandeelError('NOT_FOUND', 'department not found', { departmentId: dept });
@@ -653,11 +657,11 @@ export class GovernanceStore {
    * D-L1-44: the Employee's persistent reasoning default / ceiling (Founder authority; the Employee can never raise its
    * own). Version-safe against the previewed version; a material change, so VALID certifications become REVIEW_DUE.
    */
-  changeReasoningProfile(actorRef: string, employeeId: string, input: { defaultClass: ReasoningClass; ceilingClass: ReasoningClass; expectedVersion: number; reasonCode: string }): EmployeeRecord {
+  changeReasoningProfile(actorRef: string, employeeId: string, input: { defaultClass: ReasoningClass; ceilingClass: ReasoningClass; selection?: 'AUTO' | 'DEFAULT'; expectedVersion: number; reasonCode: string }): EmployeeRecord {
     return this.#admin('change reasoning profile', actorRef, (ctx) => {
       const id = assertId(employeeId, 'employeeId');
       const p = founder(ctx, actorRef, `employee:${id}`, 'employee reasoning profile');
-      return txChangeReasoningProfile(ctx, p.ref, { employeeId: id, defaultClass: input.defaultClass, ceilingClass: input.ceilingClass, expectedVersion: input.expectedVersion, reasonCode: assertCode(input.reasonCode, 'reasonCode') });
+      return txChangeReasoningProfile(ctx, p.ref, { employeeId: id, defaultClass: input.defaultClass, ceilingClass: input.ceilingClass, ...(input.selection !== undefined ? { selection: input.selection } : {}), expectedVersion: input.expectedVersion, reasonCode: assertCode(input.reasonCode, 'reasonCode') });
     });
   }
 

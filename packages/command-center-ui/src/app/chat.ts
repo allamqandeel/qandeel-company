@@ -17,7 +17,7 @@
 import { dirOf, fmtDate, fmtDateTime, fmtMoneyMicros, fmtTime, hasArabic, humanize, PURPOSE_LABEL, STATE_LABEL, t } from '../model/format.js';
 import type { CompanyUniverse } from '../model/types.js';
 import { beginSend, editDraft, sendState, settleFailed, settleSent, type DraftStore, type SendState, type StoredDraft } from '../model/chat-send.js';
-import { LEVEL_SHORT, LEVEL_THINKING, LEVELS, levelState, modelLabel, reasonText, REPLY_LABEL, type Level } from '../model/intelligence.js';
+import { AUTO_EXPLAINED, LEVEL_SHORT, LEVEL_THINKING, LEVELS, levelState, modelLabel, reasonText, REPLY_LABEL, selectionSummary, type Level } from '../model/intelligence.js';
 import { api, ApiError } from './api.js';
 import { h } from './panels.js';
 
@@ -350,16 +350,17 @@ export class ChatScreen {
     parts.push(h('span', { class: `chat-status-dot dot-${status.toLowerCase()}`, 'aria-hidden': 'true' }), h('strong', { text: REPLY_LABEL[status] ?? humanize(status) }));
     const why = reason(r.reasonCode as string | null);
     if (why && status !== 'REPLIED' && status !== 'RUNNING') parts.push(h('span', { class: 'chat-why', text: ` — ${why}` }));
-    const answered = (r.answeredClasses as string[] | undefined) ?? [];
-    const level = r.requestedClass ? `${String(r.requestedClass)} chosen` : answered.length ? `${answered.at(-1) ?? ''}` : '';
-    const facts: string[] = [];
-    if (level) facts.push(level);
-    if (answered.length > 1) facts.push(`${answered.length} calls`);
+    // P1-REASON-AUTO-RECOVERY-01: who chose the starting level (you, AUTO, the default or the task) and what every further
+    // call was (an escalation, a same-level retry) — an escalated default is never shown as your choice.
+    const story = selectionSummary(r);
+    const facts: string[] = [story.chosen, ...story.calls];
+    const calls = Number(r.calls ?? 0);
+    if (calls > 1) facts.push(`${calls} calls`);
     const currency = r.currency ? String(r.currency) : null;
     if (currency && Number(r.spentMoney) > 0) facts.push(`spent ${fmtMoneyMicros(Number(r.spentMoney), currency)}`);
     if (currency && Number(r.reservedMoney) > 0) facts.push(`held ${fmtMoneyMicros(Number(r.reservedMoney), currency)}`);
     if (facts.length) parts.push(h('span', { class: 'chat-facts', text: ` · ${facts.join(' · ')}` }));
-    const line = h('p', { class: `chat-status status-${status.toLowerCase()}`, title: currency ? `Reply cap ${fmtMoneyMicros(Number(r.capMoney), currency)} (a hard ceiling, not spending)` : '' }, ...parts);
+    const line = h('p', { class: `chat-status status-${status.toLowerCase()}`, title: [story.why, currency ? `Reply cap ${fmtMoneyMicros(Number(r.capMoney), currency)} (a hard ceiling, not spending)` : ''].filter(Boolean).join(' · ') }, ...parts);
     if (status === 'FAILED' || status === 'BLOCKED') line.append(h('span', { class: 'chat-why', text: ` ${id.given} did not answer this one. It is never retried automatically; you can ask again.` }));
     return line;
   }
@@ -375,6 +376,7 @@ export class ChatScreen {
     if (intel) {
       const def = String(intel.defaultClass) as Level;
       const max = String(intel.ceilingClass) as Level;
+      fact('Level selection', intel.selection === 'AUTO' ? `AUTO · by task, up to ${max}` : `Default · ${def}`);
       fact('Default level', `${def} · ${LEVEL_THINKING[def] ?? ''}`);
       fact('Maximum level', `${max} · ${LEVEL_THINKING[max] ?? ''}`);
       const env = intel.envelope as Json | null;
@@ -386,7 +388,8 @@ export class ChatScreen {
     if (currency) fact('This conversation', `${replies.length} replies requested · ${fmtMoneyMicros(replies.reduce((n, r) => n + Number(r.spentMoney ?? 0), 0), currency)} spent`);
     const change = h('button', { type: 'button', class: 'link', text: 'Change default or maximum', 'data-keep': 'chat-intel-profile' });
     change.addEventListener('click', () => this.#host.openEmployee(c.employeeId));
-    this.#side.replaceChildren(h('h3', { class: 'chat-side-title', text: 'Employee Intelligence' }), dl, h('p', { class: 'muted small', text: `A level chosen in the chat applies to the next message only. ${id.given}’s standing default and maximum change only on the profile, through a preview you confirm.` }), change);
+    const auto = intel?.selection === 'AUTO' ? h('p', { class: 'muted small', text: AUTO_EXPLAINED }) : null;
+    this.#side.replaceChildren(...[h('h3', { class: 'chat-side-title', text: 'Employee Intelligence' }), dl, ...(auto ? [auto] : []), h('p', { class: 'muted small', text: `A level chosen in the chat applies to the next message only and is kept exactly (never raised or lowered). ${id.given}’s standing selection, default and maximum change only on the profile, through a preview you confirm.` }), change]);
   }
 
   #renderControls(id: Identity): void {
@@ -420,13 +423,14 @@ export class ChatScreen {
           return;
         }
         c.level = value;
-        this.#levelNote.textContent = value === null ? '' : `${value} (${LEVEL_THINKING[value].toLowerCase()}) for the next message only. ${id.given}’s standing level stays ${def ?? 'unchanged'}.`;
+        this.#levelNote.textContent = value === null ? '' : `${value} (${LEVEL_THINKING[value].toLowerCase()}) for the next message only, kept exactly — never raised or lowered. ${id.given}’s standing ${intel?.selection === 'AUTO' ? 'selection stays AUTO' : `level stays ${def ?? 'unchanged'}`}.`;
         this.#renderControls(id);
       });
       return b;
     };
     const asking = c.mode === 'ASK';
-    const buttons = [pick(null, 'Default', def ? `${def} · ${LEVEL_SHORT[def]}` : '—', asking, 'The Employee’s standing default level')];
+    const isAuto = intel?.selection === 'AUTO';
+    const buttons = [isAuto ? pick(null, 'AUTO', 'by task', asking, AUTO_EXPLAINED) : pick(null, 'Default', def ? `${def} · ${LEVEL_SHORT[def]}` : '—', asking, 'The Employee’s standing default level')];
     for (const l of LEVELS) {
       const s = levelState(intel, l);
       buttons.push(pick(l, l, LEVEL_SHORT[l], asking && s.available, s.available ? `${LEVEL_THINKING[l]} — for the next message only` : `${LEVEL_THINKING[l]} — ${reason(s.code)}`));

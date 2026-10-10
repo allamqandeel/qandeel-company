@@ -24,6 +24,7 @@ export const RUN_FAILURE_CODES = Object.freeze({
   PROVIDER_FAILURE: 'PROVIDER', // the provider broke the contract or the outcome is unknown after send
   FALLBACK_REFUSED: 'PROVIDER', // the provider failed and the only alternative route was costlier
   NO_ELIGIBLE_ROUTE: 'PROVIDER', // no deployment is eligible for the call
+  PROVIDER_CIRCUIT_OPEN: 'PROVIDER', // P1-REASON-AUTO-RECOVERY-01: every eligible route is only held by an open circuit (bounded timed waits used)
   PROVIDER_CONTEXT_OVERFLOW: 'CONTEXT',
   PROVIDER_INVALID_REQUEST: null, // PG-11: family not decided by authority
   PROVIDER_CONTENT_POLICY: null, // PG-11: family not decided by authority
@@ -31,8 +32,10 @@ export const RUN_FAILURE_CODES = Object.freeze({
   SETTLEMENT_FAILED: null, // the store could not record a possibly-billed call's accounting (money held)
   RUN_ABORTED: null, // the run was stopped (cancel / shutdown / timeout) during a model call
   REASONING_ABOVE_CEILING: null, // the requested reasoning class is above the Employee's / policy's ceiling
+  REASONING_LEVEL_UNAVAILABLE: null, // P1-REASON-AUTO-RECOVERY-01: a pinned class has no deployment of that class at all (never substituted)
   // Model.
   MODEL_OUTPUT_INVALID: 'MODEL',
+  MODEL_OUTPUT_TRUNCATED: 'MODEL', // P1-REASON-AUTO-RECOVERY-01: the output allowance ran out again after the one same-class continuation
   // Tools.
   TOOL_FAILED: 'TOOL',
   TOOL_NOT_EXECUTED: 'TOOL',
@@ -114,6 +117,10 @@ export function unavailableRunCode(code: string): RunFailureCode {
       return 'RUN_ABORTED';
     case 'SETTLEMENT_FAILED':
       return 'SETTLEMENT_FAILED';
+    case 'REASONING_LEVEL_UNAVAILABLE':
+      return 'REASONING_LEVEL_UNAVAILABLE';
+    case 'PROVIDER_CIRCUIT_OPEN':
+      return 'PROVIDER_CIRCUIT_OPEN';
   }
   const last = code.startsWith('PROVIDER_') ? code.slice('PROVIDER_'.length) : null;
   return last !== null && failureDisposition(last).sent === 'UNKNOWN' ? 'PROVIDER_FAILURE' : 'PROVIDER_UNAVAILABLE';

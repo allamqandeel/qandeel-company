@@ -56,7 +56,7 @@ describe('D-L1-44: the persistent reasoning profile is a governed Founder act', 
   test('EMPLOYEE_REASONING_PROFILE: the preview shows previous/new default and ceiling and changes nothing; the confirm writes the profile version-safely with history and audit; grants and budget are untouched', () => {
     withSeed((h, s, actions, sess) => {
       const before = s.gov.getEmployee(s.employee.id);
-      assert.deepEqual(before.cognitiveProfile, { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' });
+      assert.deepEqual(before.cognitiveProfile, { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED', selection: 'AUTO' });
       const grants = grantsOf(s, before.id);
       const budget = s.gov.budgetFor('EMPLOYEE', before.id);
       const p = actions.preview(sess, 'EMPLOYEE_REASONING_PROFILE', { employeeId: before.id, defaultClass: 'E2', ceilingClass: 'E4', reasonCode: 'founder.deeper' });
@@ -68,7 +68,7 @@ describe('D-L1-44: the persistent reasoning profile is a governed Founder act', 
       assert.deepEqual(s.gov.getEmployee(before.id).cognitiveProfile, before.cognitiveProfile, 'a preview changes nothing');
       actions.confirm(sess, p.id, p.fingerprint);
       const after = s.gov.getEmployee(before.id);
-      assert.deepEqual(after.cognitiveProfile, { defaultClass: 'E2', ceilingClass: 'E4', costDiscipline: 'BALANCED' });
+      assert.deepEqual(after.cognitiveProfile, { defaultClass: 'E2', ceilingClass: 'E4', costDiscipline: 'BALANCED', selection: 'AUTO' });
       assert.equal(after.version, before.version + 1);
       assert.equal(after.state, before.state, 'reasoning is not a lifecycle step');
       const hist = s.gov.employeeHistory(before.id).filter((x) => x.changeKind === 'PROFILE');
@@ -83,7 +83,7 @@ describe('D-L1-44: the persistent reasoning profile is a governed Founder act', 
       // Lowering again is the same governed act (E2 → E1 default, E4 → E2 ceiling).
       const down = actions.preview(sess, 'EMPLOYEE_REASONING_PROFILE', { employeeId: before.id, defaultClass: 'E1', ceilingClass: 'E2' });
       actions.confirm(sess, down.id, down.fingerprint);
-      assert.deepEqual(s.gov.getEmployee(before.id).cognitiveProfile, { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' });
+      assert.deepEqual(s.gov.getEmployee(before.id).cognitiveProfile, { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED', selection: 'AUTO' });
     });
   });
 
@@ -239,7 +239,7 @@ describe('D-L1-44: migration 0020', () => {
         assert.equal(JSON.stringify(d.all('SELECT id, cognitive_profile_json, version FROM employees ORDER BY id')), employees, 'no Employee profile is rewritten');
         assert.equal(JSON.stringify(d.all('SELECT version, name, sha256, applied_at FROM schema_migrations WHERE version <= 19 ORDER BY version')), migrations, '0001–0019 unchanged');
         assert.equal(d.get<{ n: number }>('SELECT COUNT(*) AS n FROM work_item_reasoning_overrides')?.n, 0);
-        assert.deepEqual(GovernanceStore.for(v20).getEmployee(s.employee.id).cognitiveProfile, { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' });
+        assert.deepEqual(GovernanceStore.for(v20).getEmployee(s.employee.id).cognitiveProfile, { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED', selection: 'AUTO' });
         assert.deepEqual(d.all('PRAGMA foreign_key_check'), []);
         assert.equal(v20.quickCheck(), 'ok');
       } finally {

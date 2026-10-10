@@ -146,7 +146,7 @@ export function txPlaceEmployee(ctx: StoreContext, employeeId: Id, positionId: I
 export interface HireInput {
   readonly positionId: string;
   readonly name: { readonly given: string; readonly family: string };
-  readonly cognitiveProfile: { readonly defaultClass: ReasoningClass; readonly ceilingClass: ReasoningClass; readonly costDiscipline: 'STRICT' | 'BALANCED' | 'THOROUGH' };
+  readonly cognitiveProfile: { readonly defaultClass: ReasoningClass; readonly ceilingClass: ReasoningClass; readonly costDiscipline: 'STRICT' | 'BALANCED' | 'THOROUGH'; readonly selection?: 'AUTO' | 'DEFAULT' };
   readonly profile?: unknown;
 }
 
