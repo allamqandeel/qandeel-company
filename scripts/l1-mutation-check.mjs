@@ -6,7 +6,7 @@
 // are never touched. Run after `npm run build`:
 //
 //   npm run l1:mutation                           all mutations
-//   npm run l1:mutation -- --shard 3/9            one disjoint shard (CI parallelism: Windows 9, Ubuntu 1; D-D1-09)
+//   npm run l1:mutation -- --shard 3/12           one disjoint shard (CI parallelism: Windows 12, Ubuntu 1; D-D1-09, D-P1-06)
 //   npm run l1:mutation -- --report <file.json>   also write the ids run / caught (CI proof parity)
 //   npm run l1:mutation -- --only <id,id>         only the named mutations (a local focus; never a parity report)
 //

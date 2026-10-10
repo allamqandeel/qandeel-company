@@ -5782,3 +5782,15 @@ AHMED ZAKI / أحمد ذكي, keeping the same Employee.
 - **Clarification, not an edit.** The historical CEO Constitution v1 still names Salim Nasser. The operational identity
   kernel (`mind/src/packages/ceo-identity-v1.ts`) carries no name: the name reaches the context only from the `employees`
   row. Scenario F proves that a rename keeps the same ID, kernel, memory, history and conversations.
+
+**PR #32 CI capacity correction (amends D-D1-09: Windows L1 runs as 12 shards).**
+- **Cause.** FULL run `38055788560` (`3dfaba9`) was cancelled at the 45-minute ceiling in `mutation (windows-latest,
+  l1-3of9)`. Its 13 completed mutations were all caught; `l1-02-v7-reuse-dropped` was still running. No assertion failed.
+  The same shard took 28 minutes on `a535f2f`: that runner was uniformly about 1.6× slower per mutation, which a
+  shard already at the 30-minute target cannot absorb.
+- **Measurement (log timestamps).** 124 L1 mutations, about 211 minutes of Windows mutation time at normal speed. With
+  `i % 9`, the heaviest shards ran 27–28 minutes. With `i % 12`, the shards hold 10–11 mutations each, the heaviest is
+  about 22.0 minutes (23.5 with setup), and about 37 minutes on a 1.6× slower runner.
+- **Decision.** `MUTATION_SHARDS[windows-latest].l1` is `12`. The FULL matrix lists `l1:1/12` … `l1:12/12`, and the
+  C5-UI affected-plan expectation follows. The modulo partition, the report schema, the quality-gate parity, the Ubuntu
+  shard (`l1:1/1`), the 45-minute ceiling and every other family are unchanged. No product code changed.

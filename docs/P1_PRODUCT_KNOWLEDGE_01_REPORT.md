@@ -132,3 +132,13 @@ mutation family) is the GitHub gate on this PR's head.
   - verify-bootstrap: 110 of 110.
 - **The Constitution's old name is a clarification only.** The operational identity kernel holds no name. Scenario F
   proves the rename keeps identity and memory.
+
+## 10. CI capacity correction (L1 Windows shards 9 → 12)
+
+- **Cause.** The FULL run on `3dfaba9` hit the 45-minute ceiling in `l1-3of9` on a slow runner. All 13 finished
+  mutations were caught. The same shard took 28 minutes on the previous head.
+- **Change.** Windows L1 now runs as 12 modulo shards of 10–11 mutations each. The estimated heaviest is about
+  22 minutes. Ubuntu, the ceiling, the quality gate and every test are unchanged (D-P1-06 addendum).
+- **Proof.** A deterministic local check shows the gate's parity holds on both operating systems for every family:
+  each of the 124 L1 mutations runs once, with none missing or duplicated. Dropping or duplicating a shard fails it.
+  The impact-map, classify, quality-gate and post-merge self-tests pass, and so does verify-bootstrap (110 of 110).
