@@ -217,7 +217,7 @@ describe('discovery', () => {
   });
 
   test('D-OPS-09: only a possibly-settling UNHEALTHY is re-read, within a bound; healthy and squatter readings are not', async () => {
-    const reading = (state: HostStatus['state'], reason: string | null): HostStatus => ({ state, workspace: 'w', instanceId: null, pid: null, port: null, origin: null, runtimeState: null, leaseLive: true, descriptor: 'VALID', hold: null, reason });
+    const reading = (state: HostStatus['state'], reason: string | null): HostStatus => ({ state, workspace: 'w', instanceId: null, pid: null, port: null, origin: null, runtimeState: null, leaseLive: true, descriptor: 'VALID', hold: null, schema: 'CURRENT', reason });
     const scripted = (...seq: HostStatus[]): { classify: () => Promise<HostStatus>; calls: () => number } => {
       let n = 0;
       return { classify: async () => seq[Math.min(n++, seq.length - 1)] as HostStatus, calls: () => n };

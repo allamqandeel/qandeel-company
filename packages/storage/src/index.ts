@@ -188,6 +188,7 @@ export {
   type RetentionPolicy,
 } from './resilience.js';
 export { rollbackSchemaUpdate, safeUpgrade, type RollbackReport, type SafeUpgradeReport } from './maintenance.js';
+export { inspectCompanySchema, type SchemaInspection } from './inspection.js';
 // C7-A Operational Data + External Outcome Core: the Founder-governed source registry and evidence bindings, and the
 // content-free intake seam (allowlisted, normalized, idempotent, conflict-detecting). It feeds the C6 engine through
 // outcome verification and evaluation only; there is no transport, listener or per-user browsing path.

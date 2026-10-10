@@ -10,7 +10,15 @@
  *             stop of the running host → backup (verified) → pin → start the host FROM the release (its runtime runs the
  *             existing schema safe-upgrade: rehearsal, verification, UPDATE_HOLD on failure) → health (the host proves
  *             its identity and is READY) → point the shortcuts at the release. Any failure after the pin restores the
- *             previous pin and the previous host.
+ *             previous pin and the previous host — unless the schema was already migrated forward, which the previous
+ *             release cannot open: then nothing is claimed as rolled back (RECOVERY_HOLD, see below).
+ *
+ * Cross-version update (P1-DESKTOP-UPGRADE-CORR-01). When the new release reads the Company's schema as UPDATE_REQUIRED
+ * (a verified older history), the previous pinned release is verified byte for byte and bound to the pin, the running
+ * host is stopped by that previous release's OWN launcher (the version that started it and reads its schema), and the
+ * released supervisor lease is proven by this release's own discovery before anything migrates. The upgrade itself stays
+ * the existing safe-upgrade inside the new host's start (pre-update snapshot, rehearsal, verification, journal,
+ * UPDATE_HOLD on failure); there is no second migration, backup or update mechanism.
  *
  * Admission itself lives in the runtime (`admitRuntimeRelease`, checked by every `CompanyRuntime.start`), so a pinned
  * workspace is never run by an unactivated build, whichever entry point starts it.
@@ -22,13 +30,17 @@ import path from 'node:path';
 
 import { isQandeelError } from '@qandeel-company/domain';
 import { RELEASE_MANIFEST_FILE, RUNTIME_VERSION, hashReleaseTree, readReleasePin, releaseIdOf, releasePinPath, verifyReleaseTree, type ReleaseManifest, type ReleasePin } from '@qandeel-company/runtime';
-import { CompanyStore, createBackup, verifyBackup } from '@qandeel-company/storage';
+import { CompanyStore, createBackup, inspectCompanySchema, verifyBackup } from '@qandeel-company/storage';
 
 import { writeJsonAtomic } from './descriptor.js';
-import { discoverHost, ensureRunning, installShortcuts, launcherConfigDir, stopHost, type HostStatus } from './lifecycle.js';
+import { HOST_STOP_TIMEOUT_MS, discoverHost, ensureRunning, heldCode, installShortcuts, launcherConfigDir, stopHost, waitWhile, type HostStatus } from './lifecycle.js';
 import { runReleaseCli } from './processes.js';
 
 const DRY_RUN_TIMEOUT_MS = 60_000;
+/** The previous release's own controlled stop (its stop bound plus process start-up). */
+const PREVIOUS_STOP_TIMEOUT_MS = HOST_STOP_TIMEOUT_MS + 30_000;
+/** A crashed holder's supervisor lease (30 s TTL) is waited out, bounded, before a schema update; never ignored. */
+const LEASE_RELEASE_WAIT_MS = 45_000;
 
 /** Per-user, beside the launcher configuration, outside every checkout and workspace. */
 export function releasesDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -178,7 +190,10 @@ export interface ActivationOptions {
 
 export interface ActivationOutcome {
   readonly ok: boolean;
-  /** ACTIVATED / ALREADY_ACTIVE / ROLLED_BACK, or a refusal before anything changed. */
+  /**
+   * ACTIVATED / ALREADY_ACTIVE / ROLLED_BACK (the previous release runs the unchanged Company again), RECOVERY_HOLD (not
+   * recovered automatically; the RECOVERY step names why), or a refusal before anything changed.
+   */
   readonly outcome: string;
   readonly code: string | null;
   readonly releaseId: string | null;
@@ -200,13 +215,7 @@ function writePin(workspace: string, pin: ReleasePin | null): void {
 
 /** A verified backup of the stopped Company (Stage 12 "Backup"); a pending schema update is snapshotted by safe-upgrade itself. */
 async function backupBeforeActivation(workspace: string): Promise<{ result: string; backupId: string | null }> {
-  let store: CompanyStore;
-  try {
-    store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
-  } catch (error) {
-    if (isQandeelError(error, 'SCHEMA_UPDATE_REQUIRED')) return { result: 'BY_SAFE_UPGRADE', backupId: null };
-    throw error;
-  }
+  const store = CompanyStore.open(workspace, { create: false, migrationMode: 'verify' });
   try {
     const r = await createBackup(store, { runtimeVersion: RUNTIME_VERSION });
     const v = verifyBackup(r.directory, { liveDatabasePath: store.workspace.databasePath, artifactObjectsDir: store.workspace.objectsDir, expected: { snapshotSha256: r.manifest.snapshot.sha256, manifestSha256: r.manifestSha256 } });
@@ -214,6 +223,35 @@ async function backupBeforeActivation(workspace: string): Promise<{ result: stri
     return { result: 'VERIFIED', backupId: r.backupId };
   } finally {
     store.close();
+  }
+}
+
+/** The schema version as this release reads it, or null when it cannot be read (content-free). */
+function schemaVersion(workspace: string): number | null {
+  try {
+    return inspectCompanySchema(workspace).databaseVersion;
+  } catch {
+    return null;
+  }
+}
+
+/** The previous release, verified byte for byte and bound to the workspace's pin: the release that runs the older schema. */
+function verifyPrevious(pin: ReleasePin | null): { ok: true } | { ok: false; code: string } {
+  if (pin === null) return { ok: false, code: 'PREVIOUS_RELEASE_REQUIRED' };
+  const v = verifyReleaseTree(pin.root);
+  if (!v.ok) return { ok: false, code: 'PREVIOUS_RELEASE_INVALID' };
+  if (v.manifest.releaseId !== pin.releaseId) return { ok: false, code: 'PREVIOUS_RELEASE_MISMATCH' };
+  return { ok: true };
+}
+
+/** The previous release's own controlled stop of its host (its `stop` launcher; the outcome code only, never content). */
+async function stopByPreviousRelease(workspace: string, previousRoot: string): Promise<string> {
+  const ran = await runReleaseCli(releaseCli(previousRoot), ['stop', '--workspace', workspace], PREVIOUS_STOP_TIMEOUT_MS);
+  try {
+    const r = JSON.parse(ran.stdout.trim().split('\n').at(-1) ?? '{}') as { outcome?: unknown };
+    return typeof r.outcome === 'string' && /^[A-Z_]{1,64}$/.test(r.outcome) ? r.outcome : 'STOP_UNREADABLE';
+  } catch {
+    return 'STOP_UNREADABLE';
   }
 }
 
@@ -253,16 +291,38 @@ export async function activateRelease(workspace: string, releaseRoot: string, op
 
   // 3. Controlled stop of the running host (nothing changed yet if it does not stop).
   const wasRunning = initial.leaseLive && initial.state !== 'STALE';
+  const upgrade = check.schema === 'UPDATE_REQUIRED';
+  if (upgrade && (before !== null || wasRunning)) {
+    // The release that runs the older schema: verified and bound to the pin before it is trusted to stop its host, and
+    // the release a failure before the migration returns to.
+    const previous = verifyPrevious(before);
+    steps.push({ step: 'PREVIOUS', result: previous.ok ? 'VERIFIED' : previous.code });
+    if (!previous.ok) return refuse(previous.code, initial, releaseId);
+  }
   if (wasRunning) {
-    const stopped = await stopHost(workspace);
-    steps.push({ step: 'STOP', result: stopped.outcome });
-    if (!stopped.ok && stopped.outcome !== 'NOT_RUNNING') return refuse('HOST_NOT_STOPPED', stopped.status, releaseId);
+    if (upgrade && before) steps.push({ step: 'STOP', result: await stopByPreviousRelease(workspace, before.root) });
+    else {
+      const stopped = await stopHost(workspace);
+      steps.push({ step: 'STOP', result: stopped.outcome });
+      if (!stopped.ok && stopped.outcome !== 'NOT_RUNNING') return refuse('HOST_NOT_STOPPED', stopped.status, releaseId);
+    }
   } else steps.push({ step: 'STOP', result: 'NOT_RUNNING' });
+  if (upgrade) {
+    // Only a Company nobody holds is migrated: the released lease is proven by this release's own reading, never inferred
+    // from a stop's reply (a crashed holder's lease is waited out, bounded).
+    const settled = await waitWhile(workspace, (s) => s.leaseLive && s.state === 'STALE', LEASE_RELEASE_WAIT_MS);
+    const released = !settled.leaseLive && (settled.state === 'UPDATE_REQUIRED' || settled.state === 'STOPPED');
+    steps.push({ step: 'LEASE', result: released ? 'RELEASED' : settled.state });
+    if (!released) return refuse('HOST_NOT_STOPPED', settled, releaseId);
+  }
+  const schemaBefore = schemaVersion(workspace);
 
   // 4. Backup, verified.
   let backupId: string | null = null;
   try {
-    const b = await backupBeforeActivation(workspace);
+    // A verified older schema (the dry run's own reading): safe-upgrade's verified pre-update snapshot, journal and hold
+    // are the backup of the update.
+    const b = upgrade ? { result: 'BY_SAFE_UPGRADE', backupId: null } : await backupBeforeActivation(workspace);
     backupId = b.backupId;
     steps.push({ step: 'BACKUP', result: b.result });
   } catch (error) {
@@ -279,7 +339,9 @@ export async function activateRelease(workspace: string, releaseRoot: string, op
   steps.push({ step: 'PIN', result: 'OK' });
   const started = await ensureRunning(workspace, { cliPath: cli, providers: options.providers, ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}) });
   steps.push({ step: 'START', result: started.code ?? 'RUNNING' });
-  const healthy = started.code === null && started.status.state === 'RUNNING' && started.status.runtimeState === 'READY';
+  if (upgrade) steps.push({ step: 'SCHEMA', result: `${schemaBefore ?? 'UNKNOWN'}->${schemaVersion(workspace) ?? 'UNKNOWN'}` });
+  // The host this release runs reads its schema as current (a host of the previous release never could after an upgrade).
+  const healthy = started.code === null && started.status.state === 'RUNNING' && started.status.runtimeState === 'READY' && started.status.schema === 'CURRENT';
   steps.push({ step: 'HEALTH', result: healthy ? 'READY' : 'FAILED' });
   if (healthy) {
     if (options.shortcuts !== false && process.platform === 'win32') {
@@ -289,17 +351,34 @@ export async function activateRelease(workspace: string, releaseRoot: string, op
     return { ok: true, outcome: 'ACTIVATED', code: null, releaseId, previousReleaseId, backupId, steps, status: started.status };
   }
 
-  // Rollback: the previous pin (or none), the previous host if one ran. A schema the new release migrated stays
-  // migrated (forward-only; its pre-update snapshot is the existing `rollback-update` path).
+  // Failure after the pin. What is recovered is read from the Company itself, never assumed from the pin.
+  const code = started.code ?? 'HEALTH_CHECK_FAILED';
+  const recoveryHold = (recovery: string, status: HostStatus): ActivationOutcome => {
+    steps.push({ step: 'RECOVERY', result: recovery });
+    return { ok: false, outcome: 'RECOVERY_HOLD', code, releaseId, previousReleaseId, backupId, steps, status };
+  };
   const after = await discoverHost(workspace);
   if (after.leaseLive && after.state !== 'STALE') await stopHost(workspace, { force: true });
+  const migrated = schemaBefore !== null && (schemaVersion(workspace) ?? schemaBefore) > schemaBefore;
+  if (migrated) {
+    // The schema moved forward: the previous release refuses it (SCHEMA_FROM_FUTURE), so restoring its pin would not
+    // restore a runnable Company. The pin stays on this release, the pre-update snapshot stays, no hold is cleared and no
+    // work is discarded; the way back is the existing `rollback-update` of that snapshot, a Founder decision.
+    steps.push({ step: 'ROLLBACK_PIN', result: 'KEPT_SCHEMA_MIGRATED' });
+    const status = await discoverHost(workspace);
+    return recoveryHold(status.state === 'HELD' ? heldCode(status.hold) : 'SCHEMA_MIGRATED', status);
+  }
+  // The schema is unchanged (or the update itself was rolled back to its snapshot): the previous pin, the previous host.
   writePin(workspace, before);
   steps.push({ step: 'ROLLBACK_PIN', result: before ? 'PREVIOUS' : 'UNPINNED' });
   let status: HostStatus = await discoverHost(workspace);
+  // A held Company (a failed safe-upgrade's UPDATE_HOLD) never starts until the operator clears the hold explicitly.
+  if (status.state === 'HELD') return recoveryHold(heldCode(status.hold), status);
   if (before && wasRunning) {
     const back = await ensureRunning(workspace, { cliPath: releaseCli(before.root), providers: options.providers, ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}) });
     steps.push({ step: 'ROLLBACK_START', result: back.code ?? 'RUNNING' });
     status = back.status;
+    if (back.code !== null) return recoveryHold('PREVIOUS_HOST_NOT_RESTARTED', status);
   }
-  return { ok: false, outcome: 'ROLLED_BACK', code: started.code ?? 'HEALTH_CHECK_FAILED', releaseId, previousReleaseId, backupId, steps, status };
+  return { ok: false, outcome: 'ROLLED_BACK', code, releaseId, previousReleaseId, backupId, steps, status };
 }
