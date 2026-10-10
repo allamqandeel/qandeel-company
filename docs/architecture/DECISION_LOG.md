@@ -5770,3 +5770,15 @@ AHMED ZAKI / أحمد ذكي, keeping the same Employee.
     in the next context; version-safe.
 - `command-center/test/p1-product-knowledge-surface.test.ts`: the rename and grant sentences, and the person sheet
   re-read over loopback HTTP. The host wires the reader, and granting reads nothing.
+
+**PR #32 review corrections.**
+- **One action definition.** The read is defined once, as `PRODUCT_DOCS_ACTION_DEFINITION` in governance: R0, no side
+  effects, D2 ceiling, D1 result. The driver's declaration and the Founder act's registration both reuse that object,
+  where the driver had declared D1. The D2 path, the grant and the transport are unchanged, and no authority widened.
+- **Omitted is not unmatched.** A topic whose evidence exists but was dropped for the result limit is now reported in
+  `omitted`, never in `unmatched`. `unmatched` means no document line names the topic. The guidance tells the Employee
+  to read an omitted topic on its own.
+- Two focused tests prove these.
+- **Clarification, not an edit.** The historical CEO Constitution v1 still names Salim Nasser. The operational identity
+  kernel (`mind/src/packages/ceo-identity-v1.ts`) carries no name: the name reaches the context only from the `employees`
+  row. Scenario F proves that a rename keeps the same ID, kernel, memory, history and conversations.

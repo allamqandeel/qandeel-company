@@ -118,3 +118,17 @@ No proof made a network, DeepSeek or paid call.
 The storage figure includes the new migration 0022 upgrade proof (`storage/test/p1-product-knowledge-migration.test.ts`)
 and the appended `22` in the existing released-upgrade expectations. The FULL continuity proof (Windows + Ubuntu, every
 mutation family) is the GitHub gate on this PR's head.
+
+## 9. PR #32 review corrections
+
+- **One action definition.** The read is defined once, as `PRODUCT_DOCS_ACTION_DEFINITION` in governance, with a D2
+  ceiling and a D1 result. Both the driver and the registration reuse it. No authority widened.
+- **Omitted is not unmatched.** Evidence dropped for the result limit is reported as `omitted`. A topic with no matching
+  line anywhere is `unmatched`.
+- **Focused local proof** (no FULL rerun):
+  - tool-drivers `p1-product-docs`: 12 of 12;
+  - runtime `p1-product-knowledge`: 4 of 4;
+  - targeted eslint: clean;
+  - verify-bootstrap: 110 of 110.
+- **The Constitution's old name is a clarification only.** The operational identity kernel holds no name. Scenario F
+  proves the rename keeps identity and memory.

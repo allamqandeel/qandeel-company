@@ -22,8 +22,8 @@
  */
 import { type JsonObject } from '@qandeel-company/domain';
 import {
+  PRODUCT_DOCS_ACTION_DEFINITION,
   PRODUCT_DOCS_ADAPTER,
-  PRODUCT_DOCS_ARGS_SCHEMA,
   PRODUCT_DOCS_BRANCH,
   PRODUCT_DOCS_READ_ACTION,
   PRODUCT_KNOWLEDGE_TOOL,
@@ -53,7 +53,7 @@ export interface ProductDocsDriverOptions {
 /** The Tool Registry entry the Founder's product-knowledge act registers (tools are never granted automatically). */
 export const PRODUCT_KNOWLEDGE_TOOL_REGISTRATION = Object.freeze({
   tool: { code: PRODUCT_KNOWLEDGE_TOOL, driverCode: PRODUCT_DOCS_ADAPTER, egress: 'EXTERNAL' as const },
-  actions: [{ code: PRODUCT_DOCS_READ_ACTION, risk: 'R0' as const, sideEffects: 'NONE' as const, mutatesExternal: false, dataClassCeiling: 'D1' as const, argsSchema: PRODUCT_DOCS_ARGS_SCHEMA, costPerCallMicros: 0 }],
+  actions: [PRODUCT_DOCS_ACTION_DEFINITION],
 });
 const MAX_DOC_BYTES = 400 * 1024;
 const MAX_TOPICS = 8;
@@ -205,7 +205,8 @@ export function searchProductDoc(path: string, text: string, topics: readonly st
 /**
  * The evidence set: for each topic in order, its strongest line (its own table row first; then the earliest document in
  * the reading order; within a document, the later of two equally strong headings, since execution notes are appended).
- * One line may serve several topics. A topic with no line is reported as unmatched, never filled with a weaker guess.
+ * One line may serve several topics. A topic with no line is reported as unmatched, never filled with a weaker guess; a
+ * topic whose lines are dropped for the result limit is reported as omitted.
  */
 export function selectProductEvidence(hits: readonly ProductEvidenceHit[], topics: readonly string[]): ProductEvidenceHit[] {
   const chosen: ProductEvidenceHit[] = [];
@@ -294,11 +295,17 @@ export class ProductDocsDriver implements ToolDriver {
       notice: NOTICE,
       evidence: kept.map((h) => ({ path: h.path, line: h.line, ...(h.status === null ? { heading: h.heading } : {}), ...(h.status !== null ? { status: h.status } : {}), ...(h.record !== null ? { record: h.record } : {}), text: h.text })),
       ...(missing.length > 0 ? { missing } : {}),
-      // A topic no kept line names is reported, so the Employee says it does not know instead of guessing.
-      unmatched: topics.filter((t) => !kept.some((h) => (h.topics[t] ?? 0) > 0)),
+      // A topic no document line names is unmatched: the Employee says it does not know instead of guessing.
+      unmatched,
+      // A topic whose evidence exists but was dropped for the result limit is omitted, never unmatched: read it on its own.
+      ...(omitted(kept).length > 0 ? { omitted: omitted(kept) } : {}),
     });
+    const named = (lines: readonly ProductEvidenceHit[], t: string): boolean => lines.some((h) => (h.topics[t] ?? 0) > 0);
+    const selected = selectProductEvidence(hits, topics);
+    const unmatched = topics.filter((t) => !named(selected, t));
+    const omitted = (kept: readonly ProductEvidenceHit[]): string[] => topics.filter((t) => named(selected, t) && !named(kept, t));
     // The whole result must reach the model intact (the recent-results window): drop the last topics' lines, never truncate.
-    let kept = selectProductEvidence(hits, topics);
+    let kept = selected;
     while (kept.length > 0 && JSON.stringify(out(kept)).length > RESULT_CHARS) kept = kept.slice(0, -1);
     return out(kept);
   }

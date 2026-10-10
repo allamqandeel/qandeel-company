@@ -32,6 +32,13 @@ export const PRODUCT_DOCS_ARGS_SCHEMA = Object.freeze({
 });
 
 /**
+ * The one Tool Registry definition of the read, shared by the driver's declaration and the Founder act that registers it.
+ * The data-class ceiling is D2 because a conversation reply runs at D2; it is safe because the reader sends nothing of the
+ * Company to GitHub — only the public document paths it reads. The result (public documentation) is D1.
+ */
+export const PRODUCT_DOCS_ACTION_DEFINITION = Object.freeze({ code: PRODUCT_DOCS_READ_ACTION, risk: 'R0' as const, sideEffects: 'NONE' as const, mutatesExternal: false, dataClassCeiling: 'D2' as const, resultDataClass: 'D1' as const, argsSchema: PRODUCT_DOCS_ARGS_SCHEMA, costPerCallMicros: 0 });
+
+/**
  * The locator documents searched when no path is named, in the App's own reading order (its README "Start here"). They
  * locate authority; the primary records they cite outrank them (the App's authority precedence).
  */

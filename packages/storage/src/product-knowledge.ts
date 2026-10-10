@@ -15,8 +15,8 @@
  */
 import { QandeelError, assertId, type Id, type Timestamp } from '@qandeel-company/domain';
 import {
+  PRODUCT_DOCS_ACTION_DEFINITION,
   PRODUCT_DOCS_ADAPTER,
-  PRODUCT_DOCS_ARGS_SCHEMA,
   PRODUCT_DOCS_CAPABILITY,
   PRODUCT_DOCS_READ_ACTION,
   PRODUCT_KNOWLEDGE_TOOL,
@@ -32,12 +32,8 @@ import { GovernanceStore } from './governance.js';
 import { ts, type StoreContext } from './internal.js';
 import { storeContext, type CompanyStore } from './store.js';
 
-/**
- * The Tool Registry entry (the same values the read-only driver declares). The data-class ceiling is D2 because a
- * conversation reply runs at D2; it is safe because the reader sends nothing of the Company to GitHub — only the public
- * document paths it reads. The result (public documentation) is D1.
- */
-export const PRODUCT_KNOWLEDGE_ACTION_DEFINITION = Object.freeze({ code: PRODUCT_DOCS_READ_ACTION, risk: 'R0' as const, sideEffects: 'NONE' as const, mutatesExternal: false, dataClassCeiling: 'D2' as const, resultDataClass: 'D1' as const, argsSchema: PRODUCT_DOCS_ARGS_SCHEMA, costPerCallMicros: 0 });
+/** The Tool Registry entry: the one definition the read-only driver also declares (D2 ceiling, D1 result). */
+export const PRODUCT_KNOWLEDGE_ACTION_DEFINITION = PRODUCT_DOCS_ACTION_DEFINITION;
 
 const transition = (reason: string, message: string, details: Record<string, string | number | boolean | null> = {}): never => {
   throw new QandeelError('INVALID_TRANSITION', message, { reason, ...details });

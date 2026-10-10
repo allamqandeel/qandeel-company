@@ -14,9 +14,9 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { PRODUCT_DOCS_READ_ACTION, isProductDocPath } from '@qandeel-company/governance';
+import { PRODUCT_DOCS_ACTION_DEFINITION, PRODUCT_DOCS_READ_ACTION, isProductDocPath } from '@qandeel-company/governance';
 
-import { FakeProductDocsTransport, GitHubHttpsTransport, ProductDocsDriver, assertGitHubEndpoint, productQueryTopics, productStatusHint, type GitHubTransport } from '../src/index.js';
+import { FakeProductDocsTransport, GitHubHttpsTransport, PRODUCT_KNOWLEDGE_TOOL_REGISTRATION, ProductDocsDriver, assertGitHubEndpoint, productQueryTopics, productStatusHint, type GitHubTransport } from '../src/index.js';
 
 const REPO = 'acme-test/product';
 const STATE = [
@@ -56,7 +56,7 @@ const ROADMAP = ['# Roadmap', '', '## 6.3 Execution note — 2026-10-09', '', '-
 const DOCS = { 'QANDEEL_CURRENT_STATE.md': STATE, 'QANDEEL_PROJECT_MAP.md': '# Map\n\nThe human-model (HIM) module lives in apps/api.\n', 'QANDEEL_PRODUCT_ROADMAP.md': ROADMAP, 'README.md': '# Qandeel\n\nStart here.\n', 'docs/replay-runtime-v1.md': '# Replay Runtime v1\n\nReplay is NOT product-launch ready.\n' };
 
 type Evidence = { path: string; line: number; status?: string; record?: string; text: string; heading?: string };
-type Result = { unavailable?: string; source: string; branch: string; commit: string; committedAt: string; recentCommits: string[]; notice: string; evidence: Evidence[]; missing?: string[]; unmatched: string[] };
+type Result = { unavailable?: string; source: string; branch: string; commit: string; committedAt: string; recentCommits: string[]; notice: string; evidence: Evidence[]; missing?: string[]; unmatched: string[]; omitted?: string[] };
 
 function world(source: () => { ok: true; externalRef: string } | { ok: false; code: string } = () => ({ ok: true, externalRef: `github:${REPO}` })): { t: FakeProductDocsTransport; d: ProductDocsDriver; first: string } {
   const t = new FakeProductDocsTransport();
@@ -217,6 +217,30 @@ describe('P1-PRODUCT-KNOWLEDGE-01: the read-only product documentation reader', 
     tooBig.commit(REPO, { ...DOCS, 'README.md': 'HIM '.repeat(120_000) }, 'huge');
     const big = new ProductDocsDriver({ transport: tooBig, source: { productSource: () => ({ ok: true, externalRef: `github:${REPO}` }) } });
     assert.deepEqual(await read(big, { query: 'HIM' }), unavailable('DOCUMENT_TOO_LARGE'));
+  });
+
+  test('the result limit never makes evidence look absent: dropped topics are omitted, only topics with no line are unmatched', async () => {
+    const t = new FakeProductDocsTransport();
+    const names = ['Alpha Ledger', 'Beta Courier', 'Gamma Atlas', 'Delta Signal', 'Epsilon Harbor', 'Zeta Lantern', 'Eta Compass'];
+    const rows = names.map((n, i) => `| ${n} runtime ${'s'.repeat(80)} | IMPLEMENTED — MERGED. ${'y'.repeat(120)} | [r](docs/r${i}.md) |`);
+    t.commit(REPO, { ...DOCS, 'QANDEEL_CURRENT_STATE.md': ['| Domain | Lifecycle | Record |', '|---|---|---|', ...rows].join('\n') }, 'wide');
+    const d = new ProductDocsDriver({ transport: t, source: { productSource: () => ({ ok: true, externalRef: `github:${REPO}` }) } });
+    const r = await ok(d, { query: [...names, 'Omega Unknown'].join(', ') });
+    const topics = [...names, 'Omega Unknown'].map((n) => n.toLowerCase());
+    const kept = topics.filter((x) => r.evidence.some((e) => e.text.toLowerCase().includes(x)));
+    assert.ok(JSON.stringify(r).length <= 1_850, `result ${JSON.stringify(r).length} chars`);
+    assert.deepEqual(r.unmatched, ['omega unknown'], 'only the topic with no line anywhere is unmatched');
+    assert.ok((r.omitted ?? []).length > 0, 'some evidence was dropped for the result limit');
+    assert.ok(kept.length > 0, 'the leading topics keep their evidence');
+    assert.deepEqual([...kept, ...(r.omitted ?? []), ...r.unmatched].sort(), [...topics].sort(), 'every topic is exactly one of kept, omitted or unmatched');
+    const small = await ok(d, { query: 'Alpha Ledger, Omega Unknown' });
+    assert.equal(small.omitted, undefined, 'nothing dropped: no omitted list');
+    assert.deepEqual(small.unmatched, ['omega unknown']);
+  });
+
+  test('one action definition: the driver declares exactly what the Founder act registers (D2 ceiling, D1 result, R0, no side effects)', () => {
+    assert.equal(PRODUCT_KNOWLEDGE_TOOL_REGISTRATION.actions[0], PRODUCT_DOCS_ACTION_DEFINITION);
+    assert.deepEqual({ ...PRODUCT_DOCS_ACTION_DEFINITION, argsSchema: undefined }, { code: PRODUCT_DOCS_READ_ACTION, risk: 'R0', sideEffects: 'NONE', mutatesExternal: false, dataClassCeiling: 'D2', resultDataClass: 'D1', argsSchema: undefined, costPerCallMicros: 0 });
   });
 
   test('the one approved transport sends no Authorization header for an anonymous read (and keeps it for the C7-D adapter)', async () => {
