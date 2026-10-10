@@ -239,6 +239,8 @@ export const employeeTaskProcessor: GovernedProcessor = {
         maxOutputTokens: cfg.maxOutputTokens,
       });
       if (escalateFrom !== null) escalated = true;
+      // Every later checkpoint of this step carries whether it already escalated (a resumed run never escalates twice).
+      s = { ...s, escalated };
       escalateFrom = null;
       continuation = null;
       switch (out.kind) {
@@ -279,6 +281,8 @@ export const employeeTaskProcessor: GovernedProcessor = {
           const startClass = out.reasoningClass ?? gov.context.reasoningOverride ?? cfg.reasoningClass ?? gov.context.cognitiveProfile.defaultClass;
           if (out.failure === 'CONTEXT_OVERFLOW' && !escalated && !founderPinned && startClass !== 'E4' && cfg.invalidOutputPolicy !== 'SAME_CLASS_RETRY') {
             escalateFrom = { fromClass: startClass, evidence: 'CONTEXT_OVERFLOW' };
+            // Checkpointed like an output failure: a crash before the escalation resumes with it, never the overflowing call.
+            await save(ctx, { ...s, pendingEscalation: escalateFrom, escalated });
             continue;
           }
           return { type: 'PERMANENT_FAILURE', code: providerFailedRunCode(out.failure) };
@@ -313,8 +317,8 @@ export const employeeTaskProcessor: GovernedProcessor = {
         const f = outputFailed(cfg, s, escalated, out.reasoningClass, founderPinned);
         if (f.end) return f.end;
         s = f.s;
-        await save(ctx, s);
         escalateFrom = f.escalateFrom;
+        await save(ctx, { ...s, pendingEscalation: escalateFrom, escalated });
         continue;
       }
       if (proposal.type === 'FINAL') {
@@ -383,8 +387,8 @@ export const employeeTaskProcessor: GovernedProcessor = {
           const f = outputFailed(cfg, s, escalated, out.reasoningClass, founderPinned);
           if (f.end) return f.end;
           s = f.s;
-          await save(ctx, s);
           escalateFrom = f.escalateFrom;
+          await save(ctx, { ...s, pendingEscalation: escalateFrom, escalated });
           continue;
         }
         s = { ...s, turn: s.turn + 1, phase: 'MODEL', pending: null };
@@ -400,9 +404,11 @@ export const employeeTaskProcessor: GovernedProcessor = {
         const f = outputFailed(cfg, s, escalated, out.reasoningClass, founderPinned);
         if (f.end) return f.end;
         s = f.s;
-        // D-L1-24: an answer-only item checkpoints its failure count, so a resumed run never gets a fresh retry.
-        if (cfg.answerOnly) await save(ctx, s);
         escalateFrom = f.escalateFrom;
+        // D-L1-24: the failure count is checkpointed, so a resumed run never gets a fresh retry. P1-REASON-AUTO-RECOVERY-01
+        // (review): every Work Item checkpoints it, with the escalation it decided on, so a crash before the next call
+        // resumes with exactly that call — never a second call at the class that just failed.
+        await save(ctx, { ...s, pendingEscalation: escalateFrom, escalated });
         continue;
       }
       if (proposal.type === 'ORG_ACTION' || proposal.type === 'REVIEW_DECISION') {

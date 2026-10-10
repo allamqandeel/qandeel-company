@@ -114,4 +114,38 @@ describe('P1-REASON-AUTO-RECOVERY-01: new Employees, and the pinned Founder leve
       assert.ok(at.ok, 'at the pinned class it reserves');
     });
   });
+
+  test('D-P1-04 review: a manual level below the route minimum is refused at the preview and the confirm (never lifted), the level view names it, and the reservation compares with the exact manual class', () => {
+    withSeed((h, s, actions, sess) => {
+      const modelId = s.gov.deployment(s.deploymentId).modelId;
+      const d = s.gov.registerDeployment(s.founder, { code: 'local-e2', modelId, pinnedRevision: 'r1', reasoningClass: 'E2', contextWindowTokens: 100_000, maxOutputTokens: 4_096, taskClasses: ['draft.memo'] });
+      const card = s.gov.addPriceCard(s.founder, d.id, { currency: 'USD', billingMode: 'METERED', billedInputPerMTok: 6_000_000, billedOutputPerMTok: 24_000_000, billedPerCall: 0, economicInputPerMTok: 6_000_000, economicOutputPerMTok: 24_000_000, economicPerCall: 0 });
+      for (const q of ['BENCHMARK', 'SHADOW', 'CHALLENGER', 'LIMITED_PRODUCTION', 'QUALIFIED'] as const) s.gov.setQualification(s.founder, d.id, q, 'qualification.step');
+      s.gov.approveEgress(s.founder, d.id, 'D3', 'egress.approved');
+      const item = (): Id => {
+        const { workItem } = h.store.createWorkItem({ objective: 'pinned work', ownerRef: s.employee.ref, processorKind: GOVERNED_KIND, processorInput: { taskClass: 'draft.memo', dataClass: 'D1', instructions: 'x' } });
+        s.gov.createBudget(s.founder, { scope: 'WORK_ITEM', scopeId: workItem.id, capMoney: 100_000, capTokens: 100_000, reasonCode: 'seed' });
+        return workItem.id;
+      };
+      // Recorded while the route minimum was E1; a preview taken then is confirmed only after the minimum is raised.
+      const early = item();
+      const set = actions.preview(sess, 'WORK_ITEM_REASONING_OVERRIDE', { workItemId: early, reasoningClass: 'E1' });
+      actions.confirm(sess, set.id, set.fingerprint);
+      const late = item();
+      const stale = actions.preview(sess, 'WORK_ITEM_REASONING_OVERRIDE', { workItemId: late, reasoningClass: 'E1' });
+      assert.equal(stale.payload.effectiveClass, 'E1', 'the preview names the exact class it will run at');
+      const raised = s.gov.createRoutePolicy(s.founder, 'draft.memo', { minClass: 'E2', maxClass: 'E2', allowLimitedProduction: false, maxRetriesPerCall: 1, maxCallsPerRun: 5, fallbackCostCeilingMicros: null, escalation: { maxDepth: 1, maxOverheadMicros: 50_000 } });
+      assert.throws(() => actions.preview(sess, 'WORK_ITEM_REASONING_OVERRIDE', { workItemId: item(), reasoningClass: 'E1' }), refusedWith('BELOW_ROUTE_POLICY'));
+      assert.throws(() => actions.confirm(sess, stale.id, stale.fingerprint), refusedWith('BELOW_ROUTE_POLICY'), 'a confirm re-runs the same check and refuses');
+      assert.equal(s.gov.reasoningControl(s.employee.id).overrides.some((o) => o.workItemId === late), false, 'nothing recorded for the refused confirm');
+      assert.equal(s.gov.employeeIntelligence(s.employee.id, 'draft.memo').levels.find((l) => l.reasoningClass === 'E1')?.availability, 'BELOW_ROUTE_POLICY');
+      // The early E1 level: the reservation compares with E1 exactly, so the E2 deployment the minimum would lift it to is refused.
+      h.store.transitionWorkItem(early, { to: 'READY', reasonCode: 'release' });
+      const { claim, begun } = claimFor(h, early);
+      assert.ok(begun.ok);
+      const manifest = testManifest(h, claim.fence, s.employee.id);
+      const lifted = reserveBudget(h.store, claim.fence, { purpose: 'MODEL_CALL', attemptKind: 'PRIMARY', deploymentId: d.id, priceCardId: card.id, routePolicyId: raised.id as Id, money: 1_000, tokens: 2_000, contextManifestId: manifest });
+      assert.ok(!lifted.ok && lifted.code === 'ROUTE_NO_LONGER_ELIGIBLE' && lifted.detail === 'ABOVE_REASONING_OVERRIDE', JSON.stringify(lifted));
+    });
+  });
 });

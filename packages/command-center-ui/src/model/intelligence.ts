@@ -13,7 +13,7 @@ export const LEVEL_THINKING: Readonly<Record<Level, string>> = { E1: 'Thinking o
 export const LEVEL_SHORT: Readonly<Record<Level, string>> = { E1: 'Fast', E2: 'Low', E3: 'High', E4: 'Max' };
 
 /** A level's availability in a few words (the full reason is in its title). */
-export const LEVEL_STATE_LABEL: Readonly<Record<string, string>> = { AVAILABLE: 'Available', ABOVE_EMPLOYEE_CEILING: 'Above maximum', ABOVE_ROUTE_POLICY: 'Route limit', NOT_PROVISIONED: 'Not provisioned', NO_ROUTE_POLICY: 'No route' };
+export const LEVEL_STATE_LABEL: Readonly<Record<string, string>> = { AVAILABLE: 'Available', ABOVE_EMPLOYEE_CEILING: 'Above maximum', ABOVE_ROUTE_POLICY: 'Route limit', BELOW_ROUTE_POLICY: 'Below route minimum', NOT_PROVISIONED: 'Not provisioned', NO_ROUTE_POLICY: 'No route' };
 
 export const REPLY_LABEL: Readonly<Record<string, string>> = {
   QUEUED: 'Queued',
@@ -41,6 +41,7 @@ export const REASON_LABEL: Readonly<Record<string, string>> = {
   RETRY_SCHEDULED: 'a transient failure; one bounded retry is scheduled',
   ABOVE_EMPLOYEE_CEILING: 'above this Employee’s maximum level',
   ABOVE_ROUTE_POLICY: 'above the level the conversation route allows',
+  BELOW_ROUTE_POLICY: 'below the minimum level the conversation route requires (a chosen level is kept exactly, never raised)',
   NOT_PROVISIONED: 'not provisioned for conversation yet',
   NO_ROUTE_POLICY: 'no conversation route is provisioned',
   REASONING_CLASS: 'not a reasoning level',

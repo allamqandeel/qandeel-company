@@ -16,7 +16,7 @@
  * provider call, and records the class that actually answered on the usage record.
  */
 import { QandeelError, canonicalJson, type Id } from '@qandeel-company/domain';
-import { assertCognitiveProfile, effectiveClass, isReasoningClass, isReasoningSelection, reasoningRank, reasoningSelectionOf, type ReasoningClass, type ReasoningSelection } from '@qandeel-company/governance';
+import { assertCognitiveProfile, isReasoningClass, isReasoningSelection, reasoningRank, reasoningSelectionOf, type ReasoningClass, type ReasoningSelection } from '@qandeel-company/governance';
 
 import { employeeIdFromRef, getEmployeeRow, writeEmployeeHistory } from './governance-core.js';
 import type { EmployeeRecord } from './governance-records.js';
@@ -114,7 +114,10 @@ export interface ReasoningOverridePlan {
   readonly standingDefault: ReasoningClass;
   readonly standingCeiling: ReasoningClass;
   readonly requestedClass: ReasoningClass;
-  /** The class the router will request: the override lifted to the route policy minimum (never above the ceiling). */
+  /**
+   * The class the router will request. D-P1-04: a manual level is pinned exactly, so this is always the requested class (a
+   * class below the route policy minimum is refused, never lifted); kept for the preview payload's shape.
+   */
   readonly effectiveClass: ReasoningClass;
   readonly routePolicyMaxClass: ReasoningClass;
   /** Informational: whether a deployment of that class is provisioned for the task class now (routing re-checks). */
@@ -142,9 +145,11 @@ export function txPlanReasoningOverride(ctx: StoreContext, input: { workItemId: 
   if (above(requestedClass, profile.ceilingClass)) refuse('ABOVE_EMPLOYEE_CEILING', 'the class is above the Employee ceiling: change the persistent ceiling first', { field: 'reasoningClass', ceilingClass: profile.ceilingClass });
   const snap = routingSnapshotTx(ctx, String(pi.taskClass));
   if (!snap.policy) return transition('NO_ROUTE_POLICY', 'the Work Item task class has no route policy', { taskClass: String(pi.taskClass) });
-  const eff = effectiveClass({ reasoningClass: requestedClass }, snap.policy);
+  // D-P1-04: a manual level is pinned exactly. A class below the route minimum would be lifted by the router, so it is
+  // refused here (preview and confirm alike), never substituted by a higher class.
+  if (reasoningRank(requestedClass) < reasoningRank(snap.policy.minClass)) refuse('BELOW_ROUTE_POLICY', 'the class is below the route policy minimum for this task class', { field: 'reasoningClass', minClass: snap.policy.minClass });
+  const eff = requestedClass;
   if (above(eff, snap.policy.maxClass)) refuse('ABOVE_ROUTE_POLICY', 'the class is above the route policy maximum for this task class', { field: 'reasoningClass', maxClass: snap.policy.maxClass });
-  if (above(eff, profile.ceilingClass)) refuse('ABOVE_EMPLOYEE_CEILING', 'the route policy minimum lifts the class above the Employee ceiling', { field: 'reasoningClass' });
   const deploymentAvailable = snap.deployments.some((d) => d.reasoningClass === eff && d.status === 'ACTIVE' && d.providerStatus === 'ACTIVE');
   return { workItemId: item.id, workItemState: item.state, taskClass: String(pi.taskClass), employee: e, standingDefault: profile.defaultClass, standingCeiling: profile.ceilingClass, requestedClass, effectiveClass: eff, routePolicyMaxClass: snap.policy.maxClass, deploymentAvailable };
 }
@@ -193,7 +198,7 @@ export function txReasoningControlView(ctx: StoreContext, employeeId: Id): Reaso
 }
 
 /** P1-CHAT-INTEL-01: why one reasoning level can or cannot answer the Employee's conversation now (codes only). */
-export type LevelAvailability = 'AVAILABLE' | 'ABOVE_EMPLOYEE_CEILING' | 'ABOVE_ROUTE_POLICY' | 'NOT_PROVISIONED' | 'NO_ROUTE_POLICY';
+export type LevelAvailability = 'AVAILABLE' | 'ABOVE_EMPLOYEE_CEILING' | 'ABOVE_ROUTE_POLICY' | 'BELOW_ROUTE_POLICY' | 'NOT_PROVISIONED' | 'NO_ROUTE_POLICY';
 
 export interface EmployeeIntelligenceView {
   readonly employeeId: Id;
@@ -231,7 +236,7 @@ export function txEmployeeIntelligence(ctx: StoreContext, employeeId: Id, taskCl
   const publicName = first ? (ctx.db.get<{ n: string }>(`SELECT expected_name AS n FROM model_identity_checks WHERE provider_code = ? AND model_code = ? AND result = 'MATCH' ORDER BY checked_at DESC, rowid DESC LIMIT 1`, first.providerCode, first.modelCode)?.n ?? null) : null;
   const levels = FOUNDER_LEVELS.map((c) => {
     const provisioned = serving.some((d) => d.reasoningClass === c);
-    const availability: LevelAvailability = !policy ? 'NO_ROUTE_POLICY' : above(c, p.ceilingClass) ? 'ABOVE_EMPLOYEE_CEILING' : above(c, policy.maxClass) ? 'ABOVE_ROUTE_POLICY' : !provisioned ? 'NOT_PROVISIONED' : 'AVAILABLE';
+    const availability: LevelAvailability = !policy ? 'NO_ROUTE_POLICY' : above(c, p.ceilingClass) ? 'ABOVE_EMPLOYEE_CEILING' : above(c, policy.maxClass) ? 'ABOVE_ROUTE_POLICY' : above(policy.minClass, c) ? 'BELOW_ROUTE_POLICY' : !provisioned ? 'NOT_PROVISIONED' : 'AVAILABLE';
     return { reasoningClass: c, availability, deploymentProvisioned: provisioned };
   });
   const usage = ctx.db

@@ -194,6 +194,10 @@ describe('D-L1-24: a BQM-2 observation is answer-only — a wrong valid proposal
     const inv = await drive([NOT_JSON, parsed(ANSWER)], { input: plain });
     assert.equal(inv.result?.type, 'COMPLETED');
     assert.deepEqual(inv.calls.map((c) => c.escalation), [false, true], 'BQM-1 keeps its one evidence-based escalation');
-    assert.deepEqual(inv.checkpoints.length, 1, 'and checkpoints exactly as before (only the answer)');
+    // P1-REASON-AUTO-RECOVERY-01 (review, D-P1-04): the invalid output is now checkpointed with its count and the escalation
+    // it decided on (a crash before the escalation resumes with it), then the answer.
+    assert.deepEqual(inv.checkpoints.length, 2, 'the invalid output, then the answer');
+    const first = inv.checkpoints[0] as { invalid?: number; pendingEscalation?: { evidence?: string } | null } | undefined;
+    assert.deepEqual([first?.invalid, first?.pendingEscalation?.evidence], [1, 'OUTPUT_FAILED_VALIDATION']);
   });
 });

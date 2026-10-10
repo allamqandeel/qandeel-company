@@ -5506,7 +5506,10 @@ Ceilings, route policy, qualification, reservation, authority and budget bind in
 **Amendment to D-L1-44:** a Founder-pinned level is PINNED. It is never escalated, neither on invalid output nor on
 context overflow. The amendment covers only that pinned level:
 - Its retries, continuation and fallbacks stay at exactly that class.
-- `txReserve` refuses a reservation above it (`ABOVE_REASONING_OVERRIDE`) as it always refused one below.
+- `txReserve` refuses a reservation above it (`ABOVE_REASONING_OVERRIDE`) as it always refused one below. Both compare
+  with the exact Founder class, never with the class the route minimum would lift it to.
+- A class below the task route's minimum is refused at the preview and the confirm (`BELOW_ROUTE_POLICY`), never lifted.
+  A level recorded before the minimum was raised ends the run `REASONING_LEVEL_UNAVAILABLE` before any reservation.
 - A level with no deployment at all ends `REASONING_LEVEL_UNAVAILABLE`, never substituted.
 - AUTO and DEFAULT starts keep the bounded evidence escalation (D13-C.3). The D-L1-44 datastore rules and the Academy
   method-pin protections are unchanged.
@@ -5579,3 +5582,44 @@ authority or provider change; no historical Work Item, message or run rewritten 
 - `command-center-ui/test/p1-reason-auto.test.ts`: the reply story never shows an AUTO start or an escalation as the
   Founder's choice.
 - The superseded D-L1-44 test (`runtime/test/l1/l1-02-reasoning-control.test.ts`) now proves the amended rule.
+
+**Second independent review (PR #30 at `90953875`), corrected.**
+- MAJOR, the manual pin below the route minimum. The override preview, the confirm and `txReserve` compared with
+  `effectiveClass()`, so a Founder E1 on a task whose route minimum is E2 could be lifted to E2. Corrected on the existing
+  boundaries, with no new routing mechanism:
+  - `txPlanReasoningOverride` refuses a class below the minimum (`BELOW_ROUTE_POLICY`). The preview, the confirm and the
+    chat send all run that one check. The plan's `effectiveClass` is now always the requested class; the payload shape
+    and the override row are unchanged.
+  - `txReserve` compares with the exact override.
+  - The model runtime refuses, before routing, an override below the current minimum (`REASONING_LEVEL_UNAVAILABLE`,
+    permanent, no call, no reservation).
+  - The level view reports `BELOW_ROUTE_POLICY` for such a class, so the composer never offers it.
+  - Unpinned starts (DEFAULT, AUTO) and the Academy method pin still start at the route minimum, unchanged.
+- Checkpoint safety, reproduced and corrected. For a Founder reply (not answer-only), an invalid output wrote no
+  checkpoint. The answer-only branches checkpointed before setting the escalation. So a crash after the invalid-output
+  classification and before the next call resumed with a fresh counter and made a second call at the class that had just
+  failed (proved: `['off', 'off']` before the fix). Every output-failure branch now checkpoints its failure count with
+  the escalation it decided on (`pendingEscalation`, `escalated`), through the existing checkpoint. The resumed run makes
+  exactly the due escalation.
+- Proof:
+  - `runtime/test/p1/p1-reason-auto-recovery.test.ts` 11c: the runtime is shut down while E1's malformed answer
+    returns, then resumed. The calls are E1 then E2, and the reservations PRIMARY then ESCALATION.
+  - `runtime/test/l1/l1-02-reasoning-control.test.ts` "D-P1-04 route minimum": the refusal, the earlier E1 level ending
+    `REASONING_LEVEL_UNAVAILABLE` with zero provider calls and no reservation, and the default still at E2.
+  - `storage/test/p1-reason-auto-recovery.test.ts`: the preview and a stale confirm refused, the level view, and the
+    reservation refused at E2 for an E1 pin.
+  - Each MAJOR proof fails on the earlier source and passes now.
+- GitHub FULL run `38004831531`, job `acceptance (windows-latest)`, was not caused by this change. `c5:spike` failed
+  launching headless Chrome: in `scripts/c5/cdp.mjs`, `readFileSync(DevToolsActivePort)` threw Windows `EBUSY` while
+  Chrome still held the file open. The throw escaped the port loop without killing the browser, so the live process
+  held the step until its 8-minute timeout. This is a harness race outside product logic; no timeout was raised. It is
+  handled as an infrastructure-only failure: a narrow same-SHA rerun if it recurs.
+- Review of these corrections: no BLOCKER and no MAJOR. Its MINOR items were applied:
+  - every checkpoint after an escalated call carries `escalated`, so a resumed run never escalates a second time;
+  - a CONTEXT_OVERFLOW escalation is checkpointed like an output failure;
+  - the stale-confirm proof asserts `BELOW_ROUTE_POLICY` exactly;
+  - an unreachable ceiling refusal was removed.
+- Note for installation: an override recorded before its route minimum was raised now ends `REASONING_LEVEL_UNAVAILABLE`
+  instead of running lifted. No LIVE route minimum is above E1 today.
+- `runtime/test/l1/l1-02-answer-only.test.ts` 8 had pinned the old behaviour (an ordinary item checkpointed only its
+  answer). It now asserts the added checkpoint: the invalid count and the pending escalation, then the answer.

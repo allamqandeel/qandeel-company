@@ -239,6 +239,35 @@ describe('P1-REASON-AUTO-RECOVERY-01 B: reliable replies', () => {
       assert.equal(await settled(rt2, opener, 20_000), 'COMPLETED');
     }));
 
+  test('11c · a crash after an invalid output is classified and before the escalation is made: the resumed run makes the due E2 escalation — never a second E1 call, never a fresh retry budget', () => {
+    // Fault injection: the runtime is shut down while E1's MALFORMED answer is being returned, so the processor classifies
+    // it and then stops before its next call. Only the durable checkpoint survives into the next runtime.
+    let crash: (() => void) | null = null;
+    let restarted: Promise<CompanyRuntime> | null = null;
+    return withWorld('p1r-crash-escalation', { selection: 'DEFAULT' }, (_r, n) => {
+      if (n === 1) {
+        crash?.();
+        return fakeChatAnswer(message('x', { note: 'extra field' }), { prompt: 300, completion: 60 });
+      }
+      return ok('After the crash.');
+    }, async ({ rt, w, restart, sent }) => {
+      crash = (): void => {
+        crash = null;
+        restarted = restart();
+      };
+      const id = ask(rt, w, 'How should we start?');
+      await eventually(() => restarted ?? undefined, 15_000, 'the injected crash');
+      const rt2 = await (restarted as unknown as Promise<CompanyRuntime>);
+      assert.equal(await settled(rt2, id, 20_000), 'COMPLETED');
+      assert.deepEqual(sent.map((x) => x.effort ?? 'off'), ['off', 'low'], 'one E1 call, then the due E2 escalation — no second E1');
+      const kinds = rt2.view.runsForWorkItem(id).flatMap((r) => rt2.governance.reservations(r.id).map((x) => x.attemptKind));
+      assert.deepEqual(kinds, ['PRIMARY', 'ESCALATION']);
+      assert.deepEqual(audits(rt2, id, 'run.model_output_invalid').map((a) => [a.reason, a.reasoningClass]), [['MALFORMED', 'E1']], 'the classification was recorded once, before the crash');
+      assert.equal(replyState(rt2, w, id).status, 'REPLIED');
+      assert.equal(rt2.governance.accountingInvariants().length, 0);
+    });
+  });
+
   test('10 · a budget without headroom for the selected class blocks paid execution: the reply parks WAITING_FOR_BUDGET before any provider call; an envelope that cannot fund a reply sends nothing', () =>
     withWorld('p1r-budget', { selection: 'AUTO', ceiling: 'E4', reasoningProfile: true }, () => ok(), async ({ rt, w, sent }) => {
       const comm = rt.founder.communications;

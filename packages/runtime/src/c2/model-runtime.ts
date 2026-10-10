@@ -22,6 +22,7 @@ import {
   parseProposalDetailed,
   planEscalation,
   planFallback,
+  reasoningRank,
   reasoningSelectionOf,
   resolveAutoClass,
   route,
@@ -126,6 +127,9 @@ export class GovernedModelRuntime {
     // pin such as an Academy observation); else, with AUTO on, the governed Reasoning Demand bounded by the ceiling, the
     // route policy and what is provisioned; else the Employee default. Bounded evidence escalation may raise an AUTO or
     // DEFAULT start only; the Employee ceiling, the route policy, qualified deployments and the reservation still bind.
+    // D-P1-04: the Founder's level is pinned exactly. A level below the route minimum (an override set before the policy
+    // was raised) would only be lifted by the router, so no call is made: the level is unavailable, never substituted.
+    if (run.reasoningOverride !== null && reasoningRank(run.reasoningOverride) < reasoningRank(policy.minClass)) return { kind: 'UNAVAILABLE', code: 'REASONING_LEVEL_UNAVAILABLE' };
     let requested: ReasoningClass | undefined;
     let firstKind: AttemptKind = 'PRIMARY';
     let selection: ReasoningSelectionRecord | null = null;
