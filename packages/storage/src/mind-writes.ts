@@ -615,8 +615,23 @@ function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, m
     ...(mode !== null && ANSWER_MODES.includes(mode) ? [ANSWER_GUIDANCE] : []),
     // L1-02: the Employee's own approved identity kernel (Stage 4 §7), when its profile carries one; others unchanged.
     ...(identityKernelOf(e) !== null ? [`Identity kernel (behavioural design, never a claim of being human; grants nothing): ${identityKernelOf(e)}`] : []),
+    // P1-CEO-CONVERSATION-UX-01: how the CEO talks in the direct Founder conversation, after the kernel it applies. Only that
+    // reply carries the marker: a CEO brief, background work, an Academy run and every other Employee keep their context.
+    ...(isCeoDirectConversation(item) ? [CEO_CONVERSATION_GUIDANCE] : []),
   ].join('\n');
 }
+
+/** P1-CEO-CONVERSATION-UX-01: the reply-input marker of one direct Founder ↔ CEO conversation turn (set by the send). */
+export const CEO_DIRECT_CONVERSATION = 'FOUNDER_CEO_DIRECT';
+
+const isCeoDirectConversation = (item: WorkItemRecord): boolean => isFounderThreadReply(item) && (item.processorInput as { conversation?: unknown } | null)?.conversation === CEO_DIRECT_CONVERSATION;
+
+/**
+ * A natural executive conversation by default, structure when asked or truly needed, the Founder Communication Standard for
+ * real decisions and briefs. Shorter is never shallower: independent judgment, disagreement and honest uncertainty stay.
+ */
+export const CEO_CONVERSATION_GUIDANCE =
+  'This is your direct conversation with the Founder. Talk as a trusted executive partner: naturally, warmly and professionally, in the Founder\'s language and tone. Answer what the Founder is discussing now and follow where the conversation is going, instead of steering it back to earlier topics. When the Founder is on one subject, keep the body short and focused, in plain paragraphs: no opening restatement of what you understood, no section headings, numbered assessments or recap of earlier turns. Shorter never means shallower: bring your own judgment, an original insight, a risk or opportunity the Founder has not raised, or your disagreement and its reason. Never ask again what this conversation or your context already answers; ask a follow-up only when it genuinely moves the discussion forward, and then one question, not a list. Give structured analysis, a detailed plan, a report or decision options when the Founder asks for one or the subject genuinely requires it. The four-part Founder Communication Standard (what is happening, why it matters, your recommendation, the decision needed) is for briefs and real decisions, not for every turn: only when something actually needs the Founder\'s authority, say plainly what you recommend and what the Founder must decide, with purpose DECISION_REQUEST; never manufacture a decision to ask for. State uncertainty honestly. This shapes how you talk; it grants no authority and changes no governance, budget or approval rule.';
 
 const ANSWER_MODES: readonly string[] = ['ACADEMY_ATTEMPT', 'SHADOW_WORK', 'SKILL_BENCHMARK'];
 

@@ -5623,3 +5623,61 @@ authority or provider change; no historical Work Item, message or run rewritten 
   instead of running lifted. No LIVE route minimum is above E1 today.
 - `runtime/test/l1/l1-02-answer-only.test.ts` 8 had pinned the old behaviour (an ordinary item checkpointed only its
   answer). It now asserts the added checkpoint: the invalid count and the pending escalation, then the answer.
+
+## D-P1-05 — The CEO converses by default; a one-click Copy on every chat message (P1-CEO-CONVERSATION-UX-01; Founder-approved Task Contract, executor)
+
+**Context.** In the direct Founder ↔ CEO conversation, Salim answered a discussion with sections, numbered assessments,
+repeated summaries, stacked questions and formal decision requests. The reply instruction every Founder message carried
+("Answer as a MESSAGE proposal in the Founder Communication Standard when a decision is involved") let almost any
+strategic discussion read as "a decision is involved". The kernel's "what happened, why it matters, what you recommend,
+whether the Founder must decide" was read the same way, as a four-part report for every turn. The Founder also wanted to
+copy any message in one click.
+
+**Decision — conversation.**
+- Only a direct Founder ↔ CEO turn changes; the identity kernel, the CEO Constitution, the Academy and skills, route
+  policy and budgets are untouched.
+  - `txFounderSend` marks the reply input of a `FOUNDER_CEO` thread `conversation: 'FOUNDER_CEO_DIRECT'`.
+  - Its instruction line becomes "Reply in this conversation as one MESSAGE proposal. Communication grants no authority."
+  - Every other Employee's reply keeps its exact pre-P1 line.
+- The guidance lives in the governed preamble, not in the instructions, because the instructions also seed the
+  context's retrieval terms (`terms`: sorted, capped at 48). Long English guidance there would crowd the Founder's own
+  topic out, Arabic first, since Arabic sorts after Latin.
+  - `CEO_CONVERSATION_GUIDANCE` (in `mind-writes.ts`) follows the identity kernel, and only for the marked item.
+  - A CEO brief, background work, an Academy run and every other context keep their exact preamble.
+- What the guidance says:
+  - talk naturally, warmly and professionally, in the Founder's language and tone, and follow the current direction;
+  - on one subject, keep the reply short in plain paragraphs: no "what I understood", headings, numbered assessments or
+    recaps;
+  - shorter never means shallower: bring an original insight, an unraised risk, or a disagreement with its reason;
+  - never re-ask what the context already answers, and ask at most one follow-up, only when it moves the discussion;
+  - structure (analysis, plan, report, options) comes when asked or genuinely required;
+  - the Founder Communication Standard is for briefs and real decisions: when the Founder's authority is actually
+    needed, give the recommendation and the decision as a `DECISION_REQUEST`, and never manufacture one;
+  - state uncertainty honestly;
+  - the guidance grants nothing.
+
+**Decision — Copy.**
+- Each message's meta row (Founder and Employee) gets a Copy button with an accessible label and a decorative SVG.
+  - On a fine pointer it appears on hover or keyboard focus; on touch it stays visible.
+  - It sits in the same flex row, so RTL and LTR follow the bubble.
+- `model/message-copy.ts` defines what is copied:
+  - a body is copied verbatim;
+  - a brief copies its four shown parts under their shown titles (the renderer now uses the same `briefRows`);
+  - the sender, time, purpose and status are never copied.
+- `copyToClipboard` tries the Clipboard API, then a synchronous `execCommand` fallback.
+  - It reports success only when one of them did; otherwise it shows "Copy failed".
+  - "Copied" fades after 2 s and survives a live refresh by message id; the text itself is never kept, logged, sent or
+    stored.
+- No endpoint, storage, dependency or permission was added.
+
+**Not changed.** The send idempotency, paging, reply states, composer, message ownership, the C3 precedence, the brief
+and briefing instructions, migrations, the impact map, and LIVE. The improved style is a prompt contract. It is not
+proven on LIVE until an approved release is installed and a real conversation happens.
+
+**Proof.**
+- `storage/test/p1-ceo-conversation-ux.test.ts`: the real send → claim → assembled context path:
+  - the guidance is present once for a CEO turn, and absent for another Employee and for a CEO brief;
+  - another Employee keeps its exact line;
+  - the retrieval terms do not grow, and the Founder's terms survive.
+- `command-center-ui/test/p1-chat-copy.test.ts`: the copy text (long Arabic / English, line breaks, CRLF, brief) and
+  the honest success or failure.

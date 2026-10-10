@@ -18,6 +18,7 @@ import { dirOf, fmtDate, fmtDateTime, fmtMoneyMicros, fmtTime, hasArabic, humani
 import type { CompanyUniverse } from '../model/types.js';
 import { beginSend, editDraft, sendState, settleFailed, settleSent, type DraftStore, type SendState, type StoredDraft } from '../model/chat-send.js';
 import { AUTO_EXPLAINED, LEVEL_SHORT, LEVEL_THINKING, LEVELS, levelState, modelLabel, reasonText, REPLY_LABEL, selectionSummary, type Level } from '../model/intelligence.js';
+import { briefRows, copyToClipboard, messageCopyText } from '../model/message-copy.js';
 import { api, ApiError } from './api.js';
 import { h } from './panels.js';
 
@@ -73,6 +74,35 @@ const contentEl = (tag: string, text: string, cls: string): HTMLElement => {
   return e;
 };
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+/** Two overlapping sheets: the copy glyph (decorative; the button carries the label). */
+const copyIcon = (): SVGSVGElement => {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const [x, y] of [[5.5, 5.5], [2.5, 2.5]] as const) {
+    const r = document.createElementNS(SVG_NS, 'rect');
+    for (const [k, v] of Object.entries({ x, y, width: 8, height: 8, rx: 1.6 })) r.setAttribute(k, String(v));
+    svg.append(r);
+  }
+  return svg;
+};
+
+/** The synchronous fallback when the Clipboard API is missing or refused: a detached selection, focus given back. */
+const legacyCopy = (text: string): boolean => {
+  const back = document.activeElement as HTMLElement | null;
+  const area = h('textarea', { readonly: true, class: 'chat-copy-buffer', 'aria-hidden': 'true', tabindex: -1 }) as HTMLTextAreaElement;
+  area.value = text;
+  document.body.append(area);
+  try {
+    area.select();
+    return document.execCommand('copy');
+  } finally {
+    area.remove();
+    back?.focus({ preventScroll: true });
+  }
+};
+
 interface Identity {
   readonly name: string;
   readonly given: string;
@@ -120,6 +150,9 @@ export class ChatScreen {
   readonly #error = h('p', { class: 'chat-error', role: 'alert' });
   readonly #send = h('button', { type: 'submit', class: 'btn btn-primary chat-send', text: 'Send', 'data-keep': 'chat-send' });
   readonly #restriction = h('p', { class: 'chat-restriction' });
+  /** The last copy's outcome, by message id: kept across a live refresh until it fades (the text itself is never kept). */
+  #copied: { readonly id: string; readonly ok: boolean } | null = null;
+  #copyTimer = 0;
 
   constructor(root: HTMLElement, host: ChatHost) {
     this.#root = root;
@@ -322,12 +355,10 @@ export class ChatScreen {
       const li = h('li', { class: `chat-msg ${mine ? 'from-founder' : 'from-employee'}`, 'data-seq': String(seq) });
       const bubble = h('div', { class: 'chat-bubble' });
       const brief = m.brief as Json | null;
-      if (brief) {
-        const row = (title: string, text: string): HTMLElement => h('div', { class: 'brief-row' }, h('h4', { text: title }), contentEl('p', text, ''));
-        bubble.append(h('div', { class: 'brief' }, row('What is happening', String(brief.happening)), row('Why it matters', String(brief.matters)), row('Recommendation', String(brief.recommendation)), row('Decision needed', brief.decisionNeeded ? String(brief.decision ?? 'Yes') : 'No decision needed')));
-      } else bubble.append(contentEl('p', String(m.body), 'chat-text'));
+      if (brief) bubble.append(h('div', { class: 'brief' }, ...briefRows(brief).map((r) => h('div', { class: 'brief-row' }, h('h4', { text: r.title }), contentEl('p', r.text, '')))));
+      else bubble.append(contentEl('p', String(m.body), 'chat-text'));
       const purpose = String(m.purpose);
-      const meta = h('div', { class: 'chat-meta' }, h('span', { class: 'chat-sender', text: mine ? 'You' : id.name }), purpose !== 'QUESTION' && purpose !== 'RESULT' ? h('span', { class: `chat-purpose purpose-${purpose.toLowerCase()}`, text: t(PURPOSE_LABEL, purpose) }) : null, h('time', { class: 'chat-time', text: fmtTime(at), title: fmtDateTime(at), datetime: at }));
+      const meta = h('div', { class: 'chat-meta' }, h('span', { class: 'chat-sender', text: mine ? 'You' : id.name }), purpose !== 'QUESTION' && purpose !== 'RESULT' ? h('span', { class: `chat-purpose purpose-${purpose.toLowerCase()}`, text: t(PURPOSE_LABEL, purpose) }) : null, h('time', { class: 'chat-time', text: fmtTime(at), title: fmtDateTime(at), datetime: at }), this.#copyButton(m));
       if (!mine) li.append(h('span', { class: 'avatar avatar-sm chat-msg-avatar', text: initials(id.name), style: `--dept:${id.accent}`, 'aria-hidden': 'true' }));
       li.append(h('div', { class: 'chat-stack' }, meta, bubble, mine ? this.#replyLine(m, id) : null));
       items.push(li);
@@ -337,6 +368,36 @@ export class ChatScreen {
     if (running.length > 0) items.push(h('li', { class: 'chat-typing', 'aria-label': `${id.given} is writing a reply` }, h('span', { class: 'avatar avatar-sm chat-msg-avatar', text: initials(id.name), style: `--dept:${id.accent}`, 'aria-hidden': 'true' }), h('span', { class: 'chat-dots', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')), h('span', { class: 'chat-typing-text', text: `${id.given} is writing…` })));
     if (seqs.length === 0) items.push(h('li', { class: 'chat-empty' }, h('strong', { text: 'No messages yet.' }), h('span', { text: ` Write to ${id.given} in English or Arabic. ${id.state === 'ACTIVE' ? `The reply comes from ${id.isCeo ? 'the CEO’s' : 'their'} own governed run.` : ''}` })));
     this.#list.replaceChildren(...items);
+  }
+
+  /** Copy for one message (Founder or Employee): its full displayed text only, to the clipboard, with an honest outcome. */
+  #copyButton(m: Json): HTMLElement {
+    const msgId = String(m.id);
+    const btn = h('button', { type: 'button', class: 'chat-copy', 'data-copy': msgId, 'data-keep': `chat-copy:${msgId}` }, copyIcon(), h('span', { class: 'chat-copy-label' }));
+    btn.addEventListener('click', () => void this.#copy(msgId, messageCopyText(m)));
+    this.#paintCopy(btn);
+    return btn;
+  }
+
+  async #copy(msgId: string, text: string): Promise<void> {
+    const ok = await copyToClipboard(text, typeof navigator !== 'undefined' ? navigator.clipboard : null, legacyCopy);
+    this.#copied = { id: msgId, ok };
+    clearTimeout(this.#copyTimer);
+    this.#copyTimer = window.setTimeout(() => {
+      this.#copied = null;
+      for (const b of this.#list.querySelectorAll<HTMLElement>('.chat-copy')) this.#paintCopy(b);
+    }, ok ? 2000 : 5000);
+    for (const b of this.#list.querySelectorAll<HTMLElement>('.chat-copy')) this.#paintCopy(b);
+  }
+
+  #paintCopy(btn: HTMLElement): void {
+    const state = this.#copied !== null && this.#copied.id === btn.dataset.copy ? (this.#copied.ok ? 'copied' : 'failed') : null;
+    btn.classList.toggle('is-copied', state === 'copied');
+    btn.classList.toggle('is-failed', state === 'failed');
+    btn.setAttribute('aria-label', state === 'failed' ? 'Copy failed — the message was not copied' : 'Copy message');
+    btn.title = state === 'failed' ? 'Copy failed' : 'Copy message';
+    const label = btn.querySelector('.chat-copy-label');
+    if (label) label.textContent = state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : '';
   }
 
   /** The status line under a Founder message: what happened to its reply, at which level, and what it cost. */
