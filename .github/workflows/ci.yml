@@ -296,15 +296,18 @@ jobs:
           - { os: windows-latest, label: c7c-2of2, suite: 'c7c:2/2' }
           - { os: windows-latest, label: c7d-1of2, suite: 'c7d:1/2' }
           - { os: windows-latest, label: c7d-2of2, suite: 'c7d:2/2' }
-          - { os: windows-latest, label: l1-1of9, suite: 'l1:1/9' }
-          - { os: windows-latest, label: l1-2of9, suite: 'l1:2/9' }
-          - { os: windows-latest, label: l1-3of9, suite: 'l1:3/9' }
-          - { os: windows-latest, label: l1-4of9, suite: 'l1:4/9' }
-          - { os: windows-latest, label: l1-5of9, suite: 'l1:5/9' }
-          - { os: windows-latest, label: l1-6of9, suite: 'l1:6/9' }
-          - { os: windows-latest, label: l1-7of9, suite: 'l1:7/9' }
-          - { os: windows-latest, label: l1-8of9, suite: 'l1:8/9' }
-          - { os: windows-latest, label: l1-9of9, suite: 'l1:9/9' }
+          - { os: windows-latest, label: l1-1of12, suite: 'l1:1/12' }
+          - { os: windows-latest, label: l1-2of12, suite: 'l1:2/12' }
+          - { os: windows-latest, label: l1-3of12, suite: 'l1:3/12' }
+          - { os: windows-latest, label: l1-4of12, suite: 'l1:4/12' }
+          - { os: windows-latest, label: l1-5of12, suite: 'l1:5/12' }
+          - { os: windows-latest, label: l1-6of12, suite: 'l1:6/12' }
+          - { os: windows-latest, label: l1-7of12, suite: 'l1:7/12' }
+          - { os: windows-latest, label: l1-8of12, suite: 'l1:8/12' }
+          - { os: windows-latest, label: l1-9of12, suite: 'l1:9/12' }
+          - { os: windows-latest, label: l1-10of12, suite: 'l1:10/12' }
+          - { os: windows-latest, label: l1-11of12, suite: 'l1:11/12' }
+          - { os: windows-latest, label: l1-12of12, suite: 'l1:12/12' }
           - { os: ubuntu-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }
           - { os: ubuntu-latest, label: c3-1of1, suite: 'c3:1/1' }
           - { os: ubuntu-latest, label: r1-1of2, suite: 'r1:1/2' }

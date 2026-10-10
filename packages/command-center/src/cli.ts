@@ -78,6 +78,7 @@ import { actualCost, worstCase, type ProviderAdapter, type ProviderProvisioningP
 import { DEEPSEEK_FLASH_PRICE_CARD, DEEPSEEK_MODEL_CODE, DEEPSEEK_PROVIDER_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_PROFILE, DEEPSEEK_V41_FLASH_REASONING_PROFILE, DeepSeekHttpsTransport, DeepSeekProviderAdapter, PROBE_MAX_TOKENS, PROBE_THINKING_MAX_TOKENS } from '@qandeel-company/model-providers';
 import { Logger, admitRuntimeRelease, jsonLinesSink, selfReleaseRoot, verifyReleaseTree } from '@qandeel-company/runtime';
 import { VaultError, WindowsUserVault } from '@qandeel-company/secret-vault';
+import { GitHubHttpsTransport } from '@qandeel-company/tool-drivers';
 import { CHAT_REPLY_OUTPUT_TOKENS, CompanyStore, FounderAuthStore, GovernanceStore } from '@qandeel-company/storage';
 
 import { hostPaths, readDescriptor } from './host/descriptor.js';
@@ -340,6 +341,8 @@ export async function main(argv: readonly string[]): Promise<void> {
         fakes: { providers: values['fake-provider'] ?? [], drivers: values['fake-driver'] ?? [] },
         providers: live.map((l) => l.adapter),
         provisioningProfiles: live.flatMap((l) => l.profiles),
+        // D-P1-06: the read-only product documentation reader (anonymous, fixed host; inert until the Founder grants it).
+        productDocsTransport: new GitHubHttpsTransport(),
         log: (event, fields) => logger.info(event, fields),
         host: {
           onStopRequested: () => stop(0),

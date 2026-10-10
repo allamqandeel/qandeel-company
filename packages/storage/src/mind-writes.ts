@@ -46,6 +46,7 @@ import {
 import { txFeedbackForAttemptContext } from './academy-feedback.js';
 import { benchmarkPinMismatch, txBenchmarkRunPins } from './benchmark-pins.js';
 import { getEmployeeRow, wakeWorkItemJob } from './governance-core.js';
+import { txGrantedToolGuidance } from './product-knowledge.js';
 import type { EmployeeRecord } from './governance-records.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import {
@@ -597,7 +598,7 @@ function contextCeiling(item: WorkItemRecord, effective: DataClass): DataClass {
   return maxDataClass(declared, effective);
 }
 
-function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, mode: string | null): string {
+function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, mode: string | null, grantedTools: readonly string[] = []): string {
   const task = (item.processorInput as { taskClass?: unknown } | null)?.taskClass;
   // D-L1-25: an answer-only benchmark observation (BQM-2) is offered exactly the deliverable its fence accepts.
   const answerOnly = mode === 'SKILL_BENCHMARK' && (item.processorInput as { answerOnly?: unknown } | null)?.answerOnly === true;
@@ -618,6 +619,9 @@ function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, m
     // P1-CEO-CONVERSATION-UX-01: how the CEO talks in the direct Founder conversation, after the kernel it applies. Only that
     // reply carries the marker: a CEO brief, background work, an Academy run and every other Employee keep their context.
     ...(isCeoDirectConversation(item) ? [CEO_CONVERSATION_GUIDANCE] : []),
+    // P1-PRODUCT-KNOWLEDGE-01 (D-P1-06): only the Tools this Employee was granted, each with its release-pinned guidance.
+    // Every other Employee (and every context without such a grant) keeps its exact preamble.
+    ...grantedTools,
   ].join('\n');
 }
 
@@ -896,7 +900,9 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
 
   // L1 — the runtime's governance preamble (required; deterministic from durable state; labelled at the
   // Work Item's declared class — it carries no higher-class content).
-  const preamble = preambleText(e, item, p.ceiling, p.mode);
+  // D-P1-06: the Tools this Employee holds an active grant for (release-pinned guidance), in production work only — an
+  // Academy attempt, a benchmark observation and shadow work keep their exact preamble.
+  const preamble = preambleText(e, item, p.ceiling, p.mode, p.mode === null ? txGrantedToolGuidance(ctx, e.id, at) : []);
   add(baseCandidate({ key: 'preamble', kind: 'PREAMBLE', layer: 'AUTHORITY', required: true, itemId: 'preamble', sha256: sha256Hex(preamble), provenanceRef: 'runtime:governance-preamble', estTokens: itemEstimate(preamble), dataClass: declared }, at), () => preamble);
 
   // L2 — the Work Item's own instructions (required, intact) and, for an Academy attempt, its scenario.

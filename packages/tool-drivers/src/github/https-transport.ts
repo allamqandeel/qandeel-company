@@ -32,7 +32,8 @@ export class GitHubHttpsTransport implements GitHubTransport {
         Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': GITHUB_API_VERSION,
         'User-Agent': 'qandeel-company-tool-driver',
-        Authorization: `Bearer ${request.bearer}`,
+        // D-P1-06: an empty bearer is an anonymous public read (the product documentation reader holds no credential).
+        ...(request.bearer.length > 0 ? { Authorization: `Bearer ${request.bearer}` } : {}),
         ...(request.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       ...(request.body !== undefined ? { body: JSON.stringify(request.body) } : {}),

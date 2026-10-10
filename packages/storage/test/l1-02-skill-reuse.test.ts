@@ -390,7 +390,7 @@ describe('D-L1-28: production package v5 reuses the three v4 Skill Versions that
       assert.ok(w.store.view(V5).skills.every((s) => s.pipelineState === 'APPROVED'));
       assert.equal(w.store.view(V4).record?.state, 'QUALIFYING', 'v4 stays QUALIFYING, never installed');
       assert.equal(JSON.stringify({ rec: db.get('SELECT * FROM academy_packages WHERE id = ?', w.packageId(V4)), runs: db.all('SELECT * FROM skill_benchmark_runs WHERE package_id = ? ORDER BY id', w.packageId(V4)), skills: db.all('SELECT * FROM academy_package_skills WHERE package_id = ? ORDER BY skill_code', w.packageId(V4)) }), v4Before, 'v4 history is unchanged');
-      assert.deepEqual(loadReleasedMigrations().filter((m) => m.version > 19).map((m) => m.name), ['l1_02_employee_reasoning_control', 'l1_02_academy_founder_feedback'], 'migration 0019 is sufficient for packages: the only later migrations are D-L1-44 reasoning control and D-L1-39 Founder feedback');
+      assert.deepEqual(loadReleasedMigrations().filter((m) => m.version > 19).map((m) => m.name), ['l1_02_employee_reasoning_control', 'l1_02_academy_founder_feedback', 'p1_product_knowledge'], 'migration 0019 is sufficient for packages: the only later migrations are D-L1-44 reasoning control, D-L1-39 Founder feedback and D-P1-06 preview intents');
     });
   });
 });
@@ -461,7 +461,7 @@ describe('D-L1-31: production package v6 reuses five qualified Skill Versions (t
       assert.ok(w.store.view(V6).skills.every((s) => s.pipelineState === 'APPROVED'));
       assert.deepEqual([w.store.view(V4).record?.state, w.store.view(V5).record?.state], ['QUALIFYING', 'QUALIFYING'], 'v4 and v5 are never installed');
       assert.deepEqual([history(V4), history(V5)], [before.v4, before.v5], 'v4 and v5 history is unchanged');
-      assert.deepEqual(loadReleasedMigrations().filter((m) => m.version > 19).map((m) => m.name), ['l1_02_employee_reasoning_control', 'l1_02_academy_founder_feedback'], 'migration 0019 is sufficient for packages: the only later migrations are D-L1-44 reasoning control and D-L1-39 Founder feedback');
+      assert.deepEqual(loadReleasedMigrations().filter((m) => m.version > 19).map((m) => m.name), ['l1_02_employee_reasoning_control', 'l1_02_academy_founder_feedback', 'p1_product_knowledge'], 'migration 0019 is sufficient for packages: the only later migrations are D-L1-44 reasoning control, D-L1-39 Founder feedback and D-P1-06 preview intents');
     });
   });
 });
@@ -537,7 +537,7 @@ describe('D-L1-35A: production package v7 reuses the same five qualified Skill V
       assert.ok(w.store.view(V7).skills.every((s) => s.pipelineState === 'APPROVED'));
       assert.deepEqual([w.store.view(V4).record?.state, w.store.view(V5).record?.state, w.store.view(V6).record?.state], ['QUALIFYING', 'QUALIFYING', 'QUALIFYING'], 'v4, v5 and v6 are never installed');
       assert.deepEqual([history(V4), history(V5), history(V6)], [before.v4, before.v5, before.v6], 'v4, v5 and v6 history is unchanged');
-      assert.deepEqual(loadReleasedMigrations().filter((m) => m.version > 19).map((m) => m.name), ['l1_02_employee_reasoning_control', 'l1_02_academy_founder_feedback'], 'migration 0019 is sufficient for packages: the only later migrations are D-L1-44 reasoning control and D-L1-39 Founder feedback');
+      assert.deepEqual(loadReleasedMigrations().filter((m) => m.version > 19).map((m) => m.name), ['l1_02_employee_reasoning_control', 'l1_02_academy_founder_feedback', 'p1_product_knowledge'], 'migration 0019 is sufficient for packages: the only later migrations are D-L1-44 reasoning control, D-L1-39 Founder feedback and D-P1-06 preview intents');
     });
   });
 });

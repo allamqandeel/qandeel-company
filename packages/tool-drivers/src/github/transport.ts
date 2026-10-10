@@ -8,7 +8,10 @@ export interface GitHubRequest {
   /** An allowlisted API path (see `endpoints.ts`) — never a URL or a host. */
   readonly path: string;
   readonly body?: JsonObject;
-  /** A short-lived installation token or the App's signed JWT, used for this request only and never recorded. */
+  /**
+   * A short-lived installation token or the App's signed JWT, used for this request only and never recorded. Empty for an
+   * anonymous public read (D-P1-06: the product documentation reader), which sends no Authorization header.
+   */
   readonly bearer: string;
 }
 

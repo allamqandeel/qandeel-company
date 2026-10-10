@@ -15,6 +15,7 @@ export * from './improvement.js';
 export * from './memory.js';
 export * from './performance.js';
 export * from './pilot-evidence.js';
+export * from './product-knowledge.js';
 export * from './reporting.js';
 export * from './seo.js';
 export * from './skills.js';

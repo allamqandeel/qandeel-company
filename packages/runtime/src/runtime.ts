@@ -80,6 +80,7 @@ import {
   promotionArgsOf,
   resolvePromotionExport,
   resolvePromotionTarget,
+  resolveProductSource,
   type PromotionExportResult,
   MemoryStore,
   OrganizationStore,
@@ -952,6 +953,19 @@ export class CompanyRuntime {
       resolve: (adapterCode: string, args: JsonObject, options: { includeContent: boolean }) => resolvePromotionExport(open(), adapterCode, args, options),
       target: (adapterCode: string, targetId: string) => resolvePromotionTarget(open(), adapterCode, targetId),
       promotionArgs: (promotionId: string) => promotionArgsOf(open(), promotionId),
+    });
+  }
+
+  /**
+   * D-P1-06: the read-only product source resolver the host wires to the product documentation reader — the one ACTIVE
+   * Founder-registered source, re-read from the store on every call (a suspended or retired source stops reads at once).
+   */
+  productSource(): { productSource(): ReturnType<typeof resolveProductSource> } {
+    return Object.freeze({
+      productSource: () => {
+        if (!this.#store || this.#store.isClosed) return { ok: false, code: 'RUNTIME_NOT_READY' } as const;
+        return resolveProductSource(this.#store);
+      },
     });
   }
 

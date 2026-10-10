@@ -965,7 +965,7 @@ describe('C7-A durability', () => {
       const v12 = openStoreForTests(root, { clock: new ManualClock(), liveSchemaUpdate: true });
       try {
         // C7-B appended 0013 after 0012: the upgrade applies every pending release, in order.
-        assert.deepEqual(v12.migration.applied, [12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
+        assert.deepEqual(v12.migration.applied, [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
         const d = storeContext(v12).db;
         assert.deepEqual({ events: Number(d.get<{ n: number }>('SELECT COUNT(*) AS n FROM events')?.n), maxSeq: Number(d.get<{ n: number }>('SELECT MAX(seq) AS n FROM events')?.n) }, counts11, 'the outbox keeps every event and its order');
         assert.equal(v12.getWorkItem(workItem.id).state, 'READY');

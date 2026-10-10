@@ -48,7 +48,7 @@ export const MUTATION_FAMILIES = ['c1', 'c2', 'c3', 'r1', 'c4', 'c5', 'c6', 'c7a
  * way (audited); the affected matrix reuses the same shards, so a family's Windows budget is the same in both modes.
  */
 export const MUTATION_SHARDS = {
-  [WINDOWS]: { c1: 1, c2: 1, c3: 2, r1: 4, c4: 2, c5: 1, c6: 4, c7a: 4, c7b: 3, c7c: 2, c7d: 2, l1: 9 },
+  [WINDOWS]: { c1: 1, c2: 1, c3: 2, r1: 4, c4: 2, c5: 1, c6: 4, c7a: 4, c7b: 3, c7c: 2, c7d: 2, l1: 12 },
   [UBUNTU]: { c1: 1, c2: 1, c3: 1, r1: 2, c4: 1, c5: 1, c6: 1, c7a: 2, c7b: 2, c7c: 1, c7d: 1, l1: 1 },
 };
 
@@ -424,7 +424,7 @@ export function selfTest() {
   const want = ['build', 'typecheck', 'lint', 'verify', 'test:command-center', 'test:command-center-ui', 'test:harness', 'acceptance:c5:acceptance', 'acceptance:c5:spike', 'acceptance:desktop:e2e', 'acceptance:desktop:proof'];
   if (ui.steps.map((s) => s.id).join() !== want.join()) failures.push(`C5 UI steps are [${ui.steps.map((s) => s.id)}]`);
   if (ui.mutation.families.join() !== 'c5,c7d,l1' || ui.mutation.os.join() !== WINDOWS) failures.push('C5 UI mutation proof is not c5,c7d,l1 on Windows');
-  if (ui.mutation.matrix.map((m) => m.suite).join(' ') !== 'c5:1/1 c7d:1/2 c7d:2/2 l1:1/9 l1:2/9 l1:3/9 l1:4/9 l1:5/9 l1:6/9 l1:7/9 l1:8/9 l1:9/9') failures.push(`C5 UI mutation shards are ${ui.mutation.matrix.map((m) => m.suite)}`);
+  if (ui.mutation.matrix.map((m) => m.suite).join(' ') !== 'c5:1/1 c7d:1/2 c7d:2/2 l1:1/12 l1:2/12 l1:3/12 l1:4/12 l1:5/12 l1:6/12 l1:7/12 l1:8/12 l1:9/12 l1:10/12 l1:11/12 l1:12/12') failures.push(`C5 UI mutation shards are ${ui.mutation.matrix.map((m) => m.suite)}`);
   const desk = planFor(['packaging/windows/qandeel-company.iss']);
   if (desk.steps.map((s) => s.id).join() !== 'build,typecheck,lint,verify,acceptance:desktop:e2e,acceptance:desktop:proof' || desk.os.join() !== WINDOWS || desk.mutation.matrix.length !== 0) failures.push(`Desktop distribution plan is [${desk.steps.map((s) => s.id)}] on [${desk.os}]`);
   const host = planFor(['packages/command-center/src/host/lifecycle.ts']);

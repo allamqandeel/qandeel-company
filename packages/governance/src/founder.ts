@@ -154,7 +154,14 @@ export const REASONING_INTENTS = ['EMPLOYEE_REASONING_PROFILE', 'WORK_ITEM_REASO
  * changes no attempt, answer, score, authority or budget.
  */
 export const ACADEMY_FEEDBACK_INTENTS = ['ACADEMY_FOUNDER_FEEDBACK'] as const;
-export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS, ...EXTERNAL_EVIDENCE_INTENTS, ...PILOT_INTENTS, ...PROVISIONING_INTENTS, ...ACTIVATION_INTENTS, ...REASONING_INTENTS, ...ACADEMY_FEEDBACK_INTENTS] as const;
+/**
+ * D-P1-06 (P1-PRODUCT-KNOWLEDGE-01): the Founder's rename of an Employee's display name (the same Employee: ID, history,
+ * memory, grants and budget unchanged), and the Founder's grant / revocation of the shared, read-only product knowledge
+ * Tool to one Employee. Structured-only; neither changes a budget, a reasoning level or any other authority.
+ */
+export const EMPLOYEE_IDENTITY_INTENTS = ['EMPLOYEE_RENAME'] as const;
+export const PRODUCT_KNOWLEDGE_INTENTS = ['PRODUCT_KNOWLEDGE_ACCESS'] as const;
+export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS, ...EXTERNAL_EVIDENCE_INTENTS, ...PILOT_INTENTS, ...PROVISIONING_INTENTS, ...ACTIVATION_INTENTS, ...REASONING_INTENTS, ...ACADEMY_FEEDBACK_INTENTS, ...EMPLOYEE_IDENTITY_INTENTS, ...PRODUCT_KNOWLEDGE_INTENTS] as const;
 export type ReadIntent = (typeof READ_INTENTS)[number];
 export type MutatingIntent = (typeof MUTATING_INTENTS)[number];
 

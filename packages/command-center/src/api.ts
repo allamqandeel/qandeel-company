@@ -673,6 +673,8 @@ function resolveMutatingTarget(ctx: ApiContext, u: CompanyUniverse, command: Ext
     case 'EMPLOYEE_REASONING_PROFILE':
     case 'WORK_ITEM_REASONING_OVERRIDE':
     case 'ACADEMY_FOUNDER_FEEDBACK':
+    case 'EMPLOYEE_RENAME':
+    case 'PRODUCT_KNOWLEDGE_ACCESS':
       // Structured only (a form or a rail action posts IDs / codes), never free text (D-C5-07, R2-21, C7-A, C7-C, L1-01, L1-02).
       return null;
   }
@@ -810,6 +812,13 @@ export function structuredSummary(ctx: ApiContext, preview: { intentKind: string
       return `Run this one Work Item (${s('workItemId').slice(0, 8)}…, ${s('taskClass')}) for ${s('name')} at ${s('requestedClass')} (routes at ${s('effectiveClass')}; standing default ${s('employeeDefault')}, ceiling ${s('employeeCeiling')}; route policy max ${s('routePolicyMaxClass')}${p.deploymentAvailable === true ? '' : '; no deployment of that class is provisioned now — the run cannot route until one is'}). This Work Item only: the persistent profile, authority, tools, data and budget are unchanged, and the worst case of the class is reserved before any call`;
     case 'ACADEMY_FOUNDER_FEEDBACK':
       return `Record your feedback (${s('feedbackBytes')} bytes) on ${s('name')}'s ${s('attemptKind').toLowerCase()} #${s('trial')} (${s('scenarioCode')}, ${s('outcome')}), bound to that attempt's recorded answer. It is added, never rewritten: the attempt, its answer and its scores stand as decided. The trainee's later Academy attempts carry it in their context; production work does not. No authority, budget or provider call`;
+    // --- D-P1-06: the Founder's rename (same Employee) and the shared, read-only product knowledge Tool ---
+    case 'EMPLOYEE_RENAME':
+      return `Rename ${s('previousName')}${p.previousNameAr ? ` (${s('previousNameAr')})` : ''} to ${s('givenName')} ${s('familyName')}${p.displayNameAr ? ` (${s('displayNameAr')})` : ''}. The same Employee: its ID, seat, lifecycle, grants, budget, memory, skills, certifications, conversations and history stay as they are. Employee history records the rename with today's date; nothing earlier is rewritten. No authority, budget or provider call`;
+    case 'PRODUCT_KNOWLEDGE_ACCESS':
+      return p.decision === 'REVOKE'
+        ? `Revoke ${s('name')}'s read-only product knowledge access (${Array.isArray(p.grantIds) ? (p.grantIds as string[]).length : 0} grant(s)). Reads stop at once; nothing else changes`
+        : `Grant ${s('name')} read-only product knowledge: on request, it reads the QANDEEL App's documentation from ${s('source')} (main, at an exact commit each time) and cites path + commit. ${p.registerSource === true ? 'Registers this repository as the product source. ' : ''}${p.registerTool === true ? 'Registers the read-only product-knowledge Tool (R0, no side effect, no credential). ' : ''}Read-only: no write, commit, merge, branch, local repository, shell or secret. No budget, reasoning level or other authority changes; no provider call now`;
     case 'PILOT_ADVANCE': {
       const step: Record<string, string> = {
         BRIEFING: 'Start the pilot briefing with the CEO (a conversation; it decides nothing)',

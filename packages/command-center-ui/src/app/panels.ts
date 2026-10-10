@@ -8,7 +8,7 @@
  * Founder as a code. The sheets share the company's language: the same avatars, Department accents, gold,
  * radii and status grammar as the cards in the columns.
  */
-import { ACTION_LABEL, CALENDAR_LABEL, CAPABILITY_LABEL, DECISION_LABEL, dirOf, EVIDENCE_LABEL, FIELD_LABEL, fmtDate, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, hasArabic, humanize, INTENT_LABEL, KIND_LABEL, LANE_LABEL, MARKET_CLAIM_LABEL, PILOT_DECISION_LABEL, PILOT_MODE_LABEL, plural, PROMOTION_KIND_LABEL, PROMOTION_STATE_LABEL, PURPOSE_LABEL, READINESS_LABEL, RELATION_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATE_LABEL, t } from '../model/format.js';
+import { ACTION_LABEL, CALENDAR_LABEL, CAPABILITY_LABEL, DECISION_LABEL, dirOf, EVIDENCE_LABEL, FIELD_LABEL, fmtDate, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, hasArabic, humanize, INTENT_LABEL, KIND_LABEL, LANE_LABEL, MARKET_CLAIM_LABEL, PILOT_DECISION_LABEL, PILOT_MODE_LABEL, plural, PRODUCT_DOCS_CAPABILITY, PROMOTION_KIND_LABEL, PROMOTION_STATE_LABEL, PURPOSE_LABEL, READINESS_LABEL, RELATION_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATE_LABEL, t } from '../model/format.js';
 import { isLevel, LEVEL_SHORT, LEVEL_STATE_LABEL, LEVEL_THINKING, LEVELS, levelState, modelLabel, reasonText } from '../model/intelligence.js';
 import type { CompanyUniverse } from '../model/types.js';
 import { renderActivation } from './activation.js';
@@ -341,7 +341,7 @@ export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost,
   if (profile?.identityProfile) fact('Identity profile', humanize(String(profile.identityProfile)));
   const record = profile?.work as Json | undefined;
   fact('Work on record', record ? `${plural(Number(record.total), 'work item', 'work items')} owned, ${fmtNumber(Number(record.completed))} completed` : 'Not on record');
-  root.append(sectionEl(`About ${name.given}`, about, h('p', { class: 'muted small', text: 'Only what the Company record holds. No biography or outside experience is on record.' })));
+  root.append(sectionEl(`About ${name.given}`, about, h('p', { class: 'muted small', text: 'Only what the Company record holds. No biography or outside experience is on record.' }), renameControl(full, String(e.id), name, profile?.displayNameAr ? String(profile.displayNameAr) : '', host)));
 
   // 3. Skills, qualifications and training (the Academy overview narrowed to this person).
   const training = h('div', { class: 'training' });
@@ -388,6 +388,7 @@ export function renderEmployeeFocus(root: HTMLElement, d: Json, host: PanelHost,
   if (grants.length === 0) may.append(h('span', { class: 'muted', text: 'Nothing granted yet' }));
   for (const g of grants) may.append(h('span', { class: 'chip chip-grant' }, h('span', { text: t(CAPABILITY_LABEL, String(g.capability)) }), h('span', { class: 'chip-state', text: String(g.riskCeiling) })));
   authority.append(may);
+  if (e.state !== 'RETIRED') authority.append(productKnowledgeControl(full, String(e.id), grants.some((g) => g.capability === PRODUCT_DOCS_CAPABILITY), host));
   root.append(sectionEl('Authority', authority));
 
   // 5. Work, then live relations.
@@ -501,6 +502,71 @@ function intelligenceSection(full: string, given: string, employeeId: string, in
   change.addEventListener('click', () => (slot.childElementCount ? close() : open({ defaultClass: def, ceilingClass: max, selection: sel }, true)));
   if (draft) open(draft, false);
   return sectionEl('Employee Intelligence', facts, levels, h('p', { class: 'muted small', text: 'In the Chat a level can be chosen for one message; it never changes these standing levels.' }), usageEl, money, change, slot);
+}
+
+/**
+ * P1-PRODUCT-KNOWLEDGE-01 (D-P1-06): the Founder's rename of this Employee. A governed preview (the confirmation states
+ * that the same Employee keeps its ID, history, memory, grants and budget); nothing changes until the Founder confirms.
+ */
+function renameControl(full: string, employeeId: string, name: { given: string; family: string }, ar: string, host: PanelHost): HTMLElement {
+  const slot = h('div', { class: 'rename-slot' });
+  const open = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Rename', 'aria-label': `Rename ${full}`, 'aria-expanded': 'false', 'data-keep': 'rename' });
+  const close = (): void => {
+    slot.replaceChildren();
+    open.setAttribute('aria-expanded', 'false');
+  };
+  open.addEventListener('click', () => {
+    if (slot.childElementCount) return close();
+    const box = h('form', { class: 'intel-editor', 'aria-label': `Rename ${full}` }) as HTMLFormElement;
+    const field = (id: string, label: string, value: string, dir: 'ltr' | 'rtl'): HTMLInputElement => {
+      const input = h('input', { id, type: 'text', value, dir, autocomplete: 'off', maxlength: id === 'rename-ar' ? '60' : '40', 'data-keep': id }) as HTMLInputElement;
+      box.append(h('label', { for: id, class: 'budget-label', text: label }), input);
+      return input;
+    };
+    const given = field('rename-given', 'Given name (English)', name.given, 'ltr');
+    const family = field('rename-family', 'Family name (English)', name.family, 'ltr');
+    const arabic = field('rename-ar', 'Arabic name', ar, 'rtl');
+    const error = h('p', { class: 'budget-error', role: 'alert' });
+    const cancel = h('button', { type: 'button', class: 'btn btn-ghost', text: 'Cancel', 'data-keep': 'rename-cancel' });
+    cancel.addEventListener('click', () => {
+      close();
+      open.focus();
+    });
+    box.append(h('p', { class: 'muted small', text: 'Only the name changes: the same Employee keeps its ID, seat, history, memory, skills, grants and budget. History records the rename; nothing earlier is rewritten.' }), error, h('div', { class: 'budget-actions' }, cancel, h('button', { type: 'submit', class: 'btn btn-primary', text: 'Preview the rename', 'data-keep': 'rename-preview' })));
+    box.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      if (given.value.trim() === name.given && family.value.trim() === name.family && arabic.value.trim() === ar) {
+        error.textContent = 'That is already the name.';
+        return;
+      }
+      error.textContent = '';
+      void host.previewAction('EMPLOYEE_RENAME', { employeeId, givenName: given.value.trim(), familyName: family.value.trim(), displayNameAr: arabic.value.trim() === '' ? null : arabic.value.trim(), reasonCode: 'founder.rename' });
+    });
+    slot.replaceChildren(box);
+    open.setAttribute('aria-expanded', 'true');
+    given.focus();
+  });
+  return h('div', { class: 'rename' }, open, slot);
+}
+
+/**
+ * D-P1-06: grant or revoke the shared, read-only product knowledge Tool for this Employee (one explicit grant; titles grant
+ * nothing). The first grant names the product source (github:owner/repository); later grants reuse it.
+ */
+function productKnowledgeControl(full: string, employeeId: string, granted: boolean, host: PanelHost): HTMLElement {
+  if (granted) {
+    const revoke = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Revoke product knowledge', 'aria-label': `Revoke ${full}'s product knowledge access`, 'data-keep': 'pk-revoke' });
+    revoke.addEventListener('click', () => void host.previewAction('PRODUCT_KNOWLEDGE_ACCESS', { employeeId, decision: 'REVOKE', reasonCode: 'founder.product_knowledge_revoke' }));
+    return h('div', { class: 'product-knowledge' }, revoke);
+  }
+  const box = h('form', { class: 'product-knowledge', 'aria-label': `Product knowledge for ${full}` }) as HTMLFormElement;
+  const repo = h('input', { id: 'pk-source', type: 'text', dir: 'ltr', autocomplete: 'off', maxlength: '161', placeholder: 'github:owner/repository (first time only)', 'data-keep': 'pk-source' }) as HTMLInputElement;
+  box.append(h('label', { for: 'pk-source', class: 'budget-label', text: 'Product source (needed only the first time)' }), repo, h('button', { type: 'submit', class: 'btn btn-quiet', text: 'Grant product knowledge (read-only)', 'data-keep': 'pk-grant' }));
+  box.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    void host.previewAction('PRODUCT_KNOWLEDGE_ACCESS', { employeeId, decision: 'GRANT', ...(repo.value.trim() === '' ? {} : { repository: repo.value.trim() }), reasonCode: 'founder.product_knowledge' });
+  });
+  return box;
 }
 
 const PROFICIENCY_LABEL: Readonly<Record<string, string>> = { LEARNING: 'Learning', QUALIFIED: 'Qualified', PROFICIENT: 'Proficient', EXPERT: 'Expert' };
