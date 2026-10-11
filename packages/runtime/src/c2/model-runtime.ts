@@ -28,6 +28,7 @@ import {
   route,
   utf8TokenUpperBound,
   type AttemptKind,
+  type ParsedProposal,
   type DeploymentView,
   type ReasoningClass,
   type RoutePolicy,
@@ -307,8 +308,8 @@ export class GovernedModelRuntime {
       if (!s.providerFault) recordHealth(store, fence, deploymentId, null);
       // B2: an answer the provider cut at the allowance (`length`) is incomplete: it is charged as the provider accepted
       // and billed it, but its text never becomes a proposal (provider acceptance ≠ valid output ≠ completed work).
-      const parsed = s.finishReason === 'length' ? { proposal: { type: 'INVALID', code: 'OUTPUT_TRUNCATED' } as const, reason: null } : parseProposalDetailed(s.outputText);
-      return { done: { kind: 'OK', proposal: parsed.proposal, usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens: usage.cachedInputTokens }, deploymentId: d.deployment.id, reasoningClass: d.reasoningClass, attempts: attempt, manifestId, maxOutputTokens, finishReason: s.finishReason, invalidReason: parsed.reason } };
+      const parsed: ParsedProposal = s.finishReason === 'length' ? { proposal: { type: 'INVALID', code: 'OUTPUT_TRUNCATED' }, reason: null } : parseProposalDetailed(s.outputText);
+      return { done: { kind: 'OK', proposal: parsed.proposal, usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens: usage.cachedInputTokens }, deploymentId: d.deployment.id, reasoningClass: d.reasoningClass, attempts: attempt, manifestId, maxOutputTokens, finishReason: s.finishReason, invalidReason: parsed.reason, refsRecovery: parsed.refsRecovery ?? null } };
     }
     const failure = s.failure ?? 'UNKNOWN';
     const disp = failureDisposition(failure);

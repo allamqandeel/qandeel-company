@@ -362,3 +362,66 @@ describe('P1-REASON-AUTO-RECOVERY-01 C: Adaptive Intelligence', () => {
       assert.equal(input.reasoningDemand?.level, 'E4', 'the governed demand is recorded, but only AUTO acts on it');
     }));
 });
+
+/**
+ * P1-CHAT-REFS-CORR-01 — a well-formed Founder reply is never lost only because its optional, non-authoritative contextRefs
+ * broke the closed kind:id grammar (the LIVE incident: a document path in contextRefs, MALFORMED / REFS_INVALID twice at a
+ * pinned E2). Proven through the real runtime and the real adapter behind the fake transport; no paid call.
+ */
+describe('P1-CHAT-REFS-CORR-01: a Founder reply with malformed references', () => {
+  const PATH_REF = 'docs/ROADMAP.md@1a2b3c4';
+  const BODY = 'The roadmap is current (docs/ROADMAP.md @ 1a2b3c4).';
+  const hostile = (): DeepSeekResponse => fakeChatAnswer(message(BODY, { contextRefs: Array.from({ length: 9 }, () => PATH_REF) }), { prompt: 300, completion: 60 });
+  const employeeMessages = (rt: CompanyRuntime, w: C2World) => {
+    const comm = rt.founder.communications;
+    return comm.messages(comm.directThread(w.founder, null).id).filter((m) => m.senderKind === 'EMPLOYEE');
+  };
+  const discards = (rt: CompanyRuntime): Record<string, unknown>[] => rt.view.auditByAction('communication.message_refs_discarded').map((a) => ({ reason: a.reasonCode, discarded: a.details.discarded, kept: a.details.kept }));
+
+  test('refs 1 · at a pinned E2, a MESSAGE whose only defect is a document path in contextRefs is delivered once: body kept, valid reference kept, path discarded, no second (paid) call', () =>
+    withWorld('p1r-refs-recover', { selection: 'DEFAULT' }, () => fakeChatAnswer(message(BODY, { contextRefs: [PATH_REF, 'memory:abc123'] }), { prompt: 300, completion: 60 }), async ({ rt, w, sent }) => {
+      const id = ask(rt, w, 'Finish the study of the product repository and brief me.', 'E2');
+      assert.equal(await settled(rt, id), 'COMPLETED');
+      assert.equal(sent.length, 1, 'exactly one model call');
+      const out = employeeMessages(rt, w);
+      assert.deepEqual(out.map((m) => [m.body, m.contextRefs]), [[BODY, ['memory:abc123']]], 'exactly one reply; the path + commit stays in the body; no reference is invented');
+      assert.deepEqual(discards(rt), [{ reason: 'CHAT_REFS_DISCARDED', discarded: 1, kept: 1 }]);
+      assert.deepEqual(audits(rt, id, 'run.model_output_invalid'), [], 'not an invalid output: no retry was spent');
+      const s = replyState(rt, w, id);
+      assert.deepEqual([s.status, s.requestedClass, s.answeredClasses], ['REPLIED', 'E2', ['E2']]);
+      assert.deepEqual(s.callDetails.map((c) => [c.attemptKind, c.reasoningClass, c.invalidCode, c.malformedReason]), [['PRIMARY', 'E2', 'MALFORMED', 'REFS_INVALID']], 'the call is still observed truthfully as the raw output was');
+      const everything = JSON.stringify([...rt.view.runsForWorkItem(id).flatMap((r) => rt.view.audit(r.id)), rt.view.audit(id), rt.view.auditByAction('communication.message_refs_discarded')]);
+      assert.equal(everything.includes('ROADMAP'), false, 'the discarded reference is never stored in telemetry (Rule A)');
+      assert.equal(rt.governance.accountingInvariants().length, 0);
+    }));
+
+  test('refs 2 · a hostile reference list (over the bound) is not recovered: the pinned E2 keeps its one same-class retry and its call bound, then MODEL_OUTPUT_INVALID with no message', () =>
+    withWorld('p1r-refs-hostile', { selection: 'DEFAULT' }, () => hostile(), async ({ rt, w, sent }) => {
+      const id = ask(rt, w, 'Brief me on the product.', 'E2');
+      assert.equal(await settled(rt, id), 'FAILED');
+      assert.deepEqual(sent.map((s) => s.effort), ['low', 'low'], 'two calls, both at the pinned E2 (never escalated)');
+      assert.equal(rt.view.runsForWorkItem(id).at(-1)?.failureCode, 'MODEL_OUTPUT_INVALID');
+      assert.deepEqual(audits(rt, id, 'run.model_output_invalid').map((a) => [a.reason, a.malformedReason]), [['MALFORMED', 'REFS_INVALID'], ['MALFORMED', 'REFS_INVALID']]);
+      assert.deepEqual([employeeMessages(rt, w).length, discards(rt).length], [0, 0]);
+    }));
+
+  test('refs 3 · secret material in the body is still refused by the message fence, recovered references or not; the next turn answers cleanly', () => {
+    const secret = ['Bearer ', 'abcdefghjkmnpqrstuvwxyz23456789a'].join('');
+    return withWorld('p1r-refs-secret', { selection: 'DEFAULT' }, (_r, n) => (n === 1 ? fakeChatAnswer(message(`key ${secret}`, { contextRefs: [PATH_REF] }), { prompt: 300, completion: 60 }) : ok('Clean answer.')), async ({ rt, w, sent }) => {
+      const id = ask(rt, w, 'Status?', 'E2');
+      assert.equal(await settled(rt, id), 'COMPLETED');
+      assert.equal(sent.length, 2);
+      assert.deepEqual(employeeMessages(rt, w).map((m) => m.body), ['Clean answer.'], 'the secret-bearing body never became a message');
+      assert.equal(discards(rt).length, 0, 'a refused message records no discard');
+    });
+  });
+
+  test('refs 4 · a CEO brief is not a Founder reply: malformed references stay an invalid output (escalated as before), never recovered', () =>
+    withWorld('p1r-refs-brief', { selection: 'DEFAULT' }, () => fakeChatAnswer(JSON.stringify({ type: 'MESSAGE', purpose: 'BRIEF', attentionLevel: 'NEEDS_DECISION', body: 'Brief.', brief: { happening: 'a', matters: 'b', recommendation: 'c', decisionNeeded: true, decision: 'd' }, contextRefs: [PATH_REF] }), { prompt: 300, completion: 60 }), async ({ rt, sent }) => {
+      const req = rt.founder.communications.requestCeoBrief({ subject: 'decision', contextKind: 'APPROVAL', contextRef: 'approval:x', reasonCode: 'brief.test', instructions: 'Brief the Founder.' });
+      assert.equal(await settled(rt, req.workItemId), 'FAILED');
+      assert.equal(sent.length, 2);
+      assert.deepEqual(audits(rt, req.workItemId, 'run.model_output_invalid').map((a) => a.malformedReason), ['REFS_INVALID', 'REFS_INVALID']);
+      assert.equal(discards(rt).length, 0);
+    }));
+});

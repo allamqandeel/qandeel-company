@@ -11,7 +11,7 @@
  * message bodies are company content under the FOUNDER_ONLY scope and never enter audit, events or logs.
  */
 import { QandeelError, assertCode, assertId, boundedJson, boundedText, canonicalJson, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { OUTPUT_ALLOWANCE_BY_CLASS, assessReasoningDemand, assertCognitiveProfile, isReasoningDemand, reasoningSelectionOf, assertTaskClass, briefAttentionLevel, effectiveClass, isAttentionLevel, isContextKind, isMessagePurpose, isReasoningClass, type AttentionLevel, type ContextKind, type FounderBrief, type MessagePurpose, type ReasoningClass, type ThreadKind } from '@qandeel-company/governance';
+import { OUTPUT_ALLOWANCE_BY_CLASS, assessReasoningDemand, assertCognitiveProfile, isReasoningDemand, reasoningSelectionOf, assertTaskClass, briefAttentionLevel, effectiveClass, isAttentionLevel, isContextKind, isMessagePurpose, isReasoningClass, isStructuredRef, type AttentionLevel, type ContextKind, type FounderBrief, type MessagePurpose, type ReasoningClass, type ThreadKind } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
 import { budgetFor, employeeIdFromRef, getEmployeeRow, txAllocateWorkItemBudget } from './governance-core.js';
@@ -92,6 +92,11 @@ export interface MessageProposalInput {
   readonly body: string;
   readonly brief: FounderBrief | null;
   readonly contextRefs: readonly string[];
+  /**
+   * P1-CHAT-REFS-CORR-01: how many malformed references of a Founder reply's MESSAGE the runtime discarded (1..8; a count,
+   * never a reference). Accepted only for a reply to a Founder message whose kept references all follow the grammar.
+   */
+  readonly refsDiscarded?: number;
 }
 
 export interface RecordMessageResult {
@@ -333,12 +338,18 @@ export function txRecordMessage(ctx: StoreContext, fence: Fence, attributedEmplo
   if (containsSecretMaterial(input.body) || (typeof input.brief === 'object' && input.brief !== null && containsSecretMaterial(JSON.stringify(input.brief)))) return { outcome: 'REFUSED', code: 'SECRET_MATERIAL', messageId: null, threadId: t.id };
   if ((input.purpose === 'BRIEF') !== (input.brief !== null)) return { outcome: 'REFUSED', code: 'BRIEF_SHAPE', messageId: null, threadId: t.id };
   if (input.purpose === 'BRIEF' && t.kind !== 'CEO_BRIEF' && t.kind !== 'FOUNDER_CEO') return { outcome: 'REFUSED', code: 'BRIEF_NOT_CEO', messageId: null, threadId: t.id };
+  // P1-CHAT-REFS-CORR-01: a discard count belongs only to a reply to one Founder message, within the reference bound, and
+  // what is kept must be the closed grammar (the fence re-checks what the runtime claims; it never trusts it).
+  const discarded = input.refsDiscarded ?? 0;
+  if (input.refsDiscarded !== undefined && (!Number.isSafeInteger(discarded) || discarded < 1 || discarded + input.contextRefs.length > 8 || typeof pi.founderMessageId !== 'string' || input.contextRefs.some((r) => !isStructuredRef(r)))) return { outcome: 'REFUSED', code: 'INVALID_ARGS', messageId: null, threadId: t.id };
   // One message per (Work Item, purpose, body hash): a resumed run never posts twice.
   const dup = ctx.db.get<{ id: string }>('SELECT id FROM communication_messages WHERE thread_id = ? AND run_id IN (SELECT id FROM runs WHERE work_item_id = ?) AND body_sha256 = ?', t.id, item.id, sha256Hex(input.body));
   if (dup) return { outcome: 'RECORDED', code: 'REPLAYED', messageId: dup.id as Id, threadId: t.id };
   const level = input.brief !== null ? briefAttentionLevel(input.brief) : input.attentionLevel;
   const responseRequired = input.purpose === 'DECISION_REQUEST' || input.purpose === 'ESCALATION' || (input.brief?.decisionNeeded ?? false);
   const m = insertMessage(ctx, t, { senderKind: 'EMPLOYEE', senderRef: employeeRef, purpose: input.purpose, level, body: input.body, brief: input.brief, responseRequired, replyWorkItemId: null, runId: fence.runId, contextRefsJson: contextRefs(input.contextRefs) });
+  // Content-free (Rule A): the code and two counts, never a reference or any text. Written only with the message itself.
+  if (discarded > 0) appendAudit(ctx, 'communication.message_refs_discarded', 'thread', t.id, { actorRef: employeeRef }, 'OK', 'CHAT_REFS_DISCARDED', { messageId: m.id, runId: fence.runId, discarded, kept: input.contextRefs.length });
   return { outcome: 'RECORDED', code: 'RECORDED', messageId: m.id, threadId: t.id };
 }
 

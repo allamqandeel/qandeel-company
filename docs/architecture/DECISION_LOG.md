@@ -5873,3 +5873,69 @@ operator-only. No migration was changed. No LIVE action.
   through `release-activate` (the same `activateRelease` that `desktop-local-install` runs): ACTIVATED, 21 → 22, the old
   host stopped by its own release, one READY host, data identical. The shipped `cb3ef342` reproduces the original refusal
   on the same setup.
+
+## D-P1-08 — A Founder reply is not lost over its optional references: one stated grammar, and a bounded, Founder-reply-only recovery that keeps the valid references and discards the rest (P1-CHAT-REFS-CORR-01; Founder Task Contract, executor)
+
+**Context.** LIVE Founder conversations with the CEO failed as `MODEL_OUTPUT_INVALID` after billable calls.
+- The content-free per-call evidence shows `MALFORMED / REFS_INVALID` at E1 and E2, with `finish_reason=stop`, well under
+  the allowance.
+- It occurred before the Product Knowledge grant (2 of 15 replies, rescued by escalation) and in every reply after it.
+- A Founder-pinned E2 has one same-class retry and no escalation (D-P1-04), so two such outputs end the reply.
+
+**Root cause.**
+- **Established.** MESSAGE `contextRefs` must be at most 8 entries of the closed `kind:id` grammar (`proposals.ts`). The
+  reply shape shows the model only `"contextRefs":[]` and never states that grammar.
+- **Inference.** The Product Knowledge guidance says "cite path + short commit", and a document path in `contextRefs` breaks
+  the grammar. The raw output is not stored (by design), so this cannot be confirmed.
+
+**Consumers of `contextRefs` (none gives them authority).**
+- Parser: `governance/src/proposals.ts`.
+- Runtime: `runtime.ts` `sendMessage` → `recordMessage`.
+- Storage: `communications.ts`.
+  - The Employee and Founder inserts bound each entry to 128 characters and the list to 8 entries.
+  - They are part of the send fingerprint only for a Founder send, never for an Employee message.
+- Persistence: `communication_messages.context_refs_json`, which is append-only with a 1024-byte CHECK (0009).
+- Read model: `founder-records.ts` `mapMessage`, and `MessageMeta`, the content-free shape that is why the grammar exists.
+- The UI never reads them. Nothing resolves, verifies, grants, routes or cites through them, and no review or evidence
+  standard uses MESSAGE refs. REVIEW_DECISION `evidenceRefs` are a different field and keep their strict rule.
+
+**Decision.**
+1. **Layer A: the instructions agree.**
+   - The reply shape states the grammar: at most 8 `kind:id` entries, for example `["memory:abc123"]`, only for a
+     reference the context gave; otherwise `[]`. Never a path, URL, GitHub address, commit or prose.
+   - Product Knowledge cites document path + short commit in the reply body, never in `contextRefs`, and never invents a
+     structured reference.
+2. **Layer B: a bounded recovery, used only by a Founder reply.**
+   - **Parser.** The parser's proposal is unchanged for every caller (MALFORMED / REFS_INVALID). It additionally offers
+     `refsRecovery` only when every other MESSAGE field already passed and the list is bounded (at most 8 strings of
+     1..128 characters).
+     - The recovery is the same MESSAGE with only its grammar-valid references, in order, plus a discard count.
+     - A non-list, too many entries, a non-string, or an empty or oversized entry offers nothing and stays refused.
+       Nothing is truncated.
+   - **Employee loop.** The loop uses it only for a reply to one Founder message (`founderThreadId` and
+     `founderMessageId`, set by the submitter), never for an answer-only item, a CEO brief or any other work.
+     - The output is not counted as invalid and spends no retry. Routing, the class pin, call bounds and budgets are
+       unchanged.
+   - **Message fence.** The fence re-checks the claim: a Founder reply only, a count of 1..8 within the bound, and kept
+     references in the grammar. Otherwise the message is refused with `INVALID_ARGS`.
+     - Thread binding, body bounds, the secret-material scan and per-body idempotency run unchanged.
+     - In the same transaction as the message, and only with it, the fence writes one content-free audit row
+       `communication.message_refs_discarded` / `CHAT_REFS_DISCARDED` with `{ messageId, runId, discarded, kept }`.
+   - The discarded references are never stored, logged or displayed. The call observation still records the raw output
+     truthfully as `MALFORMED / REFS_INVALID`.
+
+**Not done.**
+- No change to the grammar, migrations, routing, E1–E4 policy, grants, the review or evidence rules, or any LIVE item.
+- **Future:** retry feedback. A same-class retry is not told which closed rule the previous output broke, so it can
+  repeat a mistake. That is a separate, general design and is not part of this task.
+
+**Proof.**
+- `governance/test/p1-chat-refs.test.ts`: valid, empty, path, hostile, other-defect-first, NOT_JSON, REVIEW_DECISION
+  strict, grammar.
+- `storage/test/p1-chat-refs.test.ts`: the fence's checks, the content-free row, the replay, secret material, a brief.
+- `runtime/test/p1/p1-reason-auto-recovery.test.ts` (refs 1–4, real runtime and adapter, fake transport):
+  - at a pinned E2, exactly one call and one reply, with the body and the valid reference kept;
+  - a hostile list keeps the same-class retry, then `MODEL_OUTPUT_INVALID`;
+  - secret material is still refused;
+  - a brief is never recovered.
+- `p1-product-knowledge` asserts both instructions in the granted CEO's context.

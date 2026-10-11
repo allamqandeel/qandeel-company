@@ -194,6 +194,9 @@ describe('P1-PRODUCT-KNOWLEDGE-01: shared, read-only product knowledge through t
       const turns = callsOf(x, a.itemId);
       assert.equal(turns.length, 2, 'one read, then the reply: two model calls within the chat bound');
       assert.ok(turns[0]?.system.includes('Keep four states apart'), 'the granted CEO sees the shared guidance');
+      // P1-CHAT-REFS-CORR-01: both instructions agree — a document is cited in the body, never in contextRefs.
+      assert.ok(turns[0]?.system.includes('path + short commit in the reply body itself; never put a document path in contextRefs'), 'product citations go in the body');
+      assert.ok(turns[0]?.system.includes('contextRefs is optional structured metadata, never a citation: at most 8 entries, each kind:id'), 'the reply shape states the reference grammar');
       const sha = /"commit":"([0-9a-f]{40})"/.exec((turns[1]?.all ?? '').replace(/\\"/g, '"'))?.[1];
       assert.ok(sha, 'the second call carries the evidence with its exact commit');
       assert.match(turns[1]?.all ?? '', /T-04 Living Analysis Map runtime/);
