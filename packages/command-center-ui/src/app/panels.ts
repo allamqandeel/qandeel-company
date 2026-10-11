@@ -8,9 +8,10 @@
  * Founder as a code. The sheets share the company's language: the same avatars, Department accents, gold,
  * radii and status grammar as the cards in the columns.
  */
-import { ACTION_LABEL, CALENDAR_LABEL, CAPABILITY_LABEL, DECISION_LABEL, dirOf, EVIDENCE_LABEL, FIELD_LABEL, fmtDate, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, hasArabic, humanize, INTENT_LABEL, KIND_LABEL, LANE_LABEL, MARKET_CLAIM_LABEL, PILOT_DECISION_LABEL, PILOT_MODE_LABEL, plural, PRODUCT_DOCS_CAPABILITY, PROMOTION_KIND_LABEL, PROMOTION_STATE_LABEL, PURPOSE_LABEL, READINESS_LABEL, RELATION_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATE_LABEL, t } from '../model/format.js';
+import { CALENDAR_LABEL, CAPABILITY_LABEL, DECISION_LABEL, dirOf, EVIDENCE_LABEL, FIELD_LABEL, fmtDate, fmtDateTime, fmtMoneyMicros, fmtNumber, fmtRelative, hasArabic, humanize, INTENT_LABEL, KIND_LABEL, LANE_LABEL, MARKET_CLAIM_LABEL, PILOT_DECISION_LABEL, PILOT_MODE_LABEL, plural, PRODUCT_DOCS_CAPABILITY, PROMOTION_KIND_LABEL, PROMOTION_STATE_LABEL, READINESS_LABEL, RELATION_LABEL, SCOPE_LABEL, STATE_LABEL, t } from '../model/format.js';
 import { isLevel, LEVEL_SHORT, LEVEL_STATE_LABEL, LEVEL_THINKING, LEVELS, levelState, modelLabel, reasonText } from '../model/intelligence.js';
 import type { CompanyUniverse } from '../model/types.js';
+import { attentionAskAr, attentionKindAr, BRIEF_LABEL_AR } from '../model/attention-text.js';
 import { renderActivation } from './activation.js';
 import { trainingFacts } from './halls.js';
 import { keepFocus, restoreFocus } from './keep-focus.js';
@@ -109,8 +110,9 @@ function personRef(host: PanelHost, ref: string, color: string, sub?: string): H
 
 /** The Founder Communication Standard brief: four named parts, read in order, as an executive memo. */
 function briefBlock(brief: Json): HTMLElement {
-  const row = (title: string, text: string, cls = ''): HTMLElement => h('div', { class: `brief-row ${cls}`.trim() }, h('h4', { text: title }), content('p', text));
-  return h('div', { class: 'brief' }, row('What is happening', String(brief.happening)), row('Why it matters', String(brief.matters)), row('Recommendation', String(brief.recommendation)), row('Decision needed', brief.decisionNeeded ? String(brief.decision ?? 'Yes') : 'No decision needed', brief.decisionNeeded ? 'is-decision' : ''));
+  // P1-EMPLOYEE-BASELINE-01: the brief's headings are the card's own words (Arabic); its text stays as its author wrote it.
+  const row = (title: string, text: string, cls = ''): HTMLElement => h('div', { class: `brief-row ${cls}`.trim() }, h('h4', { text: title, dir: 'rtl', lang: 'ar' }), content('p', text));
+  return h('div', { class: 'brief' }, row(BRIEF_LABEL_AR.happening, String(brief.happening)), row(BRIEF_LABEL_AR.matters, String(brief.matters)), row(BRIEF_LABEL_AR.recommendation, String(brief.recommendation)), row(BRIEF_LABEL_AR.decision, brief.decisionNeeded ? String(brief.decision ?? BRIEF_LABEL_AR.yes) : BRIEF_LABEL_AR.noDecision, brief.decisionNeeded ? 'is-decision' : ''));
 }
 
 function sheetHead(host: PanelHost, title: string, sub: (Node | string | null)[], avatar: HTMLElement | null, closeLabel = 'Close and return to the company'): HTMLElement {
@@ -159,7 +161,6 @@ function attentionItem(i: Json, host: PanelHost): HTMLElement {
   const message = i.message as Json | undefined;
   const staffing = i.staffing as Json | undefined;
   const goal = i.goal as Json | undefined;
-  const escalation = i.escalation as Json | undefined;
   const conflict = i.conflict as Json | undefined;
   const effect = i.uncertainEffect as Json | undefined;
   const reservation = i.heldReservation as Json | undefined;
@@ -167,35 +168,13 @@ function attentionItem(i: Json, host: PanelHost): HTMLElement {
   const reviewEsc = i.reviewEscalation as Json | undefined;
   const systemic = i.systemic as Json | undefined;
   const judgment = i.judgment as Json | undefined;
-  const outcome = i.outcome as Json | undefined;
   const brief = message?.brief as Json | null | undefined;
-  const isBrief = String(i.sourceKind) === 'BRIEF' || Boolean(brief);
-  const head = h('div', { class: 'rail-item-head' }, h('span', { class: `level-mark level-${level.toLowerCase()}`, 'aria-hidden': 'true' }), h('span', { class: 'rail-kind', text: isBrief ? 'CEO brief' : t(SOURCE_LABEL, String(i.sourceKind)) }), owner ? h('span', { class: 'rail-owner', text: owner }) : null, h('time', { class: 'rail-time', text: fmtRelative(String(i.lastSignalAt)) }));
+  const head = h('div', { class: 'rail-item-head' }, h('span', { class: `level-mark level-${level.toLowerCase()}`, 'aria-hidden': 'true' }), h('span', { class: 'rail-kind', text: attentionKindAr(i), dir: 'rtl', lang: 'ar' }), owner ? h('span', { class: 'rail-owner', text: owner }) : null, h('time', { class: 'rail-time', text: fmtRelative(String(i.lastSignalAt)) }));
   li.append(head);
-  // The ask, in one line the Founder can act on.
-  const ask = h('p', { class: 'rail-ask' });
-  if (approval) ask.append(h('span', { text: `${String(approval.risk)} approval to ${t(ACTION_LABEL, String(approval.action))} for ` }), content('span', host.nameOf(String(approval.subjectRef)), 'rail-strong'));
-  else if (goal) ask.append(h('span', { text: 'Proposed goal: ' }), content('span', String(goal.title), 'rail-strong'));
-  else if (staffing) ask.append(h('span', { text: 'Staffing request for ' }), h('span', { class: 'rail-strong', text: String(staffing.positionTitle) }), h('span', { text: ` — the CEO recommends ${staffing.ceoRecommendation === 'APPROVE' ? 'approving' : staffing.ceoRecommendation === 'REJECT' ? 'rejecting' : 'no decision yet'}` }));
-  else if (escalation) {
-    const title = host.workTitleOf(String(escalation.childWorkItemId));
-    ask.append(h('span', { text: 'Escalation on ' }), title ? content('span', title, 'rail-strong') : h('span', { text: 'a work item' }));
-  } else if (conflict) ask.append(h('span', { class: 'rail-strong', text: 'Reviewers disagree' }), h('span', { text: ' — pass the work or send it back' }));
-  else if (effect) ask.append(h('span', { class: 'rail-strong', text: 'An external effect is uncertain' }), h('span', { text: ' — did it happen? It is never repeated without your answer' }));
-  else if (reservation) ask.append(h('span', { class: 'rail-strong', text: 'Money is held for an uncertain call' }), h('span', { text: ' — release it if nothing was billed' }));
-  else if (job) {
-    const title = host.workTitleOf(String(job.workItemId));
-    ask.append(h('span', { text: 'Held after an uncertain effect: ' }), title ? content('span', title, 'rail-strong') : h('span', { class: 'rail-strong', text: 'a work item' }));
-  } else if (reviewEsc) {
-    const title = host.workTitleOf(String(reviewEsc.workItemId));
-    ask.append(h('span', { text: 'A reviewer could not decide on ' }), title ? content('span', title, 'rail-strong') : h('span', { class: 'rail-strong', text: 'a work item' }));
-  } else if (systemic) ask.append(h('span', { class: 'rail-strong', text: 'A repeated failure pattern' }), h('span', { text: ' — is it systemic?' }));
-  else if (judgment) ask.append(h('span', { class: 'rail-strong', text: judgment.subjectKind === 'LESSON' ? 'A lesson the Review Pool could not settle' : 'A cause the Review Pool could not settle' }));
-  else if (outcome) {
-    const title = host.workTitleOf(String(outcome.workItemId));
-    ask.append(h('span', { text: 'Reviewers could not verify the outcome of ' }), title ? content('span', title, 'rail-strong') : h('span', { class: 'rail-strong', text: 'a work item' }));
-  } else if (message && !brief) ask.append(h('span', { text: `${t(PURPOSE_LABEL, String(message.purpose ?? 'REQUEST'))} from ` }), h('span', { class: 'rail-strong', text: owner ?? 'the company' }));
-  else if (brief) ask.append(h('span', { class: 'rail-strong', text: brief.decisionNeeded ? 'A decision is needed' : 'For your information' }));
+  // The ask, in one line the Founder can act on. P1-EMPLOYEE-BASELINE-01 (D-P1-10): fixed Arabic words per case, read
+  // right to left inside the ask only; names and titles are company content shown as written.
+  const ask = h('p', { class: 'rail-ask is-arabic', dir: 'rtl', lang: 'ar' });
+  for (const part of attentionAskAr(i, host)) ask.append(part.content ? content('span', part.text, 'rail-strong') : h('span', { ...(part.strong ? { class: 'rail-strong' } : {}), text: part.text }));
   li.append(ask);
   const body = h('div', { class: 'rail-item-body' });
   if (message) {

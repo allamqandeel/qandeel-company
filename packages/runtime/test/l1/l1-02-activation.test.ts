@@ -1741,7 +1741,7 @@ describe('L1-02 closure: Founder feedback reaches later attempts; the activation
       assert.ok(r.skillPins.every((p) => p.current && p.reasons.length === 0), 'every pinned Skill Version is production-eligible now');
       assert.deepEqual(r.blockers, [], 'no hidden blocker');
       assert.deepEqual(r.founderDecisions, ['ACADEMY_CALIBRATION', 'ACTIVATION_DECIDE'], 'only Founder decisions remain');
-      assert.deepEqual(r.reasoning, { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' });
+      assert.deepEqual(r.reasoning, { defaultClass: 'E1', ceilingClass: 'E4', costDiscipline: 'BALANCED' }, 'P1-EMPLOYEE-BASELINE-01: a default hire is AUTO from E1 with ceiling E4');
       assert.equal(v2.next, 'FOUNDER_CALIBRATION');
       assert.equal(x.rt.governance.getEmployee(ceo).state, 'PROBATION', 'nothing activates without the Founder');
 

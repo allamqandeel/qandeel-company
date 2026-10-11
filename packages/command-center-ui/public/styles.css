@@ -405,6 +405,8 @@ button.chip:hover { background: var(--card-2); border-color: rgba(205, 214, 240,
 .rail-time { margin-left: auto; color: var(--fg-3); }
 .rail-ask { margin: 6px 0 0 19px; font-size: 14px; line-height: 1.5; }
 .rail-strong { font-weight: 600; }
+/* P1-EMPLOYEE-BASELINE-01: the card's Arabic ask reads right to left inside its own line; the panel stays left to right. */
+.rail-ask[dir="rtl"] { line-height: 1.8; text-align: start; }
 .rail-item-body { margin-left: 19px; }
 .rail-item-body p { margin: 8px 0 0; }
 .rail-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 0 19px; }

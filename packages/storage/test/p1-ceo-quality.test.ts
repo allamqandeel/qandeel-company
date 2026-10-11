@@ -16,7 +16,7 @@ import type { Id } from '@qandeel-company/domain';
 import { CEO_IDENTITY_PROFILE_V1 } from '@qandeel-company/mind';
 
 import { CommunicationStore } from '../src/index.js';
-import { CEO_CONVERSATION_GUIDANCE, CEO_LANGUAGE_GUIDANCE } from '../src/mind-writes.js';
+import { CEO_CONVERSATION_GUIDANCE, CEO_LANGUAGE_GUIDANCE, EMPLOYEE_COMMUNICATION_STANDARD } from '../src/mind-writes.js';
 import { assembleContext, type AssembleResult } from '../src/runtime-authority.js';
 import { seed, type Seed } from './c2-helpers.js';
 import { claimItem, placed } from './c4-helpers.js';
@@ -67,23 +67,23 @@ describe('P1-CEO-QUALITY-CORR-01 C: the CEO writes natural, correct Arabic and k
     });
   });
 
-  test('the rule itself: Egyptian Arabic in conversation, MSA for formal documents, no habitual honorific or literal translation, plain terms, facts apart from hypotheses, no stalling', () => {
-    const g = CEO_LANGUAGE_GUIDANCE;
+  test('the rule itself (P1-EMPLOYEE-BASELINE-01: its general part is the shared standard, the CEO keeps the executive part): Egyptian Arabic in conversation, MSA for formal documents, no habitual honorific or literal translation, plain terms, facts apart from hypotheses, no stalling', () => {
+    const g = `${EMPLOYEE_COMMUNICATION_STANDARD}\n${CEO_LANGUAGE_GUIDANCE}`;
     for (const must of [
-      'natural, polished Egyptian Arabic',
+      'natural, professional Egyptian Arabic',
       'correct spelling and grammar',
       'clear, direct, friendly and confident',
       '«يا فندم» is at most occasional, never a habit or the opening of every reply',
       'never flattery',
-      'not English translated word for word',
+      'not translated word for word',
       'say what it means in plain words the first time',
       'professional Modern Standard Arabic',
-      'a verified fact (and its source), your interpretation, a business hypothesis still to test, and your recommendation',
-      'never present a hypothesis, an estimate or a projection as an established result',
+      'a verified fact (and its source)',
+      'never present an assumption, an estimate or a projection as an established result',
       'finish what can be finished',
       'within the 4000-character body',
     ]) assert.ok(g.includes(must), must);
-    assert.ok(g.length <= 2_000, 'a bounded addition to the preamble');
+    assert.ok(CEO_LANGUAGE_GUIDANCE.length <= 2_000, 'a bounded addition to the preamble');
   });
 
   test('it lives in the conversation seam, never in the approved identity kernel (no certification-bearing profile change)', () => {
