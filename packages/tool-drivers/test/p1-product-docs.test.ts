@@ -16,7 +16,7 @@ import { describe, test } from 'node:test';
 
 import { PRODUCT_DOCS_ACTION_DEFINITION, PRODUCT_DOCS_READ_ACTION, isProductDocPath } from '@qandeel-company/governance';
 
-import { FakeProductDocsTransport, GitHubHttpsTransport, PRODUCT_KNOWLEDGE_TOOL_REGISTRATION, ProductDocsDriver, assertGitHubEndpoint, productQueryTopics, productStatusHint, type GitHubTransport } from '../src/index.js';
+import { FakeProductDocsTransport, GitHubHttpsTransport, PRODUCT_KNOWLEDGE_TOOL_REGISTRATION, PRODUCT_TOPIC_EQUIVALENTS, ProductDocsDriver, assertGitHubEndpoint, productLaunchHint, productLayerHint, productQueryTopics, productStatusHint, productTopicNames, searchProductDoc, type GitHubTransport } from '../src/index.js';
 
 const REPO = 'acme-test/product';
 const STATE = [
@@ -55,8 +55,8 @@ const STATE = [
 const ROADMAP = ['# Roadmap', '', '## 6.3 Execution note — 2026-10-09', '', '- Next: CI-01 has not started.', '', '## 6.4 Execution note — 2026-10-10', '', '- PROD-RETRY-01 is not merged.', ''].join('\n');
 const DOCS = { 'QANDEEL_CURRENT_STATE.md': STATE, 'QANDEEL_PROJECT_MAP.md': '# Map\n\nThe human-model (HIM) module lives in apps/api.\n', 'QANDEEL_PRODUCT_ROADMAP.md': ROADMAP, 'README.md': '# Qandeel\n\nStart here.\n', 'docs/replay-runtime-v1.md': '# Replay Runtime v1\n\nReplay is NOT product-launch ready.\n' };
 
-type Evidence = { path: string; line: number; status?: string; record?: string; text: string; heading?: string };
-type Result = { unavailable?: string; source: string; branch: string; commit: string; committedAt: string; recentCommits: string[]; notice: string; evidence: Evidence[]; missing?: string[]; unmatched: string[]; omitted?: string[] };
+type Evidence = { path: string; line: number; status?: string; launch?: string; historical?: boolean; equivalent?: Record<string, string>; record?: string; text: string; heading?: string };
+type Result = { unavailable?: string; source: string; branch: string; commit: string; committedAt: string; recentCommits: string[]; notice: string; evidence: Evidence[]; missing?: string[]; next?: string[]; unmatched: string[]; omitted?: string[] };
 
 function world(source: () => { ok: true; externalRef: string } | { ok: false; code: string } = () => ({ ok: true, externalRef: `github:${REPO}` })): { t: FakeProductDocsTransport; d: ProductDocsDriver; first: string } {
   const t = new FakeProductDocsTransport();
@@ -91,11 +91,14 @@ describe('P1-PRODUCT-KNOWLEDGE-01: the read-only product documentation reader', 
     const him = row(r, 'the HIM');
     assert.equal(him.path, 'QANDEEL_CURRENT_STATE.md');
     assert.equal(him.line, 7);
-    assert.equal(him.status, 'IMPLEMENTED_MERGED');
+    // D-P1-09: a merged runtime / foundation is its own layer, never "implemented" for the user.
+    assert.equal(him.status, 'RUNTIME_MERGED');
     assert.equal(him.record, 'docs/foundation-freeze-v1.md');
-    assert.equal(row(r, 'T-04 Living Analysis Map runtime').status, 'IMPLEMENTED_MERGED');
-    assert.equal(row(r, 'I-06 Replay Runtime').status, 'IMPLEMENTED_MERGED', 'a merged runtime phase');
-    assert.equal(row(r, 'I-07 Matching').status, 'IMPLEMENTED_MERGED');
+    assert.equal(row(r, 'T-04 Living Analysis Map runtime').status, 'RUNTIME_MERGED');
+    assert.equal(row(r, 'I-06 Replay Runtime').status, 'RUNTIME_MERGED', 'a merged runtime phase');
+    assert.equal(row(r, 'I-06 Replay Runtime').launch, 'NOT_LAUNCH_READY', 'its own row says it is not launch-ready');
+    assert.equal(row(r, 'I-07 Matching').status, 'RUNTIME_MERGED');
+    assert.equal(row(r, 'I-07 Matching').launch, 'NOT_LAUNCH_READY');
     assert.equal(row(r, 'Living Analysis World').status, 'APPROVED_NOT_IMPLEMENTED', 'a frozen design whose production implementation is open');
     assert.ok(!r.evidence.some((e) => e.text.includes('code fence')), 'fenced code is never evidence');
     // Anonymous, GET-only, allowlisted: ref → commits → each locator document at the exact commit.
@@ -260,5 +263,112 @@ describe('P1-PRODUCT-KNOWLEDGE-01: the read-only product documentation reader', 
     assert.equal(seen[0]?.url, `https://api.github.com/repos/${REPO}/git/ref/heads/main`);
     assert.equal('Authorization' in (seen[0]?.headers ?? {}), false);
     assert.equal(seen[1]?.headers.Authorization, 'Bearer installation-token-placeholder-value');
+  });
+});
+
+/**
+ * P1-CEO-QUALITY-CORR-01 B (D-P1-09) — the incident: the CEO kept calling "My World" unverifiable although the App's documents
+ * cover it, and mixed a merged backend runtime with what a user can use. The fixture follows the shape of the App's real
+ * locator documents (synthetic text): the world types are named as identifiers (`MY_WORLD`), the section and the
+ * implementation table say "Personal World", the Product / Design versus implementation table has the columns
+ * "Decided | In production code today | Still open", and an audit census line describes an earlier state.
+ */
+describe('P1-CEO-QUALITY-CORR-01 B: equivalent names, layers, history and the next read', () => {
+  const LAYERED = [
+    '# Current State',
+    '',
+    '## 2. Product North Star',
+    '',
+    'The product topology has exactly three world types, `MY_WORLD`, `SHARED_WORLD` and `PUBLIC_WORLD`. `REPLAY` is a capability, not a world.',
+    '',
+    '### 3.3 Living Analysis Map runtime (Personal World, T-series)',
+    '',
+    '| Task | Lifecycle | Primary record |',
+    '|---|---|---|',
+    '| T-04 Living Analysis Map runtime | IMPLEMENTED — MERGED | [`docs/living-analysis-map-runtime-v1.md`](docs/living-analysis-map-runtime-v1.md) |',
+    '',
+    '## 4. Product / Design versus implementation',
+    '',
+    '| Area | Decided (Product / Architecture / Design) | In production code today | Still open |',
+    '|---|---|---|---|',
+    '| Living Analysis Map (Personal World) | Stages 0–6 and the T-series contracts | the mobile client in `apps/mobile/src/`: world projection, camera, Timeline, Return and sign-in | heavy-history density proof |',
+    '| Replay | CW2-05 | the I-06 backend runtime (0100–0107) | the Product Replay surface. Distribution is NOT CLEARED |',
+    '| Voice / Live Call | G1.2 | none | all of it |',
+    '',
+    '## 7. Forward roadmap',
+    '',
+    'The census found that no user moment is COMPLETE / PRODUCTION-READY, and that the mobile client had no Conversation surface at the census; W1A-01 has since added it. See [`docs/e2e/E2E01_READ_FIRST.md`](docs/e2e/E2E01_READ_FIRST.md).',
+    '',
+    '| Task | Lifecycle | Primary record |',
+    '|---|---|---|',
+    '| W1A-01 Conversation surface | MERGED through PR #281 | [record](docs/e2e/w1a-01.md) |',
+  ].join('\n');
+  const docs = { 'QANDEEL_CURRENT_STATE.md': LAYERED, 'QANDEEL_PROJECT_MAP.md': '# Map\n', 'QANDEEL_PRODUCT_ROADMAP.md': '# Roadmap\n', 'README.md': '# Qandeel\n' };
+  const layeredWorld = (): ProductDocsDriver => {
+    const t = new FakeProductDocsTransport();
+    t.commit(REPO, docs, 'docs: state', '2026-10-10T10:00:00Z');
+    return new ProductDocsDriver({ transport: t, source: { productSource: () => ({ ok: true, externalRef: `github:${REPO}` }) }, clock: () => new Date('2026-10-10T12:00:00Z') });
+  };
+
+  test('the equivalents are closed and documented: the three world types and their Arabic names, nothing ambiguous', () => {
+    assert.deepEqual(productTopicNames('my world'), ['my world', 'personal world', 'العالم الشخصي']);
+    assert.deepEqual(productTopicNames('العالم الشخصي'), ['العالم الشخصي', 'my world', 'personal world']);
+    assert.deepEqual(productTopicNames('replay'), ['replay'], 'a topic outside the table is never widened');
+    assert.equal(PRODUCT_TOPIC_EQUIVALENTS.flat().includes('عالمي'), false, '"global" is not "my world"');
+    assert.equal(PRODUCT_TOPIC_EQUIVALENTS.length, 3);
+    // A one-name query stays one topic; other separator-free queries keep one topic per word.
+    assert.deepEqual(productQueryTopics('My World'), ['my world']);
+    assert.deepEqual(productQueryTopics('MY_WORLD'), ['my world']);
+    assert.deepEqual(productQueryTopics('العالم الشخصي'), ['العالم الشخصي']);
+    assert.deepEqual(productQueryTopics('Replay Matching'), ['replay', 'matching']);
+    // The identifier spelling is a whole-phrase match of "my world" (words also join across "_").
+    const hits = searchProductDoc('QANDEEL_CURRENT_STATE.md', LAYERED, ['my world']);
+    assert.ok(hits.some((h) => h.line === 5 && h.matchedAs['my world'] === undefined), 'MY_WORLD is "my world" itself');
+    assert.ok(hits.some((h) => h.text.includes('MY_WORLD')), 'an identifier keeps its underscore in the evidence text');
+  });
+
+  test('"My World" (and MY_WORLD, Personal World, العالم الشخصي) finds the Personal World row: what production code implements today, and what is still open', async () => {
+    for (const query of ['My World', 'MY_WORLD', 'Personal World', 'العالم الشخصي']) {
+      const r = await ok(layeredWorld(), { query });
+      assert.deepEqual(r.unmatched, [], query);
+      const e = r.evidence[0] as Evidence;
+      assert.equal(e.line, 17, `${query}: the topic's own row in the implementation table`);
+      assert.equal(e.status, 'SURFACE_IMPLEMENTED', 'the mobile client is a surface a user reaches');
+      assert.match(e.text, /^Living Analysis Map \(Personal World\) — in production: the mobile client in apps\/mobile\/src\/: .*; still open: heavy-history density proof$/);
+      assert.ok(!e.text.includes('Stages 0–6'), 'never the decision column alone');
+    }
+    const r = await ok(layeredWorld(), { query: 'My World' });
+    assert.deepEqual(r.evidence[0]?.equivalent, { 'my world': 'personal world' }, 'the result says which documented name it matched');
+  });
+
+  test('a backend runtime is never a user-facing product: Replay is RUNTIME_MERGED with its user surface still open; a decision with no code is design only', async () => {
+    const r = await ok(layeredWorld(), { query: 'Replay, Voice' });
+    const replay = row(r, 'Replay — in production');
+    assert.equal(replay.status, 'RUNTIME_MERGED');
+    assert.match(replay.text, /still open: the Product Replay surface/);
+    assert.equal(row(r, 'Voice / Live Call').status, 'APPROVED_NOT_IMPLEMENTED');
+    assert.equal(productLayerHint('the I-07 database runtime (0108–0118)'), 'RUNTIME_MERGED');
+    assert.equal(productLayerHint('none'), 'APPROVED_NOT_IMPLEMENTED');
+    assert.equal(productLaunchHint('`CLOSED / FROZEN`. "Replay is NOT product-launch ready"'), 'NOT_LAUNCH_READY');
+    assert.equal(productLaunchHint('**`CLOSED / MERGED` through PR #323; NOT DEPLOYED.**'), 'NOT_DEPLOYED');
+    assert.equal(productLaunchHint('IMPLEMENTED — MERGED'), null, 'launch readiness is never inferred from a merge');
+  });
+
+  test('an old census is history: its line is marked historical, the later merged record answers, and the census record is offered as the next read', async () => {
+    const r = await ok(layeredWorld(), { query: 'Conversation surface, census' });
+    const surface = row(r, 'W1A-01 Conversation surface');
+    assert.equal(surface.status, 'IMPLEMENTED_MERGED', 'the later merged record answers the topic');
+    assert.equal(surface.historical, undefined);
+    const census = r.evidence.find((e) => e.text.startsWith('The census found'));
+    assert.ok(census, JSON.stringify(r.evidence));
+    assert.equal(census.historical, true, 'the census line describes the state at the census');
+    assert.deepEqual(r.next, ['docs/e2e/E2E01_READ_FIRST.md'], 'what to read next instead of repeating "unknown"');
+    assert.deepEqual(r.unmatched, []);
+  });
+
+  test('a real gap stays unmatched: an unknown topic is never filled by an equivalent or a nearby word', async () => {
+    const r = await ok(layeredWorld(), { query: 'My World, Lantern Gateway, global rollout' });
+    assert.deepEqual(r.unmatched, ['lantern gateway', 'global rollout']);
+    assert.equal(r.evidence.length, 1);
   });
 });

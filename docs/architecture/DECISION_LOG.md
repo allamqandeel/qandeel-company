@@ -5939,3 +5939,131 @@ operator-only. No migration was changed. No LIVE action.
   - secret material is still refused;
   - a brief is never recovered.
 - `p1-product-knowledge` asserts both instructions in the granted CEO's context.
+
+## D-P1-09 — The CEO's real conversations: an E4 call gets the time its allowance needs, product names and layers read truthfully, natural Arabic, and a composer that never cuts (P1-CEO-QUALITY-CORR-01; Founder Task Contract, executor)
+
+**Context.** The Founder's real conversations with Ahmed Zaki (CEO) on LIVE after the E3 / E4 activation showed four defects.
+The evidence below is the content-free LIVE read model only (IDs, codes, counts, amounts). No conversation text was read
+into a report.
+
+**A — an E4 strategic reply ended with no answer. Established.**
+- Work Item `d92356d3`: AUTO selected E4 (RD-1: VERY_HIGH complexity and consequence, CLEAR).
+  - The PRIMARY call (16,384) ended `finish_reason=length` with `reasoning_tokens=16,384`: thinking used the whole
+    allowance and the answer never started.
+  - The one same-class continuation (RETRY, 32,768) ended `TIMEOUT_AFTER_SEND` at exactly 120 s, the fixed call timeout.
+  - The resumed run found the only E4 deployment excluded for this Work Item (P-07: it may have billed), so its
+    continuation could not grow and the run ended `MODEL_OUTPUT_TRUNCATED` with no further call.
+- Money:
+  - billed 10,565 µUSD (one usage row), governed charge 21,128 µUSD;
+  - the timed-out call's 46,229 µUSD reservation is `RECONCILIATION_REQUIRED` (`TIMEOUT_AFTER_SEND`). It is held, not
+    spent; it shows in Attention and the Founder's existing reconciliation act settles or releases it.
+- The same shape answered once (`69f14123`): primary truncated at 16,384, then a continuation of 16,430 tokens answered
+  in 93 s.
+- Successful E4 calls spent 3.4k–15.0k thinking tokens on a body of 700–1,450 tokens. The 4,000-character body is not the
+  cause; thinking at E4's maximum effort is.
+- Measured E4 throughput: 151–177 tokens/s, including the wait for the first token. A 120 s timeout therefore cuts any
+  E4 call that needs more than about 18k tokens, so the granted 32,768 continuation could not be used. **The timeout,
+  not the cost policy, was inconsistent with the allowance.**
+
+**B — "My World" reported unverifiable; runtime mixed with the product. Established** (the App's locator documents at
+`main`, read anonymously).
+- The documents never write "My World": they write `MY_WORLD` and "Personal World".
+  - A topic phrase joined words only across space, `/` and `-`.
+  - A one-name query without commas was split into one topic per word ("my", "world").
+- The Product / Design versus implementation table ("Decided | In production code today | Still open") was read through
+  its *Decided* column, which gave UNKNOWN_VERIFY.
+- A merged runtime, foundation or backend row had the same `IMPLEMENTED_MERGED` as code a user reaches.
+- An audit census line (E2E-01: "no user moment is COMPLETE … at the census") carried no sign that it describes the past.
+
+**C — Arabic style. Established cause.** The CEO conversation guidance (D-P1-05) asked for "the Founder's language and
+tone" and "warmly", but set no rule for Arabic register, honorifics, literal translation, jargon, or fact versus
+hypothesis.
+
+**D — long messages cut. Established.** The composer textarea had `maxlength=4000`, so the browser dropped the end of a
+long paste silently. The server counts the trimmed body's UTF-16 length, at most 4,000.
+
+**Decision.**
+1. **A — a call's timeout grows with its allowance.**
+   - `modelCallTimeoutMs(base, maxOutputTokens) = max(base, ceil(base × tokens / 15,000))`: at the default, 8 ms per
+     token (125 tokens/s, below the measured rate).
+   - E1–E3 keep 120 s. E4's 16,384 gets 131 s; the largest continuation (32,768, `OUTPUT_CONTINUATION_MAX_TOKENS`)
+     gets 262 s. That is inside the platform `fetch` header timeout (300 s), and three such calls (the Founder reply
+     bound) fit the 10-minute run.
+   - **Unchanged:** token allowances, the one same-class continuation, `CHAT_REPLY_MAX_MODEL_CALLS`, reservations and
+     their worst case, the class (AUTO's E4 stays E4; a Founder E4 stays pinned), and the refusal of a truncated output.
+   - The CEO language guidance (C) also says a strategic reply is complete with the decision, the reasoning that matters
+     and the next step within the body.
+2. **B — the reader.**
+   - **Words join across `_`.** `MY_WORLD` is "my world", in the query and in the documents.
+   - **Bounded equivalents.** One closed, documented table (`PRODUCT_TOPIC_EQUIVALENTS`): the App's three world types
+     and their Arabic names: my world / personal world / العالم الشخصي; shared world / العالم المشترك; public world /
+     العالم العام.
+     - Each is matched as a whole phrase. Nothing else is widened ("عالمي" also means "global" and is excluded).
+     - A one-name query stays one topic.
+     - The evidence says which documented name it matched (`equivalent`).
+   - **Layered rows.** In a "Decided | In production code today | Still open" table, the evidence shows what production
+     code implements today and what is still open. Its status comes from the production column: nothing in production
+     is `APPROVED_NOT_IMPLEMENTED`; the client, a surface or a screen is `SURFACE_IMPLEMENTED`; any other production
+     code is `RUNTIME_MERGED`.
+   - **Status hints, conservative as before.**
+     - `RUNTIME_MERGED` for a merged or closed runtime, foundation, backend, database, API or migration row.
+     - `IMPLEMENTED_MERGED` only when the layer is not stated.
+     - Launch readiness is a separate `launch` hint (`NOT_LAUNCH_READY`, `NOT_DEPLOYED`), taken only from the row's own
+       words. It is never inferred from a merge.
+   - **History.** A line about the past (census, "at the time", "as recorded on", superseded, historical) is marked
+     `historical`. At equal strength, a current line and then an implementation-table row are preferred.
+   - **Next read.** `next` names at most two cited primary records that would settle a topic this read could not (no
+     status, unknown, or historical). A real gap stays `unmatched`.
+   - The guidance names the layers, the launch hint, history, equivalents and the next read.
+   - **Unchanged:** the access (GitHub read-only, anonymous, exact commit, the closed source list, the grant, R0, the
+     result bound). There is no new source, index, persistence or background reading.
+3. **C — `CEO_LANGUAGE_GUIDANCE`.** It follows `CEO_CONVERSATION_GUIDANCE`, only on the direct Founder ↔ CEO turn (the
+   D-P1-05 seam). It asks for:
+   - natural, polished Egyptian Arabic in conversation and professional MSA for a report or formal document;
+   - correct spelling and grammar;
+   - «يا فندم» at most occasionally, never a habit, never flattery;
+   - no literal translation from English, and a term only when needed, explained once;
+   - fact (and source), interpretation, business hypothesis and recommendation kept apart, with no hypothesis presented
+     as a result;
+   - caution that never replaces finishing what the evidence allows.
+
+   The identity kernel and the CEO Constitution are unchanged byte for byte (the test pins the kernel's SHA-256). No
+   Employee profile, certification or Academy item changes.
+4. **D — the composer never cuts.**
+   - `maxlength` is removed. A count under the composer uses the server's own measure. It warns from 3,600, and over
+     4,000 it says by how much and that nothing was cut.
+   - A paste that takes the message over the limit is announced.
+   - Send is disabled while over the limit, and `beginSend` refuses an over-limit draft with its reason. No ticket and
+     no key are made, and the whole text stays in memory and in the session draft. The reason clears once the text fits.
+   - The server limit stays 4,000. Drafts, idempotency keys, replay and the one-message level are unchanged.
+
+**Not done.**
+- No change to E1–E4 allowances, the continuation policy, budgets, route policy, Ahmed's profile, ceiling, grants or
+  certification. No migration.
+- No change to the App repository (read only), and no LIVE call or LIVE change.
+- **Product Decision, not taken here:** raising E4's first allowance (16,384) would avoid a wasted first call when E4
+  thinks past it (2 of 7 LIVE E4 primaries did), at a larger worst-case reservation per E4 call.
+- **Residual:** after a `TIMEOUT_AFTER_SEND`, the resumed run ends `MODEL_OUTPUT_TRUNCATED` because its only E4
+  deployment is excluded for that Work Item. The end is honest (no complete output, no further call), but the code
+  names the outcome, not the exclusion.
+- A prompt rule cannot guarantee every future Arabic sentence.
+
+**Proof** (all deterministic: fake transport, no network, no paid call).
+- `runtime/test/p1/p1-reason-auto-recovery.test.ts` "P1-CEO-QUALITY-CORR-01 A":
+  - the timeout table;
+  - AUTO E4 truncated at 16,384, then a 32,768 continuation slower than the base timeout answers once, with no
+    escalation or downgrade and nothing held;
+  - a Founder E4 truncated twice ends `MODEL_OUTPUT_TRUNCATED` after exactly two E4 calls, with no message and both
+    calls settled;
+  - a continuation that outlives its scaled timeout is held for reconciliation, not spent, with no third call (the LIVE
+    shape).
+- `tool-drivers/test/p1-product-docs.test.ts` "B": equivalents (closed), "My World" / `MY_WORLD` / Personal World /
+  العالم الشخصي → the Personal World implementation row (`SURFACE_IMPLEMENTED`), Replay `RUNTIME_MERGED` with its
+  surface still open, design only, launch hints, the census `historical` with `next`, and a real gap `unmatched`.
+  Scenario A's runtime rows are now `RUNTIME_MERGED`.
+- `storage/test/p1-ceo-quality.test.ts`: the language guidance reaches the real CEO path once, after the conversation
+  guidance; it is absent for another Employee and for a brief; its rules are present; the kernel is pinned.
+- `runtime/test/p1/p1-product-knowledge.test.ts`: the granted CEO sees the new guidance; the evidence carries
+  `RUNTIME_MERGED`.
+- `command-center-ui/test/p1-chat-send.test.ts` "D": count, near / over, Arabic, emoji, trimming, the paste notice, the
+  refusal that keeps every character and mints no key, the reason clearing, and an unchanged retry key.

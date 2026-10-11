@@ -29,6 +29,7 @@ import {
   PRODUCT_KNOWLEDGE_TOOL,
   PRODUCT_LOCATOR_DOCS,
   isProductDocPath,
+  type ProductLaunchHint,
   type ProductStatusHint,
   type ToolDriver,
   type ToolDriverInput,
@@ -59,6 +60,7 @@ const MAX_DOC_BYTES = 400 * 1024;
 const MAX_TOPICS = 8;
 const SUBJECT_CHARS = 90;
 const LEAD_CHARS = 110;
+const OPEN_CHARS = 80;
 const PROSE_CHARS = 200;
 const RESULT_CHARS = 1_850;
 const CACHE_ENTRIES = 12;
@@ -85,7 +87,10 @@ const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  * Analysis Map" never matches every line that says "map". A query without separators is one topic per significant word.
  */
 export function productQueryTopics(query: string): string[] {
-  const text = query.normalize('NFC').toLowerCase().replace(/\s+/g, ' ').trim();
+  // D-P1-09: an identifier's underscore separates words (MY_WORLD is "my world").
+  const text = query.normalize('NFC').toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+  // A whole query that is one documented product name stays one topic ("My World" is never "my" + "world").
+  if (PRODUCT_TOPIC_EQUIVALENTS.some((g) => g.includes(text))) return [text];
   const parts = /[,;|\n]/.test(text) ? text.split(/[,;|\n]/) : text.split(' ');
   const out: string[] = [];
   for (const part of parts) {
@@ -100,13 +105,33 @@ export function productQueryTopics(query: string): string[] {
   return out;
 }
 
-const topicRe = (topic: string): RegExp => new RegExp(`(?<![\\p{L}\\p{N}])${topic.split(' ').map(escapeRe).join('[\\s/-]+')}(?![\\p{L}\\p{N}])`, 'iu');
+/**
+ * P1-CEO-QUALITY-CORR-01 (D-P1-09): the few product names the App's documents spell another way, each group closed and
+ * documented (the App's three world types, CW2-00 §3, and the Arabic names its Product copy uses). A topic in a group also
+ * matches the group's other names as whole phrases, so "My World" finds the documents' "Personal World"; nothing else is
+ * widened, so a topic is never tied to a different subject. (`MY_WORLD` needs no entry: words also join across `_`.)
+ * "عالمي" is deliberately absent: it also means "global".
+ */
+export const PRODUCT_TOPIC_EQUIVALENTS: readonly (readonly string[])[] = Object.freeze([
+  Object.freeze(['my world', 'personal world', 'العالم الشخصي']),
+  Object.freeze(['shared world', 'العالم المشترك']),
+  Object.freeze(['public world', 'العالم العام']),
+]);
+
+/** The topic and its documented equivalents, the topic first. */
+export function productTopicNames(topic: string): string[] {
+  const group = PRODUCT_TOPIC_EQUIVALENTS.find((g) => g.includes(topic));
+  return group ? [topic, ...group.filter((n) => n !== topic)] : [topic];
+}
+
+const topicRe = (topic: string): RegExp => new RegExp(`(?<![\\p{L}\\p{N}])${topic.split(' ').map(escapeRe).join('[\\s/_-]+')}(?![\\p{L}\\p{N}])`, 'iu');
 
 /** Markdown reduced to plain text: links to their label, no emphasis or code marks, single spaces. */
 function plain(s: string): string {
   return s
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/[`*_]+/g, '')
+    // Emphasis and code marks go; an underscore inside an identifier (MY_WORLD) stays.
+    .replace(/[`*]+|(?<![\p{L}\p{N}])_+|_+(?![\p{L}\p{N}])/gu, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -130,10 +155,37 @@ export function productStatusHint(subject: string, lifecycle: string): ProductSt
   if (/NOT ESTABLISHED/.test(lead)) return 'UNKNOWN_VERIFY';
   if (/PRODUCTION IMPLEMENTATION OPEN|NOT STARTED|UNSTARTED/.test(all)) return 'APPROVED_NOT_IMPLEMENTED';
   if (/NOT MERGED|\bACTIVE\b|IN PROGRESS|IN REVIEW|READY FOR (?:PO|PRODUCT OWNER) MERGE|\bCANDIDATE\b/.test(lead)) return 'ACTIVE_IN_PROGRESS';
-  if (/\bMERGED\b/.test(lead)) return 'IMPLEMENTED_MERGED';
-  if (/\bCLOSED\b/.test(lead) && /RUNTIME|FOUNDATION|\(0\d{3}/.test(subj)) return 'IMPLEMENTED_MERGED';
+  // D-P1-09: a merged runtime / backend / foundation is its own layer — it never says what a user can use.
+  const runtime = RUNTIME_SUBJECT.test(subj);
+  if (/\bMERGED\b/.test(lead)) return runtime ? 'RUNTIME_MERGED' : 'IMPLEMENTED_MERGED';
+  if (/\bCLOSED\b/.test(lead) && runtime) return 'RUNTIME_MERGED';
   return 'UNKNOWN_VERIFY';
 }
+
+const RUNTIME_SUBJECT = /RUNTIME|FOUNDATION|BACKEND|DATABASE|PERSISTENCE|\bAPI\b|\(0\d{3}|MIGRATION/;
+
+/** A row's own word that it is not launch-ready or not deployed (any sentence of the cell). Never a positive claim. */
+export function productLaunchHint(lifecycle: string): ProductLaunchHint | null {
+  const all = plain(lifecycle).toUpperCase();
+  if (/NOT (?:PRODUCT[- ])?LAUNCH[- ]READY|NOT CLAIM (?:PRODUCT )?LAUNCH READINESS|NOT[ _]EVALUATED/.test(all)) return 'NOT_LAUNCH_READY';
+  if (/NOT DEPLOYED/.test(all)) return 'NOT_DEPLOYED';
+  return null;
+}
+
+/**
+ * The layer a "Decided | In production code today | Still open" row states (the App's Product / Design versus
+ * implementation table): nothing in production is a decision only; production code a user reaches (the client, a
+ * surface or screen) is a surface; any other production code is runtime only. Conservative, like the lifecycle hint.
+ */
+export function productLayerHint(built: string): ProductStatusHint {
+  const b = plain(built);
+  if (b.length === 0 || /^(?:none|—|-)\b/i.test(b)) return 'APPROVED_NOT_IMPLEMENTED';
+  if (/apps\/mobile|mobile client|\bclient\b|\bsurfaces?\b|\bscreens?\b|\bUI\b/i.test(b)) return 'SURFACE_IMPLEMENTED';
+  return 'RUNTIME_MERGED';
+}
+
+/** A line that speaks about the past (a census, a snapshot, a superseded or "at the time" statement): never current truth. */
+const HISTORICAL = /\(historical|\bat the time\b|as recorded on|\bat the census\b|\bcensus found\b|no longer the current state|\bsuperseded\b|\bhistorical\b/i;
 
 export interface ProductEvidenceHit {
   readonly path: string;
@@ -141,9 +193,17 @@ export interface ProductEvidenceHit {
   readonly heading: string;
   readonly text: string;
   readonly status: ProductStatusHint | null;
+  /** The row's own word that it is not launch-ready or not deployed (D-P1-09), or null (which proves nothing). */
+  readonly launch: ProductLaunchHint | null;
+  /** The line speaks about the past (a census, a snapshot, an "at the time" statement): a later record outranks it. */
+  readonly historical: boolean;
+  /** A row of the "Decided | In production code today | Still open" table: it states the implementation layers. */
+  readonly layered: boolean;
   readonly record: string | null;
   /** Topic → strength of this line for it (a row whose subject names the topic is strongest). */
   readonly topics: Readonly<Record<string, number>>;
+  /** Topic → the documented equivalent this line names instead of the topic itself (D-P1-09), when it does. */
+  readonly matchedAs: Readonly<Record<string, string>>;
   readonly order: number;
 }
 
@@ -155,12 +215,16 @@ const clipAround = (s: string, n: number, re: RegExp | null): string => {
   return `${start > 0 ? '…' : ''}${s.slice(start, start + n - 1)}…`;
 };
 
+const isSeparator = (l: string | undefined): boolean => l !== undefined && /^\s*\|?\s*:?-{3,}/.test(l);
+
 /** Every line of one document that names a topic: table rows (subject — current lifecycle), headings and prose. */
 export function searchProductDoc(path: string, text: string, topics: readonly string[], order = 0): ProductEvidenceHit[] {
-  const res = topics.map((t) => [t, topicRe(t)] as const);
+  const res = topics.map((t) => [t, productTopicNames(t).map((n) => [n, topicRe(n)] as const)] as const);
   const hits: ProductEvidenceHit[] = [];
   let heading = '';
   let fenced = false;
+  // D-P1-09: the columns of the table being read — a "Decided | In production code today | Still open" table states layers.
+  let layered: { readonly built: number; readonly open: number } | null = null;
   const lines = text.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i] as string;
@@ -171,24 +235,46 @@ export function searchProductDoc(path: string, text: string, topics: readonly st
     if (fenced) continue;
     const h = /^#{1,6}\s+(.*)$/.exec(raw);
     if (h) heading = plain(h[1] as string).slice(0, 60);
-    if (raw.trim().length < 8 || /^\s*\|?\s*:?-{3,}/.test(raw)) continue;
     const isRow = /^\s*\|/.test(raw);
+    if (!isRow) layered = null;
+    if (raw.trim().length < 8 || isSeparator(raw)) continue;
     const cells = isRow ? raw.split('|').slice(1, -1) : [];
+    if (isRow && isSeparator(lines[i + 1])) {
+      // A header row: never evidence; it names the columns of the rows below it.
+      const names = cells.map((c) => plain(c).toLowerCase());
+      const built = names.findIndex((n) => n.startsWith('in production'));
+      const open = names.findIndex((n) => n.startsWith('still open'));
+      layered = built > 0 && open > 0 ? { built, open } : null;
+      continue;
+    }
     const subject = plain(cells[0] ?? '');
     if (isRow && /^(?:Task|Domain|Stage|Step|Lifecycle|)$/i.test(subject)) continue;
     const scored: Record<string, number> = {};
+    const matchedAs: Record<string, string> = {};
     let first: RegExp | null = null;
-    for (const [t, re] of res) {
-      if (!re.test(raw)) continue;
+    for (const [t, names] of res) {
+      const named = names.find(([, re]) => re.test(raw));
+      if (named === undefined) continue;
+      const [name, re] = named;
       first ??= re;
+      if (name !== t) matchedAs[t] = name;
       // A row whose subject cell names the topic is the topic's own row; a heading names a section about it.
-      scored[t] = isRow && re.test(subject) ? 6 : h ? 4 : isRow ? 2 : 1;
+      scored[t] = isRow && names.some(([, r]) => r.test(subject)) ? 6 : h ? 4 : isRow ? 2 : 1;
     }
     if (first === null) continue;
     let out: string;
     let status: ProductStatusHint | null = null;
-    if (isRow && cells.length >= 2) {
+    let launch: ProductLaunchHint | null = null;
+    if (isRow && layered !== null && cells.length > Math.max(layered.built, layered.open)) {
+      // What production code implements today and what is still open, never the decision column alone (D-P1-09).
+      const built = cells[layered.built] ?? '';
+      const open = plain(cells[layered.open] ?? '');
+      status = productLayerHint(built);
+      launch = productLaunchHint(`${built} ${open}`);
+      out = `${clipAround(subject, SUBJECT_CHARS, first)} — in production: ${clip(plain(built), LEAD_CHARS)}; still open: ${clip(open, OPEN_CHARS)}`;
+    } else if (isRow && cells.length >= 2) {
       status = productStatusHint(cells[0] ?? '', cells[1] ?? '');
+      launch = productLaunchHint(cells[1] ?? '');
       // A long subject is shown around the topic it matched (a feature named late in a long row stays visible).
       out = `${clipAround(subject, SUBJECT_CHARS, first)} — ${clip(leadOf(cells[1] ?? ''), LEAD_CHARS)}`;
     } else if (h) {
@@ -197,16 +283,19 @@ export function searchProductDoc(path: string, text: string, topics: readonly st
       const body = near.find((l) => /^\s*(?:[-*+]|\d+\.)\s/.test(l)) ?? near[0] ?? '';
       out = clip(`${plain(h[1] as string)}: ${plain(body.replace(/^\s*(?:[-*+]|\d+\.)\s+/, ''))}`, PROSE_CHARS);
     } else out = clipAround(plain(raw.replace(/^\s*(?:[-*+]|\d+\.)\s+/, '')), PROSE_CHARS, first);
-    hits.push({ path, line: i + 1, heading, text: out, status, record: firstLink(raw), topics: scored, order });
+    // A table row states its current state first (its later sentences are history); a prose line is judged whole.
+    const historical = HISTORICAL.test(isRow ? out : raw);
+    hits.push({ path, line: i + 1, heading, text: out, status, launch, historical, layered: isRow && layered !== null, record: firstLink(raw), topics: scored, matchedAs, order });
   }
   return hits;
 }
 
 /**
- * The evidence set: for each topic in order, its strongest line (its own table row first; then the earliest document in
- * the reading order; within a document, the later of two equally strong headings, since execution notes are appended).
- * One line may serve several topics. A topic with no line is reported as unmatched, never filled with a weaker guess; a
- * topic whose lines are dropped for the result limit is reported as omitted.
+ * The evidence set: for each topic in order, its strongest line (its own table row first; then a current line before a
+ * historical one; then an implementation-table row; then the earliest document in the reading order; within a document, the
+ * later of two equally strong headings, since execution notes are appended). One line may serve several topics. A topic
+ * with no line is reported as unmatched, never filled with a weaker guess; a topic whose lines are dropped for the result
+ * limit is reported as omitted.
  */
 export function selectProductEvidence(hits: readonly ProductEvidenceHit[], topics: readonly string[]): ProductEvidenceHit[] {
   const chosen: ProductEvidenceHit[] = [];
@@ -220,12 +309,27 @@ export function selectProductEvidence(hits: readonly ProductEvidenceHit[], topic
         continue;
       }
       const b = best.topics[t] ?? 0;
-      const better = s !== b ? s > b : hit.order !== best.order ? hit.order < best.order : s === 4 ? hit.line > best.line : hit.status !== null && best.status === null;
+      const better = s !== b ? s > b : hit.historical !== best.historical ? !hit.historical : hit.layered !== best.layered ? hit.layered : hit.order !== best.order ? hit.order < best.order : s === 4 ? hit.line > best.line : hit.status !== null && best.status === null;
       if (better) best = hit;
     }
     if (best !== null && !chosen.includes(best)) chosen.push(best);
   }
   return chosen;
+}
+
+/**
+ * D-P1-09: what to read next instead of repeating "unknown": the primary record a chosen line cites when that line does not
+ * settle its topic (no status, an unplaceable status, or a historical line). At most two, never a path outside the closed
+ * source list.
+ */
+export function nextProductReads(chosen: readonly ProductEvidenceHit[]): string[] {
+  const out: string[] = [];
+  for (const h of chosen) {
+    if (h.record === null || out.includes(h.record)) continue;
+    if (h.status === null || h.status === 'UNKNOWN_VERIFY' || h.historical) out.push(h.record);
+    if (out.length === 2) break;
+  }
+  return out;
 }
 
 /** Commit headlines are data too: one plain line, bounded. */
@@ -293,8 +397,21 @@ export class ProductDocsDriver implements ToolDriver {
       commit: sha,
       ...head,
       notice: NOTICE,
-      evidence: kept.map((h) => ({ path: h.path, line: h.line, ...(h.status === null ? { heading: h.heading } : {}), ...(h.status !== null ? { status: h.status } : {}), ...(h.record !== null ? { record: h.record } : {}), text: h.text })),
+      evidence: kept.map((h) => ({
+        path: h.path,
+        line: h.line,
+        ...(h.status === null ? { heading: h.heading } : {}),
+        ...(h.status !== null ? { status: h.status } : {}),
+        // D-P1-09: the row's own "not launch-ready / not deployed", a past-tense line, and the documented name it matched.
+        ...(h.launch !== null ? { launch: h.launch } : {}),
+        ...(h.historical ? { historical: true } : {}),
+        ...(Object.keys(h.matchedAs).length > 0 ? { equivalent: { ...h.matchedAs } } : {}),
+        ...(h.record !== null ? { record: h.record } : {}),
+        text: h.text,
+      })),
       ...(missing.length > 0 ? { missing } : {}),
+      // D-P1-09: the cited primary records that would settle a topic this read could not (read one next, by path).
+      ...(nextProductReads(kept).length > 0 ? { next: nextProductReads(kept) } : {}),
       // A topic no document line names is unmatched: the Employee says it does not know instead of guessing.
       unmatched,
       // A topic whose evidence exists but was dropped for the result limit is omitted, never unmatched: read it on its own.

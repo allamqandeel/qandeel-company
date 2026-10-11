@@ -46,6 +46,20 @@ import { answerSnapshot, errorSnapshot, failureSnapshot, type ProviderSnapshot, 
 import type { ModelCallOutcome, ModelCallRequest, ReasoningSelectionRecord } from './types.js';
 
 export const DEFAULT_MODEL_CALL_TIMEOUT_MS = 120_000;
+/**
+ * P1-CEO-QUALITY-CORR-01 (D-P1-09): the output allowance the base timeout covers. A call's timeout grows with the allowance
+ * it was given, so a granted allowance can actually be used: at the default, 8 ms per output token (125 tokens/s; LIVE E4
+ * calls ran at 151–177 tokens/s including the wait for the first token). Every allowance up to 15,000 keeps the base
+ * timeout; E4's 16,384 gets 131 s and the largest continuation (32,768, OUTPUT_CONTINUATION_MAX_TOKENS) 262 s, inside the
+ * 300 s default header timeout of the platform `fetch`. Three such calls (the Founder reply bound) stay inside the
+ * Employee task's 10-minute run.
+ */
+export const MODEL_CALL_TIMEOUT_REFERENCE_TOKENS = 15_000;
+
+/** The timeout of one call: the base, scaled up (never down) by the output allowance the call may use. */
+export function modelCallTimeoutMs(baseMs: number, maxOutputTokens: number): number {
+  return Math.max(baseMs, Math.ceil((baseMs * maxOutputTokens) / MODEL_CALL_TIMEOUT_REFERENCE_TOKENS));
+}
 
 /**
  * What a failed attempt's accounting actually recorded: provably not billed (reservation released),
@@ -385,7 +399,8 @@ export class GovernedModelRuntime {
     try {
       // Runtime-control outcomes are private markers no provider value can equal (R1-09 sweep): any
       // value the adapter resolves with — even the string 'TIMEOUT' — goes through the boundary.
-      const timeout = sleep(this.#timeoutMs, TIMED_OUT, { signal: timer.signal }).catch(() => CANCELLED);
+      // D-P1-09: a larger allowance gets the time it needs (an E4 call that may think for 16k tokens, or a continuation).
+      const timeout = sleep(modelCallTimeoutMs(this.#timeoutMs, request.maxOutputTokens), TIMED_OUT, { signal: timer.signal }).catch(() => CANCELLED);
       const result: unknown = await Promise.race([adapter.generate(request, controller.signal), timeout]);
       if (result === TIMED_OUT || result === CANCELLED) {
         controller.abort();

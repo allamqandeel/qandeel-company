@@ -57,9 +57,47 @@ export function sendState(threadId: string, stored: StoredDraft): SendState {
 
 const persist = (s: SendState, store: DraftStore): void => store.set(s.threadId, { text: s.draft, key: s.key, sig: s.keySig });
 
+/**
+ * P1-CEO-QUALITY-CORR-01 D (D-P1-09) — the message limit, counted exactly as the server counts it: the sent (trimmed) body's
+ * length in UTF-16 code units, at most 4,000 (an Arabic letter is one, an emoji two). The composer never cuts text: a draft
+ * may run over, it is shown with its count, and it cannot be sent until it fits — the whole draft stays, nothing is lost.
+ */
+export const MESSAGE_MAX_CHARS = 4000;
+/** From here the count warns that the limit is near. */
+export const MESSAGE_NEAR_CHARS = 3600;
+
+export interface ComposerLength {
+  readonly count: number;
+  readonly max: number;
+  readonly state: 'OK' | 'NEAR' | 'OVER';
+  /** What the Founder sees under the composer ('' when there is nothing to say). */
+  readonly label: string;
+}
+
+const fmt = (n: number): string => n.toLocaleString('en-US');
+const TOO_LONG = 'Not sent — the message is ';
+
+export function composerLength(text: string): ComposerLength {
+  const count = text.trim().length;
+  if (count > MESSAGE_MAX_CHARS) {
+    return { count, max: MESSAGE_MAX_CHARS, state: 'OVER', label: `${fmt(count)} / ${fmt(MESSAGE_MAX_CHARS)} characters — ${fmt(count - MESSAGE_MAX_CHARS)} over the limit. Nothing was cut: shorten it, or send it as two messages.` };
+  }
+  if (count >= MESSAGE_NEAR_CHARS) return { count, max: MESSAGE_MAX_CHARS, state: 'NEAR', label: `${fmt(count)} / ${fmt(MESSAGE_MAX_CHARS)} characters — close to the limit` };
+  return { count, max: MESSAGE_MAX_CHARS, state: 'OK', label: count === 0 ? '' : `${fmt(count)} / ${fmt(MESSAGE_MAX_CHARS)}` };
+}
+
+/** What a paste did to the draft: the Founder is told when the pasted text took the message over the limit (never cut). */
+export function pasteNotice(before: string, after: string): string | null {
+  const was = composerLength(before);
+  const now = composerLength(after);
+  return now.state === 'OVER' && was.state !== 'OVER' ? `The pasted text made the message ${fmt(now.count)} characters, over the ${fmt(MESSAGE_MAX_CHARS)} limit. All of it is kept in the box — nothing was cut.` : null;
+}
+
 /** The Founder edited this conversation's draft. */
 export function editDraft(s: SendState, text: string, store: DraftStore): void {
   s.draft = text;
+  // The over-limit refusal is about the text: once it fits again, the refusal is gone (other errors stay until a send).
+  if (s.error?.startsWith(TOO_LONG) && composerLength(text).state !== 'OVER') s.error = null;
   persist(s, store);
 }
 
@@ -68,6 +106,12 @@ export function beginSend(s: SendState, store: DraftStore, newKey: () => string)
   if (s.sending) return null;
   const body = s.draft.trim();
   if (!body) return null;
+  // D-P1-09: an over-limit draft is never sent (and never cut into a shorter "original"): it stays whole, with the reason.
+  const length = composerLength(body);
+  if (length.state === 'OVER') {
+    s.error = `${TOO_LONG}${fmt(length.count)} characters; the limit is ${fmt(MESSAGE_MAX_CHARS)}. Your whole text is kept: shorten it, or send it as two messages.`;
+    return null;
+  }
   const level = s.mode === 'ASK' ? s.level : null;
   const sig = sendSig(body, s.mode, level);
   if (s.key === null || s.keySig !== sig) {
