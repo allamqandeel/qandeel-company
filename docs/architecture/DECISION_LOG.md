@@ -6082,3 +6082,96 @@ long paste silently. The server counts the trimmed body's UTF-16 length, at most
   `RUNTIME_MERGED`.
 - `command-center-ui/test/p1-chat-send.test.ts` "D": count, near / over, Arabic, emoji, trimming, the paste notice, the
   refusal that keeps every character and mints no key, the reason clearing, and an unchanged retry key.
+
+## D-P1-10 — The employee baseline before department heads: one company communication standard, AUTO / E1 / E4 for new hires, Arabic Founder Attention card texts (P1-EMPLOYEE-BASELINE-01; Founder Task Contract, executor; amends the L1-02 hire profile rule and, for the Attention card's own words only, D-C5-18)
+
+**Context.** Before the department heads are hired, the Founder asked for three shared baselines on the existing seams:
+- every Employee's writing to the Founder must meet one standard, not only the CEO's;
+- new Employees must start from the lowest sufficient reasoning class and be able to reach E4;
+- the Founder Attention alerts must be readable in Arabic, without translating the application.
+
+Research on main `bc7cc1e` established:
+- `CEO_LANGUAGE_GUIDANCE` (D-P1-09) reached only the direct CEO turn.
+- `txCreateEmployee` already writes AUTO when the creator states no selection (D-P1-04). But the Founder's `EMPLOYEE_HIRE`
+  validator refused any profile outside E1 / E2 (L1-02's "conservative first activation"), and its default was E1 / E2.
+- `DEFAULT_COGNITIVE_PROFILE` (E1 / E2) was referenced nowhere.
+- Every Founder Attention card text was a fixed English string in `panels.ts`.
+
+**Decision A — `EMPLOYEE_COMMUNICATION_STANDARD` (storage `mind-writes.ts`).**
+- **Where it applies:** every context in which an Employee writes to the Founder (`founderThreadId`: a thread reply or a
+  CEO brief) carries it once. It sits after the Employee's own identity kernel, and only when no Academy or benchmark mode
+  is set.
+- **What it covers:**
+  - the Founder's language: natural, correct Egyptian Arabic for Arabic, English for English, and the task's register for
+    formal documents (MSA for a formal Arabic document);
+  - no habitual titles, flattery or calques, and plain terms;
+  - verified fact, analysis, assumption and recommendation kept apart;
+  - the Employee's own disagreement, initiative and judgment.
+- **What it leaves alone:** it sets the quality of the writing, not the voice; each Employee's kernel, role and specialty
+  still decide how it thinks and speaks.
+- **The CEO:** the general rules of D-P1-09 moved into the standard. `CEO_LANGUAGE_GUIDANCE` keeps only the CEO's own part
+  (the executive register, finishing what the evidence allows, a complete strategic reply within the body), so nothing is
+  stated twice in the CEO's context.
+- **Unchanged:**
+  - `CEO_CONVERSATION_GUIDANCE`, the identity kernels (the CEO kernel's SHA-256 is pinned in the tests), the Constitution,
+    every certification and profile;
+  - the MESSAGE / ANSWER contracts, and the contexts of Academy attempts, benchmarks and background work.
+
+**Decision B — the standard new-hire profile is AUTO / E1 / E4, BALANCED.**
+- `DEFAULT_COGNITIVE_PROFILE` (governance) is now E1 / E4 / BALANCED / AUTO, and `EMPLOYEE_HIRE` takes its defaults from it.
+- **The Founder may state otherwise:** a lower ceiling (≥ the start), or an E2 start. A start outside E1 / E2, E0, or a
+  ceiling below the start is refused (`COGNITIVE_PROFILE`). The preview states the profile and what still bounds E3 / E4.
+- **Impact, stated as the contract asked:**
+  - **Authority and grants:** the ceiling is only the highest class the Employee's work may reach. E3 / E4 still need the
+    task class, its route policy, a provisioned deployment and the budget (Academy routes stay at E2). The hire still
+    creates a CANDIDATE with no budget, grant or work; activation is still the Academy's alone.
+  - **Certification:** the profile is set before qualification, so the certification an Employee earns is issued over
+    AUTO / E1 / E4 from the start. No existing certification is touched and no recertification is triggered. A later
+    change to the profile remains material (Stage 6 §14 → REVIEW_DUE, D-L1-44 / D-P1-04).
+  - **Existing Employees:** none is changed. Ahmed stays AUTO / E1 / E4 and his certification stays REVIEW_DUE.
+- **Reused, not rebuilt:** AUTO (D-P1-04), the Founder's per-message level and the standing-profile act, and the level
+  availability reasons in the chat (above the ceiling, the route limit, not provisioned, no route).
+
+**Decision C — Arabic Founder Attention card texts only (`command-center-ui/src/model/attention-text.ts`).**
+- **The fifteen cases the card renders** (approval, goal, staffing, escalation, review conflict, uncertain external
+  effect, held reservation, held job, review escalation, systemic finding, judgment, unverified outcome, message, brief,
+  system notice) each have fixed Arabic text:
+  - the card's kind;
+  - the one-line ask;
+  - a brief's four headings.
+- Names, titles, risk codes and amounts are inserted as data, unchanged.
+- The ask and the kind read right to left in their own elements; the card, the panel and the page stay left to right.
+- **Held money:** the Founder's wording replaces "release it if nothing was billed". The Arabic says: «فيه مبلغ محجوز
+  مقابل استدعاء لم تتأكد فاتورته. راجع الفوترة قبل تحرير الحجز، وما تعتبرش المبلغ مصروفًا أو غير مصروف من غير دليل.»
+  (Money is held for a call whose billing is unconfirmed. Check the billing before releasing the hold, and do not treat
+  the amount as spent or not spent without evidence.)
+- **The card used to render nothing** for a resilience or external-evidence signal. It now says in Arabic that a system
+  alert needs review and where to look.
+- **Unchanged (English):**
+  - "Founder attention", the lanes, every button with its intent and payload;
+  - the company map's labels, the chat, every other surface;
+  - company content.
+- **D-C5-18 amended:** its "chrome is English" rule now has one Founder-approved exception: these card texts.
+
+**Proof (deterministic; no model, no provider call, no LIVE access).**
+- `storage/test/p1-employee-baseline.test.ts`:
+  - A: on the real send → Work Item → claimed run → assembled context path:
+    - the CEO turn carries the standard once and its own guidance after it, with no general rule repeated;
+    - a director's reply and a CEO brief carry the standard, without the CEO's guidance;
+    - an Academy attempt and background work carry neither;
+    - the kernel is pinned.
+  - B: the real `EMPLOYEE_HIRE` preview and confirm give AUTO / E1 / E4 BALANCED, a CANDIDATE with no budget or work, and
+    leave other profiles and certifications unchanged. A lower ceiling and an E2 start are kept; out-of-range profiles are
+    refused.
+- `storage/test/p1-ceo-quality.test.ts`: the CEO rules are checked over the standard plus the CEO's own part.
+- `command-center/test/p1-employee-baseline-surface.test.ts`: the hire preview text.
+- `command-center-ui/test/p1-attention-arabic.test.ts`:
+  - the inventory of all fifteen cases;
+  - Arabic kind and ask, with no English in the fixed words;
+  - data inserted unchanged, and the exact held-money text;
+  - every button and its intent unchanged, and the English panel title, lanes and map labels;
+  - RTL only on the card's text.
+- `runtime/test/l1/l1-02-activation.test.ts`: the readiness of a default hire now reports ceiling E4.
+
+**Not done (out of scope).** No migration, route policy, deployment, budget, grant or certification change. No LIVE
+change, hire, Academy run or install.

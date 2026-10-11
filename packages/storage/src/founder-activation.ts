@@ -9,7 +9,7 @@
  * Payloads carry IDs, codes and bounded numbers only (no prose, no answer text).
  */
 import { QandeelError, assertCode, assertId, sha256Hex, type Id } from '@qandeel-company/domain';
-import { assertTaskClass, isReasoningClass } from '@qandeel-company/governance';
+import { DEFAULT_COGNITIVE_PROFILE, HIRE_DEFAULT_CLASSES, assertTaskClass, isReasoningClass, reasoningRank } from '@qandeel-company/governance';
 import { ASSESSMENT_DIMENSIONS, BENCHMARK_ARMS, BQM2_DECLARATION, DETERMINISTIC_DIMENSIONS, academyPackageDigest, containsSecretMaterial, observationsPerArm, packageMethod, type AcademyPackage, type AssessmentDimension, type EmployeeIdentityProfile } from '@qandeel-company/mind';
 
 import { AcademyStore, txAdvance, txCollectShadowEvidence, txEvaluateDeterministic } from './academy.js';
@@ -86,10 +86,12 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
       const identity = identityCode === null ? null : env.identities.find((i) => i.code === identityCode);
       if (identityCode !== null && !identity) refuse('IDENTITY_UNKNOWN', 'unknown identity profile (release-pinned, never typed)', { field: 'identityProfileCode' });
       if (identity && identity.roleRef !== pos.roleRef) refuse('IDENTITY_ROLE_MISMATCH', 'the identity profile belongs to another role', { field: 'identityProfileCode' });
-      const defaultClass = raw.defaultClass ?? 'E1';
-      const ceilingClass = raw.ceilingClass ?? 'E2';
-      if (!isReasoningClass(defaultClass) || !isReasoningClass(ceilingClass) || !['E1', 'E2'].includes(defaultClass) || !['E1', 'E2'].includes(ceilingClass) || defaultClass > ceilingClass) refuse('COGNITIVE_PROFILE', 'the first activation uses a conservative E1 / E2 cognitive profile', { field: 'ceilingClass' });
-      return { positionId: pos.id, positionCode: pos.code, positionTitle: pos.title.slice(0, 120), roleRef: pos.roleRef, givenName: given, familyName: family, displayNameAr: ar, identityProfileCode: identityCode, defaultClass: String(defaultClass), ceilingClass: String(ceilingClass), costDiscipline: 'BALANCED', startsAs: 'CANDIDATE', portraitAssetRef: null, reasonCode: assertCode(raw.reasonCode ?? 'founder.hired', 'reasonCode') };
+      // P1-EMPLOYEE-BASELINE-01 (D-P1-10): the standard new-hire profile is AUTO from E1 with ceiling E4, unless the Founder
+      // states a lower ceiling (or an E2 start). The start stays conservative; the ceiling grants no route, deployment or budget.
+      const defaultClass = raw.defaultClass ?? DEFAULT_COGNITIVE_PROFILE.defaultClass;
+      const ceilingClass = raw.ceilingClass ?? DEFAULT_COGNITIVE_PROFILE.ceilingClass;
+      if (!isReasoningClass(defaultClass) || !isReasoningClass(ceilingClass) || defaultClass === 'E0' || ceilingClass === 'E0' || !HIRE_DEFAULT_CLASSES.includes(defaultClass) || reasoningRank(defaultClass) > reasoningRank(ceilingClass)) refuse('COGNITIVE_PROFILE', 'a new hire starts at E1 or E2, with a ceiling from its start up to E4', { field: 'ceilingClass' });
+      return { positionId: pos.id, positionCode: pos.code, positionTitle: pos.title.slice(0, 120), roleRef: pos.roleRef, givenName: given, familyName: family, displayNameAr: ar, identityProfileCode: identityCode, defaultClass: String(defaultClass), ceilingClass: String(ceilingClass), selection: 'AUTO', costDiscipline: 'BALANCED', startsAs: 'CANDIDATE', portraitAssetRef: null, reasonCode: assertCode(raw.reasonCode ?? 'founder.hired', 'reasonCode') };
     }
     case 'EMPLOYEE_LIFECYCLE': {
       const e = getEmployeeRow(ctx, assertId(raw.employeeId, 'employeeId'));
@@ -330,7 +332,7 @@ export function executeActivation(store: CompanyStore, ctx: StoreContext, founde
         ...(identity ? { identityProfile: identity.code, identityKernel: identity.identityKernel } : {}),
       };
       if (containsSecretMaterial(JSON.stringify(profile))) throw new QandeelError('VALIDATION_FAILED', 'the profile carries secret material', { reason: 'SECRET_MATERIAL' });
-      const e = OrganizationStore.for(store).hire(founderRef, { positionId: str('positionId'), name: { given: str('givenName'), family: str('familyName') }, cognitiveProfile: { defaultClass: pl.defaultClass as 'E1', ceilingClass: pl.ceilingClass as 'E2', costDiscipline: 'BALANCED' }, profile, reasonCode: str('reasonCode') });
+      const e = OrganizationStore.for(store).hire(founderRef, { positionId: str('positionId'), name: { given: str('givenName'), family: str('familyName') }, cognitiveProfile: { defaultClass: pl.defaultClass as 'E1', ceilingClass: pl.ceilingClass as 'E2', costDiscipline: 'BALANCED', selection: 'AUTO' }, profile, reasonCode: str('reasonCode') });
       return `employee:${e.id}`;
     }
     case 'EMPLOYEE_LIFECYCLE': {

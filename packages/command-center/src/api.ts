@@ -769,7 +769,7 @@ export function structuredSummary(ctx: ApiContext, preview: { intentKind: string
     }
     // --- L1-02: the activation acts, stated as exactly what the canonical store will do (nothing more) ---
     case 'EMPLOYEE_HIRE':
-      return `Hire ${s('givenName')} ${s('familyName')}${p.displayNameAr ? ` (${s('displayNameAr')})` : ''} into the seat ${s('positionTitle')} (${s('roleRef')}) as a CANDIDATE — not active, no authority, no budget; cognitive profile ${s('defaultClass')}..${s('ceilingClass')}; portrait pending. The Academy alone decides activation`;
+      return `Hire ${s('givenName')} ${s('familyName')}${p.displayNameAr ? ` (${s('displayNameAr')})` : ''} into the seat ${s('positionTitle')} (${s('roleRef')}) as a CANDIDATE — not active, no authority, no budget; reasoning ${p.selection === 'AUTO' ? `AUTO from ${s('defaultClass')}` : s('defaultClass')}, ceiling ${s('ceilingClass')} (a level above E2 runs only where the task's route policy, a provisioned deployment and the budget allow it), cost discipline BALANCED; portrait pending. The Academy alone decides activation`;
     case 'EMPLOYEE_LIFECYCLE':
       return `Move ${s('name')} from ${s('from')} to ${s('to')} (a trainee step; ACTIVE comes only from the Academy's activation decision)`;
     case 'EMPLOYEE_MODEL_ACCESS':

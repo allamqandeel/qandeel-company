@@ -135,7 +135,16 @@ export function assertCognitiveProfile(v: unknown): CognitiveProfile {
 /** The selection a stored profile carries (absent = DEFAULT, the pre-AUTO meaning). */
 export const reasoningSelectionOf = (p: Pick<CognitiveProfile, 'selection'>): ReasoningSelection => p.selection ?? 'DEFAULT';
 
-export const DEFAULT_COGNITIVE_PROFILE: CognitiveProfile = Object.freeze({ defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' });
+/**
+ * P1-EMPLOYEE-BASELINE-01 (D-P1-10): the standard profile of a newly hired Employee — AUTO from E1 (the lowest sufficient
+ * start), ceiling E4, BALANCED cost discipline — unless the Founder states a lower ceiling or another profile. The ceiling is
+ * only the highest class the Employee's work may reach: E3 / E4 still run only where the task class, its route policy, a
+ * provisioned deployment and the budget allow them. No existing Employee is changed by this default.
+ */
+export const DEFAULT_COGNITIVE_PROFILE: CognitiveProfile = Object.freeze({ defaultClass: 'E1', ceilingClass: 'E4', costDiscipline: 'BALANCED', selection: 'AUTO' });
+
+/** The default classes a first hire may start from (a conservative start; the ceiling may be anything up to E4). */
+export const HIRE_DEFAULT_CLASSES: readonly ReasoningClass[] = ['E1', 'E2'];
 
 /**
  * Professional profile / personality metadata (Stage 4 §2–§5). Bounded JSON; credential-named keys
