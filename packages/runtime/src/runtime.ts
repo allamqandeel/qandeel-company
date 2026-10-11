@@ -1362,9 +1362,9 @@ export class CompanyRuntime {
       },
       // C5: Founder-facing messages and goal acts pass the fenced authority path; only codes and references
       // are recorded for later context (the message body is company content, never a step result).
-      sendMessage: (proposal: MessageProposal, step: number) => {
+      sendMessage: (proposal: MessageProposal, step: number, refsDiscarded?: number) => {
         const g = globalStep(step);
-        const out = recordMessage(store, claim.fence, { purpose: proposal.purpose, attentionLevel: proposal.attentionLevel, body: proposal.body, brief: proposal.brief, contextRefs: proposal.contextRefs });
+        const out = recordMessage(store, claim.fence, { purpose: proposal.purpose, attentionLevel: proposal.attentionLevel, body: proposal.body, brief: proposal.brief, contextRefs: proposal.contextRefs, ...(refsDiscarded !== undefined ? { refsDiscarded } : {}) });
         recordStepResult(store, claim.fence, g, out.outcome === 'RECORDED' ? 'TOOL_RESULT' : 'TOOL_REFUSED', JSON.stringify({ message: out.outcome, code: out.code, purpose: proposal.purpose }));
         this.#founderChanged();
         return { outcome: out.outcome, code: out.code, messageId: out.messageId };

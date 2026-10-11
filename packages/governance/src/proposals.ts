@@ -189,7 +189,26 @@ export interface ParsedProposal {
   readonly proposal: ModelProposal;
   /** Set only for a MALFORMED output: the closed rule it broke. */
   readonly reason: MalformedReason | null;
+  /**
+   * P1-CHAT-REFS-CORR-01 — set only when a MESSAGE broke NOTHING but the grammar of its optional `contextRefs` (every other
+   * field already passed), within the bounds the store keeps (at most 8 strings of 1..128 characters). The proposal above
+   * stays MALFORMED / REFS_INVALID for every caller; only the Founder-reply path of the Employee loop may use this.
+   */
+  readonly refsRecovery?: MessageRefsRecovery | null;
 }
+
+/**
+ * The same MESSAGE with only its grammar-valid references kept, in their order: the body, purpose, level and brief are
+ * exactly the output's, and no reference is rewritten or manufactured. `discarded` is a count, never a reference.
+ */
+export interface MessageRefsRecovery {
+  readonly message: Extract<ModelProposal, { type: 'MESSAGE' }>;
+  readonly discarded: number;
+}
+
+/** The closed `kind:id` grammar of a structured reference (MESSAGE contextRefs, REVIEW_DECISION evidenceRefs). */
+const STRUCTURED_REF = /^[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9._:-]{1,95}$/;
+export const isStructuredRef = (r: unknown): r is string => typeof r === 'string' && STRUCTURED_REF.test(r);
 
 const malformed = (reason: MalformedReason): ParsedProposal => ({ proposal: { type: 'INVALID', code: 'MALFORMED' }, reason });
 const ok = (proposal: ModelProposal): ParsedProposal => ({ proposal, reason: null });
@@ -252,7 +271,7 @@ export function parseProposalDetailed(outputText: string): ParsedProposal {
     const rationale = o.rationale === undefined || o.rationale === null ? null : o.rationale;
     if (rationale !== null && (typeof rationale !== 'string' || rationale.length === 0 || rationale.length > 4_000)) return malformed('RATIONALE_BOUNDS');
     const refs = o.evidenceRefs === undefined ? [] : o.evidenceRefs;
-    if (!Array.isArray(refs) || refs.length > 16 || refs.some((r) => typeof r !== 'string' || r.length === 0 || r.length > 128 || !/^[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9._:-]{1,95}$/.test(r))) return malformed('REFS_INVALID');
+    if (!Array.isArray(refs) || refs.length > 16 || refs.some((r) => typeof r !== 'string' || r.length === 0 || r.length > 128 || !STRUCTURED_REF.test(r))) return malformed('REFS_INVALID');
     // C6: the reviewer's outcome judgment travels with the review decision (both fields or neither).
     if ((o.outcomeVerdict === undefined) !== (o.outcomeEvidence === undefined)) return malformed('JUDGMENT_INVALID');
     let outcomeJudgment: OutcomeJudgment | null = null;
@@ -274,7 +293,16 @@ export function parseProposalDetailed(outputText: string): ParsedProposal {
     if ((o.purpose === 'BRIEF') !== (brief !== null)) return malformed('BRIEF_MISMATCH');
     if (brief !== null && !isFounderBrief(brief)) return malformed('BRIEF_INVALID');
     const refs = o.contextRefs === undefined ? [] : o.contextRefs;
-    if (!Array.isArray(refs) || refs.length > 8 || refs.some((r) => typeof r !== 'string' || !/^[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9._:-]{1,95}$/.test(r))) return malformed('REFS_INVALID');
+    if (!Array.isArray(refs) || refs.length > 8 || refs.some((r) => typeof r !== 'string' || !STRUCTURED_REF.test(r))) {
+      // P1-CHAT-REFS-CORR-01: every other field is valid here. A bounded list (at most 8 strings of 1..128 characters) is
+      // offered as a recovery that keeps only its grammar-valid references; anything else (not a list, too many, a
+      // non-string, an empty or oversized entry) offers nothing and stays refused. Nothing is truncated or rewritten.
+      const bounded = Array.isArray(refs) && refs.length <= 8 && refs.every((r) => typeof r === 'string' && r.length > 0 && r.length <= 128);
+      if (!bounded) return malformed('REFS_INVALID');
+      const kept = (refs as string[]).filter((r) => STRUCTURED_REF.test(r));
+      const message = { type: 'MESSAGE' as const, purpose: o.purpose, attentionLevel: o.attentionLevel, body: o.body, brief: brief as FounderBrief | null, contextRefs: kept };
+      return { ...malformed('REFS_INVALID'), refsRecovery: { message, discarded: refs.length - kept.length } };
+    }
     return ok({ type: 'MESSAGE', purpose: o.purpose, attentionLevel: o.attentionLevel, body: o.body, brief: brief as FounderBrief | null, contextRefs: refs as string[] });
   }
   if (o.type === 'GOAL_ACTION') {

@@ -74,7 +74,7 @@ interface LoopState {
 }
 
 
-function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasoningClass' | 'dataClass' | 'maxModelCalls' | 'maxOutputTokensByClass' | 'reasoningDemand'>> & { reasoningClass: ReasoningClass | null; maxModelCalls: number | null; maxOutputTokensByClass: Readonly<Partial<Record<'E1' | 'E2' | 'E3' | 'E4', number>>> | null; reasoningDemand: ReasoningDemand | null } {
+function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasoningClass' | 'dataClass' | 'maxModelCalls' | 'maxOutputTokensByClass' | 'reasoningDemand'>> & { reasoningClass: ReasoningClass | null; maxModelCalls: number | null; maxOutputTokensByClass: Readonly<Partial<Record<'E1' | 'E2' | 'E3' | 'E4', number>>> | null; reasoningDemand: ReasoningDemand | null; founderReply: boolean } {
   const o = (input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}) as Record<string, JsonValue>;
   // An invalid data class is refused outright (classification never fails open).
   if (o.dataClass !== undefined && !isDataClass(o.dataClass)) throw new Error('invalid dataClass');
@@ -110,6 +110,8 @@ function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasonin
     maxModelCalls: typeof o.maxModelCalls === 'number' ? o.maxModelCalls : null,
     maxOutputTokensByClass: byClass,
     reasoningDemand: o.reasoningDemand !== undefined && isReasoningDemand(o.reasoningDemand) ? o.reasoningDemand : null,
+    // A reply to one Founder message (the submitter binds both; a CEO brief has no Founder message). Never the model's.
+    founderReply: typeof o.founderThreadId === 'string' && typeof o.founderMessageId === 'string',
   };
 }
 
@@ -297,7 +299,17 @@ export const employeeTaskProcessor: GovernedProcessor = {
           break;
       }
       s = { ...s, modelCalls: s.modelCalls + 1 };
-      const proposal: ModelProposal = out.proposal;
+      let proposal: ModelProposal = out.proposal;
+      // P1-CHAT-REFS-CORR-01: a Founder reply whose MESSAGE broke NOTHING but the grammar of its optional, non-authoritative
+      // contextRefs is delivered with only its valid references (the parser's bounded recovery: the body, purpose, level
+      // and brief are the output's own, nothing is invented). It is not an invalid output, so it spends no retry; the
+      // message fence still decides everything (thread, bounds, secret material, idempotency). The discarded references
+      // are never stored, logged or shown; only their count is recorded, with the message. Every other path is unchanged.
+      let refsDiscarded = 0;
+      if (cfg.founderReply && !cfg.answerOnly && proposal.type === 'INVALID' && out.invalidReason === 'REFS_INVALID' && out.refsRecovery) {
+        proposal = out.refsRecovery.message;
+        refsDiscarded = out.refsRecovery.discarded;
+      }
       if (proposal.type === 'INVALID' && proposal.code === 'OUTPUT_TRUNCATED' && cfg.invalidOutputPolicy !== 'SAME_CLASS_RETRY') {
         // B2: the output allowance ran out: the text is incomplete and never a reply. One same-class continuation with a
         // larger, separately reserved allowance (never an escalation: more thinking would only spend more of it); a
@@ -355,7 +367,7 @@ export const employeeTaskProcessor: GovernedProcessor = {
         // C5: a message into the run's own Founder thread, or a Director's goal act. Both are fenced writes,
         // idempotent per Work Item (a resumed run never posts or derives twice); the loop learns the code only.
         if (proposal.type === 'MESSAGE') {
-          const sent = gov.sendMessage(proposal, s.turn);
+          const sent = refsDiscarded > 0 ? gov.sendMessage(proposal, s.turn, refsDiscarded) : gov.sendMessage(proposal, s.turn);
           if (sent.outcome === 'RECORDED') {
             // D-L1-09: a thread-bound item (a Founder reply or a CEO brief) exists to deliver one message. Once the
             // fence has recorded it the work is done: the runtime ends the run here, so a second message, a wasted

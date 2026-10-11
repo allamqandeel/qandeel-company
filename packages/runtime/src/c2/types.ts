@@ -4,7 +4,7 @@
  * routing, budgets and fencing on every call (Stage 12 §11, Stage 13 D13-D).
  */
 import type { JsonObject, Processor, ProcessorContext, ProcessorResult } from '@qandeel-company/domain';
-import type { AutoConstraint, EscalationEvidence, MalformedReason, OutputDiagnosticCode, ModelProposal, ProviderFailureClass, ProviderFinishReason, ProviderUsage, ReasoningClass, ReasoningDemand } from '@qandeel-company/governance';
+import type { AutoConstraint, EscalationEvidence, MalformedReason, MessageRefsRecovery, OutputDiagnosticCode, ModelProposal, ProviderFailureClass, ProviderFinishReason, ProviderUsage, ReasoningClass, ReasoningDemand } from '@qandeel-company/governance';
 import type { GovernedRunContext } from '@qandeel-company/storage/runtime-authority';
 
 /**
@@ -62,6 +62,8 @@ export type ModelCallOutcome =
       readonly finishReason: ProviderFinishReason | null;
       /** The parser's content-free MALFORMED sub-reason, when the proposal is MALFORMED. */
       readonly invalidReason: MalformedReason | null;
+      /** P1-CHAT-REFS-CORR-01: the parser's bounded recovery of a MESSAGE that broke only its contextRefs grammar. */
+      readonly refsRecovery?: MessageRefsRecovery | null;
     }
   /** Every eligible route is held only by an open circuit: a timed wait until it may be tried, never a spent attempt. */
   | { readonly kind: 'CIRCUIT_OPEN'; readonly until: string }
@@ -168,8 +170,11 @@ export interface GovernedRunServices {
    * valid proposal an answer-only Work Item refuses, with the recognized proposal type or the answer refusal code.
    */
   noteInvalidOutput(step: number, code: OutputDiagnosticCode, reasoningClass: string, detail?: { readonly proposalType?: string; readonly refusalCode?: string; readonly malformedReason?: string }): void;
-  /** C5: the Employee's message into the Founder thread its Work Item answers (fenced; never authority). */
-  sendMessage(proposal: MessageProposal, step: number): MessageOutcome;
+  /**
+   * C5: the Employee's message into the Founder thread its Work Item answers (fenced; never authority).
+   * P1-CHAT-REFS-CORR-01: `refsDiscarded` counts the malformed references a Founder reply's MESSAGE lost (content-free).
+   */
+  sendMessage(proposal: MessageProposal, step: number, refsDiscarded?: number): MessageOutcome;
   /** C5: a Director's goal derivation / link from inside its run (fenced). */
   goalAct(proposal: GoalActProposal, step: number): GoalActOutcome;
   /** L1-02: the one answer of this run's answer-bearing Work Item (fenced; never authority, never a score). */
