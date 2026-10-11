@@ -71,5 +71,13 @@ export function assertProductRepositoryRef(v: unknown, field = 'repository'): { 
  * The four states an Employee must keep apart when it reports a capability (Task Contract §3.6). The reader derives a
  * conservative hint from a row's own lifecycle label; anything it cannot place is UNKNOWN_VERIFY (never a guess).
  */
-export const PRODUCT_STATUS_HINTS = ['IMPLEMENTED_MERGED', 'APPROVED_NOT_IMPLEMENTED', 'ACTIVE_IN_PROGRESS', 'UNKNOWN_VERIFY'] as const;
+export const PRODUCT_STATUS_HINTS = ['IMPLEMENTED_MERGED', 'RUNTIME_MERGED', 'SURFACE_IMPLEMENTED', 'APPROVED_NOT_IMPLEMENTED', 'ACTIVE_IN_PROGRESS', 'UNKNOWN_VERIFY'] as const;
+/**
+ * P1-CEO-QUALITY-CORR-01 (D-P1-09) keeps the layers apart: RUNTIME_MERGED is merged runtime / backend / foundation code
+ * that by itself says nothing about what a user can use; SURFACE_IMPLEMENTED is production code a user reaches (the
+ * client); IMPLEMENTED_MERGED is merged code whose layer the row does not state. Launch readiness is never a status: a
+ * row that says it is not launch-ready or not deployed carries a separate launch hint, and its absence proves nothing.
+ */
 export type ProductStatusHint = (typeof PRODUCT_STATUS_HINTS)[number];
+export const PRODUCT_LAUNCH_HINTS = ['NOT_LAUNCH_READY', 'NOT_DEPLOYED'] as const;
+export type ProductLaunchHint = (typeof PRODUCT_LAUNCH_HINTS)[number];

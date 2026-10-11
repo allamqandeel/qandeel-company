@@ -11,7 +11,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { beginSend, editDraft, sendState, settleFailed, settleSent, type DraftStore, type SendState, type SendTicket, type StoredDraft } from '../src/model/chat-send.js';
+import { MESSAGE_MAX_CHARS, MESSAGE_NEAR_CHARS, beginSend, composerLength, editDraft, pasteNotice, sendState, settleFailed, settleSent, type DraftStore, type SendState, type SendTicket, type StoredDraft } from '../src/model/chat-send.js';
 
 class MapDrafts implements DraftStore {
   readonly m = new Map<string, StoredDraft>();
@@ -225,5 +225,64 @@ describe('CORR-02: a chat send is bound to its own conversation', () => {
     const b = sendState('B', drafts.get('B'));
     assert.throws(() => settleSent(b, ticket, drafts), /only the conversation it started from/);
     assert.throws(() => settleFailed(b, ticket, drafts, { refused: true, message: '' }), /only the conversation it started from/);
+  });
+});
+
+/**
+ * P1-CEO-QUALITY-CORR-01 D (D-P1-09) — long messages are never cut. The browser's maxlength used to drop the end of a long
+ * paste silently; now the composer counts exactly as the server does (the trimmed body's UTF-16 length, at most 4,000),
+ * warns near the limit, says when a paste took the message over it, and refuses to send an over-limit draft while keeping
+ * every character of it. Drafts, keys and the one-message level are untouched by the refusal.
+ */
+describe('P1-CEO-QUALITY-CORR-01 D: the composer count, paste safety and the 4,000-character limit', () => {
+  const arabic = (n: number): string => 'ق'.repeat(n);
+
+  test('the count is the server\'s count: trimmed, UTF-16 units (an Arabic letter is one, an emoji two), with a near warning and an over state', () => {
+    assert.equal(MESSAGE_MAX_CHARS, 4000);
+    assert.deepEqual(composerLength(''), { count: 0, max: 4000, state: 'OK', label: '' });
+    assert.deepEqual([composerLength('  مرحبا  ').count, composerLength('  مرحبا  ').label], [5, '5 / 4,000']);
+    assert.equal(composerLength('🙂').count, 2, 'what the server counts');
+    assert.equal(composerLength(arabic(MESSAGE_NEAR_CHARS - 1)).state, 'OK');
+    assert.deepEqual([composerLength(arabic(3600)).state, composerLength(arabic(3600)).label], ['NEAR', '3,600 / 4,000 characters — close to the limit']);
+    assert.equal(composerLength(arabic(4000)).state, 'NEAR', 'exactly the limit is still sendable');
+    const over = composerLength(arabic(4321));
+    assert.equal(over.state, 'OVER');
+    assert.equal(over.label, '4,321 / 4,000 characters — 321 over the limit. Nothing was cut: shorten it, or send it as two messages.');
+    assert.equal(composerLength(`   ${arabic(4000)}\n\n  `).state, 'NEAR', 'surrounding whitespace is not sent, so it is not counted');
+  });
+
+  test('a paste that takes the message over the limit is announced; one that fits, or a draft already over, is not', () => {
+    assert.equal(pasteNotice(arabic(3000), arabic(5200)), 'The pasted text made the message 5,200 characters, over the 4,000 limit. All of it is kept in the box — nothing was cut.');
+    assert.equal(pasteNotice('', arabic(3999)), null);
+    assert.equal(pasteNotice(arabic(4100), arabic(4200)), null, 'the count already says it is over');
+  });
+
+  test('an over-limit draft is never sent and never cut: no ticket, no key, the whole text kept, the reason given; shortening it clears the reason and it sends', () => {
+    const drafts = new MapDrafts();
+    const s = sendState('A', drafts.get('A'));
+    const long = `${arabic(4100)} النهاية`;
+    editDraft(s, long, drafts);
+    assert.equal(beginSend(s, drafts, () => 'k-never'), null, 'nothing is sent');
+    assert.deepEqual([s.draft, drafts.get('A').text], [long, long], 'every character stays, in memory and in the session draft');
+    assert.deepEqual([s.key, s.sending], [null, false], 'no key was minted for a request that was never made');
+    assert.equal(s.error, 'Not sent — the message is 4,108 characters; the limit is 4,000. Your whole text is kept: shorten it, or send it as two messages.');
+    editDraft(s, arabic(4050), drafts);
+    assert.ok(s.error !== null, 'still over: the reason stays');
+    editDraft(s, arabic(3990), drafts);
+    assert.equal(s.error, null, 'it fits again: the reason is gone');
+    const ticket = beginSend(s, drafts, () => 'k-1') as SendTicket;
+    assert.deepEqual([ticket.body.length, ticket.key], [3990, 'k-1'], 'the exact text the Founder sees is what is sent');
+  });
+
+  test('a network failure is unaffected: its message stays while the Founder edits, and the retry replays the same key', () => {
+    const drafts = new MapDrafts();
+    const s = sendState('A', drafts.get('A'));
+    editDraft(s, 'رسالة قصيرة', drafts);
+    const t1 = beginSend(s, drafts, () => 'k-1') as SendTicket;
+    settleFailed(s, t1, drafts, { refused: false, message: 'Not confirmed — the connection failed.' });
+    editDraft(s, 'رسالة قصيرة', drafts);
+    assert.equal(s.error, 'Not confirmed — the connection failed.', 'only the length refusal clears on edit');
+    const t2 = beginSend(s, drafts, () => 'k-2') as SendTicket;
+    assert.equal(t2.key, 'k-1', 'the same request keeps its key: no duplicate');
   });
 });

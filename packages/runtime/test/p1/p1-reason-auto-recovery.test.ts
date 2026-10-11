@@ -22,6 +22,7 @@ import { InMemorySecretVault } from '@qandeel-company/secret-vault';
 import { CHAT_REPLY_OUTPUT_TOKENS, CompanyStore, GovernanceStore, OrganizationStore, type EmployeeRecord } from '@qandeel-company/storage';
 import { activateEmployeeForTest } from '@qandeel-company/storage/testing';
 
+import { modelCallTimeoutMs } from '../../src/c2/model-runtime.js';
 import { employeeTaskProcessor, type CompanyRuntime } from '../../src/index.js';
 import { eventually, removeRoot, runtimeFor, tempRoot } from '../helpers.js';
 import { nextName, seedWorld, type C2World } from '../c2/c2-seed.js';
@@ -67,6 +68,8 @@ interface Options {
   readonly ceiling?: ReasoningClass;
   readonly reasoningProfile?: boolean;
   readonly envelopeMoney?: number;
+  /** The runtime's base model-call timeout (default 5 s); a larger allowance scales it (D-P1-09). */
+  readonly callTimeoutMs?: number;
 }
 
 function seed(root: string, w: C2World, o: Options): EmployeeRecord {
@@ -93,7 +96,10 @@ function seed(root: string, w: C2World, o: Options): EmployeeRecord {
   }
 }
 
-async function withWorld(label: string, o: Options, chat: (request: DeepSeekRequest, n: number, maxTokens: number) => DeepSeekResponse, fn: (x: World) => Promise<void>): Promise<void> {
+/** A provider answer, possibly one that arrives later (a slow call) or never (a call that outlives its timeout). */
+type Chat = (request: DeepSeekRequest, n: number, maxTokens: number) => DeepSeekResponse | Promise<DeepSeekResponse>;
+
+async function withWorld(label: string, o: Options, chat: Chat, fn: (x: World) => Promise<void>): Promise<void> {
   const root = tempRoot(label);
   const w = seedWorld(root);
   const ceo = seed(root, w, o);
@@ -103,11 +109,12 @@ async function withWorld(label: string, o: Options, chat: (request: DeepSeekRequ
     if (request.path === DEEPSEEK_MODELS_PATH) return fakeModelsAnswer([{ id: DEEPSEEK_MODEL_CODE, name: 'DeepSeek-V4.1-Flash' }]);
     const body = request.body as { thinking: unknown; reasoning_effort?: unknown; max_tokens: number };
     sent.push({ thinking: body.thinking, effort: body.reasoning_effort, maxTokens: body.max_tokens });
-    return chat(request, sent.length, body.max_tokens);
+    // The fake transport awaits what it is given, so a delayed answer is a slow provider call.
+    return chat(request, sent.length, body.max_tokens) as DeepSeekResponse;
   });
   const make = (): CompanyRuntime => {
     const adapter = new DeepSeekProviderAdapter({ vault: new InMemorySecretVault().set('deepseek-company', KEY), transport, now: () => clock.nowMs() });
-    return runtimeFor(root, { clock, processors: [employeeTaskProcessor], governance: { providers: [adapter], provisioningProfiles: [DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_REASONING_PROFILE], modelCallTimeoutMs: 5_000 } });
+    return runtimeFor(root, { clock, processors: [employeeTaskProcessor], governance: { providers: [adapter], provisioningProfiles: [DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_REASONING_PROFILE], modelCallTimeoutMs: o.callTimeoutMs ?? 5_000 } });
   };
   let rt = make();
   try {
@@ -423,5 +430,73 @@ describe('P1-CHAT-REFS-CORR-01: a Founder reply with malformed references', () =
       assert.equal(sent.length, 2);
       assert.deepEqual(audits(rt, req.workItemId, 'run.model_output_invalid').map((a) => a.malformedReason), ['REFS_INVALID', 'REFS_INVALID']);
       assert.equal(discards(rt).length, 0);
+    }));
+});
+
+/**
+ * P1-CEO-QUALITY-CORR-01 A (D-P1-09) — the LIVE incident: AUTO chose E4 for a strategic request; thinking took the whole
+ * 16,384-token allowance (finish_reason=length), and the one same-class continuation (32,768) was cut by the fixed 120 s
+ * call timeout (TIMEOUT_AFTER_SEND), so no reply came. A call's timeout now grows with the allowance it was given. Scaled
+ * here: a 1 s base covers 15,000 tokens, so 32,768 gets 2.19 s and an answer after 1.5 s lands (the old fixed 1 s cut it).
+ */
+describe('P1-CEO-QUALITY-CORR-01 A: an E4 strategic reply can use the allowance it was given', () => {
+  const STRATEGY = 'Prepare a three-year go-to-market strategy for launching QANDEEL across the GCC. Compare the pricing options, recommend the budget split, and tell me which roles we must hire first.';
+  const later = <T>(ms: number, value: T): Promise<T> => new Promise((resolve) => setTimeout(() => resolve(value), ms));
+  const employeeMessages = (rt: CompanyRuntime, w: C2World) => {
+    const comm = rt.founder.communications;
+    return comm.messages(comm.directThread(w.founder, null).id).filter((m) => m.senderKind === 'EMPLOYEE');
+  };
+
+  test('the timeout scales with the allowance, never below the base: E1–E3 keep 120 s, E4 gets 131 s, the largest continuation 262 s', () => {
+    assert.deepEqual([2048, 4096, 8192, 15_000, 16_384, 32_768].map((t) => modelCallTimeoutMs(120_000, t)), [120_000, 120_000, 120_000, 120_000, 131_072, 262_144]);
+    assert.ok(modelCallTimeoutMs(1_000, 32_768) > 1_500 && modelCallTimeoutMs(1_000, 16_384) < 1_500, 'the slow continuation below is inside its own timeout, and would not be inside a primary call\'s');
+  });
+
+  test('AUTO E4: thinking exhausts 16,384 → one E4 continuation (32,768) that takes longer than the base timeout answers; one message, no escalation or downgrade, nothing held', () =>
+    withWorld('p1q-e4-auto', { ceiling: 'E4', reasoningProfile: true, callTimeoutMs: 1_000 }, (_r, n, max) => (n === 1 ? truncated(max) : later(1_500, ok('A focused strategic answer: the decision, why, and the next step.'))), async ({ rt, w, sent }) => {
+      const id = ask(rt, w, STRATEGY);
+      assert.equal(await settled(rt, id), 'COMPLETED');
+      assert.deepEqual(sent.map((s) => [s.effort, s.maxTokens]), [[sent[0]?.effort, 16_384], [sent[0]?.effort, 32_768]], 'E4 both times (the same thinking effort), twice the allowance');
+      const s = replyState(rt, w, id);
+      assert.deepEqual([s.status, s.selection.mode, s.selection.idealClass, s.selection.startClass, s.answeredClasses], ['REPLIED', 'AUTO', 'E4', 'E4', ['E4', 'E4']], 'the system\'s E4 decision is kept');
+      assert.deepEqual(s.callDetails.map((c) => [c.attemptKind, c.reasoningClass, c.maxOutputTokens, c.finishReason, c.invalidCode]), [['PRIMARY', 'E4', 16_384, 'length', 'OUTPUT_TRUNCATED'], ['RETRY', 'E4', 32_768, 'stop', null]]);
+      assert.deepEqual(employeeMessages(rt, w).map((m) => m.body), ['A focused strategic answer: the decision, why, and the next step.'], 'exactly one complete reply; the cut output never became a message');
+      const run = rt.view.runsForWorkItem(id).at(-1);
+      assert.ok(run);
+      assert.deepEqual(rt.governance.reservations(run.id).map((r) => [r.attemptKind, r.state]), [['PRIMARY', 'SETTLED'], ['RETRY', 'SETTLED']], 'both calls settled: nothing is held for reconciliation');
+      assert.equal(s.reservedMoney, 0);
+      assert.ok(s.spentMoney > 0 && s.spentMoney <= s.capMoney, 'within the reply\'s own cap');
+      assert.equal(rt.governance.accountingInvariants().length, 0);
+    }));
+
+  test('a Founder E4 is pinned: two exhaustions end MODEL_OUTPUT_TRUNCATED after exactly two E4 calls — no third paid call, no other class, no partial message', () =>
+    withWorld('p1q-e4-pinned', { ceiling: 'E4', reasoningProfile: true }, (_r, _n, max) => truncated(max), async ({ rt, w, sent }) => {
+      const id = ask(rt, w, STRATEGY, 'E4');
+      assert.equal(await settled(rt, id), 'FAILED');
+      assert.deepEqual(sent.map((s) => s.maxTokens), [16_384, 32_768]);
+      assert.equal(new Set(sent.map((s) => String(s.effort))).size, 1, 'one thinking effort: E4 throughout');
+      const s = replyState(rt, w, id);
+      assert.deepEqual([s.status, s.reasonCode, s.requestedClass, s.selection.mode, s.answeredClasses, s.replyMessageId], ['FAILED', 'MODEL_OUTPUT_TRUNCATED', 'E4', 'MANUAL', ['E4', 'E4'], null]);
+      assert.equal(employeeMessages(rt, w).length, 0, 'an incomplete output is never delivered');
+      const run = rt.view.runsForWorkItem(id).at(-1);
+      assert.ok(run);
+      assert.deepEqual(rt.governance.reservations(run.id).map((r) => r.state), ['SETTLED', 'SETTLED'], 'the two answered calls are charged; nothing stays held');
+      assert.equal(s.reservedMoney, 0);
+      assert.equal(rt.governance.accountingInvariants().length, 0);
+    }));
+
+  test('a continuation that outlives even its scaled timeout is TIMEOUT_AFTER_SEND: its money is held for reconciliation (not spent), the resumed run makes no third call, and no message is sent', () =>
+    withWorld('p1q-e4-timeout', { ceiling: 'E4', reasoningProfile: true, callTimeoutMs: 300 }, (_r, n, max) => (n === 1 ? truncated(max) : new Promise<DeepSeekResponse>(() => undefined)), async ({ rt, w, sent }) => {
+      const id = ask(rt, w, STRATEGY);
+      assert.equal(await settled(rt, id), 'FAILED');
+      assert.equal(sent.length, 2, 'the timed-out continuation is not retried on the deployment that may have billed it');
+      const runs = rt.view.runsForWorkItem(id);
+      assert.deepEqual(runs.map((r) => r.failureCode), ['PROVIDER_FAILURE', 'MODEL_OUTPUT_TRUNCATED']);
+      const held = runs.flatMap((r) => rt.governance.reservations(r.id)).map((r) => [r.attemptKind, r.state, r.reasonCode]);
+      assert.deepEqual(held, [['PRIMARY', 'SETTLED', null], ['RETRY', 'RECONCILIATION_REQUIRED', 'TIMEOUT_AFTER_SEND']]);
+      const s = replyState(rt, w, id);
+      assert.ok(s.reservedMoney > 0, 'held, not spent: the Founder reconciles it');
+      assert.equal(employeeMessages(rt, w).length, 0);
+      assert.equal(rt.governance.accountingInvariants().length, 0);
     }));
 });

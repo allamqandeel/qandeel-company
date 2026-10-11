@@ -16,7 +16,7 @@
  */
 import { dirOf, fmtDate, fmtDateTime, fmtMoneyMicros, fmtTime, hasArabic, humanize, PURPOSE_LABEL, STATE_LABEL, t } from '../model/format.js';
 import type { CompanyUniverse } from '../model/types.js';
-import { beginSend, editDraft, sendState, settleFailed, settleSent, type DraftStore, type SendState, type StoredDraft } from '../model/chat-send.js';
+import { beginSend, composerLength, editDraft, pasteNotice, sendState, settleFailed, settleSent, type DraftStore, type SendState, type StoredDraft } from '../model/chat-send.js';
 import { AUTO_EXPLAINED, LEVEL_SHORT, LEVEL_THINKING, LEVELS, levelState, modelLabel, reasonText, REPLY_LABEL, selectionSummary, type Level } from '../model/intelligence.js';
 import { briefRows, copyToClipboard, messageCopyText } from '../model/message-copy.js';
 import { api, ApiError } from './api.js';
@@ -143,7 +143,12 @@ export class ChatScreen {
   readonly #older = h('button', { type: 'button', class: 'btn btn-quiet chat-older', text: 'Show earlier messages', 'data-keep': 'chat-older' });
   readonly #side = h('aside', { class: 'chat-side', 'aria-label': 'Employee intelligence for this conversation' });
   readonly #form = h('form', { class: 'chat-composer', novalidate: true }) as HTMLFormElement;
-  readonly #text = h('textarea', { name: 'body', rows: 2, maxlength: 4000, dir: 'auto', 'data-keep': 'chat-text' }) as HTMLTextAreaElement;
+  // D-P1-09: no maxlength — the browser would cut a long paste silently. The count says where the limit is; an over-limit
+  // draft stays whole and cannot be sent until it fits.
+  readonly #text = h('textarea', { name: 'body', rows: 2, dir: 'auto', 'data-keep': 'chat-text', 'aria-describedby': 'chat-count' }) as HTMLTextAreaElement;
+  readonly #count = h('p', { class: 'chat-count', id: 'chat-count', 'aria-live': 'polite' });
+  /** The text before a paste, so the input that follows it can say whether the paste took the message over the limit. */
+  #beforePaste: string | null = null;
   readonly #levels = h('div', { class: 'chat-levels', role: 'radiogroup' });
   readonly #modes = h('div', { class: 'chat-modes', role: 'radiogroup', 'aria-label': 'Reply' });
   readonly #levelNote = h('p', { class: 'chat-level-note', 'aria-live': 'polite' });
@@ -163,9 +168,15 @@ export class ChatScreen {
     this.#older.addEventListener('click', () => void this.#loadOlder());
     this.#scroller.append(this.#older, this.#list);
     const foot = h('div', { class: 'chat-foot' }, h('span', { class: 'hint', text: 'Enter sends · Shift+Enter for a new line' }), this.#send);
-    this.#form.append(this.#restriction, h('div', { class: 'chat-controls' }, this.#modes, this.#levels), this.#levelNote, this.#text, this.#error, foot);
+    this.#form.append(this.#restriction, h('div', { class: 'chat-controls' }, this.#modes, this.#levels), this.#levelNote, this.#text, this.#count, this.#error, foot);
+    this.#text.addEventListener('paste', () => {
+      this.#beforePaste = this.#text.value;
+    });
     this.#text.addEventListener('input', () => {
       if (this.#c && !this.#c.sending) editDraft(this.#c, this.#text.value, sessionDrafts);
+      const pasted = this.#beforePaste === null ? null : pasteNotice(this.#beforePaste, this.#text.value);
+      this.#beforePaste = null;
+      this.#renderLength(pasted);
     });
     this.#text.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -503,8 +514,19 @@ export class ChatScreen {
     this.#text.setAttribute('aria-label', `Message to ${id.name}`);
     this.#text.placeholder = asking ? `Write to ${id.given} in English or Arabic…` : `A note for ${id.given} (no reply, nothing is spent)…`;
     this.#send.textContent = c.sending ? 'Sending…' : asking ? 'Send' : 'Save note';
-    this.#send.toggleAttribute('disabled', c.sending);
     this.#text.toggleAttribute('readonly', c.sending);
+    this.#renderLength(null);
+  }
+
+  /** D-P1-09: the count under the composer, its warning, and Send held while the draft is over the limit (never cut). */
+  #renderLength(pasted: string | null): void {
+    const c = this.#c;
+    if (!c) return;
+    const len = composerLength(this.#text.value);
+    this.#count.textContent = pasted ?? len.label;
+    this.#count.dataset.state = pasted !== null ? 'OVER' : len.state;
+    this.#text.toggleAttribute('aria-invalid', len.state === 'OVER');
+    this.#send.toggleAttribute('disabled', c.sending || len.state === 'OVER');
     this.#error.textContent = c.error ?? '';
   }
 
@@ -536,7 +558,11 @@ export class ChatScreen {
     if (!c) return;
     // The send is bound to this conversation, its draft, its key and its level (CORR-02).
     const ticket = beginSend(c, sessionDrafts, newKey);
-    if (!ticket) return;
+    if (!ticket) {
+      // Nothing to send, a send in flight, or a draft over the limit (D-P1-09: its reason is shown; the text stays whole).
+      this.#renderLength(null);
+      return;
+    }
     const shown = (): boolean => this.#c === c;
     this.#renderControls(this.#identity());
     try {
