@@ -5993,6 +5993,21 @@ long paste silently. The server counts the trimmed body's UTF-16 length, at most
      their worst case, the class (AUTO's E4 stays E4; a Founder E4 stays pinned), and the refusal of a truncated output.
    - The CEO language guidance (C) also says a strategic reply is complete with the decision, the reasoning that matters
      and the next step within the body.
+   - **This fixes the timeout; it does not guarantee a reply.** Thinking can still use all 16,384 tokens of the first E4
+     call. That call is still charged, and the continuation now has time to use 32,768. A second exhaustion still ends
+     `MODEL_OUTPUT_TRUNCATED` with no partial message.
+   - **Bounded check (Founder review of PR #35).** No code change was needed:
+     - In the shipped product, no call's allowance exceeds 32,768:
+       - Employee input is validated at ≤ 32,768;
+       - a continuation is capped by `OUTPUT_CONTINUATION_MAX_TOKENS`;
+       - Academy limits are ≤ 8,192;
+       - the only governed processor is `employeeTaskProcessor`;
+       - the 120 s base is not overridden outside tests.
+     - **Per call:** at most 262 s, below the 300 s `fetch` header timeout.
+     - **Per Founder reply:** at most 524 s, or 584 s with a 60 s tool read, below the 600 s run limit.
+     - **Every other task class:** at most 131 s per call.
+   - **Founder decision:** E4's first allowance stays 16,384. No paid LIVE test now; no merge or install before final
+     approval.
 2. **B — the reader.**
    - **Words join across `_`.** `MY_WORLD` is "my world", in the query and in the documents.
    - **Bounded equivalents.** One closed, documented table (`PRODUCT_TOPIC_EQUIVALENTS`): the App's three world types

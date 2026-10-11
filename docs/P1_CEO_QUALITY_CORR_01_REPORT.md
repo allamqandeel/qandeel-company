@@ -8,7 +8,7 @@ installed. No change was made to LIVE and no paid call was made. The LIVE eviden
 
 | Part | Result | Root cause (established) |
 |---|---|---|
-| A: E4 output reliability | FIXED (deterministic proof; LIVE behaviour needs the separate approved test) | Thinking used the whole E4 allowance (16,384 of 16,384). The one continuation (32,768) was cut by the fixed 120 s call timeout: E4 runs at 151–177 tokens/s, so 120 s covers about 18k tokens. |
+| A: E4 output reliability | FIXED for the timeout; a reply is not guaranteed (deterministic proof; LIVE behaviour needs a separately approved test) | Thinking used the whole E4 allowance (16,384 of 16,384). The one continuation (32,768) was cut by the fixed 120 s call timeout: E4 runs at 151–177 tokens/s, so 120 s covers about 18k tokens. |
 | B: product knowledge | FIXED | The documents write `MY_WORLD` and "Personal World", never "My World". A one-name query split into words. The implementation table was read through its *Decided* column. Runtime and user-facing code shared one status. Census lines carried no history mark. |
 | C: CEO Arabic | FIXED as a prompt rule (it cannot guarantee every future sentence) | The conversation guidance had no rule for Arabic register, honorifics, literal translation, jargon, or fact versus hypothesis. |
 | D: composer length | FIXED | `maxlength=4000` on the textarea let the browser cut a long paste silently. |
@@ -30,6 +30,30 @@ installed. No change was made to LIVE and no paid call was made. The LIVE eviden
 - Three calls fit the 10-minute run.
 - **Unchanged:** allowances, the one same-class continuation, the call bound, reservations, AUTO's E4 and the Founder's
   pinned E4, and the refusal of a truncated output.
+
+**What this fixes, and what it does not.** It fixes the timeout: the continuation now has time to use its 32,768
+allowance. It does not guarantee a reply.
+- Thinking can still use all 16,384 tokens of the first E4 call. That call is still charged, and the continuation runs.
+- If the continuation also runs out (or outlives even its scaled timeout), the reply still ends `MODEL_OUTPUT_TRUNCATED`
+  with no partial message. A timed-out call is held for reconciliation.
+
+**Bounded check of the timeout** (Founder review of PR #35). No code change was needed:
+- **The allowance that reaches a call is at most 32,768 in the shipped product.**
+  - Employee Work Item input is validated at ≤ 32,768 (`employee-task.ts`, `maxOutputTokens` and
+    `maxOutputTokensByClass`).
+  - A continuation is capped by `OUTPUT_CONTINUATION_MAX_TOKENS` = 32,768.
+  - Academy limits are validated at ≤ 8,192 (`academy-package.ts`).
+  - `founder.brief` and the Academy routes are capped at E2.
+  - The release's only governed processor is `employeeTaskProcessor` (`command-center/src/surface.ts`). The runtime CLI
+    registers deterministic processors only. The 120 s base is never overridden outside tests.
+- **Upper bounds:**
+  - **Per call:** 262,144 ms, below the platform `fetch` 300 s header timeout.
+  - **Per Founder reply** (`CHAT_REPLY_MAX_MODEL_CALLS` = 3, at most one continuation): 131 + 131 + 262 = 524 s, or
+    with a product-docs read, 131 + 60 (tool timeout) + 131 + 262 = 584 s. Both are below the 600 s run limit.
+  - **Every other task class:** at most 131 s per call (a continuation of ≤ 8,192), against 120 s before.
+
+**Founder decisions (review of PR #35):** E4's first allowance stays 16,384. No paid LIVE test now. No merge or install
+before final approval.
 
 ## B: the product documentation reader
 
@@ -84,7 +108,7 @@ A report or formal document requested by the Founder is written in professional 
 - Tests in each package, and the docs.
 - No migration, dependency, route policy, budget, grant or profile change.
 
-## Recommendation: a limited LIVE test after merge and install (needs new Founder approval)
+## A limited LIVE test later (not now: the Founder deferred paid LIVE tests; needs new approval)
 
 Three messages to Ahmed:
 1. A strategic question under AUTO, expected at E4 (the A path).
@@ -95,7 +119,7 @@ Three messages to Ahmed:
   two.
 - **Proposed cap:** USD 0.10 governed charge in total, including any retry.
 
-## Decision gate (Product, not taken here)
+## Decision gate (Founder kept 16,384 for now, review of PR #35)
 
 - E4's first allowance stays 16,384. Raising it (for example to 32,768) would avoid a wasted first call when E4 thinks
   past it (2 of 7 LIVE E4 primaries did). The cost is a larger worst-case reservation per E4 call; billing would still
