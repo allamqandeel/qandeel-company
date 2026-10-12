@@ -7,6 +7,7 @@ import { describe, test } from 'node:test';
 
 import { assertId, type Id } from '@qandeel-company/domain';
 import { CompanyStore, GovernanceStore } from '@qandeel-company/storage';
+import { armFounderTestSurface } from '@qandeel-company/storage/testing';
 
 import { removeRoot, tempRoot } from '../helpers.js';
 import { spawnScript, type Child } from '../process-harness.js';
@@ -31,12 +32,31 @@ async function crashThenRecover(root: string, config: Record<string, unknown>): 
 }
 
 describe('C2 fault matrix: process death at governed durability boundaries', () => {
-  test('killed right after a model-call reservation commits → reservation held for reconciliation, work completes once, ledger coherent', async () => {
+  // P1-AUTO-E12-01 R1-01: nothing durable records whether the call left the process before it died (the reservation
+  // commits immediately before the send), so the reservation is possibly billed — held — and the Work Item is held too:
+  // the recovering process sends nothing for it until the Founder's reconciliation RETRY, after which it completes once.
+  test('killed right after a model-call reservation commits → reservation held for reconciliation and the work held with it (no unapproved paid re-run); after the Founder\'s RETRY it completes once, ledger coherent', async () => {
     const root = tempRoot('c2f-reserve');
     try {
       const world = seedWorld(root);
-      const { id, recovery } = await crashThenRecover(root, { world, submit: { instructions: script(final('after.crash')) }, fault: 'reservation.afterCommit' });
+      const { id, recovery, idle } = await crashThenRecover(root, { world, submit: { instructions: script(final('after.crash')) }, fault: 'reservation.afterCommit' });
       assert.equal(recovery.governedReservationsHeld, 1, JSON.stringify(recovery));
+      assert.equal(idle.providerCalls, 0, 'the recovering process sent nothing for the held Work Item');
+      armFounderTestSurface(root);
+      const held = CompanyStore.open(root, { migrationMode: 'verify', create: false });
+      try {
+        assert.equal(held.getWorkItem(id).state, 'BLOCKED');
+        const job = held.jobsFor(id)[0];
+        assert.equal(job?.state, 'RECONCILIATION_HOLD');
+        assert.equal(held.resolveReconciliation(job?.id as Id, 'RETRY', 'CHECKED', world.founder).jobState, 'QUEUED', 'the Founder authorizes one new run');
+      } finally {
+        held.close();
+      }
+      const c = host(root, { exitWhenIdle: true });
+      const after = parse(await c.waitFor(isHost('IDLE'), 60_000));
+      await c.waitFor(isHost('STOPPED'), 30_000);
+      assert.equal(await c.exited(), 0, c.stderr());
+      assert.equal(after.providerCalls, 1, 'exactly one authorized call');
       const store = CompanyStore.open(root, { migrationMode: 'verify', create: false });
       try {
         const gov = GovernanceStore.for(store);

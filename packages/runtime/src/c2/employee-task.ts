@@ -8,7 +8,7 @@
  * review) is an event-driven WAIT that consumes no tokens.
  */
 import { assertIntInRange, boundedText, type JsonValue, type ProcessorContext, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
-import { assertTaskClass, isDataClass, isReasoningClass, isReasoningDemand, providerFailedRunCode, unavailableRunCode, type ModelProposal, type ReasoningClass, type ReasoningDemand } from '@qandeel-company/governance';
+import { AUTO_MAX_CLASS, assertTaskClass, isDataClass, isReasoningClass, isReasoningDemand, providerFailedRunCode, reasoningRank, unavailableRunCode, type ModelProposal, type ReasoningClass, type ReasoningDemand } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
 import type { GovernedProcessor, GovernedRunServices, OrgActProposal, ReviewDecisionProposal, ToolRequest } from './types.js';
@@ -140,14 +140,22 @@ const save = (ctx: ProcessorContext, s: LoopState): Promise<void> => ctx.checkpo
  * ends the run. D-L1-23: a pinned qualification observation retries once at the SAME class (the pinned class is
  * requested again); it never escalates, so both arms of a comparison are always answered by the same class.
  */
-function outputFailed(cfg: ReturnType<typeof readInput>, s: LoopState, escalated: boolean, reasoningClass: ReasoningClass, founderPinned: boolean): { s: LoopState; end: ProcessorResult | null; escalateFrom: { fromClass: ReasoningClass; evidence: 'OUTPUT_FAILED_VALIDATION' } | null } {
+function outputFailed(cfg: ReturnType<typeof readInput>, s: LoopState, escalated: boolean, reasoningClass: ReasoningClass, founderPinned: boolean, autoReasoning: boolean): { s: LoopState; end: ProcessorResult | null; escalateFrom: { fromClass: ReasoningClass; evidence: 'OUTPUT_FAILED_VALIDATION' } | null } {
   const next = { ...s, invalid: s.invalid + 1 };
   if (next.invalid >= 2 || escalated) return { s: next, end: { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_INVALID' }, escalateFrom: null };
   if (cfg.invalidOutputPolicy === 'SAME_CLASS_RETRY') return { s: next, end: null, escalateFrom: null };
   // D-P1-04: a Founder-pinned level is never raised: one bounded retry at the SAME class, like a method pin.
   if (founderPinned) return { s: next, end: null, escalateFrom: null };
+  // D-P1-11 (Correction R1-03): AUTO at its maximum (E2) is never escalated further, and an invalid output has no
+  // correction to apply (its classification never reaches the next context, D-L1-20), so a same-class call would be a
+  // blind replay: the step ends. An invalid output is no evidence that a higher level was needed, so it is reported as what
+  // it is (MODEL_OUTPUT_INVALID), never as the AUTO limit; the Founder may still choose a level for the message.
+  if (autoAtCap(autoReasoning, reasoningClass)) return { s: next, end: { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_INVALID' }, escalateFrom: null };
   return { s: next, end: null, escalateFrom: { fromClass: reasoningClass, evidence: 'OUTPUT_FAILED_VALIDATION' } };
 }
+
+/** D-P1-11: an AUTO step already at (or, from older state, above) the AUTO maximum has no automatic class above it. */
+const autoAtCap = (autoReasoning: boolean, c: ReasoningClass): boolean => autoReasoning && reasoningRank(c) >= reasoningRank(AUTO_MAX_CLASS);
 
 
 export const employeeTaskProcessor: GovernedProcessor = {
@@ -176,6 +184,8 @@ export const employeeTaskProcessor: GovernedProcessor = {
     s = { ...s, pendingEscalation: null, pendingContinuation: null };
     // D-P1-04: the Founder's one-task level is pinned — never escalated, retried only at the same class.
     const founderPinned = (gov.context.reasoningOverride ?? null) !== null;
+    // D-P1-11: the Work Item runs under AUTO (durable verdict of the run's begin): never above the AUTO maximum (E2).
+    const autoReasoning = gov.context.autoReasoning === true;
     while (s.turn < cfg.maxTurns) {
       if (ctx.signal.aborted) return { type: 'CANCELLED' };
       if (s.phase === 'ORG' && s.pendingOrg) {
@@ -255,7 +265,8 @@ export const employeeTaskProcessor: GovernedProcessor = {
           return out.code === 'BUDGET_EXHAUSTED' ? { type: 'WAIT', reasonCode: 'BUDGET_EXHAUSTED' } : { type: 'PERMANENT_FAILURE', code: out.code === 'RUN_LIMIT' ? 'RUN_LIMIT' : out.code };
         case 'ESCALATION_REFUSED':
           // A continuation that could not get a larger allowance: the output stays exhausted (never a silent success).
-          return { type: 'PERMANENT_FAILURE', code: out.code === 'CONTINUATION_NOT_LARGER' ? 'MODEL_OUTPUT_TRUNCATED' : 'ESCALATION_REFUSED' };
+          // D-P1-11: an escalation above the AUTO maximum is the AUTO limit, never another class.
+          return { type: 'PERMANENT_FAILURE', code: out.code === 'CONTINUATION_NOT_LARGER' ? 'MODEL_OUTPUT_TRUNCATED' : out.code === 'AUTO_POLICY_CAP' ? 'AUTO_LEVEL_LIMIT' : 'ESCALATION_REFUSED' };
         case 'CIRCUIT_OPEN': {
           // B3: every eligible route is only held by an open circuit. A durable timed wait (the job is re-queued for that
           // instant; it survives a restart) costs no call and no attempt; after MAX_CIRCUIT_WAITS the run reports the real
@@ -270,18 +281,23 @@ export const employeeTaskProcessor: GovernedProcessor = {
         case 'UNAVAILABLE':
           // A Founder-pinned level with no deployment of that class is reported, never retried into another class.
           if (out.code === 'REASONING_LEVEL_UNAVAILABLE') return { type: 'PERMANENT_FAILURE', code: 'REASONING_LEVEL_UNAVAILABLE' };
+          // D-P1-11: no class at or below the AUTO maximum may run this step (a route minimum above it, or a call due from
+          // before the cap). Retrying cannot change that: reported once, nothing spent, never routed higher.
+          if (out.code === 'AUTO_POLICY_CAP') return { type: 'PERMANENT_FAILURE', code: unavailableRunCode(out.code) };
           // No answer never crashes the Company: bounded C1 retry, then dead letter. The run records the real
           // cause from the shared run-failure vocabulary (R2-12): a missing route policy, a local settlement
           // failure or an abort is never blamed on the provider.
           return { type: 'RETRYABLE_FAILURE', code: unavailableRunCode(out.code) };
         case 'UNCERTAIN':
-          // The provider broke the contract or its outcome is unknown after send (money held).
+          // The provider broke the contract or its outcome is unknown after send (money held). P1-AUTO-E12-01 R1-01: the
+          // governed settle sees the held call and turns this into the reconciliation hold — no C1 retry re-sends it.
           return { type: 'RETRYABLE_FAILURE', code: 'PROVIDER_FAILURE' };
         case 'FAILED': {
           // One evidence-based escalation per run step; never re-escalate from the class that just failed.
           // D-L1-44: the step started from the Founder override when one exists (the same precedence as the model runtime).
           const startClass = out.reasoningClass ?? gov.context.reasoningOverride ?? cfg.reasoningClass ?? gov.context.cognitiveProfile.defaultClass;
-          if (out.failure === 'CONTEXT_OVERFLOW' && !escalated && !founderPinned && startClass !== 'E4' && cfg.invalidOutputPolicy !== 'SAME_CLASS_RETRY') {
+          // D-P1-11: AUTO escalates a context overflow from E1 to E2 only; at E2 the provider's failure is reported as it is.
+          if (out.failure === 'CONTEXT_OVERFLOW' && !escalated && !founderPinned && startClass !== 'E4' && !autoAtCap(autoReasoning, startClass) && cfg.invalidOutputPolicy !== 'SAME_CLASS_RETRY') {
             escalateFrom = { fromClass: startClass, evidence: 'CONTEXT_OVERFLOW' };
             // Checkpointed like an output failure: a crash before the escalation resumes with it, never the overflowing call.
             await save(ctx, { ...s, pendingEscalation: escalateFrom, escalated });
@@ -326,7 +342,7 @@ export const employeeTaskProcessor: GovernedProcessor = {
         // D-L1-24: the answer-only fence. The proposal was recognized, but this Work Item delivers only an ANSWER: it is
         // never executed (no memory, tool, organizational, message or goal effect, no completion) — an output failure.
         gov.noteInvalidOutput(s.turn, 'WRONG_PROPOSAL_TYPE', out.reasoningClass, { proposalType: proposal.type });
-        const f = outputFailed(cfg, s, escalated, out.reasoningClass, founderPinned);
+        const f = outputFailed(cfg, s, escalated, out.reasoningClass, founderPinned, autoReasoning);
         if (f.end) return f.end;
         s = f.s;
         escalateFrom = f.escalateFrom;
@@ -396,7 +412,7 @@ export const employeeTaskProcessor: GovernedProcessor = {
           // failure (the one same-class retry applies); any other refusal means the item cannot take an answer at all.
           if (rec.code !== 'INVALID_ARGS' && rec.code !== 'SECRET_MATERIAL') return { type: 'PERMANENT_FAILURE', code: 'INVALID_TASK_INPUT' };
           gov.noteInvalidOutput(s.turn, 'ANSWER_REFUSED', out.reasoningClass, { refusalCode: rec.code });
-          const f = outputFailed(cfg, s, escalated, out.reasoningClass, founderPinned);
+          const f = outputFailed(cfg, s, escalated, out.reasoningClass, founderPinned, autoReasoning);
           if (f.end) return f.end;
           s = f.s;
           escalateFrom = f.escalateFrom;
@@ -413,7 +429,7 @@ export const employeeTaskProcessor: GovernedProcessor = {
         // P1-REASON-AUTO-RECOVERY-01: a MALFORMED output also names the closed rule it broke (content-free).
         if (out.invalidReason !== null) gov.noteInvalidOutput(s.turn, proposal.code, out.reasoningClass, { malformedReason: out.invalidReason });
         else gov.noteInvalidOutput(s.turn, proposal.code, out.reasoningClass);
-        const f = outputFailed(cfg, s, escalated, out.reasoningClass, founderPinned);
+        const f = outputFailed(cfg, s, escalated, out.reasoningClass, founderPinned, autoReasoning);
         if (f.end) return f.end;
         s = f.s;
         escalateFrom = f.escalateFrom;

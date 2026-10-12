@@ -30,7 +30,8 @@ export const REPLY_LABEL: Readonly<Record<string, string>> = {
 export const REASON_LABEL: Readonly<Record<string, string>> = {
   BUDGET_EXHAUSTED: 'the budget has no headroom for this reply; it resumes only when the budget allows, never by spending more on its own',
   RETRIES_EXHAUSTED: 'it failed repeatedly and was set aside; it is not retried automatically',
-  MODEL_OUTPUT_INVALID: 'the model did not produce a usable reply twice',
+  // P1-AUTO-E12-01 R1-04: a technical output failure, never a verdict on the Employee and never a claim of how many calls ran.
+  MODEL_OUTPUT_INVALID: 'the model’s output did not follow the required reply format, so it was not used (no invalid or incomplete reply is ever accepted)',
   MODEL_ACCESS_DENIED: 'this Employee has no model access for conversation',
   EMPLOYEE_CONTAINED: 'this Employee is contained',
   RUN_LIMIT: 'the reply reached its bound on model calls',
@@ -38,6 +39,7 @@ export const REASON_LABEL: Readonly<Record<string, string>> = {
   PROVIDER_FAILURE: 'the model provider failed',
   COMPLETED_WITHOUT_REPLY: 'the run ended without recording a message',
   RECONCILIATION_HOLD: 'a provider call has an uncertain outcome and waits for your reconciliation',
+  RECONCILIATION_REQUIRED: 'a model call may have been sent and charged, but its outcome is unknown; nothing more is sent for this reply until you reconcile it',
   RETRY_SCHEDULED: 'a transient failure; one bounded retry is scheduled',
   ABOVE_EMPLOYEE_CEILING: 'above this Employee’s maximum level',
   ABOVE_ROUTE_POLICY: 'above the level the conversation route allows',
@@ -54,6 +56,10 @@ export const REASON_LABEL: Readonly<Record<string, string>> = {
   REASONING_LEVEL_UNAVAILABLE: 'the level you chose has no model deployment now; it was not replaced by another level',
   EMPLOYEE_CEILING: 'held at this Employee’s maximum level',
   ROUTE_POLICY: 'held by the conversation route’s maximum level',
+  // P1-AUTO-E12-01 (D-P1-11)
+  AUTO_POLICY_CAP: 'AUTO never goes above E2 by itself; choose E3 or E4 for a message that needs deeper thinking',
+  AUTO_LEVEL_LIMIT: 'this step required a level above E2, and company policy keeps AUTO at E2 or below, so nothing above E2 ran; choose E3 or E4 for the message if it needs deeper thinking',
+  NO_ELIGIBLE_DEPLOYMENT: 'no route can take this reply at its level now; nothing was spent',
 };
 
 export const reasonText = (code: string | null | undefined, humanize: (c: string) => string): string => (code ? (REASON_LABEL[code] ?? humanize(code).toLowerCase()) : '');
@@ -80,7 +86,7 @@ export const isEndedReply = (status: string): boolean => status === 'FAILED' || 
  * P1-REASON-AUTO-RECOVERY-01 — how a reply's level was chosen, in the Founder's words. AUTO is a selection policy over E1..E4,
  * never a fifth level; E1 on DeepSeek V4.1 Flash is thinking OFF (a light model call, not "no AI").
  */
-export const AUTO_EXPLAINED = 'AUTO picks, for each message, the lowest level the governed policy judges sufficient (routine → E1, analysis → E2, strategy → E3, very broad high-stakes work → E4), within the maximum, the route and what is provisioned. It is not a fifth level, it makes no extra model call to decide, and a level you choose for a message always wins.';
+export const AUTO_EXPLAINED = 'AUTO picks, for each message, the lowest sufficient level up to E2 (routine and simple → E1, analysis and planning → E2), within the maximum, the route and what is provisioned. It never goes to E3 or E4 by itself — choose E3 or E4 for a message that needs deeper thinking. It is not a fifth level, it makes no extra model call to decide, and a level you choose for a message always wins.';
 
 /** The content-free AUTO reason codes, in a few words each. */
 export const DEMAND_REASON_LABEL: Readonly<Record<string, string>> = {
@@ -109,8 +115,18 @@ export function selectionSummary(r: Json): { chosen: string; calls: string[]; wh
   if (mode === 'MANUAL') chosen = `${start ?? ''} chosen by you`;
   else if (mode === 'SYSTEM_PINNED') chosen = `${start ?? ''} fixed by the task`;
   else if (mode === 'NOT_RECORDED') chosen = 'level choice not recorded (earlier reply)';
-  else if (mode === 'AUTO') chosen = !start ? 'AUTO' : constraint && ideal && ideal !== start ? `AUTO: ${ideal} needed, ran at ${start} (${REASON_LABEL[constraint] ?? constraint.toLowerCase()})` : `AUTO chose ${start}`;
-  else chosen = start ? `default ${start}` : 'default level';
+  else if (mode === 'AUTO') {
+    // D-P1-11: a step that could not route ran nothing; it is never shown as a level that answered.
+    const unrouted = typeof sel.routeUnavailable === 'string' && !((r.callDetails as Json[] | undefined) ?? []).length ? sel.routeUnavailable : null;
+    if (unrouted) chosen = `AUTO: nothing ran (${REASON_LABEL[unrouted] ?? unrouted.toLowerCase()})`;
+    // R1-04: the demand is AUTO's estimate, never proof that the message needed that level; the policy's choice is named.
+    else if (!start) chosen = 'AUTO';
+    else if (constraint === 'AUTO_POLICY_CAP') chosen = ideal && ideal !== start ? `AUTO estimated ${ideal} demand; company policy selected ${start}` : `AUTO: company policy selected ${start}`;
+    else chosen = constraint && ideal && ideal !== start ? `AUTO estimated ${ideal} demand; selected ${start} (${REASON_LABEL[constraint] ?? constraint.toLowerCase()})` : `AUTO chose ${start}`;
+  } else chosen = start ? `default ${start}` : 'default level';
+  // R1-04: the level that actually executed is shown from the recorded call, never inferred (no call recorded, no claim).
+  const first = ((r.callDetails as Json[] | undefined) ?? [])[0];
+  if (first && typeof first.reasoningClass === 'string' && start && first.reasoningClass !== start) chosen += `, ran at ${first.reasoningClass}`;
   const calls = ((r.callDetails as Json[] | undefined) ?? []).slice(1).map((c) => `${ATTEMPT_LABEL[String(c.attemptKind)] ?? String(c.attemptKind).toLowerCase()} → ${String(c.reasoningClass)}${c.finishReason === 'length' ? ' (output limit reached)' : ''}`);
   return { chosen, calls, why: mode === 'AUTO' && reasons.length ? `AUTO: ${reasons.slice(0, 4).join(', ')}` : '' };
 }

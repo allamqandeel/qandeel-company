@@ -3,6 +3,7 @@
  * (Arabic, Egyptian colloquial and English, with adversarial cases built to defeat a length-only or keyword-only rule),
  * its bounding by ceiling / route / provisioning, the per-class output allowance, and the parser's content-free MALFORMED
  * sub-reasons. A passing set measures the policy; it does not guarantee the right depth for every unforeseen task.
+ * P1-AUTO-E12-01 (D-P1-11): RD-1 states the RAW demand (E1..E4, evidence); AUTO EXECUTES at most at E2 (`AUTO_MAX_CLASS`).
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -10,7 +11,7 @@ import path from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { DEMAND_REASONS, MALFORMED_REASONS, OUTPUT_ALLOWANCE_BY_CLASS, assessReasoningDemand, continuationAllowance, isReasoningDemand, parseProposal, parseProposalDetailed, reasoningRank, resolveAutoClass, type ModelClass } from '../src/index.js';
+import { AUTO_MAX_CLASS, DEMAND_REASONS, MALFORMED_REASONS, OUTPUT_ALLOWANCE_BY_CLASS, assessReasoningDemand, continuationAllowance, isReasoningDemand, isRunFailureCode, parseProposal, parseProposalDetailed, planEscalation, reasoningRank, resolveAutoClass, unavailableRunCode, withinAutoCap, type ModelClass, type RoutePolicy } from '../src/index.js';
 
 interface Case { readonly id: string; readonly text: string; readonly expect: ModelClass; readonly allow?: readonly ModelClass[]; readonly executive?: boolean; readonly kind: string }
 const fixture = JSON.parse(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'reasoning-demand-cases.json'), 'utf8')) as { policy: string; cases: Case[] };
@@ -64,18 +65,54 @@ describe('P1-REASON-AUTO-RECOVERY-01: the Reasoning Demand policy RD-1 against t
   });
 });
 
-describe('P1-REASON-AUTO-RECOVERY-01: AUTO is bounded and never misrepresented', () => {
+describe('P1-REASON-AUTO-RECOVERY-01 / P1-AUTO-E12-01: AUTO is bounded and never misrepresented', () => {
   const all = ['E1', 'E2', 'E3', 'E4'] as const;
-  test('the ideal is bounded by the ceiling, then the route policy, then what is provisioned — and the constraint is named', () => {
-    assert.deepEqual(resolveAutoClass('E3', { ceiling: 'E4', policyMin: 'E1', policyMax: 'E4', available: all }), { selected: 'E3', ideal: 'E3', constraint: null });
+  test('the ideal is bounded by the AUTO maximum (E2), the ceiling, the route policy and what is provisioned — and the binding constraint is named', () => {
+    assert.equal(AUTO_MAX_CLASS, 'E2');
+    // D-P1-11: the raw demand E3 / E4 stays the ideal (evidence); AUTO executes at E2 and says why.
+    assert.deepEqual(resolveAutoClass('E3', { ceiling: 'E4', policyMin: 'E1', policyMax: 'E4', available: all }), { selected: 'E2', ideal: 'E3', constraint: 'AUTO_POLICY_CAP' });
+    assert.deepEqual(resolveAutoClass('E4', { ceiling: 'E4', policyMin: 'E1', policyMax: 'E4', available: all }), { selected: 'E2', ideal: 'E4', constraint: 'AUTO_POLICY_CAP' });
+    assert.deepEqual(resolveAutoClass('E4', { ceiling: 'E4', policyMin: 'E1', policyMax: 'E4', available: ['E1', 'E2'] }), { selected: 'E2', ideal: 'E4', constraint: 'AUTO_POLICY_CAP' });
+    // At a tie the Employee's or the route's own bound is named (the AUTO maximum alone would not lift it).
     assert.deepEqual(resolveAutoClass('E4', { ceiling: 'E2', policyMin: 'E1', policyMax: 'E4', available: all }), { selected: 'E2', ideal: 'E4', constraint: 'EMPLOYEE_CEILING' });
     assert.deepEqual(resolveAutoClass('E4', { ceiling: 'E4', policyMin: 'E1', policyMax: 'E2', available: all }), { selected: 'E2', ideal: 'E4', constraint: 'ROUTE_POLICY' });
-    assert.deepEqual(resolveAutoClass('E4', { ceiling: 'E4', policyMin: 'E1', policyMax: 'E4', available: ['E1', 'E2'] }), { selected: 'E2', ideal: 'E4', constraint: 'NOT_PROVISIONED' });
-    assert.deepEqual(resolveAutoClass('E1', { ceiling: 'E4', policyMin: 'E2', policyMax: 'E4', available: all }), { selected: 'E2', ideal: 'E1', constraint: null }, 'the route minimum still lifts');
-    for (const ideal of all) for (const ceiling of all) {
-      const r = resolveAutoClass(ideal, { ceiling, policyMin: 'E1', policyMax: 'E4', available: all });
-      assert.ok(reasoningRank(r.selected) <= reasoningRank(ceiling) && reasoningRank(r.selected) <= reasoningRank(ideal), `${ideal}/${ceiling}: never above the ceiling or the ideal`);
+    assert.deepEqual(resolveAutoClass('E3', { ceiling: 'E1', policyMin: 'E1', policyMax: 'E4', available: all }), { selected: 'E1', ideal: 'E3', constraint: 'EMPLOYEE_CEILING' });
+    assert.deepEqual(resolveAutoClass('E2', { ceiling: 'E4', policyMin: 'E1', policyMax: 'E4', available: ['E1', 'E3', 'E4'] }), { selected: 'E1', ideal: 'E2', constraint: 'NOT_PROVISIONED' }, 'an unprovisioned E2 falls to E1, never up to E3');
+    assert.deepEqual(resolveAutoClass('E2', { ceiling: 'E4', policyMin: 'E1', policyMax: 'E4', available: all }), { selected: 'E2', ideal: 'E2', constraint: null });
+    assert.deepEqual(resolveAutoClass('E1', { ceiling: 'E4', policyMin: 'E2', policyMax: 'E4', available: all }), { selected: 'E2', ideal: 'E1', constraint: null }, 'the route minimum still lifts, up to the AUTO maximum');
+    assert.deepEqual(resolveAutoClass('E1', { ceiling: 'E4', policyMin: 'E3', policyMax: 'E4', available: all }), { selected: null, ideal: 'E1', constraint: 'AUTO_POLICY_CAP' }, 'a route minimum above E2 gives no AUTO class: never lifted to E3');
+    for (const ideal of all) for (const ceiling of all) for (const policyMin of all) for (const policyMax of all.filter((m) => reasoningRank(m) >= reasoningRank(policyMin))) {
+      const r = resolveAutoClass(ideal, { ceiling, policyMin, policyMax, available: all });
+      if (r.selected === null) {
+        assert.ok(!withinAutoCap(policyMin), `${ideal}/${ceiling}/${policyMin}: refused only when the route minimum is above E2`);
+        continue;
+      }
+      assert.ok(withinAutoCap(r.selected), `${ideal}/${ceiling}/${policyMin}-${policyMax}: never above E2 (${r.selected})`);
+      if (policyMin === 'E1') assert.ok(reasoningRank(r.selected) <= reasoningRank(ceiling) && reasoningRank(r.selected) <= reasoningRank(ideal), `${ideal}/${ceiling}: never above the ceiling or the ideal`);
     }
+  });
+
+  test('raw demand evidence vs capped execution: RD-1 still tells E3 / E4 work apart, and every AUTO execution of the expectation set runs at E1 or E2', () => {
+    const levels = fixture.cases.map((c) => [c, demandOf(c).level] as const);
+    assert.ok(levels.some(([, l]) => l === 'E3') && levels.some(([, l]) => l === 'E4'), 'the demand evidence still names deep and extended work');
+    for (const [c, level] of levels) {
+      const r = resolveAutoClass(level, { ceiling: 'E4', policyMin: 'E1', policyMax: 'E4', available: all });
+      const capped = reasoningRank(level) > reasoningRank(AUTO_MAX_CLASS);
+      assert.deepEqual(r, { selected: capped ? 'E2' : level, ideal: level, constraint: capped ? 'AUTO_POLICY_CAP' : null }, `${c.id}: raw ${level}`);
+    }
+  });
+
+  test('AUTO is never escalated above E2 (planEscalation): E1 → E2 on observable evidence, E2 → E3 refused as AUTO_POLICY_CAP; a non-AUTO step is unchanged', () => {
+    const policy: RoutePolicy = { id: 'p', taskClass: 'founder.reply', version: 1, minClass: 'E1', maxClass: 'E4', allowLimitedProduction: false, maxRetriesPerCall: 1, maxCallsPerRun: 6, fallbackCostCeilingMicros: null, escalation: { maxDepth: 2, maxOverheadMicros: 1_000_000 } };
+    assert.deepEqual(planEscalation('E1', 'OUTPUT_FAILED_VALIDATION', 0, policy, 'E4', AUTO_MAX_CLASS), { ok: true, toClass: 'E2' });
+    for (const from of ['E2', 'E3', 'E4'] as const) for (const evidence of ['OUTPUT_FAILED_VALIDATION', 'CONTEXT_OVERFLOW'] as const) {
+      const plan = planEscalation(from, evidence, 0, policy, 'E4', AUTO_MAX_CLASS);
+      assert.ok(!plan.ok && (plan.code === 'AUTO_POLICY_CAP' || (from === 'E4' && plan.code === 'CEILING_REACHED')), `${from}/${evidence}: ${JSON.stringify(plan)}`);
+    }
+    assert.deepEqual(planEscalation('E2', 'OUTPUT_FAILED_VALIDATION', 0, policy, 'E4'), { ok: true, toClass: 'E3' }, 'a DEFAULT step keeps its bounded escalation');
+    assert.deepEqual(planEscalation('E1', 'SELF_REPORTED_UNCERTAINTY', 0, policy, 'E4', AUTO_MAX_CLASS), { ok: false, code: 'EVIDENCE_NOT_OBSERVABLE' });
+    assert.equal(unavailableRunCode('AUTO_POLICY_CAP'), 'AUTO_LEVEL_LIMIT');
+    assert.ok(isRunFailureCode('AUTO_LEVEL_LIMIT'));
   });
 
   test('B1 allowances: a deeper class has more room for thinking, each within its deployment maximum; one continuation doubles within the bounds, else none', () => {

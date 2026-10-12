@@ -421,6 +421,10 @@ export interface ReplySelection {
   readonly confidence: string | null;
   readonly consequence: string | null;
   readonly reasons: readonly string[];
+  /** P1-AUTO-E12-01 (D-P1-11): the AUTO maximum the selection ran under (null: not AUTO, or recorded before the cap). */
+  readonly autoCap: string | null;
+  /** Why the step could not route at all (a closed code; nothing ran), or null. */
+  readonly routeUnavailable: string | null;
 }
 
 export interface ReplyCall {
@@ -449,14 +453,16 @@ function replyEvidence(ctx: StoreContext, workItemId: Id, profileSelection: stri
   for (const r of rows) {
     const d = JSON.parse(r.details_json) as Record<string, unknown>;
     if (r.action === 'run.reasoning_selected') {
-      if (selection === null) selection = { mode: (str(d.mode) ?? 'DEFAULT') as ReplySelection['mode'], recorded: true, startClass: str(d.startClass), idealClass: str(d.idealClass), constraint: str(d.constraint), confidence: str(d.confidence), consequence: str(d.consequence), reasons: Object.keys(d).filter((k) => k.startsWith('reason:') && d[k] === true).map((k) => k.slice('reason:'.length)) };
+      // The first selection that routed; a step that could not route is shown only while no later one did.
+      const routeUnavailable = str(d.routeUnavailable);
+      if (selection === null || (selection.routeUnavailable !== null && routeUnavailable === null)) selection = { mode: (str(d.mode) ?? 'DEFAULT') as ReplySelection['mode'], recorded: true, startClass: str(d.startClass), idealClass: str(d.idealClass), constraint: str(d.constraint), confidence: str(d.confidence), consequence: str(d.consequence), reasons: Object.keys(d).filter((k) => k.startsWith('reason:') && d[k] === true).map((k) => k.slice('reason:'.length)), autoCap: str(d.autoCap), routeUnavailable };
     } else calls.push({ reasoningClass: str(d.reasoningClass) ?? '', attemptKind: str(d.attemptKind) ?? '', maxOutputTokens: num(d.maxOutputTokens), outputTokens: num(d.outputTokens), reasoningTokens: num(d.reasoningTokens), finishReason: str(d.finishReason), result: str(d.result) ?? 'UNKNOWN', invalidCode: str(d.invalidCode), malformedReason: str(d.malformedReason) });
   }
   // Not yet run: the mode that WILL apply. Ran without a recorded selection (history): only the durable Founder level is
   // known; the current profile never relabels past work.
   const ran = ctx.db.get('SELECT 1 AS x FROM runs WHERE work_item_id = ? LIMIT 1', workItemId) !== undefined;
   const mode: ReplySelection['mode'] = requested !== null ? 'MANUAL' : ran ? 'NOT_RECORDED' : profileSelection === 'AUTO' && hasDemand ? 'AUTO' : 'DEFAULT';
-  return { selection: selection ?? { mode, recorded: false, startClass: requested, idealClass: null, constraint: null, confidence: null, consequence: null, reasons: [] }, calls };
+  return { selection: selection ?? { mode, recorded: false, startClass: requested, idealClass: null, constraint: null, confidence: null, consequence: null, reasons: [], autoCap: null, routeUnavailable: null }, calls };
 }
 
 export function txReplyStates(ctx: StoreContext, threadId: Id, messageIds: readonly Id[] | null = null): ReplyState[] {

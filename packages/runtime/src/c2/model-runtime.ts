@@ -12,6 +12,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import { newId, parseTimestamp, toTimestamp, type Id, type Timestamp } from '@qandeel-company/domain';
 import {
+  AUTO_MAX_CLASS,
   continuationAllowance,
   effectiveClass,
   failureDisposition,
@@ -23,10 +24,10 @@ import {
   planEscalation,
   planFallback,
   reasoningRank,
-  reasoningSelectionOf,
   resolveAutoClass,
   route,
   utf8TokenUpperBound,
+  withinAutoCap,
   type AttemptKind,
   type ParsedProposal,
   type DeploymentView,
@@ -151,7 +152,8 @@ export class GovernedModelRuntime {
     if (req.escalation) {
       if (run.reasoningOverride !== null) return { kind: 'ESCALATION_REFUSED', code: 'CLASS_PINNED_BY_FOUNDER' };
       const done = governance.reservations(run.runId).filter((r) => r.attemptKind === 'ESCALATION').length;
-      const plan = planEscalation(req.escalation.fromClass, req.escalation.evidence, done, policy, profile.ceilingClass);
+      // D-P1-11: an AUTO step escalates only up to the AUTO maximum (E1 → E2 on observable evidence; never E2 → E3).
+      const plan = planEscalation(req.escalation.fromClass, req.escalation.evidence, done, policy, profile.ceilingClass, run.autoReasoning ? AUTO_MAX_CLASS : undefined);
       if (!plan.ok) return { kind: 'ESCALATION_REFUSED', code: plan.code };
       requested = plan.toClass;
       firstKind = 'ESCALATION';
@@ -174,11 +176,23 @@ export class GovernedModelRuntime {
         return max !== null && eligible.some((x) => hardGate(x, { ...base, reasoningClass: c, maxOutputTokens: max }, policy, effectiveClass({ reasoningClass: c }, policy), NEVER) === null);
       };
       selection = startSelection(run, req, policy, (['E1', 'E2', 'E3', 'E4'] as const).filter(fits));
+      if (selection.startClass === null) {
+        // D-P1-11: the route minimum is above the AUTO maximum: no AUTO class may run, so nothing is reserved or called.
+        recordSelection(store, fence, run, req, selection, 'AUTO_POLICY_CAP');
+        return { kind: 'UNAVAILABLE', code: 'AUTO_POLICY_CAP' };
+      }
       requested = selection.startClass;
     }
     // Every branch above set it; the default is only the type checker’s fallback.
     const asked: ReasoningClass = requested ?? profile.defaultClass;
     const startClass = effectiveClass({ reasoningClass: asked }, policy);
+    // D-P1-11, the central AUTO guard: whatever asked for this class (a selection, an escalation, a continuation or a call
+    // checkpointed before the cap existed) and whatever the route minimum lifts it to, an AUTO step never routes, reserves or
+    // calls above the AUTO maximum. Retries and fallbacks below keep this class. `txReserve` re-checks it durably.
+    if (run.autoReasoning && !withinAutoCap(startClass)) {
+      if (selection !== null) recordSelection(store, fence, run, req, { ...selection, startClass: null }, 'AUTO_POLICY_CAP');
+      return { kind: 'UNAVAILABLE', code: 'AUTO_POLICY_CAP' };
+    }
     const maxOutputTokens = outputAllowance(req, startClass, serving);
     if (maxOutputTokens === null) return { kind: 'ESCALATION_REFUSED', code: 'CONTINUATION_NOT_LARGER' };
     const routeReq: RouteRequest = {
@@ -197,6 +211,8 @@ export class GovernedModelRuntime {
         // A Founder-pinned class with no deployment of that class at all is never substituted by another class.
         if (run.reasoningOverride !== null && !snapshot.deployments.some((x) => x.reasoningClass === decision.reasoningClass && x.taskClasses.includes(req.taskClass))) return { kind: 'UNAVAILABLE', code: 'REASONING_LEVEL_UNAVAILABLE' };
       }
+      // D-P1-11: an AUTO start with no E1 / E2 route says so (content-free) before anything is spent; it never routes higher.
+      if (selection?.mode === 'AUTO') recordSelection(store, fence, run, req, selection, decision.code);
       return { kind: 'UNAVAILABLE', code: decision.code };
     }
     if (selection !== null) recordSelection(store, fence, run, req, selection);
@@ -275,6 +291,11 @@ export class GovernedModelRuntime {
             await sleep(Math.min(2_000, 50 * 2 ** retries), undefined, { signal }).catch(() => undefined);
             continue;
           }
+          // P1-AUTO-E12-01 R1 (amends the R1-09 fallback): an attempt that may have been sent and whose money is held
+          // (no usage was reported, so its outcome is unsettled) is never followed by another paid call for this Work
+          // Item — no fallback to another deployment or class — until the Founder reconciles it. A provably unsent
+          // attempt (released) keeps its retry / fallback above; a failed attempt whose usage was reported is settled.
+          if (settled.accounting === 'HELD') return { kind: 'UNCERTAIN', failure };
           if (!disp.fallback) return disp.sent === 'UNKNOWN' ? { kind: 'UNCERTAIN', failure } : { kind: 'FAILED', failure, reasoningClass: d.reasoningClass };
           failed.push(d.deployment.id);
         }
@@ -434,16 +455,23 @@ const NEVER = '9999-12-31T23:59:59.999Z' as Timestamp;
 
 /**
  * The starting class of a step and how it was chosen (D-P1-04 precedence): the Founder's one-task level, else the
- * processor's method pin, else AUTO (when the Employee's profile selects it and the Work Item carries a governed Reasoning
- * Demand), else the Employee default.
+ * processor's method pin, else AUTO (the run's durable AUTO verdict, `txAutoReasoning`), else the Employee default.
+ * D-P1-11 R1: under AUTO a pin outside the Academy is still honoured only at or below the AUTO maximum (the central guard
+ * refuses above it), and a Work Item without a Reasoning Demand starts at the Employee default bounded by the AUTO maximum,
+ * the ceiling, the route policy and what is provisioned (`resolveAutoClass`, the same bound as a demand).
  */
 function startSelection(run: GovernedRunContext, req: ModelCallRequest, policy: RoutePolicy, available: readonly ReasoningClass[]): ReasoningSelectionRecord {
   const profile = run.cognitiveProfile;
   if (run.reasoningOverride !== null) return { mode: 'MANUAL', startClass: run.reasoningOverride, idealClass: null, constraint: null };
   if (req.reasoningClass !== undefined) return { mode: 'SYSTEM_PINNED', startClass: req.reasoningClass, idealClass: null, constraint: null };
-  if (reasoningSelectionOf(profile) === 'AUTO' && isReasoningDemand(req.reasoningDemand)) {
-    const r = resolveAutoClass(req.reasoningDemand.level, { ceiling: profile.ceilingClass, policyMin: policy.minClass, policyMax: policy.maxClass, available });
-    return { mode: 'AUTO', startClass: r.selected, idealClass: r.ideal, constraint: r.constraint };
+  if (run.autoReasoning) {
+    // D-P1-11: the ideal stays the raw RD-1 demand (evidence); the class it starts at is bounded by the AUTO maximum. Without
+    // a demand there is no estimate to record (idealClass null): only the bounded default and the constraint that held it.
+    const demand = isReasoningDemand(req.reasoningDemand) ? req.reasoningDemand : null;
+    // An E0 default (deterministic work, no model call) is already below the AUTO maximum: kept as it is.
+    if (demand === null && profile.defaultClass === 'E0') return { mode: 'AUTO', startClass: 'E0', idealClass: null, constraint: null };
+    const r = resolveAutoClass(demand?.level ?? (profile.defaultClass as Exclude<ReasoningClass, 'E0'>), { ceiling: profile.ceilingClass, policyMin: policy.minClass, policyMax: policy.maxClass, available });
+    return { mode: 'AUTO', startClass: r.selected, idealClass: demand === null ? null : r.ideal, constraint: r.constraint };
   }
   return { mode: 'DEFAULT', startClass: profile.defaultClass, idealClass: null, constraint: null };
 }
@@ -473,11 +501,14 @@ function circuitReopen(req: RouteRequest, policy: RoutePolicy, deployments: read
   return null;
 }
 
-/** The step's class selection, as one content-free audit row of the run (observability: never blocks the call). */
-function recordSelection(store: CompanyStore, fence: Fence, run: GovernedRunContext, req: ModelCallRequest, sel: ReasoningSelectionRecord): void {
+/**
+ * The step's class selection, as one content-free audit row of the run (observability: never blocks the call). D-P1-11: an
+ * AUTO row names the AUTO maximum; `routeUnavailable` names why the step could not route at all (nothing was spent).
+ */
+function recordSelection(store: CompanyStore, fence: Fence, run: GovernedRunContext, req: ModelCallRequest, sel: ReasoningSelectionRecord, routeUnavailable: string | null = null): void {
   try {
     const demand = sel.mode === 'AUTO' && isReasoningDemand(req.reasoningDemand) ? req.reasoningDemand : null;
-    recordReasoningSelection(store, fence, { step: run.stepBase + req.step, mode: sel.mode, startClass: sel.startClass, idealClass: sel.idealClass, constraint: sel.constraint, demand });
+    recordReasoningSelection(store, fence, { step: run.stepBase + req.step, mode: sel.mode, startClass: sel.startClass, idealClass: sel.idealClass, constraint: sel.constraint, demand, autoCap: sel.mode === 'AUTO' ? AUTO_MAX_CLASS : null, routeUnavailable });
   } catch {
     // Best effort by design: a busy store never blocks or fails the governed call it describes.
   }

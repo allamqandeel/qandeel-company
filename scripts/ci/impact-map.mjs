@@ -48,7 +48,7 @@ export const MUTATION_FAMILIES = ['c1', 'c2', 'c3', 'r1', 'c4', 'c5', 'c6', 'c7a
  * way (audited); the affected matrix reuses the same shards, so a family's Windows budget is the same in both modes.
  */
 export const MUTATION_SHARDS = {
-  [WINDOWS]: { c1: 1, c2: 1, c3: 2, r1: 4, c4: 2, c5: 1, c6: 4, c7a: 4, c7b: 3, c7c: 2, c7d: 2, l1: 12 },
+  [WINDOWS]: { c1: 1, c2: 1, c3: 2, r1: 8, c4: 2, c5: 1, c6: 4, c7a: 4, c7b: 3, c7c: 2, c7d: 2, l1: 12 },
   [UBUNTU]: { c1: 1, c2: 1, c3: 1, r1: 2, c4: 1, c5: 1, c6: 1, c7a: 2, c7b: 2, c7c: 1, c7d: 1, l1: 1 },
 };
 

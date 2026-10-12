@@ -6175,3 +6175,291 @@ Research on main `bc7cc1e` established:
 
 **Not done (out of scope).** No migration, route policy, deployment, budget, grant or certification change. No LIVE
 change, hire, Academy run or install.
+
+## D-P1-11 — Company-wide AUTO reasoning cap at E2, with bounded recovery; E3 / E4 only by the Founder's choice (P1-AUTO-E12-01; Founder Task Contract, executor; amends D-P1-04 C1 / C2 for AUTO and the D-P1-10 AUTO preview wording)
+
+**Context (evidence, content-free).** The read-only E4 diagnosis of 2026-10-12 (LIVE, opened with `readOnly: true`):
+- Ahmed's CEO replies that AUTO sent to E4 spent their whole output allowance on `reasoning_effort=max` thinking: 5 of 14
+  E4 calls ended `finish_reason=length` with reasoning = output = the allowance, so zero answer tokens.
+- The same-class continuation re-sends the same input with a doubled allowance. It does not resume the thinking, so the
+  worst case was 16,384 + 32,768 output tokens, about 5 minutes and USD 0.062, for no reply.
+- Throughput was 138–177 tokens/s and the input was a flat 4.6–5.1k tokens. The wait comes from the thinking, not from
+  the provider or the context.
+- RD-1 assigns E4 to most long Arabic strategy messages to the CEO (6 of 11 AUTO selections, with 8–10 reason codes each).
+
+The Founder decided the company-wide AUTO policy below. The E4 output-exhaustion problem itself stays a separate
+follow-up: E4 effort, allowance, continuation, timeout, pricing, provider and transport are unchanged here.
+
+**Decision A — AUTO executes at E1 or E2 only (`AUTO_MAX_CLASS = 'E2'`, governance).**
+- **Raw demand stays evidence.** RD-1 (`assessReasoningDemand`) is unchanged. It still states E1..E4 and its closed reason
+  codes, and the Work Item input is never rewritten (queued and historical items keep their demand).
+- **Selection.** `resolveAutoClass` bounds the ideal by the AUTO maximum, the Employee ceiling, the route policy and what
+  is provisioned.
+  - The binding constraint is named. `AUTO_POLICY_CAP` is named only where it binds strictly below the ceiling and the
+    route maximum; at a tie, the Employee's or the route's own bound is named.
+  - An unprovisioned E2 falls to E1, never up.
+  - A route minimum still lifts, but never past E2. If the minimum is above E2, `selected` is null and nothing is called.
+- **Escalation.** `planEscalation` takes an optional AUTO cap: E1 → E2 on observable evidence; E2 → E3 is
+  `AUTO_POLICY_CAP`.
+- **One durable verdict.** `txAutoReasoning` (storage) decides whether a Work Item is AUTO, using the D-P1-04 precedence:
+  no Founder level, no class pinned in the input, a profile that selects AUTO, and a governed demand on the item.
+  *Superseded by Correction R1-02 below: no demand is required, and only an Academy item is excepted.*
+  - `txBeginGovernedRun` puts it on the run context (`autoReasoning`).
+  - `txReserve` re-derives it before every reservation.
+- **The central runtime guard (Model Runtime).** After the class is chosen and lifted, an AUTO call above E2 returns
+  `UNAVAILABLE / AUTO_POLICY_CAP` before routing, reservation or call, whatever asked for that class:
+  - a selection;
+  - an escalation;
+  - a continuation or escalation checkpointed before this change;
+  - the route minimum's lift.
+
+  Retries and fallbacks keep the routed class.
+- **Defence in depth.** `txReserve` refuses an AUTO reservation above E2 (`ROUTE_NO_LONGER_ELIGIBLE` /
+  `ABOVE_AUTO_POLICY_CAP`), as it refuses one above a Founder level.
+- **Founder control is unchanged.** E3 / E4 run only as a Founder level (the per-message level / `WORK_ITEM_REASONING_OVERRIDE`),
+  within the ceiling, the route policy, qualification and the budget.
+- **Unchanged paths.**
+  - Method pins (Academy, benchmark, qualification): their class, method, limits and scoring.
+  - DEFAULT selection, including its bounded escalation above E2.
+  - No Employee profile, ceiling, cost discipline, certification, grant, egress or budget is changed, and no REVIEW_DUE
+    is triggered.
+
+**Decision B — bounded recovery at E2.**
+- **E1 → E2** stays as before, on observable evidence: an invalid output, or a context overflow.
+- **At E2, at most one technical repair per step.** It is made only where the cause is concrete and a correction exists:
+  an exhausted allowance gets the existing same-class continuation, with a larger, separately reserved allowance
+  (4,096 → 8,192). A second exhaustion ends `MODEL_OUTPUT_TRUNCATED`.
+- **An invalid output at E2 under AUTO ends the step** with the new run code `AUTO_LEVEL_LIMIT` (no second call). The
+  parser's classification is never fed back into the next context (D-L1-20), so a same-class call would be a blind
+  identical replay, which the contract forbids. An invalid output after the one repair ends the same way.
+  *Correction R1-03 below: the step still ends after that one call, but with `MODEL_OUTPUT_INVALID`.*
+- **A context overflow at E2** is reported as the provider's failure (`PROVIDER_CONTEXT_OVERFLOW`). It is never escalated
+  on AUTO.
+- **Other bounds unchanged.** Same-deployment retries happen only for provably unbilled attempts, and a possibly billed
+  call is never re-sent without reconciliation (R1-09; *made true across fallback, C1 retry, timeout and crash only by
+  Correction R1-01 below*). `maxModelCalls`, run caps, the overhead ceiling and reservations
+  bind as before. A truncated or invalid output is never a reply.
+- **`AUTO_LEVEL_LIMIT`** is in the run-failure vocabulary, unclassified (no family decided by authority, R2-12).
+  `unavailableRunCode('AUTO_POLICY_CAP')` maps to it, and the processor maps the runtime's `AUTO_POLICY_CAP`
+  (unavailable or escalation refused) to it as a permanent failure: retrying cannot change it.
+
+**Decision C — observability and the surface (content-free).**
+- `run.reasoning_selected` (an existing row) additionally carries:
+  - `autoCap` (AUTO rows);
+  - `routeUnavailable`, a closed code naming why an AUTO start could not route at all. `startClass` is null when no
+    class was allowed.
+- The constraint vocabulary gains `AUTO_POLICY_CAP`. The reply state exposes both fields; it shows a refusal only while
+  no later selection of the item routed.
+- `run.model_call_observed` is unchanged: its attempt kind already distinguishes ESCALATION from a RETRY repair.
+- **The chat explains AUTO as "up to E2, never E3 / E4 by itself; choose E3 or E4 for a message that needs deeper
+  thinking".**
+  - A capped start reads "AUTO: E4 needed, ran at E2 (…)", so the raw demand is never shown as the class used.
+    *Reworded by Correction R1-04 below.*
+  - A start that could not route reads "AUTO: nothing ran (…)".
+  - `AUTO_LEVEL_LIMIT` tells the Founder to send the message again with E3 or E4 if it needs deeper thinking. That is
+    the existing authorized path; no new authority is added.
+- The hire and profile previews state the cap for AUTO; the DEFAULT wording is unchanged.
+
+**Authority.** Stage 13 D13-C.6 requires a per-run reasoning ceiling, and this cap is one; D13-C.1 and D13-C.3 hold
+within it. It amends D-P1-04 C1 ("once E3 / E4 are provisioned and permitted, AUTO uses them") for AUTO execution only.
+No migration (JSON inputs and audit rows only).
+
+**Proof (deterministic; fake transport; no paid call; no LIVE access).**
+- `governance/test/p1-reasoning-demand.test.ts`:
+  - the cap and constraint naming, including ties and NOT_PROVISIONED;
+  - an exhaustive bounds sweep (never above E2; null only for a route minimum above E2);
+  - raw demand against capped execution over the whole expectation set;
+  - `planEscalation` with and without the cap;
+  - the vocabulary mapping.
+- `runtime/test/p1/p1-reason-auto-recovery.test.ts`, through the real runtime and adapter:
+  - AUTO at E1 / E1 / E2 / E2, with the raw E3 / E4 demand kept and every reservation at the class that ran;
+  - E1 → E2 on evidence;
+  - E2 invalid → `AUTO_LEVEL_LIMIT` after one call;
+  - E1 → E2 → invalid → `MODEL_OUTPUT_INVALID`;
+  - the E2 repair 4,096 → 8,192, then `MODEL_OUTPUT_TRUNCATED` or `AUTO_LEVEL_LIMIT`, two calls each;
+  - an E4 continuation or an E2 → E3 escalation checkpointed before the cap ends `AUTO_LEVEL_LIMIT` on resume, with no
+    call or reservation, while a Founder E4 with the same due continuation makes it;
+  - a route minimum E3 gives AUTO nothing while a Founder E3 runs at E3;
+  - E1 / E2 held: no route recorded, no call to the E3 / E4 deployments;
+  - a method-pinned E3 and DEFAULT E2 → E3 unchanged;
+  - profiles unchanged.
+
+  The two D-P1-09 E4 timing proofs now run at a Founder E4, the only way E4 runs; their behaviour is unchanged.
+- `runtime/test/r1/r1-runtime.test.ts`: the new codes are in the vocabulary.
+- `storage/test/p1-reason-auto-recovery.test.ts`: `txReserve` refuses an AUTO E3 reservation (`ABOVE_AUTO_POLICY_CAP`)
+  and allows it for DEFAULT, a method pin and a Founder level. The run context carries the verdict.
+- `command-center-ui/test/p1-reason-auto.test.ts` and `command-center/test/p1-employee-baseline-surface.test.ts`: the
+  words.
+- **Mutation checks, run by hand on this change:**
+  - with the runtime guard removed, the resume proof fails (and `txReserve` alone still blocks the E3 / E4 reservation);
+  - with the `txReserve` guard removed, the storage proof fails.
+
+**Remaining (not done here).**
+- **E4 reliability for a Founder-chosen E4** (thinking exhausting 16,384 / 32,768, and the restart-style continuation):
+  a separate follow-up.
+- **A repair for an invalid E2 output** would need the content-free invalid code fed into the next context, which changes
+  D-L1-20. It is proposed, not done.
+- **A mid-run change of AUTO / DEFAULT** (a governed profile act) is re-read by `txReserve`, so a run begun as DEFAULT
+  could be refused above E2 after it. This fails closed.
+- No LIVE change or install.
+
+### D-P1-11 Correction R1 (Founder-approved after independent review of PR #37; same PR; amends the R1-09 fallback)
+
+**Context.** The independent review of PR #37 (head `17a947c`) found two blocking gaps and two accuracy defects:
+- a possibly billed model call with an unsettled outcome could still be followed by another paid call for the same Work
+  Item: an in-run fallback after `TIMEOUT_AFTER_SEND`, or a C1 retry / resume to another deployment or class (P-07 only
+  excluded the same deployment);
+- the AUTO cap covered only Work Items that carried a Reasoning Demand, so a CEO brief, a handoff, a review or any other
+  item of an AUTO Employee ran as DEFAULT and could go above E2;
+- an invalid E2 output was reported as `AUTO_LEVEL_LIMIT`;
+- the chat called RD-1's estimate a need ("E4 needed, ran at E2").
+
+**R1-01 — no paid re-execution after an uncertain call without reconciliation (Founder principle).** A model call that
+may have been sent and billed, whose outcome is not settled, blocks every further paid execution of the same Work Item,
+on any deployment or class, until the Founder reconciles it or explicitly authorizes a new run. It reuses
+`RECONCILIATION_REQUIRED`; the reconciliation contract, P-07 and the Founder workflow are unchanged.
+- **Inside the run (Model Runtime).** An attempt whose money is held — no usage reported, so its outcome is unsettled —
+  returns `UNCERTAIN` at once, with no fallback. A provably unsent attempt (released) keeps its bounded same-deployment
+  retry and fallback; a failed attempt whose usage was reported is settled and keeps its fallback. `FAILURE_DISPOSITIONS`
+  is unchanged.
+- **The run's settle (`runtime-authority.settle`, the same fenced transaction as the R1-09 backstop).** If the run holds a
+  `MODEL_CALL` reservation still `RESERVED` or held (`RECONCILIATION_REQUIRED`), a result that would run the Work Item
+  again becomes `RECONCILIATION_REQUIRED`:
+  - `RETRYABLE_FAILURE`, keeping its own code (a provider failure, `RUN_TIMEOUT`, `PROCESSOR_ERROR`,
+    `PROCESSOR_STOPPED_UNPROMPTED`, `SETTLEMENT_FAILED`);
+  - `CANCELLED` without the Founder's termination (a shutdown or an abandoned run), recorded as `RUN_ABORTED`.
+
+  The existing `hold()` then makes the job `RECONCILIATION_HOLD` and the Work Item `BLOCKED`, and the existing Attention
+  card asks the Founder. No new failure code.
+- **Claim recovery (`interruptClaim`, supervisor-verified, same transaction).** A crashed or lost run that holds such a
+  reservation is held for reconciliation instead of resumed or retried; the orphan recovery then holds its money as before.
+- **Why `RESERVED` counts.** The runtime reserves immediately before it sends, and every attempt it accounts leaves
+  `RESERVED`: settled, released when provably unsent, or held. A reservation still `RESERVED` when its run ends or dies is
+  therefore possibly sent — the same reading the R1-09 backstop and the orphan recovery already apply.
+- **Untouched.**
+  - A completed or permanently failed result (nothing re-runs).
+  - The Founder's cancellation: `txSettle` and `txInterruptClaim` finalize the termination first, exactly as before, so a
+    cancellation is never turned into a hold or a re-run; its money stays held.
+  - The held money is never settled or released by this rule. Only the current run's reservations are read, so an
+    earlier held reservation (including the open one on LIVE) is untouched.
+  - The tool reconciliation path.
+  - `WAIT` is not converted: the only model-calling processor ends its run on `UNCERTAIN`, so no wait follows an uncertain
+    call.
+- **The authorization.** The Founder's reconciliation `RETRY` (`resolveGovernedReconciliation`) is the one explicit
+  authorization of a new run. P-07 still keeps it off the deployment that may have billed, until the Founder releases that
+  exclusion.
+
+**R1-02 — the AUTO cap covers every Work Item of an AUTO Employee.**
+- `txAutoReasoning` is now: no Founder level, a profile that selects AUTO, and not an Academy answer task. The Academy
+  test is `answerTask` (now exported from `answers.ts`), the one Academy predicate: an attempt, a benchmark run or a shadow
+  assignment.
+- A Reasoning Demand is no longer required. A CEO brief, a handoff, a review or judgment, a general item and work queued
+  before this change are AUTO. The verdict is read at each run's begin, so no item is rewritten.
+- A class pinned in a non-Academy input no longer takes an item out of AUTO, so no submitter can bypass the cap by
+  pinning. Such a pin is honoured only at or below E2; above it the central guard and `txReserve` refuse it
+  (`AUTO_LEVEL_LIMIT`, nothing spent).
+- `startSelection` uses the run's verdict. Without a demand it starts at `min(Employee default, E2)` through the same
+  `resolveAutoClass`, so the ceiling, the route policy and what is provisioned bind exactly as for a demand.
+  - It records `idealClass: null`: there is no estimate to show.
+  - It records the constraint that held the default (`AUTO_POLICY_CAP` for a default of E3 / E4).
+  - An E0 default is kept as it is.
+- **Exceptions kept.** Founder MANUAL, Academy items (with their method pins, such as BQM-2) and Employees whose profile
+  actually selects DEFAULT.
+- The runtime guard and `txReserve` read the same verdict and stay independently effective.
+
+**R1-03 — failure codes.**
+- An invalid output at E2 under AUTO ends `MODEL_OUTPUT_INVALID`, still after that one call (no blind replay, no E3).
+- `MODEL_OUTPUT_TRUNCATED` is unchanged.
+- `AUTO_LEVEL_LIMIT` now means only that the step required a class above E2 — a route minimum above it, or an escalation
+  above it due from earlier state — and AUTO does not go there.
+- No new failure code.
+
+**R1-04 — the words.**
+- A capped AUTO start reads "AUTO estimated E4 demand; company policy selected E2". Another constraint reads
+  "…; selected E2 (reason)", and a start without a demand reads "AUTO: company policy selected E2".
+- The class that executed is read from the recorded first call ("…, ran at E2" when it differs). With no recorded call,
+  nothing claims that a model ran.
+- `MODEL_OUTPUT_INVALID` reads as a format failure, never "twice" and never a judgment on the Employee.
+- `AUTO_LEVEL_LIMIT` reads as the company policy, not "could not complete".
+- The reply's `RECONCILIATION_REQUIRED` reason reads "a model call may have been sent and charged, but its outcome is
+  unknown; nothing more is sent for this reply until you reconcile it".
+- MANUAL still reads "E3 chosen by you".
+
+**Authority.**
+- R1-01 is the Founder's approved principle. It amends the R1-09 Technical Lead fallback for possibly billed attempts and
+  makes D-P1-11 B's "never re-sent without reconciliation" true across fallback, C1 retry, timeout and crash.
+- R1-02 completes D13-C.6 for every AUTO run.
+- No migration, no new failure code, no new package or dependency.
+
+**Proof (deterministic; fake transport; no paid call; no LIVE access).**
+- `storage/test/p1-reason-auto-recovery.test.ts`:
+  - **R1-01:**
+    - a held call followed by a retryable result is held, the money is untouched and nothing can be claimed; the
+      Founder's RETRY re-queues it once;
+    - a run timeout, a shutdown stop and an unprompted stop with a call in flight are each held, with the backstop
+      holding the money;
+    - a crash is held, the orphan recovery holds the money and nothing can be claimed;
+    - controls: a released (provably unsent) or settled attempt keeps the C1 retry and the crash resume, and the Founder's
+      cancellation (settle and crash) is finalized as before with its money held.
+  - **R1-02:**
+    - a real CEO brief, handoff, review Work Item and general item, none with a demand, all carry the AUTO verdict, and a
+      DEFAULT Employee's does not;
+    - `txReserve` refuses E3 to an AUTO item without a demand and to a non-Academy pin;
+    - `txReserve` reserves E3 for a Founder level, a genuine Academy attempt and a DEFAULT Employee.
+- `runtime/test/r1/r1-runtime.test.ts`:
+  - `TIMEOUT_AFTER_SEND` with a second eligible route: one call and a hold (no fallback, no C1 retry); the Founder's RETRY
+    makes exactly one new call, never on the deployment that may have billed;
+  - the twelve R1-09 containment proofs now assert the hold with one call, then prove their routing claims after the
+    Founder's RETRY.
+- `runtime/test/p1/p1-reason-auto-recovery.test.ts`:
+  - an AUTO Employee with default E3: a general item and a CEO brief without a demand run at E2, never E3 / E4;
+  - an invalid E2 output ends `MODEL_OUTPUT_INVALID` after one call, and a Founder E3 runs E3;
+  - a call in flight across a runtime stop and restart is held, with no further call or reservation;
+  - an E4 continuation that times out after send is held, with no resumed run;
+  - a non-Academy E3 pin of an AUTO item: no call, no reservation, `AUTO_LEVEL_LIMIT`;
+  - the 3–4 and 5–6 proofs end `MODEL_OUTPUT_INVALID`.
+- `runtime/test/faults/c2-fault.test.ts`: a real process death right after a model-call reservation commits.
+  Nothing durable shows whether the call left, so the work is held with its money and the recovering process sends
+  nothing. After the Founder's RETRY a new process completes it with exactly one call, and the ledger is coherent.
+- `runtime/test/l1/l1-02-reasoning-control.test.ts`: a default of E4 runs E4 for an Employee whose profile selects
+  DEFAULT (D-L1-44), and is capped at E2 under AUTO.
+- `storage/test/l1-02-answers.test.ts` and `storage/test/l1-02-bqm2.test.ts`: R1-01 has no Academy exception. A dead run
+  whose call may have been sent is held, not resumed. Once the Founder's RETRY authorizes it, the resumed run still
+  answers once, and the D-L1-24 two-call bound still holds across it.
+- `command-center-ui/test/p1-reason-auto.test.ts`: estimated versus actual levels; neutral, distinct failure words.
+- **Mutation checks, run by hand on the compiled change:**
+  - without the in-run guard, the fallback proof fails;
+  - without the settle rule, the restart and continuation proofs and the two settle proofs fail;
+  - without the claim-recovery rule, the crash proof fails;
+  - with the old demand-only verdict, both R1-02 storage proofs fail;
+  - with the runtime's AUTO start and central guard both removed, `txReserve` alone refuses every E3 reservation
+    (`ROUTE_NO_LONGER_ELIGIBLE`) and no call is sent.
+
+**Product effects the Founder accepted.**
+- A reply whose call timed out after send (or whose run stopped mid-call) now stays `BLOCKED` until the Founder reconciles
+  it from the Attention card, instead of being retried on its own.
+- An AUTO Employee's briefs, handoffs, reviews and general work never run above E2. A Founder level (or a DEFAULT
+  profile) is the way to E3 / E4.
+
+**PR #37 CI capacity correction (Windows R1 mutation runs as 8 shards; same pattern as the PR #32 L1 correction).**
+- **Cause.** FULL run `38233154168` (`1a46354`) was cancelled at the 45-minute ceiling in `mutation (windows-latest,
+  r1-1of4)`. All 16 completed mutations were caught; `r2-12-pg11-family-invented` was still running. No assertion failed.
+  - R1's runtime proofs are heavier: the twelve R1-09 proofs now also run the Founder's RETRY and a second run.
+  - That shard's runner was also slow: several storage-proof mutations took 5–7.5 minutes, against about 1.4 on the
+    previous head.
+  - The other three Windows R1 shards ran 25–30 minutes, at the 30-minute target.
+- **Measurement (log timestamps).**
+  - 65 R1 mutations.
+  - About 95 Windows mutation-minutes on `17a947c` and about 123 on `1a46354`.
+  - Simulated heaviest shard on `1a46354`: about 43 minutes with `i % 4` (observed: more than 45), 25.9 with `i % 6`,
+    and 21.8 with `i % 8` (about 25 with setup).
+  - With `i % 8`, the shards hold 8–9 mutations each.
+- **Decision.**
+  - `MUTATION_SHARDS[windows-latest].r1` is `8`. The FULL matrix lists `r1:1/8` … `r1:8/8`, and the verifier's
+    dropped-shard case now drops `r1-8of8`.
+  - The modulo partition, the report schema, the quality-gate parity, the Ubuntu R1 shards (`r1:1/2`, `r1:2/2`; 7–10
+    minutes), the 45-minute ceiling and every other family are unchanged. No product code changed.
+- **Proof (local).**
+  - impact-map, classifier, quality-gate and post-merge self-tests pass.
+  - The verifier passes 110/110 rules.
+  - A partition check over the 65 pinned ids gives the union of all 65, with no duplicate.

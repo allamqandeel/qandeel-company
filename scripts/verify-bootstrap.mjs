@@ -3303,7 +3303,7 @@ const VIOLATIONS = {
     { contents: { [C7D_STORE]: "export const HOSTING = 'vercel';\n" } },
     { contents: { 'packages/tool-drivers/src/social/linkedin.ts': "export const VERSION = 'linkedin-202609';\n" } },
   ],
-  'ci-contract': [    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: r1-4of4, suite: 'r1:4/4' }\n", '') } },
+  'ci-contract': [    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: r1-8of8, suite: 'r1:8/8' }\n", '') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace(/- \{ os: ubuntu-latest, label: c4-c5, suite: 'c4:1\/1 c5:1\/1' \}\n/, '') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('desktop]\n    if: always()\n', 'desktop]\n    if: success()\n') } },
     // D1: the Desktop proof dropped from the FULL path, or the reusable workflow weakened.

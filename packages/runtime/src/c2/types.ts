@@ -41,7 +41,8 @@ export interface ModelCallRequest {
 /** How the starting class of a model step was chosen (P1-REASON-AUTO-RECOVERY-01; content-free). */
 export interface ReasoningSelectionRecord {
   readonly mode: 'SYSTEM_PINNED' | 'MANUAL' | 'AUTO' | 'DEFAULT';
-  readonly startClass: ReasoningClass;
+  /** Null only for AUTO when no class at or below the AUTO maximum may run (D-P1-11): nothing is called. */
+  readonly startClass: ReasoningClass | null;
   /** AUTO only: the ideal the policy chose, and why it runs lower (null = it runs at the ideal). */
   readonly idealClass: ReasoningClass | null;
   readonly constraint: AutoConstraint | null;

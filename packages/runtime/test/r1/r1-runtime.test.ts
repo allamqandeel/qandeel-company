@@ -34,6 +34,18 @@ async function withWorld(label: string, fn: (ctx: { root: string; w: C2World; f:
 const state = (rt: Runtime, id: Id): string => rt.view.getWorkItem(id).state;
 const settled = (rt: Runtime, id: Id, states: readonly string[]): Promise<string> => eventually(() => (states.includes(state(rt, id)) ? state(rt, id) : undefined), 15_000, `work item ${id} to reach ${states.join('/')}`);
 const calls = (f: Fakes): number => f.local.totalCalls + f.cloud.totalCalls;
+/**
+ * P1-AUTO-E12-01 R1: a model call that may have been sent and billed, with its outcome unsettled, holds its Work Item for the
+ * Founder's reconciliation — no fallback, C1 retry or resume sends anything more for it on its own.
+ */
+async function heldForReconciliation(rt: Runtime, id: Id): Promise<Id> {
+  assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']), 'BLOCKED', 'held for reconciliation, never re-run on its own');
+  const job = rt.view.jobsFor(id)[0];
+  assert.equal(job?.state, 'RECONCILIATION_HOLD');
+  return job?.id as Id;
+}
+/** The Founder's explicit reconciliation decision RETRY: the one authorization of a new run (the existing workflow). */
+const founderRetry = (rt: Runtime, w: C2World, jobId: Id): void => void rt.resolveReconciliation(jobId, 'RETRY', 'CHECKED', w.founder);
 
 describe('R1-03: a reworked Work Item\'s new job continues in its own step range', () => {
   test('the new job sees the first job\'s recorded result and never re-presents (and stale-replays) its step-0 action', () =>
@@ -59,8 +71,9 @@ describe('R1-09: a provider answer whose accounting fails is contained', () => {
     withWorld('r1-usage', async ({ w, f, rt }) => {
       f.cloud.reportUsage('cloud-e1', { inputTokens: 999_999_999_999, outputTokens: 999_999_999_999 });
       const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
-      await settled(rt, id, ['COMPLETED', 'FAILED']);
+      await heldForReconciliation(rt, id);
       assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'the misbehaving deployment was called exactly once');
+      assert.equal(calls(f), 1, 'R1: nothing else was sent for this Work Item (no fallback, no C1 retry)');
       const first = rt.view.runsForWorkItem(id)[0];
       assert.equal(rt.governance.reservations(first?.id as Id)[0]?.state, 'RECONCILIATION_REQUIRED', 'possibly billed: held, never left RESERVED');
       assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD');
@@ -68,18 +81,22 @@ describe('R1-09: a provider answer whose accounting fails is contained', () => {
 });
 
 describe('R1-09 attribution: local store contention is never blamed on the provider', () => {
-  test('a busy store at the settlement commit holds the money but not the healthy deployment; the work completes on retry', async () => {
+  test('a busy store at the settlement commit holds the money but not the healthy deployment; the work completes on the Founder\'s reconciliation retry', async () => {
     let fired = false;
     await withWorld(
       'r1-busy',
       async ({ w, f, rt }) => {
         const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
-        assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED']), 'COMPLETED');
+        const held = await heldForReconciliation(rt, id);
         assert.ok(fired, 'the contention was injected');
         const first = rt.view.runsForWorkItem(id)[0];
         assert.equal(rt.governance.reservations(first?.id as Id)[0]?.state, 'RECONCILIATION_REQUIRED', 'possibly billed: held');
         assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'ACTIVE', 'the provider is not held for a local failure');
-        assert.equal(f.cloud.calls.get('cloud-e1'), 2, 'the retry used the same healthy route');
+        assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'R1: the possibly billed call is never replayed on its own');
+        // The Founder's reconciliation RETRY authorizes one new run, which uses the same healthy route.
+        founderRetry(rt, w, held);
+        assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED');
+        assert.equal(f.cloud.calls.get('cloud-e1'), 2, 'the authorized retry used the same healthy route');
         // R2-12: the run records the local cause, outside every provider family.
         assert.equal(first?.failureCode, 'SETTLEMENT_FAILED', 'the run names the local settlement failure');
         assert.equal(runFailureFamily(first?.failureCode), null, 'never a provider cause');
@@ -103,9 +120,10 @@ describe('R1-09 attribution: local store contention is never blamed on the provi
         // One token over the step's maxOutputTokens (256): a range-valid, priceable report that breaks the bound.
         f.cloud.reportUsage('cloud-e1', { inputTokens: 100, outputTokens: 257 });
         const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
-        await settled(rt, id, ['COMPLETED', 'FAILED']);
+        await heldForReconciliation(rt, id);
         assert.ok(fired, 'the contention was injected');
         assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'the over-bounds deployment was not called again');
+        assert.equal(calls(f), 1, 'R1: nothing else was sent for this Work Item');
         const first = rt.view.runsForWorkItem(id)[0];
         assert.equal(rt.governance.reservations(first?.id as Id)[0]?.state, 'RECONCILIATION_REQUIRED', 'possibly billed: held');
         assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD', 'held on the first attempt');
@@ -148,11 +166,15 @@ describe('R1-09 (Technical Lead follow-up): a known provider fault stays contain
       // One token over the step's maxOutputTokens (256): the provider's own answer breaks the contract.
       f.cloud.reportUsage('cloud-e1', { inputTokens: 100, outputTokens: 257 });
       const first = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
-      assert.equal(await settled(rt, first, ['COMPLETED', 'FAILED']), 'COMPLETED', 'the work is served by another qualified route');
+      const held = await heldForReconciliation(rt, first);
       assert.equal(fired, 1, 'the deployment-health / HOLD write failed once');
       assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'the violating deployment was not called again');
+      assert.equal(calls(f), 1, 'R1: nothing else was sent for this Work Item before the Founder reconciled it');
       assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD', 'contained although the health write failed');
       assert.equal(cloudReservation(rt, w, first), 'RECONCILIATION_REQUIRED', 'not an ordinary settled call: possibly billed, held for reconciliation, never released');
+      founderRetry(rt, w, held);
+      assert.equal(await settled(rt, first, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED', 'the authorized retry is served by another qualified route');
+      assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'never the violator');
       // The next route boundary: a new Work Item is never routed to the violator.
       const second = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('again')) });
       assert.equal(await settled(rt, second, ['COMPLETED', 'FAILED']), 'COMPLETED');
@@ -210,7 +232,8 @@ describe('R1-09 (Technical Lead follow-up): a known provider fault stays contain
       async ({ w, f, rt }) => {
         f.cloud.failNext('cloud-e1', 'CONTRACT_VIOLATION');
         const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
-        await settled(rt, id, ['COMPLETED', 'FAILED']);
+        await heldForReconciliation(rt, id);
+        assert.equal(calls(f), 1, 'R1: nothing else was sent for this Work Item');
         assert.equal(fired, 1, 'the containment write failed once');
         assert.equal(f.cloud.calls.get('cloud-e1'), 1);
         assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD', 'a known violator never stays routable');
@@ -235,12 +258,15 @@ describe('R1-09 (Technical Lead follow-up): a known provider fault stays contain
         // A failed call that still reports (within-bounds, billable) usage.
         f.cloud.failNextCharged('cloud-e1', 'CONTRACT_VIOLATION', { inputTokens: 100, outputTokens: 10 });
         const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
-        assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED']), 'COMPLETED');
+        const held = await heldForReconciliation(rt, id);
         assert.equal(fired, 1, 'the containment write failed once');
-        assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'the violator was not called (and paid) again');
+        assert.equal(calls(f), 1, 'R1: nothing else was sent for this Work Item before the Founder reconciled it');
         assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD');
         assert.notEqual(cloudReservation(rt, w, id), 'RESERVED');
         assert.notEqual(cloudReservation(rt, w, id), 'RELEASED', 'possibly billed: never silently released');
+        founderRetry(rt, w, held);
+        assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED');
+        assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'the violator was not called (and paid) again');
       },
       {
         storageFault: (p) => {
@@ -264,7 +290,8 @@ describe('R1-09 (Technical Lead follow-up): a known provider fault stays contain
         async ({ w, f, rt }) => {
           arrange(f);
           const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
-          await settled(rt, id, ['COMPLETED', 'FAILED']);
+          await heldForReconciliation(rt, id);
+          assert.equal(calls(f), 1, 'R1: nothing else was sent for this Work Item');
           assert.equal(fired, 1, 'the containment write failed once');
           assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'never called again');
           assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD');
@@ -298,7 +325,10 @@ describe('R1-09 (Technical Lead follow-up): a known provider fault stays contain
         };
       };
       const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
-      assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED', 'served by another route');
+      const held = await heldForReconciliation(rt, id);
+      assert.equal(calls(f), 1, 'R1: nothing else was sent for this Work Item before the Founder reconciled it');
+      founderRetry(rt, w, held);
+      assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED', 'the authorized retry is served by another route');
       assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'the paid route was not called again');
       assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD');
       assert.equal(cloudReservation(rt, w, id), 'RECONCILIATION_REQUIRED', 'possibly billed: held');
@@ -498,8 +528,12 @@ describe('R1-09 (Technical Lead follow-up): a known provider fault stays contain
       async ({ w, f, rt }) => {
         f.cloud.reportUsage('cloud-e1', { inputTokens: 100, outputTokens: 257 });
         const first = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
-        assert.equal(await settled(rt, first, ['COMPLETED', 'FAILED']), 'COMPLETED');
-        assert.equal(fired, 3, 'settle-with-containment, hold-with-containment and the first next-route containment were all refused');
+        const held = await heldForReconciliation(rt, first);
+        assert.equal(fired, 2, 'settle-with-containment and hold-with-containment were refused');
+        assert.equal(calls(f), 1, 'R1: nothing else was sent for this Work Item before the Founder reconciled it');
+        founderRetry(rt, w, held);
+        assert.equal(await settled(rt, first, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED');
+        assert.equal(fired, 3, 'the authorized run\'s first next-route containment was refused as well');
         assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'excluded from routing although the store still says ACTIVE');
         // The store accepts writes again: the next route boundary writes the containment.
         const second = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('again')) });
@@ -525,8 +559,11 @@ describe('R1-09 (Technical Lead follow-up): a known provider fault stays contain
       async ({ w, f, rt }) => {
         f.cloud.reportUsage('cloud-e1', { inputTokens: 100, outputTokens: 257 });
         const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
-        assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED']), 'COMPLETED');
+        const held = await heldForReconciliation(rt, id);
         assert.equal(fired, 2, 'the settle-with-containment and the hold-with-containment were both refused');
+        assert.equal(calls(f), 1, 'R1: nothing else was sent for this Work Item before the Founder reconciled it');
+        founderRetry(rt, w, held);
+        assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED');
         assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'the violator was not called again meanwhile');
         assert.equal(rt.governance.deployment(w.deployments.cloudE1).status, 'HOLD', 'contained at the next route boundary');
         assert.equal(cloudReservation(rt, w, id), 'RECONCILIATION_REQUIRED', 'possibly billed: held');
@@ -786,7 +823,7 @@ describe('R2-12: one run-failure vocabulary — the runtime records the real cau
   const CONTEXT_CODES: Extract<ModelCallOutcome, { kind: 'CONTEXT' }>['code'][] = ['CONTEXT_BUDGET_EXHAUSTED', 'CONFLICT_HOLD', 'SKILL_CONFLICT', 'INTEGRITY_FAILURE', 'CONTEXT_NOT_ASSEMBLED'];
   const BEGIN_CODES: Extract<BeginResult, { ok: false }>['code'][] = ['EMPLOYEE_NOT_ELIGIBLE', 'NOT_EMPLOYEE_OWNED', 'CAPABILITY_GAP_CANCELLED', 'STEP_RANGE_EXHAUSTED', 'CAPABILITY_GAP'];
   // The model runtime's UNAVAILABLE codes: configuration, route, local and provider causes.
-  const UNAVAILABLE = ['NO_ROUTE_POLICY', 'NO_ELIGIBLE_DEPLOYMENT', 'REASONING_ABOVE_CEILING', 'FALLBACK_REFUSED_COST', 'ABORTED', 'SETTLEMENT_FAILED', 'ATTEMPTS_EXHAUSTED', 'REASONING_LEVEL_UNAVAILABLE', ...PROVIDER_FAILURE_CLASSES.map((c) => `PROVIDER_${c}`)];
+  const UNAVAILABLE = ['NO_ROUTE_POLICY', 'NO_ELIGIBLE_DEPLOYMENT', 'REASONING_ABOVE_CEILING', 'FALLBACK_REFUSED_COST', 'ABORTED', 'SETTLEMENT_FAILED', 'ATTEMPTS_EXHAUSTED', 'REASONING_LEVEL_UNAVAILABLE', 'AUTO_POLICY_CAP', ...PROVIDER_FAILURE_CLASSES.map((c) => `PROVIDER_${c}`)];
   // The runtime's own settle overrides (runtime.ts) and the governed-run refusal the plain entry point returns.
   const RUNTIME_CODES = ['PROCESSOR_ERROR', 'PROCESSOR_STOPPED_UNPROMPTED', 'INVALID_WAIT', 'RUN_TIMEOUT'];
 
@@ -808,6 +845,10 @@ describe('R2-12: one run-failure vocabulary — the runtime records the real cau
     add('continuation not larger', await codeOf([{ kind: 'ESCALATION_REFUSED', code: 'CONTINUATION_NOT_LARGER' }]));
     add('truncated twice', await codeOf([answer({ type: 'INVALID', code: 'OUTPUT_TRUNCATED' }), answer({ type: 'INVALID', code: 'OUTPUT_TRUNCATED' })]));
     add('circuit open', await codeOf([{ kind: 'CIRCUIT_OPEN', until: '2999-01-01T00:00:00.000Z' }]));
+    // P1-AUTO-E12-01: an escalation refused at the AUTO maximum, and an invalid output of an AUTO step already at E2.
+    add('escalation refused at the AUTO maximum', await codeOf([{ kind: 'ESCALATION_REFUSED', code: 'AUTO_POLICY_CAP' }]));
+    const autoContext = { cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E4', selection: 'AUTO' }, autoReasoning: true } as unknown as GovernedRunServices['context'];
+    add('AUTO invalid output at E2', await codeOf([{ ...answer({ type: 'INVALID', code: 'NOT_JSON' }), reasoningClass: 'E2' } as ModelCallOutcome], { context: autoContext }));
     for (const c of CONTEXT_CODES) add(`context ${c}`, await codeOf([{ kind: 'CONTEXT', code: c }]));
     const toolOutcomes: ToolOutcome[] = [
       { kind: 'DENIED', code: 'NO_GRANT', paused: true },
@@ -938,4 +979,31 @@ describe('R1-08: a job re-claimed after an in-process lease loss stays tracked',
       removeRoot(root);
     }
   });
+});
+
+/**
+ * P1-AUTO-E12-01 Correction R1-01 (Founder-approved, amends the R1-09 fallback): a model call that may have been sent and
+ * billed, with its outcome unsettled, is never followed by another paid call for the same Work Item — no fallback to
+ * another deployment or class, no C1 retry, no resume — until the Founder reconciles it through the existing workflow.
+ */
+describe('P1-AUTO-E12-01 R1-01: no unapproved paid replay of an uncertain call', () => {
+  test('TIMEOUT_AFTER_SEND with a second eligible route: no fallback and no C1 retry — the item is held with its money; the Founder\'s RETRY makes exactly one new call, never on the deployment that may have billed', () =>
+    withWorld('r1-p1-unknown-send', async ({ w, f, rt }) => {
+      f.cloud.failNext('cloud-e1', 'TIMEOUT_AFTER_SEND');
+      const id = submitTask(rt, w, { dataClass: 'D1', instructions: script(final('done')) });
+      const held = await heldForReconciliation(rt, id);
+      assert.equal(calls(f), 1, 'no fallback to the other eligible route, no C1 retry');
+      const [run] = rt.view.runsForWorkItem(id);
+      assert.equal(run?.failureCode, 'PROVIDER_FAILURE', 'the run keeps its own code');
+      const money = (): unknown[] => rt.governance.reservations(run?.id as Id).map((r) => [r.attemptKind, r.state, r.reasonCode, r.money]);
+      const before = money();
+      assert.deepEqual(before.map((r) => (r as unknown[]).slice(0, 3)), [['PRIMARY', 'RECONCILIATION_REQUIRED', 'TIMEOUT_AFTER_SEND']], 'one reservation, held');
+      await sleep(300);
+      assert.equal(calls(f), 1, 'nothing is sent while it waits for the Founder');
+      founderRetry(rt, w, held);
+      assert.equal(await settled(rt, id, ['COMPLETED', 'FAILED', 'BLOCKED']), 'COMPLETED');
+      assert.equal(calls(f), 2, 'exactly one new call, authorized by the Founder');
+      assert.equal(f.cloud.calls.get('cloud-e1'), 1, 'never again on the deployment that may have billed it (P-07, unchanged)');
+      assert.deepEqual(money(), before, 'the held money is untouched by the job reconciliation');
+    }));
 });

@@ -226,30 +226,49 @@ export function isReasoningDemand(v: unknown): v is ReasoningDemand {
   );
 }
 
-/** Why the class AUTO runs at is below its ideal (null = it runs at the ideal). */
-export type AutoConstraint = 'EMPLOYEE_CEILING' | 'ROUTE_POLICY' | 'NOT_PROVISIONED';
+/**
+ * P1-AUTO-E12-01 (D-P1-11, Founder decision) — the highest class an AUTO Work Item ever EXECUTES at, company-wide: E1 for
+ * routine work, E2 for analysis and planning. RD-1 still states the raw demand (E1..E4) as evidence, but no AUTO call is
+ * selected, escalated, lifted by a route minimum, retried, continued or fallen back above this class. E3 / E4 run only when
+ * the Founder chooses them for a task (a MANUAL level), within the ceiling, the route policy and the budget.
+ */
+export const AUTO_MAX_CLASS = 'E2' as const satisfies ModelClass;
 
+/** True when an AUTO Work Item may execute at `cls` (never above AUTO_MAX_CLASS). */
+export const withinAutoCap = (cls: ReasoningClass): boolean => reasoningRank(cls) <= reasoningRank(AUTO_MAX_CLASS);
+
+/**
+ * Why the class AUTO runs at is below its ideal (null = it runs at the ideal). AUTO_POLICY_CAP: the Company's AUTO maximum
+ * (named only where it binds strictly below the Employee ceiling and the route maximum).
+ */
+export type AutoConstraint = 'EMPLOYEE_CEILING' | 'ROUTE_POLICY' | 'NOT_PROVISIONED' | 'AUTO_POLICY_CAP';
+
+/** `selected` null: no class at or below the AUTO maximum may run (the route minimum is above it); nothing is called. */
 export interface AutoResolution {
-  readonly selected: ModelClass;
+  readonly selected: ModelClass | null;
   readonly ideal: ModelClass;
   readonly constraint: AutoConstraint | null;
 }
 
 /**
- * Bounds an AUTO ideal by the Employee ceiling, the route policy and the classes with a provisioned, eligible deployment
- * now. The result is the highest permitted class at or below the ideal (never above it); a constrained result names its
- * constraint so the surface never presents it as the ideal. The route policy minimum still lifts (minimum sufficient).
+ * Bounds an AUTO ideal by the AUTO maximum, the Employee ceiling, the route policy and the classes with a provisioned,
+ * eligible deployment now. The result is the highest permitted class at or below the ideal (never above it); a constrained
+ * result names its constraint so the surface never presents it as the ideal. The route policy minimum still lifts (minimum
+ * sufficient), but never past the AUTO maximum: a route that requires more gives no AUTO class at all.
  */
 export function resolveAutoClass(ideal: ModelClass, bounds: { readonly ceiling: ReasoningClass; readonly policyMin: ReasoningClass; readonly policyMax: ReasoningClass; readonly available: readonly ReasoningClass[] }): AutoResolution {
   const rank = reasoningRank;
   const allowedMax = rank(bounds.ceiling) <= rank(bounds.policyMax) ? bounds.ceiling : bounds.policyMax;
   let constraint: AutoConstraint | null = null;
   let target: ReasoningClass = ideal;
-  if (rank(ideal) > rank(allowedMax)) {
-    target = allowedMax;
-    constraint = rank(bounds.ceiling) <= rank(bounds.policyMax) ? 'EMPLOYEE_CEILING' : 'ROUTE_POLICY';
+  if (rank(ideal) > rank(allowedMax) || rank(ideal) > rank(AUTO_MAX_CLASS)) {
+    // The lowest bound binds; at a tie the Employee's or the route's own bound is named (raising the AUTO maximum alone
+    // would not lift it).
+    if (rank(AUTO_MAX_CLASS) < rank(allowedMax)) [target, constraint] = [AUTO_MAX_CLASS, 'AUTO_POLICY_CAP'];
+    else [target, constraint] = [allowedMax, rank(bounds.ceiling) <= rank(bounds.policyMax) ? 'EMPLOYEE_CEILING' : 'ROUTE_POLICY'];
   }
   if (rank(target) < rank(bounds.policyMin)) target = bounds.policyMin;
+  if (!withinAutoCap(target)) return { selected: null, ideal, constraint: 'AUTO_POLICY_CAP' };
   const avail = new Set(bounds.available);
   if (!avail.has(target)) {
     const lower = REASONING_CLASSES.filter((x) => x !== 'E0' && avail.has(x) && rank(x) < rank(target) && rank(x) >= rank(bounds.policyMin)).at(-1);

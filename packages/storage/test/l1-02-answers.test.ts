@@ -152,14 +152,17 @@ describe('L1-02: the Academy answer — durable, bound to its exact model call, 
     });
   });
 
+  // P1-AUTO-E12-01 R1-01: the dead run's call may have been sent (its reservation is still RESERVED), so the attempt is
+  // held for the Founder's reconciliation instead of resumed; the resumed run is the one the Founder's RETRY authorizes.
   test('a dead worker\'s fence writes nothing; the resumed run answers once; an ended run cannot answer', () => {
     withSeed((h, s) => {
       const at = openAttempt(h, s);
       const dead = claimFor(h, at.workItemId, 'w-dead').claim;
       const dm = assemble(h, dead, 0);
       assert.ok(reserve(h, s, dead.fence, dm.manifestId).ok);
-      interruptClaim(h.store, h.supervisor, dead.fence.jobId, 'PROCESS_DIED');
+      assert.deepEqual(interruptClaim(h.store, h.supervisor, dead.fence.jobId, 'PROCESS_DIED'), { disposition: 'RECONCILIATION_REQUIRED', jobState: 'RECONCILIATION_HOLD' }, 'a possibly sent call is never resumed without reconciliation');
       assert.throws(() => recordAnswer(h.store, dead.fence, ANSWER, { manifestId: dm.manifestId, step: 0 }), code('STALE_LEASE'));
+      assert.equal(h.store.resolveReconciliation(dead.fence.jobId, 'RETRY', 'CHECKED', s.founder).jobState, 'QUEUED');
       h.clock.advance(60 * 60_000);
       const resumed = claimFor(h, at.workItemId, 'w-resumed').claim;
       const rm = assemble(h, resumed, 1);
