@@ -286,6 +286,19 @@ export function resolveAutoClass(ideal: ModelClass, bounds: { readonly ceiling: 
  */
 export const OUTPUT_ALLOWANCE_BY_CLASS: Readonly<Record<ModelClass, number>> = Object.freeze({ E1: 2_048, E2: 4_096, E3: 8_192, E4: 16_384 });
 
+/**
+ * P1-E4-RELIABILITY-01 (D-P1-12): the output allowance of a reply at the Founder's own E4 (MANUAL). It covers thinking and
+ * answer at `reasoning_effort=max`, and replaces the old 16,384 first call plus a 32,768 restart with one call. It does not
+ * guarantee an answer: thinking can still use all of it. Every other class, mode and task keeps `OUTPUT_ALLOWANCE_BY_CLASS`.
+ */
+export const MANUAL_E4_OUTPUT_ALLOWANCE = 32_768;
+
+/**
+ * D-P1-12: a step at the Founder's own E4 is never re-sent automatically. The provider bills the thinking either way, and a
+ * same-class continuation or retry would only restart it from nothing: an exhausted or invalid output ends the step.
+ */
+export const isFounderE4 = (reasoningOverride: ReasoningClass | null | undefined): boolean => reasoningOverride === 'E4';
+
 /** The hard ceiling of a same-class continuation after output exhaustion (never above the deployment's own maximum). */
 export const OUTPUT_CONTINUATION_MAX_TOKENS = 32_768;
 

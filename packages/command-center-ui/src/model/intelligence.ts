@@ -50,7 +50,8 @@ export const REASON_LABEL: Readonly<Record<string, string>> = {
   EMPLOYEE_NOT_ELIGIBLE: 'only an ACTIVE Employee can be asked for a reply',
   BUDGET_MISSING: 'this Employee has no budget envelope to answer from',
   // P1-REASON-AUTO-RECOVERY-01
-  MODEL_OUTPUT_TRUNCATED: 'the reply ran out of its output allowance twice (also after one larger same-level try), so no incomplete reply was accepted',
+  // P1-E4-RELIABILITY-01 (D-P1-12): no claim of how many calls ran (an E4 you chose makes one; AUTO E2 one repair).
+  MODEL_OUTPUT_TRUNCATED: 'the thinking and the reply used up the output allowance before the reply was complete, so no incomplete reply was accepted; the call was charged and is not re-sent on its own',
   OUTPUT_TRUNCATED: 'the output allowance ran out before the reply was complete',
   PROVIDER_CIRCUIT_OPEN: 'the model provider is paused after repeated failures; the reply waits for it and spends nothing meanwhile',
   REASONING_LEVEL_UNAVAILABLE: 'the level you chose has no model deployment now; it was not replaced by another level',
@@ -60,6 +61,8 @@ export const REASON_LABEL: Readonly<Record<string, string>> = {
   AUTO_POLICY_CAP: 'AUTO never goes above E2 by itself; choose E3 or E4 for a message that needs deeper thinking',
   AUTO_LEVEL_LIMIT: 'this step required a level above E2, and company policy keeps AUTO at E2 or below, so nothing above E2 ran; choose E3 or E4 for the message if it needs deeper thinking',
   NO_ELIGIBLE_DEPLOYMENT: 'no route can take this reply at its level now; nothing was spent',
+  // P1-E4-RELIABILITY-01 (D-P1-12)
+  RUN_DEADLINE_INSUFFICIENT: 'too little of the reply’s run time was left for the next model call to finish, so that call was not sent and nothing was charged; the reply continues in a new run, at the same level',
 };
 
 export const reasonText = (code: string | null | undefined, humanize: (c: string) => string): string => (code ? (REASON_LABEL[code] ?? humanize(code).toLowerCase()) : '');
@@ -99,6 +102,30 @@ export const DEMAND_REASON_LABEL: Readonly<Record<string, string>> = {
 };
 
 const ATTEMPT_LABEL: Readonly<Record<string, string>> = { ESCALATION: 'escalated', RETRY: 'retried at the same level', FALLBACK: 'fallback route' };
+
+const count = (n: unknown): string | null => (typeof n === 'number' && Number.isFinite(n) ? Math.round(n).toLocaleString('en-US') : null);
+
+/**
+ * P1-E4-RELIABILITY-01 (D-P1-12) — one content-free line per sent call, oldest first: the level, the attempt, the allowance it
+ * had, its token counts (thinking included), the finish reason, the latency and the result code. Numbers and codes only;
+ * an answer is never claimed for a call whose output was cut or invalid.
+ */
+export function callDiagnostics(r: Json): string[] {
+  return ((r.callDetails as Json[] | undefined) ?? []).map((c) => {
+    const parts = [`${String(c.reasoningClass)} ${String(c.attemptKind).toLowerCase()}`];
+    const allowance = count(c.maxOutputTokens);
+    if (allowance) parts.push(`allowance ${allowance}`);
+    const out = count(c.outputTokens);
+    const thinking = count(c.reasoningTokens);
+    if (out) parts.push(thinking ? `${out} output tokens (${thinking} thinking)` : `${out} output tokens`);
+    if (c.finishReason === 'length') parts.push('output limit reached');
+    else if (c.finishReason === 'stop') parts.push('finished');
+    if (typeof c.latencyMs === 'number' && Number.isFinite(c.latencyMs)) parts.push(`${(c.latencyMs / 1000).toFixed(1)} s`);
+    const invalid = typeof c.invalidCode === 'string' ? c.invalidCode : null;
+    parts.push(c.result === 'ANSWERED' && invalid === null ? 'valid output' : (invalid ?? String(c.result)));
+    return parts.join(' · ');
+  });
+}
 
 /**
  * One reply's reasoning story from the server's reply state (codes only): who chose the starting level and why, then

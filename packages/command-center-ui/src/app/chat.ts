@@ -17,7 +17,7 @@
 import { dirOf, fmtDate, fmtDateTime, fmtMoneyMicros, fmtTime, hasArabic, humanize, PURPOSE_LABEL, STATE_LABEL, t } from '../model/format.js';
 import type { CompanyUniverse } from '../model/types.js';
 import { beginSend, composerLength, editDraft, pasteNotice, sendState, settleFailed, settleSent, type DraftStore, type SendState, type StoredDraft } from '../model/chat-send.js';
-import { AUTO_EXPLAINED, LEVEL_SHORT, LEVEL_THINKING, LEVELS, levelState, modelLabel, reasonText, REPLY_LABEL, selectionSummary, type Level } from '../model/intelligence.js';
+import { AUTO_EXPLAINED, callDiagnostics, LEVEL_SHORT, LEVEL_THINKING, LEVELS, levelState, modelLabel, reasonText, REPLY_LABEL, selectionSummary, type Level } from '../model/intelligence.js';
 import { briefRows, copyToClipboard, messageCopyText } from '../model/message-copy.js';
 import { api, ApiError } from './api.js';
 import { h } from './panels.js';
@@ -432,7 +432,9 @@ export class ChatScreen {
     if (currency && Number(r.spentMoney) > 0) facts.push(`spent ${fmtMoneyMicros(Number(r.spentMoney), currency)}`);
     if (currency && Number(r.reservedMoney) > 0) facts.push(`held ${fmtMoneyMicros(Number(r.reservedMoney), currency)}`);
     if (facts.length) parts.push(h('span', { class: 'chat-facts', text: ` · ${facts.join(' · ')}` }));
-    const line = h('p', { class: `chat-status status-${status.toLowerCase()}`, title: [story.why, currency ? `Reply cap ${fmtMoneyMicros(Number(r.capMoney), currency)} (a hard ceiling, not spending)` : ''].filter(Boolean).join(' · ') }, ...parts);
+    // P1-E4-RELIABILITY-01 (D-P1-12): each call's content-free diagnostics (level, allowance, tokens, finish, latency, result).
+    const summary = [story.why, currency ? `Reply cap ${fmtMoneyMicros(Number(r.capMoney), currency)} (a hard ceiling, not spending)` : ''].filter(Boolean).join(' · ');
+    const line = h('p', { class: `chat-status status-${status.toLowerCase()}`, title: [summary, ...callDiagnostics(r)].filter(Boolean).join('\n') }, ...parts);
     if (status === 'FAILED' || status === 'BLOCKED') line.append(h('span', { class: 'chat-why', text: ` ${id.given} did not answer this one. It is never retried automatically; you can ask again.` }));
     return line;
   }

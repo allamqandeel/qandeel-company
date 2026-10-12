@@ -17,7 +17,7 @@ import { describe, test } from 'node:test';
 import type { Id } from '@qandeel-company/domain';
 import { DEEPSEEK_CHAT_COMPLETIONS_PATH, DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_REASONING_PROFILE, DeepSeekProviderAdapter, FakeDeepSeekTransport, fakeChatAnswer, fakeModelsAnswer, type DeepSeekRequest, type DeepSeekResponse } from '@qandeel-company/model-providers';
 import { InMemorySecretVault } from '@qandeel-company/secret-vault';
-import { CHAT_REPLY_OUTPUT_TOKENS, CompanyStore, GovernanceStore, OrganizationStore, type EmployeeRecord } from '@qandeel-company/storage';
+import { CHAT_REPLY_MANUAL_E4_OUTPUT_TOKENS, CHAT_REPLY_OUTPUT_TOKENS, CompanyStore, GovernanceStore, OrganizationStore, type EmployeeRecord } from '@qandeel-company/storage';
 import { activateEmployeeForTest } from '@qandeel-company/storage/testing';
 
 import { employeeTaskProcessor, type CompanyRuntime } from '../../src/index.js';
@@ -287,7 +287,7 @@ describe('P1-CHAT-INTEL-01: per-message reasoning on DeepSeek V4.1 Flash (E1..E4
       assert.equal(await settled(rt, e1.replyWorkItemId as Id), 'COMPLETED');
       assert.deepEqual(sent.map((s) => [s.thinking, s.effort, s.maxTokens]), [
         [{ type: 'enabled' }, 'high', CHAT_REPLY_OUTPUT_TOKENS.E3],
-        [{ type: 'enabled' }, 'max', CHAT_REPLY_OUTPUT_TOKENS.E4],
+        [{ type: 'enabled' }, 'max', CHAT_REPLY_MANUAL_E4_OUTPUT_TOKENS.E4], // D-P1-12: a Founder E4 gets its one 32,768 call
         [{ type: 'disabled' }, undefined, CHAT_REPLY_OUTPUT_TOKENS.E1],
       ], 'each level reaches DeepSeek V4.1 Flash with its own thinking; the default stays fast');
       assert.deepEqual(comm.replyStates(thread.id).map((s) => s.answeredClasses), [['E3'], ['E4'], ['E1']]);

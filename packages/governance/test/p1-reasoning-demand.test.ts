@@ -11,7 +11,7 @@ import path from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { AUTO_MAX_CLASS, DEMAND_REASONS, MALFORMED_REASONS, OUTPUT_ALLOWANCE_BY_CLASS, assessReasoningDemand, continuationAllowance, isReasoningDemand, isRunFailureCode, parseProposal, parseProposalDetailed, planEscalation, reasoningRank, resolveAutoClass, unavailableRunCode, withinAutoCap, type ModelClass, type RoutePolicy } from '../src/index.js';
+import { AUTO_MAX_CLASS, DEMAND_REASONS, MALFORMED_REASONS, MANUAL_E4_OUTPUT_ALLOWANCE, OUTPUT_ALLOWANCE_BY_CLASS, assessReasoningDemand, continuationAllowance, isFounderE4, isReasoningDemand, isRunFailureCode, parseProposal, parseProposalDetailed, planEscalation, reasoningRank, resolveAutoClass, runFailureFamily, unavailableRunCode, withinAutoCap, type ModelClass, type RoutePolicy } from '../src/index.js';
 
 interface Case { readonly id: string; readonly text: string; readonly expect: ModelClass; readonly allow?: readonly ModelClass[]; readonly executive?: boolean; readonly kind: string }
 const fixture = JSON.parse(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'reasoning-demand-cases.json'), 'utf8')) as { policy: string; cases: Case[] };
@@ -122,6 +122,16 @@ describe('P1-REASON-AUTO-RECOVERY-01 / P1-AUTO-E12-01: AUTO is bounded and never
     assert.equal(continuationAllowance(4096, 16384), 8192);
     assert.equal(continuationAllowance(16384, 65536), 32768, 'the continuation ceiling binds');
     assert.equal(continuationAllowance(4096, 4096), null, 'no larger allowance: no continuation');
+  });
+
+  test('P1-E4-RELIABILITY-01 (D-P1-12): the Founder\'s E4 has one 32,768 allowance within its deployment (65,536) and the input bound; only an E4 override is the Founder\'s E4; a refused deadline is a local cause, never the provider', () => {
+    assert.equal(MANUAL_E4_OUTPUT_ALLOWANCE, 32_768);
+    assert.ok(MANUAL_E4_OUTPUT_ALLOWANCE <= 65_536 && MANUAL_E4_OUTPUT_ALLOWANCE > OUTPUT_ALLOWANCE_BY_CLASS.E4);
+    assert.equal(OUTPUT_ALLOWANCE_BY_CLASS.E4, 16_384, 'every other E4 (an escalated default, a brief) keeps the approved table');
+    assert.deepEqual([isFounderE4('E4'), isFounderE4('E3'), isFounderE4('E2'), isFounderE4('E1'), isFounderE4(null), isFounderE4(undefined)], [true, false, false, false, false, false]);
+    assert.equal(unavailableRunCode('RUN_DEADLINE_INSUFFICIENT'), 'RUN_DEADLINE_INSUFFICIENT');
+    assert.ok(isRunFailureCode('RUN_DEADLINE_INSUFFICIENT'));
+    assert.equal(runFailureFamily('RUN_DEADLINE_INSUFFICIENT'), null);
   });
 });
 

@@ -107,7 +107,7 @@ import {
 } from '@qandeel-company/storage';
 import type { OutputDiagnosticCode, ProviderAdapter, ProviderProvisioningProfile, ToolDriver } from '@qandeel-company/governance';
 
-import { GovernedModelRuntime } from './c2/model-runtime.js';
+import { GovernedModelRuntime, type RunDeadline } from './c2/model-runtime.js';
 import { ToolExecutor } from './c2/tool-executor.js';
 import { isGovernedProcessor, type AnswerProposal, type GoalActProposal, type GovernedRunServices, type MemoryProposal, type MessageProposal, type ModelCallOutcome, type ModelCallRequest, type OrgActProposal, type ReviewDecisionProposal, type ToolRequest } from './c2/types.js';
 import { assembleGovernedContext } from './c3/context-assembler.js';
@@ -1190,6 +1190,10 @@ export class CompanyRuntime {
       }
     }, Math.max(100, Math.floor(leaseMs / 3)));
     const maxRunMs = processor.maxRunMs ?? this.#opts.defaultMaxRunMs ?? 10 * 60_000;
+    // P1-E4-RELIABILITY-01 (D-P1-12): the run's real deadline (the instant this timer stops it), carried to the model-call
+    // boundary so a call that could not finish inside it is never sent. Monotonic, like the timer itself.
+    const deadlineAt = performance.now() + maxRunMs;
+    const deadline: RunDeadline = { remainingMs: () => deadlineAt - performance.now() };
     const timeout = setTimeout(() => {
       run.reason = 'TIMEOUT';
       run.controller.abort();
@@ -1239,7 +1243,7 @@ export class CompanyRuntime {
         );
       });
       try {
-        const outcome = await Promise.race([this.#runProcessor(processor, context, claim, store, run.controller.signal), abandoned]);
+        const outcome = await Promise.race([this.#runProcessor(processor, context, claim, store, run.controller.signal, deadline), abandoned]);
         result = outcome === 'ABANDONED' ? { type: 'CANCELLED' } : outcome;
       } finally {
         graceTimer.abort();
@@ -1298,7 +1302,7 @@ export class CompanyRuntime {
    * Employee (the runtime refuses ineligible Employees before any model or tool call), then receives
    * services bound to this claim's fence — never the store, an adapter or a driver.
    */
-  async #runProcessor(processor: Processor, context: ProcessorContext, claim: Claim, store: CompanyStore, signal: AbortSignal): Promise<ProcessorResult> {
+  async #runProcessor(processor: Processor, context: ProcessorContext, claim: Claim, store: CompanyStore, signal: AbortSignal, deadline: RunDeadline): Promise<ProcessorResult> {
     if (!isGovernedProcessor(processor)) return processor.run(context);
     const begun = beginGovernedRun(store, claim.fence);
     if (!begun.ok) {
@@ -1321,7 +1325,7 @@ export class CompanyRuntime {
       invokeModel: async (request: ModelCallRequest): Promise<ModelCallOutcome> => {
         const assembled = assembleGovernedContext(store, claim.fence, { step: globalStep(request.step) });
         if (assembled.kind !== 'OK') return { kind: 'CONTEXT', code: assembled.code };
-        return this.#models.call(store, claim.fence, run, request, assembled.context, signal);
+        return this.#models.call(store, claim.fence, run, request, assembled.context, signal, deadline);
       },
       // The runtime (not the processor) records each step's outcome for later context (layer L6).
       proposeMemory: (proposal: MemoryProposal, step: number) => {

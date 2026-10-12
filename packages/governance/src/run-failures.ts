@@ -31,12 +31,13 @@ export const RUN_FAILURE_CODES = Object.freeze({
   // Local causes: never the provider.
   SETTLEMENT_FAILED: null, // the store could not record a possibly-billed call's accounting (money held)
   RUN_ABORTED: null, // the run was stopped (cancel / shutdown / timeout) during a model call
+  RUN_DEADLINE_INSUFFICIENT: null, // P1-E4-RELIABILITY-01 (D-P1-12): too little of the run was left for the next call's own timeout; it was not sent (nothing reserved or charged) and a new run makes it
   REASONING_ABOVE_CEILING: null, // the requested reasoning class is above the Employee's / policy's ceiling
   REASONING_LEVEL_UNAVAILABLE: null, // P1-REASON-AUTO-RECOVERY-01: a pinned class has no deployment of that class at all (never substituted)
   AUTO_LEVEL_LIMIT: null, // P1-AUTO-E12-01 (D-P1-11, R1-03): the step required a class above the AUTO maximum (E2) — a route minimum above it, or an escalation above it — and AUTO never goes there (an invalid or truncated output keeps its own code); family not decided by authority
   // Model.
   MODEL_OUTPUT_INVALID: 'MODEL',
-  MODEL_OUTPUT_TRUNCATED: 'MODEL', // P1-REASON-AUTO-RECOVERY-01: the output allowance ran out again after the one same-class continuation
+  MODEL_OUTPUT_TRUNCATED: 'MODEL', // P1-REASON-AUTO-RECOVERY-01: the output allowance ran out again after the one same-class continuation (D-P1-12: at the Founder's E4, after its one call)
   // Tools.
   TOOL_FAILED: 'TOOL',
   TOOL_NOT_EXECUTED: 'TOOL',
@@ -116,6 +117,8 @@ export function unavailableRunCode(code: string): RunFailureCode {
       return 'FALLBACK_REFUSED';
     case 'ABORTED':
       return 'RUN_ABORTED';
+    case 'RUN_DEADLINE_INSUFFICIENT':
+      return 'RUN_DEADLINE_INSUFFICIENT';
     case 'SETTLEMENT_FAILED':
       return 'SETTLEMENT_FAILED';
     case 'REASONING_LEVEL_UNAVAILABLE':
