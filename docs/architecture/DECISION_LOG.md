@@ -6440,3 +6440,26 @@ on any deployment or class, until the Founder reconciles it or explicitly author
   it from the Attention card, instead of being retried on its own.
 - An AUTO Employee's briefs, handoffs, reviews and general work never run above E2. A Founder level (or a DEFAULT
   profile) is the way to E3 / E4.
+
+**PR #37 CI capacity correction (Windows R1 mutation runs as 8 shards; same pattern as the PR #32 L1 correction).**
+- **Cause.** FULL run `38233154168` (`1a46354`) was cancelled at the 45-minute ceiling in `mutation (windows-latest,
+  r1-1of4)`. All 16 completed mutations were caught; `r2-12-pg11-family-invented` was still running. No assertion failed.
+  - R1's runtime proofs are heavier: the twelve R1-09 proofs now also run the Founder's RETRY and a second run.
+  - That shard's runner was also slow: several storage-proof mutations took 5–7.5 minutes, against about 1.4 on the
+    previous head.
+  - The other three Windows R1 shards ran 25–30 minutes, at the 30-minute target.
+- **Measurement (log timestamps).**
+  - 65 R1 mutations.
+  - About 95 Windows mutation-minutes on `17a947c` and about 123 on `1a46354`.
+  - Simulated heaviest shard on `1a46354`: about 43 minutes with `i % 4` (observed: more than 45), 25.9 with `i % 6`,
+    and 21.8 with `i % 8` (about 25 with setup).
+  - With `i % 8`, the shards hold 8–9 mutations each.
+- **Decision.**
+  - `MUTATION_SHARDS[windows-latest].r1` is `8`. The FULL matrix lists `r1:1/8` … `r1:8/8`, and the verifier's
+    dropped-shard case now drops `r1-8of8`.
+  - The modulo partition, the report schema, the quality-gate parity, the Ubuntu R1 shards (`r1:1/2`, `r1:2/2`; 7–10
+    minutes), the 45-minute ceiling and every other family are unchanged. No product code changed.
+- **Proof (local).**
+  - impact-map, classifier, quality-gate and post-merge self-tests pass.
+  - The verifier passes 110/110 rules.
+  - A partition check over the 65 pinned ids gives the union of all 65, with no duplicate.

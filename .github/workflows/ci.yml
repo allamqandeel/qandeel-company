@@ -274,10 +274,14 @@ jobs:
           - { os: windows-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }
           - { os: windows-latest, label: c3-1of2, suite: 'c3:1/2' }
           - { os: windows-latest, label: c3-2of2, suite: 'c3:2/2' }
-          - { os: windows-latest, label: r1-1of4, suite: 'r1:1/4' }
-          - { os: windows-latest, label: r1-2of4, suite: 'r1:2/4' }
-          - { os: windows-latest, label: r1-3of4, suite: 'r1:3/4' }
-          - { os: windows-latest, label: r1-4of4, suite: 'r1:4/4' }
+          - { os: windows-latest, label: r1-1of8, suite: 'r1:1/8' }
+          - { os: windows-latest, label: r1-2of8, suite: 'r1:2/8' }
+          - { os: windows-latest, label: r1-3of8, suite: 'r1:3/8' }
+          - { os: windows-latest, label: r1-4of8, suite: 'r1:4/8' }
+          - { os: windows-latest, label: r1-5of8, suite: 'r1:5/8' }
+          - { os: windows-latest, label: r1-6of8, suite: 'r1:6/8' }
+          - { os: windows-latest, label: r1-7of8, suite: 'r1:7/8' }
+          - { os: windows-latest, label: r1-8of8, suite: 'r1:8/8' }
           - { os: windows-latest, label: c4-1of2, suite: 'c4:1/2' }
           - { os: windows-latest, label: c4-2of2, suite: 'c4:2/2' }
           - { os: windows-latest, label: c5-1of1, suite: 'c5:1/1' }
