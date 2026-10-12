@@ -199,13 +199,17 @@ export const ESCALATION_EVIDENCE = ['OUTPUT_FAILED_VALIDATION', 'TOOL_RESULT_CON
 export type EscalationEvidence = (typeof ESCALATION_EVIDENCE)[number];
 export const OBSERVABLE_EVIDENCE: ReadonlySet<EscalationEvidence> = new Set(['OUTPUT_FAILED_VALIDATION', 'TOOL_RESULT_CONTRADICTION', 'CONTEXT_OVERFLOW', 'CHECK_FAILED']);
 
-export type EscalationDecision = { readonly ok: true; readonly toClass: ReasoningClass } | { readonly ok: false; readonly code: 'EVIDENCE_NOT_OBSERVABLE' | 'DEPTH_EXCEEDED' | 'CEILING_REACHED' };
+export type EscalationDecision = { readonly ok: true; readonly toClass: ReasoningClass } | { readonly ok: false; readonly code: 'EVIDENCE_NOT_OBSERVABLE' | 'DEPTH_EXCEEDED' | 'CEILING_REACHED' | 'AUTO_POLICY_CAP' };
 
-/** Bounded, evidence-based escalation of one step to the next reasoning class. */
-export function planEscalation(current: ReasoningClass, evidence: EscalationEvidence, escalationsSoFar: number, policy: RoutePolicy, employeeCeiling: ReasoningClass): EscalationDecision {
+/**
+ * Bounded, evidence-based escalation of one step to the next reasoning class. `autoCap` (D-P1-11): the step runs under AUTO,
+ * so it is never escalated above that class (AUTO_POLICY_CAP), whatever the ceiling and the route would permit.
+ */
+export function planEscalation(current: ReasoningClass, evidence: EscalationEvidence, escalationsSoFar: number, policy: RoutePolicy, employeeCeiling: ReasoningClass, autoCap?: ReasoningClass): EscalationDecision {
   if (!OBSERVABLE_EVIDENCE.has(evidence)) return { ok: false, code: 'EVIDENCE_NOT_OBSERVABLE' };
   if (escalationsSoFar >= policy.escalation.maxDepth) return { ok: false, code: 'DEPTH_EXCEEDED' };
   const next = REASONING_CLASSES[reasoningRank(current) + 1];
+  if (next !== undefined && autoCap !== undefined && reasoningRank(next) > reasoningRank(autoCap)) return { ok: false, code: 'AUTO_POLICY_CAP' };
   if (next === undefined || reasoningRank(next) > reasoningRank(policy.maxClass) || reasoningRank(next) > reasoningRank(employeeCeiling)) return { ok: false, code: 'CEILING_REACHED' };
   return { ok: true, toClass: next };
 }

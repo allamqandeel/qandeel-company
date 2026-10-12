@@ -33,6 +33,7 @@ import {
   decideEmployeeAction,
   toolCapability,
   validateArgs,
+  withinAutoCap,
   type AttemptKind,
   type CognitiveProfile,
   type DataClass,
@@ -69,7 +70,7 @@ import { academyExecutionMode, academyRun, constrainedRun, contextClassOf, manif
 import { OPEN_HANDOFF_STATES, acceptDelegationOnStart, materializeExpiredActing, snapshotRunOrganization } from './org-core.js';
 import { verifyFence } from './queue.js';
 import type { Fence } from './records.js';
-import { txReasoningOverride } from './reasoning-control.js';
+import { txAutoReasoning, txReasoningOverride } from './reasoning-control.js';
 import { actionReviewGate, consumeActionReview, recheckReviewWait } from './review-core.js';
 
 export const SYSTEM_RUNTIME_REF = 'system:runtime';
@@ -88,6 +89,11 @@ export interface GovernedRunContext {
    * replaces only the starting class; the Employee ceiling, the route policy and the budget still bind.
    */
   readonly reasoningOverride: ReasoningClass | null;
+  /**
+   * P1-AUTO-E12-01 (D-P1-11): this Work Item runs under AUTO (durable, `txAutoReasoning`), so no call of it executes above
+   * `AUTO_MAX_CLASS` — not its start, an escalation, a route-minimum lift, a retry, a continuation or a fallback.
+   */
+  readonly autoReasoning: boolean;
   /** Highest data class of this run's context (declared on the Work Item; the model cannot lower it). */
   readonly dataClass: DataClass;
   /** ACTIVE duty, or constrained Academy / shadow execution by a non-ACTIVE Employee (C3, Stage 6 §11). */
@@ -164,6 +170,8 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
     snapshotRunOrganization(ctx, fence.runId, e);
     acceptDelegationOnStart(ctx, fence.runId, item.id, e.id);
   }
+  const profile = assertCognitiveProfile(e.cognitiveProfile);
+  const override = txReasoningOverride(ctx, item.id);
   // Deeply immutable: the processor holds this object, and nothing it does to it can lower the data
   // class or raise the ceiling (the model path also re-derives both from durable state per call).
   const context: GovernedRunContext = Object.freeze({
@@ -173,8 +181,9 @@ export function txBeginGovernedRun(ctx: StoreContext, fence: Fence): BeginResult
     employeeRef: e.ref,
     departmentId: e.departmentId,
     orgScope: e.orgScope,
-    cognitiveProfile: Object.freeze({ ...assertCognitiveProfile(e.cognitiveProfile) }),
-    reasoningOverride: txReasoningOverride(ctx, item.id),
+    cognitiveProfile: Object.freeze({ ...profile }),
+    reasoningOverride: override,
+    autoReasoning: txAutoReasoning(ctx, item.id, profile, override),
     dataClass: workItemDataClass(item.processorInput),
     executionMode: academyMode ?? 'ACTIVE',
     stepBase,
@@ -355,6 +364,9 @@ export function txReserve(ctx: StoreContext, fence: Fence, input: ReserveInput):
     // The comparison is with the Founder's exact class, never the class the route minimum would lift it to.
     if (override !== null && reasoningRank(d.reasoning_class) < reasoningRank(override)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'BELOW_REASONING_OVERRIDE');
     if (override !== null && reasoningRank(d.reasoning_class) > reasoningRank(override)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'ABOVE_REASONING_OVERRIDE');
+    // P1-AUTO-E12-01 (D-P1-11): an AUTO Work Item never reserves above the AUTO maximum, re-derived here from durable state
+    // (defence in depth under the Model Runtime's own cap: a stale checkpoint, a resumed run or a caller cannot pass it).
+    if (txAutoReasoning(ctx, a.workItemId, assertCognitiveProfile(e.cognitiveProfile), override) && !withinAutoCap(d.reasoning_class)) return refuse('ROUTE_NO_LONGER_ELIGIBLE', 'ABOVE_AUTO_POLICY_CAP');
     // D-L1-24: a Work Item that declares a hard model-call bound (a BQM-2 benchmark observation: two) never reserves past
     // it, across every run of the item (a retry or a resume after a crash included). Counted from durable reservations;
     // a RELEASED one was never sent, so only possibly-sent calls count.

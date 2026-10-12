@@ -115,6 +115,46 @@ describe('P1-REASON-AUTO-RECOVERY-01: new Employees, and the pinned Founder leve
     });
   });
 
+  test('P1-AUTO-E12-01 (D-P1-11): an AUTO Work Item never reserves above E2 (ABOVE_AUTO_POLICY_CAP), re-derived from durable state; the same E3 deployment stays reservable for a DEFAULT item, a method pin and a Founder level', () => {
+    withSeed((h, s, actions, sess) => {
+      legacy(h, s.employee.id, '{"ceilingClass":"E4","costDiscipline":"BALANCED","defaultClass":"E1","selection":"AUTO"}');
+      const modelId = s.gov.deployment(s.deploymentId).modelId;
+      const d = s.gov.registerDeployment(s.founder, { code: 'local-e3', modelId, pinnedRevision: 'r1', reasoningClass: 'E3', contextWindowTokens: 100_000, maxOutputTokens: 8_192, taskClasses: ['draft.memo'] });
+      const card = s.gov.addPriceCard(s.founder, d.id, { currency: 'USD', billingMode: 'METERED', billedInputPerMTok: 6_000_000, billedOutputPerMTok: 24_000_000, billedPerCall: 0, economicInputPerMTok: 6_000_000, economicOutputPerMTok: 24_000_000, economicPerCall: 0 });
+      for (const q of ['BENCHMARK', 'SHADOW', 'CHALLENGER', 'LIMITED_PRODUCTION', 'QUALIFIED'] as const) s.gov.setQualification(s.founder, d.id, q, 'qualification.step');
+      s.gov.approveEgress(s.founder, d.id, 'D3', 'egress.approved');
+      const policy = s.gov.createRoutePolicy(s.founder, 'draft.memo', { minClass: 'E1', maxClass: 'E4', allowLimitedProduction: false, maxRetriesPerCall: 1, maxCallsPerRun: 5, fallbackCostCeilingMicros: null, escalation: { maxDepth: 1, maxOverheadMicros: 50_000 } });
+      const demand = { policy: 'RD-1', level: 'E4', complexity: 'VERY_HIGH', consequence: 'VERY_HIGH', confidence: 'CLEAR', reasons: ['STRATEGIC_PLANNING'] };
+      const item = (input: Record<string, unknown>, founderLevel?: 'E3'): Id => {
+        const { workItem } = h.store.createWorkItem({ objective: 'auto cap', ownerRef: s.employee.ref, processorKind: GOVERNED_KIND, processorInput: { taskClass: 'draft.memo', dataClass: 'D1', instructions: 'x', ...input } });
+        s.gov.createBudget(s.founder, { scope: 'WORK_ITEM', scopeId: workItem.id, capMoney: 100_000, capTokens: 100_000, reasonCode: 'seed' });
+        if (founderLevel) {
+          const p = actions.preview(sess, 'WORK_ITEM_REASONING_OVERRIDE', { workItemId: workItem.id, reasoningClass: founderLevel });
+          actions.confirm(sess, p.id, p.fingerprint);
+        }
+        h.store.transitionWorkItem(workItem.id, { to: 'READY', reasonCode: 'release' });
+        return workItem.id;
+      };
+      const reserveAt = (id: Id, deploymentId: Id, priceCardId: Id): { auto: boolean; r: ReturnType<typeof reserveBudget> } => {
+        const { claim, begun } = claimFor(h, id);
+        assert.ok(begun.ok);
+        const manifest = testManifest(h, claim.fence, s.employee.id);
+        return { auto: begun.context.autoReasoning, r: reserveBudget(h.store, claim.fence, { purpose: 'MODEL_CALL', attemptKind: 'RETRY', deploymentId, priceCardId, routePolicyId: policy.id as Id, money: 1_000, tokens: 2_000, contextManifestId: manifest }) };
+      };
+      const auto = reserveAt(item({ reasoningDemand: demand }), d.id, card.id);
+      assert.equal(auto.auto, true, 'the run context carries the durable AUTO verdict');
+      assert.ok(!auto.r.ok && auto.r.code === 'ROUTE_NO_LONGER_ELIGIBLE' && auto.r.detail === 'ABOVE_AUTO_POLICY_CAP', JSON.stringify(auto.r));
+      const autoE1 = reserveAt(item({ reasoningDemand: demand }), s.deploymentId, s.priceCardId);
+      assert.ok(autoE1.r.ok, 'at or below E2 an AUTO item reserves as before');
+      for (const [label, id] of [['DEFAULT (no demand)', item({})], ['method pin', item({ reasoningDemand: demand, reasoningClass: 'E3' })], ['Founder level', item({ reasoningDemand: demand }, 'E3')]] as const) {
+        const x = reserveAt(id, d.id, card.id);
+        assert.equal(x.auto, false, label);
+        assert.ok(x.r.ok, `${label}: E3 reservable (${JSON.stringify(x.r)})`);
+      }
+      assert.equal(reasoningSelectionOf(s.gov.getEmployee(s.employee.id).cognitiveProfile), 'AUTO', 'nothing here changes the profile');
+    });
+  });
+
   test('D-P1-04 review: a manual level below the route minimum is refused at the preview and the confirm (never lifted), the level view names it, and the reservation compares with the exact manual class', () => {
     withSeed((h, s, actions, sess) => {
       const modelId = s.gov.deployment(s.deploymentId).modelId;

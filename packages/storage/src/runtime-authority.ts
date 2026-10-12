@@ -469,21 +469,29 @@ export function recordModelCallObservation(
  * P1-REASON-AUTO-RECOVERY-01 (C1) — how a model step's starting class was chosen, as one content-free audit row of the run:
  * the mode (SYSTEM_PINNED / MANUAL / AUTO / DEFAULT), the class it starts at and, for AUTO, the ideal the governed
  * Reasoning Demand chose, its closed reason codes, tiers and policy confidence, and the constraint that holds it lower.
+ * P1-AUTO-E12-01 (D-P1-11): an AUTO row also names the AUTO maximum it ran under (`autoCap`), and a step that could not
+ * route at all names why (`routeUnavailable`, a closed code; `startClass` is then null — nothing ran).
  */
 export function recordReasoningSelection(
   store: CompanyStore,
   fence: Fence,
-  input: { step: number; mode: string; startClass: string; idealClass: string | null; constraint: string | null; demand: ReasoningDemand | null },
+  input: { step: number; mode: string; startClass: string | null; idealClass: string | null; constraint: string | null; demand: ReasoningDemand | null; autoCap?: string | null; routeUnavailable?: string | null },
 ): void {
   fenced(store, 'record reasoning selection', fence, (ctx) => {
     verifyFence(ctx, fence);
+    const autoCap = input.autoCap ?? null;
+    const routeUnavailable = input.routeUnavailable ?? null;
     if (!['SYSTEM_PINNED', 'MANUAL', 'AUTO', 'DEFAULT'].includes(input.mode)) throw new QandeelError('VALIDATION_FAILED', 'unknown selection mode', { field: 'mode' });
-    if (!OBS_CLASS.test(input.startClass) || (input.idealClass !== null && !OBS_CLASS.test(input.idealClass))) throw new QandeelError('VALIDATION_FAILED', 'unknown reasoning class', { field: 'startClass' });
-    if (input.constraint !== null && !['EMPLOYEE_CEILING', 'ROUTE_POLICY', 'NOT_PROVISIONED'].includes(input.constraint)) throw new QandeelError('VALIDATION_FAILED', 'unknown constraint', { field: 'constraint' });
+    if ((input.startClass === null ? routeUnavailable === null : !OBS_CLASS.test(input.startClass)) || (input.idealClass !== null && !OBS_CLASS.test(input.idealClass))) throw new QandeelError('VALIDATION_FAILED', 'unknown reasoning class', { field: 'startClass' });
+    if (input.constraint !== null && !['EMPLOYEE_CEILING', 'ROUTE_POLICY', 'NOT_PROVISIONED', 'AUTO_POLICY_CAP'].includes(input.constraint)) throw new QandeelError('VALIDATION_FAILED', 'unknown constraint', { field: 'constraint' });
+    if (autoCap !== null && (input.mode !== 'AUTO' || !OBS_CLASS.test(autoCap))) throw new QandeelError('VALIDATION_FAILED', 'an AUTO maximum is a reasoning class of an AUTO selection', { field: 'autoCap' });
+    if (routeUnavailable !== null && !/^[A-Z][A-Z_]{1,31}$/.test(routeUnavailable)) throw new QandeelError('VALIDATION_FAILED', 'a route refusal is a closed code', { field: 'routeUnavailable' });
     if (input.demand !== null && !isReasoningDemand(input.demand)) throw new QandeelError('VALIDATION_FAILED', 'a reasoning demand is the closed RD-1 shape', { field: 'demand' });
     const d = input.demand;
     appendAudit(ctx, 'run.reasoning_selected', 'run', fence.runId, {}, 'OK', input.mode, {
       step: Math.max(0, Math.trunc(input.step)), mode: input.mode, startClass: input.startClass, idealClass: input.idealClass, constraint: input.constraint,
+      ...(autoCap !== null ? { autoCap } : {}),
+      ...(routeUnavailable !== null ? { routeUnavailable } : {}),
       // Each reason is its own closed key (audit values are short codes, Rule A): `reason:STRATEGIC_PLANNING` = true.
       ...(d ? { policy: d.policy, complexity: d.complexity, consequence: d.consequence, confidence: d.confidence, ...Object.fromEntries(d.reasons.map((r) => [`reason:${r}`, true])) } : {}),
     });

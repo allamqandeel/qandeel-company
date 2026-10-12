@@ -32,6 +32,19 @@ describe('P1-REASON-AUTO-RECOVERY-01: the reply reasoning story', () => {
     assert.match(AUTO_EXPLAINED, /not a fifth level/);
     assert.match(AUTO_EXPLAINED, /no extra model call/);
     assert.equal(LEVEL_THINKING.E1, 'Thinking off');
-    for (const code of ['MODEL_OUTPUT_TRUNCATED', 'PROVIDER_CIRCUIT_OPEN', 'REASONING_LEVEL_UNAVAILABLE']) assert.ok(REASON_LABEL[code], code);
+    for (const code of ['MODEL_OUTPUT_TRUNCATED', 'PROVIDER_CIRCUIT_OPEN', 'REASONING_LEVEL_UNAVAILABLE', 'AUTO_POLICY_CAP', 'AUTO_LEVEL_LIMIT']) assert.ok(REASON_LABEL[code], code);
+  });
+
+  test('P1-AUTO-E12-01: AUTO is explained as never going above E2 by itself; a capped start names its raw demand and the level it ran at; a step that could not route is never shown as a level that answered', () => {
+    assert.match(AUTO_EXPLAINED, /up to E2/);
+    assert.match(AUTO_EXPLAINED, /never goes to E3 or E4 by itself/);
+    assert.doesNotMatch(AUTO_EXPLAINED, /strategy → E3|→ E4/);
+    assert.match(REASON_LABEL.AUTO_LEVEL_LIMIT ?? '', /choose|chosen/);
+    const capped = selectionSummary({ selection: { mode: 'AUTO', startClass: 'E2', idealClass: 'E4', constraint: 'AUTO_POLICY_CAP', autoCap: 'E2', reasons: ['STRATEGIC_PLANNING'] }, callDetails: [call('PRIMARY', 'E2')] });
+    assert.equal(capped.chosen, `AUTO: E4 needed, ran at E2 (${REASON_LABEL.AUTO_POLICY_CAP ?? ''})`);
+    const unrouted = selectionSummary({ selection: { mode: 'AUTO', startClass: null, idealClass: 'E4', constraint: 'AUTO_POLICY_CAP', autoCap: 'E2', routeUnavailable: 'AUTO_POLICY_CAP', reasons: [] }, callDetails: [] });
+    assert.equal(unrouted.chosen, `AUTO: nothing ran (${REASON_LABEL.AUTO_POLICY_CAP ?? ''})`);
+    const laterRan = selectionSummary({ selection: { mode: 'AUTO', startClass: 'E2', idealClass: 'E2', constraint: null, routeUnavailable: 'NO_ELIGIBLE_DEPLOYMENT', reasons: [] }, callDetails: [call('PRIMARY', 'E2')] });
+    assert.equal(laterRan.chosen, 'AUTO chose E2', 'once a call ran, the earlier refusal is not the story');
   });
 });

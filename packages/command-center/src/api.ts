@@ -769,7 +769,7 @@ export function structuredSummary(ctx: ApiContext, preview: { intentKind: string
     }
     // --- L1-02: the activation acts, stated as exactly what the canonical store will do (nothing more) ---
     case 'EMPLOYEE_HIRE':
-      return `Hire ${s('givenName')} ${s('familyName')}${p.displayNameAr ? ` (${s('displayNameAr')})` : ''} into the seat ${s('positionTitle')} (${s('roleRef')}) as a CANDIDATE — not active, no authority, no budget; reasoning ${p.selection === 'AUTO' ? `AUTO from ${s('defaultClass')}` : s('defaultClass')}, ceiling ${s('ceilingClass')} (a level above E2 runs only where the task's route policy, a provisioned deployment and the budget allow it), cost discipline BALANCED; portrait pending. The Academy alone decides activation`;
+      return `Hire ${s('givenName')} ${s('familyName')}${p.displayNameAr ? ` (${s('displayNameAr')})` : ''} into the seat ${s('positionTitle')} (${s('roleRef')}) as a CANDIDATE — not active, no authority, no budget; reasoning ${p.selection === 'AUTO' ? `AUTO from ${s('defaultClass')}` : s('defaultClass')}, ceiling ${s('ceilingClass')} (${p.selection === 'AUTO' ? 'AUTO never goes above E2 by itself; E3 / E4 run only when you choose them for a task, and only where' : 'a level above E2 runs only where'} the task's route policy, a provisioned deployment and the budget allow it), cost discipline BALANCED; portrait pending. The Academy alone decides activation`;
     case 'EMPLOYEE_LIFECYCLE':
       return `Move ${s('name')} from ${s('from')} to ${s('to')} (a trainee step; ACTIVE comes only from the Academy's activation decision)`;
     case 'EMPLOYEE_MODEL_ACCESS':
@@ -805,7 +805,7 @@ export function structuredSummary(ctx: ApiContext, preview: { intentKind: string
     case 'EMPLOYEE_REASONING_PROFILE': {
       const due = Array.isArray(p.certificationsReviewDue) ? (p.certificationsReviewDue as string[]).length : 0;
       // P1-REASON-AUTO-RECOVERY-01: the selection (AUTO / DEFAULT) is named whenever it changes.
-      const sel = p.previousSelection !== undefined && p.previousSelection !== p.newSelection ? ` Level selection ${s('previousSelection')} → ${s('newSelection')}: ${p.newSelection === 'AUTO' ? 'each task starts at the lowest level the governed AUTO policy judges sufficient, within the ceiling, the route and what is provisioned (AUTO is not a fifth level; a level you choose for a message still wins)' : 'each task starts at the default'}.` : '';
+      const sel = p.previousSelection !== undefined && p.previousSelection !== p.newSelection ? ` Level selection ${s('previousSelection')} → ${s('newSelection')}: ${p.newSelection === 'AUTO' ? 'each task starts at the lowest level the governed AUTO policy judges sufficient, up to E2, within the ceiling, the route and what is provisioned; AUTO never goes above E2 by itself (AUTO is not a fifth level; a level you choose for a message still wins, E3 / E4 included)' : 'each task starts at the default'}.` : '';
       return `Change ${s('name')}'s standing reasoning profile: default ${s('previousDefault')} → ${s('newDefault')}, ceiling ${s('previousCeiling')} → ${s('newCeiling')}; cost discipline ${s('costDiscipline')} unchanged.${sel} Future work without a one-task override starts from the new ${p.newSelection === 'AUTO' ? 'selection' : 'default'}. A material change: ${due} valid certification(s) become REVIEW_DUE. No authority, tool, data, approval or budget change; no provider call`;
     }
     case 'WORK_ITEM_REASONING_OVERRIDE':

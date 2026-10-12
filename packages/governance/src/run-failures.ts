@@ -33,6 +33,7 @@ export const RUN_FAILURE_CODES = Object.freeze({
   RUN_ABORTED: null, // the run was stopped (cancel / shutdown / timeout) during a model call
   REASONING_ABOVE_CEILING: null, // the requested reasoning class is above the Employee's / policy's ceiling
   REASONING_LEVEL_UNAVAILABLE: null, // P1-REASON-AUTO-RECOVERY-01: a pinned class has no deployment of that class at all (never substituted)
+  AUTO_LEVEL_LIMIT: null, // P1-AUTO-E12-01 (D-P1-11): AUTO could not complete the step at or below its maximum (E2) and never goes above it; family not decided by authority
   // Model.
   MODEL_OUTPUT_INVALID: 'MODEL',
   MODEL_OUTPUT_TRUNCATED: 'MODEL', // P1-REASON-AUTO-RECOVERY-01: the output allowance ran out again after the one same-class continuation
@@ -119,6 +120,8 @@ export function unavailableRunCode(code: string): RunFailureCode {
       return 'SETTLEMENT_FAILED';
     case 'REASONING_LEVEL_UNAVAILABLE':
       return 'REASONING_LEVEL_UNAVAILABLE';
+    case 'AUTO_POLICY_CAP':
+      return 'AUTO_LEVEL_LIMIT';
     case 'PROVIDER_CIRCUIT_OPEN':
       return 'PROVIDER_CIRCUIT_OPEN';
   }

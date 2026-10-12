@@ -54,6 +54,10 @@ export const REASON_LABEL: Readonly<Record<string, string>> = {
   REASONING_LEVEL_UNAVAILABLE: 'the level you chose has no model deployment now; it was not replaced by another level',
   EMPLOYEE_CEILING: 'held at this Employee’s maximum level',
   ROUTE_POLICY: 'held by the conversation route’s maximum level',
+  // P1-AUTO-E12-01 (D-P1-11)
+  AUTO_POLICY_CAP: 'AUTO never goes above E2 by itself; choose E3 or E4 for a message that needs deeper thinking',
+  AUTO_LEVEL_LIMIT: 'E2, the highest level AUTO uses, could not complete this reply, and AUTO never goes above E2 by itself; send the message again with E3 or E4 chosen if it needs deeper thinking',
+  NO_ELIGIBLE_DEPLOYMENT: 'no route can take this reply at its level now; nothing was spent',
 };
 
 export const reasonText = (code: string | null | undefined, humanize: (c: string) => string): string => (code ? (REASON_LABEL[code] ?? humanize(code).toLowerCase()) : '');
@@ -80,7 +84,7 @@ export const isEndedReply = (status: string): boolean => status === 'FAILED' || 
  * P1-REASON-AUTO-RECOVERY-01 — how a reply's level was chosen, in the Founder's words. AUTO is a selection policy over E1..E4,
  * never a fifth level; E1 on DeepSeek V4.1 Flash is thinking OFF (a light model call, not "no AI").
  */
-export const AUTO_EXPLAINED = 'AUTO picks, for each message, the lowest level the governed policy judges sufficient (routine → E1, analysis → E2, strategy → E3, very broad high-stakes work → E4), within the maximum, the route and what is provisioned. It is not a fifth level, it makes no extra model call to decide, and a level you choose for a message always wins.';
+export const AUTO_EXPLAINED = 'AUTO picks, for each message, the lowest sufficient level up to E2 (routine and simple → E1, analysis and planning → E2), within the maximum, the route and what is provisioned. It never goes to E3 or E4 by itself — choose E3 or E4 for a message that needs deeper thinking. It is not a fifth level, it makes no extra model call to decide, and a level you choose for a message always wins.';
 
 /** The content-free AUTO reason codes, in a few words each. */
 export const DEMAND_REASON_LABEL: Readonly<Record<string, string>> = {
@@ -109,8 +113,12 @@ export function selectionSummary(r: Json): { chosen: string; calls: string[]; wh
   if (mode === 'MANUAL') chosen = `${start ?? ''} chosen by you`;
   else if (mode === 'SYSTEM_PINNED') chosen = `${start ?? ''} fixed by the task`;
   else if (mode === 'NOT_RECORDED') chosen = 'level choice not recorded (earlier reply)';
-  else if (mode === 'AUTO') chosen = !start ? 'AUTO' : constraint && ideal && ideal !== start ? `AUTO: ${ideal} needed, ran at ${start} (${REASON_LABEL[constraint] ?? constraint.toLowerCase()})` : `AUTO chose ${start}`;
-  else chosen = start ? `default ${start}` : 'default level';
+  else if (mode === 'AUTO') {
+    // D-P1-11: a step that could not route ran nothing; it is never shown as a level that answered.
+    const unrouted = typeof sel.routeUnavailable === 'string' && !((r.callDetails as Json[] | undefined) ?? []).length ? sel.routeUnavailable : null;
+    if (unrouted) chosen = `AUTO: nothing ran (${REASON_LABEL[unrouted] ?? unrouted.toLowerCase()})`;
+    else chosen = !start ? 'AUTO' : constraint && ideal && ideal !== start ? `AUTO: ${ideal} needed, ran at ${start} (${REASON_LABEL[constraint] ?? constraint.toLowerCase()})` : `AUTO chose ${start}`;
+  } else chosen = start ? `default ${start}` : 'default level';
   const calls = ((r.callDetails as Json[] | undefined) ?? []).slice(1).map((c) => `${ATTEMPT_LABEL[String(c.attemptKind)] ?? String(c.attemptKind).toLowerCase()} → ${String(c.reasoningClass)}${c.finishReason === 'length' ? ' (output limit reached)' : ''}`);
   return { chosen, calls, why: mode === 'AUTO' && reasons.length ? `AUTO: ${reasons.slice(0, 4).join(', ')}` : '' };
 }

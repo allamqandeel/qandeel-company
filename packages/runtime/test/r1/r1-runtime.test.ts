@@ -786,7 +786,7 @@ describe('R2-12: one run-failure vocabulary — the runtime records the real cau
   const CONTEXT_CODES: Extract<ModelCallOutcome, { kind: 'CONTEXT' }>['code'][] = ['CONTEXT_BUDGET_EXHAUSTED', 'CONFLICT_HOLD', 'SKILL_CONFLICT', 'INTEGRITY_FAILURE', 'CONTEXT_NOT_ASSEMBLED'];
   const BEGIN_CODES: Extract<BeginResult, { ok: false }>['code'][] = ['EMPLOYEE_NOT_ELIGIBLE', 'NOT_EMPLOYEE_OWNED', 'CAPABILITY_GAP_CANCELLED', 'STEP_RANGE_EXHAUSTED', 'CAPABILITY_GAP'];
   // The model runtime's UNAVAILABLE codes: configuration, route, local and provider causes.
-  const UNAVAILABLE = ['NO_ROUTE_POLICY', 'NO_ELIGIBLE_DEPLOYMENT', 'REASONING_ABOVE_CEILING', 'FALLBACK_REFUSED_COST', 'ABORTED', 'SETTLEMENT_FAILED', 'ATTEMPTS_EXHAUSTED', 'REASONING_LEVEL_UNAVAILABLE', ...PROVIDER_FAILURE_CLASSES.map((c) => `PROVIDER_${c}`)];
+  const UNAVAILABLE = ['NO_ROUTE_POLICY', 'NO_ELIGIBLE_DEPLOYMENT', 'REASONING_ABOVE_CEILING', 'FALLBACK_REFUSED_COST', 'ABORTED', 'SETTLEMENT_FAILED', 'ATTEMPTS_EXHAUSTED', 'REASONING_LEVEL_UNAVAILABLE', 'AUTO_POLICY_CAP', ...PROVIDER_FAILURE_CLASSES.map((c) => `PROVIDER_${c}`)];
   // The runtime's own settle overrides (runtime.ts) and the governed-run refusal the plain entry point returns.
   const RUNTIME_CODES = ['PROCESSOR_ERROR', 'PROCESSOR_STOPPED_UNPROMPTED', 'INVALID_WAIT', 'RUN_TIMEOUT'];
 
@@ -808,6 +808,10 @@ describe('R2-12: one run-failure vocabulary — the runtime records the real cau
     add('continuation not larger', await codeOf([{ kind: 'ESCALATION_REFUSED', code: 'CONTINUATION_NOT_LARGER' }]));
     add('truncated twice', await codeOf([answer({ type: 'INVALID', code: 'OUTPUT_TRUNCATED' }), answer({ type: 'INVALID', code: 'OUTPUT_TRUNCATED' })]));
     add('circuit open', await codeOf([{ kind: 'CIRCUIT_OPEN', until: '2999-01-01T00:00:00.000Z' }]));
+    // P1-AUTO-E12-01: an escalation refused at the AUTO maximum, and an invalid output of an AUTO step already at E2.
+    add('escalation refused at the AUTO maximum', await codeOf([{ kind: 'ESCALATION_REFUSED', code: 'AUTO_POLICY_CAP' }]));
+    const autoContext = { cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E4', selection: 'AUTO' }, autoReasoning: true } as unknown as GovernedRunServices['context'];
+    add('AUTO invalid output at E2', await codeOf([{ ...answer({ type: 'INVALID', code: 'NOT_JSON' }), reasoningClass: 'E2' } as ModelCallOutcome], { context: autoContext }));
     for (const c of CONTEXT_CODES) add(`context ${c}`, await codeOf([{ kind: 'CONTEXT', code: c }]));
     const toolOutcomes: ToolOutcome[] = [
       { kind: 'DENIED', code: 'NO_GRANT', paused: true },

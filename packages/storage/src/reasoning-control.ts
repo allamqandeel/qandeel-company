@@ -16,7 +16,7 @@
  * provider call, and records the class that actually answered on the usage record.
  */
 import { QandeelError, canonicalJson, type Id } from '@qandeel-company/domain';
-import { assertCognitiveProfile, isReasoningClass, isReasoningSelection, reasoningRank, reasoningSelectionOf, type ReasoningClass, type ReasoningSelection } from '@qandeel-company/governance';
+import { assertCognitiveProfile, isReasoningClass, isReasoningDemand, isReasoningSelection, reasoningRank, reasoningSelectionOf, type CognitiveProfile, type ReasoningClass, type ReasoningSelection } from '@qandeel-company/governance';
 
 import { employeeIdFromRef, getEmployeeRow, writeEmployeeHistory } from './governance-core.js';
 import type { EmployeeRecord } from './governance-records.js';
@@ -45,6 +45,19 @@ const above = (a: ReasoningClass, b: ReasoningClass): boolean => reasoningRank(a
 export function txReasoningOverride(ctx: StoreContext, workItemId: Id): ReasoningClass | null {
   const r = ctx.db.get<{ c: string }>('SELECT reasoning_class AS c FROM work_item_reasoning_overrides WHERE work_item_id = ?', workItemId);
   return r && isReasoningClass(r.c) ? r.c : null;
+}
+
+/**
+ * P1-AUTO-E12-01 (D-P1-11) — whether this Work Item's model steps run under AUTO, from durable state only, in the D-P1-04
+ * precedence: no Founder one-task level, no class pinned in the submitter's immutable input (a method pin), an Employee
+ * profile that selects AUTO, and a governed Reasoning Demand on the Work Item. Such work never executes above
+ * `AUTO_MAX_CLASS`: the run context carries this verdict to the Model Runtime, and `txReserve` re-derives it before every
+ * reservation. A DEFAULT, MANUAL or pinned item is never AUTO, so its behaviour is unchanged.
+ */
+export function txAutoReasoning(ctx: StoreContext, workItemId: Id, profile: CognitiveProfile, override: ReasoningClass | null): boolean {
+  if (override !== null || reasoningSelectionOf(profile) !== 'AUTO') return false;
+  const pi = getWorkItemRow(ctx, workItemId).processorInput as { reasoningClass?: unknown; reasoningDemand?: unknown } | null;
+  return pi !== null && typeof pi === 'object' && pi.reasoningClass === undefined && isReasoningDemand(pi.reasoningDemand);
 }
 
 export interface ReasoningProfilePlan {
