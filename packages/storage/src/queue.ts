@@ -518,9 +518,11 @@ export function txHoldForReconciliation(ctx: StoreContext, jobId: Id, code: stri
  * The job is fenced immediately (token bump), then classified: durable termination intent is
  * finalized; UNSAFE side effects go to reconciliation; everything else counts as a failed attempt
  * (crash-loop bound) and is resumed from its checkpoint or retried — or dead-lettered once the
- * attempt budget is exhausted.
+ * attempt budget is exhausted. P1-AUTO-E12-01 R1: `uncertainModelCall` (the governed caller's durable read: the run may
+ * have sent a model call whose outcome is unsettled) also goes to reconciliation instead of resume / retry; durable
+ * termination intent is still finalized exactly as before (a model call is no external effect that decides it).
  */
-export function txInterruptClaim(ctx: StoreContext, jobId: Id, reasonCode: string): { disposition: string; jobState: JobRecord['state'] } | null {
+export function txInterruptClaim(ctx: StoreContext, jobId: Id, reasonCode: string, uncertainModelCall = false): { disposition: string; jobState: JobRecord['state'] } | null {
   const job = getJobRow(ctx, jobId);
   if (job.state !== 'CLAIMED') return null;
   const run = job.currentRunId ? ctx.db.get('SELECT * FROM runs WHERE id = ?', job.currentRunId) : undefined;
@@ -528,12 +530,13 @@ export function txInterruptClaim(ctx: StoreContext, jobId: Id, reasonCode: strin
   const trace: TraceContext = { correlationId: job.correlationId, causationId: job.currentRunId };
   appendAudit(ctx, 'job.lease_recovered', 'job', job.id, trace, 'OK', reasonCode, { previousOwner: job.leaseOwner, fencingToken: job.fencingToken });
   const hasCheckpoint = latestValidCheckpoint(ctx, job.id) !== null;
-  const disposition = classifyInterruptedRun(runRecord?.sideEffects ?? 'NONE', hasCheckpoint);
+  const classified = classifyInterruptedRun(runRecord?.sideEffects ?? 'NONE', hasCheckpoint);
   // Termination intent is finalized directly only when no uncertain external effect can exist.
-  if (job.cancelRequested && disposition !== 'RECONCILIATION_REQUIRED') {
+  if (job.cancelRequested && classified !== 'RECONCILIATION_REQUIRED') {
     finalizeTermination(ctx, job, runRecord?.state === 'RUNNING' ? runRecord.id : null, trace);
     return { disposition: 'TERMINATED', jobState: 'CANCELLED' };
   }
+  const disposition = uncertainModelCall ? 'RECONCILIATION_REQUIRED' : classified;
   if (runRecord?.state === 'RUNNING') endRun(ctx, runRecord.id, 'INTERRUPTED', { failureCategory: 'INTERRUPTED', failureCode: reasonCode, disposition });
   const item = getWorkItemRow(ctx, job.workItemId);
   if (disposition === 'RECONCILIATION_REQUIRED') {

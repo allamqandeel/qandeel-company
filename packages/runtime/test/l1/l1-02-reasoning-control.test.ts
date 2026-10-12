@@ -58,9 +58,9 @@ const state = (rt: CompanyRuntime, id: Id): string => rt.view.getWorkItem(id).st
 const settled = (rt: CompanyRuntime, id: Id): Promise<string> => eventually(() => (['COMPLETED', 'FAILED', 'WAITING', 'BLOCKED'].includes(state(rt, id)) ? state(rt, id) : undefined), 15_000, `work item ${id} to settle`);
 
 /** The Founder's persistent profile act (through the test-armed Founder authority; the preview path is proven in storage). */
-function setProfile(x: World, defaultClass: Cls, ceilingClass: Cls): void {
+function setProfile(x: World, defaultClass: Cls, ceilingClass: Cls, selection?: 'AUTO' | 'DEFAULT'): void {
   const e = x.rt.governance.getEmployee(x.w.employee.id);
-  x.rt.governance.changeReasoningProfile(x.w.founder, e.id, { defaultClass, ceilingClass, expectedVersion: e.version, reasonCode: 'founder.reasoning' });
+  x.rt.governance.changeReasoningProfile(x.w.founder, e.id, { defaultClass, ceilingClass, ...(selection ? { selection } : {}), expectedVersion: e.version, reasonCode: 'founder.reasoning' });
 }
 
 /** A governed task: created PROPOSED, budgeted, optionally given a Founder one-task override, then released. */
@@ -111,16 +111,20 @@ describe('D-L1-44 runtime: reasoning precedence for one model step', () => {
       assert.deepEqual(view.modelCalls.filter((m) => [a, b, c].includes(m.workItemId)).map((m) => [m.workItemId, m.reasoningClass]).sort(), [[a, 'E1'], [b, 'E3'], [c, 'E1']].sort(), 'the read model shows the class actually used');
     }));
 
-  test('highest class: an isolated test Employee configured up to E4 runs E4 by override and by default', () =>
+  test('highest class: an isolated test Employee configured up to E4 runs E4 by override and, when its profile selects DEFAULT, by default; under AUTO the same default is capped at E2 (P1-AUTO-E12-01 R1-02)', () =>
     withWorld('l1-rc-e4', async (x) => {
       setProfile(x, 'E1', 'E4');
       const o = submit(x, { override: 'E4' });
       assert.equal(await settled(x.rt, o), 'COMPLETED');
       assert.deepEqual(usedClasses(x, o), ['E4']);
-      setProfile(x, 'E4', 'E4');
+      setProfile(x, 'E4', 'E4', 'DEFAULT');
       const d = submit(x);
       assert.equal(await settled(x.rt, d), 'COMPLETED');
       assert.deepEqual(usedClasses(x, d), ['E4']);
+      setProfile(x, 'E4', 'E4', 'AUTO');
+      const a = submit(x);
+      assert.equal(await settled(x.rt, a), 'COMPLETED');
+      assert.deepEqual(usedClasses(x, a), ['E2'], 'AUTO without a demand starts at min(default, E2): never E4 by itself');
     }));
 
   // D-P1-04 (P1-REASON-AUTO-RECOVERY-01, Founder decision) amends the D-L1-44 escalation rule for a Founder-pinned level:

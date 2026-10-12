@@ -53,6 +53,7 @@ import {
   txDeploymentOutcome,
   txHold,
   txHoldUnsettledModelCalls,
+  txRunHasUncertainModelCall,
   GOVERNED_WAITS,
   txRecheckGovernedWait,
   type GovernedWait,
@@ -194,7 +195,7 @@ export function checkpoint(store: CompanyStore, fence: Fence, kind: string, stat
 
 export function settle(store: CompanyStore, fence: Fence, result: ProcessorResult, options: SettleOptions): SettleOutcome {
   return fenced(store, 'settle', fence, (ctx) => {
-    const out = txSettle(ctx, fence, result, options);
+    const out = txSettle(ctx, fence, holdUncertainModelCall(ctx, fence.runId, result), options);
     // R1-09 backstop: no model-call reservation outlives its run as RESERVED (possibly billed → held).
     txHoldUnsettledModelCalls(ctx, fence.runId);
     // C3: a capability gap may have closed while the run was settling — re-check in the same transaction.
@@ -215,12 +216,31 @@ export function settle(store: CompanyStore, fence: Fence, result: ProcessorResul
   });
 }
 
+/**
+ * P1-AUTO-E12-01 R1 (Founder-approved): a run that leaves a model call which may have been sent and billed, with its
+ * outcome unsettled, never re-runs its Work Item on its own. A result that would re-queue it (a C1 retry, a run timeout or
+ * processor error turned retryable, a stop without the Founder's termination) becomes the existing RECONCILIATION_REQUIRED
+ * hold, keeping the run's own code (no new failure code): the job waits in RECONCILIATION_HOLD and the Work Item is BLOCKED
+ * until the Founder resolves it through the existing reconciliation (RETRY is the explicit authorization of one new run).
+ * Decided from durable state in this settle transaction. Untouched: a completed or permanently failed result (nothing
+ * re-runs), the Founder's cancellation (`txSettle` finalizes the termination first, whatever the result), the held money
+ * itself (never settled or released here), and a run whose every attempt was provably unsent or settled.
+ */
+function holdUncertainModelCall(ctx: StoreContext, runId: Id, result: ProcessorResult): ProcessorResult {
+  if (result.type !== 'RETRYABLE_FAILURE' && result.type !== 'CANCELLED') return result;
+  if (!txRunHasUncertainModelCall(ctx, runId)) return result;
+  return { type: 'RECONCILIATION_REQUIRED', code: result.type === 'RETRYABLE_FAILURE' ? result.code : 'RUN_ABORTED' };
+}
+
 // --- Claim recovery (supervisor fence mandatory) -------------------------------------------------
 
 export function interruptClaim(store: CompanyStore, supervisor: SupervisorFence, jobId: Id, reasonCode: string): ReturnType<typeof txInterruptClaim> {
   return write(store, 'interrupt claim', (ctx) => {
     verifySupervisor(ctx, supervisor);
-    return txInterruptClaim(ctx, jobId, reasonCode);
+    // P1-AUTO-E12-01 R1: a crashed or lost run that may have sent a model call whose outcome is unsettled is held for
+    // reconciliation instead of being resumed or retried (the same rule as the settle above, in this same transaction).
+    const runId = ctx.db.get<{ r: string | null }>(`SELECT current_run_id AS r FROM queue_jobs WHERE id = ? AND state = 'CLAIMED'`, jobId)?.r ?? null;
+    return txInterruptClaim(ctx, jobId, reasonCode, runId !== null && txRunHasUncertainModelCall(ctx, runId as Id));
   });
 }
 

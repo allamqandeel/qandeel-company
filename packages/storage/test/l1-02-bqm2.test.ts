@@ -198,7 +198,9 @@ describe('D-L1-23: BQM-2 at the store boundary (0018)', () => {
       const refused = reserve(first.fence, third.manifestId);
       assert.deepEqual(refused.ok ? null : [refused.code, refused.detail], ['RUN_LIMIT', 'MAX_CALLS_PER_WORK_ITEM']);
       // The run dies; its possibly-sent calls stay counted: a resumed run of the same observation gets no third call.
-      interruptClaim(w.h.store, w.h.supervisor, first.fence.jobId, 'PROCESS_DIED');
+      // P1-AUTO-E12-01 R1-01: the run is held for reconciliation first; the resume is the one the Founder's RETRY authorizes.
+      assert.deepEqual(interruptClaim(w.h.store, w.h.supervisor, first.fence.jobId, 'PROCESS_DIED'), { disposition: 'RECONCILIATION_REQUIRED', jobState: 'RECONCILIATION_HOLD' });
+      assert.equal(w.h.store.resolveReconciliation(first.fence.jobId, 'RETRY', 'CHECKED', w.s.founder).jobState, 'QUEUED');
       w.h.clock.advance(60 * 60_000);
       const resumed = claimFor(w.h, o.work_item_id as Id, 'w-resumed').claim;
       const rm = assemble(w.h, resumed, 3);

@@ -20,7 +20,7 @@ describe('P1-REASON-AUTO-RECOVERY-01: the reply reasoning story', () => {
     const free = selectionSummary({ selection: { mode: 'AUTO', startClass: 'E3', idealClass: 'E3', constraint: null, reasons: ['STRATEGIC_PLANNING', 'MARKET_OR_EXPANSION_SCOPE'] }, callDetails: [call('PRIMARY', 'E3')] });
     assert.deepEqual([free.chosen, free.why], ['AUTO chose E3', 'AUTO: strategy, market scope']);
     const held = selectionSummary({ selection: { mode: 'AUTO', startClass: 'E2', idealClass: 'E4', constraint: 'EMPLOYEE_CEILING', reasons: ['STRATEGIC_PLANNING'] }, callDetails: [call('PRIMARY', 'E2')] });
-    assert.equal(held.chosen, `AUTO: E4 needed, ran at E2 (${REASON_LABEL.EMPLOYEE_CEILING ?? ''})`);
+    assert.equal(held.chosen, `AUTO estimated E4 demand; selected E2 (${REASON_LABEL.EMPLOYEE_CEILING ?? ''})`);
   });
 
   test('a Founder level is the Founder\'s; a same-level retry after the output limit is shown as such', () => {
@@ -41,10 +41,39 @@ describe('P1-REASON-AUTO-RECOVERY-01: the reply reasoning story', () => {
     assert.doesNotMatch(AUTO_EXPLAINED, /strategy → E3|→ E4/);
     assert.match(REASON_LABEL.AUTO_LEVEL_LIMIT ?? '', /choose|chosen/);
     const capped = selectionSummary({ selection: { mode: 'AUTO', startClass: 'E2', idealClass: 'E4', constraint: 'AUTO_POLICY_CAP', autoCap: 'E2', reasons: ['STRATEGIC_PLANNING'] }, callDetails: [call('PRIMARY', 'E2')] });
-    assert.equal(capped.chosen, `AUTO: E4 needed, ran at E2 (${REASON_LABEL.AUTO_POLICY_CAP ?? ''})`);
+    assert.equal(capped.chosen, 'AUTO estimated E4 demand; company policy selected E2');
     const unrouted = selectionSummary({ selection: { mode: 'AUTO', startClass: null, idealClass: 'E4', constraint: 'AUTO_POLICY_CAP', autoCap: 'E2', routeUnavailable: 'AUTO_POLICY_CAP', reasons: [] }, callDetails: [] });
     assert.equal(unrouted.chosen, `AUTO: nothing ran (${REASON_LABEL.AUTO_POLICY_CAP ?? ''})`);
     const laterRan = selectionSummary({ selection: { mode: 'AUTO', startClass: 'E2', idealClass: 'E2', constraint: null, routeUnavailable: 'NO_ELIGIBLE_DEPLOYMENT', reasons: [] }, callDetails: [call('PRIMARY', 'E2')] });
     assert.equal(laterRan.chosen, 'AUTO chose E2', 'once a call ran, the earlier refusal is not the story');
+  });
+});
+
+describe('P1-AUTO-E12-01 R1-04: estimated versus actual levels, and technical failures in neutral words', () => {
+  test('the demand is shown as AUTO\'s estimate, never as proof that the message needed it; the level that actually ran is read from the recorded call', () => {
+    const capped = selectionSummary({ selection: { mode: 'AUTO', startClass: 'E2', idealClass: 'E4', constraint: 'AUTO_POLICY_CAP', autoCap: 'E2', reasons: [] }, callDetails: [call('PRIMARY', 'E2')] });
+    assert.equal(capped.chosen, 'AUTO estimated E4 demand; company policy selected E2');
+    assert.doesNotMatch(capped.chosen, /needed/);
+    const noDemand = selectionSummary({ selection: { mode: 'AUTO', startClass: 'E2', idealClass: null, constraint: 'AUTO_POLICY_CAP', autoCap: 'E2', reasons: [] }, callDetails: [call('PRIMARY', 'E2')] });
+    assert.equal(noDemand.chosen, 'AUTO: company policy selected E2', 'no demand: no estimate is invented');
+    const lifted = selectionSummary({ selection: { mode: 'AUTO', startClass: 'E1', idealClass: 'E1', constraint: null, reasons: [] }, callDetails: [call('PRIMARY', 'E2')] });
+    assert.equal(lifted.chosen, 'AUTO chose E1, ran at E2', 'the class that executed is the recorded one');
+    const notRun = selectionSummary({ selection: { mode: 'AUTO', startClass: 'E2', idealClass: 'E4', constraint: 'AUTO_POLICY_CAP', reasons: [] }, callDetails: [] });
+    assert.doesNotMatch(notRun.chosen, /ran/, 'no recorded call, no claim that a model ran');
+    const manual = selectionSummary({ requestedClass: 'E4', selection: { mode: 'MANUAL', startClass: 'E4', reasons: [] }, callDetails: [call('PRIMARY', 'E4')] });
+    assert.equal(manual.chosen, 'E4 chosen by you', 'the Founder\'s choice reads differently from AUTO');
+  });
+
+  test('failure words are neutral and distinct: an invalid output, an exhausted allowance and the AUTO limit; an uncertain call names the reconciliation', () => {
+    const invalid = REASON_LABEL.MODEL_OUTPUT_INVALID ?? '';
+    assert.doesNotMatch(invalid, /twice|E3|E4|level/, 'an invalid output is no claim about how many calls ran or which level was needed');
+    assert.match(invalid, /format/);
+    assert.match(REASON_LABEL.MODEL_OUTPUT_TRUNCATED ?? '', /output allowance/);
+    const limit = REASON_LABEL.AUTO_LEVEL_LIMIT ?? '';
+    assert.doesNotMatch(limit, /could not complete/, 'the AUTO limit is the policy, never a verdict on the Employee');
+    assert.match(limit, /company policy/);
+    assert.match(limit, /choose E3 or E4/);
+    assert.notEqual(invalid, limit);
+    assert.match(REASON_LABEL.RECONCILIATION_REQUIRED ?? '', /reconcile/);
   });
 });

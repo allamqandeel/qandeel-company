@@ -30,7 +30,8 @@ export const REPLY_LABEL: Readonly<Record<string, string>> = {
 export const REASON_LABEL: Readonly<Record<string, string>> = {
   BUDGET_EXHAUSTED: 'the budget has no headroom for this reply; it resumes only when the budget allows, never by spending more on its own',
   RETRIES_EXHAUSTED: 'it failed repeatedly and was set aside; it is not retried automatically',
-  MODEL_OUTPUT_INVALID: 'the model did not produce a usable reply twice',
+  // P1-AUTO-E12-01 R1-04: a technical output failure, never a verdict on the Employee and never a claim of how many calls ran.
+  MODEL_OUTPUT_INVALID: 'the model’s output did not follow the required reply format, so it was not used (no invalid or incomplete reply is ever accepted)',
   MODEL_ACCESS_DENIED: 'this Employee has no model access for conversation',
   EMPLOYEE_CONTAINED: 'this Employee is contained',
   RUN_LIMIT: 'the reply reached its bound on model calls',
@@ -38,6 +39,7 @@ export const REASON_LABEL: Readonly<Record<string, string>> = {
   PROVIDER_FAILURE: 'the model provider failed',
   COMPLETED_WITHOUT_REPLY: 'the run ended without recording a message',
   RECONCILIATION_HOLD: 'a provider call has an uncertain outcome and waits for your reconciliation',
+  RECONCILIATION_REQUIRED: 'a model call may have been sent and charged, but its outcome is unknown; nothing more is sent for this reply until you reconcile it',
   RETRY_SCHEDULED: 'a transient failure; one bounded retry is scheduled',
   ABOVE_EMPLOYEE_CEILING: 'above this Employee’s maximum level',
   ABOVE_ROUTE_POLICY: 'above the level the conversation route allows',
@@ -56,7 +58,7 @@ export const REASON_LABEL: Readonly<Record<string, string>> = {
   ROUTE_POLICY: 'held by the conversation route’s maximum level',
   // P1-AUTO-E12-01 (D-P1-11)
   AUTO_POLICY_CAP: 'AUTO never goes above E2 by itself; choose E3 or E4 for a message that needs deeper thinking',
-  AUTO_LEVEL_LIMIT: 'E2, the highest level AUTO uses, could not complete this reply, and AUTO never goes above E2 by itself; send the message again with E3 or E4 chosen if it needs deeper thinking',
+  AUTO_LEVEL_LIMIT: 'this step required a level above E2, and company policy keeps AUTO at E2 or below, so nothing above E2 ran; choose E3 or E4 for the message if it needs deeper thinking',
   NO_ELIGIBLE_DEPLOYMENT: 'no route can take this reply at its level now; nothing was spent',
 };
 
@@ -117,8 +119,14 @@ export function selectionSummary(r: Json): { chosen: string; calls: string[]; wh
     // D-P1-11: a step that could not route ran nothing; it is never shown as a level that answered.
     const unrouted = typeof sel.routeUnavailable === 'string' && !((r.callDetails as Json[] | undefined) ?? []).length ? sel.routeUnavailable : null;
     if (unrouted) chosen = `AUTO: nothing ran (${REASON_LABEL[unrouted] ?? unrouted.toLowerCase()})`;
-    else chosen = !start ? 'AUTO' : constraint && ideal && ideal !== start ? `AUTO: ${ideal} needed, ran at ${start} (${REASON_LABEL[constraint] ?? constraint.toLowerCase()})` : `AUTO chose ${start}`;
+    // R1-04: the demand is AUTO's estimate, never proof that the message needed that level; the policy's choice is named.
+    else if (!start) chosen = 'AUTO';
+    else if (constraint === 'AUTO_POLICY_CAP') chosen = ideal && ideal !== start ? `AUTO estimated ${ideal} demand; company policy selected ${start}` : `AUTO: company policy selected ${start}`;
+    else chosen = constraint && ideal && ideal !== start ? `AUTO estimated ${ideal} demand; selected ${start} (${REASON_LABEL[constraint] ?? constraint.toLowerCase()})` : `AUTO chose ${start}`;
   } else chosen = start ? `default ${start}` : 'default level';
+  // R1-04: the level that actually executed is shown from the recorded call, never inferred (no call recorded, no claim).
+  const first = ((r.callDetails as Json[] | undefined) ?? [])[0];
+  if (first && typeof first.reasoningClass === 'string' && start && first.reasoningClass !== start) chosen += `, ran at ${first.reasoningClass}`;
   const calls = ((r.callDetails as Json[] | undefined) ?? []).slice(1).map((c) => `${ATTEMPT_LABEL[String(c.attemptKind)] ?? String(c.attemptKind).toLowerCase()} → ${String(c.reasoningClass)}${c.finishReason === 'length' ? ' (output limit reached)' : ''}`);
   return { chosen, calls, why: mode === 'AUTO' && reasons.length ? `AUTO: ${reasons.slice(0, 4).join(', ')}` : '' };
 }

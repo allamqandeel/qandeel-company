@@ -755,6 +755,17 @@ export function txHoldUnsettledModelCalls(ctx: StoreContext, runId: Id): number 
   return open.length;
 }
 
+/**
+ * P1-AUTO-E12-01 R1 — whether this run left a model call that may have been sent and billed and whose outcome is not
+ * settled: a MODEL_CALL reservation of the run still RESERVED (the runtime reserves immediately before it sends, and every
+ * attempt it accounts leaves RESERVED: settled, released when provably unsent, or held) or held for reconciliation
+ * (RECONCILIATION_REQUIRED). A released (provably unsent) or settled (usage reported) reservation is not uncertain. Read
+ * from durable state only, inside the caller's fenced or supervisor-verified transaction.
+ */
+export function txRunHasUncertainModelCall(ctx: StoreContext, runId: Id): boolean {
+  return ctx.db.get(`SELECT 1 AS x FROM budget_reservations WHERE run_id = ? AND purpose = 'MODEL_CALL' AND state IN ('RESERVED', 'RECONCILIATION_REQUIRED') LIMIT 1`, runId) !== undefined;
+}
+
 // --- WAIT re-check (lost-wake window) ------------------------------------------------------------------
 
 /**

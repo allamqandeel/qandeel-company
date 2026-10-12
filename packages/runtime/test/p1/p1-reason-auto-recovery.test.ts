@@ -496,17 +496,19 @@ describe('P1-CEO-QUALITY-CORR-01 A: an E4 strategic reply can use the allowance 
       assert.equal(rt.governance.accountingInvariants().length, 0);
     }));
 
-  test('a continuation that outlives even its scaled timeout is TIMEOUT_AFTER_SEND: its money is held for reconciliation (not spent), the resumed run makes no third call, and no message is sent', () =>
+  test('a continuation that outlives even its scaled timeout is TIMEOUT_AFTER_SEND: its money is held (not spent) and the reply waits for the Founder\'s reconciliation (R1-01) — no resumed run, no third call, no message', () =>
     withWorld('p1q-e4-timeout', { ceiling: 'E4', reasoningProfile: true, callTimeoutMs: 300 }, (_r, n, max) => (n === 1 ? truncated(max) : new Promise<DeepSeekResponse>(() => undefined)), async ({ rt, w, sent }) => {
       const id = ask(rt, w, STRATEGY, 'E4');
-      assert.equal(await settled(rt, id), 'FAILED');
-      assert.equal(sent.length, 2, 'the timed-out continuation is not retried on the deployment that may have billed it');
+      assert.equal(await settled(rt, id), 'BLOCKED');
+      assert.equal(sent.length, 2, 'the timed-out continuation is not retried, on any deployment');
       assert.deepEqual(sent.map((s) => [s.effort, s.maxTokens]), [['max', 16_384], ['max', 32_768]]);
       const runs = rt.view.runsForWorkItem(id);
-      assert.deepEqual(runs.map((r) => r.failureCode), ['PROVIDER_FAILURE', 'MODEL_OUTPUT_TRUNCATED']);
+      assert.deepEqual(runs.map((r) => [r.state, r.failureCode]), [['RECONCILIATION_REQUIRED', 'PROVIDER_FAILURE']], 'one run: the job is held, never resumed on its own');
+      assert.equal(rt.view.jobsFor(id)[0]?.state, 'RECONCILIATION_HOLD');
       const held = runs.flatMap((r) => rt.governance.reservations(r.id)).map((r) => [r.attemptKind, r.state, r.reasonCode]);
       assert.deepEqual(held, [['PRIMARY', 'SETTLED', null], ['RETRY', 'RECONCILIATION_REQUIRED', 'TIMEOUT_AFTER_SEND']]);
       const s = replyState(rt, w, id);
+      assert.deepEqual([s.status, s.reasonCode], ['BLOCKED', 'RECONCILIATION_REQUIRED']);
       assert.ok(s.reservedMoney > 0, 'held, not spent: the Founder reconciles it');
       assert.equal(employeeMessages(rt, w).length, 0);
       assert.equal(rt.governance.accountingInvariants().length, 0);
@@ -531,7 +533,7 @@ describe('P1-AUTO-E12-01: the company-wide AUTO cap and bounded recovery', () =>
     return comm.messages(comm.directThread(w.founder, null).id).filter((m) => m.senderKind === 'EMPLOYEE');
   };
 
-  test('3–4 · AUTO E1 → E2 on observable evidence works; at E2 an invalid output ends AUTO_LEVEL_LIMIT after one call (no E3, no blind replay); E1 → E2 → invalid ends MODEL_OUTPUT_INVALID; the profile never changes', () =>
+  test('3–4 · AUTO E1 → E2 on observable evidence works; at E2 an invalid output ends MODEL_OUTPUT_INVALID after one call (no E3, no blind replay, never reported as the AUTO limit: R1-03); E1 → E2 → invalid ends MODEL_OUTPUT_INVALID; the profile never changes', () =>
     withWorld('p1a-escalate', { ceiling: 'E4', reasoningProfile: true }, (_r, n) => ([1, 4].includes(n) ? extraField() : [3, 5].includes(n) ? notJson() : ok('Two departments first.')), async ({ rt, w, sent, ceo }) => {
       const before = rt.governance.getEmployee(ceo.id);
       const routine = ask(rt, w, 'Thanks, got it.');
@@ -544,9 +546,9 @@ describe('P1-AUTO-E12-01: the company-wide AUTO cap and bounded recovery', () =>
       assert.equal(await settled(rt, strategic), 'FAILED');
       assert.equal(sent.length, 3, 'exactly one call: no escalation to E3 and no identical E2 replay');
       assert.equal(sent[2]?.effort, 'low');
-      assert.deepEqual([failure(rt, strategic), kinds(rt, strategic), reservedClasses(rt, strategic)], ['AUTO_LEVEL_LIMIT', ['PRIMARY'], ['E2']]);
+      assert.deepEqual([failure(rt, strategic), kinds(rt, strategic), reservedClasses(rt, strategic)], ['MODEL_OUTPUT_INVALID', ['PRIMARY'], ['E2']], 'an invalid output is no evidence that a higher level was needed');
       const s = replyState(rt, w, strategic);
-      assert.deepEqual([s.status, s.reasonCode, s.replyMessageId, s.selection.idealClass, s.selection.startClass, s.selection.constraint], ['FAILED', 'AUTO_LEVEL_LIMIT', null, 'E4', 'E2', 'AUTO_POLICY_CAP'], 'the limit is reported truthfully; the raw demand is never shown as the class used');
+      assert.deepEqual([s.status, s.reasonCode, s.replyMessageId, s.selection.idealClass, s.selection.startClass, s.selection.constraint], ['FAILED', 'MODEL_OUTPUT_INVALID', null, 'E4', 'E2', 'AUTO_POLICY_CAP'], 'the failure is reported as what it is; the raw demand is never shown as the class used');
       assert.deepEqual(audits(rt, strategic, 'run.model_output_invalid').map((a) => [a.reason, a.reasoningClass]), [['NOT_JSON', 'E2']]);
 
       const again = ask(rt, w, 'Thanks again.');
@@ -560,7 +562,7 @@ describe('P1-AUTO-E12-01: the company-wide AUTO cap and bounded recovery', () =>
       assert.equal(rt.governance.accountingInvariants().length, 0);
     }));
 
-  test('5–6 · AUTO E2 output exhaustion: one E2 repair with a larger allowance (4,096 → 8,192) answers; a second exhaustion ends MODEL_OUTPUT_TRUNCATED, and an invalid repair ends AUTO_LEVEL_LIMIT — two calls each, never E3 / E4, never a partial message', () =>
+  test('5–6 · AUTO E2 output exhaustion: one E2 repair with a larger allowance (4,096 → 8,192) answers; a second exhaustion ends MODEL_OUTPUT_TRUNCATED, and an invalid repair ends MODEL_OUTPUT_INVALID (R1-03: three distinct codes) — two calls each, never E3 / E4, never a partial message', () =>
     withWorld('p1a-repair', { ceiling: 'E4', reasoningProfile: true }, (_r, n, max) => (n === 2 ? ok('The complete answer.') : n === 6 ? notJson() : truncated(max)), async ({ rt, w, sent }) => {
       const repaired = ask(rt, w, STRATEGY);
       assert.equal(await settled(rt, repaired), 'COMPLETED');
@@ -574,7 +576,7 @@ describe('P1-AUTO-E12-01: the company-wide AUTO cap and bounded recovery', () =>
 
       const invalidRepair = ask(rt, w, STRATEGY);
       assert.equal(await settled(rt, invalidRepair), 'FAILED');
-      assert.deepEqual([failure(rt, invalidRepair), kinds(rt, invalidRepair), reservedClasses(rt, invalidRepair)], ['AUTO_LEVEL_LIMIT', ['PRIMARY', 'RETRY'], ['E2', 'E2']], 'one repair per step: the invalid repair is not followed by a third call');
+      assert.deepEqual([failure(rt, invalidRepair), kinds(rt, invalidRepair), reservedClasses(rt, invalidRepair)], ['MODEL_OUTPUT_INVALID', ['PRIMARY', 'RETRY'], ['E2', 'E2']], 'one repair per step: the invalid repair is not followed by a third call');
       assert.equal(sent.length, 6);
       assert.ok(sent.every((x) => x.effort === 'low'));
       assert.deepEqual(employeeMessages(rt, w).map((m) => m.body), ['The complete answer.'], 'a truncated or invalid output never became a message');
@@ -649,14 +651,14 @@ describe('P1-AUTO-E12-01: the company-wide AUTO cap and bounded recovery', () =>
       assert.equal(rt.governance.accountingInvariants().length, 0);
     }));
 
-  test('9, 11 · a method-pinned E3 Work Item (with a demand) keeps E3; a DEFAULT Employee keeps its bounded escalation E2 → E3 — the cap is AUTO-only and the profiles stay as stored', () =>
+  test('9, 11 · an E3 pinned in a non-Academy Work Item of an AUTO Employee is no bypass (R1-02): nothing is reserved or sent above E2; a DEFAULT Employee keeps its bounded escalation E2 → E3 — the cap is AUTO-only and the profiles stay as stored', () =>
     withWorld('p1a-pinned', { ceiling: 'E4', reasoningProfile: true }, () => fakeChatAnswer(JSON.stringify({ type: 'FINAL', summaryCode: 'done' }), { prompt: 300, completion: 10 }), async ({ rt, w, ceo, sent }) => {
       const { workItem } = rt.submitWorkItem({ objective: 'method-pinned observation', ownerRef: ceo.ref, processorKind: 'c2.employee-task', processorInput: { taskClass: 'founder.reply', dataClass: 'D2', reasoningClass: 'E3', invalidOutputPolicy: 'SAME_CLASS_RETRY', maxOutputTokens: 512, reasoningDemand: { policy: 'RD-1', level: 'E4', complexity: 'VERY_HIGH', consequence: 'VERY_HIGH', confidence: 'CLEAR', reasons: ['STRATEGIC_PLANNING'] }, instructions: 'Answer.' } });
       rt.governance.createBudget(w.founder, { scope: 'WORK_ITEM', scopeId: workItem.id, capMoney: 500_000, capTokens: 200_000, reasonCode: 'seed' });
       rt.transitionWorkItem(workItem.id, { to: 'READY', reasonCode: 'release' });
-      assert.equal(await settled(rt, workItem.id), 'COMPLETED', String(rt.view.runsForWorkItem(workItem.id).at(-1)?.failureCode));
-      assert.deepEqual([sent.map((s) => [s.effort, s.maxTokens]), reservedClasses(rt, workItem.id)], [[['high', 512]], ['E3']], 'the pinned class and its pinned allowance');
-      assert.deepEqual(audits(rt, workItem.id, 'run.reasoning_selected').map((a) => [a.mode, a.startClass, a.autoCap]), [['SYSTEM_PINNED', 'E3', undefined]]);
+      assert.equal(await settled(rt, workItem.id), 'FAILED');
+      assert.deepEqual([failure(rt, workItem.id), sent.length, reservedClasses(rt, workItem.id)], ['AUTO_LEVEL_LIMIT', 0, []], 'a submitter cannot pin past the AUTO maximum: no call, no reservation');
+      // Genuine Academy items (attempts, benchmarks, shadow work) are never AUTO: the store-boundary proof reserves E3 for one.
       assert.equal(rt.governance.getEmployee(ceo.id).cognitiveProfile.selection, 'AUTO', 'unchanged');
     }).then(() =>
       withWorld('p1a-default', { selection: 'DEFAULT', ceiling: 'E4', reasoningProfile: true }, (_r, n) => (n === 1 ? notJson() : ok('Escalated answer.')), async ({ rt, w, ceo, sent }) => {
@@ -669,4 +671,72 @@ describe('P1-AUTO-E12-01: the company-wide AUTO cap and bounded recovery', () =>
         assert.deepEqual([s.selection.mode, s.selection.autoCap, reservedClasses(rt, id)], ['DEFAULT', null, ['E2', 'E3']]);
         assert.equal(rt.governance.getEmployee(ceo.id).cognitiveProfile.selection, 'DEFAULT', 'DEFAULT stays DEFAULT');
       })));
+});
+
+/**
+ * P1-AUTO-E12-01 Correction R1 (Founder-approved), through the REAL runtime and the REAL adapter behind the fake transport:
+ *   - R1-02: an AUTO Employee's Work Item without a Reasoning Demand (a general item, a CEO brief) starts at
+ *     min(default, E2) and never runs E3 / E4; MANUAL keeps its exact class;
+ *   - R1-01: a call in flight when the runtime stops is never re-sent after the restart: the reply waits for the Founder's
+ *     reconciliation with its money held, and no further call or reservation happens.
+ */
+describe('P1-AUTO-E12-01 Correction R1: AUTO without a demand; no unapproved paid replay across a restart', () => {
+  const FINAL = (): DeepSeekResponse => fakeChatAnswer(JSON.stringify({ type: 'FINAL', summaryCode: 'done' }), { prompt: 300, completion: 10 });
+  const kinds = (rt: CompanyRuntime, id: Id): string[] => rt.view.runsForWorkItem(id).flatMap((r) => rt.governance.reservations(r.id)).map((r) => r.attemptKind);
+  const general = (rt: CompanyRuntime, w: C2World, ceo: EmployeeRecord, instructions: string): Id => {
+    const { workItem } = rt.submitWorkItem({ objective: 'general work', ownerRef: ceo.ref, processorKind: 'c2.employee-task', processorInput: { taskClass: 'founder.reply', dataClass: 'D2', maxOutputTokens: 512, instructions } });
+    rt.governance.createBudget(w.founder, { scope: 'WORK_ITEM', scopeId: workItem.id, capMoney: 500_000, capTokens: 200_000, reasonCode: 'seed' });
+    rt.transitionWorkItem(workItem.id, { to: 'READY', reasonCode: 'release' });
+    return workItem.id;
+  };
+
+  test('R1-02 · an AUTO Employee with default E3: a general Work Item and a CEO brief without a demand run at E2 (company policy), never E3 / E4; an invalid E2 output ends MODEL_OUTPUT_INVALID after one call; a Founder E3 still runs exactly E3', () =>
+    withWorld('p1r1-no-demand', { ceiling: 'E4', reasoningProfile: true }, (request) => {
+      const text = JSON.stringify(request.body);
+      if (text.includes('Return garbage')) return fakeChatAnswer('not json', { prompt: 300, completion: 20 });
+      if (text.includes('Answer the general task')) return FINAL();
+      return ok('Answer.');
+    }, async ({ rt, w, ceo, sent }) => {
+      const e = rt.governance.getEmployee(ceo.id);
+      rt.governance.changeReasoningProfile(w.founder, e.id, { defaultClass: 'E3', ceilingClass: 'E4', expectedVersion: e.version, reasonCode: 'founder.reasoning_profile' });
+      assert.equal(rt.governance.getEmployee(ceo.id).cognitiveProfile.selection, 'AUTO');
+      // A general Employee Work Item, created (and queued) with no demand: what any older queued AUTO item looks like.
+      const task = general(rt, w, ceo, 'Answer the general task.');
+      assert.equal(await settled(rt, task), 'COMPLETED');
+      assert.deepEqual([sent.map((s) => s.effort), reservedClasses(rt, task)], [['low'], ['E2']], 'min(default E3, E2) = E2: thinking low');
+      assert.deepEqual(audits(rt, task, 'run.reasoning_selected').map((a) => [a.mode, a.startClass, a.idealClass, a.constraint, a.autoCap]), [['AUTO', 'E2', null, 'AUTO_POLICY_CAP', 'E2']], 'no demand: no estimate is recorded, only the policy that held the default');
+      // An invalid output at E2: one call, MODEL_OUTPUT_INVALID — never escalated to E3, never replayed.
+      const garbage = general(rt, w, ceo, 'Return garbage.');
+      assert.equal(await settled(rt, garbage), 'FAILED');
+      assert.deepEqual([rt.view.runsForWorkItem(garbage).at(-1)?.failureCode, kinds(rt, garbage), reservedClasses(rt, garbage)], ['MODEL_OUTPUT_INVALID', ['PRIMARY'], ['E2']]);
+      // A CEO brief (the CEO seat holder's governed run), with no demand.
+      const brief = rt.founder.communications.requestCeoBrief({ subject: 'brief', contextKind: 'APPROVAL', contextRef: 'approval:1', reasonCode: 'brief.test', instructions: 'Brief the Founder.', taskClass: 'founder.reply' });
+      await settled(rt, brief.workItemId);
+      assert.ok(reservedClasses(rt, brief.workItemId).length >= 1, 'the brief ran');
+      assert.ok(reservedClasses(rt, brief.workItemId).every((c) => c === 'E1' || c === 'E2'), `never E3 / E4 (${reservedClasses(rt, brief.workItemId).join(',')})`);
+      assert.ok(sent.every((s) => s.effort === undefined || s.effort === 'low'), 'no AUTO call ran with thinking high or max');
+      // MANUAL is not AUTO: the Founder's E3 is kept exactly.
+      const before = sent.length;
+      const manual = ask(rt, w, 'Thanks.', 'E3');
+      assert.equal(await settled(rt, manual), 'COMPLETED');
+      assert.deepEqual(sent.slice(before).map((s) => s.effort), ['high']);
+      assert.equal(rt.governance.accountingInvariants().length, 0);
+    }));
+
+  test('R1-01 · a call in flight when the runtime stops is never re-sent after the restart: the reply is held for the Founder\'s reconciliation, its money stays held, and no further call or reservation happens', () =>
+    withWorld('p1r1-restart', { reasoningProfile: true }, () => new Promise<DeepSeekResponse>(() => undefined), async ({ w, sent, rt, restart }) => {
+      const id = ask(rt, w, 'Thanks, got it.');
+      await eventually(() => sent.length === 1, 10_000, 'the call to be sent');
+      const after = await restart();
+      assert.equal(await settled(after, id, 30_000), 'BLOCKED');
+      assert.equal(after.view.jobsFor(id)[0]?.state, 'RECONCILIATION_HOLD', 'held for reconciliation, not resumed or retried');
+      const reservations = (): unknown[] => after.view.runsForWorkItem(id).flatMap((r) => after.governance.reservations(r.id)).map((r) => [r.attemptKind, r.state, r.money]);
+      const held = reservations();
+      assert.deepEqual(held.map((r) => (r as unknown[]).slice(0, 2)), [['PRIMARY', 'RECONCILIATION_REQUIRED']], 'one reservation, held');
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      assert.equal(sent.length, 1, 'no call after the restart');
+      assert.deepEqual(reservations(), held, 'no new reservation, the held money untouched');
+      assert.deepEqual([replyState(after, w, id).status, replyState(after, w, id).reasonCode], ['BLOCKED', 'RECONCILIATION_REQUIRED']);
+      assert.equal(after.governance.accountingInvariants().length, 0);
+    }));
 });

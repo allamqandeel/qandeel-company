@@ -16,8 +16,9 @@
  * provider call, and records the class that actually answered on the usage record.
  */
 import { QandeelError, canonicalJson, type Id } from '@qandeel-company/domain';
-import { assertCognitiveProfile, isReasoningClass, isReasoningDemand, isReasoningSelection, reasoningRank, reasoningSelectionOf, type CognitiveProfile, type ReasoningClass, type ReasoningSelection } from '@qandeel-company/governance';
+import { assertCognitiveProfile, isReasoningClass, isReasoningSelection, reasoningRank, reasoningSelectionOf, type CognitiveProfile, type ReasoningClass, type ReasoningSelection } from '@qandeel-company/governance';
 
+import { answerTask } from './answers.js';
 import { employeeIdFromRef, getEmployeeRow, writeEmployeeHistory } from './governance-core.js';
 import type { EmployeeRecord } from './governance-records.js';
 import { routingSnapshotTx } from './governance.js';
@@ -48,16 +49,19 @@ export function txReasoningOverride(ctx: StoreContext, workItemId: Id): Reasonin
 }
 
 /**
- * P1-AUTO-E12-01 (D-P1-11) — whether this Work Item's model steps run under AUTO, from durable state only, in the D-P1-04
- * precedence: no Founder one-task level, no class pinned in the submitter's immutable input (a method pin), an Employee
- * profile that selects AUTO, and a governed Reasoning Demand on the Work Item. Such work never executes above
+ * P1-AUTO-E12-01 (D-P1-11, Correction R1) — whether this Work Item's model steps run under AUTO, from durable state only:
+ * no Founder one-task level (MANUAL wins), an Employee profile that selects AUTO, and not an Academy answer task (an
+ * attempt, a benchmark or a shadow assignment, whose class and method their own contracts fix — `answerTask`, the one
+ * Academy predicate). A Reasoning Demand is NOT required: a CEO brief, a handoff, a review or judgment, any other Employee
+ * Work Item and work queued before this change are AUTO too; without a demand they start at the Employee default bounded
+ * by `AUTO_MAX_CLASS`. A class pinned in the input outside the Academy does not take an item out of AUTO (no submitter
+ * bypasses the cap by pinning): it is honoured only at or below the AUTO maximum. AUTO work never executes above
  * `AUTO_MAX_CLASS`: the run context carries this verdict to the Model Runtime, and `txReserve` re-derives it before every
- * reservation. A DEFAULT, MANUAL or pinned item is never AUTO, so its behaviour is unchanged.
+ * reservation. A DEFAULT, MANUAL or Academy item is never AUTO, so its behaviour is unchanged.
  */
 export function txAutoReasoning(ctx: StoreContext, workItemId: Id, profile: CognitiveProfile, override: ReasoningClass | null): boolean {
   if (override !== null || reasoningSelectionOf(profile) !== 'AUTO') return false;
-  const pi = getWorkItemRow(ctx, workItemId).processorInput as { reasoningClass?: unknown; reasoningDemand?: unknown } | null;
-  return pi !== null && typeof pi === 'object' && pi.reasoningClass === undefined && isReasoningDemand(pi.reasoningDemand);
+  return answerTask(ctx, workItemId) === null;
 }
 
 export interface ReasoningProfilePlan {

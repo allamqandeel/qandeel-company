@@ -47,8 +47,12 @@ export interface AnswerRecord {
   readonly answerContractSha256: string | null;
 }
 
-/** What makes a Work Item answer-bearing, and whether it still takes an answer. */
-function answerTask(ctx: StoreContext, workItemId: Id): { kind: 'ATTEMPT' | 'BENCHMARK' | 'SHADOW'; open: boolean } | null {
+/**
+ * What makes a Work Item answer-bearing, and whether it still takes an answer: the one Academy predicate (an Academy
+ * attempt, a skill benchmark run or a shadow assignment, each bound to its Work Item by its own contract). P1-AUTO-E12-01 R1
+ * reads it for the AUTO exception as well, never a parallel classification.
+ */
+export function answerTask(ctx: StoreContext, workItemId: Id): { kind: 'ATTEMPT' | 'BENCHMARK' | 'SHADOW'; open: boolean } | null {
   const attempt = ctx.db.get<{ state: string }>('SELECT state FROM academy_attempts WHERE work_item_id = ?', workItemId);
   if (attempt) return { kind: 'ATTEMPT', open: attempt.state === 'OPEN' };
   const bench = ctx.db.get<{ state: string }>('SELECT state FROM skill_benchmark_runs WHERE work_item_id = ?', workItemId);

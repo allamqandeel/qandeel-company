@@ -146,10 +146,11 @@ function outputFailed(cfg: ReturnType<typeof readInput>, s: LoopState, escalated
   if (cfg.invalidOutputPolicy === 'SAME_CLASS_RETRY') return { s: next, end: null, escalateFrom: null };
   // D-P1-04: a Founder-pinned level is never raised: one bounded retry at the SAME class, like a method pin.
   if (founderPinned) return { s: next, end: null, escalateFrom: null };
-  // D-P1-11: AUTO at its maximum (E2) is never escalated further, and an invalid output has no correction to apply (its
-  // classification never reaches the next context, D-L1-20), so a same-class call would be a blind replay: the step ends
-  // with the AUTO limit, and the Founder may choose a higher level for the message.
-  if (autoAtCap(autoReasoning, reasoningClass)) return { s: next, end: { type: 'PERMANENT_FAILURE', code: 'AUTO_LEVEL_LIMIT' }, escalateFrom: null };
+  // D-P1-11 (Correction R1-03): AUTO at its maximum (E2) is never escalated further, and an invalid output has no
+  // correction to apply (its classification never reaches the next context, D-L1-20), so a same-class call would be a
+  // blind replay: the step ends. An invalid output is no evidence that a higher level was needed, so it is reported as what
+  // it is (MODEL_OUTPUT_INVALID), never as the AUTO limit; the Founder may still choose a level for the message.
+  if (autoAtCap(autoReasoning, reasoningClass)) return { s: next, end: { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_INVALID' }, escalateFrom: null };
   return { s: next, end: null, escalateFrom: { fromClass: reasoningClass, evidence: 'OUTPUT_FAILED_VALIDATION' } };
 }
 
@@ -288,7 +289,8 @@ export const employeeTaskProcessor: GovernedProcessor = {
           // failure or an abort is never blamed on the provider.
           return { type: 'RETRYABLE_FAILURE', code: unavailableRunCode(out.code) };
         case 'UNCERTAIN':
-          // The provider broke the contract or its outcome is unknown after send (money held).
+          // The provider broke the contract or its outcome is unknown after send (money held). P1-AUTO-E12-01 R1-01: the
+          // governed settle sees the held call and turns this into the reconciliation hold — no C1 retry re-sends it.
           return { type: 'RETRYABLE_FAILURE', code: 'PROVIDER_FAILURE' };
         case 'FAILED': {
           // One evidence-based escalation per run step; never re-escalate from the class that just failed.
