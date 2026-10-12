@@ -8,7 +8,7 @@
  * review) is an event-driven WAIT that consumes no tokens.
  */
 import { assertIntInRange, boundedText, type JsonValue, type ProcessorContext, type ProcessorResult, type Timestamp } from '@qandeel-company/domain';
-import { AUTO_MAX_CLASS, assertTaskClass, isDataClass, isReasoningClass, isReasoningDemand, providerFailedRunCode, reasoningRank, unavailableRunCode, type ModelProposal, type ReasoningClass, type ReasoningDemand } from '@qandeel-company/governance';
+import { AUTO_MAX_CLASS, assertTaskClass, isDataClass, isFounderE4, isReasoningClass, isReasoningDemand, providerFailedRunCode, reasoningRank, unavailableRunCode, type ModelProposal, type ReasoningClass, type ReasoningDemand } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
 import type { GovernedProcessor, GovernedRunServices, OrgActProposal, ReviewDecisionProposal, ToolRequest } from './types.js';
@@ -144,7 +144,8 @@ function outputFailed(cfg: ReturnType<typeof readInput>, s: LoopState, escalated
   const next = { ...s, invalid: s.invalid + 1 };
   if (next.invalid >= 2 || escalated) return { s: next, end: { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_INVALID' }, escalateFrom: null };
   if (cfg.invalidOutputPolicy === 'SAME_CLASS_RETRY') return { s: next, end: null, escalateFrom: null };
-  // D-P1-04: a Founder-pinned level is never raised: one bounded retry at the SAME class, like a method pin.
+  // D-P1-04: a Founder-pinned level is never raised: one bounded retry at the SAME class, like a method pin. D-P1-12: at the
+  // Founder's E4 that retry is never made (the loop ends the step before its next call).
   if (founderPinned) return { s: next, end: null, escalateFrom: null };
   // D-P1-11 (Correction R1-03): AUTO at its maximum (E2) is never escalated further, and an invalid output has no
   // correction to apply (its classification never reaches the next context, D-L1-20), so a same-class call would be a
@@ -168,6 +169,8 @@ export const employeeTaskProcessor: GovernedProcessor = {
   run: () => Promise.resolve({ type: 'PERMANENT_FAILURE', code: 'GOVERNANCE_REQUIRED' }),
   async runGoverned(ctx: ProcessorContext, gov: GovernedRunServices): Promise<ProcessorResult> {
     let s = readState(ctx);
+    // D-P1-12: where this run started (a deadline refusal is retried in a new run only after this run made progress).
+    const startedAt = { turn: s.turn, modelCalls: s.modelCalls };
     // A FINAL decision checkpointed before a crash is honoured on resume first: the work already
     // finished, so nothing about its input is re-judged and no new model call or action happens.
     if (s.phase === 'FINAL') return { type: 'COMPLETED', evidence: { summaryCode: s.summaryCode ?? 'final', turns: s.turn, modelCalls: s.modelCalls, resumed: true } };
@@ -184,6 +187,8 @@ export const employeeTaskProcessor: GovernedProcessor = {
     s = { ...s, pendingEscalation: null, pendingContinuation: null };
     // D-P1-04: the Founder's one-task level is pinned — never escalated, retried only at the same class.
     const founderPinned = (gov.context.reasoningOverride ?? null) !== null;
+    // D-P1-12: the Founder's own E4 — one call per model step; an exhausted or invalid output is never re-sent on its own.
+    const founderE4 = isFounderE4(gov.context.reasoningOverride);
     // D-P1-11: the Work Item runs under AUTO (durable verdict of the run's begin): never above the AUTO maximum (E2).
     const autoReasoning = gov.context.autoReasoning === true;
     while (s.turn < cfg.maxTurns) {
@@ -234,6 +239,11 @@ export const employeeTaskProcessor: GovernedProcessor = {
             return { type: 'PERMANENT_FAILURE', code: 'TOOL_FAILED' };
         }
       }
+      // D-P1-12: at the Founder's own E4 an output that failed (parser-invalid, wrong proposal type, an answer refused for its
+      // content) is never followed by the D-P1-04 same-class retry: no correction reaches the next context (D-L1-20), so it
+      // would re-send the unchanged request and pay for the whole thinking again. The step ends with the output's real cause,
+      // before the call bound is read — also for a checkpoint an earlier release wrote awaiting that retry.
+      if (founderE4 && s.invalid > 0) return { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_INVALID' };
       // D-L1-24: a declared model-call bound is never exceeded (the store's reservation refuses past it too, durably).
       if (cfg.maxModelCalls !== null && s.modelCalls >= cfg.maxModelCalls) return { type: 'PERMANENT_FAILURE', code: 'RUN_LIMIT' };
       const requested = escalateFrom === null && continuation === null ? (cfg.reasoningClass ?? undefined) : undefined;
@@ -266,7 +276,8 @@ export const employeeTaskProcessor: GovernedProcessor = {
         case 'ESCALATION_REFUSED':
           // A continuation that could not get a larger allowance: the output stays exhausted (never a silent success).
           // D-P1-11: an escalation above the AUTO maximum is the AUTO limit, never another class.
-          return { type: 'PERMANENT_FAILURE', code: out.code === 'CONTINUATION_NOT_LARGER' ? 'MODEL_OUTPUT_TRUNCATED' : out.code === 'AUTO_POLICY_CAP' ? 'AUTO_LEVEL_LIMIT' : 'ESCALATION_REFUSED' };
+          // D-P1-12: a continuation refused at the Founder's E4 (NO_AUTOMATIC_REPLAY) is the same exhausted output.
+          return { type: 'PERMANENT_FAILURE', code: out.code === 'CONTINUATION_NOT_LARGER' || out.code === 'NO_AUTOMATIC_REPLAY' ? 'MODEL_OUTPUT_TRUNCATED' : out.code === 'AUTO_POLICY_CAP' ? 'AUTO_LEVEL_LIMIT' : 'ESCALATION_REFUSED' };
         case 'CIRCUIT_OPEN': {
           // B3: every eligible route is only held by an open circuit. A durable timed wait (the job is re-queued for that
           // instant; it survives a restart) costs no call and no attempt; after MAX_CIRCUIT_WAITS the run reports the real
@@ -284,6 +295,10 @@ export const employeeTaskProcessor: GovernedProcessor = {
           // D-P1-11: no class at or below the AUTO maximum may run this step (a route minimum above it, or a call due from
           // before the cap). Retrying cannot change that: reported once, nothing spent, never routed higher.
           if (out.code === 'AUTO_POLICY_CAP') return { type: 'PERMANENT_FAILURE', code: unavailableRunCode(out.code) };
+          // D-P1-12: the Founder's E4 call does not fit this run's remaining time. After this run made progress (a call, a tool
+          // step) the step is checkpointed and a new run, with the whole run time, makes it. A run that made none started with
+          // that whole time already: no new run could do better, so it ends now rather than spending the C1 attempts.
+          if (out.code === 'RUN_DEADLINE_INSUFFICIENT' && s.turn === startedAt.turn && s.modelCalls === startedAt.modelCalls) return { type: 'PERMANENT_FAILURE', code: 'RUN_DEADLINE_INSUFFICIENT' };
           // No answer never crashes the Company: bounded C1 retry, then dead letter. The run records the real
           // cause from the shared run-failure vocabulary (R2-12): a missing route policy, a local settlement
           // failure or an abort is never blamed on the provider.
@@ -331,7 +346,9 @@ export const employeeTaskProcessor: GovernedProcessor = {
         // larger, separately reserved allowance (never an escalation: more thinking would only spend more of it); a
         // second exhaustion ends the run with its own code. A method-pinned Academy observation keeps its fixed method.
         gov.noteInvalidOutput(s.turn, 'OUTPUT_TRUNCATED', out.reasoningClass);
-        if ((s.truncations ?? 0) >= 1) return { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_TRUNCATED' };
+        // D-P1-12: at the Founder's own E4 the continuation would restart the thinking from nothing and bill it again (the
+        // provider has no resume): the step ends after its one call, charged truthfully, with no partial message.
+        if (founderE4 || (s.truncations ?? 0) >= 1) return { type: 'PERMANENT_FAILURE', code: 'MODEL_OUTPUT_TRUNCATED' };
         s = { ...s, truncations: (s.truncations ?? 0) + 1 };
         continuation = { reasoningClass: out.reasoningClass, exhaustedTokens: out.maxOutputTokens };
         // Checkpointed with the continuation it decided on, so a resume after a crash makes that call, not a plain one.

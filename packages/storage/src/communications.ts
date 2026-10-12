@@ -11,7 +11,7 @@
  * message bodies are company content under the FOUNDER_ONLY scope and never enter audit, events or logs.
  */
 import { QandeelError, assertCode, assertId, boundedJson, boundedText, canonicalJson, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { OUTPUT_ALLOWANCE_BY_CLASS, assessReasoningDemand, assertCognitiveProfile, isReasoningDemand, reasoningSelectionOf, assertTaskClass, briefAttentionLevel, effectiveClass, isAttentionLevel, isContextKind, isMessagePurpose, isReasoningClass, isStructuredRef, type AttentionLevel, type ContextKind, type FounderBrief, type MessagePurpose, type ReasoningClass, type ThreadKind } from '@qandeel-company/governance';
+import { MANUAL_E4_OUTPUT_ALLOWANCE, OUTPUT_ALLOWANCE_BY_CLASS, assessReasoningDemand, assertCognitiveProfile, isReasoningDemand, reasoningSelectionOf, assertTaskClass, briefAttentionLevel, effectiveClass, isAttentionLevel, isContextKind, isMessagePurpose, isReasoningClass, isStructuredRef, type AttentionLevel, type ContextKind, type FounderBrief, type MessagePurpose, type ReasoningClass, type ThreadKind } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
 import { budgetFor, employeeIdFromRef, getEmployeeRow, txAllocateWorkItemBudget } from './governance-core.js';
@@ -82,6 +82,12 @@ export const CHAT_REPLY_MAX_TURNS = 3;
  * evidence: `OUTPUT_ALLOWANCE_BY_CLASS` (governance). Work Items created before keep their recorded input unchanged.
  */
 export const CHAT_REPLY_OUTPUT_TOKENS: Readonly<Record<'E1' | 'E2' | 'E3' | 'E4', number>> = OUTPUT_ALLOWANCE_BY_CLASS;
+/**
+ * P1-E4-RELIABILITY-01 (D-P1-12): the table of a reply whose Founder chose E4 for the message: one E4 call of 32,768
+ * (`MANUAL_E4_OUTPUT_ALLOWANCE`), never restarted. Every other reply, a CEO brief and every Work Item created before keep
+ * `CHAT_REPLY_OUTPUT_TOKENS` (their recorded input is never rewritten).
+ */
+export const CHAT_REPLY_MANUAL_E4_OUTPUT_TOKENS: Readonly<Record<'E1' | 'E2' | 'E3' | 'E4', number>> = Object.freeze({ ...OUTPUT_ALLOWANCE_BY_CLASS, E4: MANUAL_E4_OUTPUT_ALLOWANCE });
 const CLIENT_KEY = /^[A-Za-z0-9-]{8,64}$/;
 /** The canonical idempotency scope of a Founder chat send: the key binds the MESSAGE itself, with or without a reply. */
 export const IDEMPOTENCY_SCOPE_FOUNDER_SEND = 'communication.founder_send';
@@ -209,6 +215,8 @@ export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSen
     const cap = input.replyCap ?? DEFAULT_REPLY_CAP;
     const messageId = newId();
     const chosen = (input.reasoningClass ?? null) as ReasoningClass | null;
+    // D-P1-12: the Founder's own E4 gets its one larger call; the reservation holds that call's worst case, as for any class.
+    const allowances = chosen === 'E4' ? CHAT_REPLY_MANUAL_E4_OUTPUT_TOKENS : CHAT_REPLY_OUTPUT_TOKENS;
     const created = txCreateWorkItem(
       ctx,
       {
@@ -220,7 +228,7 @@ export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSen
         // is never pinned here (that would be a method pin): a per-message level is the durable override below.
         // P1-REASON-AUTO-RECOVERY-01: the per-class allowance table (B1) and the governed Reasoning Demand of the message
         // (C1: content-free codes from RD-1, used only when the Employee's profile selects AUTO and nothing fixes the class).
-        processorInput: { taskClass, dataClass: 'D2', maxOutputTokens: CHAT_REPLY_OUTPUT_TOKENS[replyClass(ctx, e, taskClass, chosen)], maxOutputTokensByClass: CHAT_REPLY_OUTPUT_TOKENS, reasoningDemand: assessReasoningDemand({ text: body, purpose: input.purpose, attentionLevel: level, executive: e.orgScope === 'COMPANY' }), maxTurns: CHAT_REPLY_MAX_TURNS, maxModelCalls: CHAT_REPLY_MAX_MODEL_CALLS, instructions: founderReplyInstructions(t.kind, input.purpose, body), founderThreadId: t.id, founderMessageId: messageId, ...(t.kind === 'FOUNDER_CEO' ? { conversation: CEO_DIRECT_CONVERSATION } : {}) },
+        processorInput: { taskClass, dataClass: 'D2', maxOutputTokens: allowances[replyClass(ctx, e, taskClass, chosen)], maxOutputTokensByClass: allowances, reasoningDemand: assessReasoningDemand({ text: body, purpose: input.purpose, attentionLevel: level, executive: e.orgScope === 'COMPANY' }), maxTurns: CHAT_REPLY_MAX_TURNS, maxModelCalls: CHAT_REPLY_MAX_MODEL_CALLS, instructions: founderReplyInstructions(t.kind, input.purpose, body), founderThreadId: t.id, founderMessageId: messageId, ...(t.kind === 'FOUNDER_CEO' ? { conversation: CEO_DIRECT_CONVERSATION } : {}) },
         dedupeKey: `founder-reply:${messageId}`,
         initialState: 'PROPOSED',
       },
@@ -407,7 +415,7 @@ export interface ReplyState {
    * default. Before the first run it is the mode that WILL apply; after, the recorded selection of the first call.
    */
   readonly selection: ReplySelection;
-  /** Every sent call, oldest first: the class that answered, the attempt kind, the allowance, tokens and the result codes. */
+  /** Every sent call, oldest first: the class that answered, the attempt kind, the allowance, tokens, the result codes and the latency. */
   readonly callDetails: readonly ReplyCall[];
 }
 
@@ -437,6 +445,8 @@ export interface ReplyCall {
   readonly result: string;
   readonly invalidCode: string | null;
   readonly malformedReason: string | null;
+  /** P1-E4-RELIABILITY-01 (D-P1-12): how long the call took (null: recorded before latency was measured). */
+  readonly latencyMs: number | null;
 }
 
 /** The content-free selection and per-call observations recorded on a reply's runs (codes and counts only). */
@@ -456,7 +466,7 @@ function replyEvidence(ctx: StoreContext, workItemId: Id, profileSelection: stri
       // The first selection that routed; a step that could not route is shown only while no later one did.
       const routeUnavailable = str(d.routeUnavailable);
       if (selection === null || (selection.routeUnavailable !== null && routeUnavailable === null)) selection = { mode: (str(d.mode) ?? 'DEFAULT') as ReplySelection['mode'], recorded: true, startClass: str(d.startClass), idealClass: str(d.idealClass), constraint: str(d.constraint), confidence: str(d.confidence), consequence: str(d.consequence), reasons: Object.keys(d).filter((k) => k.startsWith('reason:') && d[k] === true).map((k) => k.slice('reason:'.length)), autoCap: str(d.autoCap), routeUnavailable };
-    } else calls.push({ reasoningClass: str(d.reasoningClass) ?? '', attemptKind: str(d.attemptKind) ?? '', maxOutputTokens: num(d.maxOutputTokens), outputTokens: num(d.outputTokens), reasoningTokens: num(d.reasoningTokens), finishReason: str(d.finishReason), result: str(d.result) ?? 'UNKNOWN', invalidCode: str(d.invalidCode), malformedReason: str(d.malformedReason) });
+    } else calls.push({ reasoningClass: str(d.reasoningClass) ?? '', attemptKind: str(d.attemptKind) ?? '', maxOutputTokens: num(d.maxOutputTokens), outputTokens: num(d.outputTokens), reasoningTokens: num(d.reasoningTokens), finishReason: str(d.finishReason), result: str(d.result) ?? 'UNKNOWN', invalidCode: str(d.invalidCode), malformedReason: str(d.malformedReason), latencyMs: num(d.latencyMs) });
   }
   // Not yet run: the mode that WILL apply. Ran without a recorded selection (history): only the durable Founder level is
   // known; the current profile never relabels past work.

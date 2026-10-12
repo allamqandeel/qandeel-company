@@ -463,6 +463,8 @@ export function recordModelCallObservation(
     step: number; attemptKind: string; reasoningClass: string; deploymentCode: string; maxOutputTokens: number;
     inputTokens: number | null; outputTokens: number | null; reasoningTokens: number | null; finishReason: string | null;
     result: string; proposalType: string | null; invalidCode: string | null; malformedReason: string | null;
+    /** P1-E4-RELIABILITY-01 (D-P1-12): the call's duration measured by the Model Runtime (null: not measured). */
+    latencyMs?: number | null;
   },
 ): void {
   fenced(store, 'record model call observation', fence, (ctx) => {
@@ -480,6 +482,7 @@ export function recordModelCallObservation(
       maxOutputTokens: count(input.maxOutputTokens, 'maxOutputTokens'), inputTokens: count(input.inputTokens, 'inputTokens'), outputTokens: count(input.outputTokens, 'outputTokens'),
       reasoningTokens: count(input.reasoningTokens, 'reasoningTokens'), finishReason: input.finishReason, result: input.result,
       proposalType: input.proposalType, invalidCode: input.invalidCode, malformedReason: input.malformedReason,
+      latencyMs: count(input.latencyMs ?? null, 'latencyMs'),
     };
     appendAudit(ctx, 'run.model_call_observed', 'run', fence.runId, {}, 'OK', input.result, details);
   });

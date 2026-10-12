@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { AUTO_EXPLAINED, LEVEL_THINKING, REASON_LABEL, selectionSummary } from '../src/model/intelligence.js';
+import { AUTO_EXPLAINED, LEVEL_THINKING, REASON_LABEL, callDiagnostics, selectionSummary } from '../src/model/intelligence.js';
 
 const call = (attemptKind: string, reasoningClass: string, finishReason = 'stop') => ({ attemptKind, reasoningClass, finishReason });
 
@@ -75,5 +75,39 @@ describe('P1-AUTO-E12-01 R1-04: estimated versus actual levels, and technical fa
     assert.match(limit, /choose E3 or E4/);
     assert.notEqual(invalid, limit);
     assert.match(REASON_LABEL.RECONCILIATION_REQUIRED ?? '', /reconcile/);
+  });
+});
+
+describe('P1-E4-RELIABILITY-01 (D-P1-12): the true outcome of a Founder E4, content-free', () => {
+  test('an exhausted allowance and a time-limit refusal read as what they are: no count of calls, no answer claimed, nothing charged for the refused call', () => {
+    const truncated = REASON_LABEL.MODEL_OUTPUT_TRUNCATED ?? '';
+    assert.doesNotMatch(truncated, /twice|larger same-level try/, 'a Founder E4 makes one call: no claim of a second');
+    assert.match(truncated, /output allowance/);
+    assert.match(truncated, /no incomplete reply was accepted/);
+    const deadline = REASON_LABEL.RUN_DEADLINE_INSUFFICIENT ?? '';
+    assert.match(deadline, /not sent/);
+    assert.match(deadline, /nothing was charged/);
+    assert.match(deadline, /same level/, 'never a claim that the level was lowered');
+    assert.doesNotMatch(deadline, /the reply continues/, 'no promised continuation: the new run is bounded and may not happen');
+    assert.match(deadline, /otherwise the reply ends here/);
+    assert.notEqual(deadline, truncated);
+  });
+
+  test('each call reads as its level, attempt, allowance, tokens (thinking included), finish, latency and result; a cut or invalid output is never called valid; no text, only numbers and codes', () => {
+    const lines = callDiagnostics({
+      callDetails: [
+        { reasoningClass: 'E4', attemptKind: 'PRIMARY', maxOutputTokens: 32_768, outputTokens: 32_768, reasoningTokens: 32_768, finishReason: 'length', result: 'ANSWERED', invalidCode: 'OUTPUT_TRUNCATED', latencyMs: 196_400 },
+        { reasoningClass: 'E4', attemptKind: 'PRIMARY', maxOutputTokens: 32_768, outputTokens: 12_370, reasoningTokens: 11_703, finishReason: 'stop', result: 'ANSWERED', invalidCode: null, latencyMs: 81_250 },
+        { reasoningClass: 'E4', attemptKind: 'PRIMARY', maxOutputTokens: 32_768, outputTokens: 900, reasoningTokens: null, finishReason: 'stop', result: 'ANSWERED', invalidCode: 'MALFORMED', latencyMs: null },
+        { reasoningClass: 'E4', attemptKind: 'PRIMARY', maxOutputTokens: 32_768, outputTokens: null, reasoningTokens: null, finishReason: null, result: 'TIMEOUT_AFTER_SEND', invalidCode: null },
+      ],
+    });
+    assert.deepEqual(lines, [
+      'E4 primary · allowance 32,768 · 32,768 output tokens (32,768 thinking) · output limit reached · 196.4 s · OUTPUT_TRUNCATED',
+      'E4 primary · allowance 32,768 · 12,370 output tokens (11,703 thinking) · finished · 81.3 s · valid output',
+      'E4 primary · allowance 32,768 · 900 output tokens · finished · MALFORMED',
+      'E4 primary · allowance 32,768 · TIMEOUT_AFTER_SEND',
+    ]);
+    assert.deepEqual(callDiagnostics({}), [], 'no call recorded, no claim');
   });
 });

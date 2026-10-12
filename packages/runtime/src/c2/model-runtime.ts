@@ -17,6 +17,7 @@ import {
   effectiveClass,
   failureDisposition,
   hardGate,
+  isFounderE4,
   isReasoningDemand,
   maxDataClass,
   mayRetry,
@@ -52,14 +53,33 @@ export const DEFAULT_MODEL_CALL_TIMEOUT_MS = 120_000;
  * it was given, so a granted allowance can actually be used: at the default, 8 ms per output token (125 tokens/s; LIVE E4
  * calls ran at 151–177 tokens/s including the wait for the first token). Every allowance up to 15,000 keeps the base
  * timeout; E4's 16,384 gets 131 s and the largest continuation (32,768, OUTPUT_CONTINUATION_MAX_TOKENS) 262 s, inside the
- * 300 s default header timeout of the platform `fetch`. Three such calls (the Founder reply bound) stay inside the
- * Employee task's 10-minute run.
+ * 300 s default header timeout of the platform `fetch`. P1-E4-RELIABILITY-01 (D-P1-12): three 262 s calls would not fit the
+ * Employee task's 10-minute run, so each Founder E4 call is admitted only while its own timeout fits the run's remaining time
+ * (`admitsCall`).
  */
 export const MODEL_CALL_TIMEOUT_REFERENCE_TOKENS = 15_000;
 
 /** The timeout of one call: the base, scaled up (never down) by the output allowance the call may use. */
 export function modelCallTimeoutMs(baseMs: number, maxOutputTokens: number): number {
   return Math.max(baseMs, Math.ceil((baseMs * maxOutputTokens) / MODEL_CALL_TIMEOUT_REFERENCE_TOKENS));
+}
+
+/**
+ * P1-E4-RELIABILITY-01 (D-P1-12): the operational margin the Founder's own E4 call must leave before its run's deadline. It is
+ * admitted only when its own timeout ends before the run does, so the call's outcome (settled, released or held) and the step's
+ * checkpoint are recorded by this runtime, a few short store transactions, rather than cut by the run timer mid-call.
+ */
+export const MODEL_CALL_DEADLINE_MARGIN_MS = 10_000;
+
+/** The real deadline of the run a call belongs to (the Runtime Supervisor's own run timer), read at the call boundary. */
+export interface RunDeadline {
+  /** Milliseconds until the run's timer stops it (may be negative once passed). */
+  remainingMs(): number;
+}
+
+/** Whether a call with this allowance can finish, by its own timeout plus the margin, before the run's deadline. */
+export function admitsCall(remainingMs: number, baseMs: number, maxOutputTokens: number): boolean {
+  return remainingMs >= modelCallTimeoutMs(baseMs, maxOutputTokens) + MODEL_CALL_DEADLINE_MARGIN_MS;
 }
 
 /**
@@ -112,7 +132,7 @@ export class GovernedModelRuntime {
    * run: anything else (a hand-built message list, a copy) is refused before any authorization,
    * routing or reservation — the model only ever sees governed, budgeted, manifest-bound context.
    */
-  async call(store: CompanyStore, fence: Fence, run: GovernedRunContext, req: ModelCallRequest, context: AssembledContext, signal: AbortSignal): Promise<ModelCallOutcome> {
+  async call(store: CompanyStore, fence: Fence, run: GovernedRunContext, req: ModelCallRequest, context: AssembledContext, signal: AbortSignal, deadline?: RunDeadline): Promise<ModelCallOutcome> {
     if (!isAssembledContext(context)) return { kind: 'CONTEXT', code: 'CONTEXT_NOT_ASSEMBLED' };
     // Authorization (and the durable effective data class) is re-evaluated before EVERY attempt:
     // a revoked grant or a context raised by a tool result or by assembled context applies at once.
@@ -158,6 +178,9 @@ export class GovernedModelRuntime {
       requested = plan.toClass;
       firstKind = 'ESCALATION';
     } else if (req.continuation) {
+      // D-P1-12, the central guard: a step at the Founder's own E4 is never re-sent after its output ran out (whatever asked
+      // for it, including a continuation checkpointed by an earlier release): nothing is routed, reserved or called.
+      if (isFounderE4(run.reasoningOverride)) return { kind: 'ESCALATION_REFUSED', code: 'NO_AUTOMATIC_REPLAY' };
       // The same class again with a larger allowance (a separately reserved RETRY attempt), never another class.
       requested = req.continuation.reasoningClass;
       firstKind = 'RETRY';
@@ -233,6 +256,10 @@ export class GovernedModelRuntime {
         failed.push(d.deployment.id);
         lastFailure = 'CONTRACT_VIOLATION';
       } else {
+        // D-P1-12: deadline-aware admission of the Founder's own E4 call, before any reservation (nothing is held or charged).
+        // The run's own deadline, not a count of calls: a call whose timeout (plus the margin) would outlast the run is never
+        // sent. Every other call (AUTO, DEFAULT, E1–E3, Academy) keeps its unchanged policy.
+        if (deadline !== undefined && isFounderE4(run.reasoningOverride) && !admitsCall(deadline.remainingMs(), this.#timeoutMs, routeReq.maxOutputTokens)) return { kind: 'UNAVAILABLE', code: 'RUN_DEADLINE_INSUFFICIENT' };
         const reserved = reserveBudget(store, fence, {
           purpose: 'MODEL_CALL',
           attemptKind,
@@ -254,6 +281,7 @@ export class GovernedModelRuntime {
           const reservationId = reserved.reservation.id;
           const sessionId = newId();
           this.#calls++;
+          const sentAt = performance.now();
           // The provider boundary: the answer or thrown failure is read once into a frozen snapshot of
           // plain values; everything below decides from the snapshot only (R1-09).
           const provided = await this.#call(
@@ -263,6 +291,8 @@ export class GovernedModelRuntime {
             { inputUpperBound: routeReq.inputTokensUpperBound, maxOutputTokens: routeReq.maxOutputTokens, priceCard: (d.deployment.priceCard as PriceCard | undefined) ?? null },
             signal,
           );
+          // Content-free diagnostics (D-P1-12): how long the call took, measured here (never a provider value).
+          const latencyMs = Math.max(0, Math.round(performance.now() - sentAt));
           // From here on the call may have been billed. Bookkeeping that fails (an out-of-range usage
           // report, a busy store) never escapes as a processor error that would retry the same route:
           // the money stays held for reconciliation and the deployment is held as a contract violation
@@ -273,11 +303,11 @@ export class GovernedModelRuntime {
           } catch {
             // Whether the PROVIDER broke the contract was decided at the boundary, never inferred from
             // whichever local error the store threw (R1 re-review).
-            observe(store, fence, run, req, { attemptKind, d, maxOutputTokens: routeReq.maxOutputTokens, s: provided, outcome: null });
+            observe(store, fence, run, req, { attemptKind, d, maxOutputTokens: routeReq.maxOutputTokens, latencyMs, s: provided, outcome: null });
             return this.#containAccountingFailure(store, fence, reservationId, d.deployment.id, provided.providerFault);
           }
           // B2: one content-free observation per sent call (class, allowance, tokens, finish reason, validation).
-          observe(store, fence, run, req, { attemptKind, d, maxOutputTokens: routeReq.maxOutputTokens, s: provided, outcome: 'done' in settled ? settled.done : null, failure: 'done' in settled ? null : settled.failure });
+          observe(store, fence, run, req, { attemptKind, d, maxOutputTokens: routeReq.maxOutputTokens, latencyMs, s: provided, outcome: 'done' in settled ? settled.done : null, failure: 'done' in settled ? null : settled.failure });
           if ('done' in settled) return settled.done;
           const failure = settled.failure;
           lastFailure = failure;
@@ -514,13 +544,13 @@ function recordSelection(store: CompanyStore, fence: Fence, run: GovernedRunCont
   }
 }
 
-/** One content-free observation of a sent call (B2): class, allowance, token counts, finish reason, validation codes. */
+/** One content-free observation of a sent call (B2): class, allowance, token counts, finish reason, validation codes, latency. */
 function observe(
   store: CompanyStore,
   fence: Fence,
   run: GovernedRunContext,
   req: ModelCallRequest,
-  o: { attemptKind: AttemptKind; d: Extract<RouteDecision, { kind: 'ROUTE' }>; maxOutputTokens: number; s: ProviderSnapshot; outcome: ModelCallOutcome | null; failure?: ProviderFailureClass | null },
+  o: { attemptKind: AttemptKind; d: Extract<RouteDecision, { kind: 'ROUTE' }>; maxOutputTokens: number; latencyMs: number; s: ProviderSnapshot; outcome: ModelCallOutcome | null; failure?: ProviderFailureClass | null },
 ): void {
   try {
     const u = o.s.usage;
@@ -539,6 +569,7 @@ function observe(
       proposalType: ok ? ok.proposal.type : null,
       invalidCode: ok && ok.proposal.type === 'INVALID' ? ok.proposal.code : null,
       malformedReason: ok ? ok.invalidReason : null,
+      latencyMs: o.latencyMs,
     });
   } catch {
     // Best effort by design (observability never changes the money or the outcome of the call).
