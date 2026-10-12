@@ -6497,16 +6497,22 @@ on any deployment or class, until the Founder reconciles it or explicitly author
    - Unchanged: the REFS_INVALID recovery (no new call), a refused MESSAGE and a tool result as context for a separate
      next step, the UNBILLED same-deployment retry, R1-01 (a possibly-billed call is held for the Founder's
      reconciliation) and P-07.
-3. **Deadline-aware call admission (WP4).** The Runtime Supervisor carries the run's real deadline (the instant its own
-   run timer stops the run, monotonic) to the model-call boundary (`RunDeadline`). Before any reservation, a call is
-   admitted only when `remaining ≥ modelCallTimeoutMs(base, allowance) + MODEL_CALL_DEADLINE_MARGIN_MS` (10 s: the call's
-   outcome and the step's checkpoint are then recorded by the runtime, never cut by the run timer mid-call).
+3. **Deadline-aware admission of the Founder's own E4 call (WP4).** The Runtime Supervisor carries the run's real deadline
+   (the instant its own run timer stops the run, monotonic) to the model-call boundary (`RunDeadline`). Before any
+   reservation, a call at the Founder's E4 (`isFounderE4(run.reasoningOverride)`) is admitted only when
+   `remaining ≥ modelCallTimeoutMs(base, allowance) + MODEL_CALL_DEADLINE_MARGIN_MS` (10 s: the call's outcome and the
+   step's checkpoint are then recorded by the runtime, never cut by the run timer mid-call).
    - Otherwise `UNAVAILABLE / RUN_DEADLINE_INSUFFICIENT` (new run code, family null, a local cause): nothing is reserved,
-     sent or charged, and the bounded C1 retry continues the Work Item in a new run with a fresh deadline, at the same level
-     and from its checkpoint. A possibly-billed reservation is never released because a run timed out (unchanged).
+     sent or charged. A possibly-billed reservation is never released because a run timed out (unchanged).
+   - If this run made progress (a model call or a tool step since it started), the step is checkpointed and the bounded C1
+     retry (one attempt) makes the call in a new run with a fresh deadline, at the same level. If it made none, the run
+     started with the whole run time already: no new run could admit the call, so the Work Item fails at once with
+     `RUN_DEADLINE_INSUFFICIENT` (`PERMANENT_FAILURE`) instead of spending every C1 attempt on identical refusals.
    - No existing code fits: `RUN_TIMEOUT` means the run's timer fired, `RUN_ABORTED` that a call was stopped.
-   - It applies to every governed call: only a call that could not finish before the run's own timer is affected (it was
-     cut and held before). E4 at 32,768 needs 272,144 ms of the 600,000 ms run: at most two such calls per run.
+   - Scope (PR #38 review correction): only the Founder's own E4. AUTO, DEFAULT, Founder E1–E3 and Academy calls keep their
+     unchanged policy. The first revision applied the admission to every governed call and broke the C5 harness, whose
+     base call timeout equals its 600,000 ms run limit (no call of any allowance fits that): every call was refused.
+   - E4 at 32,768 needs 272,144 ms of the 600,000 ms run: at most two such calls per run.
    - Not changed: the 10-minute run limit, the 300 s platform `fetch` default, the call timeouts, streaming (none).
 4. **Diagnostics (WP5).** Each sent call's observation also records its latency (measured by the Model Runtime). The reply
    state exposes it; the chat status line's title lists each call (level, attempt, allowance, output and thinking tokens,
@@ -6521,7 +6527,9 @@ USD 0.041. A reply may still make up to 3 calls (`CHAT_REPLY_MAX_MODEL_CALLS`) a
 - `runtime/test/p1/p1-e4-reliability.test.ts`: the admission arithmetic; a Founder E4 sends max / 32,768 and is reserved at
   that worst case while every other reply keeps the table; MALFORMED and NOT_JSON end after one call; a 30,000-token reply
   cap parks the E4 before any call while it funds an E3; after a tool result the next E4 step is refused for time, the
-  new run admits it and the reply lands (the tool ran once); a legacy invalid-output checkpoint is not re-sent at E4 while
+  new run admits it and the reply lands (the tool ran once; one C1 attempt spent); with the base timeout equal to the run
+  limit a Founder E4 fails once with nothing reserved or sent and one C1 attempt, while AUTO and Founder E1–E3 replies under
+  the same limits are sent as before; a legacy invalid-output checkpoint is not re-sent at E4 while
   a Founder E3 keeps its retry; a Work Item created before keeps 16,384 and its input.
 - `runtime/test/p1/p1-reason-auto-recovery.test.ts`: the three D-P1-09 E4 proofs now prove one 32,768 call (answers after
   the base timeout; exhaustion ends after one call; a timeout is held for reconciliation, R1-01); a due legacy E4
@@ -6532,7 +6540,8 @@ USD 0.041. A reply may still make up to 3 calls (`CHAT_REPLY_MAX_MODEL_CALLS`) a
 - **Mutation checks, run by hand on the compiled change** (each caught by at least one proof): admission removed; margin 0;
   deadline not carried to the call; central replay guard removed; central and processor truncation guards removed together;
   invalid-output guard removed; invalid-output guard read after the call bound; submitter E4 allowance reverted;
-  `isFounderE4` true for any Founder level. Removing only the processor truncation guard is equivalent (the central guard,
+  `isFounderE4` true for any Founder level; admission for every class; a no-progress refusal retried; every refusal
+  permanent. The C5 browser spike and C5 acceptance pass with their harness unchanged. Removing only the processor truncation guard is equivalent (the central guard,
   and `continuationAllowance` at 32,768, refuse the continuation before any call): kept as defence in depth.
 
 **Remaining risks.** The completion rate at 32,768 is not measured (8 of 13 observed samples would have fit, 1 would not,

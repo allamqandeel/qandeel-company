@@ -146,6 +146,8 @@ describe('P1-E4-RELIABILITY-01: deadline admission (the arithmetic)', () => {
     // A fresh 10-minute run admits a Founder E4 call twice over, never three times: a third call waits for a new run.
     assert.equal(admitsCall(600_000 - 2 * 262_144, 120_000, 32_768), false);
     assert.equal(admitsCall(600_000 - 262_144, 120_000, 32_768), true);
+    // A base timeout equal to the run limit (the C5 harness: 600,000 ms each): no call of any allowance fits even a fresh run.
+    for (const tokens of [2_048, 8_192, 16_384, MANUAL_E4_OUTPUT_ALLOWANCE]) assert.equal(admitsCall(600_000, 600_000, tokens), false, `${tokens}`);
   });
 });
 
@@ -228,6 +230,30 @@ describe('P1-E4-RELIABILITY-01: the Founder\'s E4 (D-P1-12)', () => {
       assert.equal(notes.invocations.length, 1, 'the tool step is not repeated by the new run');
       const s = replyState(rt, w, id);
       assert.deepEqual([s.status, s.answeredClasses, s.callDetails.map((c) => [c.reasoningClass, c.maxOutputTokens])], ['REPLIED', ['E4', 'E4'], [['E4', 32_768], ['E4', 32_768]]]);
+      // C1: the refusal after progress spent exactly one bounded attempt, and the new run used it to make the refused call.
+      const job = rt.view.jobsFor(id).at(-1);
+      assert.ok(job);
+      assert.deepEqual([job.state, job.attemptCount, job.lastFailureCode], ['DONE', 1, 'RUN_DEADLINE_INSUFFICIENT'], 'one failed attempt (the refusal), then the run that answered');
+      assert.ok(job.attemptCount < job.maxAttempts, 'attempts left over: no exhaustion');
+      assert.equal(rt.governance.accountingInvariants().length, 0);
+    });
+  });
+
+  test('a Founder E4 call that cannot fit even a fresh run (base timeout = run limit, the C5 shape) fails once, nothing reserved or sent, one C1 attempt — no retry loop; AUTO and Founder E1–E3 under the same limits are not touched by the admission', () => {
+    const tight: GovernedProcessor = { ...employeeTaskProcessor, maxRunMs: 5_000 };
+    return withWorld('p1e4-never-fits', { processor: tight, callTimeoutMs: 5_000 }, () => ok('Answered.'), async ({ rt, w, sent }) => {
+      const e4 = ask(rt, w, STRATEGY, 'E4');
+      assert.equal(await settled(rt, e4), 'FAILED');
+      assert.deepEqual([sent.length, reservations(rt, e4).length, rt.view.runsForWorkItem(e4).map((r) => r.failureCode)], [0, 0, ['RUN_DEADLINE_INSUFFICIENT']], 'no paid call, no MODEL_CALL reservation, one run');
+      const job = rt.view.jobsFor(e4).at(-1);
+      assert.ok(job);
+      assert.deepEqual([job.state, job.attemptCount], ['FAILED', 1], 'a run that made no progress is not retried: a new run would start with no more time');
+      assert.ok(job.maxAttempts > 1);
+      assert.deepEqual([replyState(rt, w, e4).status, replyState(rt, w, e4).reasonCode], ['FAILED', 'RUN_DEADLINE_INSUFFICIENT']);
+      // The same run limit and base timeout for every other level: each call is sent as before (its own timeout bounds it).
+      const others = [ask(rt, w, 'Thanks, got it.'), ask(rt, w, STRATEGY, 'E1'), ask(rt, w, STRATEGY, 'E2'), ask(rt, w, STRATEGY, 'E3')];
+      for (const id of others) assert.equal(await settled(rt, id), 'COMPLETED');
+      assert.deepEqual(sent.map((s) => s.maxTokens), [2_048, 2_048, 4_096, 8_192]);
       assert.equal(rt.governance.accountingInvariants().length, 0);
     });
   });

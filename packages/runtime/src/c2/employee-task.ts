@@ -169,6 +169,8 @@ export const employeeTaskProcessor: GovernedProcessor = {
   run: () => Promise.resolve({ type: 'PERMANENT_FAILURE', code: 'GOVERNANCE_REQUIRED' }),
   async runGoverned(ctx: ProcessorContext, gov: GovernedRunServices): Promise<ProcessorResult> {
     let s = readState(ctx);
+    // D-P1-12: where this run started (a deadline refusal is retried in a new run only after this run made progress).
+    const startedAt = { turn: s.turn, modelCalls: s.modelCalls };
     // A FINAL decision checkpointed before a crash is honoured on resume first: the work already
     // finished, so nothing about its input is re-judged and no new model call or action happens.
     if (s.phase === 'FINAL') return { type: 'COMPLETED', evidence: { summaryCode: s.summaryCode ?? 'final', turns: s.turn, modelCalls: s.modelCalls, resumed: true } };
@@ -293,6 +295,10 @@ export const employeeTaskProcessor: GovernedProcessor = {
           // D-P1-11: no class at or below the AUTO maximum may run this step (a route minimum above it, or a call due from
           // before the cap). Retrying cannot change that: reported once, nothing spent, never routed higher.
           if (out.code === 'AUTO_POLICY_CAP') return { type: 'PERMANENT_FAILURE', code: unavailableRunCode(out.code) };
+          // D-P1-12: the Founder's E4 call does not fit this run's remaining time. After this run made progress (a call, a tool
+          // step) the step is checkpointed and a new run, with the whole run time, makes it. A run that made none started with
+          // that whole time already: no new run could do better, so it ends now rather than spending the C1 attempts.
+          if (out.code === 'RUN_DEADLINE_INSUFFICIENT' && s.turn === startedAt.turn && s.modelCalls === startedAt.modelCalls) return { type: 'PERMANENT_FAILURE', code: 'RUN_DEADLINE_INSUFFICIENT' };
           // No answer never crashes the Company: bounded C1 retry, then dead letter. The run records the real
           // cause from the shared run-failure vocabulary (R2-12): a missing route policy, a local settlement
           // failure or an abort is never blamed on the provider.

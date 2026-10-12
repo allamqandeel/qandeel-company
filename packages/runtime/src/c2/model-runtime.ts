@@ -54,7 +54,7 @@ export const DEFAULT_MODEL_CALL_TIMEOUT_MS = 120_000;
  * calls ran at 151–177 tokens/s including the wait for the first token). Every allowance up to 15,000 keeps the base
  * timeout; E4's 16,384 gets 131 s and the largest continuation (32,768, OUTPUT_CONTINUATION_MAX_TOKENS) 262 s, inside the
  * 300 s default header timeout of the platform `fetch`. P1-E4-RELIABILITY-01 (D-P1-12): three 262 s calls would not fit the
- * Employee task's 10-minute run, so each call is admitted only while its own timeout fits the run's remaining time
+ * Employee task's 10-minute run, so each Founder E4 call is admitted only while its own timeout fits the run's remaining time
  * (`admitsCall`).
  */
 export const MODEL_CALL_TIMEOUT_REFERENCE_TOKENS = 15_000;
@@ -65,8 +65,8 @@ export function modelCallTimeoutMs(baseMs: number, maxOutputTokens: number): num
 }
 
 /**
- * P1-E4-RELIABILITY-01 (D-P1-12): the operational margin a call must leave before its run's deadline. A call is admitted only
- * when its own timeout ends before the run does, so the call's outcome (settled, released or held) and the step's
+ * P1-E4-RELIABILITY-01 (D-P1-12): the operational margin the Founder's own E4 call must leave before its run's deadline. It is
+ * admitted only when its own timeout ends before the run does, so the call's outcome (settled, released or held) and the step's
  * checkpoint are recorded by this runtime, a few short store transactions, rather than cut by the run timer mid-call.
  */
 export const MODEL_CALL_DEADLINE_MARGIN_MS = 10_000;
@@ -256,9 +256,10 @@ export class GovernedModelRuntime {
         failed.push(d.deployment.id);
         lastFailure = 'CONTRACT_VIOLATION';
       } else {
-        // D-P1-12: deadline-aware admission, before any reservation (nothing is held or charged). The run's own deadline,
-        // not a count of calls: a call whose timeout (plus the margin) would outlast the run is never sent; a new run makes it.
-        if (deadline !== undefined && !admitsCall(deadline.remainingMs(), this.#timeoutMs, routeReq.maxOutputTokens)) return { kind: 'UNAVAILABLE', code: 'RUN_DEADLINE_INSUFFICIENT' };
+        // D-P1-12: deadline-aware admission of the Founder's own E4 call, before any reservation (nothing is held or charged).
+        // The run's own deadline, not a count of calls: a call whose timeout (plus the margin) would outlast the run is never
+        // sent. Every other call (AUTO, DEFAULT, E1–E3, Academy) keeps its unchanged policy.
+        if (deadline !== undefined && isFounderE4(run.reasoningOverride) && !admitsCall(deadline.remainingMs(), this.#timeoutMs, routeReq.maxOutputTokens)) return { kind: 'UNAVAILABLE', code: 'RUN_DEADLINE_INSUFFICIENT' };
         const reserved = reserveBudget(store, fence, {
           purpose: 'MODEL_CALL',
           attemptKind,

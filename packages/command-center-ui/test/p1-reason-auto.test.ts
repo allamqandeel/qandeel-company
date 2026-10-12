@@ -88,6 +88,8 @@ describe('P1-E4-RELIABILITY-01 (D-P1-12): the true outcome of a Founder E4, cont
     assert.match(deadline, /not sent/);
     assert.match(deadline, /nothing was charged/);
     assert.match(deadline, /same level/, 'never a claim that the level was lowered');
+    assert.doesNotMatch(deadline, /the reply continues/, 'no promised continuation: the new run is bounded and may not happen');
+    assert.match(deadline, /otherwise the reply ends here/);
     assert.notEqual(deadline, truncated);
   });
 

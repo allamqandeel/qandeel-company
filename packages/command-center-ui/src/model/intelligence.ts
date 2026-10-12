@@ -62,7 +62,7 @@ export const REASON_LABEL: Readonly<Record<string, string>> = {
   AUTO_LEVEL_LIMIT: 'this step required a level above E2, and company policy keeps AUTO at E2 or below, so nothing above E2 ran; choose E3 or E4 for the message if it needs deeper thinking',
   NO_ELIGIBLE_DEPLOYMENT: 'no route can take this reply at its level now; nothing was spent',
   // P1-E4-RELIABILITY-01 (D-P1-12)
-  RUN_DEADLINE_INSUFFICIENT: 'too little of the reply’s run time was left for the next model call to finish, so that call was not sent and nothing was charged; the reply continues in a new run, at the same level',
+  RUN_DEADLINE_INSUFFICIENT: 'too little of the reply’s run time was left for its E4 call to finish, so that call was not sent and nothing was charged for it; a new run tries it again at the same level only after the run made progress and while the limited retries last — otherwise the reply ends here',
 };
 
 export const reasonText = (code: string | null | undefined, humanize: (c: string) => string): string => (code ? (REASON_LABEL[code] ?? humanize(code).toLowerCase()) : '');
