@@ -9,7 +9,9 @@
  *   - an invalid answer, a provider failure, a timeout (money held, never a reconciliation brief) or a budget refusal ends the
  *     assessment with a recorded fallback and the reply still lands, with every eligible Skill SUPPORTING;
  *   - a restart keeps the order durable; the Skill-need profile adds one E1 deployment and one route policy only;
- *   - logs and records stay content-free.
+ *   - logs and records stay content-free;
+ *   - G4-C2-TEMP-01: every assessment call (a retry included) sends temperature 0 with thinking off; no reply call, at any
+ *     level (E1 included), carries a temperature field.
  * P1-PROOF: skill-need
  */
 import assert from 'node:assert/strict';
@@ -46,6 +48,8 @@ class OffsetClock implements Clock {
 interface Sent {
   readonly assessment: boolean;
   readonly thinking: unknown;
+  /** G4-C2-TEMP-01: the wire `temperature`, or ABSENT when the body carries no such field. */
+  readonly temperature: unknown;
   readonly maxTokens: number;
   readonly text: string;
 }
@@ -115,10 +119,10 @@ async function withWorld(label: string, o: Options, chat: Chat, fn: (x: World) =
   const clock = new OffsetClock();
   const transport = new FakeDeepSeekTransport().respondWith((request) => {
     if (request.path === DEEPSEEK_MODELS_PATH) return fakeModelsAnswer([{ id: DEEPSEEK_MODEL_CODE, name: 'DeepSeek-V4.1-Flash' }]);
-    const body = request.body as { thinking: unknown; max_tokens: number };
+    const body = request.body as { thinking: unknown; max_tokens: number; temperature?: unknown };
     const text = textOf(request);
     const assessment = text.includes(SKILL_NEED_PREAMBLE.split('\n')[0] as string);
-    sent.push({ assessment, thinking: body.thinking, maxTokens: body.max_tokens, text });
+    sent.push({ assessment, thinking: body.thinking, temperature: 'temperature' in body ? body.temperature : 'ABSENT', maxTokens: body.max_tokens, text });
     return chat(request, assessment, sent.filter((s) => s.assessment === assessment).length) as DeepSeekResponse;
   });
   let starts = 0;
@@ -170,7 +174,9 @@ describe('G4-C2-SNA-01: the assessment runs first, at E1, outside the reply', ()
       assert.deepEqual(sent.map((s) => s.assessment), [true, false], 'the assessment call comes first, then the reply');
       const [a, r] = sent;
       assert.deepEqual([a?.thinking, a?.maxTokens], [{ type: 'disabled' }, 256], 'E1, no thinking, the 256 allowance');
+      assert.equal(a?.temperature, 0, 'G4-C2-TEMP-01: the assessment sends temperature 0, explicitly');
       assert.deepEqual(r?.thinking, { type: 'enabled' }, 'the reply keeps the Founder\'s E2');
+      assert.equal(r?.temperature, 'ABSENT', 'the reply keeps the provider default (no temperature field)');
       for (const c of CEO_SKILLS) assert.equal(a?.text.includes(`PAYLOAD-${c}`), false, 'the assessment never reads a Skill payload');
       const sna = assessment(rt, reply);
       assert.equal(state(rt, sna), 'COMPLETED');
@@ -197,6 +203,7 @@ describe('G4-C2-SNA-01: the assessment runs first, at E1, outside the reply', ()
       const reply = ask(rt, w, 'Thanks, got it.');
       assert.equal(await settled(rt, reply), 'COMPLETED');
       assert.deepEqual(sent.map((s) => [s.assessment, s.maxTokens]), [[true, 256], [false, CHAT_REPLY_OUTPUT_TOKENS.E1], [false, CHAT_REPLY_AUTO_OUTPUT_TOKENS.E2]], 'the assessment, then the reply\'s E1 call and its E2 repair');
+      assert.deepEqual(sent.map((s) => [s.thinking, s.temperature]), [[{ type: 'disabled' }, 0], [{ type: 'disabled' }, 'ABSENT'], [{ type: 'enabled' }, 'ABSENT']], 'G4-C2-TEMP-01: temperature 0 is the task class\'s, not E1\'s: the reply\'s own E1 call keeps the default');
       assert.deepEqual(reservationsOf(rt, reply).map((x) => x.attemptKind), ['PRIMARY', 'ESCALATION'], 'the reply\'s calls are its own');
       assert.equal(reservationsOf(rt, assessment(rt, reply)).length, 1);
     }));
@@ -205,7 +212,7 @@ describe('G4-C2-SNA-01: the assessment runs first, at E1, outside the reply', ()
     withWorld('sna-auto-e2', {}, (_r, a) => (a ? skillNeed(tiersWith({ 'ceo.executive-judgment': 'TASK_REQUIRED' })) : replyOk('Keep the date.')), async ({ rt, w, sent }) => {
       const reply = ask(rt, w, 'SYNTHETIC: Should we delay the launch two weeks to fix onboarding, or keep the date? Think it through.');
       assert.equal(await settled(rt, reply), 'COMPLETED');
-      assert.deepEqual(sent.map((s) => [s.assessment, s.thinking, s.maxTokens]), [[true, { type: 'disabled' }, 256], [false, { type: 'enabled' }, CHAT_REPLY_AUTO_OUTPUT_TOKENS.E2]]);
+      assert.deepEqual(sent.map((s) => [s.assessment, s.thinking, s.temperature, s.maxTokens]), [[true, { type: 'disabled' }, 0, 256], [false, { type: 'enabled' }, 'ABSENT', CHAT_REPLY_AUTO_OUTPUT_TOKENS.E2]]);
     }));
 });
 
@@ -233,6 +240,7 @@ describe('G4-C2-SNA-01: every failure ends in a recorded fallback and the reply 
       const reply = ask(rt, w, ORG);
       assert.equal(await settled(rt, reply), 'COMPLETED');
       assert.ok(sent.filter((s) => s.assessment).length <= 2, 'never more than the route policy\'s two attempts');
+      assert.deepEqual([...new Set(sent.map((s) => `${s.assessment}:${String(s.temperature)}`))].sort(), ['false:ABSENT', 'true:0'], 'G4-C2-TEMP-01: the retry keeps temperature 0; the reply keeps the default');
       assert.ok(['PROVIDER_FAILED', 'PROVIDER_UNAVAILABLE'].includes(String(decision(rt, reply)?.outcome)), String(decision(rt, reply)?.outcome));
       assert.equal(state(rt, assessment(rt, reply)), 'FAILED');
     }));

@@ -12,9 +12,19 @@
 import { sha256Hex } from '@qandeel-company/domain';
 
 import type { ModelProposal } from './proposals.js';
+import type { ProviderSampling } from './providers.js';
 
 /** The task class of the assessment call: its own grant, route policy and deployment qualification (never `founder.reply`). */
 export const SKILL_NEED_TASK_CLASS = 'skill.need.assessment';
+
+/**
+ * G4-C2-TEMP-01 (D-P1-15): the one task class whose calls are sampled deterministically (temperature 0) — the assessment,
+ * so the same message gets the same tiers. Every other task class (the Founder reply included) keeps the provider's default
+ * sampling: there is no per-Employee, per-call or model-chosen sampling setting anywhere.
+ */
+export function samplingForTaskClass(taskClass: string): ProviderSampling | undefined {
+  return taskClass === SKILL_NEED_TASK_CLASS ? 'DETERMINISTIC' : undefined;
+}
 
 export const SKILL_NEED_TIERS = ['TASK_REQUIRED', 'SUPPORTING', 'NON_RELEVANT'] as const;
 export type SkillNeedTier = (typeof SKILL_NEED_TIERS)[number];

@@ -30,6 +30,8 @@ const reply = (body: string): string => JSON.stringify({ type: 'MESSAGE', purpos
 interface Sent {
   readonly thinking: unknown;
   readonly effort: unknown;
+  /** G4-C2-TEMP-01: whether the wire body carries a `temperature` field (a Founder reply never does). */
+  readonly hasTemperature: boolean;
   readonly maxTokens: number;
   readonly messages: readonly { readonly role: string; readonly content: string }[];
 }
@@ -73,7 +75,7 @@ async function withWorld(label: string, chat: (request: DeepSeekRequest, n: numb
   const transport = new FakeDeepSeekTransport().respondWith((request) => {
     if (request.path === DEEPSEEK_MODELS_PATH) return fakeModelsAnswer([{ id: DEEPSEEK_MODEL_CODE, name: 'DeepSeek-V4.1-Flash' }]);
     const body = request.body as { thinking: unknown; reasoning_effort?: unknown; max_tokens: number; messages: { role: string; content: string }[] };
-    sent.push({ thinking: body.thinking, effort: body.reasoning_effort, maxTokens: body.max_tokens, messages: body.messages });
+    sent.push({ thinking: body.thinking, effort: body.reasoning_effort, hasTemperature: 'temperature' in body, maxTokens: body.max_tokens, messages: body.messages });
     return chat(request, sent.length);
   });
   const adapter = new DeepSeekProviderAdapter({ vault: new InMemorySecretVault().set('deepseek-company', KEY), transport });
@@ -227,6 +229,7 @@ describe('P1-CHAT-INTEL-01: per-message reasoning on DeepSeek V4.1 Flash (E1..E4
       assert.equal(await settled(rt, plain.replyWorkItemId as Id), 'COMPLETED');
       assert.deepEqual([sent[0]?.thinking, sent[0]?.effort, sent[0]?.maxTokens], [{ type: 'enabled' }, 'low', CHAT_REPLY_OUTPUT_TOKENS.E2]);
       assert.deepEqual([sent[1]?.thinking, sent[1]?.effort, sent[1]?.maxTokens], [{ type: 'disabled' }, undefined, CHAT_REPLY_OUTPUT_TOKENS.E1], 'the level applied to one message only');
+      assert.deepEqual(sent.map((s) => s.hasTemperature), [false, false], 'G4-C2-TEMP-01: a Founder reply (E1, E2) keeps the provider default sampling');
       const after = rt.governance.getEmployee(ceo.id);
       assert.deepEqual([after.cognitiveProfile.defaultClass, after.cognitiveProfile.ceilingClass, after.version], [before.cognitiveProfile.defaultClass, before.cognitiveProfile.ceilingClass, before.version], 'the persistent profile never changed');
       const view = rt.governance.reasoningControl(ceo.id);
@@ -290,6 +293,7 @@ describe('P1-CHAT-INTEL-01: per-message reasoning on DeepSeek V4.1 Flash (E1..E4
         [{ type: 'enabled' }, 'max', CHAT_REPLY_MANUAL_E4_OUTPUT_TOKENS.E4], // D-P1-12: a Founder E4 gets its one 32,768 call
         [{ type: 'disabled' }, undefined, CHAT_REPLY_OUTPUT_TOKENS.E1],
       ], 'each level reaches DeepSeek V4.1 Flash with its own thinking; the default stays fast');
+      assert.deepEqual(sent.map((s) => s.hasTemperature), [false, false, false], 'G4-C2-TEMP-01: E3, E4 and E1 replies carry no temperature');
       assert.deepEqual(comm.replyStates(thread.id).map((s) => s.answeredClasses), [['E3'], ['E4'], ['E1']]);
       assert.equal(gov.employeeIntelligence(ceo.id).usage.map((u) => u.reasoningClass).join(','), 'E1,E3,E4');
       assert.equal(gov.accountingInvariants().length, 0);

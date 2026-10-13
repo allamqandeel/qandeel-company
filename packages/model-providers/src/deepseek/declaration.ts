@@ -45,11 +45,12 @@ export const DEEPSEEK_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 export const DEEPSEEK_MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 
 /**
- * The only fields a chat request ever carries (no tools, no temperature, no stream, nothing of the Company).
+ * The only fields a chat request ever carries (no tools, no stream, nothing of the Company).
  * `reasoning_effort` is a top-level field of the official contract (beside `thinking: { type }`), sent only for a
- * thinking class.
+ * thinking class. `temperature` (G4-C2-TEMP-01) is only ever the constant 0 of the DETERMINISTIC sampling profile, sent
+ * only without thinking (the provider ignores sampling in thinking mode); no other value can be expressed.
  */
-export const DEEPSEEK_REQUEST_FIELDS = ['model', 'messages', 'max_tokens', 'stream', 'thinking', 'reasoning_effort', 'response_format'] as const;
+export const DEEPSEEK_REQUEST_FIELDS = ['model', 'messages', 'max_tokens', 'stream', 'thinking', 'reasoning_effort', 'response_format', 'temperature'] as const;
 
 /** The probe's output ceilings: non-thinking (E1) and thinking (the ceiling bounds the thinking tokens too). */
 export const PROBE_MAX_TOKENS = 32;

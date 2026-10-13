@@ -24,6 +24,7 @@
 // leak check compares inside `vault.use`).
 //
 // Output is content-free: ids, codes, counts, metrics, money and milliseconds. No message text is printed or written.
+// G4-C2-TEMP-01: it also counts the `temperature` each chat call carried on the wire (counts only) and records the sampling.
 // --ho2 is the one-shot held-out mode: it verifies the sealed hashes, requires a clean tracked tree, refuses a second
 // HO-2 run in the ledger, writes no per-item file and prints aggregates only.
 
@@ -138,6 +139,8 @@ if (!o.fake) {
   if (!(await vault.has(mp.DEEPSEEK_CREDENTIAL_REF))) refuse('CREDENTIAL_UNAVAILABLE', `no secret is stored for ${mp.DEEPSEEK_CREDENTIAL_REF}; the paid part stops`);
 }
 const providerMs = [];
+// G4-C2-TEMP-01: what sampling actually reached the wire (counts only; the body is never kept or printed).
+const wire = { chatCalls: 0, temperatureZero: 0, temperatureOther: 0, temperatureAbsent: 0 };
 const inner = o.fake
   ? new mp.FakeDeepSeekTransport().respondWith((request) => {
       if (request.path === mp.DEEPSEEK_MODELS_PATH) return mp.fakeModelsAnswer([{ id: mp.DEEPSEEK_MODEL_CODE, name: mp.DEEPSEEK_EXPECTED_PUBLIC_NAME }]);
@@ -147,6 +150,13 @@ const inner = o.fake
 const transport = {
   async send(request, signal) {
     const t0 = performance.now();
+    if (request.path !== mp.DEEPSEEK_MODELS_PATH) {
+      wire.chatCalls++;
+      const t = request.body && typeof request.body === 'object' && 'temperature' in request.body ? request.body.temperature : undefined;
+      if (t === undefined) wire.temperatureAbsent++;
+      else if (t === 0) wire.temperatureZero++;
+      else wire.temperatureOther++;
+    }
     try {
       return await inner.send(request, signal);
     } finally {
@@ -228,10 +238,12 @@ async function assess(row) {
   const usage = assessment ? runtime.governance.usage({ workItemId: assessment }) : [];
   const runs = assessment ? runtime.view.runsForWorkItem(assessment) : [];
   const open = runs.flatMap((r) => runtime.governance.reservations(r.id)).filter((r) => r.state !== 'SETTLED' && r.state !== 'RELEASED');
+  const all = runs.flatMap((r) => runtime.governance.reservations(r.id));
   results.set(row.id, {
     record,
     usage,
     heldMicros: open.reduce((a, r) => a + r.money, 0),
+    reservations: all.map((r) => ({ state: r.state, money: r.money })),
     endToEndMs: record ? Date.parse(record.createdAt) - sentAt : null,
     runMs: runs.map((r) => (r.endedAt ? Date.parse(r.endedAt) - Date.parse(r.startedAt) : null)).filter((x) => x !== null),
   });
@@ -351,14 +363,25 @@ const cost = {
   inputTokensAvg: avg(usageAll.map((u) => u.inputTokens)), cachedInputTokensAvg: avg(usageAll.map((u) => u.cachedInputTokens)), outputTokensAvg: avg(usageAll.map((u) => u.outputTokens)), outputTokensMax: Math.max(0, ...usageAll.map((u) => u.outputTokens)),
   calls: usageAll.length,
 };
+// G4-C2-TEMP-01: the accounting split the Founder asked for. Reservations are worst-case holds that end SETTLED (to the
+// actual usage) or RELEASED (provably unsent); only a HELD / still-open one is money of uncertain outcome.
+const resAll = [...results.values()].flatMap((r) => r.reservations);
+const accounting = {
+  economicMicros: economic,
+  providerBilledMicros: billed,
+  reservations: { count: resAll.length, worstCaseMicros: resAll.reduce((a, r) => a + r.money, 0), byState: resAll.reduce((a, r) => ({ ...a, [r.state]: (a[r.state] ?? 0) + 1 }), {}) },
+  heldOrUncertainMicros: [...results.values()].reduce((a, r) => a + r.heldMicros, 0),
+  chargedToTrialCapMicros: spendMicros,
+};
 const latency = { providerAvgMs: avg(providerMs), providerP50Ms: pct(providerMs, 50), providerP95Ms: pct(providerMs, 95), providerMaxMs: providerMs.length ? Math.max(...providerMs) : null, runAvgMs: avg(runMs), runP95Ms: pct(runMs, 95), endToEndAvgMs: avg(e2e), endToEndP95Ms: pct(e2e, 95), withinReplyWindow: e2e.filter((x) => x <= gov.SKILL_NEED_WINDOW_MS).length, wallMs };
 const rates = { fallbackRate: r3(fallback, classifications), timeoutRate: r3((outcomes.PROVIDER_UNCERTAIN ?? 0) + (outcomes.HARNESS_TIMEOUT ?? 0), classifications), failureRate: r3(classifications - (outcomes.CLASSIFIED ?? 0), classifications), invalidRate: r3((outcomes.OUTPUT_INVALID ?? 0) + (outcomes.OUTPUT_TRUNCATED ?? 0), classifications), outcomes };
 const privacy = { credentialInDbOrLogs: keyLeak, messageTextInLogs: textInLogs };
+const sampling = { ...wire, allDeterministic: wire.chatCalls > 0 && wire.temperatureZero === wire.chatCalls };
 
-const entry = { at: new Date().toISOString(), label: o.label, fake: o.fake, ho2: Boolean(o.ho2), sets: sets.map((s) => s.prefix), items: classifications, promptVersion: gov.SKILL_NEED_PROMPT_VERSION, promptSha256: promptSha, cardsSha256: mind.skillNeedCardsDigest(SKILLS), freeze, spendMicros: o.fake ? 0 : spendMicros, billedMicros: o.fake ? 0 : billed, economicMicros: o.fake ? 0 : economic, calls: cost.calls, stopCode, gatePass: Object.values(gate).every(Boolean) };
+const entry = { at: new Date().toISOString(), label: o.label, fake: o.fake, ho2: Boolean(o.ho2), sets: sets.map((s) => s.prefix), items: classifications, promptVersion: gov.SKILL_NEED_PROMPT_VERSION, promptSha256: promptSha, cardsSha256: mind.skillNeedCardsDigest(SKILLS), sampling: sampling.allDeterministic ? 'TEMPERATURE_0' : 'PROVIDER_DEFAULT_OR_MIXED', freeze, spendMicros: o.fake ? 0 : spendMicros, billedMicros: o.fake ? 0 : billed, economicMicros: o.fake ? 0 : economic, calls: cost.calls, stopCode, gatePass: Object.values(gate).every(Boolean) };
 appendFileSync(ledgerFile, JSON.stringify(entry) + '\n');
 if (o.out && !o.ho2) writeFileSync(path.resolve(o.out), perItem.map((x) => JSON.stringify(x)).join('\n') + '\n');
-say('result', { label: o.label, metrics, gate, gatePass: entry.gatePass, cost, latency, rates, privacy, stopCode, totalSpentMicros: spentBefore + entry.spendMicros, totalCapMicros: TOTAL_CAP_MICROS });
+say('result', { label: o.label, metrics, gate, gatePass: entry.gatePass, cost, accounting, sampling, latency, rates, privacy, stopCode, totalSpentMicros: spentBefore + entry.spendMicros, totalCapMicros: TOTAL_CAP_MICROS });
 
 if (!o.keep) rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 else say('kept', { sandbox });

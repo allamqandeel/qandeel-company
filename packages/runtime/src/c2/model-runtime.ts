@@ -27,6 +27,7 @@ import {
   reasoningRank,
   resolveAutoClass,
   route,
+  samplingForTaskClass,
   utf8TokenUpperBound,
   withinAutoCap,
   type AttemptKind,
@@ -250,6 +251,9 @@ export class GovernedModelRuntime {
     if (selection !== null) recordSelection(store, fence, run, req, selection);
     let attemptKind: AttemptKind = firstKind;
     let retries = 0;
+    // The task class the grant was checked for (the processor's own constant), never anything the model or a message supplies.
+    const samplingCode = samplingForTaskClass(req.taskClass);
+    const sampling = samplingCode === undefined ? {} : { sampling: samplingCode };
     const failed: string[] = [];
     let lastFailure: ProviderFailureClass = 'UNKNOWN';
     const ceiling = policy.maxRetriesPerCall + snapshot.deployments.length + 1;
@@ -298,7 +302,8 @@ export class GovernedModelRuntime {
             // D-P1-15: a call that names its own (shorter) timeout keeps it; every other call keeps the runtime's.
             callTimeoutMs(this.#timeoutMs, routeReq.maxOutputTokens, req.timeoutMs),
             // The route's reasoning class travels with the request (L1-01): the adapter maps it to its bounded profile.
-            { providerCode: d.deployment.providerCode, modelCode: d.deployment.modelCode, deploymentCode: d.deployment.code, reasoningClass: d.reasoningClass, messages: context.messages, maxOutputTokens: routeReq.maxOutputTokens },
+            // G4-C2-TEMP-01: so does the sampling profile of the call's authorized task class (the assessment only).
+            { providerCode: d.deployment.providerCode, modelCode: d.deployment.modelCode, deploymentCode: d.deployment.code, reasoningClass: d.reasoningClass, messages: context.messages, maxOutputTokens: routeReq.maxOutputTokens, ...sampling },
             { inputUpperBound: routeReq.inputTokensUpperBound, maxOutputTokens: routeReq.maxOutputTokens, priceCard: (d.deployment.priceCard as PriceCard | undefined) ?? null },
             signal,
           );

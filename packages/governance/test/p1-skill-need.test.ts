@@ -9,6 +9,7 @@ import { describe, test } from 'node:test';
 import {
   MALFORMED_REASONS,
   PROPOSAL_TYPES,
+  PROVIDER_SAMPLINGS,
   SKILL_NEED_CAP,
   SKILL_NEED_MAX_SKILLS,
   SKILL_NEED_OUTCOMES,
@@ -21,6 +22,7 @@ import {
   SKILL_NEED_WINDOW_MS,
   checkSkillNeed,
   parseProposalDetailed,
+  samplingForTaskClass,
   type SkillNeedProposal,
 } from '../src/index.js';
 import * as gov from '../src/index.js';
@@ -75,6 +77,13 @@ describe('G4-C2-SNA-01: the classifier contract', () => {
     assert.ok(SKILL_NEED_PREAMBLE.includes('You do not answer the Founder'));
     assert.ok(SKILL_NEED_PREAMBLE.includes('{"type":"SKILL_NEED","skills":[{"code":"<skill code>","tier":"TASK_REQUIRED|SUPPORTING|NON_RELEVANT"}]}'));
     for (const name of ['Ahmed', 'أحمد', 'ceo.']) assert.equal(SKILL_NEED_PREAMBLE.includes(name), false, `Employee-neutral: ${name}`);
+  });
+
+  test('G4-C2-TEMP-01: the frozen SNP-2 is unchanged, and only the assessment task class is sampled deterministically', () => {
+    assert.equal(SKILL_NEED_PREAMBLE_SHA256, '8367fe1c5b2e9235f7f3311ae995baf2e229f59a3071980640678fb542c3d3fd', 'SNP-2 byte for byte (the hash frozen before the temperature correction)');
+    assert.deepEqual([...PROVIDER_SAMPLINGS], ['DETERMINISTIC'], 'a closed code, never a number');
+    assert.equal(samplingForTaskClass(SKILL_NEED_TASK_CLASS), 'DETERMINISTIC');
+    for (const other of ['founder.reply', 'founder.brief', 'academy.answer', 'employee.task', '', ' skill.need.assessment', 'SKILL.NEED.ASSESSMENT', '__proto__', 'constructor']) assert.equal(samplingForTaskClass(other), undefined, `"${other}" keeps the provider default`);
   });
 
   test('TS-1 is gone: no task-signal export remains beside RD-1', () => {
