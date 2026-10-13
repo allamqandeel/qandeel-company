@@ -1,15 +1,16 @@
 /**
  * P1-DESKTOP-UPGRADE-CORR-01 — the controlled activation across a schema migration, between REAL releases and REAL hosts.
  *
- * The older release is the staged current build with its last released migration withdrawn (its storage pins 0001–0021
- * only): a genuine schema-21 runtime and Founder host, started from its own frozen release, holding its own Company. The
- * newer release is the staged current build (0001–0022). Proven on disposable workspaces:
+ * The older release is the staged current build with its last released migration withdrawn (its storage pins every
+ * migration but the newest): a genuine schema-(N-1) runtime and Founder host, started from its own frozen release, holding
+ * its own Company. The newer release is the staged current build (schema N; written for 21 → 22, it follows each new
+ * migration, e.g. D-P1-15's 0023). Proven on disposable workspaces:
  *
  *   - the newer release sees the running older host (never "not running" because it cannot open the older schema);
  *   - an invalid or mismatched previous release, a host that does not stop, a squatter on the host's port and a missing
  *     descriptor are refused BEFORE anything is stopped, backed up, pinned or migrated — no duplicate runtime starts;
- *   - 21 → 22 with the previous host running (stopped by its own release, lease release proven) and stopped (and its
- *     holder crashed: the lease is waited out) activates: one READY host, the new pin, schema 22, business data unchanged;
+ *   - N-1 → N with the previous host running (stopped by its own release, lease release proven) and stopped (and its
+ *     holder crashed: the lease is waited out) activates: one READY host, the new pin, schema N, business data unchanged;
  *   - a schema newer than the runtime and a history that does not match the release are refused at the dry run;
  *   - a rehearsal failure keeps the original data and the UPDATE_HOLD; a failure after the migration is never reported as
  *     a rollback (the previous release cannot open the migrated Company): RECOVERY_HOLD, snapshot kept, nothing cleared.
@@ -27,6 +28,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { RELEASE_MANIFEST_FILE, RUNTIME_VERSION, hashReleaseTree, readReleaseManifest, readReleasePin, releaseIdOf, releasePinPath } from '@qandeel-company/runtime';
 import * as currentStorage from '@qandeel-company/storage';
 import { inspectCompanySchema } from '@qandeel-company/storage';
+
+/** The newest released migration (withdrawn from the older release) and the schema the older release runs. */
+const LAST = currentStorage.CURRENT_SCHEMA_VERSION;
+const PREV = LAST - 1;
+const LAST_FILE = currentStorage.RELEASED_MIGRATIONS[LAST - 1]?.file ?? '';
 
 import { hostPaths } from '../src/host/descriptor.js';
 import { discoverHost, ensureRunning, stopHost } from '../src/host/lifecycle.js';
@@ -106,7 +112,7 @@ describe('P1-DESKTOP-UPGRADE-CORR-01: cross-version Desktop update', { timeout: 
   let older = '';
   let olderStorage: StorageModule;
 
-  /** A disposable Company created and run by the OLDER release (schema 21), with Founder, budget and Work Items. */
+  /** A disposable Company created and run by the OLDER release (schema N-1), with Founder, budget and Work Items. */
   async function olderCompany(name: string, running: boolean): Promise<{ ws: string; instanceId: string | null; pid: number | null; data: string }> {
     const ws = path.join(root, name);
     workspaces.push(ws);
@@ -118,7 +124,7 @@ describe('P1-DESKTOP-UPGRADE-CORR-01: cross-version Desktop update', { timeout: 
       const founder = gov.registerFounder().ref;
       gov.createBudget(founder, { scope: 'COMPANY', scopeId: 'company', capMoney: 5_000_000, capTokens: 10_000_000, currency: 'USD', reasonCode: 'seed' });
       for (const objective of ['خطة الربع', 'Quarter plan', 'مراجعة']) store.createWorkItem({ objective, ownerRef: founder, initialState: 'PROPOSED' });
-      assert.equal(store.schemaVersion, 21);
+      assert.equal(store.schemaVersion, PREV);
     } finally {
       store.close();
     }
@@ -135,24 +141,24 @@ describe('P1-DESKTOP-UPGRADE-CORR-01: cross-version Desktop update', { timeout: 
   before(async () => {
     next = stageRelease(checkout, releases).root;
     // The older release: the same build with its last released migration withdrawn (pins and file).
-    older = variant(next, 'v21', (d) => {
-      edit(migrationsJs(d), /^\s*\{ version: 22, [^\n]*\n/m, '');
-      rmSync(path.join(pkg(d, 'storage'), 'migrations', '0022_p1_product_knowledge.sql'));
+    older = variant(next, `v${PREV}`, (d) => {
+      edit(migrationsJs(d), new RegExp(`^\\s*\\{ version: ${LAST}, [^\\n]*\\n`, 'm'), '');
+      rmSync(path.join(pkg(d, 'storage'), 'migrations', LAST_FILE));
     });
     olderStorage = (await import(pathToFileURL(path.join(pkg(older, 'storage'), 'dist', 'src', 'index.js')).href)) as StorageModule;
   });
 
-  test('fixture: the older release is a schema-21 runtime; the newer one reads its Company as UPDATE_REQUIRED', async () => {
-    assert.equal(olderStorage.CURRENT_SCHEMA_VERSION, 21);
+  test('fixture: the older release is a schema N-1 runtime; the newer one reads its Company as UPDATE_REQUIRED', async () => {
+    assert.equal(olderStorage.CURRENT_SCHEMA_VERSION, PREV);
     const { ws } = await olderCompany('fixture', false);
     const check = await runCli(releaseCli(next), ['release-check', '--workspace', ws]);
     assert.equal(check.json.schema, 'UPDATE_REQUIRED', JSON.stringify(check.json));
-    assert.equal(check.json.databaseVersion, 21);
+    assert.equal(check.json.databaseVersion, PREV);
     assert.equal(check.json.ok, true);
     assert.equal((await runCli(releaseCli(older), ['release-check', '--workspace', ws])).json.schema, 'CURRENT');
   });
 
-  test('21 → 22 with the previous host RUNNING: found, refused safely when unsafe, then stopped by its own release and upgraded', async () => {
+  test('N-1 → N with the previous host RUNNING: found, refused safely when unsafe, then stopped by its own release and upgraded', async () => {
     const old = await olderCompany('running', true);
     const { ws } = old;
     const pinOld = readFileSync(releasePinPath(ws), 'utf8');
@@ -160,7 +166,7 @@ describe('P1-DESKTOP-UPGRADE-CORR-01: cross-version Desktop update', { timeout: 
       const s = await discoverHost(ws);
       assert.equal(s.state, 'RUNNING', `${label}: the previous host still runs`);
       assert.equal(s.instanceId, old.instanceId, `${label}: the same host, no second runtime`);
-      assert.equal(inspectCompanySchema(ws).databaseVersion, 21, `${label}: schema untouched`);
+      assert.equal(inspectCompanySchema(ws).databaseVersion, PREV, `${label}: schema untouched`);
       assert.equal(readFileSync(releasePinPath(ws), 'utf8'), pinOld, `${label}: pin untouched`);
       assert.deepEqual(journals(ws), [], `${label}: no update started`);
     };
@@ -216,7 +222,7 @@ describe('P1-DESKTOP-UPGRADE-CORR-01: cross-version Desktop update', { timeout: 
     await unchanged('missing descriptor');
 
     // The update: the previous release stops its own host, the lease release is proven, safe-upgrade migrates in the new
-    // host's start, and exactly one READY host of the new release runs schema 22 with the business data unchanged.
+    // host's start, and exactly one READY host of the new release runs schema N with the business data unchanged.
     const r = await activateRelease(ws, next, { providers: [], shortcuts: false });
     assert.equal(r.outcome, 'ACTIVATED', JSON.stringify(r));
     assert.deepEqual(r.steps, [
@@ -228,7 +234,7 @@ describe('P1-DESKTOP-UPGRADE-CORR-01: cross-version Desktop update', { timeout: 
       { step: 'BACKUP', result: 'BY_SAFE_UPGRADE' },
       { step: 'PIN', result: 'OK' },
       { step: 'START', result: 'RUNNING' },
-      { step: 'SCHEMA', result: '21->22' },
+      { step: 'SCHEMA', result: `${PREV}->${LAST}` },
       { step: 'HEALTH', result: 'READY' },
     ]);
     const now = await discoverHost(ws);
@@ -239,7 +245,7 @@ describe('P1-DESKTOP-UPGRADE-CORR-01: cross-version Desktop update', { timeout: 
     assert.equal(pidAlive(old.pid ?? 0), false, 'the previous host has exited');
     assert.equal(readReleasePin(ws)?.releaseId, readReleaseManifest(next)?.releaseId);
     assert.equal(readReleasePin(ws)?.previous?.releaseId, readReleaseManifest(older)?.releaseId, 'the previous release is kept as the rollback point');
-    assert.equal(inspectCompanySchema(ws).databaseVersion, 22);
+    assert.equal(inspectCompanySchema(ws).databaseVersion, LAST);
     const [update] = journals(ws);
     assert.ok(update, 'the safe-upgrade journal');
     assert.equal(journal(ws, update).state, 'ACTIVATED');
@@ -254,12 +260,12 @@ describe('P1-DESKTOP-UPGRADE-CORR-01: cross-version Desktop update', { timeout: 
     assert.equal((await discoverHost(ws)).instanceId, now.instanceId, 'the new host was never stopped');
   });
 
-  test('21 → 22 with the previous host STOPPED, and with its holder crashed (the live lease is waited out, never ignored)', async () => {
+  test('N-1 → N with the previous host STOPPED, and with its holder crashed (the live lease is waited out, never ignored)', async () => {
     const stopped = await olderCompany('stopped', false);
     const r = await activateRelease(stopped.ws, next, { providers: [], shortcuts: false });
     assert.equal(r.outcome, 'ACTIVATED', JSON.stringify(r));
     assert.deepEqual(r.steps.slice(0, 5).map((s) => `${s.step}:${s.result}`), ['VERIFY:OK', 'DRY_RUN:UPDATE_REQUIRED', 'PREVIOUS:VERIFIED', 'STOP:NOT_RUNNING', 'LEASE:RELEASED']);
-    assert.equal(inspectCompanySchema(stopped.ws).databaseVersion, 22);
+    assert.equal(inspectCompanySchema(stopped.ws).databaseVersion, LAST);
     assert.equal(businessData(currentStorage, stopped.ws), stopped.data);
 
     const crashed = await olderCompany('crashed', true);
@@ -288,20 +294,20 @@ describe('P1-DESKTOP-UPGRADE-CORR-01: cross-version Desktop update', { timeout: 
     assert.equal((await runCli(releaseCli(drifted), ['release-check', '--workspace', ws])).json.schema, 'MIGRATION_CHECKSUM_DRIFT');
     const r = await activateRelease(ws, drifted, { providers: [], shortcuts: false });
     assert.equal(r.code, 'DRY_RUN_FAILED', JSON.stringify(r));
-    assert.equal(inspectCompanySchema(ws).databaseVersion, 21);
+    assert.equal(inspectCompanySchema(ws).databaseVersion, PREV);
     assert.equal(readReleasePin(ws)?.releaseId, readReleaseManifest(older)?.releaseId);
     assert.deepEqual(journals(ws), []);
     assert.equal(businessData(olderStorage, ws), data);
   });
 
   test('an update that fails before the live Company is touched rolls back truthfully; a rehearsal failure keeps the UPDATE_HOLD', async () => {
-    /** A release whose migration 0022 carries one more statement (pinned consistently, so it loads and runs). */
+    /** A release whose newest migration carries one more statement (pinned consistently, so it loads and runs). */
     const withStatement = (name: string, statement: string): string =>
       variant(next, name, (d) => {
-        const file = path.join(pkg(d, 'storage'), 'migrations', '0022_p1_product_knowledge.sql');
+        const file = path.join(pkg(d, 'storage'), 'migrations', LAST_FILE);
         const text = `${readFileSync(file, 'utf8')}\n${statement}\n`;
         writeFileSync(file, text);
-        edit(migrationsJs(d), /(\{ version: 22, [^\n]*sha256: ')[0-9a-f]{64}'/, `$1${sha(text)}'`);
+        edit(migrationsJs(d), new RegExp(`(\\{ version: ${LAST}, [^\\n]*sha256: ')[0-9a-f]{64}'`), `$1${sha(text)}'`);
       });
     const old = await olderCompany('rehearsal', true);
 
@@ -309,7 +315,7 @@ describe('P1-DESKTOP-UPGRADE-CORR-01: cross-version Desktop update', { timeout: 
     // previous release runs it again — a real rollback, reported as one.
     const unbuildable = await activateRelease(old.ws, withStatement('unbuildable', 'INSERT INTO no_such_table VALUES (1);'), { providers: [], shortcuts: false });
     assert.equal(unbuildable.outcome, 'ROLLED_BACK', JSON.stringify(unbuildable));
-    assert.equal(unbuildable.steps.find((s) => s.step === 'SCHEMA')?.result, '21->21');
+    assert.equal(unbuildable.steps.find((s) => s.step === 'SCHEMA')?.result, `${PREV}->${PREV}`);
     assert.equal(unbuildable.steps.find((s) => s.step === 'ROLLBACK_START')?.result, 'RUNNING');
     assert.equal(unbuildable.status?.schema, 'UPDATE_REQUIRED', 'the previous release runs the unchanged Company');
     assert.equal(readReleasePin(old.ws)?.releaseId, readReleaseManifest(older)?.releaseId);
@@ -324,7 +330,7 @@ describe('P1-DESKTOP-UPGRADE-CORR-01: cross-version Desktop update', { timeout: 
     assert.equal(r.steps.find((s) => s.step === 'ROLLBACK_PIN')?.result, 'PREVIOUS');
     assert.equal(r.steps.at(-1)?.result, 'UPDATE_HOLD');
     assert.equal(readReleasePin(old.ws)?.releaseId, readReleaseManifest(older)?.releaseId, 'the previous pin');
-    assert.equal(inspectCompanySchema(old.ws).databaseVersion, 21, 'the live Company was never migrated');
+    assert.equal(inspectCompanySchema(old.ws).databaseVersion, PREV, 'the live Company was never migrated');
     assert.equal(businessData(olderStorage, old.ws), old.data, 'original data preserved');
     assert.ok(journals(old.ws).some((id) => journal(old.ws, id).state === 'UPDATE_HOLD' && journal(old.ws, id).code.startsWith('REHEARSAL_')));
     const held = await discoverHost(old.ws);
@@ -339,12 +345,12 @@ describe('P1-DESKTOP-UPGRADE-CORR-01: cross-version Desktop update', { timeout: 
     const r = await activateRelease(old.ws, dying, { providers: [], shortcuts: false });
     assert.notEqual(r.outcome, 'ROLLED_BACK', 'never reported as a successful rollback');
     assert.equal(r.outcome, 'RECOVERY_HOLD', JSON.stringify(r));
-    assert.equal(r.steps.find((s) => s.step === 'SCHEMA')?.result, '21->22');
+    assert.equal(r.steps.find((s) => s.step === 'SCHEMA')?.result, `${PREV}->${LAST}`);
     assert.equal(r.steps.find((s) => s.step === 'ROLLBACK_PIN')?.result, 'KEPT_SCHEMA_MIGRATED');
     assert.equal(r.steps.at(-1)?.result, 'SCHEMA_MIGRATED');
     assert.equal(readReleasePin(old.ws)?.releaseId, readReleaseManifest(dying)?.releaseId, 'the only release that can open the migrated Company');
     assert.equal(readReleasePin(old.ws)?.previous?.releaseId, readReleaseManifest(older)?.releaseId);
-    assert.equal(inspectCompanySchema(old.ws).databaseVersion, 22);
+    assert.equal(inspectCompanySchema(old.ws).databaseVersion, LAST);
     const [update] = journals(old.ws);
     assert.equal(journal(old.ws, update ?? '').state, 'ACTIVATED');
     assert.ok(existsSync(path.join(old.ws, 'maintenance', update ?? '', 'pre-update.sqlite3')), 'the pre-update snapshot is kept for a Founder-approved rollback-update');

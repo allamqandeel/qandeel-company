@@ -6681,3 +6681,102 @@ set; the Founder decides between a fix and acceptance. Nothing was tuned on HO-1
 - Knowledge losses under populated stores are whole-item budget rejections that 60K does not solve (company-knowledge track).
 - Past the pool limits, admission still ranks by matched-term count, not importance (pre-existing; company-knowledge track).
 - Rollback: reinstall the previous pin; no schema change, no DB restore. Re-upgrade reaches rows written meanwhile through tier 1.
+
+## D-P1-15 — Skill Need Assessment (SNA): a governed DeepSeek Flash classification decides a Founder reply's Skill tiers; TS-1 retired; conservative fallback (G4-C2-SNA-01; Founder decision after WP0 G4-C2-ARCH-01, executor; replaces D-P1-14 item 2 and its rollback line)
+
+**Context.** HO-1 failed (D-P1-14). G4-C2-CORR-01 WP0 showed that no deterministic design generalizes: a structured
+lexical task model (TU-1) tuned to 0.93 recall on one author fell to 0.63 on an unseen author, a local n-gram classifier
+reached 0.16–0.28, while a blind language-model labeller reading the frozen SN-2 guidelines
+(`docs/P1_SKILL_NEED_GUIDELINES_SN2.md`) agreed with an independent author at 0.957 recall / 0.873 precision.
+G4-C2-ARCH-01 compared A (conservative deterministic), B (a governed model classification) and C (hybrid) and proved from
+the code that no existing call can be reused, that a classification inside the reply Work Item would take one of its three
+calls (`CHAT_REPLY_MAX_MODEL_CALLS`) and inherit the Founder's pinned level, and that the reliable local uncertainty signal
+C needs does not exist (the TU-1 shape gate still sent 78 % of messages to the model and lost 5 of 248 required Skills).
+The Founder approved B with its own task class, A as the fallback only, C rejected, and a bounded paid validation on DEV.
+
+**Decision (implemented).**
+1. **Its own Work Item and task class.** `txFounderSend` (one transaction) opens, for a `founder.reply` whose Employee holds
+   eligible Skills with a need card, one child Work Item `c2.skill-need-assessment` (task class `skill.need.assessment`,
+   input pinned at E1, `maxModelCalls` 1, 256 output, D2, 24,000 context budget, its own cap of 20,000 µUSD / 40,000 tokens
+   from the Employee envelope, priority 70). It is never `founder.reply`: its own grant, route policy and deployment
+   qualification; never one of the reply's calls; never the Founder's per-message level (that pins only the reply).
+   The reply's job is enqueued available after the dependency window (20 s): no worker waits; the assessment's result
+   makes it available at once (`available_at` moves, so the wake generation advances, D-C1-23).
+2. **Provisioning is explicit and Founder-confirmed.** `DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE` (additive, `extendsProvider`)
+   registers one new E1 deployment `deepseek-flash-e1-skill-need` qualified for that class only (same model identity,
+   pinned revision, price card, D2 egress, LIMITED_PRODUCTION) and the class's route policy (E1..E1, one retry of a provably
+   unsent attempt, two calls per run, no escalation, 20,000 µUSD overhead). The Employee's `model.invoke` for the class is
+   the existing Founder act EMPLOYEE_MODEL_ACCESS. Without the route policy or the grant the send seals the fallback
+   (`NOT_PROVISIONED`) and opens nothing.
+3. **What the classifier reads.** Context Assembly builds, for an assessment, only the governed preamble (SNP-2, see below; governance;
+   derived from SN-2 §1–§2; Employee-neutral; versioned and digested) and the request (mind): SN-2 §4 Company context, the
+   SNC-1 need card (SN-2 §3) of exactly the offered Skills, and the Founder message verified against the hash the send bound.
+   Never a Skill payload, knowledge, memory, canonical truth, history or recent result. Manifest as for any call.
+4. **The call** goes through the unchanged Model Runtime (authorize → route → reserve the worst case → call → settle) with
+   its own timeout (`ModelCallRequest.timeoutMs`, only ever shorter than the runtime's: 15 s). The processor makes one call,
+   never waits on a circuit, never escalates, and can only call its model and record its result (`skillNeedOnly`: no tool,
+   message, memory, organizational, review, goal or answer path).
+5. **The output** is a new proposal type `SKILL_NEED` — a closed list of `{code, tier}` (no reasons); any extra field,
+   duplicate code, unknown tier or oversize list is MALFORMED (`SKILLS_INVALID`); the store binds it to exactly the offered
+   codes (`checkSkillNeed`) and to the run's own OK manifest: an unknown or missing code refuses the whole answer. In any
+   other Work Item a SKILL_NEED is never executed (WRONG_PROPOSAL_TYPE).
+6. **One durable decision per reply — migration 0023 `skill_need_assessments`** (additive, append-only, UNIQUE reply): the
+   message id and hash, the offered Skill versions, card set and prompt digests, source (MODEL / FALLBACK), outcome code,
+   tiers, run and manifest — content-free. First writer wins: the assessment (CLASSIFIED or its fallback cause), the send
+   (NOT_PROVISIONED) or the reply's Context Assembly, which seals WINDOW_EXPIRED / ASSESSMENT_ENDED when none exists; a late
+   or second result is refused (`ALREADY_DECIDED`); every step of a reply plans with the same decision. A classification is
+   applied only to exactly the Skill versions it was given (otherwise STALE_RESULT → fallback). Necessity: no existing table
+   can bind a result to a reply, a message hash and Skill versions with uniqueness and immutability without misusing its
+   meaning (`context_step_results`' closed kinds, `idempotency_records`' 161-character reference).
+7. **The reply** tiers each Skill with a card by the decision; the conservative fallback is every eligible offered Skill
+   SUPPORTING (never NON_RELEVANT, never an ineligible Skill); Skills without a card keep the legacy lexical path. CP-1, 60K,
+   G4b, DG-1n, eligibility, conflicts, certification and the hash-verified loader are unchanged. The manifest records policy,
+   source, outcome, card set, record id and tier counts.
+8. **TS-1 retired.** `reasoning-demand.ts` is byte-identical to D1 (`2be1b68`); RD-1 unchanged; the SN-1 table is replaced
+   by the SNC-1 cards. TU-1 was never released (archived as evidence).
+9. **Failure behaviour.** Invalid output, a timeout, an unavailable or failing provider, an open circuit, a budget refusal,
+   a context refusal or the call bound each record one fallback cause and end the assessment FAILED (never BLOCKED: no
+   reconciliation brief); a possibly billed call keeps its money held for the existing reconciliation; the reply lands.
+
+**Proof (no network, no paid call).** governance `p1-skill-need` (grammar, binding, contract, TS-1 gone); mind
+`p1-context-intel` (cards, request, digest); storage `p1-skill-need` (send, provisioning, assessment context, exactly-once,
+late / window / ended / stale, fallback on a populated store, content-free), `p1-skill-need-migration` (v22 → v23, every row
+kept, append-only, CHECKs), `p1-context-intel` (60K / G4b / AC2 / AC4 / AC6 on SNA tiers); runtime `p1-skill-need` (real
+runtime and DeepSeek adapter behind a fake transport: the assessment first at E1 / 256 under its own Work Item and
+deployment, the reply's own calls and D1's AUTO E2 8,192 unchanged, invalid / prose / failing / timed-out / budget-refused /
+not-provisioned paths, restart ordering, the profile), `p1-skill-need-processor` (outcome mapping, closed services, timeout);
+command-center `p1-desktop-upgrade` now follows the newest migration (N-1 → N). `verify-bootstrap`: `skill-need` joins the
+C3 writers (memory-writes-confined).
+
+**Rollback.** Migration 0023 makes this a schema change: the previous release refuses schema 23 (SCHEMA_FROM_FUTURE), so a
+rollback is the activation's pre-update backup plus the previous pin (D1 activation), never an in-place downgrade.
+
+**Paid validation (DEV only, 2026-10-13/14; `scripts/p1-sna-evaluate.mjs`).** The real governed runtime in a disposable
+workspace (test seam; `model.invoke` for `skill.need.assessment` only; the assessment processor only, so no reply ran) and the
+real DeepSeek V4.1 Flash. A ledger carries the Founder's $5 total: each run's Company cap is what is left of it, each
+assessment is capped at $0.02, and failed, uncertain and held money counts. Spend so far: 1,081,958 µUSD economic
+(144,864 µUSD billed, all off-peak) of 5,000,000, for 1,200 classifications. Metrics are SN-2 TASK_REQUIRED on the five task
+Skills (the scorer of the free simulation); founder-partnership is reported separately.
+
+| Prompt (sha256) | Set | R | P | exec pred/ref | partnership pred/ref | lost in MULTI | invalid |
+|---|---|---|---|---|---|---|---|
+| SNP-1 (a635c010…) | DEVA+DEVB 240 | 0.953 | 0.824 | 34/21 | 38/28 | 0 | 0 |
+| SNP-2 (8367fe1c…) | DEVA+DEVB 240 | 0.932 | 0.844 | 25/21 | 33/28 | 1 | 0 |
+| SNP-3 (dea6f38e…) | DEVA+DEVB 240 | 0.958 | 0.763 | 42/21 | 44/28 | 0 | 0 |
+| SNP-2 repeat | DEVA+DEVB 240 | 0.932 | 0.836 | 25/21 | 29/28 | 1 | 1 (fallback) |
+| **SNP-2 frozen** | **VAL1–4 240, once** | **0.932** | **0.806** | **33/23** | **44/43** | **0** | **0** |
+
+VAL1–4 (SNP-2): per-Skill recall governance 0.913, executive 0.913, evidence 0.981, organization 0.915, cross-functional
+0.917; per language EN 0.955, MSA 0.942, EG 0.899 (gap 0.056); loaded recall 1.0; SIMPLE 48/48 without a task Skill; 0
+fallbacks; provider latency mean 1.23 s, p95 1.45 s; assessment end-to-end p95 1.80 s (240/240 inside the 20 s window); input
+≈2,500 tokens (≈2,300 cached), output ≈132 (max 138 of 256); ≈$0.91 economic / ≈$0.12 billed per 1,000 messages.
+Every numeric gate of the decision (R ≥ 0.90, P ≥ 0.80, per-Skill R ≥ 0.80, per-language R ≥ 0.85, gap ≤ 0.10) passes; the
+Founder's "no over-assignment of executive-judgment" does not (precision 0.636; all 12 false positives are reference
+SUPPORTING, i.e. a tier promotion, never an irrelevant Skill). Run-to-run variance: two identical SNP-2 DEV runs differ on
+12.4% of labels (no sampling temperature is pinned), so differences between prompt versions are partly noise. The three
+allowed prompt versions are spent; SNP-3 was not adopted.
+
+**Open (Founder Decision Gate).** HO-2 is untouched (sealed, unopened). Stopped under the task's quality stop rule: whether
+the VAL over-assignment of executive-judgment is acceptable for the one-shot HO-2 on frozen SNP-2, or the classifier first
+needs a change outside this approval (a fourth prompt version, a pinned sampling temperature for this task class, or an
+executive-judgment card revision under SN-2), is the Founder's decision. No PR, no LIVE change.

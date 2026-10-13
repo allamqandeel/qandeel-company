@@ -11,7 +11,7 @@
  * message bodies are company content under the FOUNDER_ONLY scope and never enter audit, events or logs.
  */
 import { QandeelError, assertCode, assertId, boundedJson, boundedText, canonicalJson, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { AUTO_E2_REPLY_OUTPUT_ALLOWANCE, MANUAL_E4_OUTPUT_ALLOWANCE, OUTPUT_ALLOWANCE_BY_CLASS, assessReasoningDemand, taskSignals, assertCognitiveProfile, isReasoningDemand, reasoningSelectionOf, assertTaskClass, briefAttentionLevel, effectiveClass, isAttentionLevel, isContextKind, isMessagePurpose, isReasoningClass, isStructuredRef, type AttentionLevel, type ContextKind, type FounderBrief, type MessagePurpose, type ReasoningClass, type ThreadKind } from '@qandeel-company/governance';
+import { AUTO_E2_REPLY_OUTPUT_ALLOWANCE, MANUAL_E4_OUTPUT_ALLOWANCE, OUTPUT_ALLOWANCE_BY_CLASS, SKILL_NEED_POLICY, assessReasoningDemand, assertCognitiveProfile, isReasoningDemand, reasoningSelectionOf, assertTaskClass, briefAttentionLevel, effectiveClass, isAttentionLevel, isContextKind, isMessagePurpose, isReasoningClass, isStructuredRef, type AttentionLevel, type ContextKind, type FounderBrief, type MessagePurpose, type ReasoningClass, type ThreadKind } from '@qandeel-company/governance';
 import { containsSecretMaterial } from '@qandeel-company/mind';
 
 import { budgetFor, employeeIdFromRef, getEmployeeRow, txAllocateWorkItemBudget } from './governance-core.js';
@@ -27,6 +27,7 @@ import { applyTransition, enqueueJob } from './work-core.js';
 import { txDeclareRequirements } from './capability.js';
 import { txCreateWorkItem } from './work-items.js';
 import { CEO_DIRECT_CONVERSATION } from './mind-writes.js';
+import { skillNeedReplyAvailableAt, txOpenSkillNeed, txPlanSkillNeed } from './skill-need.js';
 
 const EMPLOYEE_TASK = 'c2.employee-task';
 /** Founder communication runs are ordinary governed tasks of this class (routed by the Router Policy). */
@@ -232,9 +233,13 @@ export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSen
     const allowances = chosen === 'E4' ? CHAT_REPLY_MANUAL_E4_OUTPUT_TOKENS : CHAT_REPLY_OUTPUT_TOKENS;
     // D-P1-13: a reply without a Founder level may run under AUTO; its AUTO-only E2 allowance is applied by the run, never here.
     const autoAllowances = chosen === null ? { autoMaxOutputTokensByClass: CHAT_REPLY_AUTO_OUTPUT_TOKENS } : {};
-    // D-P1-14: a Founder reply plans a 60,000 context with Skill selection from the message's TS-1 signals (content-free
-    // codes, like the RD-1 demand). Any other reply task class keeps its exact input.
-    const contextIntel = taskClass === FOUNDER_REPLY_TASK_CLASS ? { contextBudgetTokens: FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS, taskSignals: taskSignals({ text: body, purpose: input.purpose, attentionLevel: level, executive: e.orgScope === 'COMPANY' }) } : {};
+    // D-P1-14: a Founder reply plans a 60,000 context in the CP-1 order. D-P1-15 (G4-C2-SNA-01): its Skill need comes from the
+    // Skill Need Assessment of this message (a separate governed Work Item), never from words in the message. Any other reply
+    // task class keeps its exact input.
+    const founderReply = taskClass === FOUNDER_REPLY_TASK_CLASS;
+    const contextIntel = founderReply ? { contextBudgetTokens: FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS, skillNeed: { policy: SKILL_NEED_POLICY } } : {};
+    // The Skills the assessment is offered (eligible, with a need card; metadata only) and whether it can run at all.
+    const skillNeed = founderReply ? txPlanSkillNeed(ctx, e.id) : null;
     const created = txCreateWorkItem(
       ctx,
       {
@@ -259,8 +264,11 @@ export function txFounderSend(ctx: StoreContext, threadId: Id, input: FounderSen
     declareRoleTopics(ctx, replyWorkItemId, e.id, e.roleRef);
     txAllocateWorkItemBudget(ctx, replyWorkItemId, e.id, cap, founderRef, 'founder.reply');
     const ready = applyTransition(ctx, getWorkItemRow(ctx, replyWorkItemId), 'READY', { reasonCode: 'founder.reply', trace: { correlationId: created.workItem.correlationId, actorRef: founderRef } });
-    enqueueJob(ctx, ready, { correlationId: ready.correlationId, actorRef: founderRef });
+    // D-P1-15: a reply that waits for its assessment is available only after the dependency window (no worker waits); the
+    // assessment's result makes it available at once, and the reply plans with the fallback if none arrived by then.
+    enqueueJob(ctx, ready, { correlationId: ready.correlationId, actorRef: founderRef }, skillNeed?.assess === true ? skillNeedReplyAvailableAt(ctx) : undefined);
     const message = insertMessageWithId(ctx, t, messageId, { senderKind: 'FOUNDER', senderRef: founderRef, purpose: input.purpose, level, body, brief: null, responseRequired: true, replyWorkItemId, runId: null, contextRefsJson: refsJson });
+    if (skillNeed !== null) txOpenSkillNeed(ctx, e, ready, skillNeed, { threadId: t.id, messageId, body, actorRef: founderRef });
     remember(message);
     return { message, replyWorkItemId };
   }

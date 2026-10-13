@@ -94,6 +94,7 @@ import { txGoalAct } from './goals.js';
 import { getEmployeeRow, recoverBudgetAdmissions } from './governance-core.js';
 import { attributed } from './governed-writes.js';
 import { txRecordAnswer, type AnswerInput, type AnswerProvenance, type RecordAnswerResult } from './answers.js';
+import { txRecordSkillNeed, txSkillNeedAssessmentState, type RecordSkillNeedInput, type RecordSkillNeedResult, type SkillNeedAssessmentState } from './skill-need.js';
 import { materializeExpiredActing } from './org-core.js';
 import { txOrgAct, txReviewDecision, type OrgActResult, type ReviewDecisionResult } from './org-writes.js';
 import { sweepReviews } from './review-core.js';
@@ -294,6 +295,7 @@ export function abandonStaleInstances(store: CompanyStore, supervisor: Superviso
 export type { BeginResult, GovernedRecoverySummary, GovernedRunContext, ReserveInput, ReserveResult, ToolDriverOutcome, ToolIntent, ToolIntentInput, AuthorizeResult } from './governed-writes.js';
 export { GOVERNED_STEP_SPAN } from './governed-writes.js';
 export type { SettleUsage } from './governance-core.js';
+export type { RecordSkillNeedInput, RecordSkillNeedResult, SkillNeedAssessmentState, SkillNeedBinding } from './skill-need.js';
 
 /** Binds the run to its eligible Employee (and Department). */
 export function beginGovernedRun(store: CompanyStore, fence: Fence): BeginResult {
@@ -603,6 +605,23 @@ export function recordAnswer(store: CompanyStore, fence: Fence, input: AnswerInp
     const a = attributed(ctx, fence);
     return txRecordAnswer(ctx, fence, a.employeeId, a.workItemId, input, from);
   });
+}
+
+/**
+ * D-P1-15 (G4-C2-SNA-01): what a Skill Need Assessment run sees before it calls — its binding, whether a decision already
+ * exists and whether its reply already ended (then no call is made). Fenced to the assessment's own run.
+ */
+export function skillNeedAssessmentState(store: CompanyStore, fence: Fence): SkillNeedAssessmentState {
+  return fenced(store, 'skill need state', fence, (ctx) => txSkillNeedAssessmentState(ctx, fence));
+}
+
+/**
+ * D-P1-15: the assessment's one durable result — a classification bound to its offered Skills, or the fallback with its
+ * cause — written by its own fenced run; the reply's job becomes available in the same transaction. A late result never
+ * replaces an existing decision.
+ */
+export function recordSkillNeed(store: CompanyStore, fence: Fence, input: RecordSkillNeedInput): RecordSkillNeedResult {
+  return fenced(store, 'skill need result', fence, (ctx) => txRecordSkillNeed(ctx, fence, input));
 }
 
 /**

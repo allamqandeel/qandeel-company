@@ -141,7 +141,8 @@ const STORAGE_EXPORTS = ['.', './runtime-authority', './testing'];
 // tests (plus the acceptance harness) may import it.
 const TEST_CONDITION = 'qandeel-test';
 // L1-01: the Founder-host live smoke seeds identities through the seam exactly as the acceptances do (never CI, never a product path).
-const TEST_SEAM_HARNESSES = ['scripts/c2-acceptance.mjs', 'scripts/c3-acceptance.mjs', 'scripts/c4-acceptance.mjs', 'scripts/c5-acceptance.mjs', 'scripts/c5-visual-proof.mjs', 'scripts/c5/seed-company.mjs', 'scripts/c6-acceptance.mjs', 'scripts/l1-deepseek-smoke.mjs'];
+// D-P1-15: so does the Skill Need Assessment measurement harness (a disposable workspace; never CI, never the Founder's Company).
+const TEST_SEAM_HARNESSES = ['scripts/c2-acceptance.mjs', 'scripts/c3-acceptance.mjs', 'scripts/c4-acceptance.mjs', 'scripts/c5-acceptance.mjs', 'scripts/c5-visual-proof.mjs', 'scripts/c5/seed-company.mjs', 'scripts/c6-acceptance.mjs', 'scripts/l1-deepseek-smoke.mjs', 'scripts/p1-sna-evaluate.mjs'];
 const FOUNDER_SEAM_FILES = ['packages/storage/src/governance.ts', 'packages/storage/src/testing/founder-seam.ts'];
 const CLI_SOURCE = 'packages/runtime/src/cli.ts';
 const AUTHORITY_SUBPATH = '@qandeel-company/storage/runtime-authority';
@@ -760,8 +761,9 @@ const RUNTIME_SERVICES = 'packages/runtime/src/runtime.ts';
 // Durable Memory / Knowledge / Canonical Truth / Skill / Academy / certification state changes only in
 // the C3 storage modules (never in the runtime, the governance kernel or the ordinary CompanyStore).
 // L1-02: `academy-packages` is the Academy package lifecycle (qualify → benchmark → install), a C3 storage module behind
-// the Founder-authority write path (D-L1-13); it joins the C3 writers.
-const MIND_WRITERS = ['mind-core', 'mind-writes', 'memory', 'skill-registry', 'academy', 'capability', 'academy-packages', 'academy-feedback'].map((m) => `packages/storage/src/${m}.ts`);
+// the Founder-authority write path (D-L1-13); it joins the C3 writers. D-P1-15: `skill-need` holds the Skill Need Assessment
+// decisions that tier a Founder reply's Skills (C3 context planning; append-only records, fenced writes) — a C3 writer too.
+const MIND_WRITERS = ['mind-core', 'mind-writes', 'memory', 'skill-registry', 'academy', 'capability', 'academy-packages', 'academy-feedback', 'skill-need'].map((m) => `packages/storage/src/${m}.ts`);
 const MIND_WRITE = /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO|DELETE\s+FROM|REPLACE\s+INTO)\s+(?:canonical_truth|memory_\w+|lesson\w*|knowledge_\w+|context_\w+|skill\w*|role_blueprint\w*|passport_\w+|academy_\w+|certification\w*|founder_calibrations|probation_\w+|activation_requests|capability_gaps|work_item_capabilities|run_execution_modes)\b/i;
 // Founder / evaluator acts that model output must never reach: the runtime and CLI never call them.
 const MIND_AUTHORITY_CALL = /\.(?:recordCanonicalTruth|correctMemory|recordKnowledge|validateLesson|decidePromotion|advanceSkillVersion|acknowledgePaidDependency|publishBlueprint|openPassportEntry|rolloutUpdate|rollbackUpdate|recordEvaluation|decideProbationReview|decideFounderCalibration|decideActivation|revokeCertification|requireRecertification|cancelGap)\s*\(/;

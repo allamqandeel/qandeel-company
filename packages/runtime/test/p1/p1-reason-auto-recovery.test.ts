@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import type { Clock, Id } from '@qandeel-company/domain';
-import { AUTO_E2_REPLY_OUTPUT_ALLOWANCE, MANUAL_E4_OUTPUT_ALLOWANCE, isTaskSignals, worstCase, type ReasoningClass } from '@qandeel-company/governance';
+import { AUTO_E2_REPLY_OUTPUT_ALLOWANCE, MANUAL_E4_OUTPUT_ALLOWANCE, worstCase, type ReasoningClass } from '@qandeel-company/governance';
 import { DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_REASONING_PROFILE, DeepSeekProviderAdapter, FakeDeepSeekTransport, fakeChatAnswer, fakeModelsAnswer, type DeepSeekRequest, type DeepSeekResponse } from '@qandeel-company/model-providers';
 import { InMemorySecretVault } from '@qandeel-company/secret-vault';
 import { CHAT_REPLY_AUTO_OUTPUT_TOKENS, CHAT_REPLY_OUTPUT_TOKENS, CompanyStore, FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS, GovernanceStore, OrganizationStore, type EmployeeRecord } from '@qandeel-company/storage';
@@ -859,13 +859,13 @@ describe('D-P1-14: a Founder reply plans 60,000 — E1 stays eligible and every 
     assert.ok(FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS + 2 * CHAT_REPLY_OUTPUT_TOKENS.E1 <= 65_536, 'E1 continuation margin');
   });
 
-  test('a real AUTO reply records 60,000 and its TS-1 signals; a simple message runs at E1 with 2,048, reserved at the worst case of its rendered input', () =>
+  test('a real AUTO reply records 60,000 and Skill selection (SNA-1); a simple message runs at E1 with 2,048, reserved at the worst case of its rendered input', () =>
     withWorld('d14-auto-e1', { ceiling: 'E4', reasoningProfile: true }, () => ok('Noted.'), async ({ rt, w, sent }) => {
       const id = ask(rt, w, 'Thanks, got it.');
       assert.equal(await settled(rt, id), 'COMPLETED');
       const input = rt.view.getWorkItem(id).processorInput as Record<string, unknown>;
       assert.equal(input.contextBudgetTokens, 60_000);
-      assert.ok(isTaskSignals(input.taskSignals));
+      assert.deepEqual(input.skillNeed, { policy: 'SNA-1' });
       assert.deepEqual(sent.map((x) => [x.effort ?? 'off', x.maxTokens]), [['off', 2_048]], 'E1, unchanged allowance');
       const r = rt.view.runsForWorkItem(id).flatMap((x) => rt.governance.reservations(x.id)).find((x) => x.purpose === 'MODEL_CALL');
       assert.ok(r && r.tokens - 2_048 <= FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS, 'the input bound never exceeds the policy total');

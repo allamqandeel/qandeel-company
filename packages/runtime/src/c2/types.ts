@@ -5,7 +5,7 @@
  */
 import type { JsonObject, Processor, ProcessorContext, ProcessorResult } from '@qandeel-company/domain';
 import type { AutoConstraint, EscalationEvidence, MalformedReason, MessageRefsRecovery, OutputDiagnosticCode, ModelProposal, ProviderFailureClass, ProviderFinishReason, ProviderUsage, ReasoningClass, ReasoningDemand } from '@qandeel-company/governance';
-import type { GovernedRunContext } from '@qandeel-company/storage/runtime-authority';
+import type { GovernedRunContext, RecordSkillNeedInput, RecordSkillNeedResult, SkillNeedAssessmentState } from '@qandeel-company/storage/runtime-authority';
 
 /**
  * One model step. There are no messages here: the runtime assembles the context for the step through
@@ -36,6 +36,11 @@ export interface ModelCallRequest {
    * (bounded), a separately reserved RETRY attempt. Never an escalation.
    */
   readonly continuation?: { readonly reasoningClass: ReasoningClass; readonly exhaustedTokens: number };
+  /**
+   * D-P1-15 (G4-C2-SNA-01): this call's own timeout (milliseconds), only ever shorter than the runtime's: a Skill Need
+   * Assessment never waits the reply's minutes. Absent, the runtime's timeout applies (every other call is unchanged).
+   */
+  readonly timeoutMs?: number;
 }
 
 /** How the starting class of a model step was chosen (P1-REASON-AUTO-RECOVERY-01; content-free). */
@@ -180,6 +185,13 @@ export interface GovernedRunServices {
   goalAct(proposal: GoalActProposal, step: number): GoalActOutcome;
   /** L1-02: the one answer of this run's answer-bearing Work Item (fenced; never authority, never a score). */
   recordAnswer(proposal: AnswerProposal, step: number, manifestId: string): AnswerOutcome;
+  /**
+   * D-P1-15: a Skill Need Assessment run's state — its binding, whether a decision exists, whether its reply ended. The store
+   * refuses it for any other Work Item.
+   */
+  skillNeedState(): SkillNeedAssessmentState;
+  /** D-P1-15: the assessment's one durable result (a classification or the fallback with its cause; fenced). */
+  recordSkillNeed(input: RecordSkillNeedInput): RecordSkillNeedResult;
 }
 
 /**

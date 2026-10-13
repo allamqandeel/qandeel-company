@@ -75,7 +75,7 @@ import { parseArgs } from 'node:util';
 
 import { isQandeelError } from '@qandeel-company/domain';
 import { actualCost, worstCase, type ProviderAdapter, type ProviderProvisioningProfile } from '@qandeel-company/governance';
-import { DEEPSEEK_FLASH_PRICE_CARD, DEEPSEEK_MODEL_CODE, DEEPSEEK_PROVIDER_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_PROFILE, DEEPSEEK_V41_FLASH_REASONING_PROFILE, DeepSeekHttpsTransport, DeepSeekProviderAdapter, PROBE_MAX_TOKENS, PROBE_THINKING_MAX_TOKENS } from '@qandeel-company/model-providers';
+import { DEEPSEEK_FLASH_PRICE_CARD, DEEPSEEK_MODEL_CODE, DEEPSEEK_PROVIDER_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_PROFILE, DEEPSEEK_V41_FLASH_REASONING_PROFILE, DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE, DeepSeekHttpsTransport, DeepSeekProviderAdapter, PROBE_MAX_TOKENS, PROBE_THINKING_MAX_TOKENS } from '@qandeel-company/model-providers';
 import { Logger, admitRuntimeRelease, jsonLinesSink, selfReleaseRoot, verifyReleaseTree } from '@qandeel-company/runtime';
 import { VaultError, WindowsUserVault } from '@qandeel-company/secret-vault';
 import { GitHubHttpsTransport } from '@qandeel-company/tool-drivers';
@@ -115,7 +115,7 @@ function liveProvider(code: string): { adapter: ProviderAdapter & DeepSeekProvid
   // L1-02 (D-L1-14): the versioned activation profile (E1 / E2 and the Academy task classes) is offered beside the unchanged
   // L1-01 profile; a provider is provisioned once, by the Founder's explicit choice. Both share one model identity.
   // P1-CHAT-INTEL-01: the additive E3 / E4 conversation profile extends an already provisioned provider (never re-provisions).
-  return { adapter: new DeepSeekProviderAdapter({ vault: new WindowsUserVault(), transport: new DeepSeekHttpsTransport() }), profile: DEEPSEEK_V41_FLASH_PROFILE, profiles: [DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_PROFILE, DEEPSEEK_V41_FLASH_REASONING_PROFILE] };
+  return { adapter: new DeepSeekProviderAdapter({ vault: new WindowsUserVault(), transport: new DeepSeekHttpsTransport() }), profile: DEEPSEEK_V41_FLASH_PROFILE, profiles: [DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_PROFILE, DEEPSEEK_V41_FLASH_REASONING_PROFILE, DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE] };
 }
 
 /** Whether every configured live provider's vault reference holds a value (a file check: no key is read or decrypted). */

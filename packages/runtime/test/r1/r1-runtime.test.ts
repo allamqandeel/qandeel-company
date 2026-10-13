@@ -814,6 +814,8 @@ describe('R2-12: one run-failure vocabulary — the runtime records the real cau
       sendMessage: () => ({ outcome: 'RECORDED', code: 'OK', messageId: null }),
       goalAct: () => ({ outcome: 'DONE', code: 'OK', resultRef: null }),
       recordAnswer: () => ({ outcome: 'RECORDED', code: 'OK', answerId: null }),
+      skillNeedState: () => { throw new Error('not a Skill Need Assessment'); },
+      recordSkillNeed: () => { throw new Error('not a Skill Need Assessment'); },
       ...over,
     };
     const r = await employeeTaskProcessor.runGoverned(ctxFor(input), services);

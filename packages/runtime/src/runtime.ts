@@ -69,6 +69,7 @@ import {
   AcademyStore,
   AttentionStore,
   CapabilityStore,
+  SkillNeedStore,
   CommunicationStore,
   FounderActionStore,
   FounderAuthStore,
@@ -108,6 +109,7 @@ import {
 import type { OutputDiagnosticCode, ProviderAdapter, ProviderProvisioningProfile, ToolDriver } from '@qandeel-company/governance';
 
 import { GovernedModelRuntime, type RunDeadline } from './c2/model-runtime.js';
+import { SKILL_NEED_ASSESSMENT_KIND, skillNeedOnly } from './c2/skill-need-assessment.js';
 import { ToolExecutor } from './c2/tool-executor.js';
 import { isGovernedProcessor, type AnswerProposal, type GoalActProposal, type GovernedRunServices, type MemoryProposal, type MessageProposal, type ModelCallOutcome, type ModelCallRequest, type OrgActProposal, type ReviewDecisionProposal, type ToolRequest } from './c2/types.js';
 import { assembleGovernedContext } from './c3/context-assembler.js';
@@ -134,9 +136,12 @@ import {
   recordReviewDecision,
   recordStepResult,
   recordInvalidOutput,
+  recordSkillNeed,
   settle,
+  skillNeedAssessmentState,
   updateInstance,
 } from '@qandeel-company/storage/runtime-authority';
+import type { RecordSkillNeedInput } from '@qandeel-company/storage/runtime-authority';
 
 import { ProcessorRegistry } from './deterministic-processors.js';
 import { Logger, errorCode, silentLogger } from './logger.js';
@@ -208,6 +213,8 @@ export interface MindAdmin {
   readonly skills: SkillStore;
   readonly academy: AcademyStore;
   readonly capability: CapabilityStore;
+  /** D-P1-15: Skill need decisions of Founder replies (read-only, content-free). */
+  readonly skillNeed: SkillNeedStore;
 }
 /** C4 administration: the organization and the Review Pool (Founder writes fail closed until C5). */
 export interface OrgAdmin {
@@ -804,7 +811,7 @@ export class CompanyRuntime {
           },
         });
       const s = this.#store;
-      this.#mindAdmin = Object.freeze({ memory: wrap(MemoryStore.for(s)), skills: wrap(SkillStore.for(s)), academy: wrap(AcademyStore.for(s)), capability: wrap(CapabilityStore.for(s)) });
+      this.#mindAdmin = Object.freeze({ memory: wrap(MemoryStore.for(s)), skills: wrap(SkillStore.for(s)), academy: wrap(AcademyStore.for(s)), capability: wrap(CapabilityStore.for(s)), skillNeed: SkillNeedStore.for(s) });
     }
     return this.#mindAdmin;
   }
@@ -1388,8 +1395,13 @@ export class CompanyRuntime {
         this.#founderChanged();
         return out;
       },
+      // D-P1-15: the Skill Need Assessment's state and its one result (the store refuses both for any other Work Item).
+      skillNeedState: () => skillNeedAssessmentState(store, claim.fence),
+      recordSkillNeed: (input: RecordSkillNeedInput) => recordSkillNeed(store, claim.fence, input),
     });
-    return processor.runGoverned(context, services);
+    // D-P1-15: a Skill Need Assessment may only call its model and record its result: no tool, message, memory,
+    // organizational, review, goal or answer path exists for it, whatever its model proposes.
+    return processor.runGoverned(context, processor.kind === SKILL_NEED_ASSESSMENT_KIND ? skillNeedOnly(services) : services);
   }
 
   // --- artifacts from processors ------------------------------------------------------------------
