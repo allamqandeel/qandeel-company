@@ -20,10 +20,10 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import type { Clock, Id } from '@qandeel-company/domain';
-import { AUTO_E2_REPLY_OUTPUT_ALLOWANCE, worstCase, type ReasoningClass } from '@qandeel-company/governance';
+import { AUTO_E2_REPLY_OUTPUT_ALLOWANCE, MANUAL_E4_OUTPUT_ALLOWANCE, isTaskSignals, worstCase, type ReasoningClass } from '@qandeel-company/governance';
 import { DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_REASONING_PROFILE, DeepSeekProviderAdapter, FakeDeepSeekTransport, fakeChatAnswer, fakeModelsAnswer, type DeepSeekRequest, type DeepSeekResponse } from '@qandeel-company/model-providers';
 import { InMemorySecretVault } from '@qandeel-company/secret-vault';
-import { CHAT_REPLY_AUTO_OUTPUT_TOKENS, CHAT_REPLY_OUTPUT_TOKENS, CompanyStore, GovernanceStore, OrganizationStore, type EmployeeRecord } from '@qandeel-company/storage';
+import { CHAT_REPLY_AUTO_OUTPUT_TOKENS, CHAT_REPLY_OUTPUT_TOKENS, CompanyStore, FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS, GovernanceStore, OrganizationStore, type EmployeeRecord } from '@qandeel-company/storage';
 import { activateEmployeeForTest } from '@qandeel-company/storage/testing';
 
 import { modelCallTimeoutMs } from '../../src/c2/model-runtime.js';
@@ -832,6 +832,44 @@ describe('D-P1-13: the AUTO E2 output allowance of a Founder reply (8,192)', () 
       const reply = ask(rt, w, STRATEGY);
       assert.equal(await settled(rt, reply), 'COMPLETED');
       assert.deepEqual([replyState(rt, w, reply).selection.mode, input(rt, reply).autoMaxOutputTokensByClass, sent.slice(n).map((s) => [s.effort, s.maxTokens])], ['DEFAULT', { E2: 8_192 }, [['low', 4_096]]], 'DEFAULT E2 keeps 4,096');
+      assert.equal(rt.governance.accountingInvariants().length, 0);
+    }));
+});
+
+/**
+ * D-P1-14 (P1-CONTEXT-INTEL-01 C1, Founder decision): a new Founder reply plans a 60,000 context. The input bound of every
+ * call is the rendered context (never above the policy total), so against the provisioned DeepSeek classes E1 stays
+ * eligible — its call and its one continuation fit the 65,536 window — and every call's worst case stays within the reply's
+ * capped budget. Reservations keep their formula (the worst case of each call's own allowance).
+ */
+describe('D-P1-14: a Founder reply plans 60,000 — E1 stays eligible and every call is bounded', () => {
+  test('the bounds against the provisioned classes: each class call and its continuation fit the window at 60,000; each worst case fits the reply cap', () => {
+    assert.equal(FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS, 60_000);
+    const d = (cls: string) => [...DEEPSEEK_V41_FLASH_REASONING_PROFILE.deployments, ...DEEPSEEK_V41_FLASH_ACADEMY_PROFILE.deployments].find((x) => x.reasoningClass === cls);
+    const card = DEEPSEEK_V41_FLASH_ACADEMY_PROFILE.priceCard;
+    // [class, first allowance, continuation] — AUTO E2 (D-P1-13) and the Founder's own E4 (one 32,768 call, D-P1-12) included.
+    for (const [cls, first, next] of [['E1', CHAT_REPLY_OUTPUT_TOKENS.E1, CHAT_REPLY_OUTPUT_TOKENS.E1 * 2], ['E2', AUTO_E2_REPLY_OUTPUT_ALLOWANCE, AUTO_E2_REPLY_OUTPUT_ALLOWANCE * 2], ['E3', CHAT_REPLY_OUTPUT_TOKENS.E3, CHAT_REPLY_OUTPUT_TOKENS.E3 * 2], ['E4', MANUAL_E4_OUTPUT_ALLOWANCE, MANUAL_E4_OUTPUT_ALLOWANCE]] as const) {
+      const dep = d(cls);
+      assert.ok(dep, cls);
+      for (const out of [first, next]) {
+        assert.ok(FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS + out <= dep.contextWindowTokens && out <= dep.maxOutputTokens, `${cls}: 60,000 + ${out} within ${dep.contextWindowTokens}`);
+        assert.ok(worstCase(card as never, FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS, out).economicMicros <= 500_000, `${cls} ${out}: within the reply cap`);
+      }
+    }
+    assert.ok(FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS + 2 * CHAT_REPLY_OUTPUT_TOKENS.E1 <= 65_536, 'E1 continuation margin');
+  });
+
+  test('a real AUTO reply records 60,000 and its TS-1 signals; a simple message runs at E1 with 2,048, reserved at the worst case of its rendered input', () =>
+    withWorld('d14-auto-e1', { ceiling: 'E4', reasoningProfile: true }, () => ok('Noted.'), async ({ rt, w, sent }) => {
+      const id = ask(rt, w, 'Thanks, got it.');
+      assert.equal(await settled(rt, id), 'COMPLETED');
+      const input = rt.view.getWorkItem(id).processorInput as Record<string, unknown>;
+      assert.equal(input.contextBudgetTokens, 60_000);
+      assert.ok(isTaskSignals(input.taskSignals));
+      assert.deepEqual(sent.map((x) => [x.effort ?? 'off', x.maxTokens]), [['off', 2_048]], 'E1, unchanged allowance');
+      const r = rt.view.runsForWorkItem(id).flatMap((x) => rt.governance.reservations(x.id)).find((x) => x.purpose === 'MODEL_CALL');
+      assert.ok(r && r.tokens - 2_048 <= FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS, 'the input bound never exceeds the policy total');
+      assert.equal(r.money, worstCase(rt.governance.priceCard(r.priceCardId as Id), r.tokens - 2_048, 2_048).economicMicros, 'the reservation formula is unchanged');
       assert.equal(rt.governance.accountingInvariants().length, 0);
     }));
 });
