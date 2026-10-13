@@ -6780,3 +6780,38 @@ allowed prompt versions are spent; SNP-3 was not adopted.
 the VAL over-assignment of executive-judgment is acceptable for the one-shot HO-2 on frozen SNP-2, or the classifier first
 needs a change outside this approval (a fourth prompt version, a pinned sampling temperature for this task class, or an
 executive-judgment card revision under SN-2), is the Founder's decision. No PR, no LIVE change.
+
+**Correction G4-C2-TEMP-01 — temperature 0 for the assessment only (Founder-approved, 2026-10-14).** `ProviderRequest` gains
+an optional closed `sampling` code (`DETERMINISTIC`; no numeric field exists). The Model Runtime sets it from the call's
+authorized task class through `samplingForTaskClass`, which names `skill.need.assessment` only: nothing a model, a message,
+an Employee or a processor option supplies can select it. The DeepSeek adapter maps it to `temperature: 0` (allowlisted as a
+request field; D-L1-03's "no temperature" now holds for every other call) only with `thinking.disabled`, and refuses any other
+value, or DETERMINISTIC on a thinking class, as INVALID_REQUEST before anything is sent. Founder replies at E1–E4 (E1
+included), Academy and every other class carry no `temperature` field, as before. Unchanged: SNP-2 (sha 8367fe1c…), SN-2,
+E1 / thinking.disabled for the assessment, RD-1, E1–E4, AUTO E2, D1, the 60K context, CP-1, DG-1n, history, certifications,
+grants and money. Proofs (fake transport): the adapter, governance and runtime tests; three new L1 mutations
+(`l1-temperature-any-task-class`, `l1-temperature-dropped`, `l1-temperature-unchecked`). The harness counts the wire
+temperature per call (240/240 at 0 in each paid run below) and splits the accounting.
+
+Paid measurement on the same frozen SNP-2 (DEV twice, VAL once as a diagnostic; VAL had already informed decisions, so it
+is not a substitute for the independent HO-2):
+
+| Run | R | P | FP / FN | exec pred/ref (P) | partnership R | lang EN / MSA / EG (gap) | lost in MULTI |
+|---|---|---|---|---|---|---|---|
+| DEV, default sampling (run 1 / 2) | 0.932 / 0.932 | 0.844 / 0.836 | 33/13, 35/13 | 25/21, 25/21 | 0.893 / 0.857 | — | 1 / 1 |
+| DEV, temperature 0 (run 1 / 2) | 0.953 / 0.953 | 0.875 / 0.858 | 26/9, 30/9 | 24/21 (0.750), 26/21 (0.731) | 0.893 / 0.893 | 0.985/0.909/0.966, 0.985/0.894/0.983 | 0 / 0 |
+| VAL, default sampling | 0.932 | 0.806 | 46/14 | 33/23 (0.636) | 0.837 | 0.955/0.942/0.899 (0.056) | 0 |
+| VAL, temperature 0 | 0.937 | 0.835 | 38/13 | 32/23 (0.656) | 0.791 | 0.955/0.957/0.899 (0.058) | 0 |
+
+Stability: two identical DEV runs differ on 1.6% of labels at temperature 0 (23 of 1,440; 21 of 240 messages) against 12.4%
+(179; 125 messages) before — much better, not fully deterministic. Executive-judgment over-assignment is essentially
+unchanged (VAL 11 false positives against 12, every one a reference-SUPPORTING promotion; DEV 6–7 against 7–8), and
+founder-partnership recall on VAL fell from 0.837 to 0.791 (nine reference-TASK_REQUIRED messages labelled SUPPORTING). VAL
+(temperature 0): per-Skill recall governance 0.891, executive 0.913, evidence 1.0, organization 0.915, cross-functional 0.944;
+loaded recall 1.0; SIMPLE 48/48 without a task Skill; 0 fallbacks or failures; provider latency mean 1.19 s, p95 1.41 s;
+end-to-end p95 1.74 s (240/240 inside 20 s); ≈$0.91 economic / ≈$0.11 billed per 1,000 messages. Accounting of the three
+runs: 653,805 µUSD economic, 80,163 µUSD billed, 720 reservations all SETTLED (none held or uncertain); trial total
+1,735,763 µUSD economic (225,027 billed) of 5,000,000 over 1,920 calls.
+
+**Open (Founder Decision Gate, after G4-C2-TEMP-01).** Stopped under the correction's rule ("the over-assignment remains
+material, or quality regressed"): HO-2 stays sealed and unopened; no PR, no LIVE change.
