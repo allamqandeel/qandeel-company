@@ -6815,3 +6815,25 @@ runs: 653,805 µUSD economic, 80,163 µUSD billed, 720 reservations all SETTLED 
 
 **Open (Founder Decision Gate, after G4-C2-TEMP-01).** Stopped under the correction's rule ("the over-assignment remains
 material, or quality regressed"): HO-2 stays sealed and unopened; no PR, no LIVE change.
+
+**G4-C2-TIER-01 — bounded review of the TASK_REQUIRED / SUPPORTING errors (2026-10-14; free, no code change).** DEV and VAL
+are diagnostic only here (both informed earlier decisions). Evidence: `corr-01/sna/TIER-01-*`.
+- *Mapping.* No defect: the recorded tier reaches CP-1 unchanged; TASK_REQUIRED is protected at step 4, SUPPORTING competes
+  at step 6b inside the SKILL share, NON_RELEVANT is the only exclusion, and the tier is never rendered to the model (a Skill
+  renders as `(skill id vN)` only). Ahmed's six v7 payloads total 10,560 bytes, inside the 60K reply's SKILL share (11,897).
+- *Content effect (real storage path: send → recorded tiers → assembled context; 480 DEV+VAL messages; an EMPTY world and a
+  FULL one with canonical truth, 40 knowledge items, 30 memories and a full 11,704-byte history, 57.0–59.5K used; a null
+  control repeated each reference send, drift 0).* No reference-TASK_REQUIRED Skill was ever unloaded (0 of 467). Setting
+  only executive-judgment and founder-partnership to the classifier's TASK_REQUIRED ↔ SUPPORTING tiers (43 messages)
+  changed the loaded Skill set 0 times, displaced 0 knowledge and 0 memory items, and changed used tokens by 0; only the
+  Skill order changed (39). All six TASK_REQUIRED against all six SUPPORTING: identical selection. What changes content is
+  the SUPPORTING ↔ NON_RELEVANT boundary (VAL: loaded-set recall 0.960, precision 0.903; FULL world: 47 knowledge and 58
+  memory items displaced over 480 messages by extra or dropped SUPPORTING Skills), which no current gate measures.
+- *Cause of the 29 errors (17 executive promotions, 12 partnership demotions).* 11 are messages the two labellers split on
+  (adjudicated); 12 match a TASK_REQUIRED bullet of two Skills in SN-2 itself (a date against a data-loss risk: §3.3 and
+  §3.6; "challenge my plan": §3.2 and §3.3; decision rights inside an authority question: §3.1 and §3.2), settled only by
+  the general §2.5 precedence or not at all; 6 deviate from explicit text. Removing the overlaps is an SN-2 (SN-3) or prompt
+  change, outside this task; no production change was made.
+
+**Open (Founder Decision Gate, after G4-C2-TIER-01).** The VAL pre-gate is still unmet (executive-judgment over-assigned;
+founder-partnership recall 0.791 < 0.80). HO-2 stays sealed and unused; no PR, no LIVE change.
