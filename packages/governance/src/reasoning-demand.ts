@@ -294,6 +294,14 @@ export const OUTPUT_ALLOWANCE_BY_CLASS: Readonly<Record<ModelClass, number>> = O
 export const MANUAL_E4_OUTPUT_ALLOWANCE = 32_768;
 
 /**
+ * D-P1-13 (P1-CONTEXT-INTEL-01 D1, Founder decision): the E2 output allowance of a Founder reply while AUTO runs it at E2
+ * (its starting class or its E1 → E2 evidence escalation). It covers thinking (`reasoning_effort=low`) and answer: LIVE AUTO
+ * E2 replies used the whole 4,096 in 3 of 19 calls. A Founder-chosen E2, a DEFAULT Employee, a CEO brief and every other
+ * class and task keep `OUTPUT_ALLOWANCE_BY_CLASS`; AUTO still never runs above `AUTO_MAX_CLASS`.
+ */
+export const AUTO_E2_REPLY_OUTPUT_ALLOWANCE = 8_192;
+
+/**
  * D-P1-12: a step at the Founder's own E4 is never re-sent automatically. The provider bills the thinking either way, and a
  * same-class continuation or retry would only restart it from nothing: an exhausted or invalid output ends the step.
  */

@@ -42,6 +42,11 @@ export interface EmployeeTaskInput {
    * actually routes at; without it (every Work Item created before), `maxOutputTokens` binds every class, as before.
    */
   readonly maxOutputTokensByClass?: Readonly<Partial<Record<'E1' | 'E2' | 'E3' | 'E4', number>>>;
+  /**
+   * D-P1-13 (P1-CONTEXT-INTEL-01 D1): per-class allowances that replace those entries only while the run is AUTO (the run's
+   * durable verdict, `txAutoReasoning`). A MANUAL, DEFAULT, pinned or Academy run never reads them; absent, nothing changes.
+   */
+  readonly autoMaxOutputTokensByClass?: Readonly<Partial<Record<'E1' | 'E2' | 'E3' | 'E4', number>>>;
   /** P1-REASON-AUTO-RECOVERY-01 (C1): the governed Reasoning Demand of the request, set by the submitter (never the model). */
   readonly reasoningDemand?: ReasoningDemand;
 }
@@ -74,7 +79,18 @@ interface LoopState {
 }
 
 
-function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasoningClass' | 'dataClass' | 'maxModelCalls' | 'maxOutputTokensByClass' | 'reasoningDemand'>> & { reasoningClass: ReasoningClass | null; maxModelCalls: number | null; maxOutputTokensByClass: Readonly<Partial<Record<'E1' | 'E2' | 'E3' | 'E4', number>>> | null; reasoningDemand: ReasoningDemand | null; founderReply: boolean } {
+type ClassAllowances = Readonly<Partial<Record<'E1' | 'E2' | 'E3' | 'E4', number>>>;
+
+/** A per-class allowance table of the input, or null when absent; anything but E1–E4 keys with bounded integers is refused. */
+function allowanceTable(v: JsonValue | undefined, field: string): ClassAllowances | null {
+  if (v === undefined) return null;
+  if (v === null || typeof v !== 'object' || Array.isArray(v) || Object.keys(v).some((k) => !['E1', 'E2', 'E3', 'E4'].includes(k))) throw new Error(`invalid ${field}`);
+  const byClass: Partial<Record<'E1' | 'E2' | 'E3' | 'E4', number>> = {};
+  for (const [k, n] of Object.entries(v)) byClass[k as 'E1'] = assertIntInRange(n, field, 1, 32_768);
+  return byClass;
+}
+
+function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasoningClass' | 'dataClass' | 'maxModelCalls' | 'maxOutputTokensByClass' | 'autoMaxOutputTokensByClass' | 'reasoningDemand'>> & { reasoningClass: ReasoningClass | null; maxModelCalls: number | null; maxOutputTokensByClass: ClassAllowances | null; autoMaxOutputTokensByClass: ClassAllowances | null; reasoningDemand: ReasoningDemand | null; founderReply: boolean } {
   const o = (input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}) as Record<string, JsonValue>;
   // An invalid data class is refused outright (classification never fails open).
   if (o.dataClass !== undefined && !isDataClass(o.dataClass)) throw new Error('invalid dataClass');
@@ -87,13 +103,8 @@ function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasonin
   // C3 context controls are validated up front (a typed refusal, never a failure inside assembly).
   if (o.contextDataClassCeiling !== undefined && !isDataClass(o.contextDataClassCeiling)) throw new Error('invalid contextDataClassCeiling');
   if (o.contextBudgetTokens !== undefined) assertIntInRange(o.contextBudgetTokens, 'contextBudgetTokens', 1_024, 64_000);
-  let byClass: Partial<Record<'E1' | 'E2' | 'E3' | 'E4', number>> | null = null;
-  if (o.maxOutputTokensByClass !== undefined) {
-    const m = o.maxOutputTokensByClass;
-    if (m === null || typeof m !== 'object' || Array.isArray(m) || Object.keys(m).some((k) => !['E1', 'E2', 'E3', 'E4'].includes(k))) throw new Error('invalid maxOutputTokensByClass');
-    byClass = {};
-    for (const [k, v] of Object.entries(m)) byClass[k as 'E1'] = assertIntInRange(v, 'maxOutputTokensByClass', 1, 32_768);
-  }
+  const byClass = allowanceTable(o.maxOutputTokensByClass, 'maxOutputTokensByClass');
+  const autoByClass = allowanceTable(o.autoMaxOutputTokensByClass, 'autoMaxOutputTokensByClass');
   // A demand is the closed RD-1 shape or the input is refused (a selection never runs on an unvalidated value).
   if (o.reasoningDemand !== undefined && !isReasoningDemand(o.reasoningDemand)) throw new Error('invalid reasoningDemand');
   const instructions = boundedText(o.instructions, 'instructions', 12_000);
@@ -109,6 +120,7 @@ function readInput(input: JsonValue): Required<Omit<EmployeeTaskInput, 'reasonin
     answerOnly: o.answerOnly === true,
     maxModelCalls: typeof o.maxModelCalls === 'number' ? o.maxModelCalls : null,
     maxOutputTokensByClass: byClass,
+    autoMaxOutputTokensByClass: autoByClass,
     reasoningDemand: o.reasoningDemand !== undefined && isReasoningDemand(o.reasoningDemand) ? o.reasoningDemand : null,
     // A reply to one Founder message (the submitter binds both; a CEO brief has no Founder message). Never the model's.
     founderReply: typeof o.founderThreadId === 'string' && typeof o.founderMessageId === 'string',
@@ -191,6 +203,9 @@ export const employeeTaskProcessor: GovernedProcessor = {
     const founderE4 = isFounderE4(gov.context.reasoningOverride);
     // D-P1-11: the Work Item runs under AUTO (durable verdict of the run's begin): never above the AUTO maximum (E2).
     const autoReasoning = gov.context.autoReasoning === true;
+    // D-P1-13: the allowance table of this run: an AUTO run takes its AUTO-only entries (a Founder reply's E2 8,192); every
+    // other run keeps the recorded table exactly.
+    const byClass = autoReasoning && cfg.autoMaxOutputTokensByClass !== null ? { ...(cfg.maxOutputTokensByClass ?? {}), ...cfg.autoMaxOutputTokensByClass } : cfg.maxOutputTokensByClass;
     while (s.turn < cfg.maxTurns) {
       if (ctx.signal.aborted) return { type: 'CANCELLED' };
       if (s.phase === 'ORG' && s.pendingOrg) {
@@ -253,7 +268,7 @@ export const employeeTaskProcessor: GovernedProcessor = {
         ...(requested !== undefined ? { reasoningClass: requested } : {}),
         ...(escalateFrom !== null ? { escalation: escalateFrom } : {}),
         ...(continuation !== null ? { continuation } : {}),
-        ...(cfg.maxOutputTokensByClass !== null ? { maxOutputTokensByClass: cfg.maxOutputTokensByClass } : {}),
+        ...(byClass !== null ? { maxOutputTokensByClass: byClass } : {}),
         ...(cfg.reasoningDemand !== null ? { reasoningDemand: cfg.reasoningDemand } : {}),
         // No messages: the runtime assembles this step's context (C3 Context Assembler) from durable state —
         // instructions, skills, knowledge, memory and the results its own services recorded for earlier steps.
