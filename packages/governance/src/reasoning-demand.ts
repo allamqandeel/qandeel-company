@@ -227,6 +227,174 @@ export function isReasoningDemand(v: unknown): v is ReasoningDemand {
 }
 
 /**
+ * P1-CONTEXT-INTEL-01 (D-P1-14) — Task Signals (policy TS-1): what a request needs, as closed, content-free codes, for the
+ * Skill need table (`skillTier`, mind). TS-1 reads the same request RD-1 reads, with the same normalization and matcher,
+ * and adds to the RD-1 reasons the cue families RD-1 does not have (evidence, authority, departments, prioritization,
+ * spending, roles, ownership, a market decision). RD-1 itself is unchanged: `assessReasoningDemand` gives byte-identical
+ * demands, and TS-1 never changes a stored demand.
+ *
+ * - A message that asks for nothing and reads as a note or an acknowledgement (thanks, FYI, a reminder) raises no task
+ *   need, except a governance boundary it names; a transformation (translate, rewrite, summarize) raises none.
+ * - An executive decision asked in words RD-1 does not read as a decision ("your call", "is it worth it", "هتعمل إيه",
+ *   "هل نوقّع") counts as one for the CEO seat (`executive`).
+ * - A factual or status question (where do we stand, how many, when) with no ask for judgment does not turn a role, a
+ *   spending word or a financial word into a need: it names what to report, not a skill to apply.
+ * - Departments: two named departments, or one with a disagreement between parties, is cross-functional work. A market
+ *   signal is cross-functional only with a market place (not a launch date) and a decision, comparison or strategy, or a
+ *   launch that is analysed and planned.
+ * - An Arabic article or clitic written onto a Latin name ("الـGrowth") is read as the name.
+ * Limits: lexical, like RD-1. It cannot read intent it is not shown; the sealed held-out set HO-1 measures it.
+ */
+export const TASK_SIGNAL_POLICY = 'TS-1';
+
+export const TASK_SIGNAL_FAMILIES = ['EVIDENCE', 'AUTHORITY', 'CROSS_DEPARTMENT', 'PRIORITIZATION', 'BUDGET_SUFFIXED', 'ORG_ROLE', 'OWNERSHIP', 'MARKET_DECISION', 'STATUS_QUERY'] as const;
+export const TASK_SIGNALS = [...DEMAND_REASONS, ...TASK_SIGNAL_FAMILIES] as const;
+export type TaskSignal = (typeof TASK_SIGNALS)[number];
+
+export interface TaskSignals {
+  readonly policy: typeof TASK_SIGNAL_POLICY;
+  /** RD-1 reasons and TS-1 families, in `TASK_SIGNALS` order (closed codes, never text). */
+  readonly signals: readonly TaskSignal[];
+}
+
+/** A TS-1 cue matcher: the RD-1 matcher, plus whole-word cues (`=` prefix) where a stem would match another word. */
+function signalCues(list: readonly string[]): (t: string) => number {
+  const res = list.map((raw) => {
+    const whole = raw.startsWith('=');
+    const word = whole ? raw.slice(1) : raw;
+    const c = normalizeDemandText(word).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (ARABIC.test(word)) return new RegExp(`(?:^|\\s)(?:[وفبلك]?(?:ال)?|لل)${c}${whole ? '(?![\\p{L}\\p{N}])' : ''}`, 'u');
+    return new RegExp(`(?:^|[^\\p{L}\\p{N}])${c}${whole ? '(?![\\p{L}\\p{N}])' : ''}`, 'u');
+  });
+  return (t: string) => res.reduce((n, re) => n + (re.test(t) ? 1 : 0), 0);
+}
+
+const EVIDENCE = signalCues(['evidence', 'proof', 'prove', 'measured', 'measure', 'metric', 'kpi', 'baseline', 'data show', 'the data', 'the numbers', 'numbers', 'figures', 'retention', 'conversion', 'did it work', 'really work', 'actually work', 'success rate', 'roi', 'return on', 'unit economics', 'cac', 'ltv', 'cost per', 'error rate', 'unmeasured', 'not measured', 'are real', 'is real', 'verify', 'verified', '=data', 'churn', 'target', 'sign up', 'signups', 'sign ups', 'kpis', 'experiment', 'pilot', 'a test', 'دليل', 'اثبات', 'اثبت', 'مؤشر', 'مؤشرات', 'قياس', 'نقيس', 'اتقاس', 'نتيجه', 'نتايج', 'نتائج', 'ارقام', 'بيانات', 'الداتا', 'بجد', 'العائد', 'عائد', 'معدل', 'نسبه التحويل', 'الاحتفاظ', 'حقيقيه', 'اتاكد', 'نتاكد', 'التحقق', 'داتا', 'الانسحاب', 'التسجيلات', 'الهدف', 'هدف', 'تارجت', 'تجربه', 'تجارب', 'تجاربنا']);
+/** Phrases where an evidence word means something else (a data-retention policy is governance, not user retention). */
+const NOT_EVIDENCE = /data retention|retention polic|data leak|user data|customer data|personal data|الاحتفاظ بالبيانات|حفظ البيانات|تسرب البيانات|تسريب البيانات|البيانات اتسربت|بيانات المستخدمين|بيانات العملاء/gu;
+const AUTHORITY = signalCues(['approve', 'approval', 'authority', 'permission', 'authorize', 'authorise', 'without asking', 'without my', 'without approval', 'without permission', 'bypass', 'skip the', 'go around', 'override', 'governance', 'privacy', 'private', 'compliant', 'compliance', 'give access', 'grant access', 'access to', 'admin access', 'post directly', 'publish directly', 'user conversations', 'user chats', 'user messages', 'chat logs', 'real user', 'user data', 'personal data', 'customer data', 'confidential', 'restricted', 'raise your budget', 'raise your own', 'full mandate', 'is it ok for you', 'are you allowed', 'allowed to', 'yourself', 'on your own', 'without me', 'freedom', 'autonomy', 'more mandate', 'signing', 'sign the', 'agreement', 'lawyer', 'share the', 'send the', 'share our data', 'share the data', 'share it with', 'third party', 'third parties', 'external party', 'leak', 'breach', 'security', 'hacked', 'صلاحيه', 'صلاحيات', 'صلاحيتك', 'تفويض', 'موافقتي', 'موافق', 'موافقه', 'من غير ما ترجعلي', 'من غير ما ترجع', 'من غير ما يرجع', 'من غير ما نرجع', 'من غير اذن', 'بدون اذن', 'من غير موافقه', 'بدون موافقه', 'دون موافقتي', 'دون الرجوع', 'نتخطي', 'تتخطي', 'نتجاوز', 'تتجاوز', 'الحوكمه', 'حوكمه', 'خصوصيه', 'متوافقه', 'الامتثال', 'النشر المباشر', 'محادثات المستخدمين', 'محادثات مستخدمين', 'محادثات العملاء', 'رسايل المستخدمين', 'بيانات المستخدمين', 'بيانات العملاء', 'سريه', 'ميزانيتك', 'سقف ميزانيتك', 'هل يحق', 'يحق لك', 'هل يجوز', 'الوصول الي بيانات', 'صلاحيه الوصول', 'حق الوصول', 'حريه', 'توقيع', 'اتفاقيه', 'محامي', 'محام', 'دون ان تسال', 'من غير ما تسال', 'شارك', 'ابعت', 'مشاركه البيانات', 'نشارك', 'مشاركتها', 'طرف ثالث', 'جهه خارجيه', 'بنفسك', 'لوحدك', '=ينفع', 'تسرب', 'تسريب', 'اتسربت', 'اختراق', 'اتخترق', 'امن المعلومات', 'الامان']);
+/** The Company's named departments (each counts once however it is written). */
+const DEPARTMENTS: readonly ((t: string) => number)[] = [
+  signalCues(['product', 'المنتج']),
+  signalCues(['growth', 'النمو']),
+  signalCues(['brand', 'creative', 'البراند', 'العلامه التجاريه', 'الابداع']),
+  signalCues(['engineering', 'الهندسه']),
+  signalCues(['marketing', 'التسويق']),
+  signalCues(['strategic market intelligence', 'market intelligence', 'smi', 'الاستخبارات السوقيه', 'ذكاء السوق']),
+];
+const DEPARTMENTS_PLURAL = signalCues(['departments', 'teams', 'cross functional', 'اقسام', 'الادارات', 'الفرق']);
+const DISAGREEMENT = signalCues(['disagree', 'conflict', 'at odds', 'clash', 'tension between', 'both want', 'the same', 'compete for', 'competing', 'both ask', 'مختلفين', 'مختلفان', 'مختلفون', 'خلاف', 'تعارض', 'متعارض', 'اختلاف', 'نفس ال', 'كلاهما', 'الاتنين عايزين', 'عايزين نفس', 'يريدان']);
+/** A product incident users feel (complaints, a bug, lost data): Product and Engineering together, with Growth's users. */
+const PRODUCT_INCIDENT = signalCues(['complain', 'complaints', 'bug', 'crash', 'data loss', 'loses', 'forgets', 'broken', 'outage', 'يشتكي', 'بيشتكوا', 'يشتكون', 'شكاوي', 'باج', 'بينسي', 'ينسي', 'بيقع', 'عطل']);
+/** Several Directors (parties of a cross-department disagreement). */
+const DIRECTORS = signalCues(['directors', 'two directors', 'both directors', 'مديرين', 'مديران', 'مديرا', 'المديرين']);
+const PRIORITIZATION = signalCues(['priorit', 'what first', 'start with', 'focus on', 'which first', 'most important', 'matters most', 'matters more', 'more important', 'which matters', 'اولويه', 'اولويات', 'نبدا ب', 'تبدا ب', 'نبدا بايه', 'نركز', 'تركز', 'رتب', 'بانهي', 'الاهم', '=اهم', 'ايهما', 'اهم حاجه']);
+const SPENDING = signalCues(['ميزانيت', 'سقف الميزانيه', 'صرف', 'نصرف', 'مصاريف', 'المصروفات', 'السيوله', 'سيوله', 'الفلوس', 'فلوس', 'ننفق', 'انفاق', 'نفقات', 'worth our time', 'opportunity cost', 'agreement', 'lawyer', 'وقتنا', 'اتفاقيه', 'محامي', 'محام', 'spend', 'spending', 'expenses', 'runway', 'cash flow', 'burn rate', 'bill', 'invoice', 'cheaper', 'expensive', 'charging', 'charge for', 'fees', 'monetiz', 'paid tier', 'financial', 'investors', 'fundraising', 'raise money', 'فاتوره', 'سعر', 'مالي', 'ماليه', 'المستثمرين', 'مستثمر', 'ارخص', 'اغلي', 'رسوم', 'تحصيل', 'نحصل فلوس', 'نكسب', 'الاشتراك المدفوع']);
+const ORG_ROLE = signalCues(['directors', 'hire a director', 'a new director', 'no head of', 'no director', 'without a director', 'head of', 'appoint', 'missing deadlines', 'keeps missing', 'not delivering', 'performance', 'vacancy', 'org chart', 'headcount', 'employees', 'delegate', 'delegation', 'promote', 'promotion', 'underperform', 'let go', 'talent', '=عين', '=يعين', '=تعين', '=عينا', '=نعين', 'مديرين', 'مديران', 'مديرا', 'مدير جديد', 'معندناش مدير', 'ليس لدينا مدير', 'من غير مدير', 'بدون مدير', 'مدير للمنتج', 'مدير للنمو', 'مدير منتج', 'مدير growth', 'اداء', 'مش بيسلم', 'منصب', 'تاسيس قسم', 'قسم جديد', 'موظف', 'اول ناس', 'ترقيه', 'نرقي', 'المواهب', 'نفوض', 'تفوض', 'افوض', 'team lead', 'train the', 'training', 'coach', 'mentor', 'new hire', 'analyst', 'morale', 'burnout', 'burned out', 'motivation', 'team health', 'quit', 'resign', 'left the company', 'replace him', 'replace her', 'قائد فريق', 'ليدر', 'تدريب', 'تدرب', 'ندرب', 'محلل', 'الموظف الجديد', 'معنويات', 'المعنويات', 'محبط', 'الاحتراق', 'استقال', 'استقاله', 'ساب الشركه', 'نعوضه', 'بديل له']);
+const OWNERSHIP = signalCues(['owner', 'ownership', 'responsib', 'who should own', 'who owns', 'who will own', 'who holds', 'who leads', 'should lead', 'lead the', 'who fixes', 'who handles', 'who will fix', 'accountab', 'hand off', 'handover', 'مسووليه', 'مسووليات', 'المسوول', 'مسوول', 'يمسك', 'هيمسك', 'مين ماسك', 'ماسكين ايه', 'مين المفروض', 'نوزع', 'يقود', 'تقود', 'مين يقود', 'مين يصلح', 'من يصلح', 'مين هيصلح', 'يصلحه']);
+/** A market place (not a launch date). */
+const MARKET_PLACE = signalCues(['market', 'markets', 'regional', 'global', 'international', 'countries', 'gcc', 'gulf', 'mena', 'saudi', 'ksa', 'riyadh', 'jeddah', 'uae', 'dubai', 'egypt', 'cairo', 'europe', 'expansion', 'expand', 'السوق', 'سوق', 'اسواق', 'اقليمي', 'عالمي', 'دولي', 'الخليج', 'الخليجيه', 'السعوديه', 'الرياض', 'جده', 'الامارات', 'دبي', 'مصر', 'القاهره', 'الشرق الاوسط', 'اوروبا', 'امريكا', 'التوسع', 'توسع', 'نتوسع']);
+/** Named markets (two of them in one request: a comparison or a sequence of markets). */
+const MARKETS: readonly ((t: string) => number)[] = [
+  signalCues(['egypt', 'cairo', 'مصر', 'القاهره']),
+  signalCues(['saudi', 'ksa', 'riyadh', 'jeddah', 'السعوديه', 'الرياض', 'جده']),
+  signalCues(['uae', 'emirates', 'dubai', 'الامارات', 'دبي']),
+  signalCues(['gulf', 'gcc', 'الخليج', 'الخليجيه']),
+  signalCues(['europe', 'اوروبا']),
+  signalCues(['america', 'usa', 'امريكا']),
+];
+/** A move into a market (enter, open, expand): a decision about it is a market decision. */
+const MARKET_MOVE = signalCues(['enter', 'entry', 'entering', 'expand', 'expansion', 'go into', 'move into', 'office', 'branch', 'ندخل', 'دخول', 'نفتح', 'فرع', 'مكتب', 'نتوسع', 'التوسع', 'توسع']);
+/** A launch: cross-functional when the request analyses and plans it (launch sequencing), not when it is a date. */
+const LAUNCH = signalCues(['launch', 'rollout', 'roll out', 'go live', 'اطلاق', 'نطلق']);
+/** An executive decision asked in words RD-1 does not read as one. */
+const DECISION_ASK = signalCues(['your call', 'what would you do', 'what do we do', 'what should we do', 'what now', 'would you pick', 'would you choose', 'what would you pick', 'would you advise', 'do you advise', 'your advice', 'is it worth', 'worth it', 'whether to', 'whether we', 'go or no go', 'yes or no', 'sort it out', 'قرارك', 'هتعمل ايه', 'تعمل ايه', 'نعمل ايه', 'هنعمل ايه', 'ماذا نفعل', 'ماذا تفعل', 'هتختار', 'تختار', 'اختيارك', 'احسم', 'تنصح', 'نصيحتك', 'يستاهل', 'يستحق', 'تستاهل', 'تستحق', 'pick one', 'choose one', 'who should make', 'who decides', 'اختر', 'اختار واحده', 'مين ياخد', 'من يتخذ', 'نوقع', 'نمضي', 'افوض', '=ولا لا', 'how do we respond', 'how do we handle', 'how do we deal', 'what next', 'next step', 'who gets', 'who should get', 'to whom', 'should we switch', 'نرد ازاي', 'كيف نرد', 'نتصرف ازاي', 'كيف نتصرف', 'كيف نتعامل', 'نتعامل ازاي', 'what we change', 'what to change', 'what should change', '=worth', 'الخطوه التاليه', 'الخطوه الجايه', 'نغير ايه', 'يجب تغييره', 'نكمل بيه', 'نكمل ولا', 'لمين', 'لمن نعطي', 'نديه', 'نحول', 'ننتقل']);
+/** A crisis (a leak, a press question, a resignation, an outage): an executive call for the CEO seat. */
+const CRISIS = signalCues(['crisis', 'leak', 'breach', 'journalist', 'press', 'rumor', 'outage', 'lawsuit', 'quit', 'resigned', 'ازمه', 'تسرب', 'اتسربت', 'صحفي', 'الاعلام', 'شايعه', 'اشاعه', 'استقال', 'عطل', 'قضيه']);
+/** "Which …" is a decision only with a modal ("which … should we stop", "أنهي … لازم"); "which departments have a director" is a fact. */
+const WHICH = signalCues(['which of', 'which one', 'اي من', 'انهي', 'ايهم']);
+const MODAL = signalCues(['should', 'must', 'لازم', 'يجب', 'المفروض', 'ينبغي']);
+/** "هل نـ…؟": the Modern Standard Arabic first-person decision question ("should we …?"). */
+const MSA_DECISION_QUESTION = /(?:^|\s)هل (?:ن(?!حن\s)|ا(?!نت|نا\s|ن\s|لا\s))\p{L}{2,}/u;
+const STATUS = signalCues(['what day', 'what date', 'what time', 'متي', 'امتي', 'موعد', 'يوم كام', 'الساعه كام', 'status', 'update on', 'where are we', 'where do we stand', 'where we stand', 'how is', 'how are', 'how s the', 'how many', 'progress on', 'any news', 'وصلنا لفين', 'وصلنا فين', 'وصلت لفين', 'واقفه فين', 'واقفين فين', 'ايه الاخبار', 'ايه الوضع', 'الوضع ايه', 'ماشي ازاي', 'ماشيه ازاي', 'ماشيين ازاي', '=كام', 'ما وضع', 'ما حاله', 'الي اين وصل', 'كم عدد']);
+/** A definition or an explanation (what does X mean): reported, not judged. */
+const DEFINITION = signalCues(['what does', 'what is a', 'what are okr', '=mean', 'meaning of', 'explain what', 'ما معني', 'يعني ايه', 'معني', 'ما المقصود', 'ايه معني']);
+/** "Do we …?" / "Shall we …?" opening a question: an English decision question (not "do we have / know", not "where do we stand"). */
+const DO_WE_DECISION = /(?:^|[.!?؟]\s*)(?:do|shall) we (?!have\b|know\b|already\b)\p{L}{3,}/iu;
+/** Who to contact about something (a routing question): a fact to report, even when phrased "who should I talk to". */
+const ROUTING = signalCues(['who should i talk to', 'who do i talk to', 'who should i contact', 'who do i contact', 'who should i ask', 'who do i ask', 'اكلم مين', 'مين اكلم', 'مع من اتحدث', 'من اتواصل', 'مين اتواصل']);
+/** A hypothetical (what if, if we): a scenario to judge, not a fact to report. */
+const HYPOTHETICAL = signalCues(['what if', 'if we', 'suppose', 'in case', 'في حاله']);
+/** "لو / إذا + a first-person plural verb" (if we hire, if we spend): the Arabic scenario. */
+const ARABIC_HYPOTHETICAL = /(?:^|\s)[وف]?(?:لو|اذا) \p{L}{2,}نا(?:\s|$)/u;
+/** An ask for judgment (advice, a plan, a view): a factual question with one of these is not a factual question only. */
+const JUDGMENT = signalCues(['recommend', 'propose', 'suggest', 'advise', 'plan', 'what should', 'how should', 'who should', 'should we', 'should i', 'your view', 'your opinion', 'what do you think', 'اقترح', 'تقترح', 'رشح', 'تنصح', 'نعمل ايه', 'المفروض', 'رايك', 'تفتكر', 'شايف', 'خطه', 'خطط', 'نحسم', 'توصي']);
+const JUDGMENT_REASONS: readonly DemandReason[] = ['EXECUTIVE_DECISION', 'MULTI_DECISION', 'COMPARISON_OR_TRADEOFF', 'STRATEGIC_PLANNING', 'FOUNDER_DECISION_PURPOSE', 'URGENT_OR_IRREVERSIBLE'];
+
+/** Where a request's own instruction ends and the material it carries begins (RD-1's rule). */
+const HEAD_END = /[:：\n"“«]|[?؟]\s*\S/u;
+
+/** The Task Signals of one request (TS-1). Pure and deterministic; takes exactly the RD-1 input. */
+export function taskSignals(input: DemandInput): TaskSignals {
+  const demand = assessReasoningDemand(input);
+  const reasons = new Set<TaskSignal>(demand.reasons);
+  const done = (): TaskSignals => Object.freeze({ policy: TASK_SIGNAL_POLICY, signals: Object.freeze(TASK_SIGNALS.filter((s) => reasons.has(s))) });
+  const raw = typeof input.text === 'string' ? input.text : '';
+  // The RD-1 normal form, with an Arabic article or clitic written onto a Latin name split from it ("الـGrowth").
+  const t = normalizeDemandText(raw).replace(/([؀-ۿ])(?=[a-z])/gu, '$1 ');
+  // A transformation of given content needs no executive skill; the content it carries is material, not the task. RD-1's
+  // own test reads only the instruction head; TS-1 applies it even when RD-1 reads the request as a note ("Translate this:").
+  const end = raw.search(HEAD_END);
+  const head = normalizeDemandText(end > 0 ? raw.slice(0, end + 1) : raw);
+  if (TRANSFORM(head) > 0 && DECISION(head) === 0 && ANALYSIS(head) === 0 && STRATEGY(head) === 0) reasons.add('TRANSFORMATION_TASK');
+  if (reasons.has('TRANSFORMATION_TASK')) return done();
+  // A message that asks for nothing (RD-1's own test of an ask) and reads as a note or an acknowledgement: only a governance
+  // boundary it names is a need. An imperative RD-1 does not read as a request ("compare …", "رتبلي …") is not a note.
+  const asks = REQUEST(t) > 0 || /[?؟]/u.test(raw) || DECISION(t) > 0 || input.purpose === 'DECISION_REQUEST' || input.purpose === 'REQUEST';
+  if (!asks && (t === '' || ROUTINE(t) > 0 || INFO(t) > 0)) {
+    const keep = new Set<TaskSignal>([...reasons].filter((r) => r === 'INFORMATIONAL_NOTE' || r === 'ROUTINE_ACKNOWLEDGEMENT'));
+    if (AUTHORITY(t) > 0) keep.add('AUTHORITY');
+    reasons.clear();
+    for (const r of keep) reasons.add(r);
+    return done();
+  }
+  if (EVIDENCE(t.replace(NOT_EVIDENCE, ' ')) > 0) reasons.add('EVIDENCE');
+  if (AUTHORITY(t) > 0) reasons.add('AUTHORITY');
+  const named = DEPARTMENTS.filter((d) => d(t) > 0).length;
+  const disagreement = DISAGREEMENT(t) > 0;
+  if (named >= 2 || ((named >= 1 || DEPARTMENTS_PLURAL(t) > 0 || DIRECTORS(t) > 0) && disagreement) || PRODUCT_INCIDENT(t) > 0) reasons.add('CROSS_DEPARTMENT');
+  if (named >= 1 && LAUNCH(t) > 0 && (/[?؟]/u.test(raw) || reasons.has('COMPARISON_OR_TRADEOFF') || reasons.has('MULTI_DECISION'))) reasons.add('CROSS_DEPARTMENT');
+  if (PRIORITIZATION(t) > 0) reasons.add('PRIORITIZATION');
+  if (SPENDING(t) > 0) reasons.add('BUDGET_SUFFIXED');
+  if (ORG_ROLE(t) > 0) reasons.add('ORG_ROLE');
+  if (OWNERSHIP(t) > 0) reasons.add('OWNERSHIP');
+  if (input.executive === true && (DECISION_ASK(t) > 0 || (WHICH(t) > 0 && MODAL(t) > 0) || MSA_DECISION_QUESTION.test(t) || DO_WE_DECISION.test(raw.trim()) || CRISIS(t) > 0)) reasons.add('EXECUTIVE_DECISION');
+  if (MARKET_PLACE(t) > 0 && (reasons.has('COMPARISON_OR_TRADEOFF') || reasons.has('STRATEGIC_PLANNING') || reasons.has('MULTI_DECISION') || (reasons.has('EXECUTIVE_DECISION') && MARKET_MOVE(t) > 0))) reasons.add('MARKET_DECISION');
+  if (LAUNCH(t) > 0 && reasons.has('ANALYSIS_DEPTH') && reasons.has('STRATEGIC_PLANNING')) reasons.add('MARKET_DECISION');
+  if (MARKETS.filter((m) => m(t) > 0).length >= 2) reasons.add('MARKET_DECISION');
+  // Spending in a named market (ads in Riyadh, a campaign in the Gulf) is market work for Growth and market intelligence.
+  if (MARKETS.some((m) => m(t) > 0) && (reasons.has('BUDGET_SUFFIXED') || reasons.has('FINANCIAL_OR_LEGAL_STAKES'))) reasons.add('MARKET_DECISION');
+  // A factual or status question with no ask for judgment (no decision, boundary, priority, ownership or scenario) names
+  // what to report, not a skill to apply.
+  const judgment = JUDGMENT(t) > 0 || HYPOTHETICAL(t) > 0 || ARABIC_HYPOTHETICAL.test(t) || JUDGMENT_REASONS.some((r) => reasons.has(r)) || reasons.has('PRIORITIZATION') || reasons.has('OWNERSHIP') || reasons.has('AUTHORITY');
+  const definition = DEFINITION(t) > 0;
+  const routing = ROUTING(t) > 0 && !reasons.has('AUTHORITY');
+  if (routing || ((STATUS(t) > 0 || definition || reasons.has('SIMPLE_QUESTION')) && !judgment)) {
+    if (STATUS(t) > 0) reasons.add('STATUS_QUERY');
+    for (const r of ['ORG_ROLE', 'BUDGET_SUFFIXED', 'FINANCIAL_OR_LEGAL_STAKES', 'ORGANIZATION_DESIGN', 'STAFFING_CONSEQUENCE'] as const) reasons.delete(r);
+    if (definition) reasons.delete('EVIDENCE');
+    if (routing) reasons.delete('EXECUTIVE_DECISION');
+  }
+  return done();
+}
+
+/** A stored TS-1 value read back from a Work Item's input (closed shape; anything else is treated as absent). */
+export function isTaskSignals(v: unknown): v is TaskSignals {
+  const s = v as Partial<TaskSignals> | null;
+  return typeof s === 'object' && s !== null && s.policy === TASK_SIGNAL_POLICY && Array.isArray(s.signals) && s.signals.length <= TASK_SIGNALS.length && s.signals.every((x) => (TASK_SIGNALS as readonly unknown[]).includes(x)) && new Set(s.signals).size === s.signals.length;
+}
+
+/**
  * P1-AUTO-E12-01 (D-P1-11, Founder decision) — the highest class an AUTO Work Item ever EXECUTES at, company-wide: E1 for
  * routine work, E2 for analysis and planning. RD-1 still states the raw demand (E1..E4) as evidence, but no AUTO call is
  * selected, escalated, lifted by a route minimum, retried, continued or fallen back above this class. E3 / E4 run only when
