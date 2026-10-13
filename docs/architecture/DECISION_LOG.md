@@ -6665,7 +6665,15 @@ G1 (implement), G2 (the need table), G3 (CP-1 instead of a literal FO-1) and G4 
   4,800; the payload loader fetching the instructions unverified; SUPPORTING Skills taken before the anchors; TASK_REQUIRED
   Skills not protected.
 
-**Held-out evaluation (HO-1).** Recorded below after the one-shot evaluation on the frozen lexicon.
+**Held-out evaluation (HO-1) — FAILED (one shot, 2026-10-13).** Lexicon frozen at c175d75 (reasoning-demand.ts
+sha256 19fb1d2e…, skill-need.ts 6ae2dade…); evaluator committed first (c665e6e); all seals re-verified; 71 valid items
+(EN 24, MSA 24, EG 23; 18 SIMPLE, 6 LONG, 47 SUBSTANTIVE). Five task-dependent Skills, TASK_REQUIRED vs the reference:
+recall 0.730 (threshold 0.90), precision 0.426 (0.80); per Skill recall governance 0.429, organization 0.583, executive
+0.875, evidence 0.875, cross-functional 0.923; predicted / reference TASK_REQUIRED: executive 36 / 8, evidence 27 / 16,
+cross-functional 22 / 13, governance 11 / 14, organization 12 / 12; per-language recall EN 0.591, MSA 0.762, EG 0.850
+(gap 0.259); SIMPLE: 15 / 18 with at most one task Skill, 4 loading four or more. founder-partnership (table rule):
+69 predicted / 13 reference. Every AC3 check fails. Per the Task Contract the set is not reused: a fix needs a new held-out
+set; the Founder decides between a fix and acceptance. Nothing was tuned on HO-1.
 
 **Limits (stated).**
 - TS-1 is lexical: on fresh synthetic phrasings written before each tuning round, recall of TASK_REQUIRED was 0.70, 0.33,
