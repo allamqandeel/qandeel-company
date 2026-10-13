@@ -19,6 +19,7 @@ export * from './product-knowledge.js';
 export * from './reporting.js';
 export * from './seo.js';
 export * from './skills.js';
+export * from './skill-need.js';
 export * from './text.js';
 export * from './academy-package.js';
 export * from './benchmark-method.js';

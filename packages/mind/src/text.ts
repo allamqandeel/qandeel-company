@@ -43,6 +43,71 @@ export function terms(s: string, max = MAX_TERMS): string[] {
   return [...out].sort().slice(0, max);
 }
 
+/**
+ * P1-CONTEXT-INTEL-01 (D-P1-14, TI-1): extra stopwords for salience only — Egyptian and Modern Standard Arabic function
+ * words and short English function words. `terms()` (TI-0) and every stored `terms_json` are unchanged.
+ */
+const SALIENCE_STOPWORDS = new Set(
+  ['اللي', 'ده', 'دي', 'دا', 'عشان', 'علشان', 'مش', 'ايه', 'ازاي', 'كده', 'بس', 'يعني', 'برضه', 'لسه', 'دلوقتي', 'احنا', 'انا', 'انت', 'انتو', 'عايز', 'عاوز', 'ممكن', 'لازم', 'كمان', 'حاجه', 'زي', 'بتاع', 'ولا', 'لو', 'لما', 'اي', 'فيه', 'فيها', 'منه', 'منها', 'عليه', 'عليها', 'ليه', 'بين', 'بعد', 'قبل', 'عند', 'غير', 'لحد', 'حتي', 'ثم', 'كما', 'لكن', 'اذا', 'هل', 'هناك', 'هنا', 'تلك', 'بعض', 'ايضا', 'جدا', 'وده', 'ودي', 'يا', 'we', 'me', 'my', 'is', 'be', 'it', 'to', 'of', 'in', 'on', 'an', 'or', 'if', 'so', 'as', 'at', 'by', 'do', 'how', 'why', 'who', 'please'].map((w) => normalizeText(w)),
+);
+
+/** The normalized word tokens of `s` in order (the `terms()` tokenizer, before selection). */
+function tokensOf(s: string): string[] {
+  return normalizeText(s)
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((t) => t.length >= 2)
+    .map((t) => (t.length > 40 ? t.slice(0, 40) : t));
+}
+
+/**
+ * TI-1 salience terms: the same tokens and normal form as `terms()`, chosen by frequency (then first position) instead of
+ * alphabetically, with the salience stopwords removed; output sorted. Written only as extra `~` index rows of new items
+ * (DG-1n) and used on the query side; never stored in `terms_json`.
+ */
+export function salienceTerms(s: string, max = MAX_TERMS): string[] {
+  const freq = new Map<string, number>();
+  const first = new Map<string, number>();
+  tokensOf(s).forEach((t, i) => {
+    if (STOPWORDS.has(t) || SALIENCE_STOPWORDS.has(t)) return;
+    freq.set(t, (freq.get(t) ?? 0) + 1);
+    if (!first.has(t)) first.set(t, i);
+  });
+  return [...freq.keys()]
+    .sort((a, b) => (freq.get(b) ?? 0) - (freq.get(a) ?? 0) || (first.get(a) ?? 0) - (first.get(b) ?? 0))
+    .slice(0, max)
+    .sort();
+}
+
+const ARABIC_START = /^[؀-ۿ]/u;
+/** An Arabic token without its proclitic article (وال / بال / فال / كال / لل / ال), for query-side variants only. */
+function withoutArticle(t: string): string {
+  if (!ARABIC_START.test(t) || t.length < 5) return t;
+  for (const p of ['وال', 'بال', 'فال', 'كال']) if (t.startsWith(p)) return t.slice(3);
+  for (const p of ['لل', 'ال']) if (t.startsWith(p)) return t.slice(2);
+  return t;
+}
+
+/** Query-side Arabic variants of each token: the stem and ال + stem (stored terms are never stemmed). */
+function arabicVariants(ts: readonly string[]): string[] {
+  return ts.flatMap((t) => {
+    if (!ARABIC_START.test(t) || t.length < 4) return [t];
+    const s = withoutArticle(t);
+    return s === t ? [t, `ال${t}`] : [t, s, `ال${s}`];
+  });
+}
+
+/**
+ * The retrieval query of one task (P1-CONTEXT-INTEL-01, C3): topics ∪ TI-0(text) ∪ TI-1(text) with their Arabic proclitic
+ * variants ∪ the extra terms (skill codes). No alphabetical cut: the size is bounded by construction (≤ 2 × 48 tokens,
+ * ≤ 3 variants each, plus the topics and extras).
+ */
+export function queryTerms(text: string, topics: readonly string[] = [], extra: readonly string[] = []): string[] {
+  return [...new Set([...topics, ...arabicVariants([...terms(text), ...salienceTerms(text)]), ...extra])].sort();
+}
+
+/** The `~` prefix of a TI-1 index row (DG-1n): the previous release's query terms are always `[\p{L}\p{N}]+`, so it never matches one. */
+export const SALIENCE_INDEX_PREFIX = '~';
+
 /** Integrity fingerprint of text content (exact-duplicate identity after normalization). */
 export function contentFingerprint(s: string): string {
   return sha256Hex(normalizeText(s));
