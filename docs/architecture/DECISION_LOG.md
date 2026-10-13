@@ -6593,3 +6593,83 @@ Founder level; submitter never records it.
 
 **Remaining risk.** Whether 8,192 suffices for every AUTO E2 reply is not measured (3 of 19 observed calls exceeded 4,096;
 their full need is unknown). No LIVE probe is part of this decision.
+
+## D-P1-14 — Context & Skill Intelligence for Founder replies: 60K, need-based Skill tiers (TS-1 + SN-1), DG-1n index rows with a two-tier pool, the CP-1 order, history 11,750 (P1-CONTEXT-INTEL-01 G4; Founder decisions G1–G4, executor)
+
+**Context.** The G4 study (read-only, free) proved three causes of the CEO's thin context: a 24,000-byte budget in which the
+governance preamble, the message and the history evicted every Skill (all 80 LIVE Skill rejections were `BUDGET_EXCEEDED`);
+a question-blind ranking (the alphabetical 48-term index and the reply-template query); and no notion of what a task needs.
+Task Contract v3.1 (outside the repository, `p1-context-intel-01/TASK-CONTRACT.md`) specifies the fix; the Founder approved
+G1 (implement), G2 (the need table), G3 (CP-1 instead of a literal FO-1) and G4 (the sealed held-out set HO-1).
+
+**Decision (implemented).**
+1. **C1 — 60,000 for new Founder replies.** `txFounderSend` records `contextBudgetTokens: 60_000`
+   (`FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS`) on a `founder.reply` Work Item through the existing control (1,024–64,000). A CEO
+   brief, Academy, shadow and benchmark work, any other reply task class and every Work Item created before keep 24,000.
+   The input bound of a call is still the rendered context (≤ the policy total), so E1 stays eligible: 60,000 + 2,048 and its
+   continuation 60,000 + 4,096 fit the 65,536 window; every class's call and continuation fit its window, and each call's
+   worst case fits the 500,000 µUSD reply cap. The reservation formula, the reply caps, budgets and model bounds are unchanged.
+2. **C2 — Skill tiers from metadata (TS-1 + SN-1).** The reply also records its **TS-1 task signals** (`taskSignals`,
+   governance, beside RD-1): the RD-1 reasons plus cue families RD-1 lacks (evidence, authority, departments, prioritization,
+   spending, roles, ownership, a market decision, a status question) — closed codes, never text. **RD-1 is byte-identical**:
+   `reasoning-demand.ts` equals `main` outside the inserted TS-1 block, and the demands of the RD-1 expectation set and the
+   development set are pinned by hash. The release-pinned need table `SKILL_NEED_TABLE` (`SN-1`, mind) is the approved G2
+   table; `skillTier(code, signals, taskClass)` gives TASK_REQUIRED / SUPPORTING / NON_RELEVANT, or null for an undeclared
+   Skill (legacy lexical path). Assembly reads Skill **metadata** with named columns (`getSkillVersionMeta`: the stored hash
+   and byte length, never the instructions); a NON_RELEVANT Skill is recorded `NOT_RELEVANT` from metadata and its payload is
+   never read; a selected Skill is loaded once, hash-verified, by `loadPinnedSkillInstructions` (whose eligibility check now
+   also reads metadata only). A capability-required Skill is TASK_REQUIRED. Eligibility, directive conflicts and
+   certifications are unchanged.
+3. **C3 — DG-1n + two-tier pool.** `terms()` and every stored `terms_json` are unchanged (TI-0). A NEW knowledge, canonical,
+   memory or lesson item additionally gets its TI-1 salience terms (`salienceTerms`: frequency then first position, top 48,
+   extra Egyptian / MSA stopwords) that TI-0 lacks as index rows `~` + term, in its creating transaction (no migration: the
+   rows fit `mind_terms`). The previous release's query terms are always `[\p{L}\p{N}]+`, so it never matches a `~` row:
+   after a rollback its pools and decisions are exactly what its own rows give, past the pool limits too. Every pool lookup
+   is two-tier: **tier 1** is today's query construction and SQL verbatim (`termMatches`, today's limits and the knowledge
+   re-rank); **tier 2** adds union-query matches (`queryTerms`: topics ∪ TI-0 ∪ TI-1 of the Founder's message, or of the
+   instructions for other work, with Arabic proclitic variants on the query side only, ∪ Skill codes) that tier 1 did not
+   admit, at most 25% of each limit (`POOL_EXTENSION_PCT`). An item's candidate terms are its `terms_json` plus the `~` terms
+   the query holds (read through the primary key, bounded; exactly the overlap relevance and score use). A summary's terms
+   are the full union of its sources' candidate terms (no alphabetical cut).
+4. **CP-1 (G3).** A Work Item with TS-1 signals plans in the `CP1` order (`ContextBudgetPolicy.order`; every other Work Item
+   keeps `LAYERED`): canonical truth first within the AUTHORITY share (overflow first in the spill); TASK_REQUIRED Skills
+   protected (never planner-required); the history and Work context; the best knowledge and memory items; then SUPPORTING
+   Skills, knowledge, memory and recent results each within its own share; then the spill. Every eligibility, authority,
+   conflict and privacy rule runs before, unchanged. The repository CP-1 equals the study's measured replica (V6) on 3,000
+   random plans, and `LAYERED` equals the previous planner on 3,000 (0 differences each).
+5. **G4b — history 11,750.** A reply whose context budget is ≥ 48,000 sees up to 11,750 bytes of its own thread's earlier
+   turns (same thread scope, turn bound and order); below that it stays 4,800.
+6. **Manifest.** A Work Item with Skill selection records `order` and `skillSelection` (policy, table version, signals,
+   counts per tier) in `policy_json` (content-free, ≤ 1,024 characters); everything else records exactly what it did.
+
+**Proof (no network, no paid call, synthetic text only).**
+- `governance/test/p1-task-signals.test.ts`: RD-1 pinned; TS-1 closed, deterministic and content-free; notes, thanks and
+  transformations raise no need; cue-family behaviours.
+- `mind/test/p1-context-intel.test.ts`: the need table pinned; the development set (247 synthetic EN / MSA / EG messages,
+  `governance/test/fixtures/task-signals-dev-set.json`): recall 0.994, precision 0.836, ≥ 0.95 per language; simple
+  messages ≤ 1 task Skill and < 4 loaded; `terms()` byte-identical to a frozen copy; TI-1 and the union query; CP-1 order,
+  anchors before SUPPORTING, share isolation, protected TASK_REQUIRED Skills and history, canonical overflow, rule items with
+  their exact codes, every critical item classified.
+- `storage/test/p1-context-intel.test.ts`: 60K + signals on a reply and 24K on a brief and on earlier work; the history
+  allowance; AC2 (empty stores, full history, a 4,000-character message, 0 / 2 tools: every TASK_REQUIRED Skill and the
+  history selected, within budget); AC4 (an instrumented connection sees exactly one verified payload read per selected
+  Skill, none for NON_RELEVANT or unrelated Skills, no metadata read fetching a payload); AC5 (new rows: `terms_json`,
+  content and hashes byte-identical, index = TI-0 ∪ `~`TI-1; the previous release's frozen query and SQL give identical
+  pools on the mixed store and on the same store without `~` rows, below and past the limits — 440 canonical, 1,400
+  knowledge, 650 memory matches, more new rows than each limit — and the new release keeps that whole pool plus ≤ 25%);
+  summary terms; AC6 on a populated store. `c3-mind`: the memory pool bound now includes the 25% extension.
+- `runtime/test/p1/p1-reason-auto-recovery.test.ts`, block D-P1-14: bounds per class at 60,000; a real AUTO reply records
+  60,000 and its signals, runs at E1 with 2,048 and is reserved at the worst case of its rendered input.
+- Mutation checks by hand on the change, each caught by the tests above: TI-1 rows written without the `~` prefix; tier 1
+  built from the union query; summary terms cut at 48 again; NON_RELEVANT Skills left as candidates; the history kept at
+  4,800; the payload loader fetching the instructions unverified; SUPPORTING Skills taken before the anchors; TASK_REQUIRED
+  Skills not protected.
+
+**Held-out evaluation (HO-1).** Recorded below after the one-shot evaluation on the frozen lexicon.
+
+**Limits (stated).**
+- TS-1 is lexical: on fresh synthetic phrasings written before each tuning round, recall of TASK_REQUIRED was 0.70, 0.33,
+  0.60, 0.61, 0.10 and 0.83 (batches 2–7); each round fixed defects by concept, not by item. HO-1 measures it once.
+- Knowledge losses under populated stores are whole-item budget rejections that 60K does not solve (company-knowledge track).
+- Past the pool limits, admission still ranks by matched-term count, not importance (pre-existing; company-knowledge track).
+- Rollback: reinstall the previous pin; no schema change, no DB restore. Re-upgrade reaches rows written meanwhile through tier 1.
