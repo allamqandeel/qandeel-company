@@ -12,16 +12,18 @@
  *     missing E3 / E4 are never used, the budget still parks the work before any call;
  *   - P1-AUTO-E12-01: no AUTO call reaches E3 / E4 by selection, escalation, route-minimum lift, retry, continuation,
  *     fallback or a resumed checkpoint; one bounded E2 repair; truthful limits; MANUAL, pinned and DEFAULT unchanged.
+ *   - D-P1-13 (P1-CONTEXT-INTEL-01 D1): a Founder reply that AUTO runs at E2 gets 8,192 (its one continuation 16,384), each
+ *     reserved at its worst case; a Founder E2, a DEFAULT Employee and a Work Item created before keep 4,096.
  * P1-PROOF: reason-auto-recovery
  */
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import type { Clock, Id } from '@qandeel-company/domain';
-import { worstCase, type ReasoningClass } from '@qandeel-company/governance';
+import { AUTO_E2_REPLY_OUTPUT_ALLOWANCE, worstCase, type ReasoningClass } from '@qandeel-company/governance';
 import { DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_REASONING_PROFILE, DeepSeekProviderAdapter, FakeDeepSeekTransport, fakeChatAnswer, fakeModelsAnswer, type DeepSeekRequest, type DeepSeekResponse } from '@qandeel-company/model-providers';
 import { InMemorySecretVault } from '@qandeel-company/secret-vault';
-import { CHAT_REPLY_OUTPUT_TOKENS, CompanyStore, GovernanceStore, OrganizationStore, type EmployeeRecord } from '@qandeel-company/storage';
+import { CHAT_REPLY_AUTO_OUTPUT_TOKENS, CHAT_REPLY_OUTPUT_TOKENS, CompanyStore, GovernanceStore, OrganizationStore, type EmployeeRecord } from '@qandeel-company/storage';
 import { activateEmployeeForTest } from '@qandeel-company/storage/testing';
 
 import { modelCallTimeoutMs } from '../../src/c2/model-runtime.js';
@@ -324,7 +326,7 @@ describe('P1-REASON-AUTO-RECOVERY-01 C: Adaptive Intelligence', () => {
         assert.deepEqual(reservedClasses(rt, id), [ran], 'reserved at the class that ran, never above E2');
         assert.equal((rt.view.getWorkItem(id).processorInput as { reasoningDemand?: { level?: string } }).reasoningDemand?.level, ideal, 'the recorded demand is never rewritten');
       }
-      assert.deepEqual(sent.map((s) => [s.effort ?? 'off', s.maxTokens]), [['off', 2048], ['off', 2048], ['low', 4096], ['low', 4096]], 'each call has its own class allowance; nothing ran with thinking high or max');
+      assert.deepEqual(sent.map((s) => [s.effort ?? 'off', s.maxTokens]), [['off', 2048], ['off', 2048], ['low', 8192], ['low', 8192]], 'each call has its own class allowance (AUTO E2 8,192, D-P1-13); nothing ran with thinking high or max');
       assert.equal(rt.governance.accountingInvariants().length, 0);
     }));
 
@@ -539,7 +541,7 @@ describe('P1-AUTO-E12-01: the company-wide AUTO cap and bounded recovery', () =>
       const before = rt.governance.getEmployee(ceo.id);
       const routine = ask(rt, w, 'Thanks, got it.');
       assert.equal(await settled(rt, routine), 'COMPLETED');
-      assert.deepEqual(sent.map((s) => [s.effort ?? 'off', s.maxTokens]), [['off', 2048], ['low', 4096]], 'E1, then the evidence escalation to E2 with its own allowance');
+      assert.deepEqual(sent.map((s) => [s.effort ?? 'off', s.maxTokens]), [['off', 2048], ['low', 8192]], 'E1, then the evidence escalation to E2 with its own AUTO allowance (D-P1-13)');
       assert.deepEqual([kinds(rt, routine), reservedClasses(rt, routine)], [['PRIMARY', 'ESCALATION'], ['E1', 'E2']]);
       assert.equal(replyState(rt, w, routine).status, 'REPLIED');
 
@@ -563,11 +565,11 @@ describe('P1-AUTO-E12-01: the company-wide AUTO cap and bounded recovery', () =>
       assert.equal(rt.governance.accountingInvariants().length, 0);
     }));
 
-  test('5–6 · AUTO E2 output exhaustion: one E2 repair with a larger allowance (4,096 → 8,192) answers; a second exhaustion ends MODEL_OUTPUT_TRUNCATED, and an invalid repair ends MODEL_OUTPUT_INVALID (R1-03: three distinct codes) — two calls each, never E3 / E4, never a partial message', () =>
+  test('5–6 · AUTO E2 output exhaustion: one E2 repair with a larger allowance (8,192 → 16,384, D-P1-13) answers; a second exhaustion ends MODEL_OUTPUT_TRUNCATED, and an invalid repair ends MODEL_OUTPUT_INVALID (R1-03: three distinct codes) — two calls each, never E3 / E4, never a partial message', () =>
     withWorld('p1a-repair', { ceiling: 'E4', reasoningProfile: true }, (_r, n, max) => (n === 2 ? ok('The complete answer.') : n === 6 ? notJson() : truncated(max)), async ({ rt, w, sent }) => {
       const repaired = ask(rt, w, STRATEGY);
       assert.equal(await settled(rt, repaired), 'COMPLETED');
-      assert.deepEqual(sent.map((s) => [s.effort, s.maxTokens]), [['low', 4096], ['low', 8192]], 'the same class, a larger allowance: the correction is concrete');
+      assert.deepEqual(sent.map((s) => [s.effort, s.maxTokens]), [['low', 8192], ['low', 16384]], 'the same class, a larger allowance: the correction is concrete');
       assert.deepEqual([kinds(rt, repaired), reservedClasses(rt, repaired)], [['PRIMARY', 'RETRY'], ['E2', 'E2']]);
       assert.deepEqual(replyState(rt, w, repaired).callDetails.map((c) => [c.attemptKind, c.reasoningClass, c.finishReason]), [['PRIMARY', 'E2', 'length'], ['RETRY', 'E2', 'stop']]);
 
@@ -740,5 +742,96 @@ describe('P1-AUTO-E12-01 Correction R1: AUTO without a demand; no unapproved pai
       assert.deepEqual(reservations(), held, 'no new reservation, the held money untouched');
       assert.deepEqual([replyState(after, w, id).status, replyState(after, w, id).reasonCode], ['BLOCKED', 'RECONCILIATION_REQUIRED']);
       assert.equal(after.governance.accountingInvariants().length, 0);
+    }));
+});
+
+/**
+ * D-P1-13 (P1-CONTEXT-INTEL-01 D1, Founder decision) through the REAL runtime and the REAL adapter behind the fake transport:
+ * a Founder reply that AUTO runs at E2 is sent with 8,192 (its one same-class continuation 16,384, the E2 deployment maximum),
+ * each call reserved at the worst case of its own allowance; E1 stays 2,048 and AUTO never reaches E3 / E4. The AUTO-only
+ * table is read by an AUTO run alone: a Founder E2, a MANUAL override on a recorded table, a DEFAULT Employee and a Work Item
+ * created before keep 4,096; an invalid table is refused before any call.
+ */
+describe('D-P1-13: the AUTO E2 output allowance of a Founder reply (8,192)', () => {
+  const STRATEGY = 'Prepare a three-year go-to-market strategy for launching QANDEEL across the GCC. Compare the pricing options, recommend the budget split, and tell me which roles we must hire first.';
+  const FINAL = (): DeepSeekResponse => fakeChatAnswer(JSON.stringify({ type: 'FINAL', summaryCode: 'done' }), { prompt: 300, completion: 10 });
+  const kinds = (rt: CompanyRuntime, id: Id): string[] => rt.view.runsForWorkItem(id).flatMap((r) => rt.governance.reservations(r.id)).map((r) => r.attemptKind);
+  const input = (rt: CompanyRuntime, id: Id): Record<string, unknown> => rt.view.getWorkItem(id).processorInput as never;
+  const general = (rt: CompanyRuntime, w: C2World, ceo: EmployeeRecord, extra: Record<string, unknown>, override?: ReasoningClass): Id => {
+    const { workItem } = rt.submitWorkItem({ objective: 'general work', ownerRef: ceo.ref, processorKind: 'c2.employee-task', processorInput: { taskClass: 'founder.reply', dataClass: 'D2', maxOutputTokens: 512, maxOutputTokensByClass: { ...CHAT_REPLY_OUTPUT_TOKENS }, instructions: 'Answer the general task.', ...extra } });
+    rt.governance.createBudget(w.founder, { scope: 'WORK_ITEM', scopeId: workItem.id, capMoney: 500_000, capTokens: 200_000, reasonCode: 'seed' });
+    if (override) rt.governance.setWorkItemReasoningOverride(w.founder, workItem.id, { reasoningClass: override, reasonCode: 'founder.one_task' });
+    rt.transitionWorkItem(workItem.id, { to: 'READY', reasonCode: 'release' });
+    return workItem.id;
+  };
+
+  test('the constant and the bounds: E2 8,192 (E1 2,048, E3 / E4 unchanged); the continuation is 16,384 within the E2 deployment; timeouts 120 s / 131 s; the longest AUTO reply (E1 → E2 → continuation) fits the 10-minute run', () => {
+    assert.equal(AUTO_E2_REPLY_OUTPUT_ALLOWANCE, 8_192);
+    assert.deepEqual(CHAT_REPLY_AUTO_OUTPUT_TOKENS, { E2: 8_192 }, 'AUTO-only: E2 alone; nothing above the AUTO maximum');
+    assert.deepEqual(CHAT_REPLY_OUTPUT_TOKENS, { E1: 2_048, E2: 4_096, E3: 8_192, E4: 16_384 }, 'the shared table is unchanged (Founder E2, DEFAULT, briefs)');
+    assert.equal(DEEPSEEK_V41_FLASH_ACADEMY_PROFILE.deployments.find((d) => d.reasoningClass === 'E2')?.maxOutputTokens, 16_384, 'the continuation stays within the E2 deployment maximum');
+    assert.deepEqual([modelCallTimeoutMs(120_000, 8_192), modelCallTimeoutMs(120_000, 16_384)], [120_000, 131_072]);
+    assert.ok(modelCallTimeoutMs(120_000, 2_048) + modelCallTimeoutMs(120_000, 8_192) + modelCallTimeoutMs(120_000, 16_384) < (employeeTaskProcessor.maxRunMs ?? 0), 'three calls of the longest chain stay inside one run');
+  });
+
+  test('an AUTO E2 reply sends 8,192, then one E2 continuation of 16,384, each reserved at its worst case; E1 stays 2,048; a Founder E2 keeps 4,096; nothing above E2', () =>
+    withWorld('d1-auto-e2', { ceiling: 'E4', reasoningProfile: true }, (_r, n, max) => (n === 1 ? truncated(max) : ok('The complete answer.')), async ({ rt, w, sent }) => {
+      const strategic = ask(rt, w, STRATEGY);
+      assert.equal(await settled(rt, strategic), 'COMPLETED');
+      assert.deepEqual(sent.map((s) => [s.effort, s.maxTokens]), [['low', 8_192], ['low', 16_384]], 'E2 8,192, then the same class at twice the allowance');
+      assert.deepEqual([kinds(rt, strategic), reservedClasses(rt, strategic)], [['PRIMARY', 'RETRY'], ['E2', 'E2']]);
+      const reservations = rt.view.runsForWorkItem(strategic).flatMap((r) => rt.governance.reservations(r.id));
+      for (const [r, cap] of reservations.map((x, i) => [x, [8_192, 16_384][i] ?? 0] as const)) {
+        const card = rt.governance.priceCard(r.priceCardId as Id);
+        assert.equal(r.money, worstCase(card, r.tokens - cap, cap).economicMicros, `the ${r.attemptKind} reservation is the worst case of its own allowance`);
+      }
+      assert.deepEqual(audits(rt, strategic, 'run.model_call_observed').map((a) => [a.attemptKind, a.reasoningClass, a.maxOutputTokens, a.finishReason]), [['PRIMARY', 'E2', 8_192, 'length'], ['RETRY', 'E2', 16_384, 'stop']]);
+      assert.deepEqual([input(rt, strategic).maxOutputTokensByClass, input(rt, strategic).autoMaxOutputTokensByClass], [CHAT_REPLY_OUTPUT_TOKENS, { E2: 8_192 }], 'the reply records the shared table and its AUTO-only entry');
+      assert.equal(replyState(rt, w, strategic).selection.mode, 'AUTO');
+
+      const routine = ask(rt, w, 'Thanks, got it.');
+      assert.equal(await settled(rt, routine), 'COMPLETED');
+      assert.deepEqual(sent.slice(2).map((s) => [s.effort ?? 'off', s.maxTokens]), [['off', 2_048]], 'AUTO E1 is unchanged');
+
+      const manual = ask(rt, w, STRATEGY, 'E2');
+      assert.equal(await settled(rt, manual), 'COMPLETED');
+      assert.deepEqual(sent.slice(3).map((s) => [s.effort, s.maxTokens]), [['low', 4_096]], 'a Founder-chosen E2 keeps 4,096');
+      assert.equal(input(rt, manual).autoMaxOutputTokensByClass, undefined, 'a reply with a Founder level records no AUTO-only table');
+      assert.ok(sent.every((s) => s.effort === undefined || s.effort === 'low'), 'no AUTO call ran with thinking high or max');
+      assert.equal(rt.governance.accountingInvariants().length, 0);
+    }));
+
+  test('only an AUTO run reads the AUTO-only table: a MANUAL override on it, a Work Item created before and a DEFAULT Employee keep 4,096; an invalid table is refused before any call', () =>
+    withWorld('d1-auto-only', { ceiling: 'E4', reasoningProfile: true }, (request) => (JSON.stringify(request.body).includes('Answer the general task') ? FINAL() : ok('Answer.')), async ({ rt, w, ceo, sent }) => {
+      const at = (): number => sent.length;
+      // An AUTO run with a class pinned at the AUTO maximum: the AUTO-only entry applies.
+      let n = at();
+      const autoPinned = general(rt, w, ceo, { reasoningClass: 'E2', autoMaxOutputTokensByClass: { E2: 8_192 } });
+      assert.equal(await settled(rt, autoPinned), 'COMPLETED');
+      assert.deepEqual(sent.slice(n).map((s) => s.maxTokens), [8_192]);
+      // The same recorded table under a Founder one-task level (MANUAL): never read.
+      n = at();
+      const manual = general(rt, w, ceo, { autoMaxOutputTokensByClass: { E2: 8_192 } }, 'E2');
+      assert.equal(await settled(rt, manual), 'COMPLETED');
+      assert.deepEqual(sent.slice(n).map((s) => s.maxTokens), [4_096]);
+      // A Work Item created before (no AUTO-only table): its recorded input binds, unchanged.
+      n = at();
+      const legacy = general(rt, w, ceo, { reasoningClass: 'E2' });
+      assert.equal(await settled(rt, legacy), 'COMPLETED');
+      assert.deepEqual(sent.slice(n).map((s) => s.maxTokens), [4_096]);
+      assert.equal(input(rt, legacy).autoMaxOutputTokensByClass, undefined, 'never rewritten');
+      // An invalid table: a typed refusal, nothing reserved or sent.
+      n = at();
+      const invalid = general(rt, w, ceo, { reasoningClass: 'E2', autoMaxOutputTokensByClass: { E2: 0 } });
+      assert.equal(await settled(rt, invalid), 'FAILED');
+      assert.deepEqual([rt.view.runsForWorkItem(invalid).at(-1)?.failureCode, at() - n, reservedClasses(rt, invalid)], ['INVALID_TASK_INPUT', 0, []]);
+      // The Employee becomes DEFAULT (default E2): a reply still records the AUTO-only table, but its run is not AUTO.
+      const e = rt.governance.getEmployee(ceo.id);
+      rt.governance.changeReasoningProfile(w.founder, e.id, { defaultClass: 'E2', ceilingClass: 'E4', selection: 'DEFAULT', expectedVersion: e.version, reasonCode: 'founder.reasoning_profile' });
+      n = at();
+      const reply = ask(rt, w, STRATEGY);
+      assert.equal(await settled(rt, reply), 'COMPLETED');
+      assert.deepEqual([replyState(rt, w, reply).selection.mode, input(rt, reply).autoMaxOutputTokensByClass, sent.slice(n).map((s) => [s.effort, s.maxTokens])], ['DEFAULT', { E2: 8_192 }, [['low', 4_096]]], 'DEFAULT E2 keeps 4,096');
+      assert.equal(rt.governance.accountingInvariants().length, 0);
     }));
 });

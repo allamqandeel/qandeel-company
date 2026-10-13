@@ -6547,3 +6547,49 @@ USD 0.041. A reply may still make up to 3 calls (`CHAT_REPLY_MAX_MODEL_CALLS`) a
 **Remaining risks.** The completion rate at 32,768 is not measured (8 of 13 observed samples would have fit, 1 would not,
 4 unknown); a controlled LIVE probe (up to USD 0.25) is a separate Founder decision. An override set later on an existing
 Work Item through the generic one-task path uses that item's recorded allowance (no restart either).
+
+## D-P1-13 — A Founder reply that AUTO runs at E2 gets an output allowance of 8,192 (P1-CONTEXT-INTEL-01 D1; Founder decision, executor; amends the D-P1-04 B1 E2 allowance for AUTO Founder replies only)
+
+**Context (G4 study, read-only, content-free).** LIVE AUTO E2 `founder.reply` calls used the whole 4,096 allowance in 3 of
+19 calls (thinking at `reasoning_effort=low` plus the answer share one `max_tokens`). Each such call was either continued at
+8,192 (paying for the cut 4,096 again) or failed `MODEL_OUTPUT_TRUNCATED`. E3 never reached its 8,192 (largest 6,197).
+
+**Decision (Founder, approved for implementation 2026-10-13).**
+1. A Founder reply whose run is AUTO gets E2 = 8,192 (`AUTO_E2_REPLY_OUTPUT_ALLOWANCE`, governance;
+   `CHAT_REPLY_AUTO_OUTPUT_TOKENS`, storage). It applies to every E2 call of that run: the AUTO start at E2 and the E1 → E2
+   evidence escalation (each call has the allowance of the class it routes at, D-P1-04 B1).
+2. **Separated from Manual E2.** The shared per-class table (`OUTPUT_ALLOWANCE_BY_CLASS` / `CHAT_REPLY_OUTPUT_TOKENS`) is
+   unchanged, so raising it would also have raised a Founder-chosen E2, a DEFAULT Employee's E2 and the CEO brief. Instead a
+   reply without a Founder level records a separate AUTO-only table (`autoMaxOutputTokensByClass: { E2: 8,192 }`), and the
+   employee-task processor merges it over the recorded table only when the run's durable AUTO verdict (`txAutoReasoning`,
+   read at every run's begin) is true. A Founder E2 (MANUAL), a one-task override set later on the item, a DEFAULT run (an
+   Employee switched to DEFAULT after the send), a pinned Academy item and every Work Item created before (no AUTO-only
+   table) keep 4,096. An invalid table is refused as `INVALID_TASK_INPUT` before any reservation or call.
+3. **Unchanged:** E1 2,048; E3 8,192; E4 16,384; the Founder's own E4 32,768 (D-P1-12); the AUTO maximum E2 (D-P1-11: no
+   AUTO selection, escalation, continuation or retry above E2); Employee profiles, ceilings and defaults; budgets, reply caps
+   and permissions; the call bound (3) and the run limit (10 minutes).
+
+**Bounds (checked).**
+- Continuation: one same-class E2 continuation per step at `continuationAllowance(8,192, 16,384)` = 16,384, the E2
+  deployment maximum (before: 8,192). A second exhaustion still ends `MODEL_OUTPUT_TRUNCATED`; no class above E2.
+- Context window: 24,000 input + 16,384 ≤ 131,072 (E2 window).
+- Timeouts (D-P1-09 scaling): 8,192 keeps the 120 s base; the 16,384 continuation gets 131 s. The longest AUTO chain
+  (E1 2,048 → E2 8,192 → E2 16,384) needs at most 371 s of the 600 s run (before 360 s). Deadline admission stays
+  Founder-E4-only.
+- Money: every call is reserved at the worst case of the allowance it actually has (unchanged mechanism). Longest AUTO
+  reply at the 24K context: about 60.9k µUSD economic reserved (before about 41.3k), well inside the 500,000 µUSD /
+  200,000-token reply cap (3 × 24,000 + 26,624 = 98,624 tokens). A reply cap, envelope or Company budget that cannot fund it
+  parks the reply before the call (`BUDGET_EXHAUSTED`), as before. Spend is billed on real tokens, not the allowance; a
+  reply that previously ran out at 4,096 and was continued at 8,192 now usually answers in one call.
+
+**Proof (no network, no paid call; the real runtime and DeepSeek adapter behind the fake transport).**
+`runtime/test/p1/p1-reason-auto-recovery.test.ts`, block D-P1-13: the constants and bounds; an AUTO E2 reply sends 8,192,
+then one 16,384 continuation, each reserved at its own worst case, with E1 at 2,048 and a Founder E2 at 4,096 in the same
+world; only an AUTO run reads the AUTO-only table (a MANUAL override on it, a Work Item created before and a DEFAULT
+Employee keep 4,096; an invalid table is refused with no call). Three earlier AUTO proofs now expect 8,192 (and 16,384 for
+the continuation); the DEFAULT and Manual proofs are unchanged. Mutation checks by hand on the compiled change, each caught:
+AUTO gate removed; AUTO table never applied; shared table merged over the AUTO entry; submitter records the table for a
+Founder level; submitter never records it.
+
+**Remaining risk.** Whether 8,192 suffices for every AUTO E2 reply is not measured (3 of 19 observed calls exceeded 4,096;
+their full need is unknown). No LIVE probe is part of this decision.
