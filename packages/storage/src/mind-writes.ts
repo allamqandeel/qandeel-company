@@ -11,7 +11,7 @@
  * to that manifest (migration 0005 trigger).
  */
 import { QandeelError, hasSecretNamedKey, isQandeelError, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { ANSWER_CONTRACT_TEXT, ANSWER_ONLY_OUTPUT_INSTRUCTION, assertDataClass, dataRank, isDataClass, maxDataClass, type DataClass } from '@qandeel-company/governance';
+import { ANSWER_CONTRACT_TEXT, ANSWER_ONLY_OUTPUT_INSTRUCTION, assertDataClass, dataRank, isDataClass, isTaskSignals, maxDataClass, type DataClass, type TaskSignals } from '@qandeel-company/governance';
 import {
   ACADEMY_EXECUTION_STAGES,
   COMPACTION_THRESHOLD,
@@ -31,10 +31,16 @@ import {
   neutralizeLayerMarkers,
   overlap,
   planContext,
+  queryTerms as unionQueryTerms,
   renderContext,
+  SALIENCE_INDEX_PREFIX,
+  SKILL_NEED_TABLE_VERSION,
+  skillNeedRank,
+  skillTier,
   summaryFingerprint,
   terms as termsOf,
   type CapabilityRequirement,
+  type SkillTier,
   type ContextBudgetPolicy,
   type ContextCandidate,
   type ContextPlan,
@@ -63,6 +69,7 @@ import {
   setMemoryStatus,
   sourceChanged,
   versionEligibility,
+  getSkillVersionMeta,
   getSkillVersionRow,
 } from './mind-core.js';
 import { mapCandidate, mapKnowledge, mapMemory, mapPassport, type MemoryCandidateRecord } from './mind-records.js';
@@ -583,12 +590,26 @@ export const KNOWLEDGE_POOL_LIMIT = 200;
 export const CANONICAL_POOL_LIMIT = 200;
 export const RECENT_RESULTS_MAX = 8;
 export const RECENT_RESULT_CHARS = 2_048;
+/**
+ * P1-CONTEXT-INTEL-01 (D-P1-14, two-tier pool): the extension of each pool past today's lookup, as a share of its limit —
+ * canonical 50, knowledge 200 → 50, memory 75 — for items only the new union query matches.
+ */
+export const POOL_EXTENSION_PCT = 25;
+const extension = (limit: number): number => Math.floor((limit * POOL_EXTENSION_PCT) / 100);
+
+/** P1-CONTEXT-INTEL-01 (D-P1-14): the TS-1 signals a Work Item was created with (Skill selection on), or null (legacy). */
+function skillSelectionOf(item: WorkItemRecord): TaskSignals | null {
+  const v = (item.processorInput as { taskSignals?: unknown } | null)?.taskSignals;
+  return isTaskSignals(v) ? v : null;
+}
 
 function contextPolicy(item: WorkItemRecord): ContextBudgetPolicy {
   const o = item.processorInput as { contextBudgetTokens?: unknown } | null;
   const t = o && typeof o === 'object' ? o.contextBudgetTokens : undefined;
-  if (typeof t === 'number' && Number.isInteger(t) && t >= 1_024 && t <= 64_000) return { ...DEFAULT_CONTEXT_POLICY, totalTokens: t };
-  return DEFAULT_CONTEXT_POLICY;
+  const base = typeof t === 'number' && Number.isInteger(t) && t >= 1_024 && t <= 64_000 ? { ...DEFAULT_CONTEXT_POLICY, totalTokens: t } : DEFAULT_CONTEXT_POLICY;
+  // A Work Item created with Skill selection (TS-1 signals) plans in the CP-1 order (Founder decision G3); every other
+  // Work Item — earlier work, Academy, shadow, benchmarks, background tasks — keeps the layered order.
+  return skillSelectionOf(item) !== null ? { ...base, order: 'CP1' } : base;
 }
 
 /** The submitter-declared ceiling of what the context may contain (default: the declared class — minimization by exclusion). */
@@ -679,6 +700,12 @@ const isFounderThreadReply = (item: WorkItemRecord): boolean => typeof (item.pro
 /** P1-CHAT-INTEL-01: the bounds of the earlier turns a conversation reply sees (bytes are the context's token estimate). */
 export const CONVERSATION_HISTORY_MAX_MESSAGES = 12;
 export const CONVERSATION_HISTORY_MAX_BYTES = 4_800;
+/**
+ * P1-CONTEXT-INTEL-01 (D-P1-14, G4b): the history allowance of a reply whose context budget is at least
+ * `CONVERSATION_HISTORY_LARGE_BUDGET` (a new Founder reply: 60,000). Same thread scope, same turn bound, same order.
+ */
+export const CONVERSATION_HISTORY_LARGE_MAX_BYTES = 11_750;
+export const CONVERSATION_HISTORY_LARGE_BUDGET = 48_000;
 const CONVERSATION_TURN_MAX_CHARS = 1_200;
 
 /**
@@ -686,7 +713,8 @@ const CONVERSATION_TURN_MAX_CHARS = 1_200;
  * never seen early), newest first into the allowance and rendered oldest first. Bodies are company content of the
  * Founder-only thread, already secret-scanned on write; lines that would impersonate a context layer are neutralized.
  */
-function conversationHistory(ctx: StoreContext, item: WorkItemRecord): { threadId: string; count: number; text: string } | null {
+function conversationHistory(ctx: StoreContext, item: WorkItemRecord, budgetTokens: number): { threadId: string; count: number; text: string } | null {
+  const maxBytes = budgetTokens >= CONVERSATION_HISTORY_LARGE_BUDGET ? CONVERSATION_HISTORY_LARGE_MAX_BYTES : CONVERSATION_HISTORY_MAX_BYTES;
   const pi = (item.processorInput ?? {}) as { founderThreadId?: unknown; founderMessageId?: unknown };
   if (typeof pi.founderThreadId !== 'string' || typeof pi.founderMessageId !== 'string') return null;
   const anchor = ctx.db.get<{ seq: number }>('SELECT seq FROM communication_messages WHERE id = ? AND thread_id = ?', pi.founderMessageId, pi.founderThreadId);
@@ -702,7 +730,7 @@ function conversationHistory(ctx: StoreContext, item: WorkItemRecord): { threadI
     const who = r.sender_kind === 'FOUNDER' ? 'Founder' : r.sender_ref === item.ownerRef ? 'You' : 'Employee';
     const line = `- ${r.created_at.slice(0, 16).replace('T', ' ')} UTC, ${who} (${r.purpose.toLowerCase().replace('_', ' ')}): ${neutralizeLayerMarkers(body)}`;
     const size = Buffer.byteLength(line, 'utf8') + 1;
-    if (bytes + size > CONVERSATION_HISTORY_MAX_BYTES) break;
+    if (bytes + size > maxBytes) break;
     lines.push(line);
     bytes += size;
   }
@@ -761,10 +789,14 @@ export function txAssembleContext(ctx: StoreContext, fence: Fence, req: Assemble
   const mode = ctx.db.get<{ mode: string }>('SELECT mode FROM run_execution_modes WHERE run_id = ?', fence.runId)?.mode ?? (benchmarkRunOf(ctx, fence.runId) !== null ? 'SKILL_BENCHMARK' : null);
   const instructions = String((item.processorInput as { instructions?: unknown } | null)?.instructions ?? '');
   const skillCodes = caps.requirements.flatMap((r) => (r.kind === 'SKILL' ? [ctx.db.get<{ code: string }>('SELECT code FROM skills WHERE id = ?', r.skillId)?.code ?? ''] : []));
-  const queryTerms = [...new Set([...caps.topicTerms, ...termsOf(instructions), ...skillCodes.flatMap((c) => termsOf(c.replace(/[.-]/g, ' ')))])].sort().slice(0, 96);
-  const query = { terms: queryTerms, marketRef: caps.marketRef, dataClassCeiling: ceiling, importance } as const;
+  const codeTerms = skillCodes.flatMap((c) => termsOf(c.replace(/[.-]/g, ' ')));
+  // Tier 1 (P1-CONTEXT-INTEL-01, DG-1n): today's query, constructed exactly as the previous release builds it.
+  const legacyTerms = [...new Set([...caps.topicTerms, ...termsOf(instructions), ...codeTerms])].sort().slice(0, 96);
+  // The union query of this task (C3): topics ∪ TI-0 ∪ TI-1 of its text with Arabic proclitic variants ∪ Skill codes. The text is
+  // the Founder's own message for a Founder reply (never the reply template), the instructions otherwise.
+  const query = { terms: unionQueryTerms(founderMessageBody(ctx, item) ?? instructions, caps.topicTerms, codeTerms), marketRef: caps.marketRef, dataClassCeiling: ceiling, importance } as const;
 
-  const pool = buildPool(ctx, fence, e, item, { at, effective, ceiling, caps, mode, instructions, query, step: req.step });
+  const pool = buildPool(ctx, fence, e, item, { at, effective, ceiling, caps, mode, instructions, query, legacyTerms, policy, step: req.step });
 
   let plan: ContextPlan;
   let rendered: ReturnType<typeof renderContext> | null = null;
@@ -836,7 +868,7 @@ export function txAssembleContext(ctx: StoreContext, fence: Fence, req: Assemble
     `INSERT INTO context_manifests (id, run_id, work_item_id, employee_id, inference_seq, step, outcome, policy_json, total_budget, used_tokens, estimated_input_tokens, max_data_class, per_layer_json, selected_count, rejected_count, conflict_count, prefix_sha256, messages_sha256, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     manifestId, fence.runId, item.id, e.id, seq, Math.max(0, Math.trunc(req.step)), outcome,
-    JSON.stringify({ totalTokens: policy.totalTokens, frameTokens: policy.frameTokens, maxItemsPerLayer: policy.maxItemsPerLayer, ceiling, importance }),
+    manifestPolicyJson(policy, ceiling, importance, item, pool),
     policy.totalTokens, plan.usedTokens, ok && rendered ? rendered.estimatedTokens : 0, maxClass, JSON.stringify(plan.perLayer),
     selected.length, plan.rejected.length + pool.preRejected.length, plan.conflictClaims.length,
     ok && rendered ? sha256Hex(rendered.prefixText) : null, messagesSha, at,
@@ -874,6 +906,21 @@ export function txAssembleContext(ctx: StoreContext, fence: Fence, req: Assemble
   return { outcome: 'OK', manifestId, messages: rendered.messages, estimatedInputTokens: rendered.estimatedTokens, dataClass: maxClass, selected: selected.length, conflicts: plan.conflictClaims.length };
 }
 
+/**
+ * The manifest's policy record. P1-CONTEXT-INTEL-01 (D-P1-14): a Work Item with Skill selection also records the order, the
+ * TS-1 signals (closed codes), the need-table version and the number of Skills per tier — content-free (Rule A), bounded
+ * by the column's 1,024 characters (the signals give way to their count first).
+ */
+function manifestPolicyJson(policy: ContextBudgetPolicy, ceiling: DataClass, importance: string, item: WorkItemRecord, pool: Pool): string {
+  const base = { totalTokens: policy.totalTokens, frameTokens: policy.frameTokens, maxItemsPerLayer: policy.maxItemsPerLayer, ceiling, importance };
+  const selection = skillSelectionOf(item);
+  if (selection === null) return JSON.stringify(base);
+  const tiers = { TASK_REQUIRED: 0, SUPPORTING: 0, NON_RELEVANT: 0 };
+  for (const c of [...pool.candidates, ...pool.preRejected.map((r) => r.candidate)]) if (c.kind === 'SKILL' && c.tier !== undefined) tiers[c.tier]++;
+  const full = JSON.stringify({ ...base, order: policy.order ?? 'LAYERED', skillSelection: { policy: selection.policy, table: SKILL_NEED_TABLE_VERSION, signals: selection.signals, tiers } });
+  return full.length <= 1_024 ? full : JSON.stringify({ ...base, order: policy.order ?? 'LAYERED', skillSelection: { policy: selection.policy, table: SKILL_NEED_TABLE_VERSION, signalCount: selection.signals.length, tiers } });
+}
+
 interface PoolInput {
   readonly at: Timestamp;
   readonly effective: DataClass;
@@ -881,8 +928,19 @@ interface PoolInput {
   readonly caps: WorkItemCapabilities;
   readonly mode: string | null;
   readonly instructions: string;
+  /** The union query (tier 2, relevance and score). */
   readonly query: { readonly terms: readonly string[] };
+  /** Today's query, built exactly as the previous release builds it (tier 1). */
+  readonly legacyTerms: readonly string[];
+  readonly policy: ContextBudgetPolicy;
   readonly step: number;
+}
+
+/** The Founder message a Founder reply answers (its anchor), or null for any other Work Item. */
+function founderMessageBody(ctx: StoreContext, item: WorkItemRecord): string | null {
+  const pi = (item.processorInput ?? {}) as { founderThreadId?: unknown; founderMessageId?: unknown };
+  if (typeof pi.founderThreadId !== 'string' || typeof pi.founderMessageId !== 'string') return null;
+  return ctx.db.get<{ body: string }>('SELECT body FROM communication_messages WHERE id = ? AND thread_id = ?', pi.founderMessageId, pi.founderThreadId)?.body ?? null;
 }
 
 /** Term-matched ids of one kind (bounded, relevance-ordered by matched-term count, then id). */
@@ -907,6 +965,66 @@ function termMatches(
   );
   return new Map(rows.map((r) => [r.id, Number(r.n)]));
 }
+
+/** A union query in both index-row forms: TI-0 rows as written, TI-1 rows as `~` + term (DG-1n). */
+const bothForms = (terms: readonly string[]): string[] => [...terms, ...terms.map((t) => `${SALIENCE_INDEX_PREFIX}${t}`)];
+
+/**
+ * P1-CONTEXT-INTEL-01 (D-P1-14) — tier 2 of a two-tier pool: live items the union query matches (either row form) that
+ * tier 1 did not admit, ranked by total matched rows, then id, and bounded by `limit` (the extension). Tier 1 — today's
+ * query on today's rows, today's ranking and limits — is never displaced by it.
+ */
+function extensionMatches(
+  ctx: StoreContext,
+  kind: 'MEMORY' | 'KNOWLEDGE' | 'CANONICAL',
+  owner: string,
+  terms: readonly string[],
+  limit: number,
+  live: Parameters<typeof termMatches>[5],
+  tier1: Iterable<string>,
+): Map<string, number> {
+  if (terms.length === 0 || limit <= 0) return new Map();
+  const rows = ctx.db.all<{ id: string; n: number }>(
+    `SELECT t.item_id AS id, COUNT(*) AS n FROM mind_terms t JOIN ${live.table} x ON x.id = t.item_id
+      WHERE t.item_kind = ? AND t.owner_key = ? AND t.term IN (SELECT value FROM json_each(?)) AND (${live.where})
+        AND t.item_id NOT IN (SELECT value FROM json_each(?))
+      GROUP BY t.item_id ORDER BY n DESC, t.item_id LIMIT ?`,
+    kind, owner, JSON.stringify(bothForms(terms)), ...live.params, inList(tier1), limit,
+  );
+  return new Map(rows.map((r) => [r.id, Number(r.n)]));
+}
+
+/** Two-tier pool of one lookup: today's pool (tier 1, verbatim) and the bounded extension (tier 2). */
+function pooledMatches(
+  ctx: StoreContext,
+  kind: 'MEMORY' | 'KNOWLEDGE' | 'CANONICAL',
+  owner: string,
+  q: { readonly legacy: readonly string[]; readonly union: readonly string[] },
+  limit: number,
+  live: Parameters<typeof termMatches>[5],
+): Map<string, number> {
+  const tier1 = termMatches(ctx, kind, owner, q.legacy, limit, live);
+  return new Map([...tier1, ...extensionMatches(ctx, kind, owner, q.union, extension(limit), live, tier1.keys())]);
+}
+
+/**
+ * The TI-1 index terms (`~` rows, prefix removed) the union query holds, per item of one pool. Relevance and score only
+ * read an item's overlap with the query, so these — added to its `terms_json` — give exactly the overlap of its full
+ * index terms, through the primary key (kind, owner, term ∈ query): bounded, never a scan of an owner's index.
+ */
+function salienceHits(ctx: StoreContext, kind: 'MEMORY' | 'KNOWLEDGE' | 'CANONICAL', owner: string, union: readonly string[], ids: Iterable<string>): Map<string, string[]> {
+  const list = [...ids];
+  const out = new Map<string, string[]>();
+  if (list.length === 0 || union.length === 0) return out;
+  for (const r of ctx.db.all<{ id: string; t: string }>(
+    'SELECT item_id AS id, term AS t FROM mind_terms WHERE item_kind = ? AND owner_key = ? AND term IN (SELECT value FROM json_each(?)) AND item_id IN (SELECT value FROM json_each(?))',
+    kind, owner, JSON.stringify(union.map((t) => `${SALIENCE_INDEX_PREFIX}${t}`)), JSON.stringify(list),
+  )) out.set(r.id, [...(out.get(r.id) ?? []), r.t.slice(SALIENCE_INDEX_PREFIX.length)]);
+  return out;
+}
+
+/** An item's candidate terms: its stored `terms_json` ∪ the TI-1 index terms the query holds. */
+const candidateTerms = (termsJson: unknown, hits: Map<string, string[]>, id: string): string[] => [...new Set([...(JSON.parse(String(termsJson)) as string[]), ...(hits.get(id) ?? [])])];
 
 const inList = (ids: Iterable<string>): string => JSON.stringify([...ids]);
 
@@ -933,7 +1051,7 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // P1-CHAT-INTEL-01: a conversation reply sees the earlier turns of its own thread — bounded (newest first into a fixed
   // byte allowance, then shown oldest first), never the whole history, optional (it competes for the WORK share and yields
   // to the budget), and recorded in the manifest by thread, count and hash only (Rule A).
-  const history = conversationHistory(ctx, item);
+  const history = conversationHistory(ctx, item, p.policy.totalTokens);
   if (history !== null) add(baseCandidate({ key: 'conversation', kind: 'WORK_INSTRUCTIONS', layer: 'WORK', itemId: history.threadId, version: history.count, sha256: sha256Hex(history.text), provenanceRef: `communication_thread:${history.threadId}`, authorityWeight: 5, estTokens: itemEstimate(history.text), dataClass: declared }, at), () => history.text);
   let scenario: Pool['scenario'] = null;
   if (p.mode === 'ACADEMY_ATTEMPT') {
@@ -965,21 +1083,34 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
       add(baseCandidate({ key: `skill:${v.id}`, kind: 'SKILL', layer: 'SKILL', required: true, itemId: v.id, version: v.version, sha256: v.instructionsSha256, provenanceRef: v.sourceRef, authorityWeight: 20, dataClass: 'D1', createdAt: v.createdAt, estTokens: Buffer.byteLength(b.text, 'utf8') + itemEstimate('') }, at), () => b.text);
     }
   }
-  // L3 — progressive Skill disclosure: passport metadata → task-relevant pinned versions → payload.
+  // L3 — progressive Skill disclosure: passport metadata → task-relevant pinned versions → payload. Every read here is
+  // METADATA (named columns, no instructions); a payload is read only for a selected Skill, by the pinned loader.
   const requiredSkills = new Set(p.caps.requirements.flatMap((r) => (r.kind === 'SKILL' ? [r.skillId] : [])));
+  // P1-CONTEXT-INTEL-01 (D-P1-14): a Work Item created with TS-1 signals tiers its Skills by the need table (metadata only).
+  const selection = skillSelectionOf(item);
+  const taskClass = String((item.processorInput as { taskClass?: unknown } | null)?.taskClass ?? '');
   const skillPool: { c: ContextCandidate; directives: Readonly<Record<string, string>>; required: boolean }[] = [];
   for (const pe of ctx.db.all('SELECT * FROM passport_entries WHERE employee_id = ? ORDER BY skill_id', e.id).map(mapPassport)) {
     if (pe.status !== 'ACTIVE' || p.mode === 'SKILL_BENCHMARK') continue;
-    const v = getSkillVersionRow(ctx, pe.skillVersionId);
+    const v = getSkillVersionMeta(ctx, pe.skillVersionId);
     const skill = ctx.db.get<{ code: string; status: string }>('SELECT code, status FROM skills WHERE id = ?', pe.skillId);
-    const vTerms = [...new Set([...(JSON.parse(String(ctx.db.get<{ t: string }>('SELECT terms_json AS t FROM skill_versions WHERE id = ?', v.id)?.t ?? '[]')) as string[]), ...termsOf(String(skill?.code ?? '').replace(/[.-]/g, ' '))])];
-    const relevant = requiredSkills.has(pe.skillId) || overlap(p.query.terms, vTerms) > 0;
+    const code = String(skill?.code ?? '');
+    const vTerms = [...new Set([...v.terms, ...termsOf(code.replace(/[.-]/g, ' '))])];
+    // A capability-required Skill is TASK_REQUIRED; a declared Skill takes its need-table tier; an undeclared one (null) keeps
+    // the legacy lexical path.
+    const tier: SkillTier | null = selection === null ? null : requiredSkills.has(pe.skillId) ? 'TASK_REQUIRED' : skillTier(code, selection.signals, taskClass);
+    const rank = tier === null ? null : skillNeedRank(code);
+    const c = baseCandidate({ key: `skill:${v.id}`, kind: 'SKILL', layer: 'SKILL', itemId: v.id, version: v.version, sha256: v.instructionsSha256, provenanceRef: v.sourceRef, authorityWeight: requiredSkills.has(pe.skillId) ? 20 : tier === 'TASK_REQUIRED' ? 15 : 5, status: 'CURRENT', dataClass: 'D1', terms: requiredSkills.has(pe.skillId) ? [...vTerms, ...p.query.terms.slice(0, 1)] : vTerms, createdAt: v.createdAt, estTokens: v.bytes + itemEstimate(''), ...(tier !== null ? { tier } : {}), ...(rank !== null ? { needRank: rank } : {}) }, at);
+    if (tier === 'NON_RELEVANT') {
+      // Not needed by this task: recorded from metadata (id, version, hash, size); its payload is never read.
+      preRejected.push({ candidate: c, score: 0, reason: 'NOT_RELEVANT' });
+      continue;
+    }
+    const relevant = tier !== null || requiredSkills.has(pe.skillId) || overlap(p.query.terms, vTerms) > 0;
     if (!relevant) continue; // Not task-relevant: its payload is never even read.
     const eligible = skill?.status === 'ACTIVE' && versionEligibility(ctx, v).eligible;
-    const bytes = Number(ctx.db.get<{ b: number }>('SELECT length(CAST(instructions AS BLOB)) AS b FROM skill_versions WHERE id = ?', v.id)?.b ?? 0);
-    const c = baseCandidate({ key: `skill:${v.id}`, kind: 'SKILL', layer: 'SKILL', itemId: v.id, version: v.version, sha256: v.instructionsSha256, provenanceRef: v.sourceRef, authorityWeight: requiredSkills.has(pe.skillId) ? 20 : 5, status: eligible ? 'CURRENT' : `INELIGIBLE`, dataClass: 'D1', terms: requiredSkills.has(pe.skillId) ? [...vTerms, ...p.query.terms.slice(0, 1)] : vTerms, createdAt: v.createdAt, estTokens: bytes + itemEstimate('') }, at);
     if (!eligible) {
-      preRejected.push({ candidate: c, score: 0, reason: 'STATUS_NOT_RETRIEVABLE' });
+      preRejected.push({ candidate: { ...c, status: 'INELIGIBLE' }, score: 0, reason: 'STATUS_NOT_RETRIEVABLE' });
       continue;
     }
     skillPool.push({ c, directives: v.directives, required: requiredSkills.has(pe.skillId) });
@@ -1020,8 +1151,10 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // an eligible slot (R1 re-review).
   const kEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND (x.review_at IS NULL OR x.review_at > ?)`;
   const kEligibleParams = [p.ceiling, p.caps.marketRef ?? '', at];
-  const kMatch = termMatches(ctx, 'KNOWLEDGE', '', p.query.terms, KNOWLEDGE_POOL_LIMIT * 4, { table: 'knowledge_items', where: `${kLive} AND ${kEligible} AND ${kScope}`, params: [...kEligibleParams, ...kScopeParams] });
-  const kEvidence = termMatches(ctx, 'KNOWLEDGE', '', p.query.terms, KNOWLEDGE_POOL_LIMIT * 4, { table: 'knowledge_items', where: `${kLive} AND NOT (${kEligible}) AND ${kScope}`, params: [...kEligibleParams, ...kScopeParams] });
+  const kEligibleLive = { table: 'knowledge_items', where: `${kLive} AND ${kEligible} AND ${kScope}`, params: [...kEligibleParams, ...kScopeParams] } as const;
+  const kEvidenceLive = { table: 'knowledge_items', where: `${kLive} AND NOT (${kEligible}) AND ${kScope}`, params: [...kEligibleParams, ...kScopeParams] } as const;
+  const kMatch = termMatches(ctx, 'KNOWLEDGE', '', p.legacyTerms, KNOWLEDGE_POOL_LIMIT * 4, kEligibleLive);
+  const kEvidence = termMatches(ctx, 'KNOWLEDGE', '', p.legacyTerms, KNOWLEDGE_POOL_LIMIT * 4, kEvidenceLive);
   const knowledgeRows = (ids: Map<string, number>) => ids.size === 0 ? [] : ctx.db.all(
     `SELECT id, scope, scope_ref, topic, claim_key, claim_value, content_sha256, terms_json, data_class, market_ref, provenance_kind, provenance_ref, confidence_pct, status, integrity, review_at, last_validated_at, version, created_at, created_by_ref, fingerprint, length(CAST(content AS BLOB)) AS bytes, '' AS content
        FROM knowledge_items
@@ -1035,7 +1168,13 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   );
   const rank = (m: Map<string, number>) => (a: Readonly<Record<string, unknown>>, b: Readonly<Record<string, unknown>>): number =>
     (m.get(String(b.id)) ?? 0) - (m.get(String(a.id)) ?? 0) || (String(b.created_at) < String(a.created_at) ? -1 : String(b.created_at) > String(a.created_at) ? 1 : 0) || (String(a.id) < String(b.id) ? -1 : 1);
-  const kRows = [...knowledgeRows(kMatch).sort(rank(kMatch)).slice(0, KNOWLEDGE_POOL_LIMIT), ...knowledgeRows(kEvidence).sort(rank(kEvidence)).slice(0, KNOWLEDGE_POOL_LIMIT)];
+  // Tier 1: today's pool (800 term-matched, re-ranked to 200). Tier 2: the union query's other matches, 200 → 50.
+  const kTier1 = knowledgeRows(kMatch).sort(rank(kMatch)).slice(0, KNOWLEDGE_POOL_LIMIT);
+  const kEvidence1 = knowledgeRows(kEvidence).sort(rank(kEvidence)).slice(0, KNOWLEDGE_POOL_LIMIT);
+  const kMatch2 = extensionMatches(ctx, 'KNOWLEDGE', '', p.query.terms, extension(KNOWLEDGE_POOL_LIMIT * 4), kEligibleLive, kTier1.map((r) => String(r.id)));
+  const kEvidence2 = extensionMatches(ctx, 'KNOWLEDGE', '', p.query.terms, extension(KNOWLEDGE_POOL_LIMIT * 4), kEvidenceLive, kEvidence1.map((r) => String(r.id)));
+  const kRows = [...kTier1, ...knowledgeRows(kMatch2).sort(rank(kMatch2)).slice(0, extension(KNOWLEDGE_POOL_LIMIT)), ...kEvidence1, ...knowledgeRows(kEvidence2).sort(rank(kEvidence2)).slice(0, extension(KNOWLEDGE_POOL_LIMIT))];
+  const kHits = salienceHits(ctx, 'KNOWLEDGE', '', p.query.terms, kRows.map((r) => String(r.id)));
   for (const r of kRows) {
     const k = mapKnowledge(r);
     if (!knowledgeReadable(k, access)) continue; // defence in depth: re-checked in code
@@ -1048,7 +1187,7 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
     }
     const stale = isStale({ reviewAt: k.reviewAt, sourceChanged: false }, at);
     add(
-      baseCandidate({ key: `knowledge:${k.id}`, kind: 'KNOWLEDGE', layer: 'KNOWLEDGE', itemId: k.id, version: k.version, sha256: k.contentSha256, provenanceRef: k.provenanceRef, authorityWeight: KNOWLEDGE_WEIGHT[k.provenanceKind] ?? 5, status: k.status, stale, dataClass: k.dataClass, marketRef: k.marketRef, terms: JSON.parse(String(r.terms_json)) as string[], confidencePct: k.confidencePct, createdAt: k.createdAt, validatedAt: (r.last_validated_at as Timestamp | null) ?? null, estTokens: Number(r.bytes) + itemEstimate(''), claimKey: k.claimKey, claimValue: k.claimValue }, at),
+      baseCandidate({ key: `knowledge:${k.id}`, kind: 'KNOWLEDGE', layer: 'KNOWLEDGE', itemId: k.id, version: k.version, sha256: k.contentSha256, provenanceRef: k.provenanceRef, authorityWeight: KNOWLEDGE_WEIGHT[k.provenanceKind] ?? 5, status: k.status, stale, dataClass: k.dataClass, marketRef: k.marketRef, terms: candidateTerms(r.terms_json, kHits, k.id), confidencePct: k.confidencePct, createdAt: k.createdAt, validatedAt: (r.last_validated_at as Timestamp | null) ?? null, estTokens: Number(r.bytes) + itemEstimate(''), claimKey: k.claimKey, claimValue: k.claimValue }, at),
       () => loadVerified(ctx, 'knowledge_items', k.id),
     );
   }
@@ -1064,14 +1203,15 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // the WAIT-settle hold re-check reads it), never an eligible slot.
   const memEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND NOT EXISTS (SELECT 1 FROM memory_conflicts c WHERE c.state = 'OPEN' AND (c.memory_a_id = x.id OR c.memory_b_id = x.id))`;
   const memCurrent = `(x.review_at IS NULL OR x.review_at > ?)`;
-  const mEligible = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND ${memEligible} AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });
-  const mEvidence = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND NOT (${memEligible}) AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });
+  const q2 = { legacy: p.legacyTerms, union: p.query.terms };
+  const mEligible = pooledMatches(ctx, 'MEMORY', e.id, q2, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND ${memEligible} AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });
+  const mEvidence = pooledMatches(ctx, 'MEMORY', e.id, q2, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND NOT (${memEligible}) AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });
   // Memories held in an OPEN conflict that CAN hold this work (class within the ceiling, market-eligible —
   // the planner rejects any other kind before it looks at conflicts) get their OWN bounded pool: the
   // IMPORTANT-work CONFLICT_HOLD and the WAIT-settle hold re-check depend on them being candidates, so no
   // amount of other rejection evidence — including ineligible conflicted memories, which stay in the
   // evidence pool — may crowd them out (R1 final re-reviews).
-  const mConflict = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, {
+  const mConflict = pooledMatches(ctx, 'MEMORY', e.id, q2, MEMORY_POOL_LIMIT, {
     table: 'memory_records',
     where: `${memLive} AND ${memCurrent} AND x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND EXISTS (SELECT 1 FROM memory_conflicts c WHERE c.state = 'OPEN' AND (c.memory_a_id = x.id OR c.memory_b_id = x.id))`,
     params: [e.id, at, p.ceiling, p.caps.marketRef ?? ''],
@@ -1081,7 +1221,7 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
             confidence_pct, status, integrity, retention_policy, review_at, last_validated_at, candidate_id, supersedes_id, superseded_by_id, version, created_at, terms_json, fingerprint, length(CAST(content AS BLOB)) AS bytes`;
   // Relevant memories that reached their review horizon take no pool slot: they are marked STALE durably
   // (bounded, decay is not deletion) and recorded as rejected, exactly as before.
-  const dueMatch = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND x.review_at IS NOT NULL AND x.review_at <= ?`, params: [e.id, at] });
+  const dueMatch = pooledMatches(ctx, 'MEMORY', e.id, q2, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND x.review_at IS NOT NULL AND x.review_at <= ?`, params: [e.id, at] });
   if (dueMatch.size > 0) {
     for (const r of ctx.db.all(`SELECT ${memCols} FROM memory_records WHERE id IN (SELECT value FROM json_each(?)) AND employee_id = ?`, inList(dueMatch.keys()), e.id)) {
       const m = setMemoryStatus(ctx, mapMemory(r), 'STALE', 'REVIEW_HORIZON_OR_SOURCE_CHANGED', SYSTEM_MIND_REF);
@@ -1089,12 +1229,13 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
     }
   }
   const memRows = mMatch.size === 0 ? [] : ctx.db.all(`SELECT ${memCols} FROM memory_records WHERE id IN (SELECT value FROM json_each(?)) AND employee_id = ? AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE')`, inList(mMatch.keys()), e.id).sort(rank(mMatch));
+  const mHits = salienceHits(ctx, 'MEMORY', e.id, p.query.terms, memRows.map((r) => String(r.id)));
   const memCandidates: { c: ContextCandidate; topic: string; eligible: boolean }[] = [];
   for (const r of memRows) {
     let m = mapMemory(r);
     const stale = isStale({ reviewAt: m.reviewAt, sourceChanged: sourceChanged(ctx, m.provenanceKind, m.provenanceRef, r.source_version === null ? null : Number(r.source_version), (r.source_sha256 as string | null) ?? null) }, at);
     if (stale) m = setMemoryStatus(ctx, m, 'STALE', 'REVIEW_HORIZON_OR_SOURCE_CHANGED', SYSTEM_MIND_REF);
-    const c = baseCandidate({ key: `memory:${m.id}`, kind: 'MEMORY', layer: 'MEMORY', itemId: m.id, version: m.version, sha256: m.contentSha256, provenanceRef: m.provenanceRef, authorityWeight: MEMORY_WEIGHT[m.provenanceKind] ?? 0, status: m.status, stale, dataClass: m.dataClass, marketRef: m.marketRef, terms: JSON.parse(String(r.terms_json)) as string[], confidencePct: m.confidencePct, createdAt: m.createdAt, validatedAt: m.lastValidatedAt, estTokens: Number(r.bytes) + itemEstimate(''), claimKey: m.claimKey, claimValue: m.claimValue, conflictHeld: held.has(m.id) }, at);
+    const c = baseCandidate({ key: `memory:${m.id}`, kind: 'MEMORY', layer: 'MEMORY', itemId: m.id, version: m.version, sha256: m.contentSha256, provenanceRef: m.provenanceRef, authorityWeight: MEMORY_WEIGHT[m.provenanceKind] ?? 0, status: m.status, stale, dataClass: m.dataClass, marketRef: m.marketRef, terms: candidateTerms(r.terms_json, mHits, m.id), confidencePct: m.confidencePct, createdAt: m.createdAt, validatedAt: m.lastValidatedAt, estTokens: Number(r.bytes) + itemEstimate(''), claimKey: m.claimKey, claimValue: m.claimValue, conflictHeld: held.has(m.id) }, at);
     const eligible = !stale && !c.conflictHeld && dataRank(c.dataClass) <= dataRank(p.ceiling) && (c.marketRef === null || c.marketRef === p.caps.marketRef) && overlap(p.query.terms, c.terms) > 0;
     memCandidates.push({ c, topic: m.topic, eligible });
   }
@@ -1103,16 +1244,17 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // candidate asserts (bound whether or not the statement itself is relevant). A corrupt ACTIVE canonical
   // record fails the whole assembly closed.
   const corruptCanonical = ctx.db.get(`SELECT 1 AS x FROM canonical_truth WHERE status = 'ACTIVE' AND integrity = 'CORRUPT' LIMIT 1`) !== undefined;
-  const cMatch = termMatches(ctx, 'CANONICAL', '', p.query.terms, CANONICAL_POOL_LIMIT, { table: 'canonical_truth', where: `x.status = 'ACTIVE' AND x.integrity = 'OK'`, params: [] });
+  const cMatch = pooledMatches(ctx, 'CANONICAL', '', q2, CANONICAL_POOL_LIMIT, { table: 'canonical_truth', where: `x.status = 'ACTIVE' AND x.integrity = 'OK'`, params: [] });
   const claimKeys = [...new Set(candidates.concat(memCandidates.map((x) => x.c)).flatMap((c) => (c.claimKey === null ? [] : [c.claimKey])))];
   const cRows = ctx.db.all<{ id: string; level: string; topic: string; claim_key: string | null; claim_value: string | null; statement_sha256: string; terms_json: string; data_class: string; source_ref: string; version: number; recorded_at: string; bytes: number }>(
     `SELECT id, level, topic, claim_key, claim_value, statement_sha256, terms_json, data_class, source_ref, version, recorded_at, length(CAST(statement AS BLOB)) AS bytes
        FROM canonical_truth WHERE status = 'ACTIVE' AND integrity = 'OK' AND (id IN (SELECT value FROM json_each(?)) OR claim_key IN (SELECT value FROM json_each(?)))`,
     inList(cMatch.keys()), JSON.stringify(claimKeys),
   );
+  const cHits = salienceHits(ctx, 'CANONICAL', '', p.query.terms, cRows.map((r) => r.id));
   for (const r of cRows.sort((a, b) => (CANONICAL_WEIGHT[b.level] ?? 0) - (CANONICAL_WEIGHT[a.level] ?? 0) || rank(cMatch)({ id: a.id, created_at: a.recorded_at }, { id: b.id, created_at: b.recorded_at }))) {
     add(
-      baseCandidate({ key: `canonical:${r.id}`, kind: 'CANONICAL', layer: 'AUTHORITY', itemId: r.id, version: Number(r.version), sha256: r.statement_sha256, provenanceRef: r.source_ref, authorityWeight: CANONICAL_WEIGHT[r.level] ?? 14, dataClass: r.data_class as DataClass, terms: JSON.parse(r.terms_json) as string[], createdAt: r.recorded_at as Timestamp, validatedAt: r.recorded_at as Timestamp, estTokens: Number(r.bytes) + itemEstimate(''), claimKey: r.claim_key, claimValue: r.claim_value }, at),
+      baseCandidate({ key: `canonical:${r.id}`, kind: 'CANONICAL', layer: 'AUTHORITY', itemId: r.id, version: Number(r.version), sha256: r.statement_sha256, provenanceRef: r.source_ref, authorityWeight: CANONICAL_WEIGHT[r.level] ?? 14, dataClass: r.data_class as DataClass, terms: candidateTerms(r.terms_json, cHits, r.id), createdAt: r.recorded_at as Timestamp, validatedAt: r.recorded_at as Timestamp, estTokens: Number(r.bytes) + itemEstimate(''), claimKey: r.claim_key, claimValue: r.claim_value }, at),
       () => loadVerified(ctx, 'canonical_truth', r.id),
     );
   }
@@ -1158,7 +1300,7 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
     const row = ctx.db.get<{ content_sha256: string; bytes: number; created_at: string }>('SELECT content_sha256, created_at, length(CAST(content AS BLOB)) AS bytes FROM context_summaries WHERE id = ?', sid);
     for (const x of src) compacted.add(`memory:${x.id}`);
     add(
-      baseCandidate({ key: `summary:${sid}`, kind: 'SUMMARY', layer: 'MEMORY', itemId: sid, sha256: String(row?.content_sha256), provenanceRef: `context_summary:${sid}`, dataClass: summaryClass, terms: [...new Set(src.flatMap((x) => JSON.parse(x.terms_json) as string[]))].sort().slice(0, 48), confidencePct: Math.min(...src.map((x) => Number(x.confidence_pct))), createdAt: (row?.created_at ?? at) as Timestamp, estTokens: Number(row?.bytes ?? 0) + itemEstimate('') }, at),
+      baseCandidate({ key: `summary:${sid}`, kind: 'SUMMARY', layer: 'MEMORY', itemId: sid, sha256: String(row?.content_sha256), provenanceRef: `context_summary:${sid}`, dataClass: summaryClass, terms: summaryTerms(src, salienceHits(ctx, 'MEMORY', e.id, p.query.terms, src.map((x) => x.id))), confidencePct: Math.min(...src.map((x) => Number(x.confidence_pct))), createdAt: (row?.created_at ?? at) as Timestamp, estTokens: Number(row?.bytes ?? 0) + itemEstimate('') }, at),
       () => loadVerified(ctx, 'context_summaries', sid),
     );
   }
@@ -1208,6 +1350,14 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
     );
   }
   return { candidates, preRejected, loaders, grantUse, corruptCanonical, requiredSkillConflict, scenario, heldClaims: [...new Set(memCandidates.filter((x) => x.c.conflictHeld && x.c.claimKey !== null).map((x) => x.c.claimKey as string))].sort() };
+}
+
+/**
+ * P1-CONTEXT-INTEL-01 (D-P1-14): a summary's terms — the full union of its sources' candidate terms (no alphabetical
+ * cut, which made the summary blind to every term after the first 48). Computed at read time; nothing is stored.
+ */
+function summaryTerms(src: readonly { readonly id: string; readonly terms_json: string }[], hits: Map<string, string[]>): string[] {
+  return [...new Set(src.flatMap((x) => candidateTerms(x.terms_json, hits, x.id)))].sort();
 }
 
 function invalidateSummary(ctx: StoreContext, id: string, employeeId: Id, reason: string): void {

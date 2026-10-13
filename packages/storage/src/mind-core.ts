@@ -11,6 +11,8 @@ import { dataRank, grantCovers, maxDataClass, type DataClass } from '@qandeel-co
 import {
   certificationStatusAt,
   productionEligibility,
+  SALIENCE_INDEX_PREFIX,
+  salienceTerms,
   terms as termsOf,
   type CertificationView,
   type EligibilitySnapshot,
@@ -111,6 +113,17 @@ export function indexItemTerms(ctx: StoreContext, kind: 'MEMORY' | 'KNOWLEDGE' |
   for (const t of new Set(terms)) if (t.length >= 1 && t.length <= 64) ctx.db.run('INSERT OR IGNORE INTO mind_terms (item_kind, owner_key, term, item_id) VALUES (?, ?, ?, ?)', kind, ownerKey, t, itemId);
 }
 
+/**
+ * P1-CONTEXT-INTEL-01 (D-P1-14, DG-1n): the TI-1 salience terms of a NEW item that its TI-0 terms do not already hold, as
+ * extra index rows `~` + term, in the item's creating transaction (never added to an existing item). `terms_json`, the
+ * content, its hashes and provenance are untouched. The previous release's query terms are always `[\p{L}\p{N}]+`, so it
+ * never matches a `~` row: its pools and decisions stay exactly what its own rows give.
+ */
+export function indexSalienceTerms(ctx: StoreContext, kind: 'MEMORY' | 'KNOWLEDGE' | 'CANONICAL', ownerKey: string, itemId: Id, topic: string, text: string, ti0: readonly string[]): void {
+  const held = new Set(ti0);
+  indexItemTerms(ctx, kind, ownerKey, itemId, salienceTerms(`${topic.replace(/[.-]/g, ' ')} ${text}`).filter((t) => !held.has(t)).map((t) => `${SALIENCE_INDEX_PREFIX}${t}`));
+}
+
 /** Canonical Truth outranks every lower layer at write time too: no memory / knowledge contradicts an ACTIVE claim. */
 export function assertNotContradictingCanonical(ctx: StoreContext, claimKey: string | null, claimValue: string | null): void {
   if (claimKey === null) return;
@@ -146,6 +159,7 @@ export function insertMemory(ctx: StoreContext, m: NewMemory, actorRef: string, 
   );
   memoryHistory(ctx, id, 1, null, m.status, reasonCode, actorRef);
   indexItemTerms(ctx, 'MEMORY', m.employeeId, id, m.terms);
+  indexSalienceTerms(ctx, 'MEMORY', m.employeeId, id, m.topic, m.content, m.terms);
   appendAudit(ctx, 'memory.stored', 'memory', id, { actorRef }, 'OK', reasonCode, { employeeId: m.employeeId, memoryClass: m.memoryClass, dataClass: m.dataClass, provenance: m.provenanceKind });
   return id;
 }
@@ -276,6 +290,23 @@ export function getSkillVersionRow(ctx: StoreContext, id: Id): SkillVersionRecor
   return mapSkillVersion(r);
 }
 
+/**
+ * P1-CONTEXT-INTEL-01 (D-P1-14, R2): a Skill version's METADATA for Context Assembly — named columns, never the
+ * instructions (only their stored hash and byte length), so tiering, eligibility and manifest rows never fetch a payload.
+ * The payload is read only after selection, through `loadPinnedSkillInstructions`.
+ */
+export function getSkillVersionMeta(ctx: StoreContext, id: Id): SkillVersionRecord & { readonly terms: readonly string[]; readonly bytes: number } {
+  const r = ctx.db.get(
+    `SELECT id, skill_id, version_label, source_ref, source_revision, author_ref, license_spdx, license_status, paid_dependency, paid_dependency_ack_ref, requested_tools_json, directives_json,
+            instructions_sha256, inspection_findings_json, security_status, benchmark_refs_json, pipeline_state, freshness, integrity, failure_reason, previous_version_id, version, created_at,
+            terms_json, length(CAST(instructions AS BLOB)) AS bytes
+       FROM skill_versions WHERE id = ?`,
+    id,
+  );
+  if (!r) throw new QandeelError('NOT_FOUND', 'skill version not found', { skillVersionId: id });
+  return { ...mapSkillVersion(r), terms: JSON.parse(String(r.terms_json)) as string[], bytes: Number(r.bytes) };
+}
+
 export function skillVersionView(v: SkillVersionRecord, skillType: SkillVersionView['skillType']): SkillVersionView {
   return {
     id: v.id,
@@ -302,7 +333,8 @@ export function versionEligibility(ctx: StoreContext, v: SkillVersionRecord): Re
  * its instructions only when that version is production-eligible and its hash verifies.
  */
 export function loadPinnedSkillInstructions(ctx: StoreContext, skillVersionId: Id): { readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: string } {
-  const v = getSkillVersionRow(ctx, skillVersionId);
+  // D-P1-14 (R2): eligibility from metadata; the payload is read once, by the verified load below.
+  const v = getSkillVersionMeta(ctx, skillVersionId);
   const e = versionEligibility(ctx, v);
   if (!e.eligible) return { ok: false, reason: e.reasons[0] ?? 'NOT_APPROVED' };
   const text = loadVerified(ctx, 'skill_versions', v.id);

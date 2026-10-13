@@ -34,7 +34,7 @@ import {
 import { founder, founderAdminWrite } from './governance.js';
 import { txDecideLesson, txPatternShareGate, txRequestLessonJudgment } from './improvement.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
-import { SYSTEM_MIND_REF, assertNotContradictingCanonical, getKnowledgeRow, getMemoryRow, indexItemTerms, indexTerms, insertMemory, setMemoryStatus, wakeEmployeeWaits } from './mind-core.js';
+import { SYSTEM_MIND_REF, assertNotContradictingCanonical, getKnowledgeRow, getMemoryRow, indexItemTerms, indexSalienceTerms, indexTerms, insertMemory, setMemoryStatus, wakeEmployeeWaits } from './mind-core.js';
 import {
   mapCandidate,
   mapCanonical,
@@ -180,6 +180,7 @@ function insertKnowledge(ctx: StoreContext, f: { scope: KnowledgeScope; scopeRef
   );
   ctx.db.run('INSERT INTO knowledge_history (knowledge_id, version, from_status, to_status, reason_code, actor_ref, occurred_at) VALUES (?, 1, NULL, ?, ?, ?, ?)', id, 'ACTIVE', 'knowledge.recorded', f.actorRef, at);
   indexItemTerms(ctx, 'KNOWLEDGE', '', id, indexTerms(f.topic, f.content));
+  indexSalienceTerms(ctx, 'KNOWLEDGE', '', id, f.topic, f.content, indexTerms(f.topic, f.content));
   appendAudit(ctx, 'knowledge.recorded', 'knowledge', id, { actorRef: f.actorRef }, 'OK', null, { scope: f.scope, dataClass: f.dataClass, provenance: f.provenanceKind });
   return id;
 }
@@ -256,6 +257,7 @@ export class MemoryStore {
         id, input.level, topic, claimKey, claimValue, statement, sha256Hex(statement), JSON.stringify(indexTerms(topic, statement)), assertDataClass(input.dataClass, 'dataClass'), assertOpaqueRef(input.sourceRef, 'sourceRef'), input.sourceSha256 ?? null, supersedes, p.ref, at, at,
       );
       indexItemTerms(ctx, 'CANONICAL', '', id, indexTerms(topic, statement));
+      indexSalienceTerms(ctx, 'CANONICAL', '', id, topic, statement, indexTerms(topic, statement));
       appendAudit(ctx, 'canonical_truth.recorded', 'canonical_truth', id, { actorRef: p.ref }, 'OK', null, { level: input.level, supersedes });
       if (claimKey !== null && claimValue !== null) applyCanonicalClaim(ctx, id, claimKey, claimValue, p.ref);
       return mapCanonical(ctx.db.get('SELECT * FROM canonical_truth WHERE id = ?', id) ?? {});
