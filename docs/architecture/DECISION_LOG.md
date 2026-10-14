@@ -6895,3 +6895,66 @@ founder-partnership recall 0.791 < 0.80). HO-2 stays sealed and unused; no PR, n
 a FAIL. Executive-judgment recall rests on 8 reference messages, so one miss is worth 0.125.
 - HO-2 is consumed and is never reused.
 - No prompt, SN-2, threshold or code change; no retry, no PR, no LIVE change.
+
+**G4-FINAL-QUALITY-CORR-01 — root-cause correction (Founder-approved, 2026-10-14). Stopped at a Founder gate: VAL-3 failed
+on precision.** Evidence: `corr-02/` (wp0, wp2, wp3, dev3, val3, sna); ledger as before.
+
+*Root causes (WP0, free).*
+- **Executive-judgment priority was definitional.**
+  - Over 576 doubly labelled messages, the two human labellers agreed on executive TASK_REQUIRED only 83% of the time (the
+    other Skills: 0.89–0.94).
+  - SN-2 §2.5 forced one "core" Skill, while §3.3 listed the same decisions as executive TASK_REQUIRED. Ten of the 18
+    executive splits were settled by §2.5.
+- **SUPPORTING ↔ NON_RELEVANT had no test.** In the FULL world, the Skill tiers never decided whether a critical item
+  arrived.
+- **What lost critical items was ranking.** The score's relevance part saturates at four matched terms, so a specific item
+  tied generic ones and lost to recency.
+- **Latency.**
+  - With the product concurrency of 2, two long runs held both slots: the assessment started after 39.7 s and the reply fell
+    back.
+  - The store stages take < 100 ms. The DPAPI credential host takes ~0.23 s quiet and ~0.3–0.7 s p95 in the paid runs.
+  - HO-2's 7.25 s p95 was not reproducible: quiet p95 2.1 s; with 15 busy CPU threads, 2.3 s.
+
+*Fixed (local commits de8555e..492d0bd).*
+- **SN-3** (`docs/P1_SKILL_NEED_GUIDELINES_SN3.md`, DRAFT for approval):
+  - a necessity test and a named-contribution test;
+  - several Skills may be TASK_REQUIRED together, with no single-core precedence;
+  - an explicit "Not TASK_REQUIRED when" for the general Skills.
+  - Cards SNC-4, prompt SNP-6. Three design reviews, on DEV-3 only.
+- **CP-1:** knowledge and memory are ranked by matched query terms weighted by rarity, then score (CP-1 only).
+- **Runtime:** one reserved slot above the cap, for the Skill Need Assessment only.
+
+*Measured.*
+- **Human agreement on the same 240 DEV texts, both labellers blind (TASK_REQUIRED agreement, SN-2 → SN-3):**
+  executive 0.870 → 0.946, partnership 0.880 → 0.933, cross-functional 0.881 → 0.923.
+- **Agreement on the loaded set:** organization 0.831 → 0.950.
+- **On VAL-3 (new authors):** 0.889–0.959.
+- **FULL-store probe (24 critical items):**
+  - critical knowledge reaching the context rose from 21–22/24, dependent on the tiers, to 23/24 in every tier variant;
+  - large items 7/8 → 8/8;
+  - same-language critical memory 24/24.
+  - The remaining misses are Arabic morphology (Egyptian vs MSA wording) and cross-language memory (16/24): limits of
+    lexical retrieval (the company-knowledge track).
+- **Latency, both slots busy:** assessment p95 41.97 s → 2.23 s. Burst of 12: 11.2 s → 8.2 s. Quiet: unchanged (2.1 s).
+
+*Paid classification (temperature 0, DeepSeek Flash E1):*
+
+| Run | R (5 / 6) | P (5 / 6) | exec pred/ref | xfn pred/ref | Verdict |
+|---|---|---|---|---|---|
+| SNP-4 DEV-3 | 0.982 / 0.961 | 0.767 / 0.769 | 78/47 | 43/30 | FAIL |
+| SNP-5 DEV-3 | 0.960 / 0.957 | 0.824 / 0.795 | 66/47 | 43/30 | AMBIGUOUS |
+| SNP-6 DEV-3 | 0.969 / 0.949 | 0.823 / 0.832 | 66/47 | 42/30 | PASS |
+| **SNP-6 VAL-3, once** | **0.972 / 0.956** | **0.741 / 0.760** | **72/48** | **51/34** | **FAIL** |
+
+VAL-3 (237 items) detail:
+- Per-Skill recall ≥ 0.865 (executive 0.938); gap 0.014; SIMPLE 46/46.
+- One required Skill lost in a MULTI (3 lost in all; required coverage 0.988).
+- CP-1: priority-only differences change no content. Extra or missing Skills displaced 37 knowledge and 26 memory items in
+  the generic FULL world.
+- Cost: this task spent 966,065 µUSD economic. Trial total 2,788,891 of 5,000,000.
+
+**Open (Founder gate).** Under SN-3 the humans agree; the classifier at E1 (no thinking) over-promotes the general Skills
+and does not generalize from DEV to VAL.
+- The next steps are design changes outside this task's approval, for example a thinking class for the assessment, which
+  is incompatible with temperature 0.
+- HO-3 was not built. VAL-3 is consumed for design. No PR, no LIVE change.
