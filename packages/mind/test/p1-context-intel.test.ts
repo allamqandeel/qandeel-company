@@ -46,9 +46,9 @@ interface DevCase { readonly id: string; readonly lang: string; readonly kind: s
 const dev = JSON.parse(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'governance', 'test', 'fixtures', 'task-signals-dev-set.json'), 'utf8')) as { cases: DevCase[] };
 const CEO = ['ceo.governance-discipline', 'ceo.founder-partnership', 'ceo.executive-judgment', 'ceo.evidence-and-economics', 'ceo.organization-leadership', 'ceo.cross-functional-synthesis'];
 
-describe('G4-C2-SNA-01 C2: the Skill need cards (SNC-1) and the assessment request (metadata, never a Skill payload)', () => {
+describe('G4-C2-SNA-01 C2: the Skill need cards (SNC-4, SN-3) and the assessment request (metadata, never a Skill payload)', () => {
   test('six cards keyed by Skill code, release-pinned, in their declared order; the tiers are the governance tiers; the fallback is SUPPORTING', () => {
-    assert.equal(SKILL_NEED_CARDS_VERSION, 'SNC-1');
+    assert.equal(SKILL_NEED_CARDS_VERSION, 'SNC-4');
     assert.deepEqual(Object.keys(SKILL_NEED_CARDS), CEO);
     assert.deepEqual(CEO.map(skillNeedRank), [0, 1, 2, 3, 4, 5], 'declaration order is the intra-tier priority');
     assert.deepEqual([...SKILL_TIERS], [...SKILL_NEED_TIERS]);
@@ -60,7 +60,11 @@ describe('G4-C2-SNA-01 C2: the Skill need cards (SNC-1) and the assessment reque
       const t = skillNeedCardText(c) as string;
       assert.ok(t.startsWith(`Skill ${c} — `) && t.includes('TASK_REQUIRED when:') && t.includes('SUPPORTING when ') && t.includes('NON_RELEVANT when '), c);
     }
-    assert.ok((skillNeedCardText('ceo.executive-judgment') as string).includes('only when the judgment itself is the core'), 'SN-2 §2.5 travels with the executive card');
+    // SN-3 §3.3: the executive card says when it is NOT TASK_REQUIRED (one analysis settles the decision) and that it stays
+    // TASK_REQUIRED beside another Skill; the partnership card says a request for a recommendation is SUPPORTING.
+    const ej = skillNeedCardText('ceo.executive-judgment') as string;
+    assert.ok(ej.includes('Not TASK_REQUIRED when the decision follows from one analysis') && ej.includes('also when another Skill is TASK_REQUIRED'), 'SN-3 §3.3');
+    assert.ok((skillNeedCardText('ceo.founder-partnership') as string).includes('Not TASK_REQUIRED when the Founder asks for a recommendation, including about something the Founder intends to do'), 'SN-3 §3.2');
   });
 
   test('the request: Company context, only the offered cards in declared order, the message as delimited data with layer markers neutralized', () => {
@@ -254,5 +258,58 @@ describe('P1-CONTEXT-INTEL-01 CP-1 (Founder decision G3): the context priority o
     const withoutTier = plan60(untiered, undefined);
     assert.deepEqual(layered.selected.map((x) => x.candidate.key), withoutTier.selected.map((x) => x.candidate.key), 'tiers never act outside CP-1');
     assert.throws(() => planContext(c, { ...DEFAULT_CONTEXT_POLICY, order: 'FO1' as 'CP1' }, Q, NOW), /order must be LAYERED or CP1/);
+  });
+
+  // G4-FINAL-QUALITY-CORR-01 (WP2): the score's relevance part saturates at four matched terms, so a specific item tied
+  // with generic ones and lost to recency. CP-1 ranks knowledge and memory by matched terms weighted by rarity, then score.
+  describe('relevance order: a specific item beats generic ones that tie it on the saturated score', () => {
+    const QS = { ...Q, terms: ['company', 'team', 'plan', 'quarter', 'fawry', 'egp', 'devaluation', 'price'] } as const;
+    const generic = (i: number, kind: 'KNOWLEDGE' | 'MEMORY'): ContextCandidate =>
+      cand({ key: `${kind.toLowerCase()}:generic${String(i).padStart(2, '0')}`, kind, layer: kind, terms: ['company', 'team', 'plan', 'quarter', 'week'], estTokens: 2_400, createdAt: '2026-10-12T00:00:00.000Z' as Timestamp });
+    const specific = (kind: 'KNOWLEDGE' | 'MEMORY', est: number): ContextCandidate =>
+      cand({ key: `${kind.toLowerCase()}:specific`, kind, layer: kind, terms: ['company', 'egp', 'fawry', 'devaluation', 'price', 'plan'], estTokens: est, createdAt: '2026-10-01T00:00:00.000Z' as Timestamp });
+    const world = (kind: 'KNOWLEDGE' | 'MEMORY', est = 2_400): ContextCandidate[] => [
+      ...populated({ knowledge: 0, memory: 0 }),
+      ...Array.from({ length: 30 }, (_, i) => generic(i, kind)),
+      specific(kind, est),
+    ];
+    const plan = (c: readonly ContextCandidate[], order?: 'CP1'): ContextPlan => planContext(c, { ...DEFAULT_CONTEXT_POLICY, totalTokens: 60_000, ...(order ? { order } : {}) }, QS, NOW);
+
+    test('the older specific item ties the generic ones on the score and loses under it; CP-1 selects it', () => {
+      for (const kind of ['KNOWLEDGE', 'MEMORY'] as const) {
+        const c = world(kind);
+        const layered = plan(c);
+        const cp1 = plan(c, 'CP1');
+        const key = `${kind.toLowerCase()}:specific`;
+        const score = (p: ContextPlan, k: string): number | undefined => [...p.selected, ...p.rejected].find((x) => x.candidate.key === k)?.score;
+        assert.equal(score(layered, key), score(layered, `${kind.toLowerCase()}:generic00`), `${kind}: the same saturated score`);
+        assert.equal(selectedKeys(layered).has(key), false, `${kind}: the layered order (score only) loses the specific item`);
+        assert.equal(why(layered).get(key), 'BUDGET_EXCEEDED');
+        assert.ok(selectedKeys(cp1).has(key), `${kind}: CP-1 selects it`);
+      }
+    });
+
+    test('a large specific item (beyond the layer share) is the protected anchor instead of a budget rejection', () => {
+      assert.ok(selectedKeys(plan(world('KNOWLEDGE', 7_400), 'CP1')).has('knowledge:specific'));
+    });
+
+    test('a term every candidate shares weighs less than a rare one: more generic matches never outrank a specific match', () => {
+      const c = [
+        ...populated({ knowledge: 0, memory: 0 }),
+        ...Array.from({ length: 40 }, (_, i) => cand({ key: `knowledge:g${i}`, kind: 'KNOWLEDGE', layer: 'KNOWLEDGE', terms: ['company', 'team', 'plan', 'quarter', 'price'], estTokens: 2_400 })),
+        cand({ key: 'knowledge:rare', kind: 'KNOWLEDGE', layer: 'KNOWLEDGE', terms: ['fawry', 'egp'], estTokens: 2_400 }),
+      ];
+      assert.ok(selectedKeys(plan(c, 'CP1')).has('knowledge:rare'), 'two rare terms outrank five common ones');
+      assert.equal(selectedKeys(plan(c)).has('knowledge:rare'), false, 'under the score alone the five common matches win');
+    });
+
+    test('deterministic, and the layered order (every Work Item without CP-1) keeps the score order exactly', () => {
+      const c = world('MEMORY');
+      const a = plan(c, 'CP1');
+      const b = plan([...c].reverse(), 'CP1');
+      assert.deepEqual(a.selected.map((x) => x.candidate.key).sort(), b.selected.map((x) => x.candidate.key).sort());
+      const scores = plan(c).selected.filter((x) => x.candidate.layer === 'MEMORY').map((x) => x.score);
+      assert.deepEqual(scores, [...scores].sort((x, y) => y - x), 'layered memory stays in score order');
+    });
   });
 });
