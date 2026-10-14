@@ -126,7 +126,7 @@ describe('G4-C2-SNA-01: the send opens one assessment per Founder reply (or seal
       assert.equal(Date.parse(job?.availableAt ?? ''), h.clock.nowMs());
       const ctx = assembleContext(h.store, claimItem(h, reply, 'w-np').fence, { step: 0 });
       const sel = policyOf(h, ctx.manifestId).skillSelection as Record<string, unknown>;
-      assert.deepEqual([sel.policy, sel.source, sel.outcome, sel.cards, sel.recordId], ['SNA-1', 'FALLBACK', 'NOT_PROVISIONED', 'SNC-1', r.id]);
+      assert.deepEqual([sel.policy, sel.source, sel.outcome, sel.cards, sel.recordId], ['SNA-1', 'FALLBACK', 'NOT_PROVISIONED', 'SNC-4', r.id]);
     });
   });
 

@@ -69,7 +69,10 @@ describe('G4-C2-SNA-01: the classifier contract', () => {
   test('its own task class, the approved bounds, versioned and digested preamble, closed outcome codes', () => {
     assert.equal(SKILL_NEED_TASK_CLASS, 'skill.need.assessment');
     assert.equal(SKILL_NEED_POLICY, 'SNA-1');
-    assert.equal(SKILL_NEED_PROMPT_VERSION, 'SNP-2');
+    assert.equal(SKILL_NEED_PROMPT_VERSION, 'SNP-6');
+    // G4-FINAL-QUALITY-CORR-01: SN-3 — a test per label, several Skills TASK_REQUIRED together, no single-core precedence.
+    for (const rule of ['necessity test', 'named-contribution test', 'Several Skills can be TASK_REQUIRED together', 'never demote a Skill because another one is TASK_REQUIRED', 'A decision in the message is not by itself a judgment need']) assert.ok(SKILL_NEED_PREAMBLE.includes(rule), rule);
+    assert.equal(SKILL_NEED_PREAMBLE.includes('The most specific Skill: when'), false, 'the SN-2 single-core rule is gone');
     assert.match(SKILL_NEED_PREAMBLE_SHA256, /^[0-9a-f]{64}$/);
     assert.equal(SKILL_NEED_WINDOW_MS, 20_000);
     assert.deepEqual({ ...SKILL_NEED_CAP }, { money: 20_000, tokens: 40_000 });
@@ -79,8 +82,8 @@ describe('G4-C2-SNA-01: the classifier contract', () => {
     for (const name of ['Ahmed', 'أحمد', 'ceo.']) assert.equal(SKILL_NEED_PREAMBLE.includes(name), false, `Employee-neutral: ${name}`);
   });
 
-  test('G4-C2-TEMP-01: the frozen SNP-2 is unchanged, and only the assessment task class is sampled deterministically', () => {
-    assert.equal(SKILL_NEED_PREAMBLE_SHA256, '8367fe1c5b2e9235f7f3311ae995baf2e229f59a3071980640678fb542c3d3fd', 'SNP-2 byte for byte (the hash frozen before the temperature correction)');
+  test('G4-C2-TEMP-01: the frozen prompt (SNP-6, G4-FINAL-QUALITY-CORR-01) is pinned, and only the assessment task class is sampled deterministically', () => {
+    assert.equal(SKILL_NEED_PREAMBLE_SHA256, '853becd2a74c487de66dbaa6d20711e2bbad85f2f02b3655889a67d3da03ac3e', 'SNP-6 byte for byte (SNP-2 was 8367fe1c…; kept in history and evidence)');
     assert.deepEqual([...PROVIDER_SAMPLINGS], ['DETERMINISTIC'], 'a closed code, never a number');
     assert.equal(samplingForTaskClass(SKILL_NEED_TASK_CLASS), 'DETERMINISTIC');
     for (const other of ['founder.reply', 'founder.brief', 'academy.answer', 'employee.task', '', ' skill.need.assessment', 'SKILL.NEED.ASSESSMENT', '__proto__', 'constructor']) assert.equal(samplingForTaskClass(other), undefined, `"${other}" keeps the provider default`);

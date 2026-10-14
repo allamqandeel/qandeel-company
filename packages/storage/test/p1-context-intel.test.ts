@@ -109,7 +109,7 @@ describe('P1-CONTEXT-INTEL-01 C1 / G4b: a new Founder reply plans 60,000 with Sk
       const policy = policyOf(h, ctx.manifestId);
       assert.equal(policy.order, 'CP1');
       const sel = policy.skillSelection as { policy: string; source: string; outcome: string; cards: string; tiers: { TASK_REQUIRED: number; SUPPORTING: number; NON_RELEVANT: number } };
-      assert.deepEqual([sel.policy, sel.source, sel.outcome, sel.cards], ['SNA-1', 'MODEL', 'CLASSIFIED', 'SNC-1']);
+      assert.deepEqual([sel.policy, sel.source, sel.outcome, sel.cards], ['SNA-1', 'MODEL', 'CLASSIFIED', 'SNC-4']);
       assert.equal(sel.tiers.TASK_REQUIRED + sel.tiers.SUPPORTING + sel.tiers.NON_RELEVANT, 6);
       assert.equal(JSON.stringify(policy).includes('أحمد'), false, 'never the text');
       const brief = CommunicationStore.for(h.store).requestCeoBrief({ subject: 'SYNTHETIC brief', contextKind: 'APPROVAL', contextRef: 'approval:1', reasonCode: 'brief.test', instructions: 'Brief the Founder as a MESSAGE proposal with purpose BRIEF.' });

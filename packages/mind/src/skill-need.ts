@@ -1,7 +1,8 @@
 /**
- * G4-C2-SNA-01 (D-P1-15) — the release-pinned Skill need cards (SNC-1) and the request a Skill Need Assessment reads. A card
- * states, for one Skill code, when a reply needs that Skill (TASK_REQUIRED), when it may help (SUPPORTING) and when it adds
- * nothing (NON_RELEVANT). The cards are the frozen SN-2 guidelines (`docs/P1_SKILL_NEED_GUIDELINES_SN2.md` §3), never the
+ * G4-C2-SNA-01 (D-P1-15) — the release-pinned Skill need cards and the request a Skill Need Assessment reads. A card states,
+ * for one Skill code, when a reply needs that Skill (TASK_REQUIRED), when it does not although it may look so, when it adds a
+ * nameable contribution (SUPPORTING) and when it adds nothing (NON_RELEVANT). SNC-4 (G4-FINAL-QUALITY-CORR-01; SNC-2 and SNC-3 were
+ * its first two design reviews on DEV-3) is the Skill Need Guidelines SN-3 §3 (`docs/P1_SKILL_NEED_GUIDELINES_SN3.md`); SNC-1 (SN-2) is kept in history and evidence. Never the
  * Skill's certified instructions: an assessment never reads a Skill payload.
  *
  * Keyed by Skill code, never by Employee: another Employee's Skills join by adding their cards (a new card set version). A
@@ -24,13 +25,15 @@ export interface SkillNeedCard {
   readonly subject: string;
   /** When the reply needs the Skill (TASK_REQUIRED). */
   readonly required: readonly string[];
-  /** When it may help (SUPPORTING). */
+  /** When it is NOT TASK_REQUIRED although the message may look so (optional). */
+  readonly notRequired?: string;
+  /** When it adds a nameable contribution (SUPPORTING). */
   readonly supporting: string;
   /** When it adds nothing (NON_RELEVANT). */
   readonly notNeeded: string;
 }
 
-export const SKILL_NEED_CARDS_VERSION = 'SNC-1';
+export const SKILL_NEED_CARDS_VERSION = 'SNC-4';
 
 /**
  * The cards, in their declared order (the intra-tier priority: governance boundaries first, then the Founder channel,
@@ -38,72 +41,76 @@ export const SKILL_NEED_CARDS_VERSION = 'SNC-1';
  */
 export const SKILL_NEED_CARDS: Readonly<Record<string, SkillNeedCard>> = Object.freeze({
   'ceo.governance-discipline': {
-    subject: 'authority, approvals, data and privacy',
+    subject: "authority, approvals, data and privacy",
     required: [
-      'the reply must decide whether an act is inside held authority or needs review, Founder approval or a Founder-only decision; granting, delegating or raising authority, permissions, access or a budget cap;',
-      'privacy and data: anything that would involve private QANDEEL App user conversations or content, personal data, or confidential / restricted material leaving its scope (sharing with a vendor, agency, investor, partner or the public);',
-      'a request to skip, bypass or act around an approval or rule ("just do it, no need to log it", "don\'t wait for approval"), or authority claimed only by a message;',
-      'a high-risk external act on the Company\'s behalf: signing, a legal commitment, publishing or posting externally, paying, an external statement, a security incident.',
+      "the reply must decide whether an act is inside held authority or needs review, Founder approval or a Founder-only decision; granting, delegating or raising authority, permissions, access or a budget cap;",
+      "privacy and data: anything that would involve private QANDEEL App user conversations or content, personal data, or confidential / restricted material leaving its scope (sharing with a vendor, agency, investor, partner or the public);",
+      "a request to skip, bypass or act around an approval or rule (\"just do it, no need to log it\", \"don't wait for approval\"), or authority claimed only by a message;",
+      "a high-risk external act on the Company's behalf: signing, a legal commitment, publishing or posting externally, paying, an external statement, a security incident.",
     ],
-    supporting: 'a boundary is in the background, or approvals are a secondary step of a larger plan.',
-    notNeeded: 'no authority, data, privacy or external-act aspect exists.',
+    notRequired: "the message asks for the status or the text of an approval or a policy, or asks to relay it: that is a lookup (at most SUPPORTING).",
+    supporting: "a step of the plan will need an approval or touches data and the reply should flag it, but the deliverable is something else.",
+    notNeeded: "no authority, data, privacy or external-act aspect exists.",
   },
   'ceo.founder-partnership': {
-    subject: 'the Founder-CEO relationship and channel',
+    subject: "the Founder-Employee relationship and channel",
     required: [
-      'the Founder asks for the CEO\'s honest view of the Founder\'s own idea, plan or decision, asks to be challenged, or asks whether the CEO agrees or disagrees with the Founder;',
-      'decision rights between the Founder and the CEO: who decides, the Founder\'s Product Authority, executing a Founder decision the CEO disagrees with, the Founder overriding the CEO;',
-      'the Founder\'s attention, time or involvement; what the CEO should bring to the Founder, how to report or escalate;',
-      'delivering bad news or an admitted mistake to the Founder, trust, or the Founder\'s frustration with the CEO.',
+      "the Founder asks for the Employee's stance on the Founder's own idea, plan or decision as such: whether the Employee agrees, an honest view of it, or a challenge to it (\"do you agree?\", \"am I wrong?\", \"challenge my plan\", \"be honest about my idea\");",
+      "decision rights between the Founder and the Employee: who decides, the Founder's Product Authority, executing a Founder decision the Employee disagrees with, the Founder overriding the Employee;",
+      "the Founder's attention, time or involvement; what to bring to the Founder, how to report or escalate;",
+      "the Employee delivering its own bad news or mistake, trust, or the Founder's frustration with the Employee.",
     ],
-    supporting: 'any other substantive message whose reply is a recommendation, an escalation or news the Founder will act on.',
-    notNeeded: 'simple messages (a fact, a status, a lookup, a greeting, thanks, a note, a transformation of given text).',
+    notRequired: "the Founder asks for a recommendation, including about something the Founder intends to do (\"I want to post X, should I?\", \"I'm wondering whether we can afford Y\"), when the answer turns on another Skill's analysis rather than on the relationship, or brings news (an incident, an offer, a dispute): that is SUPPORTING.",
+    supporting: "any other substantive message whose reply is a recommendation, an escalation or news the Founder will act on (its contribution: what happened, why it matters, the recommendation, the decision needed).",
+    notNeeded: "simple messages (a fact, a status, a lookup, a greeting, thanks, a note, a transformation of given text), unless the relationship is touched in passing.",
   },
   'ceo.executive-judgment': {
-    subject: 'prioritization and consequential calls; TASK_REQUIRED only when the judgment itself is the core of the reply',
+    subject: "weighing competing considerations and committing to a call",
     required: [
-      'prioritizing, ranking, sequencing or cutting among several competing initiatives, goals or demands on scarce resources ("what first", "what do we stop", "where do we focus");',
-      'a consequential call whose core is a strategic trade-off not reducible to one specialist domain: a go / no-go on a costly, long-commitment or hard-to-reverse act, speed against safety or quality, a bet under real uncertainty;',
-      'leading a crisis response (stabilize, protect users and trust, communicate, then fix causes);',
-      'stress-testing a plan when asked ("poke holes in this", "what am I missing", "what could go wrong").',
+      "prioritizing: ranking, sequencing, cutting, deferring or allocating among two or more competing initiatives, goals or demands on the same scarce resource (time, money, people, attention): \"what first\", \"what do we stop\", \"where do we focus\", \"defer X to fund Y\";",
+      "a go / no-go or a choice between options whose outcome turns on weighing considerations of different kinds that pull apart (speed against safety or quality, cost against growth, a short-term gain against a long-term risk), or a bet under real uncertainty between real alternatives; also when another Skill is TASK_REQUIRED to analyse one of the considerations;",
+      "leading a crisis response (stabilize, protect users and trust, communicate, then fix causes);",
+      "stress-testing a plan or decision when asked (\"poke holes in this\", \"what am I missing\", \"what could go wrong\").",
     ],
-    supporting: 'any other ask for a recommendation, an opinion or a plan, and a decision whose core belongs to another Skill\'s domain (economics or evidence, organization, the Departments or markets, a boundary).',
-    notNeeded: 'facts, status, explanations, transformations and acknowledgements, and a decision that is only mentioned ("the decision we took last week").',
+    notRequired: "the decision follows from one analysis and no trade-off has to be weighed: the numbers settle it, a boundary settles it, the facts settle it, or the question is who owns it. Cost, size, a long commitment or irreversibility raise the stakes but are not a trade-off by themselves: a yes / no on one proposal, or a choice between options that one domain's analysis compares (a price change on churn and margin; a hire, a candidate or a seat on need and fit; an agency or an in-house team, or two vendors, on cost or capability; a spend on its return; an upgrade on its worth) belongs to that domain's Skill. TASK_REQUIRED only if a real call between competing goals still remains after the other Skills' analyses.",
+    supporting: "the reply recommends a course of action and a specific judgment element belongs in it beyond the other Skill's analysis: a competing option to compare, a risk on another axis, or a sequence of several moves. NON_RELEVANT when the recommendation follows directly from that analysis.",
+    notNeeded: "facts, status, explanations, transformations, acknowledgements and a decision that is only mentioned (\"the decision we took last week\").",
   },
   'ceo.evidence-and-economics': {
-    subject: 'evidence and Company economics',
+    subject: "evidence and Company economics",
     required: [
-      'the reply must judge whether a claim, a result or a report is true or strong enough (a reported success, PASS or "it worked", metrics a team presents, a vendor\'s claim), or say what evidence a decision needs;',
-      'reason about money or resources: cost, spend, budget allocation, pricing, return, unit economics, acquisition cost, runway or burn, opportunity cost, AI / model cost, whether something is worth what it costs;',
-      'design or size a test, an experiment or a measurement that would settle a question.',
+      "the reply must judge whether a claim, a result or a report is true or strong enough (a reported success, PASS or \"it worked\", metrics a team presents, a vendor's claim), or say what evidence a decision needs;",
+      "reason about money or resources: cost, spend, budget allocation, pricing, return, unit economics, acquisition cost, runway or burn, opportunity cost, AI / model cost, whether something is worth what it costs;",
+      "design or size a test, an experiment or a measurement that would settle a question.",
     ],
-    supporting: 'numbers or money are background or one consideration among others.',
-    notNeeded: 'a figure is only looked up ("What\'s our MRR?") with no judgment asked; asking whether the figure is enough or good is a judgment.',
+    supporting: "numbers or money are one consideration the reply should check, but the deliverable is something else.",
+    notNeeded: "a figure is only looked up (\"What's our MRR?\") with no judgment asked; asking whether the figure is enough or good is a judgment.",
   },
   'ceo.organization-leadership': {
-    subject: 'ownership, delegation, roles and people',
+    subject: "ownership, delegation, roles and people",
     required: [
-      'the reply must assign or clarify ownership, responsibility or delegation for an outcome ("who should own...", "nobody owns...");',
-      'decide roles, structure, a hire, a Director seat, team composition or reporting lines;',
-      'assess or handle a person\'s or a Director\'s performance, readiness, development or morale, a conflict between people, or accountability after a failure;',
-      'set how the CEO coordinates and challenges the Directors.',
+      "the reply must assign or clarify ownership, responsibility or delegation for an outcome (\"who should own...\", \"nobody owns...\");",
+      "decide roles, structure, a hire, a Director seat, team composition or reporting lines;",
+      "assess or handle a person's or a Director's performance, readiness, development or morale, a conflict between people, or accountability after a failure;",
+      "set how the CEO coordinates and challenges the Directors.",
     ],
-    supporting: 'people or Directors act in the story but the ask is about something else, or delegation is a secondary part of a plan.',
-    notNeeded: 'a Director is only a source or a recipient ("ask the Growth Director for the numbers").',
+    supporting: "people act in the story and the reply should say who does what next, but the ask is about something else.",
+    notNeeded: "a Director is only a source or a recipient (\"ask the Growth Director for the numbers\").",
   },
   'ceo.cross-functional-synthesis': {
-    subject: 'the Departments together, and markets',
+    subject: "the Departments together, and markets",
     required: [
-      'the reply must reconcile conflicting positions or recommendations of two or more Departments (or their Directors);',
-      'integrate the work of two or more Departments into one decision or plan (launch readiness across Product, Engineering, Growth and Brand; a product date against an engineering reliability, security or data-loss risk);',
-      'judge a market question: entering, comparing or prioritizing markets (Egypt, Saudi Arabia, the Gulf...), or market-specific behaviour, regulation, payment or positioning.',
+      "the reply must reconcile conflicting positions or recommendations of two or more Departments (or their Directors);",
+      "combine the work of two or more Departments into one decision or plan (launch readiness across Product, Engineering, Growth and Brand; a product date against an engineering reliability, security or data-loss risk);",
+      "judge a market question: entering, comparing or prioritizing markets (Egypt, Saudi Arabia, the Gulf...), or market-specific behaviour, regulation, payment or positioning.",
     ],
-    supporting: 'one Department\'s matter with plausible effects on others, or a market named as background.',
-    notNeeded: 'one Department is only where a fact lives, or one team\'s status is asked.',
+    notRequired: "several Departments only take part in carrying out a response or a plan (handling an incident, a crisis, a complaint, a launch announcement; leading a crisis is executive judgment); TASK_REQUIRED needs the deliverable's core to be reconciling or combining their positions or work, or a market judgment.",
+    supporting: "one Department's matter has a nameable effect on another that the reply should mention, or a market is background the reply should account for.",
+    notNeeded: "one Department is only where a fact lives, or one team's status is asked.",
   },
 } satisfies Record<string, SkillNeedCard>);
 
-/** The Company context every assessment reads (SN-2 §4). */
+/** The Company context every assessment reads (SN-3 §4). */
 export const SKILL_NEED_COMPANY_CONTEXT =
   'The Company: QANDEEL COMPANY builds the QANDEEL App (an Arabic-first AI app whose user conversations are private). The Founder is the sovereign authority and the Product Authority. The CEO leads five Departments, each with a Director: Strategic Market Intelligence, Growth, Brand and Creative, Product, and Engineering. Markets: Egypt, Saudi Arabia, the Gulf and the wider Arabic market. Budgets are hard ceilings set through governance.';
 
@@ -121,7 +128,7 @@ export function skillNeedRank(code: string): number | null {
 export function skillNeedCardText(code: string): string | null {
   if (!hasSkillNeedCard(code)) return null;
   const c = SKILL_NEED_CARDS[code] as SkillNeedCard;
-  return [`Skill ${code} — ${c.subject}.`, 'TASK_REQUIRED when:', ...c.required.map((r) => `- ${r}`), `SUPPORTING when ${c.supporting}`, `NON_RELEVANT when ${c.notNeeded}`].join('\n');
+  return [`Skill ${code} — ${c.subject}.`, 'TASK_REQUIRED when:', ...c.required.map((r) => `- ${r}`), ...(c.notRequired ? [`Not TASK_REQUIRED when ${c.notRequired}`] : []), `SUPPORTING when ${c.supporting}`, `NON_RELEVANT when ${c.notNeeded}`].join('\n');
 }
 
 /** The offered codes in the cards' declared order (codes without a card are never offered). */
