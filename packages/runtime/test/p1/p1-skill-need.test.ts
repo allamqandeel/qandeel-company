@@ -11,21 +11,27 @@
  *   - a restart keeps the order durable; the Skill-need profile adds one E1 deployment and one route policy only;
  *   - logs and records stay content-free;
  *   - G4-C2-TEMP-01: every assessment call (a retry included) sends temperature 0 with thinking off; no reply call, at any
- *     level (E1 included), carries a temperature field.
+ *     level (E1 included), carries a temperature field;
+ *   - G4-C2-REASONING-GATE-01 (the isolated E2 DEV pilot): an assessment pinned at E2 under a DEV-only pilot profile sends
+ *     thinking low with the E2 allowance and no temperature, reserves and settles within its Work Item cap, never stores or
+ *     logs the thinking text, falls back on an exhausted allowance or a timeout, leaves the reply's calls unchanged — and
+ *     under the production Skill-need profile (E1 only) an E2 pin makes no call at all.
  * P1-PROOF: skill-need
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, test } from 'node:test';
 
 import type { Clock, Id } from '@qandeel-company/domain';
-import { SKILL_NEED_PREAMBLE, SKILL_NEED_TASK_CLASS, type ReasoningClass } from '@qandeel-company/governance';
+import { OUTPUT_ALLOWANCE_BY_CLASS, SKILL_NEED_CAP, SKILL_NEED_PREAMBLE, SKILL_NEED_TASK_CLASS, type ProviderProvisioningProfile, type ReasoningClass } from '@qandeel-company/governance';
 import { SKILL_NEED_CARDS } from '@qandeel-company/mind';
-import { DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE, DeepSeekProviderAdapter, FakeDeepSeekTransport, fakeChatAnswer, fakeModelsAnswer, type DeepSeekRequest, type DeepSeekResponse } from '@qandeel-company/model-providers';
+import { DEEPSEEK_CLASS_LIMITS, DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE, DeepSeekProviderAdapter, FakeDeepSeekTransport, fakeChatAnswer, fakeModelsAnswer, type DeepSeekRequest, type DeepSeekResponse } from '@qandeel-company/model-providers';
 import { InMemorySecretVault } from '@qandeel-company/secret-vault';
 import { CHAT_REPLY_AUTO_OUTPUT_TOKENS, CHAT_REPLY_OUTPUT_TOKENS, CompanyStore, GovernanceStore, OrganizationStore, SkillStore, type EmployeeRecord } from '@qandeel-company/storage';
 import { activateEmployeeForTest } from '@qandeel-company/storage/testing';
 
-import { Logger, employeeTaskProcessor, skillNeedAssessmentProcessor, type CompanyRuntime } from '../../src/index.js';
+import { Logger, employeeTaskProcessor, skillNeedAssessmentProcessor, skillNeedAssessmentProcessorAt, type CompanyRuntime, type SkillNeedCallLevel } from '../../src/index.js';
 import { eventually, removeRoot, runtimeFor, tempRoot } from '../helpers.js';
 import { nextName, seedWorld, type C2World } from '../c2/c2-seed.js';
 
@@ -48,12 +54,15 @@ class OffsetClock implements Clock {
 interface Sent {
   readonly assessment: boolean;
   readonly thinking: unknown;
+  /** The wire `reasoning_effort`, or ABSENT. */
+  readonly effort: unknown;
   /** G4-C2-TEMP-01: the wire `temperature`, or ABSENT when the body carries no such field. */
   readonly temperature: unknown;
   readonly maxTokens: number;
   readonly text: string;
 }
 interface World {
+  readonly root: string;
   readonly w: C2World;
   readonly ceo: EmployeeRecord;
   readonly rt: CompanyRuntime;
@@ -70,7 +79,29 @@ interface Options {
   readonly callTimeoutMs?: number;
   /** The first runtime runs without the assessment processor (its job waits in the queue); a restart adds it. */
   readonly assessorAfterRestart?: boolean;
+  /** G4-C2-REASONING-GATE-01: the class and allowance the assessment is pinned at (default: production E1 / 256). */
+  readonly level?: SkillNeedCallLevel;
+  /** G4-C2-REASONING-GATE-01: provision the DEV-only E2 pilot profile INSTEAD of the production Skill-need profile. */
+  readonly e2Pilot?: boolean;
 }
+
+/**
+ * G4-C2-REASONING-GATE-01: the DEV-only E2 pilot profile (the same shape the paid harness provisions in its disposable
+ * workspace; never a release profile): one E2 deployment qualified for the assessment class only, and the production route
+ * policy with E2 as both its minimum and maximum. Everything else is the production Skill-need profile's.
+ */
+const E2_PILOT_PROFILE: ProviderProvisioningProfile = (() => {
+  const p = DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE;
+  const d = p.deployments[0] as ProviderProvisioningProfile['deployments'][number];
+  const r = p.routePolicies[0] as ProviderProvisioningProfile['routePolicies'][number];
+  return Object.freeze({
+    ...p,
+    code: 'deepseek-v4-1-flash-skill-need-e2-pilot',
+    deployments: Object.freeze([Object.freeze({ ...d, code: 'deepseek-flash-e2-skill-need-pilot', reasoningClass: 'E2' as const, contextWindowTokens: DEEPSEEK_CLASS_LIMITS.E2.contextWindowTokens, maxOutputTokens: DEEPSEEK_CLASS_LIMITS.E2.maxOutputTokens })]),
+    routePolicies: Object.freeze([Object.freeze({ taskClass: r.taskClass, body: Object.freeze({ ...r.body, minClass: 'E2' as const, maxClass: 'E2' as const }) })]),
+  });
+})();
+const E2_LEVEL: SkillNeedCallLevel = { reasoningClass: 'E2', maxOutputTokens: OUTPUT_ALLOWANCE_BY_CLASS.E2 };
 
 /** The CEO, its six approved CEO Skills (synthetic text), the Academy profile and (by default) the Skill-need profile. */
 function seed(root: string, w: C2World, o: Options): { ceo: EmployeeRecord; versions: Map<string, Id> } {
@@ -90,7 +121,7 @@ function seed(root: string, w: C2World, o: Options): { ceo: EmployeeRecord; vers
     org.assignPrimary(w.founder, { positionId: seat.id, employeeId: e.id, reasonCode: 'placed' });
     gov.recordModelIdentityCheck({ providerCode: 'deepseek', modelCode: DEEPSEEK_MODEL_CODE, expectedName: 'DeepSeek-V4.1-Flash', observedName: 'DeepSeek-V4.1-Flash', result: 'MATCH' });
     gov.provisionProviderProfile(w.founder, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, { capMoney: 5_000_000, capTokens: 50_000_000, reasonCode: 'l1.activation' });
-    if (o.provision !== false) gov.provisionProviderProfile(w.founder, DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE, { capMoney: 0, capTokens: 0, reasonCode: 'p1.skill_need' });
+    if (o.provision !== false) gov.provisionProviderProfile(w.founder, o.e2Pilot === true ? E2_PILOT_PROFILE : DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE, { capMoney: 0, capTokens: 0, reasonCode: 'p1.skill_need' });
     const reg = SkillStore.for(store);
     const versions = new Map<string, Id>();
     for (const code of CEO_SKILLS) {
@@ -119,17 +150,17 @@ async function withWorld(label: string, o: Options, chat: Chat, fn: (x: World) =
   const clock = new OffsetClock();
   const transport = new FakeDeepSeekTransport().respondWith((request) => {
     if (request.path === DEEPSEEK_MODELS_PATH) return fakeModelsAnswer([{ id: DEEPSEEK_MODEL_CODE, name: 'DeepSeek-V4.1-Flash' }]);
-    const body = request.body as { thinking: unknown; max_tokens: number; temperature?: unknown };
+    const body = request.body as { thinking: unknown; reasoning_effort?: unknown; max_tokens: number; temperature?: unknown };
     const text = textOf(request);
     const assessment = text.includes(SKILL_NEED_PREAMBLE.split('\n')[0] as string);
-    sent.push({ assessment, thinking: body.thinking, temperature: 'temperature' in body ? body.temperature : 'ABSENT', maxTokens: body.max_tokens, text });
+    sent.push({ assessment, thinking: body.thinking, effort: body.reasoning_effort ?? 'ABSENT', temperature: 'temperature' in body ? body.temperature : 'ABSENT', maxTokens: body.max_tokens, text });
     return chat(request, assessment, sent.filter((s) => s.assessment === assessment).length) as DeepSeekResponse;
   });
   let starts = 0;
   const make = (): CompanyRuntime => {
     const adapter = new DeepSeekProviderAdapter({ vault: new InMemorySecretVault().set('deepseek-company', KEY), transport, now: () => clock.nowMs() });
-    const assessor = o.assessorAfterRestart === true && starts++ === 0 ? [] : [skillNeedAssessmentProcessor];
-    return runtimeFor(root, { clock, processors: [employeeTaskProcessor, ...assessor], logger: new Logger((r) => logs.push(JSON.stringify(r))), governance: { providers: [adapter], provisioningProfiles: [DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE], modelCallTimeoutMs: o.callTimeoutMs ?? 5_000 } });
+    const assessor = o.assessorAfterRestart === true && starts++ === 0 ? [] : [o.level ? skillNeedAssessmentProcessorAt(o.level) : skillNeedAssessmentProcessor];
+    return runtimeFor(root, { clock, processors: [employeeTaskProcessor, ...assessor], logger: new Logger((r) => logs.push(JSON.stringify(r))), governance: { providers: [adapter], provisioningProfiles: [DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, o.e2Pilot === true ? E2_PILOT_PROFILE : DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE], modelCallTimeoutMs: o.callTimeoutMs ?? 5_000 } });
   };
   let rt = make();
   try {
@@ -140,7 +171,7 @@ async function withWorld(label: string, o: Options, chat: Chat, fn: (x: World) =
       await rt.start();
       return rt;
     };
-    await fn({ w, ceo, rt, sent, logs, versions, restart });
+    await fn({ root, w, ceo, rt, sent, logs, versions, restart });
   } finally {
     await rt.stop().catch(() => undefined);
     removeRoot(root);
@@ -335,5 +366,69 @@ describe('G4-C2-SNA-01: the additive Skill-need profile', () => {
     assert.deepEqual(p.routePolicies.map((r) => [r.taskClass, r.body.minClass, r.body.maxClass, r.body.maxRetriesPerCall, r.body.maxCallsPerRun, r.body.escalation.maxDepth]), [[SKILL_NEED_TASK_CLASS, 'E1', 'E1', 1, 2, 0]]);
     assert.equal(p.egressMaxDataClass, 'D2');
     assert.equal(p.deployments.some((d) => d.taskClasses.includes('founder.reply')), false, 'never founder.reply');
+  });
+});
+
+describe('G4-C2-REASONING-GATE-01: the isolated E2 pilot (DEV only; production stays E1)', () => {
+  const THOUGHT = 'CANARY-THINKING-7Qx: the deliverable is a named owner';
+  const thinkingAnswer = (content: string, completion: number, finish = 'stop'): DeepSeekResponse =>
+    fakeChatAnswer(content, { prompt: 2_600, completion }, { choices: [{ index: 0, message: { role: 'assistant', content, reasoning_content: THOUGHT }, finish_reason: finish }] });
+  const need = (tiers: Record<string, string>): string => JSON.stringify({ type: 'SKILL_NEED', skills: Object.entries(tiers).map(([code, tier]) => ({ code, tier })) });
+
+  test('E2 pinned under the pilot profile: thinking low with the E2 allowance and no temperature; one reservation within the Work Item cap, settled; the thinking text is never stored or logged; the reply\'s calls are unchanged', () =>
+    withWorld('sna-e2-pilot', { e2Pilot: true, level: E2_LEVEL }, (_r, a) => (a ? thinkingAnswer(need(tiersWith({ 'ceo.organization-leadership': 'TASK_REQUIRED' })), 900) : replyOk('Owner named.')), async ({ root, rt, w, sent, logs, versions }) => {
+      const reply = ask(rt, w, ORG);
+      assert.equal(await settled(rt, reply), 'COMPLETED');
+      assert.deepEqual(sent.map((s) => s.assessment), [true, false]);
+      const [a, r] = sent;
+      assert.deepEqual([a?.thinking, a?.effort, a?.temperature, a?.maxTokens], [{ type: 'enabled' }, 'low', 'ABSENT', OUTPUT_ALLOWANCE_BY_CLASS.E2], 'E2 = thinking low, the E2 allowance, no sampling field');
+      assert.deepEqual([r?.thinking, r?.effort, r?.temperature], [{ type: 'disabled' }, 'ABSENT', 'ABSENT'], 'the reply keeps its own AUTO E1 and the provider default');
+      const sna = assessment(rt, reply);
+      assert.deepEqual([decision(rt, reply)?.source, decision(rt, reply)?.outcome], ['MODEL', 'CLASSIFIED']);
+      const res = reservationsOf(rt, sna);
+      assert.equal(res.length, 1);
+      const dep = rt.governance.deployment(res[0]?.deploymentId as Id);
+      assert.deepEqual([dep.code, dep.reasoningClass], ['deepseek-flash-e2-skill-need-pilot', 'E2']);
+      assert.equal(res[0]?.state, 'SETTLED');
+      assert.ok((res[0]?.money ?? Infinity) <= SKILL_NEED_CAP.money, `the worst case ${res[0]?.money} fits the assessment's own cap`);
+      assert.ok(reservationsOf(rt, reply).every((x) => rt.governance.deployment(x.deploymentId as Id).code !== dep.code), 'the reply never uses the pilot deployment');
+      assert.equal(replyManifestSkills(rt, reply, versions)['ceo.organization-leadership'], 'SELECTED');
+      const db = readFileSync(path.join(root, 'state', 'company.sqlite3'));
+      assert.equal(db.includes(Buffer.from('CANARY-THINKING-7Qx')), false, 'the thinking text is never stored');
+      assert.equal(logs.join('\n').includes('CANARY-THINKING-7Qx'), false, 'nor logged');
+      assert.equal(rt.governance.accountingInvariants().length, 0);
+    }));
+
+  test('thinking exhausts the allowance (finish_reason length): one call, never re-sent, OUTPUT_TRUNCATED fallback; the reply lands with every eligible Skill', () =>
+    withWorld('sna-e2-trunc', { e2Pilot: true, level: E2_LEVEL }, (_r, a) => (a ? thinkingAnswer('', OUTPUT_ALLOWANCE_BY_CLASS.E2, 'length') : replyOk()), async ({ rt, w, sent, versions }) => {
+      const reply = ask(rt, w, ORG);
+      assert.equal(await settled(rt, reply), 'COMPLETED');
+      assert.equal(sent.filter((s) => s.assessment).length, 1);
+      assert.deepEqual([decision(rt, reply)?.source, decision(rt, reply)?.outcome], ['FALLBACK', 'OUTPUT_TRUNCATED']);
+      assert.deepEqual(Object.keys(replyManifestSkills(rt, reply, versions)).sort(), [...CEO_SKILLS].sort());
+      assert.equal(rt.governance.accountingInvariants().length, 0);
+    }));
+
+  test('an E2 call that outlives its timeout: held for reconciliation, never re-sent, PROVIDER_UNCERTAIN; the reply lands', () =>
+    withWorld('sna-e2-timeout', { e2Pilot: true, level: E2_LEVEL, callTimeoutMs: 1_500 }, (_r, a) => (a ? new Promise<DeepSeekResponse>(() => undefined) : replyOk()), async ({ rt, w, sent }) => {
+      const reply = ask(rt, w, ORG);
+      assert.equal(await settled(rt, reply, 20_000), 'COMPLETED');
+      assert.equal(sent.filter((s) => s.assessment).length, 1);
+      assert.equal(decision(rt, reply)?.outcome, 'PROVIDER_UNCERTAIN');
+      assert.deepEqual(reservationsOf(rt, assessment(rt, reply)).map((x) => x.state), ['RECONCILIATION_REQUIRED']);
+    }));
+
+  test('isolation: an E2 pin under the production Skill-need profile (E1 only) makes no call — PROVIDER_UNAVAILABLE fallback, nothing reserved; the reply lands', () =>
+    withWorld('sna-e2-unqualified', { level: E2_LEVEL }, (_r, a) => (a ? skillNeed(tiersWith({})) : replyOk()), async ({ rt, w, sent }) => {
+      const reply = ask(rt, w, ORG);
+      assert.equal(await settled(rt, reply), 'COMPLETED');
+      assert.equal(sent.filter((s) => s.assessment).length, 0, 'no assessment call');
+      assert.deepEqual([decision(rt, reply)?.source, decision(rt, reply)?.outcome], ['FALLBACK', 'PROVIDER_UNAVAILABLE']);
+      assert.equal(reservationsOf(rt, assessment(rt, reply)).length, 0);
+    }));
+
+  test('the factory accepts E1 / E2 with a positive allowance only; the production processor is E1 / 256', () => {
+    for (const bad of [{ reasoningClass: 'E3', maxOutputTokens: 256 }, { reasoningClass: 'E2', maxOutputTokens: 0 }, { reasoningClass: 'E1', maxOutputTokens: 1.5 }]) assert.throws(() => skillNeedAssessmentProcessorAt(bad as unknown as SkillNeedCallLevel), /INVALID_SKILL_NEED_CALL_LEVEL/);
+    assert.equal(skillNeedAssessmentProcessorAt(E2_LEVEL).kind, skillNeedAssessmentProcessor.kind, 'the same kind: the reserved lane and the reply order are unchanged');
   });
 });

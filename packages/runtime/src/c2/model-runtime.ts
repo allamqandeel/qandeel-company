@@ -252,7 +252,8 @@ export class GovernedModelRuntime {
     let attemptKind: AttemptKind = firstKind;
     let retries = 0;
     // The task class the grant was checked for (the processor's own constant), never anything the model or a message supplies.
-    const samplingCode = samplingForTaskClass(req.taskClass);
+    // G4-C2-REASONING-GATE-01: and of the class it routed at (every attempt below keeps that class): temperature 0 at E1 only.
+    const samplingCode = samplingForTaskClass(req.taskClass, decision.reasoningClass);
     const sampling = samplingCode === undefined ? {} : { sampling: samplingCode };
     const failed: string[] = [];
     let lastFailure: ProviderFailureClass = 'UNKNOWN';

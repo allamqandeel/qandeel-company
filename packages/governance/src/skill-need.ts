@@ -11,6 +11,7 @@
  */
 import { sha256Hex } from '@qandeel-company/domain';
 
+import type { ReasoningClass } from './classes.js';
 import type { ModelProposal } from './proposals.js';
 import type { ProviderSampling } from './providers.js';
 
@@ -21,9 +22,13 @@ export const SKILL_NEED_TASK_CLASS = 'skill.need.assessment';
  * G4-C2-TEMP-01 (D-P1-15): the one task class whose calls are sampled deterministically (temperature 0) — the assessment,
  * so the same message gets the same tiers. Every other task class (the Founder reply included) keeps the provider's default
  * sampling: there is no per-Employee, per-call or model-chosen sampling setting anywhere.
+ *
+ * G4-C2-REASONING-GATE-01: only at E1, the one class without thinking. A thinking class ignores sampling at the provider
+ * (and the adapter refuses DETERMINISTIC with thinking), so an assessment call at E2 — the isolated DEV pilot only; the
+ * production route policy is E1 only — carries no sampling field. E1 is unchanged: temperature 0.
  */
-export function samplingForTaskClass(taskClass: string): ProviderSampling | undefined {
-  return taskClass === SKILL_NEED_TASK_CLASS ? 'DETERMINISTIC' : undefined;
+export function samplingForTaskClass(taskClass: string, reasoningClass: ReasoningClass): ProviderSampling | undefined {
+  return taskClass === SKILL_NEED_TASK_CLASS && reasoningClass === 'E1' ? 'DETERMINISTIC' : undefined;
 }
 
 export const SKILL_NEED_TIERS = ['TASK_REQUIRED', 'SUPPORTING', 'NON_RELEVANT'] as const;

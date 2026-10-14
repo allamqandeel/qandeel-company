@@ -85,8 +85,10 @@ describe('G4-C2-SNA-01: the classifier contract', () => {
   test('G4-C2-TEMP-01: the frozen prompt (SNP-6, G4-FINAL-QUALITY-CORR-01) is pinned, and only the assessment task class is sampled deterministically', () => {
     assert.equal(SKILL_NEED_PREAMBLE_SHA256, '853becd2a74c487de66dbaa6d20711e2bbad85f2f02b3655889a67d3da03ac3e', 'SNP-6 byte for byte (SNP-2 was 8367fe1c…; kept in history and evidence)');
     assert.deepEqual([...PROVIDER_SAMPLINGS], ['DETERMINISTIC'], 'a closed code, never a number');
-    assert.equal(samplingForTaskClass(SKILL_NEED_TASK_CLASS), 'DETERMINISTIC');
-    for (const other of ['founder.reply', 'founder.brief', 'academy.answer', 'employee.task', '', ' skill.need.assessment', 'SKILL.NEED.ASSESSMENT', '__proto__', 'constructor']) assert.equal(samplingForTaskClass(other), undefined, `"${other}" keeps the provider default`);
+    assert.equal(samplingForTaskClass(SKILL_NEED_TASK_CLASS, 'E1'), 'DETERMINISTIC');
+    for (const other of ['founder.reply', 'founder.brief', 'academy.answer', 'employee.task', '', ' skill.need.assessment', 'SKILL.NEED.ASSESSMENT', '__proto__', 'constructor']) for (const c of ['E1', 'E2'] as const) assert.equal(samplingForTaskClass(other, c), undefined, `"${other}" at ${c} keeps the provider default`);
+    // G4-C2-REASONING-GATE-01: a thinking class ignores sampling, so the assessment at E2 / E3 / E4 sends none (never refused).
+    for (const c of ['E0', 'E2', 'E3', 'E4'] as const) assert.equal(samplingForTaskClass(SKILL_NEED_TASK_CLASS, c), undefined, c);
   });
 
   test('TS-1 is gone: no task-signal export remains beside RD-1', () => {

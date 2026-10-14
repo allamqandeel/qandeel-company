@@ -3,7 +3,7 @@
 //
 //   node --conditions=qandeel-test scripts/p1-sna-evaluate.mjs --label <run label> --ledger <file.jsonl>
 //        --set <dir>/<PREFIX> [--set ...] [--out <per-item.jsonl>] [--concurrency 4] [--fake] [--keep]
-//        [--ho2 <HO-2-MANIFEST.md>] [--cp1]
+//        [--ho2 <HO-2-MANIFEST.md>] [--cp1] [--level E1|E2]
 //
 // NOT a CI test. In a disposable workspace (never inside a Git tree, never the Founder's Company) it seeds, through the
 // TEST-ONLY Founder seam, a CEO holding the six CEO Skills (synthetic payloads: the assessment reads the SN-2 need cards
@@ -30,6 +30,12 @@
 // G4-HO2-FINAL-01 (fixed before HO-2 was opened): the scorer is scripts/p1-sna-score.mjs (pre-registered gates, six-Skill
 // scope, loaded-set and tier-confusion metrics, over-assignment as evidence only); --ho2 (or --cp1) then measures the content
 // effect on CP-1 with scripts/p1-sna-cp1-effect.mjs, free and local, from tiers held in memory only.
+// G4-C2-REASONING-GATE-01: --level E2 is the isolated DEV pilot. In the disposable workspace only, it provisions a DEV-only
+// pilot profile (one E2 deployment for the assessment class, the production route policy at E2..E2) INSTEAD of the release
+// Skill-need profile, and pins the assessment at E2 (thinking low) with the Company's E2 allowance; prompt, cards, timeout,
+// window, caps and the governed path are unchanged. The wire is checked for thinking low and no temperature. Production is
+// E1 and is never touched. Every run also scores the tiers the reply would plan with in production: an assessment recorded
+// after the 20-second window counts as the fallback (every eligible Skill SUPPORTING).
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -61,6 +67,7 @@ const { values: o } = parseArgs({
     ho2: { type: 'string' },
     limit: { type: 'string' },
     cp1: { type: 'boolean', default: false },
+    level: { type: 'string', default: 'E1' },
   },
 });
 
@@ -77,6 +84,8 @@ if (!o.ledger) refuse('USAGE', '--ledger <file.jsonl> is required (it carries th
 if (!o.set || o.set.length === 0) refuse('USAGE', 'at least one --set <dir>/<PREFIX>');
 const concurrency = Number(o.concurrency);
 if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 8) refuse('USAGE', '--concurrency is 1..8');
+if (o.level !== 'E1' && o.level !== 'E2') refuse('USAGE', '--level is E1 (production) or E2 (the isolated DEV pilot)');
+if (o.level === 'E2' && o.ho2) refuse('HELD_OUT', 'the E2 pilot never opens a held-out set');
 const limit = o.limit === undefined ? Infinity : Number(o.limit);
 if (o.limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) refuse('USAGE', '--limit is a positive integer');
 
@@ -113,12 +122,27 @@ const gov = await import('@qandeel-company/governance');
 const mind = await import('@qandeel-company/mind');
 const mp = await import('@qandeel-company/model-providers');
 const { InMemorySecretVault, WindowsUserVault } = await import('@qandeel-company/secret-vault');
-const { CompanyRuntime, Logger, skillNeedAssessmentProcessor } = await import('@qandeel-company/runtime');
+const { CompanyRuntime, Logger, skillNeedAssessmentProcessor, skillNeedAssessmentProcessorAt } = await import('@qandeel-company/runtime');
 const { CompanyStore, GovernanceStore, OrganizationStore, SkillStore } = await import('@qandeel-company/storage');
 // Test-only seam: resolvable only because this harness runs with --conditions=qandeel-test.
 const { activateEmployeeForTest, armFounderTestSurface } = await import('@qandeel-company/storage/testing');
 
 const SKILLS = Object.keys(mind.SKILL_NEED_CARDS);
+// G4-C2-REASONING-GATE-01: the DEV-only E2 pilot profile (never a release profile; provisioned in this workspace only).
+const E2_PILOT_PROFILE = (() => {
+  const p = mp.DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE;
+  const r = p.routePolicies[0];
+  return Object.freeze({
+    ...p,
+    code: 'deepseek-v4-1-flash-skill-need-e2-pilot',
+    deployments: Object.freeze([Object.freeze({ ...p.deployments[0], code: 'deepseek-flash-e2-skill-need-pilot', reasoningClass: 'E2', contextWindowTokens: mp.DEEPSEEK_CLASS_LIMITS.E2.contextWindowTokens, maxOutputTokens: mp.DEEPSEEK_CLASS_LIMITS.E2.maxOutputTokens })]),
+    routePolicies: Object.freeze([Object.freeze({ taskClass: r.taskClass, body: Object.freeze({ ...r.body, minClass: 'E2', maxClass: 'E2' }) })]),
+  });
+})();
+const pilot = o.level === 'E2';
+const skillNeedProfile = pilot ? E2_PILOT_PROFILE : mp.DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE;
+const assessor = pilot ? skillNeedAssessmentProcessorAt({ reasoningClass: 'E2', maxOutputTokens: gov.OUTPUT_ALLOWANCE_BY_CLASS.E2 }) : skillNeedAssessmentProcessor;
+const callLevel = pilot ? { reasoningClass: 'E2', thinking: 'low', maxOutputTokens: gov.OUTPUT_ALLOWANCE_BY_CLASS.E2 } : { reasoningClass: 'E1', thinking: 'none', maxOutputTokens: gov.SKILL_NEED_MAX_OUTPUT_TOKENS };
 if (SKILLS.join() !== SIX.join()) refuse('USAGE', 'the scorer and the need cards must name the same six Skills in the same order');
 const promptSha = gov.SKILL_NEED_PREAMBLE_SHA256;
 const versions = new Set(ledger.filter((r) => !r.fake).map((r) => r.promptSha256));
@@ -139,7 +163,7 @@ if (Number.isFinite(limit)) rows.splice(limit);
 const remaining = TOTAL_CAP_MICROS - spentBefore;
 const perCall = gov.SKILL_NEED_CAP.money;
 if (!o.fake && remaining < perCall) refuse('BUDGET', `the $5 total is spent (${spentBefore} µUSD recorded)`);
-say('plan', { label: o.label, mode: o.fake ? 'FAKE' : o.ho2 ? 'HO2_ONE_SHOT' : 'PAID_DEV', items: rows.length, sets: sets.map((s) => s.prefix), promptVersion: gov.SKILL_NEED_PROMPT_VERSION, promptSha256: promptSha, cardsVersion: mind.SKILL_NEED_CARDS_VERSION, cardsSha256: mind.skillNeedCardsDigest(SKILLS), spentBeforeMicros: spentBefore, companyCapMicros: o.fake ? 0 : remaining, perClassificationCapMicros: perCall, concurrency });
+say('plan', { label: o.label, level: callLevel, mode: o.fake ? 'FAKE' : o.ho2 ? 'HO2_ONE_SHOT' : 'PAID_DEV', items: rows.length, sets: sets.map((s) => s.prefix), promptVersion: gov.SKILL_NEED_PROMPT_VERSION, promptSha256: promptSha, cardsVersion: mind.SKILL_NEED_CARDS_VERSION, cardsSha256: mind.skillNeedCardsDigest(SKILLS), spentBeforeMicros: spentBefore, companyCapMicros: o.fake ? 0 : remaining, perClassificationCapMicros: perCall, concurrency });
 
 // ----------------------------------------------------------------------------------------------------------- transport
 const realVault = o.fake ? new InMemorySecretVault().set('deepseek-company', 'fake-' + 'k'.repeat(24)) : new WindowsUserVault();
@@ -169,7 +193,7 @@ if (!o.fake) {
 }
 const providerMs = [];
 // G4-C2-TEMP-01: what sampling actually reached the wire (counts only; the body is never kept or printed).
-const wire = { chatCalls: 0, temperatureZero: 0, temperatureOther: 0, temperatureAbsent: 0 };
+const wire = { chatCalls: 0, temperatureZero: 0, temperatureOther: 0, temperatureAbsent: 0, thinkingDisabled: 0, thinkingLow: 0, thinkingOther: 0, maxTokensMismatch: 0 };
 const inner = o.fake
   ? new mp.FakeDeepSeekTransport().respondWith((request) => {
       if (request.path === mp.DEEPSEEK_MODELS_PATH) return mp.fakeModelsAnswer([{ id: mp.DEEPSEEK_MODEL_CODE, name: mp.DEEPSEEK_EXPECTED_PUBLIC_NAME }]);
@@ -185,6 +209,12 @@ const transport = {
       if (t === undefined) wire.temperatureAbsent++;
       else if (t === 0) wire.temperatureZero++;
       else wire.temperatureOther++;
+      // G4-C2-REASONING-GATE-01: the thinking switch, the effort and the allowance that reached the wire (counts only).
+      const b = request.body ?? {};
+      if (b.thinking?.type === 'disabled' && b.reasoning_effort === undefined) wire.thinkingDisabled++;
+      else if (b.thinking?.type === 'enabled' && b.reasoning_effort === 'low') wire.thinkingLow++;
+      else wire.thinkingOther++;
+      if (b.max_tokens !== callLevel.maxOutputTokens) wire.maxTokensMismatch++;
     }
     try {
       return await inner.send(request, signal);
@@ -218,7 +248,7 @@ armFounderTestSurface(company);
     g.recordModelIdentityCheck({ providerCode: mp.DEEPSEEK_V41_FLASH_ACADEMY_PROFILE.provider.code, modelCode: mp.DEEPSEEK_V41_FLASH_ACADEMY_PROFILE.model.code, expectedName: mp.DEEPSEEK_V41_FLASH_ACADEMY_PROFILE.model.expectedPublicName, observedName: id.observedName, observedContextWindow: id.observedContextWindow, observedMaxOutputTokens: id.observedMaxOutputTokens, result: id.result });
     if (id.result !== 'MATCH') refuse('IDENTITY', `model identity check: ${id.result}`);
     g.provisionProviderProfile(founder, mp.DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, { capMoney: cap, capTokens: 50_000_000, reasonCode: 'p1.skill_need' });
-    g.provisionProviderProfile(founder, mp.DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE, { capMoney: 0, capTokens: 0, reasonCode: 'p1.skill_need' });
+    g.provisionProviderProfile(founder, skillNeedProfile, { capMoney: 0, capTokens: 0, reasonCode: 'p1.skill_need' });
     g.createBudget(founder, { scope: 'DEPARTMENT', scopeId: dept.id, capMoney: cap, capTokens: 50_000_000, reasonCode: 'p1.skill_need' });
     const e = g.createEmployee(founder, { name: { given: 'Eval', family: 'CEO' }, profile: { personality: 'steady' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED', selection: 'AUTO' }, roleRef: seat.roleRef, positionRef: 'position:p1', departmentId: dept.id, managerRef: founder });
     g.transitionEmployee(founder, e.id, { to: 'TRAINING', reasonCode: 'onboarding' });
@@ -244,7 +274,7 @@ armFounderTestSurface(company);
 
 // ----------------------------------------------------------------------------------------------------------------- run
 const logs = [];
-const runtime = new CompanyRuntime({ workspace: company, processors: [skillNeedAssessmentProcessor], concurrency, supervisorTtlMs: 5_000, governance: { providers: [adapter], provisioningProfiles: [mp.DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, mp.DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE], modelCallTimeoutMs: 180_000 }, logger: new Logger((r) => logs.push(JSON.stringify(r))) });
+const runtime = new CompanyRuntime({ workspace: company, processors: [assessor], concurrency, supervisorTtlMs: 5_000, governance: { providers: [adapter], provisioningProfiles: [mp.DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, skillNeedProfile], modelCallTimeoutMs: 180_000 }, logger: new Logger((r) => logs.push(JSON.stringify(r))) });
 await runtime.start();
 const comm = runtime.founder.communications;
 const thread = comm.directThread(world.founder, null);
@@ -324,9 +354,11 @@ for (const row of scored) {
   outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
   // What the reply would plan with: the model's tiers, or (fallback) every eligible Skill SUPPORTING.
   row.pred = Object.fromEntries(SKILLS.map((s) => [s, rec?.source === 'MODEL' ? rec.tiers[s] ?? 'NON_RELEVANT' : 'SUPPORTING']));
+  // G4-C2-REASONING-GATE-01: in production a classification recorded after the window loses to the reply's fallback.
+  row.lateForWindow = res.endToEndMs !== null && res.endToEndMs > gov.SKILL_NEED_WINDOW_MS;
   row.source = rec?.source ?? 'NONE';
   row.outcome = outcome;
-  perItem.push({ id: row.id, lang: row.lang, cat: row.cat, source: row.source, outcome, pred: row.pred, usage: res.usage.map((u) => ({ in: u.inputTokens, cached: u.cachedInputTokens, out: u.outputTokens, billed: u.billedMicros, economic: u.economicMicros, outcome: u.outcome, band: u.billingBand })), endToEndMs: res.endToEndMs, runMs: res.runMs });
+  perItem.push({ id: row.id, lang: row.lang, cat: row.cat, source: row.source, outcome, lateForWindow: row.lateForWindow, pred: row.pred, usage: res.usage.map((u) => ({ in: u.inputTokens, cached: u.cachedInputTokens, out: u.outputTokens, billed: u.billedMicros, economic: u.economicMicros, outcome: u.outcome, band: u.billingBand })), endToEndMs: res.endToEndMs, runMs: res.runMs });
 }
 const usageAll = [...results.values()].flatMap((r) => r.usage);
 // Integrity facts the gate needs from the harness (each true when held): every message decided; the frozen prompt and cards
@@ -340,10 +372,15 @@ const integrity = {
   modelTiersWellFormed: records.filter((r) => r.source === 'MODEL').every((r) => Object.keys(r.tiers).sort().join() === sortedSkills && Object.values(r.tiers).every((t) => tierSet.has(t))),
   singleDeployment: new Set(usageAll.map((u) => String(u.deploymentId))).size <= 1,
   noReplyModelCall: [...results.values()].every((r) => r.replyUsage === 0),
-  allTemperatureZero: wire.chatCalls > 0 && wire.temperatureZero === wire.chatCalls,
+  // E1: temperature 0 and thinking off on every call; the E2 pilot: thinking low and no temperature on every call. Both: the
+  // pinned allowance on every call.
+  allTemperatureZero: pilot ? wire.chatCalls > 0 && wire.temperatureAbsent === wire.chatCalls && wire.thinkingLow === wire.chatCalls && wire.maxTokensMismatch === 0 : wire.chatCalls > 0 && wire.temperatureZero === wire.chatCalls && wire.thinkingDisabled === wire.chatCalls && wire.maxTokensMismatch === 0,
   noCredentialOrTextLeak: !keyLeak && textInLogs === 0,
 };
 const sc = score(scored, integrity);
+// G4-C2-REASONING-GATE-01: the same scorer on what the reply would plan with in production (late → fallback).
+const lateCount = scored.filter((r) => r.lateForWindow).length;
+const effective = score(scored.map((r) => (r.lateForWindow ? { ...r, pred: Object.fromEntries(SKILLS.map((s) => [s, 'SUPPORTING'])) } : r)), integrity);
 const metrics = sc.metrics;
 const spendMicros = usageAll.reduce((a, u) => a + Math.max(u.billedMicros, u.economicMicros), 0) + [...results.values()].reduce((a, r) => a + r.heldMicros, 0);
 const billed = usageAll.reduce((a, u) => a + u.billedMicros, 0);
@@ -362,6 +399,7 @@ const cost = {
   per1000MessagesUsd: classifications ? Math.round((economic / classifications) * 1000) / 1e6 : null,
   maxCallBilledMicros: Math.max(0, ...usageAll.map((u) => u.billedMicros)),
   bands: usageAll.reduce((a, u) => ({ ...a, [u.billingBand ?? 'NONE']: (a[u.billingBand ?? 'NONE'] ?? 0) + 1 }), {}),
+  outputTokensP50: pct(usageAll.map((u) => u.outputTokens), 50), outputTokensP95: pct(usageAll.map((u) => u.outputTokens), 95),
   inputTokensAvg: avg(usageAll.map((u) => u.inputTokens)), cachedInputTokensAvg: avg(usageAll.map((u) => u.cachedInputTokens)), outputTokensAvg: avg(usageAll.map((u) => u.outputTokens)), outputTokensMax: Math.max(0, ...usageAll.map((u) => u.outputTokens)),
   calls: usageAll.length,
 };
@@ -375,15 +413,15 @@ const accounting = {
   heldOrUncertainMicros: [...results.values()].reduce((a, r) => a + r.heldMicros, 0),
   chargedToTrialCapMicros: spendMicros,
 };
-const latency = { vaultAvgMs: avg(vaultMs), vaultP50Ms: pct(vaultMs, 50), vaultP95Ms: pct(vaultMs, 95), vaultMaxMs: vaultMs.length ? Math.max(...vaultMs) : null, providerAvgMs: avg(providerMs), providerP50Ms: pct(providerMs, 50), providerP95Ms: pct(providerMs, 95), providerMaxMs: providerMs.length ? Math.max(...providerMs) : null, runAvgMs: avg(runMs), runP95Ms: pct(runMs, 95), endToEndAvgMs: avg(e2e), endToEndP95Ms: pct(e2e, 95), withinReplyWindow: e2e.filter((x) => x <= gov.SKILL_NEED_WINDOW_MS).length, wallMs };
+const latency = { vaultAvgMs: avg(vaultMs), vaultP50Ms: pct(vaultMs, 50), vaultP95Ms: pct(vaultMs, 95), vaultMaxMs: vaultMs.length ? Math.max(...vaultMs) : null, providerAvgMs: avg(providerMs), providerP50Ms: pct(providerMs, 50), providerP95Ms: pct(providerMs, 95), providerMaxMs: providerMs.length ? Math.max(...providerMs) : null, runAvgMs: avg(runMs), runP95Ms: pct(runMs, 95), endToEndAvgMs: avg(e2e), endToEndP50Ms: pct(e2e, 50), endToEndP95Ms: pct(e2e, 95), endToEndMaxMs: e2e.length ? Math.max(...e2e) : null, withinReplyWindow: e2e.filter((x) => x <= gov.SKILL_NEED_WINDOW_MS).length, wallMs };
 const rates = { fallbackRate: r3(fallback, classifications), timeoutRate: r3((outcomes.PROVIDER_UNCERTAIN ?? 0) + (outcomes.HARNESS_TIMEOUT ?? 0), classifications), failureRate: r3(classifications - (outcomes.CLASSIFIED ?? 0), classifications), invalidRate: r3((outcomes.OUTPUT_INVALID ?? 0) + (outcomes.OUTPUT_TRUNCATED ?? 0), classifications), outcomes };
 const privacy = { credentialInDbOrLogs: keyLeak, messageTextInLogs: textInLogs };
-const sampling = { ...wire, allDeterministic: wire.chatCalls > 0 && wire.temperatureZero === wire.chatCalls };
+const sampling = { ...wire, allDeterministic: wire.chatCalls > 0 && wire.temperatureZero === wire.chatCalls, wireAsPinned: integrity.allTemperatureZero };
 
-const entry = { at: new Date().toISOString(), label: o.label, fake: o.fake, ho2: Boolean(o.ho2), sets: sets.map((s) => s.prefix), items: classifications, promptVersion: gov.SKILL_NEED_PROMPT_VERSION, promptSha256: promptSha, cardsSha256: mind.skillNeedCardsDigest(SKILLS), sampling: sampling.allDeterministic ? 'TEMPERATURE_0' : 'PROVIDER_DEFAULT_OR_MIXED', freeze, spendMicros: o.fake ? 0 : spendMicros, billedMicros: o.fake ? 0 : billed, economicMicros: o.fake ? 0 : economic, calls: cost.calls, stopCode, verdict: sc.verdict, gatePass: sc.verdict === 'PASS' };
+const entry = { at: new Date().toISOString(), label: o.label, fake: o.fake, ho2: Boolean(o.ho2), sets: sets.map((s) => s.prefix), items: classifications, promptVersion: gov.SKILL_NEED_PROMPT_VERSION, promptSha256: promptSha, cardsSha256: mind.skillNeedCardsDigest(SKILLS), sampling: sampling.allDeterministic ? 'TEMPERATURE_0' : 'PROVIDER_DEFAULT_OR_MIXED', level: callLevel.reasoningClass, freeze, spendMicros: o.fake ? 0 : spendMicros, billedMicros: o.fake ? 0 : billed, economicMicros: o.fake ? 0 : economic, calls: cost.calls, stopCode, verdict: sc.verdict, gatePass: sc.verdict === 'PASS', effectiveVerdict: effective.verdict, lateForWindow: lateCount };
 appendFileSync(ledgerFile, JSON.stringify(entry) + '\n');
 if (o.out && !o.ho2) writeFileSync(path.resolve(o.out), perItem.map((x) => JSON.stringify(x)).join('\n') + '\n');
-say('result', { label: o.label, metrics, sixSkillScope: sc.six, content: sc.content, overAssignment: sc.overAssignment, gate, scopeDisagreement: sc.scopeDisagreement, failed: sc.failed, verdict: sc.verdict, gatePass: entry.gatePass, cost, accounting, sampling, latency, rates, privacy, stopCode, totalSpentMicros: spentBefore + entry.spendMicros, totalCapMicros: TOTAL_CAP_MICROS });
+say('result', { label: o.label, level: callLevel, effective: { lateForWindow: lateCount, verdict: effective.verdict, metrics: effective.metrics, sixSkillScope: effective.six, failed: effective.failed }, metrics, sixSkillScope: sc.six, content: sc.content, overAssignment: sc.overAssignment, gate, scopeDisagreement: sc.scopeDisagreement, failed: sc.failed, verdict: sc.verdict, gatePass: entry.gatePass, cost, accounting, sampling, latency, rates, privacy, stopCode, totalSpentMicros: spentBefore + entry.spendMicros, totalCapMicros: TOTAL_CAP_MICROS });
 
 // G4-HO2-FINAL-01: the content effect on CP-1 (free, local, after the money is recorded), from tiers held in memory only.
 if (o.ho2 || o.cp1) {
