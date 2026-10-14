@@ -290,6 +290,43 @@ describe('G4-C2-SNA-01: durable across a restart', () => {
     }));
 });
 
+describe('G4-FINAL-QUALITY-CORR-01 (WP3): the reserved assessment lane', () => {
+  const occupy = (rt: CompanyRuntime, ceo: EmployeeRecord, n: number, stepMs: number): Id[] =>
+    Array.from({ length: n }, () => rt.submitWorkItem({ objective: 'a long run holding a worker slot', ownerRef: ceo.ref, processorKind: 'c1.steps', processorInput: { steps: 1, stepMs }, initialState: 'READY' }).workItem.id);
+  const running = (rt: CompanyRuntime, id: Id): boolean => rt.view.runsForWorkItem(id).some((r) => !r.endedAt);
+  const lanes = (logs: string[]): { kind: string; lane: string }[] => logs.map((l) => JSON.parse(l) as { event?: string; kind?: string; lane?: string }).filter((r) => r.event === 'run.started').map((r) => ({ kind: r.kind ?? '', lane: r.lane ?? '' }));
+
+  test('every ordinary slot busy with long work: the assessment still runs at once in the reserved slot, well inside its window; the reply waits for an ordinary slot (no worker held)', () =>
+    withWorld('sna-lane', {}, (_r, a) => (a ? skillNeed(tiersWith({ 'ceo.organization-leadership': 'TASK_REQUIRED' })) : replyOk()), async ({ rt, w, ceo, logs }) => {
+      const busy = occupy(rt, ceo, 2, 6_000);
+      await eventually(() => (busy.every((id) => running(rt, id)) ? true : undefined), 5_000, 'both ordinary slots busy');
+      const t0 = Date.now();
+      const reply = ask(rt, w, ORG);
+      await eventually(() => decision(rt, reply) ?? undefined, 5_000, 'the assessment decided while both slots are busy');
+      assert.ok(Date.now() - t0 < 5_000, 'decided in seconds, not after the long runs');
+      assert.equal(decision(rt, reply)?.outcome, 'CLASSIFIED');
+      assert.ok(busy.every((id) => running(rt, id)), 'the long runs were never displaced');
+      assert.equal(rt.view.runsForWorkItem(reply).length, 0, 'the reply has not started: it waits for an ordinary slot, holding none');
+      assert.equal(await settled(rt, reply, 20_000), 'COMPLETED');
+      assert.equal(decision(rt, reply)?.outcome, 'CLASSIFIED', 'the reply planned with the classification, not the window fallback');
+      const started = lanes(logs);
+      assert.deepEqual(started.filter((s) => s.lane === 'RESERVED').map((s) => s.kind), ['c2.skill-need-assessment'], 'only the assessment ever takes the reserved slot');
+      assert.ok(started.filter((s) => s.kind === 'c1.steps' || s.kind === 'c2.employee-task').every((s) => s.lane === 'ORDINARY'));
+      assert.ok(rt.diagnostics().maxObservedActive <= 3, 'at most the cap plus the one reserved slot');
+    }));
+
+  test('two assessments while every ordinary slot is busy: the reserved slot runs them one at a time; both decide inside the window', () =>
+    withWorld('sna-lane-two', {}, (_r, a) => (a ? skillNeed(tiersWith({ 'ceo.evidence-and-economics': 'TASK_REQUIRED' })) : replyOk()), async ({ rt, w, ceo }) => {
+      const busy = occupy(rt, ceo, 2, 8_000);
+      await eventually(() => (busy.every((id) => running(rt, id)) ? true : undefined), 5_000, 'both ordinary slots busy');
+      const r1 = ask(rt, w, 'SYNTHETIC: is the 49 SAR price worth it given the churn data?');
+      const r2 = ask(rt, w, 'SYNTHETIC: هل التكلفة دي تستاهل؟');
+      await eventually(() => (decision(rt, r1) && decision(rt, r2) ? true : undefined), 6_000, 'both decided');
+      assert.deepEqual([decision(rt, r1)?.outcome, decision(rt, r2)?.outcome], ['CLASSIFIED', 'CLASSIFIED']);
+      assert.ok(rt.diagnostics().maxObservedActive <= 3, 'never two reserved runs');
+    }));
+});
+
 describe('G4-C2-SNA-01: the additive Skill-need profile', () => {
   test('one E1 deployment qualified for the assessment class only, its route policy (E1..E1, one retry, two calls, no escalation), D2 egress, no budget', () => {
     const p = DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE;

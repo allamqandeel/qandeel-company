@@ -42,6 +42,7 @@ import {
   type Processor,
   type ProcessorContext,
   type ProcessorResult,
+  type SideEffectClass,
 } from '@qandeel-company/domain';
 import {
   ArtifactStore,
@@ -248,9 +249,20 @@ export interface FounderAdmin {
 const recoverGovernedOrphansCount = (g: { reservationsHeld: number; reservationsReleased: number; invocationsRetryable: number; invocationsHeld: number }): number =>
   g.reservationsHeld + g.reservationsReleased + g.invocationsRetryable + g.invocationsHeld;
 
+/**
+ * G4-FINAL-QUALITY-CORR-01 (WP3): the kinds that may take the ONE reserved slot above the concurrency cap when every ordinary
+ * slot is busy. Only the Skill Need Assessment: one model call (15 s timeout), bounded at SKILL_NEED_RUN_MS, no tool, no
+ * write but its own record — and a Founder reply waits on it for at most 20 s. Measured without it (product concurrency 2):
+ * two long runs (an E3/E4 reply, Academy work) held both slots for 40 s, the assessment started after 39.7 s, past its
+ * window, and the reply planned with the conservative fallback.
+ */
+const RESERVED_LANE_KINDS: readonly string[] = Object.freeze([SKILL_NEED_ASSESSMENT_KIND]);
+
 interface ActiveRun {
   readonly claim: Claim;
   readonly processor: Processor;
+  /** ORDINARY counts against the concurrency cap; RESERVED is the one extra slot of a reserved-lane kind. */
+  readonly lane: 'ORDINARY' | 'RESERVED';
   readonly controller: AbortController;
   reason: 'CANCEL' | 'TIMEOUT' | 'SHUTDOWN' | 'LEASE_LOST' | null;
   fenced: boolean;
@@ -361,6 +373,8 @@ export class CompanyRuntime {
   readonly #backoff: BackoffPolicy;
   readonly #log: Logger;
   readonly #concurrency: number;
+  /** The registered reserved-lane kinds and their side-effect classes (empty when no such processor is registered). */
+  readonly #reservedLane: ReadonlyMap<string, SideEffectClass>;
   readonly #supervisorTtlMs: number;
   readonly #jobLeaseMs: number;
   readonly #wake: WakeSignal;
@@ -403,6 +417,7 @@ export class CompanyRuntime {
   constructor(options: RuntimeOptions) {
     this.#opts = options;
     this.#registry = new ProcessorRegistry(options.processors);
+    this.#reservedLane = new Map([...this.#registry.sideEffects].filter(([kind]) => RESERVED_LANE_KINDS.includes(kind)));
     this.#clock = options.clock ?? systemClock;
     this.#backoff = options.backoff ?? new ExponentialBackoff();
     this.#log = options.logger ?? silentLogger;
@@ -1072,12 +1087,21 @@ export class CompanyRuntime {
         }
         // Governed work left by an interrupted run is classified at once (held / retryable).
         if (interrupted > 0) for (let i = 0; i < 20 && recoverGovernedOrphansCount(recoverGovernedOrphans(store, this.#fence)) > 0; i++);
-        while (this.#active.size < this.#concurrency && this.#state === 'READY') {
+        while (this.#ordinaryActive() < this.#concurrency && this.#state === 'READY') {
           this.#claimsAttempted++;
           const claim = claimNext(store, { workerId: `${this.instanceId}:${++this.#workerSeq}`, leaseMs: this.#jobLeaseMs, kinds: this.#registry.sideEffects, supervisor: this.#fence });
           if (!claim) break;
           this.#opts.fault?.('claim.afterCommit');
-          this.#startRun(claim);
+          this.#startRun(claim, 'ORDINARY');
+        }
+        // Every ordinary slot is busy: one reserved-lane run may start (claimed by the same fenced path, its kinds only).
+        if (this.#state === 'READY' && this.#ordinaryActive() >= this.#concurrency && this.#reservedLane.size > 0 && ![...this.#active.values()].some((r) => r.lane === 'RESERVED')) {
+          this.#claimsAttempted++;
+          const claim = claimNext(store, { workerId: `${this.instanceId}:${++this.#workerSeq}`, leaseMs: this.#jobLeaseMs, kinds: this.#reservedLane, supervisor: this.#fence });
+          if (claim) {
+            this.#opts.fault?.('claim.afterCommit');
+            this.#startRun(claim, 'RESERVED');
+          }
         }
       } while (this.#pumpAgain && this.#state === 'READY');
       this.#pumpErrors = 0;
@@ -1123,7 +1147,7 @@ export class CompanyRuntime {
     clearTimeout(this.#timer);
     this.#timer = undefined;
     this.#timerFor = null;
-    if (this.#state !== 'READY' || this.#active.size >= this.#concurrency) return;
+    if (this.#state !== 'READY' || this.#ordinaryActive() >= this.#concurrency) return;
     const due = store.nextDueAt(this.#registry.kinds);
     if (due === null) return;
     const delay = Date.parse(due) - this.#clock.nowMs();
@@ -1166,15 +1190,22 @@ export class CompanyRuntime {
     return [...this.#active.values()].filter((r) => r.claim.fence.jobId === jobId);
   }
 
-  #startRun(claim: Claim): void {
+  /** Runs counted against the concurrency cap (the reserved-lane run is not). */
+  #ordinaryActive(): number {
+    let n = 0;
+    for (const r of this.#active.values()) if (r.lane === 'ORDINARY') n++;
+    return n;
+  }
+
+  #startRun(claim: Claim, lane: ActiveRun['lane']): void {
     const processor = this.#registry.get(claim.job.processorKind);
     if (!processor) return; // unreachable: claims are filtered by registered kinds
-    const run: ActiveRun = { claim, processor, controller: new AbortController(), reason: null, fenced: false, settled: false, done: Promise.resolve() };
+    const run: ActiveRun = { claim, processor, lane, controller: new AbortController(), reason: null, fenced: false, settled: false, done: Promise.resolve() };
     // Keyed by RUN (R1-08): a job re-claimed while its previous, fenced processor is still in its abort
     // grace gets a separate entry; the old run's completion can never remove the new run's entry.
     this.#active.set(claim.fence.runId, run);
     this.#maxObservedActive = Math.max(this.#maxObservedActive, this.#active.size);
-    this.#log.info('run.started', { jobId: claim.fence.jobId, runId: claim.fence.runId, workItemId: claim.workItem.id, kind: processor.kind, attempt: claim.run.attempt, fencingToken: claim.fence.fencingToken });
+    this.#log.info('run.started', { jobId: claim.fence.jobId, runId: claim.fence.runId, workItemId: claim.workItem.id, kind: processor.kind, attempt: claim.run.attempt, fencingToken: claim.fence.fencingToken, lane });
     run.done = this.#execute(run).finally(() => {
       this.#active.delete(claim.fence.runId);
       this.#wake.signal(); // a slot is free
