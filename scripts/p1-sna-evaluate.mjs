@@ -43,7 +43,9 @@ import { cp1Effect } from './p1-sna-cp1-effect.mjs';
 import { N, SIX, score } from './p1-sna-score.mjs';
 
 const TOTAL_CAP_MICROS = 5_000_000;
-const MAX_PROMPT_VERSIONS = 3;
+// G4-SNA-01 allowed 3 paid prompt versions (SNP-1..SNP-3, all SN-2). G4-FINAL-QUALITY-CORR-01 approves a new version for
+// the corrected definitions (SN-3) under a bounded number of design reviews: at most 3 more (SNP-4..SNP-6), 6 in total.
+const MAX_PROMPT_VERSIONS = 6;
 const ITEM_DEADLINE_MS = 90_000;
 
 const { values: o } = parseArgs({
@@ -140,7 +142,27 @@ if (!o.fake && remaining < perCall) refuse('BUDGET', `the $5 total is spent (${s
 say('plan', { label: o.label, mode: o.fake ? 'FAKE' : o.ho2 ? 'HO2_ONE_SHOT' : 'PAID_DEV', items: rows.length, sets: sets.map((s) => s.prefix), promptVersion: gov.SKILL_NEED_PROMPT_VERSION, promptSha256: promptSha, cardsVersion: mind.SKILL_NEED_CARDS_VERSION, cardsSha256: mind.skillNeedCardsDigest(SKILLS), spentBeforeMicros: spentBefore, companyCapMicros: o.fake ? 0 : remaining, perClassificationCapMicros: perCall, concurrency });
 
 // ----------------------------------------------------------------------------------------------------------- transport
-const vault = o.fake ? new InMemorySecretVault().set('deepseek-company', 'fake-' + 'k'.repeat(24)) : new WindowsUserVault();
+const realVault = o.fake ? new InMemorySecretVault().set('deepseek-company', 'fake-' + 'k'.repeat(24)) : new WindowsUserVault();
+// G4-FINAL-QUALITY-CORR-01 (WP3): how long resolving the credential takes (the DPAPI host process on Windows), timed around
+// `use()` only — the callback (the request itself) is timed by the transport below. The value is never read here.
+const vaultMs = [];
+const vault = {
+  kind: realVault.kind,
+  has: (ref) => realVault.has(ref),
+  list: () => realVault.list(),
+  async use(ref, fn) {
+    const t0 = performance.now();
+    let inside = null;
+    try {
+      return await realVault.use(ref, (secret) => {
+        inside = performance.now();
+        return fn(secret);
+      });
+    } finally {
+      if (inside !== null) vaultMs.push(Math.round(inside - t0));
+    }
+  },
+};
 if (!o.fake) {
   if (process.platform !== 'win32') refuse('VAULT_UNAVAILABLE', 'the paid run uses the Founder host DPAPI vault');
   if (!(await vault.has(mp.DEEPSEEK_CREDENTIAL_REF))) refuse('CREDENTIAL_UNAVAILABLE', `no secret is stored for ${mp.DEEPSEEK_CREDENTIAL_REF}; the paid part stops`);
@@ -279,7 +301,7 @@ const wallMs = Date.now() - started;
 // ----------------------------------------------------------------------------------------------------- privacy checks
 const db = readFileSync(path.join(company, 'state', 'company.sqlite3'));
 const logText = logs.join('\n');
-const keyLeak = o.fake ? false : await vault.use(mp.DEEPSEEK_CREDENTIAL_REF, (key) => db.includes(key) || logText.includes(key));
+const keyLeak = o.fake ? false : await realVault.use(mp.DEEPSEEK_CREDENTIAL_REF, (key) => db.includes(key) || logText.includes(key));
 const textInLogs = rows.filter((r) => r.text.length >= 12 && logText.includes(r.text.slice(0, 24))).length;
 
 // ------------------------------------------------------------------------------------------------------------- scoring
@@ -353,7 +375,7 @@ const accounting = {
   heldOrUncertainMicros: [...results.values()].reduce((a, r) => a + r.heldMicros, 0),
   chargedToTrialCapMicros: spendMicros,
 };
-const latency = { providerAvgMs: avg(providerMs), providerP50Ms: pct(providerMs, 50), providerP95Ms: pct(providerMs, 95), providerMaxMs: providerMs.length ? Math.max(...providerMs) : null, runAvgMs: avg(runMs), runP95Ms: pct(runMs, 95), endToEndAvgMs: avg(e2e), endToEndP95Ms: pct(e2e, 95), withinReplyWindow: e2e.filter((x) => x <= gov.SKILL_NEED_WINDOW_MS).length, wallMs };
+const latency = { vaultAvgMs: avg(vaultMs), vaultP50Ms: pct(vaultMs, 50), vaultP95Ms: pct(vaultMs, 95), vaultMaxMs: vaultMs.length ? Math.max(...vaultMs) : null, providerAvgMs: avg(providerMs), providerP50Ms: pct(providerMs, 50), providerP95Ms: pct(providerMs, 95), providerMaxMs: providerMs.length ? Math.max(...providerMs) : null, runAvgMs: avg(runMs), runP95Ms: pct(runMs, 95), endToEndAvgMs: avg(e2e), endToEndP95Ms: pct(e2e, 95), withinReplyWindow: e2e.filter((x) => x <= gov.SKILL_NEED_WINDOW_MS).length, wallMs };
 const rates = { fallbackRate: r3(fallback, classifications), timeoutRate: r3((outcomes.PROVIDER_UNCERTAIN ?? 0) + (outcomes.HARNESS_TIMEOUT ?? 0), classifications), failureRate: r3(classifications - (outcomes.CLASSIFIED ?? 0), classifications), invalidRate: r3((outcomes.OUTPUT_INVALID ?? 0) + (outcomes.OUTPUT_TRUNCATED ?? 0), classifications), outcomes };
 const privacy = { credentialInDbOrLogs: keyLeak, messageTextInLogs: textInLogs };
 const sampling = { ...wire, allDeterministic: wire.chatCalls > 0 && wire.temperatureZero === wire.chatCalls };
