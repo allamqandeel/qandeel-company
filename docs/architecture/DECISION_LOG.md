@@ -6837,3 +6837,61 @@ are diagnostic only here (both informed earlier decisions). Evidence: `corr-01/s
 
 **Open (Founder Decision Gate, after G4-C2-TIER-01).** The VAL pre-gate is still unmet (executive-judgment over-assigned;
 founder-partnership recall 0.791 < 0.80). HO-2 stays sealed and unused; no PR, no LIVE change.
+
+**G4-HO2-FINAL-01 — the one-shot HO-2 acceptance (Founder-authorized, 2026-10-14): FAILED on one gate.**
+
+*Before HO-2 was read:*
+- The evaluator was extended and committed at `89be8ff`. The product code is unchanged since `d79d18e`.
+  - `scripts/p1-sna-score.mjs` is the pure scorer. Its self-test reproduces the four recorded paid runs exactly.
+  - `scripts/p1-sna-cp1-effect.mjs` measures the content effect on CP-1, free and from tiers held in memory.
+- Freeze: SNP-2 8367fe1c, SN-2 c6be8fc3 (equal to the sealed copy), cards 23ebd24b, temperature 0 on the assessment class
+  only.
+- HO-2 seal:
+  - all 15 hashes match; the blind hash equals the reviewer labels;
+  - 96 items, 0 excluded, 54 disagreements with 54 adjudications.
+- Leak scan: no HO-2 text in the prompt, the repository, the scratch areas or DEV. In VAL, the one known `VAL4-018`
+  collision (a 4-word SIMPLE message with no required Skill, never in the prompt) was judged not material and kept.
+- Pre-registered rule: thresholds as recorded, with per-Skill recall applied to all six Skills; over-assignment is
+  evidence only.
+- Evidence: `corr-01/sna/freeze/`, `corr-01/sna/HO2-FINAL.log`. Aggregates only.
+
+*Result:* 96 messages, all CLASSIFIED (0 fallbacks or invalid outputs); 96 calls at temperature 0.
+
+| Gate | Value | Threshold | Pass |
+|---|---|---|---|
+| Micro recall, five task Skills / six Skills | 0.925 / 0.936 | 0.90 | yes |
+| Micro precision, five / six | 0.861 / 0.869 | 0.80 | yes |
+| Recall per language (EN / MSA / EG), five Skills | 0.905 / 0.955 / 0.917 | 0.85 | yes |
+| Language gap, five / six | 0.050 / 0.042 | 0.10 | yes |
+| Per-Skill recall (all six) | executive-judgment **0.750** (6 of 8) | 0.80 | **no** |
+| SIMPLE (21 messages): at most one task Skill, none loading four | 21 / 21, 0 | rule | yes |
+| MULTI: no required Skill set NON_RELEVANT | 0 | rule | yes |
+| Integrity (frozen prompt and cards, six offered, one deployment, no reply call, no leak) | all held | rule | yes |
+
+- *Per-Skill recall:* governance 1.0, partnership 1.0, evidence 0.947, organization 0.867, cross-functional 1.0. Both
+  executive-judgment misses are TASK_REQUIRED → SUPPORTING: the Skill was still loaded, never excluded.
+- *Over-assignment (evidence only):*
+  - executive-judgment: 9 predicted against 8 in the reference, P 0.667; its 3 false positives are all reference
+    SUPPORTING;
+  - founder-partnership: 12 against 11, P 0.917.
+- *Content:*
+  - Every reference-TASK_REQUIRED Skill was loaded: 78 of 78; none was excluded as NON_RELEVANT.
+  - Loaded-set recall 0.932, precision 0.884.
+  - Priority errors: 5 TASK_REQUIRED → SUPPORTING and 11 the other way. Boundary errors: 29 NON_RELEVANT → SUPPORTING and
+    16 SUPPORTING → NON_RELEVANT.
+- *CP-1, real storage path:*
+  - The null control drifted 0. No required Skill was unloaded in either world (0 of 78 by the reference, 0 of 78 by the
+    classifier).
+  - The 14 messages with priority-only differences changed the loaded set 0 times and displaced 0 knowledge and 0 memory
+    items; only the order changed (7).
+  - Boundary errors changed the loaded set in 33 messages. In the FULL 60K world (57.0–59.4K used) they displaced 9
+    knowledge and 14 memory items.
+- *Cost and latency:*
+  - 87,063 µUSD economic and 22,817 µUSD billed (PEAK); 96 reservations, all SETTLED, 0 held.
+  - Trial total: 1,822,826 µUSD of 5,000,000.
+  - Provider latency mean 1.53 s, p95 1.94 s. Assessment end-to-end mean 4.15 s, p95 7.25 s; all 96 within the 20 s window.
+
+**Open (Founder Decision Gate, after G4-HO2-FINAL-01).** The rule chosen before the run says a gate failing on both scopes is
+a FAIL. Executive-judgment recall rests on 8 reference messages, so one miss is worth 0.125.
+- HO-2 is consumed and is never reused.
+- No prompt, SN-2, threshold or code change; no retry, no PR, no LIVE change.
