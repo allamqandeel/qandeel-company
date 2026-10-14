@@ -3,7 +3,7 @@
 //
 //   node --conditions=qandeel-test scripts/p1-sna-evaluate.mjs --label <run label> --ledger <file.jsonl>
 //        --set <dir>/<PREFIX> [--set ...] [--out <per-item.jsonl>] [--concurrency 4] [--fake] [--keep]
-//        [--ho2 <HO-2-MANIFEST.md>]
+//        [--ho2 <HO-2-MANIFEST.md>] [--cp1]
 //
 // NOT a CI test. In a disposable workspace (never inside a Git tree, never the Founder's Company) it seeds, through the
 // TEST-ONLY Founder seam, a CEO holding the six CEO Skills (synthetic payloads: the assessment reads the SN-2 need cards
@@ -27,6 +27,9 @@
 // G4-C2-TEMP-01: it also counts the `temperature` each chat call carried on the wire (counts only) and records the sampling.
 // --ho2 is the one-shot held-out mode: it verifies the sealed hashes, requires a clean tracked tree, refuses a second
 // HO-2 run in the ledger, writes no per-item file and prints aggregates only.
+// G4-HO2-FINAL-01 (fixed before HO-2 was opened): the scorer is scripts/p1-sna-score.mjs (pre-registered gates, six-Skill
+// scope, loaded-set and tier-confusion metrics, over-assignment as evidence only); --ho2 (or --cp1) then measures the content
+// effect on CP-1 with scripts/p1-sna-cp1-effect.mjs, free and local, from tiers held in memory only.
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -35,6 +38,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
+
+import { cp1Effect } from './p1-sna-cp1-effect.mjs';
+import { N, SIX, score } from './p1-sna-score.mjs';
 
 const TOTAL_CAP_MICROS = 5_000_000;
 const MAX_PROMPT_VERSIONS = 3;
@@ -52,6 +58,7 @@ const { values: o } = parseArgs({
     keep: { type: 'boolean', default: false },
     ho2: { type: 'string' },
     limit: { type: 'string' },
+    cp1: { type: 'boolean', default: false },
   },
 });
 
@@ -110,7 +117,7 @@ const { CompanyStore, GovernanceStore, OrganizationStore, SkillStore } = await i
 const { activateEmployeeForTest, armFounderTestSurface } = await import('@qandeel-company/storage/testing');
 
 const SKILLS = Object.keys(mind.SKILL_NEED_CARDS);
-const TASK = SKILLS.filter((s) => s !== 'ceo.founder-partnership');
+if (SKILLS.join() !== SIX.join()) refuse('USAGE', 'the scorer and the need cards must name the same six Skills in the same order');
 const promptSha = gov.SKILL_NEED_PREAMBLE_SHA256;
 const versions = new Set(ledger.filter((r) => !r.fake).map((r) => r.promptSha256));
 if (!o.fake && !versions.has(promptSha) && versions.size >= MAX_PROMPT_VERSIONS) refuse('PROMPT_VERSIONS', `${MAX_PROMPT_VERSIONS} prompt versions were already paid for`);
@@ -243,6 +250,7 @@ async function assess(row) {
     record,
     usage,
     heldMicros: open.reduce((a, r) => a + r.money, 0),
+    replyUsage: runtime.governance.usage({ workItemId: reply }).length,
     reservations: all.map((r) => ({ state: r.state, money: r.money })),
     endToEndMs: record ? Date.parse(record.createdAt) - sentAt : null,
     runMs: runs.map((r) => (r.endedAt ? Date.parse(r.endedAt) - Date.parse(r.startedAt) : null)).filter((x) => x !== null),
@@ -275,56 +283,46 @@ const keyLeak = o.fake ? false : await vault.use(mp.DEEPSEEK_CREDENTIAL_REF, (ke
 const textInLogs = rows.filter((r) => r.text.length >= 12 && logText.includes(r.text.slice(0, 24))).length;
 
 // ------------------------------------------------------------------------------------------------------------- scoring
-const N = (l) => (l === 'NOT_NEEDED' ? 'NON_RELEVANT' : l);
+// G4-HO2-FINAL-01: the scorer lives in scripts/p1-sna-score.mjs (pure; its self-test replays the recorded runs exactly).
 const r3 = (a, b) => (b === 0 ? null : Math.round((a / b) * 1000) / 1000);
 const pct = (xs, p) => {
   const s = [...xs].sort((a, b) => a - b);
   return s.length ? s[Math.min(s.length - 1, Math.ceil((p / 100) * s.length) - 1)] : null;
 };
-const per = {}, lang = {}, cat = {};
-let tp = 0, fn = 0, fp = 0, loaded = 0, severe = 0, refTR = 0, multiLost = 0;
 const outcomes = {};
 const perItem = [];
 const scored = rows.filter((r) => results.has(r.id));
+const tierSet = new Set(gov.SKILL_NEED_TIERS);
+const records = [];
 for (const row of scored) {
   const res = results.get(row.id);
   const rec = res.record;
+  if (rec) records.push(rec);
   const outcome = rec ? rec.outcome : 'HARNESS_TIMEOUT';
   outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
   // What the reply would plan with: the model's tiers, or (fallback) every eligible Skill SUPPORTING.
   row.pred = Object.fromEntries(SKILLS.map((s) => [s, rec?.source === 'MODEL' ? rec.tiers[s] ?? 'NON_RELEVANT' : 'SUPPORTING']));
   row.source = rec?.source ?? 'NONE';
-  for (const s of TASK) {
-    const want = N(row.labels[s]), got = row.pred[s];
-    per[s] ??= { tp: 0, fn: 0, fp: 0 };
-    lang[row.lang] ??= { tp: 0, fn: 0 };
-    cat[row.cat] ??= { tp: 0, fn: 0, fp: 0 };
-    const w = want === 'TASK_REQUIRED', g = got === 'TASK_REQUIRED';
-    if (w) {
-      refTR++;
-      if (got !== 'NON_RELEVANT') loaded++;
-      else {
-        severe++;
-        if (row.cat === 'MULTI') multiLost++;
-      }
-    }
-    if (w && g) { tp++; per[s].tp++; lang[row.lang].tp++; cat[row.cat].tp++; }
-    else if (w) { fn++; per[s].fn++; lang[row.lang].fn++; cat[row.cat].fn++; }
-    else if (g) { fp++; per[s].fp++; cat[row.cat].fp++; }
-  }
+  row.outcome = outcome;
   perItem.push({ id: row.id, lang: row.lang, cat: row.cat, source: row.source, outcome, pred: row.pred, usage: res.usage.map((u) => ({ in: u.inputTokens, cached: u.cachedInputTokens, out: u.outputTokens, billed: u.billedMicros, economic: u.economicMicros, outcome: u.outcome, band: u.billingBand })), endToEndMs: res.endToEndMs, runMs: res.runMs });
 }
-const lr = Object.fromEntries(Object.entries(lang).map(([l, x]) => [l, r3(x.tp, x.tp + x.fn)]));
-const lv = Object.values(lr).filter((x) => x !== null);
-const partner = 'ceo.founder-partnership', exec = 'ceo.executive-judgment';
-const pr = (s) => {
-  const pred = scored.filter((r) => r.pred[s] === 'TASK_REQUIRED').length;
-  const ref = scored.filter((r) => r.labels[s] === 'TASK_REQUIRED').length;
-  const hit = scored.filter((r) => r.pred[s] === 'TASK_REQUIRED' && r.labels[s] === 'TASK_REQUIRED').length;
-  return { R: r3(hit, ref), P: r3(hit, pred), ref, pred, fp: pred - hit, fn: ref - hit };
-};
-const simple = scored.filter((r) => r.cat.startsWith('SIMPLE'));
 const usageAll = [...results.values()].flatMap((r) => r.usage);
+// Integrity facts the gate needs from the harness (each true when held): every message decided; the frozen prompt and cards
+// on every record; exactly the six eligible Skills offered; well-formed model tiers bound to those codes (anything else is a
+// fallback); one deployment for every call; no Founder reply ever called a model; temperature 0 on every call; no leak.
+const sortedSkills = [...SKILLS].sort().join();
+const integrity = {
+  everyMessageDecided: records.length === scored.length,
+  frozenPromptAndCards: records.every((r) => r.cardsSha256 === mind.skillNeedCardsDigest(SKILLS) && (r.source !== 'MODEL' || r.promptSha256 === promptSha)),
+  offeredExactlyEligible: records.every((r) => r.offered.map((x) => x.code).sort().join() === sortedSkills),
+  modelTiersWellFormed: records.filter((r) => r.source === 'MODEL').every((r) => Object.keys(r.tiers).sort().join() === sortedSkills && Object.values(r.tiers).every((t) => tierSet.has(t))),
+  singleDeployment: new Set(usageAll.map((u) => String(u.deploymentId))).size <= 1,
+  noReplyModelCall: [...results.values()].every((r) => r.replyUsage === 0),
+  allTemperatureZero: wire.chatCalls > 0 && wire.temperatureZero === wire.chatCalls,
+  noCredentialOrTextLeak: !keyLeak && textInLogs === 0,
+};
+const sc = score(scored, integrity);
+const metrics = sc.metrics;
 const spendMicros = usageAll.reduce((a, u) => a + Math.max(u.billedMicros, u.economicMicros), 0) + [...results.values()].reduce((a, r) => a + r.heldMicros, 0);
 const billed = usageAll.reduce((a, u) => a + u.billedMicros, 0);
 const economic = usageAll.reduce((a, u) => a + u.economicMicros, 0);
@@ -332,27 +330,9 @@ const classifications = scored.length;
 const e2e = [...results.values()].map((r) => r.endToEndMs).filter((x) => x !== null);
 const runMs = [...results.values()].flatMap((r) => r.runMs);
 const avg = (xs) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
-const perSkill = Object.fromEntries(TASK.map((s) => [s.replace('ceo.', ''), { R: r3(per[s].tp, per[s].tp + per[s].fn), P: r3(per[s].tp, per[s].tp + per[s].fp), ref: per[s].tp + per[s].fn, pred: per[s].tp + per[s].fp, fp: per[s].fp, fn: per[s].fn }]));
 const fallback = scored.filter((r) => r.source !== 'MODEL').length;
-const metrics = {
-  items: classifications,
-  recallMicro: r3(tp, tp + fn), precisionMicro: r3(tp, tp + fp), tp, fn, fp,
-  loadedRecall: r3(loaded, refTR), severeMisses: severe, multiLost,
-  perSkill, partnership: pr(partner), executive: pr(exec),
-  perLang: lr, gap: lv.length ? Math.round((Math.max(...lv) - Math.min(...lv)) * 1000) / 1000 : null,
-  perCat: Object.fromEntries(Object.entries(cat).map(([c, x]) => [c, { R: r3(x.tp, x.tp + x.fn), fp: x.fp }])),
-  simple: { n: simple.length, atMostOneTask: simple.filter((r) => TASK.filter((s) => r.pred[s] === 'TASK_REQUIRED').length <= 1).length, noTask: simple.filter((r) => TASK.every((s) => r.pred[s] !== 'TASK_REQUIRED')).length, loadsFour: simple.filter((r) => SKILLS.filter((s) => r.pred[s] !== 'NON_RELEVANT').length >= 4).length },
-};
-const gate = {
-  recallMicro: metrics.recallMicro >= 0.9,
-  precisionMicro: metrics.precisionMicro >= 0.8,
-  perSkillRecall: Object.values(perSkill).every((x) => x.R === null || x.R >= 0.8),
-  perLangRecall: lv.every((x) => x >= 0.85),
-  langGap: metrics.gap !== null && metrics.gap <= 0.1,
-  noOverAssignment: [metrics.partnership, metrics.executive].every((x) => x.pred <= Math.max(x.ref, 1) * 1.25),
-  simpleLimits: metrics.simple.atMostOneTask === metrics.simple.n && metrics.simple.loadsFour === 0,
-  noLostInCompound: multiLost === 0,
-};
+// G4-HO2-FINAL-01: the pre-registered gates (scripts/p1-sna-score.mjs). Over-assignment is descriptive evidence only.
+const gate = sc.gates;
 const cost = {
   spendMicros, billedMicros: billed, economicMicros: economic,
   perClassificationBilledMicros: classifications ? Math.round(billed / classifications) : null,
@@ -378,10 +358,20 @@ const rates = { fallbackRate: r3(fallback, classifications), timeoutRate: r3((ou
 const privacy = { credentialInDbOrLogs: keyLeak, messageTextInLogs: textInLogs };
 const sampling = { ...wire, allDeterministic: wire.chatCalls > 0 && wire.temperatureZero === wire.chatCalls };
 
-const entry = { at: new Date().toISOString(), label: o.label, fake: o.fake, ho2: Boolean(o.ho2), sets: sets.map((s) => s.prefix), items: classifications, promptVersion: gov.SKILL_NEED_PROMPT_VERSION, promptSha256: promptSha, cardsSha256: mind.skillNeedCardsDigest(SKILLS), sampling: sampling.allDeterministic ? 'TEMPERATURE_0' : 'PROVIDER_DEFAULT_OR_MIXED', freeze, spendMicros: o.fake ? 0 : spendMicros, billedMicros: o.fake ? 0 : billed, economicMicros: o.fake ? 0 : economic, calls: cost.calls, stopCode, gatePass: Object.values(gate).every(Boolean) };
+const entry = { at: new Date().toISOString(), label: o.label, fake: o.fake, ho2: Boolean(o.ho2), sets: sets.map((s) => s.prefix), items: classifications, promptVersion: gov.SKILL_NEED_PROMPT_VERSION, promptSha256: promptSha, cardsSha256: mind.skillNeedCardsDigest(SKILLS), sampling: sampling.allDeterministic ? 'TEMPERATURE_0' : 'PROVIDER_DEFAULT_OR_MIXED', freeze, spendMicros: o.fake ? 0 : spendMicros, billedMicros: o.fake ? 0 : billed, economicMicros: o.fake ? 0 : economic, calls: cost.calls, stopCode, verdict: sc.verdict, gatePass: sc.verdict === 'PASS' };
 appendFileSync(ledgerFile, JSON.stringify(entry) + '\n');
 if (o.out && !o.ho2) writeFileSync(path.resolve(o.out), perItem.map((x) => JSON.stringify(x)).join('\n') + '\n');
-say('result', { label: o.label, metrics, gate, gatePass: entry.gatePass, cost, accounting, sampling, latency, rates, privacy, stopCode, totalSpentMicros: spentBefore + entry.spendMicros, totalCapMicros: TOTAL_CAP_MICROS });
+say('result', { label: o.label, metrics, sixSkillScope: sc.six, content: sc.content, overAssignment: sc.overAssignment, gate, scopeDisagreement: sc.scopeDisagreement, failed: sc.failed, verdict: sc.verdict, gatePass: entry.gatePass, cost, accounting, sampling, latency, rates, privacy, stopCode, totalSpentMicros: spentBefore + entry.spendMicros, totalCapMicros: TOTAL_CAP_MICROS });
+
+// G4-HO2-FINAL-01: the content effect on CP-1 (free, local, after the money is recorded), from tiers held in memory only.
+if (o.ho2 || o.cp1) {
+  try {
+    const data = scored.map((r) => ({ text: r.text, ref: Object.fromEntries(SKILLS.map((s) => [s, N(r.labels[s])])), pred: r.pred }));
+    say('cp1-effect', await cp1Effect(data));
+  } catch (error) {
+    say('cp1-effect', { result: 'ERROR', code: error?.code ?? error?.name ?? 'UNKNOWN' });
+  }
+}
 
 if (!o.keep) rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 else say('kept', { sandbox });
