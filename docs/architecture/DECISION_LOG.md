@@ -6958,3 +6958,78 @@ and does not generalize from DEV to VAL.
 - The next steps are design changes outside this task's approval, for example a thinking class for the assessment, which
   is incompatible with temperature 0.
 - HO-3 was not built. VAL-3 is consumed for design. No PR, no LIVE change.
+
+### G4-C2-REASONING-GATE-01 — E2 for the Skill Need Assessment: an isolated DEV pilot. Verdict B, E2 NOT QUALIFIED (Founder-approved bounded investigation, executor; stopped at the Founder Decision Gate)
+
+**What changed (code, 6edfc4f; production behaviour unchanged).**
+- **Sampling.** `samplingForTaskClass(taskClass, reasoningClass)`: temperature 0 for the assessment **at E1 only**.
+  - A thinking class ignores sampling, and the adapter refuses temperature together with thinking.
+  - The Model Runtime passes the class the call routed at.
+  - E1 is unchanged on the wire: temperature 0, thinking off, 256.
+- **Processor.** `skillNeedAssessmentProcessorAt({ reasoningClass: 'E1' | 'E2', maxOutputTokens })` pins the call's level.
+  - The production processor is unchanged at E1 / 256.
+  - An E2 pin under the release Skill-need profile (E1 only) makes no call and falls back with PROVIDER_UNAVAILABLE
+    (proven).
+- **Harness.** `scripts/p1-sna-evaluate.mjs --level E2` provisions, in its disposable workspace only, a DEV-only E2 profile:
+  one E2 deployment for the assessment class and the production route policy at E2..E2.
+  - It uses the Company's E2 allowance (4,096) and leaves the 15 s timeout, the 20 s window, the cap, the prompt and the
+    cards unchanged.
+  - Every run is also scored on the tiers the reply would plan with: an assessment recorded after the window counts as the
+    fallback.
+- No release profile, route policy, grant, Employee level, AUTO, RD-1, D1, CP-1, SN-3, SNC-4, SNP-6 or LIVE change.
+
+**WP0 findings.**
+- E2 is not provisioned for the assessment today. Production E2 would need a new deployment and route policy, which is a
+  Founder provisioning act.
+- E2 is thinking `low` on the wire.
+- The 256 allowance cannot hold thinking.
+- Worst-case reservation: E1 ≈ 4.3k µUSD, E2 at 4,096 ≈ 9.0k µUSD, both within the 20k per-assessment cap.
+- E2 cannot be temperature 0 (TEMP-01 conflict).
+- **Protocol finding:** the SN-3 copy used to label DEV-3 / VAL-3 predates design reviews 2–3. The model ran the later SN-3.
+  The changes mostly narrow TASK_REQUIRED, so they do not explain VAL-3.
+
+**Set RGV (new, sealed before any paid run).**
+- Construction:
+  - two independent authors, 120 messages each (EN / MSA / EG, six categories), using the frozen SN-3 dc51ccf5…;
+  - 11 near-duplicates of earlier sets excluded by an independent judge;
+  - one blind reviewer (hash ed03f65a…);
+  - one third-party adjudicator (72 cells: 36 toward the author, 36 toward the reviewer, 0 to a third value);
+  - 229 items scored.
+- Author–reviewer agreement: 0.948 per cell; κ 0.80–0.96 per Skill.
+- Pre-registration: `rg-01/RG-PREREG.md`; seal: `RGV-SEAL.sha256`.
+
+**Results (same items, same prompt, cards, bounds and concurrency).**
+
+| Run | Classified | R (5 / 6) | P (5 / 6) | exec pred/ref | xfn P | Provider P50 / P95 | Verdict |
+|---|---|---|---|---|---|---|---|
+| E1 (production) | 229 / 229 | 0.990 / 0.978 | 0.747 / 0.771 | 67 / 36 | 0.698 | 1.35 s / 1.63 s | FAIL (precision) |
+| E2-A (pilot) | 8 / 229 | — | — | — | — | 14.6 s / 14.7 s | FAIL |
+
+E1 detail:
+- The VAL-3 failure reproduces on new data: executive-judgment P 0.537, all 31 of its false positives in messages the
+  reference marks NON_RELEVANT (25) or SUPPORTING (6).
+- Required Skill loaded 0.996; NON_RELEVANT→SUPPORTING 115.
+- CP-1 FULL: 33 knowledge and 37 memory items displaced by the Skill-set differences.
+
+E2-A detail:
+- 11 of the 19 calls sent ran past the 15 s timeout (PROVIDER_UNCERTAIN, money held for reconciliation).
+- The third timeout opened the deployment's circuit breaker (3 failures, 5 minutes), so 210 assessments fell back at once
+  (CIRCUIT_OPEN): fallback rate 0.965.
+- The 8 completed calls used 258–1,729 output tokens (thinking included) at ≈ 150 tokens/s, taking 2.6–12.1 s.
+- The thinking length, not the load, sets the latency: E1 at the same concurrency answered in 1.3 s.
+- In CP-1 FULL, the fallback loads all six Skills and displaces 261 knowledge and 88 memory items.
+- E2-B (stability) was not run: there was no qualification to test.
+
+**Verdict B — E2 NOT QUALIFIED,** by the pre-registered rule. Within the approved bounds (15 s call, 20 s window) E2 low
+cannot answer most assessments, and a run of timeouts opens the circuit for every reply. E2's classification quality is
+therefore **not established either way** (8 items).
+- Measuring it would need a longer call timeout and window. That changes an approved bound and the reply's latency, so it
+  is a Founder decision.
+
+**Money.**
+- This task: E1 240,960 µUSD economic; E2-A 113,054 µUSD charged to the cap (14,781 economic, plus 98,273 held at the
+  worst case for 11 uncertain calls).
+- Trial total: 3,142,905 of 5,000,000; 1,857,095 left.
+
+**Not done:** no prompt, card or threshold change, no E3, no second classification call, no provider change, no HO-3, no
+PR, no push, no LIVE change.
