@@ -26,9 +26,10 @@
 //
 //   node scripts/ci/impact-map.mjs --self-test          decision cases + repository audit
 //   node scripts/ci/impact-map.mjs --plan <file> ...    print the plan for the given paths (diagnostic)
+//   node scripts/ci/impact-map.mjs --harness-report <f>  record the harness unit as run (the FULL tests job, after it passed)
 
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -46,11 +47,27 @@ export const MUTATION_FAMILIES = ['c1', 'c2', 'c3', 'r1', 'c4', 'c5', 'c6', 'c7a
 /**
  * Shards per family and OS. The FULL matrix in `.github/workflows/ci.yml` must partition each family exactly this
  * way (audited); the affected matrix reuses the same shards, so a family's Windows budget is the same in both modes.
+ * Windows counts (D-P1-17) are sized from measured per-mutation durations (the maximum over three FULL runs) so the
+ * worst shard predicts <= 25m including setup, with round-robin `index % n` (each script's own rule).
  */
 export const MUTATION_SHARDS = {
-  [WINDOWS]: { c1: 1, c2: 1, c3: 2, r1: 8, c4: 2, c5: 1, c6: 4, c7a: 4, c7b: 3, c7c: 2, c7d: 2, l1: 12 },
+  [WINDOWS]: { c1: 1, c2: 2, c3: 3, r1: 13, c4: 2, c5: 1, c6: 6, c7a: 9, c7b: 4, c7c: 2, c7d: 2, l1: 27 },
   [UBUNTU]: { c1: 1, c2: 1, c3: 1, r1: 2, c4: 1, c5: 1, c6: 1, c7a: 2, c7b: 2, c7c: 1, c7d: 1, l1: 12 },
 };
+
+/**
+ * The FULL `tests` job's units and shards per OS (D-P1-17): every workspace (its tracked `test/**\/*.test.ts` files,
+ * run by `scripts/run-node-tests.mjs --shard i/n` after one root build) and the root harness (`npm run test:harness`).
+ * The workflow's `tests` matrix must list exactly these shards (audited in classify, before any long job), and the
+ * quality gate requires every tracked test file of every unit covered exactly once per OS (test parity).
+ * Budget: a job targets <= 25m on Windows so a slow runner stays well inside the 45m ceiling; never raise the ceiling.
+ */
+export const TEST_HARNESS = 'harness';
+const TEST_SHARDS_PER_OS = { storage: 6, runtime: 3, 'command-center': 1, 'bootstrap-contract': 1, domain: 1, governance: 1, mind: 1, 'secret-vault': 1, 'model-providers': 1, 'tool-drivers': 1, 'command-center-ui': 1, [TEST_HARNESS]: 1 };
+export const TEST_SHARDS = { [WINDOWS]: TEST_SHARDS_PER_OS, [UBUNTU]: TEST_SHARDS_PER_OS };
+/** A workspace's `test` script must be exactly this: CI runs its runner directly after the root build, so any extra test logic would be skipped. */
+export const WORKSPACE_TEST_SCRIPT = 'npm run build && node ../../scripts/run-node-tests.mjs';
+export const ROOT_TEST_SCRIPT = 'npm run test --workspaces && npm run test:harness';
 
 /** Paths whose change can reduce, redefine or invalidate proof anywhere: always the FULL continuity proof. */
 export const HIGH_RISK = [
@@ -288,6 +305,75 @@ export function fullMatrixShards(wf) {
   return out;
 }
 
+/** FULL `tests` matrix specs per OS (`unit:i/n`) and labels, read from the workflow's `tests` job. */
+export function testMatrixShards(wf) {
+  const job = workflowJob(wf, 'tests') ?? '';
+  const out = { [WINDOWS]: [], [UBUNTU]: [] };
+  const labels = { [WINDOWS]: [], [UBUNTU]: [] };
+  for (const m of job.matchAll(/os:\s*([\w-]+),\s*label:\s*([\w-]+),\s*suite:\s*'([^']+)'/g)) {
+    (out[m[1]] ??= []).push(...m[3].split(/\s+/));
+    (labels[m[1]] ??= []).push(m[2]);
+  }
+  return { specs: out, labels };
+}
+
+/** Tracked test sources of one workspace, relative to it, sorted (the same list `run-node-tests.mjs` shards). */
+export function workspaceTestFiles(root, ws) {
+  const base = path.join(root, 'packages', ws);
+  const walk = (dir) => (existsSync(dir) ? readdirSync(dir, { withFileTypes: true }).flatMap((d) => (d.isDirectory() ? walk(path.join(dir, d.name)) : d.name.endsWith('.test.ts') ? [path.join(dir, d.name)] : [])) : []);
+  return walk(path.join(base, 'test')).sort().map((f) => path.relative(base, f).split(path.sep).join('/'));
+}
+
+/** The harness unit's files: the `node --test` arguments of the root `test:harness` script. */
+export function harnessFiles(pkg) {
+  const m = /^node --test ((?:\S+\.test\.mjs ?)+)$/.exec(String(pkg.scripts?.['test:harness'] ?? ''));
+  return m ? m[1].trim().split(/\s+/).sort() : [];
+}
+
+/** Every FULL test unit and the files it must cover (the gate's test-parity truth). */
+export function testUnits(root = ROOT) {
+  const pkg = readJson(path.join(root, 'package.json'));
+  const units = {};
+  for (const w of pkg.workspaces ?? []) units[w.replace(/^packages\//, '')] = workspaceTestFiles(root, w.replace(/^packages\//, ''));
+  units[TEST_HARNESS] = harnessFiles(pkg);
+  return units;
+}
+
+/** The FULL test matrix against the workspace manifest, the shard map and the workflow (fail closed, pure on its inputs). */
+export function testMatrixProblems({ wf, pkg, workspacePkgs, units, shards = TEST_SHARDS }) {
+  const problems = [];
+  const want = Object.keys(units).sort();
+  if (pkg.scripts?.test !== ROOT_TEST_SCRIPT) problems.push(`root test script is ${JSON.stringify(pkg.scripts?.test)}, the FULL tests matrix runs ${JSON.stringify(ROOT_TEST_SCRIPT)}`);
+  if (pkg.scripts?.build !== 'npm run build --workspaces') problems.push('root build is not npm run build --workspaces (the FULL tests job builds once, then runs each runner)');
+  if (!(units[TEST_HARNESS]?.length > 0)) problems.push('the root test:harness script names no test file');
+  for (const [ws, p] of Object.entries(workspacePkgs)) if (p.scripts?.test !== WORKSPACE_TEST_SCRIPT) problems.push(`workspace ${ws} test script is ${JSON.stringify(p.scripts?.test)}, not ${JSON.stringify(WORKSPACE_TEST_SCRIPT)}`);
+  const { specs, labels } = testMatrixShards(wf);
+  const job = workflowJob(wf, 'tests') ?? '';
+  if (!/timeout-minutes:\s*45\s*$/m.test(job)) problems.push('the tests job ceiling is not 45 minutes');
+  if (!/run-node-tests\.mjs --shard "\$shard" --report/.test(job)) problems.push('the tests job does not run each workspace through run-node-tests.mjs --shard with a report');
+  if (!/npm run test:harness/.test(job) || !/impact-map\.mjs --harness-report/.test(job)) problems.push('the tests job does not run and record the harness');
+  if (!/name:\s*tests-\$\{\{ matrix\.os \}\}-\$\{\{ matrix\.label \}\}/.test(job)) problems.push('the tests job does not upload its reports as tests-<os>-<label>');
+  for (const os of OPERATING_SYSTEMS) {
+    const map = shards[os] ?? {};
+    const mapped = Object.keys(map).sort();
+    if (mapped.join() !== want.join()) problems.push(`${os} test shard map units [${mapped.join(' ')}] are not the workspaces + harness [${want.join(' ')}]`);
+    const got = specs[os] ?? [];
+    for (const u of want) {
+      const n = map[u];
+      if (!(Number.isInteger(n) && n >= 1)) continue;
+      if (n > (units[u]?.length ?? 0)) problems.push(`${os} ${u} has ${n} shards for ${units[u]?.length ?? 0} test files (an empty shard)`);
+      const have = got.filter((s) => s.startsWith(`${u}:`)).map((s) => s.slice(u.length + 1)).sort();
+      const expect = Array.from({ length: n }, (_, i) => `${i + 1}/${n}`).sort();
+      if (have.join() !== expect.join()) problems.push(`${os} FULL tests shards of ${u} are [${have.join(' ')}], the map says [${expect.join(' ')}]`);
+    }
+    const unknown = uniq(got.map((s) => s.split(':')[0]).filter((u) => !want.includes(u)));
+    if (unknown.length) problems.push(`${os} FULL tests matrix runs units the manifest does not know: ${unknown.join(', ')}`);
+    const l = labels[os] ?? [];
+    if (new Set(l).size !== l.length) problems.push(`${os} FULL tests matrix repeats a label (artifact names collide)`);
+  }
+  return problems;
+}
+
 export function auditRepo(root = ROOT, boundaries = BOUNDARIES) {
   const problems = [];
   const graph = workspaceGraph(root);
@@ -316,6 +402,10 @@ export function auditRepo(root = ROOT, boundaries = BOUNDARIES) {
   for (const f of readdirSync(path.join(root, 'scripts')).filter((x) => x.endsWith('-mutation-check.mjs'))) {
     if (!MUTATION_FAMILIES.includes(f.replace('-mutation-check.mjs', ''))) problems.push(`scripts/${f} is a mutation family the map does not know`);
   }
+  // The FULL tests matrix covers every workspace and the harness, each shard exactly once per OS (D-P1-17).
+  const workspacePkgs = Object.fromEntries((pkg.workspaces ?? []).map((w) => [w.replace(/^packages\//, ''), readJson(path.join(root, w, 'package.json'))]));
+  problems.push(...testMatrixProblems({ wf, pkg, workspacePkgs, units: testUnits(root) }));
+  for (const name of Object.keys(graph)) if (!Object.hasOwn(workspacePkgs, name)) problems.push(`packages/${name} is not a root workspace (its tests would never run)`);
   // Every acceptance step the FULL path runs, and which workspaces its script imports.
   const acceptanceJob = workflowJob(wf, 'acceptance') ?? '';
   // D1: the FULL path's `desktop` job runs the reusable Desktop workflow; its steps are FULL acceptance steps too.
@@ -424,7 +514,7 @@ export function selfTest() {
   const want = ['build', 'typecheck', 'lint', 'verify', 'test:command-center', 'test:command-center-ui', 'test:harness', 'acceptance:c5:acceptance', 'acceptance:c5:spike', 'acceptance:desktop:e2e', 'acceptance:desktop:proof'];
   if (ui.steps.map((s) => s.id).join() !== want.join()) failures.push(`C5 UI steps are [${ui.steps.map((s) => s.id)}]`);
   if (ui.mutation.families.join() !== 'c5,c7d,l1' || ui.mutation.os.join() !== WINDOWS) failures.push('C5 UI mutation proof is not c5,c7d,l1 on Windows');
-  if (ui.mutation.matrix.map((m) => m.suite).join(' ') !== 'c5:1/1 c7d:1/2 c7d:2/2 l1:1/12 l1:2/12 l1:3/12 l1:4/12 l1:5/12 l1:6/12 l1:7/12 l1:8/12 l1:9/12 l1:10/12 l1:11/12 l1:12/12') failures.push(`C5 UI mutation shards are ${ui.mutation.matrix.map((m) => m.suite)}`);
+  if (ui.mutation.matrix.map((m) => m.suite).join(' ') !== 'c5:1/1 c7d:1/2 c7d:2/2 l1:1/27 l1:2/27 l1:3/27 l1:4/27 l1:5/27 l1:6/27 l1:7/27 l1:8/27 l1:9/27 l1:10/27 l1:11/27 l1:12/27 l1:13/27 l1:14/27 l1:15/27 l1:16/27 l1:17/27 l1:18/27 l1:19/27 l1:20/27 l1:21/27 l1:22/27 l1:23/27 l1:24/27 l1:25/27 l1:26/27 l1:27/27') failures.push(`C5 UI mutation shards are ${ui.mutation.matrix.map((m) => m.suite)}`);
   const desk = planFor(['packaging/windows/qandeel-company.iss']);
   if (desk.steps.map((s) => s.id).join() !== 'build,typecheck,lint,verify,acceptance:desktop:e2e,acceptance:desktop:proof' || desk.os.join() !== WINDOWS || desk.mutation.matrix.length !== 0) failures.push(`Desktop distribution plan is [${desk.steps.map((s) => s.id)}] on [${desk.os}]`);
   const host = planFor(['packages/command-center/src/host/lifecycle.ts']);
@@ -451,6 +541,34 @@ export function selfTest() {
     ['a shared foundation claimed as a boundary', { ...ccui, id: 'storage', packages: ['storage'], workspaces: ['storage'] }],
   ];
   for (const [name, b] of weakened) if (auditRepo(ROOT, [b]).length === 0) failures.push(`repository audit accepted a boundary with ${name}`);
+  // The FULL tests matrix audit can fail: a dropped, duplicated or unknown shard, a workspace with extra test logic,
+  // a unit missing from the map, a raised ceiling.
+  {
+    const wf = readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+    const pkg = readJson(path.join(ROOT, 'package.json'));
+    const workspacePkgs = Object.fromEntries((pkg.workspaces ?? []).map((w) => [w.replace(/^packages\//, ''), readJson(path.join(ROOT, w, 'package.json'))]));
+    const units = testUnits(ROOT);
+    const base = { wf, pkg, workspacePkgs, units };
+    if (testMatrixProblems(base).length) failures.push(`the live tests matrix does not audit clean: ${testMatrixProblems(base).join('; ')}`);
+    const line = (os, label, suite) => `          - { os: ${os}, label: ${label}, suite: '${suite}' }\n`;
+    const first = /^ {10}- \{ os: [\w-]+, label: [\w-]+, suite: '[^']+' \}\n/m.exec(workflowJob(wf, 'tests') ?? '')?.[0] ?? '';
+    const tamper = (from, to) => wf.replace(workflowJob(wf, 'tests') ?? '', (workflowJob(wf, 'tests') ?? '').replace(from, to));
+    const runtimeLine = line(WINDOWS, 'runtime-2of3', 'runtime:2/3');
+    const bad = [
+      ['a dropped shard', { ...base, wf: tamper(runtimeLine, '') }],
+      ['a duplicated shard', { ...base, wf: tamper(runtimeLine, runtimeLine.replace('runtime-2of3', 'runtime-2of3b').repeat(1) + runtimeLine) }],
+      ['an unknown unit', { ...base, wf: tamper(first, first + line(UBUNTU, 'ghost', 'ghost:1/1')) }],
+      ['a repeated label', { ...base, wf: tamper(first, first + first.replace(/suite: '[^']+'/, "suite: 'mind:1/1'")) }],
+      ['a raised ceiling', { ...base, wf: tamper('timeout-minutes: 45', 'timeout-minutes: 90') }],
+      ['a workspace missing from the map', { ...base, shards: { ...TEST_SHARDS, [UBUNTU]: Object.fromEntries(Object.entries(TEST_SHARDS[UBUNTU]).filter(([u]) => u !== 'mind')) } }],
+      ['a new workspace the matrix never runs', { ...base, units: { ...units, newpkg: ['test/a.test.ts'] }, workspacePkgs: { ...workspacePkgs, newpkg: { scripts: { test: WORKSPACE_TEST_SCRIPT } } } }],
+      ['a workspace with extra test logic', { ...base, workspacePkgs: { ...workspacePkgs, mind: { scripts: { test: `${WORKSPACE_TEST_SCRIPT} && node extra.mjs` } } } }],
+      ['more shards than test files', { ...base, shards: { ...TEST_SHARDS, [WINDOWS]: { ...TEST_SHARDS[WINDOWS], 'secret-vault': 2 } } }],
+      ['a root test script that runs more', { ...base, pkg: { ...pkg, scripts: { ...pkg.scripts, test: `${ROOT_TEST_SCRIPT} && npm run test:extra` } } }],
+    ];
+    if (!wf.includes(runtimeLine)) failures.push('self-test probe: the Windows runtime-2of3 line is not in the workflow');
+    for (const [name, input] of bad) if (testMatrixProblems(input).length === 0) failures.push(`tests matrix audit accepted ${name}`);
+  }
   // Determinism.
   if (planFor(['b/x', 'a/y']).digest !== planFor(['a/y', 'b/x', 'a/y']).digest) failures.push('plan is not order/duplicate independent');
   return failures;
@@ -462,6 +580,13 @@ function main(argv) {
     for (const f of failures) console.error(`impact-map self-test FAILED: ${f}`);
     if (failures.length) process.exit(1);
     console.log(`impact-map self-test ok (${SELF_TEST_CASES.length} decision cases; repository audit of ${BOUNDARIES.length} boundaries, ${MUTATION_FAMILIES.length} mutation families)`);
+    return;
+  }
+  if (argv[0] === '--harness-report') {
+    // Run by the FULL tests job only after `npm run test:harness` passed (bash -e); the gate checks the files.
+    const pkg = readJson(path.join(ROOT, 'package.json'));
+    const files = harnessFiles(pkg);
+    writeFileSync(String(argv[1]), `${JSON.stringify({ schema: 'qc-tests/1', unit: TEST_HARNESS, group: null, shard: '1/1', total: files.length, files, tests: null, ok: true }, null, 2)}\n`);
     return;
   }
   if (argv[0] === '--plan') {

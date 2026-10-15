@@ -7363,3 +7363,30 @@ update path's snapshot and RECOVERY_HOLD apply, as for every migration.
 - **Proof.** The repository audit refuses a map/workflow mismatch, a missing shard and a duplicated shard. On both
   operating systems, the 124 recorded L1 mutations fall into the 12 shards exactly once (11 or 10 per shard), and the
   gate's own `parity` accepts the full set and refuses a lost or duplicated shard.
+
+**FULL CI capacity (PR #40 review, Founder-approved; CI structure only).**
+- **Finding.** GitHub FULL run 38773412658 on `c762373` cancelled `tests (windows-latest)` at the 45-minute ceiling:
+  storage alone took 28 minutes, then runtime ran out of time. The quality gate failed only for that reason; every
+  mutation proof passed on both operating systems. Windows durations swing widely between runs (storage 16, 24 and
+  28 minutes). Over the last three FULL runs, several Windows mutation shards also exceeded the 30-minute budget:
+  `c7a-3of4` 42, `l1-8of12` and `l1-10of12` 39, `l1-12of12` 36, `l1-3of12` 32 minutes.
+- **Repair.** One capacity change for every job near the ceiling; the 45-minute ceiling, the gate and every test and
+  mutation are unchanged.
+  - **Workspace tests.** The FULL `tests` job is a matrix on both operating systems: storage in 6 shards, runtime in
+    3, and one job for the nine other workspaces plus the harness. `scripts/run-node-tests.mjs --shard i/n` runs a
+    disjoint slice of a workspace's sorted tracked test files and writes a report. After the one root build, each job
+    calls the runner directly, which is what every workspace's `test` script does.
+  - **Fail-closed coverage.** `scripts/ci/impact-map.mjs` (`TEST_SHARDS`, audited in `classify` before any long job)
+    refuses a test matrix that drops, duplicates or adds a shard, misses a workspace or the harness, repeats a label,
+    raises the ceiling, or runs against a workspace whose `test` script does more than the runner. In FULL mode the
+    quality gate requires every tracked test file of every workspace, plus the harness, covered exactly once per
+    operating system by passing reports (test parity). A missing, failed, duplicated or unknown report fails it.
+  - **Windows mutation shards.** They are sized from measured per-mutation durations (the maximum over three FULL
+    runs) so the worst shard predicts no more than about 25 minutes including setup: c2 2, c3 3, r1 13, c6 6, c7a 9,
+    c7b 4, l1 27. Ubuntu is unchanged (every Ubuntu shard is at most 17 minutes).
+- **Proof (local).**
+  - The audit and gate self-tests reject each tampering case.
+  - On both operating systems, the 126 tracked test files (11 workspaces and the harness) and the 588 recorded
+    mutations fall into the shards exactly once, with no empty shard. The gate's own `parity` and `testParity` accept
+    the full sets and refuse a lost or duplicated shard.
+  - A representative sample ran through the workflow's own step script.
