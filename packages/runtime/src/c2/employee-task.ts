@@ -455,17 +455,6 @@ export const employeeTaskProcessor: GovernedProcessor = {
         await save(ctx, s);
         continue;
       }
-      if (proposal.type === 'SKILL_NEED') {
-        // D-P1-15 (G4-C2-SNA-01): a Skill need classification is the deliverable of a Skill Need Assessment only. In any other
-        // Work Item it is never executed: an output that failed the Work Item's contract, handled like a parser-invalid one.
-        gov.noteInvalidOutput(s.turn, 'WRONG_PROPOSAL_TYPE', out.reasoningClass, { proposalType: proposal.type });
-        const f = outputFailed(cfg, s, escalated, out.reasoningClass, founderPinned, autoReasoning);
-        if (f.end) return f.end;
-        s = f.s;
-        escalateFrom = f.escalateFrom;
-        await save(ctx, { ...s, pendingEscalation: escalateFrom, escalated });
-        continue;
-      }
       if (proposal.type === 'INVALID') {
         // Observable evidence (the output failed validation) may justify one escalation. D-L1-20: its content-free
         // classification is recorded first (never the output), so a run that ends without an answer is diagnosable.

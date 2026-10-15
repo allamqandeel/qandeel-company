@@ -1,23 +1,25 @@
 /**
- * P1-CONTEXT-INTEL-01 (D-P1-14) — G4 Context & Skill Intelligence through the real send → reply Work Item → claimed run →
- * assembled context path, on fixture stores (no model, no provider call, synthetic text only):
- *   - C1 / G4b: a new Founder reply plans 60,000 with Skill selection (D-P1-15: its Skill Need Assessment decides the
- *     tiers); a brief and earlier work keep 24,000; the history allowance is 11,750 bytes at 60K and 4,800 below 48K;
- *   - AC2: empty stores, a full history, 0 or 2 tool results — every TASK_REQUIRED Skill and the history are selected;
- *   - AC4: Skill tiers from metadata only; an instrumented loader sees exactly one verified payload read per selected Skill
- *     and none for an unselected, NON_RELEVANT or unrelated Skill;
+ * P1-CONTEXT-INTEL-01 (D-P1-14) and G4-SIMPLE-01 (D-P1-16) — G4 Context & Skill Intelligence through the real send → reply
+ * Work Item → claimed run → assembled context path, on fixture stores (no model, no provider call, synthetic text only):
+ *   - C1 / G4b: a new Founder reply plans 60,000 in the CP-1 order; in the CEO's thread it loads the CEO's Skills DIRECT (no
+ *     classification, no extra Work Item, no delayed job), in another Founder thread it keeps the LEXICAL selection; a brief
+ *     and earlier work keep 24,000; the history allowance is 11,750 bytes at 60K and 4,800 below 48K;
+ *   - AC2: empty stores, a full history, simple to 4,000-character messages, 0 or 2 tool results — all six eligible CEO Skills
+ *     and the history are selected, within the budget;
+ *   - AC4: direct loading never widens eligibility: one verified payload read per selected Skill, a held Skill and a conflicting
+ *     pair are recorded from metadata and never read, another Employee's Skill is never a candidate;
  *   - AC5 (DG-1n): new rows keep `terms_json`, content and hashes byte-identical and add `~` index rows only; the previous
  *     release's pool (its query and SQL, frozen here) on a mixed store is identical to its pool on the same store written
  *     by the old code — below and past the pool limits — and the new release keeps that whole pool as tier 1, adding at most
  *     25% (tier 2) of union-only matches;
- *   - summary terms carry no alphabetical cut; CP-1 is recorded in the manifest (content-free).
+ *   - summary terms carry no alphabetical cut; AC6: CP-1 on a full store keeps Canonical Truth, the history and the knowledge
+ *     and memory shares while all six Skills load (content-free manifest).
  */
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { newId, sha256Hex, type Id } from '@qandeel-company/domain';
-import type { SkillNeedTier } from '@qandeel-company/governance';
-import { SALIENCE_INDEX_PREFIX, SKILL_NEED_CARDS, contentFingerprint, salienceTerms, terms } from '@qandeel-company/mind';
+import { DEFAULT_CONTEXT_POLICY, SALIENCE_INDEX_PREFIX, contentFingerprint, salienceTerms, terms } from '@qandeel-company/mind';
 
 import { CommunicationStore, MemoryStore, SkillStore } from '../src/index.js';
 import { FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS } from '../src/communications.js';
@@ -29,7 +31,6 @@ import { seed, type Seed } from './c2-helpers.js';
 import { approvedSkill, claimFor, propose, workItem } from './c3-helpers.js';
 import { claimItem, placed } from './c4-helpers.js';
 import { harness, type Harness } from './helpers.js';
-import { assess, provisionSkillNeed } from './sna-helpers.js';
 
 function withSeed(fn: (h: Harness, s: Seed) => void): void {
   const h = harness();
@@ -40,10 +41,10 @@ function withSeed(fn: (h: Harness, s: Seed) => void): void {
   }
 }
 
-const CEO_SKILLS = Object.keys(SKILL_NEED_CARDS);
+const CEO_SKILLS = ['ceo.governance-discipline', 'ceo.founder-partnership', 'ceo.executive-judgment', 'ceo.evidence-and-economics', 'ceo.organization-leadership', 'ceo.cross-functional-synthesis'];
 const skillText = (code: string): string => `Synthetic guidance for ${code.replace(/[.-]/g, ' ')}. ${'State the decision, the evidence and the owner; keep it short and concrete. '.repeat(22)}`;
 
-/** The CEO with the six CEO Skills on its passport (approved, pinned, synthetic text) and the assessment provisioned. */
+/** The CEO with the six CEO Skills on its passport (approved, pinned, synthetic text) and the Founder ↔ CEO thread. */
 function ceoWorld(h: Harness, s: Seed): { ceo: ReturnType<typeof placed>; versions: Map<string, Id>; thread: Id } {
   const ceo = placed(h, s, 'company.ceo', 9_000_000);
   const reg = SkillStore.for(h.store);
@@ -53,17 +54,11 @@ function ceoWorld(h: Harness, s: Seed): { ceo: ReturnType<typeof placed>; versio
     reg.openPassportEntry(s.founder, ceo.id, version.id);
     versions.set(code, version.id);
   }
-  provisionSkillNeed(s, ceo.id);
   const thread = CommunicationStore.for(h.store).directThread(s.founder, null).id;
   return { ceo, versions, thread };
 }
 
-/** Sends a Founder message and runs its Skill Need Assessment with the given TASK_REQUIRED Skills (the rest NON_RELEVANT). */
-const send = (h: Harness, s: Seed, thread: Id, body: string): Id => {
-  const reply = CommunicationStore.for(h.store).send(s.founder, thread, { purpose: 'QUESTION', body }).replyWorkItemId as Id;
-  assess(h, reply, Object.fromEntries(CEO_SKILLS.map((c) => [c, (REQUIRED.get(body) ?? []).includes(c) ? 'TASK_REQUIRED' : 'NON_RELEVANT'])) as Record<string, SkillNeedTier>, `w-sna-${reply.slice(0, 8)}`);
-  return reply;
-};
+const send = (h: Harness, s: Seed, thread: Id, body: string): Id => CommunicationStore.for(h.store).send(s.founder, thread, { purpose: 'QUESTION', body }).replyWorkItemId as Id;
 /** Earlier Founder turns (FYI: no reply Work Item), each at the 1,200-character turn bound. */
 function fillHistory(h: Harness, s: Seed, thread: Id, n = 12): void {
   for (let i = 0; i < n; i++) CommunicationStore.for(h.store).send(s.founder, thread, { purpose: 'FYI', body: `SYNTHETIC ${i}: ${'ملاحظة سابقة عن خطة الشركة والفريق والإطلاق. '.repeat(40)}`.slice(0, 1_200) });
@@ -76,7 +71,7 @@ function assembledAt(h: Harness, workItemId: Id, worker: string, tools = 0): Ass
 const policyOf = (h: Harness, manifestId: Id): Record<string, unknown> => JSON.parse(String(storeContext(h.store).db.get<{ p: string }>('SELECT policy_json AS p FROM context_manifests WHERE id = ?', manifestId)?.p)) as Record<string, unknown>;
 const entries = (h: Harness, manifestId: Id) => MemoryStore.for(h.store).manifestEntries(manifestId);
 const inputOf = (h: Harness, id: Id): Record<string, unknown> => h.store.getWorkItem(id).processorInput as Record<string, unknown>;
-const requiredSkills = (body: string): string[] => [...(REQUIRED.get(body) ?? [])];
+const workItemCount = (h: Harness): number => Number(storeContext(h.store).db.get<{ n: number }>('SELECT COUNT(*) AS n FROM work_items')?.n);
 
 const S_ORG = 'SYNTHETIC: يا أحمد، الأسبوعين الجايين هبقى مسافر. عايزين نحسم مين أول ناس نعيّنهم، ونوقف أي صرف مش ضروري لحد الإطلاق. إنت شايف الفترة الجاية إزاي؟';
 const S_MARKET = 'SYNTHETIC: قارن بين دخول السوق السعودي الآن والبقاء في مصر من حيث التكلفة والمخاطر، ومن يقود ذلك بين المنتج والنمو؟';
@@ -84,41 +79,50 @@ const S_AUTH = 'SYNTHETIC: Can you approve the Brand posts yourself, without my 
 const S_PRIORITY = 'SYNTHETIC: Give me your top three priorities for next quarter across Product, Growth and Engineering, the evidence behind each, and what you would stop.';
 const S_LONG = `${S_ORG} ${S_MARKET} `.repeat(30).slice(0, 4_000);
 const S_THANKS = 'تمام، متشكر';
-/** What the assessment decides for each fixture message (TASK_REQUIRED; every other Skill NON_RELEVANT). */
-const REQUIRED = new Map<string, readonly string[]>([
-  [S_ORG, ['ceo.organization-leadership', 'ceo.executive-judgment', 'ceo.evidence-and-economics']],
-  [S_MARKET, ['ceo.cross-functional-synthesis', 'ceo.evidence-and-economics', 'ceo.organization-leadership']],
-  [S_AUTH, ['ceo.governance-discipline']],
-  [S_PRIORITY, ['ceo.executive-judgment', 'ceo.evidence-and-economics', 'ceo.cross-functional-synthesis']],
-  [S_LONG, ['ceo.organization-leadership', 'ceo.executive-judgment', 'ceo.evidence-and-economics', 'ceo.cross-functional-synthesis']],
-  [S_THANKS, []],
-]);
 
-describe('P1-CONTEXT-INTEL-01 C1 / G4b: a new Founder reply plans 60,000 with Skill selection; everything else keeps its input', () => {
-  test('the reply carries 60,000 and Skill selection; a CEO brief keeps 24,000 and none; the manifest records CP-1, the decision and the tiers (content-free)', () => {
+describe('P1-CONTEXT-INTEL-01 C1 / G4b, G4-SIMPLE-01: a new Founder reply plans 60,000; the CEO loads its Skills directly; everything else keeps its input', () => {
+  test('the CEO reply carries 60,000 and DIRECT; no assessment Work Item and no delayed job; the manifest records CP-1, DIRECT and the tiers (content-free); a brief keeps 24,000', () => {
     withSeed((h, s) => {
       const w = ceoWorld(h, s);
+      const before = workItemCount(h);
       const reply = send(h, s, w.thread, S_ORG);
+      assert.equal(workItemCount(h), before + 1, 'the send creates the reply Work Item only (no Skill Need Assessment)');
       const input = inputOf(h, reply);
       assert.equal(input.contextBudgetTokens, FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS);
       assert.equal(FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS, 60_000);
-      assert.deepEqual(input.skillNeed, { policy: 'SNA-1' });
+      assert.equal(input.skillSelection, 'DIRECT');
+      assert.equal('skillNeed' in input, false);
+      const job = storeContext(h.store).db.get<{ a: string; c: string }>("SELECT available_at AS a, created_at AS c FROM queue_jobs WHERE work_item_id = ?", reply);
+      assert.ok(job && job.a <= job.c, 'the reply job is available at once (no dependency window)');
       const ctx = assembledAt(h, reply, 'w-c1-reply');
       assert.equal(ctx.outcome, 'OK');
       assert.equal(MemoryStore.for(h.store).manifest(ctx.manifestId).totalBudget, 60_000);
       const policy = policyOf(h, ctx.manifestId);
       assert.equal(policy.order, 'CP1');
-      const sel = policy.skillSelection as { policy: string; source: string; outcome: string; cards: string; tiers: { TASK_REQUIRED: number; SUPPORTING: number; NON_RELEVANT: number } };
-      assert.deepEqual([sel.policy, sel.source, sel.outcome, sel.cards], ['SNA-1', 'MODEL', 'CLASSIFIED', 'SNC-4']);
-      assert.equal(sel.tiers.TASK_REQUIRED + sel.tiers.SUPPORTING + sel.tiers.NON_RELEVANT, 6);
+      assert.deepEqual(policy.skillSelection, { mode: 'DIRECT', tiers: { TASK_REQUIRED: 0, SUPPORTING: 6 } });
       assert.equal(JSON.stringify(policy).includes('أحمد'), false, 'never the text');
       const brief = CommunicationStore.for(h.store).requestCeoBrief({ subject: 'SYNTHETIC brief', contextKind: 'APPROVAL', contextRef: 'approval:1', reasonCode: 'brief.test', instructions: 'Brief the Founder as a MESSAGE proposal with purpose BRIEF.' });
       const briefInput = inputOf(h, brief.workItemId);
       assert.equal(briefInput.contextBudgetTokens, undefined);
-      assert.equal(briefInput.skillNeed, undefined);
+      assert.equal(briefInput.skillSelection, undefined);
       const b = assembledAt(h, brief.workItemId, 'w-c1-brief');
       assert.equal(MemoryStore.for(h.store).manifest(b.manifestId).totalBudget, 24_000);
       assert.deepEqual(Object.keys(policyOf(h, b.manifestId)).sort(), ['ceiling', 'frameTokens', 'importance', 'maxItemsPerLayer', 'totalTokens'], 'a brief keeps its exact policy record');
+    });
+  });
+
+  test('a reply in another Employee\'s Founder thread keeps LEXICAL: a Skill its message does not touch is not even a candidate', () => {
+    withSeed((h, s) => {
+      ceoWorld(h, s);
+      const other = approvedSkill(h, s, 'market.research', { instructions: 'Market research guidance: name sources, sample sizes and dates.' });
+      SkillStore.for(h.store).openPassportEntry(s.founder, s.employee.id, other.version.id);
+      const thread = CommunicationStore.for(h.store).directThread(s.founder, s.employee.id).id;
+      const reply = send(h, s, thread, S_THANKS);
+      assert.equal(inputOf(h, reply).skillSelection, 'LEXICAL');
+      const ctx = assembledAt(h, reply, 'w-c1-lexical');
+      assert.equal(ctx.outcome, 'OK');
+      assert.deepEqual(policyOf(h, ctx.manifestId).skillSelection, { mode: 'LEXICAL', tiers: { TASK_REQUIRED: 0, SUPPORTING: 0 } });
+      assert.equal(entries(h, ctx.manifestId).some((e) => e.itemKind === 'SKILL'), false, 'unchanged lexical path');
     });
   });
 
@@ -132,7 +136,7 @@ describe('P1-CONTEXT-INTEL-01 C1 / G4b: a new Founder reply plans 60,000 with Sk
       assert.ok(conv && conv.decision === 'SELECTED', 'history selected');
       assert.ok(conv.estTokens > CONVERSATION_HISTORY_MAX_BYTES + 96 && conv.estTokens <= CONVERSATION_HISTORY_LARGE_MAX_BYTES + 96 + 200, `history ${conv.estTokens}`);
       // A Work Item created before: the same reply input without the new fields (its recorded input is never rewritten).
-      const { contextBudgetTokens: _b, skillNeed: _t, ...earlier } = inputOf(h, reply);
+      const { contextBudgetTokens: _b, skillSelection: _t, ...earlier } = inputOf(h, reply);
       void _b;
       void _t;
       const { workItem: old } = h.store.createWorkItem({ objective: 'earlier reply', ownerRef: w.ceo.ref, processorKind: h.store.getWorkItem(reply).processorKind as string, processorInput: earlier as never, riskLevel: 'R1' });
@@ -147,8 +151,8 @@ describe('P1-CONTEXT-INTEL-01 C1 / G4b: a new Founder reply plans 60,000 with Sk
   });
 });
 
-describe('P1-CONTEXT-INTEL-01 AC2: empty stores, a full history, a 4,000-character message, 0 or 2 tool results', () => {
-  test('every TASK_REQUIRED Skill and the history are selected, within the budget', () => {
+describe('P1-CONTEXT-INTEL-01 AC2 / G4-SIMPLE-01: empty stores, a full history, simple to 4,000-character messages, 0 or 2 tool results', () => {
+  test('all six CEO Skills and the history are selected for every message, within the budget', () => {
     withSeed((h, s) => {
       const w = ceoWorld(h, s);
       fillHistory(h, s, w.thread);
@@ -160,18 +164,17 @@ describe('P1-CONTEXT-INTEL-01 AC2: empty stores, a full history, a 4,000-charact
           assert.equal(ctx.outcome, 'OK', body.slice(0, 30));
           const es = entries(h, ctx.manifestId);
           const selected = new Set(es.filter((e) => e.decision === 'SELECTED').map((e) => e.itemId));
-          for (const code of requiredSkills(body)) assert.ok(selected.has(w.versions.get(code) as string), `${code} for ${body.slice(0, 24)} / ${tools}`);
+          for (const code of CEO_SKILLS) assert.ok(selected.has(w.versions.get(code) as string), `${code} for ${body.slice(0, 24)} / ${tools}`);
           assert.ok(es.some((e) => e.provenanceRef.startsWith('communication_thread:') && e.decision === 'SELECTED'), 'history');
           const m = MemoryStore.for(h.store).manifest(ctx.manifestId);
           assert.ok(m.usedTokens <= m.totalBudget - 512 && m.estimatedInputTokens <= m.totalBudget, `${m.usedTokens} / ${m.estimatedInputTokens}`);
         }
       }
-      assert.ok(requiredSkills(S_LONG).length >= 4 && requiredSkills(S_THANKS).length === 0, 'the fixture spans complex and simple messages');
     });
   });
 });
 
-describe('P1-CONTEXT-INTEL-01 AC4: Skill tiers from metadata; one verified payload read per selected Skill', () => {
+describe('G4-SIMPLE-01 AC4: direct loading never widens eligibility; one verified payload read per selected Skill', () => {
   /** Runs `fn` with the store's statements observed: verified payload reads and any unverified payload fetch of skill_versions. */
   function observed<T>(h: Harness, fn: () => T): { result: T; verified: string[]; unverified: number } {
     const db = storeContext(h.store).db as unknown as Record<'get' | 'all', (sql: string, ...p: unknown[]) => unknown>;
@@ -196,31 +199,37 @@ describe('P1-CONTEXT-INTEL-01 AC4: Skill tiers from metadata; one verified paylo
     }
   }
 
-  test('NON_RELEVANT Skills are recorded from metadata and never read; each selected Skill is read once, hash-verified; an undeclared Skill keeps the lexical path', () => {
+  test('a held Skill and a conflicting pair on the CEO passport are rejected from metadata and never read; another Employee\'s Skill is never a candidate; each selected Skill is read once, hash-verified', () => {
     withSeed((h, s) => {
       const w = ceoWorld(h, s);
-      const other = approvedSkill(h, s, 'market.research', { instructions: 'Market research guidance: name sources, sample sizes and dates.' });
-      SkillStore.for(h.store).openPassportEntry(s.founder, w.ceo.id, other.version.id);
-      const reply = CommunicationStore.for(h.store).send(s.founder, w.thread, { purpose: 'QUESTION', body: S_THANKS }).replyWorkItemId as Id;
-      // The assessment of a "thanks": founder-partnership and governance SUPPORTING, the four others NON_RELEVANT.
-      assess(h, reply, Object.fromEntries(CEO_SKILLS.map((c) => [c, c === 'ceo.founder-partnership' || c === 'ceo.governance-discipline' ? 'SUPPORTING' : 'NON_RELEVANT'])) as Record<string, SkillNeedTier>, 'w-ac4-sna');
+      const reg = SkillStore.for(h.store);
+      // Certification / eligibility: a security hold makes a pinned version unretrievable at once.
+      const held = approvedSkill(h, s, 'ceo.held-skill', { instructions: 'Held guidance.' });
+      reg.openPassportEntry(s.founder, w.ceo.id, held.version.id);
+      reg.setFreshness(s.founder, held.version.id, 'SECURITY_HOLD', 'advisory.cve');
+      // Conflict: two Skills whose directives disagree are surfaced, never combined (neither loads).
+      const a = approvedSkill(h, s, 'memo.formal', { directives: { 'tone.formality': 'formal' }, instructions: 'Memo writing guidance: formal tone.' });
+      const b = approvedSkill(h, s, 'memo.casual', { directives: { 'tone.formality': 'casual' }, instructions: 'Memo writing guidance: casual tone.' });
+      reg.openPassportEntry(s.founder, w.ceo.id, a.version.id);
+      reg.openPassportEntry(s.founder, w.ceo.id, b.version.id);
+      // Data access: a Skill on another Employee's passport only.
+      const foreign = approvedSkill(h, s, 'market.research', { instructions: 'Market research guidance: name sources, sample sizes and dates.' });
+      reg.openPassportEntry(s.founder, s.employee.id, foreign.version.id);
+      const reply = send(h, s, w.thread, S_MARKET);
       const claim = claimItem(h, reply, 'w-ac4');
       const run = observed(h, () => assembleContext(h.store, claim.fence, { step: 0 }));
-      assert.equal(run.result.outcome, 'OK');
-      const es = entries(h, run.result.manifestId);
-      const skillEntries = es.filter((e) => e.itemKind === 'SKILL');
-      const notRelevant = skillEntries.filter((e) => e.reasonCode === 'NOT_RELEVANT').map((e) => e.itemId);
+      assert.equal(run.result.outcome, 'OK', 'an unloadable Skill never fails the reply');
+      const skillEntries = entries(h, run.result.manifestId).filter((e) => e.itemKind === 'SKILL');
+      const why = Object.fromEntries(skillEntries.map((e) => [e.itemId, e.decision === 'SELECTED' ? 'SELECTED' : e.reasonCode]));
+      assert.equal(why[held.version.id], 'STATUS_NOT_RETRIEVABLE');
+      assert.deepEqual([why[a.version.id], why[b.version.id]], ['SKILL_CONFLICT', 'SKILL_CONFLICT']);
+      assert.equal(foreign.version.id in why, false, 'another Employee\'s Skill is never a candidate');
       const selected = skillEntries.filter((e) => e.decision === 'SELECTED').map((e) => e.itemId);
-      assert.equal(notRelevant.length, 4);
-      assert.ok(selected.includes(w.versions.get('ceo.founder-partnership') as string));
-      assert.equal(skillEntries.some((e) => e.itemId === other.version.id), false, 'an undeclared Skill the message does not touch is not even a candidate (legacy lexical path)');
-      for (const e of skillEntries.filter((x) => x.reasonCode === 'NOT_RELEVANT')) {
-        assert.equal(e.estTokens, Buffer.byteLength(skillText(CEO_SKILLS.find((c) => w.versions.get(c) === e.itemId) as string), 'utf8') + 96, 'size from metadata');
-        assert.equal(e.itemSha256.length, 64);
-      }
+      assert.deepEqual([...selected].sort(), [...w.versions.values()].sort(), 'exactly the six eligible, unconflicted CEO Skills');
       assert.deepEqual([...run.verified].sort(), [...selected].sort(), 'exactly one verified read per selected Skill');
-      for (const id of notRelevant) assert.equal(run.verified.includes(id), false, 'a NON_RELEVANT payload is never read');
+      for (const id of [held.version.id, a.version.id, b.version.id, foreign.version.id]) assert.equal(run.verified.includes(id), false, 'a rejected payload is never read');
       assert.equal(run.unverified, 0, 'no metadata read fetches a payload');
+      assert.deepEqual(policyOf(h, run.result.manifestId).skillSelection, { mode: 'DIRECT', tiers: { TASK_REQUIRED: 0, SUPPORTING: 9 } });
     });
   });
 });
@@ -372,8 +381,8 @@ describe('P1-CONTEXT-INTEL-01 C3: summary terms carry no alphabetical cut', () =
   });
 });
 
-describe('P1-CONTEXT-INTEL-01 AC6: CP-1 on a populated store (canonical, knowledge, memory, a rule item, six Skills, full history, 4,000 characters, 2 tools)', () => {
-  test('canonical truth, TASK_REQUIRED Skills and the history are selected; the rule item keeps its exact code; every candidate is accounted for; used <= budget', () => {
+describe('P1-CONTEXT-INTEL-01 AC6 / G4-SIMPLE-01: CP-1 on a populated store (canonical, knowledge, memory, a rule item, six Skills, full history, 4,000 characters, 2 tools)', () => {
+  test('canonical truth, all six Skills and the history are selected; the Skills stay within their share and the knowledge and memory shares are filled; every candidate is accounted for; used <= budget', () => {
     withSeed((h, s) => {
       const w = ceoWorld(h, s);
       const mem = MemoryStore.for(h.store);
@@ -390,14 +399,24 @@ describe('P1-CONTEXT-INTEL-01 AC6: CP-1 on a populated store (canonical, knowled
       const es = entries(h, ctx.manifestId);
       const sel = new Set(es.filter((e) => e.decision === 'SELECTED').map((e) => e.itemId));
       for (const id of canon) assert.ok(sel.has(id), 'relevant canonical truth');
-      for (const code of requiredSkills(S_LONG)) assert.ok(sel.has(w.versions.get(code) as string), code);
+      for (const code of CEO_SKILLS) assert.ok(sel.has(w.versions.get(code) as string), code);
       assert.ok(es.some((e) => e.provenanceRef.startsWith('communication_thread:') && e.decision === 'SELECTED'), 'history');
       assert.equal(es.find((e) => e.itemId === d3)?.reasonCode, 'DATA_CLASS_ABOVE_CONTEXT');
-      assert.ok(es.some((e) => e.itemKind === 'KNOWLEDGE' && e.decision === 'SELECTED') && es.some((e) => e.itemKind === 'MEMORY' && e.decision === 'SELECTED'), 'knowledge and memory anchors');
       for (const e of es) assert.ok(e.decision === 'SELECTED' || (e.reasonCode !== null && e.reasonCode.length > 0), `${e.itemKind} ${e.itemId} is classified`);
       const m = MemoryStore.for(h.store).manifest(ctx.manifestId);
       assert.ok(m.usedTokens <= 60_000 - 512 && m.estimatedInputTokens <= 60_000);
       assert.equal(policyOf(h, ctx.manifestId).order, 'CP1');
+      // The six Skills take no more than the SKILL share; knowledge and memory each fill their own share as far as their
+      // items fit (a budget-rejected item is larger than the room its share had left): loading every Skill displaces neither.
+      const share = (pct: number): number => Math.floor(((60_000 - DEFAULT_CONTEXT_POLICY.frameTokens) * pct) / 100);
+      assert.ok((m.perLayer.SKILL ?? 0) <= share(DEFAULT_CONTEXT_POLICY.layerSharePct.SKILL), `skills ${m.perLayer.SKILL}`);
+      for (const kind of ['KNOWLEDGE', 'MEMORY'] as const) {
+        const own = es.filter((e) => e.itemKind === kind);
+        const used = own.filter((e) => e.decision === 'SELECTED').reduce((n, e) => n + e.estTokens, 0);
+        const smallestLeft = Math.min(...own.filter((e) => e.reasonCode === 'BUDGET_EXCEEDED').map((e) => e.estTokens));
+        assert.ok(used > 0, `${kind} anchor`);
+        assert.ok(used + smallestLeft > share(DEFAULT_CONTEXT_POLICY.layerSharePct[kind]), `${kind}: ${used} used, the next item (${smallestLeft}) would pass the share`);
+      }
     });
   });
 });

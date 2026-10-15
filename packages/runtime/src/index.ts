@@ -15,7 +15,6 @@ export { WakeSignal, notifyRuntime } from './wake.js';
 // C2 governed execution: the only model-call and tool-driver paths, plus deterministic fakes.
 export { DeterministicFakeProvider, FakeToolDriver } from './c2/deterministic-fakes.js';
 export { EMPLOYEE_TASK_KIND, employeeTaskProcessor, type EmployeeTaskInput } from './c2/employee-task.js';
-export { SKILL_NEED_ASSESSMENT_KIND, SKILL_NEED_RUN_MS, skillNeedAssessmentProcessor, skillNeedAssessmentProcessorAt, type SkillNeedCallLevel } from './c2/skill-need-assessment.js';
 export { isGovernedProcessor, type GovernedProcessor, type GovernedRunServices, type ModelCallOutcome, type ModelCallRequest, type ToolOutcome, type ToolRequest } from './c2/types.js';
 // C3: health counts (content-free). The context assembler and memory proposal path are internal to the
 // runtime: a processor reaches them only through its bound GovernedRunServices.

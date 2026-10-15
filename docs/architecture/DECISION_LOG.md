@@ -6684,6 +6684,8 @@ set; the Founder decides between a fix and acceptance. Nothing was tuned on HO-1
 
 ## D-P1-15 — Skill Need Assessment (SNA): a governed DeepSeek Flash classification decides a Founder reply's Skill tiers; TS-1 retired; conservative fallback (G4-C2-SNA-01; Founder decision after WP0 G4-C2-ARCH-01, executor; replaces D-P1-14 item 2 and its rollback line)
 
+**Superseded by D-P1-16 (2026-10-15): withdrawn before release; the code is kept on branch `p1/context-intel-01-sna-archive` (`6a5bd69`).** The guideline files and scripts named below live there.
+
 **Context.** HO-1 failed (D-P1-14). G4-C2-CORR-01 WP0 showed that no deterministic design generalizes: a structured
 lexical task model (TU-1) tuned to 0.93 recall on one author fell to 0.63 on an unseen author, a local n-gram classifier
 reached 0.16–0.28, while a blind language-model labeller reading the frozen SN-2 guidelines
@@ -7033,3 +7035,155 @@ therefore **not established either way** (8 items).
 
 **Not done:** no prompt, card or threshold change, no E3, no second classification call, no provider change, no HO-3, no
 PR, no push, no LIVE change.
+
+## D-P1-16 — The CEO's Founder replies load his qualified Skills directly; the Skill Need Assessment is withdrawn before release (G4-SIMPLE-01; Founder decision, executor; supersedes D-P1-15 and D-P1-14 item 2)
+
+**Context.** D-P1-15's governed classification (SNA) never qualified:
+- E1 failed precision on VAL-3 and on RGV.
+- E2 timed out within the approved bounds.
+
+Each reply paid one extra call (≈ 1,052 µUSD economic at E1) and waited up to a 20 s window (p95 2.23 s with the reserved
+slot). The Founder decided to stop pre-classifying: the CEO's (Ahmed's) qualified Skills go straight into his Founder-reply
+context, and DeepSeek decides how to apply them while it answers. Skill ≠ Tool ≠ Authority: which Skills may load stays a
+governed decision, never the model's.
+
+**Decision (implemented).**
+1. **The SNA is withdrawn, never released.** It was on this branch only: migration 0023 never reached `main`, so removing it
+   edits no released migration, and the schema stays 22. Removed:
+   - the `c2.skill-need-assessment` processor, task class, route policy, profile, deployment and grant path;
+   - the `SKILL_NEED` proposal type;
+   - the need cards and their request, and the assessment preamble;
+   - the `skill_need_assessments` table and store;
+   - the reserved runtime slot, the per-call timeout, temperature 0 and the E2 pilot path;
+   - the reply's 20 s dependency window: its job is available at once;
+   - the evaluation scripts and the SN-2 / SN-3 guidelines.
+
+   `governance`, `model-providers`, `runtime` (sources) and `command-center` equal `main`. The full SNA work is kept on
+   branch `p1/context-intel-01-sna-archive` (`6a5bd69`) as evidence.
+2. **DIRECT for the CEO, LEXICAL for everyone else.** `txFounderSend` records `skillSelection` beside the 60K budget on every
+   `founder.reply`:
+   - `DIRECT` when the thread is the Founder ↔ CEO thread (`FOUNDER_CEO`);
+   - `LEXICAL` otherwise.
+
+   Under DIRECT, every ACTIVE passport Skill of the replying Employee is task-relevant and SUPPORTING. A capability-required
+   Skill stays TASK_REQUIRED. Under LEXICAL, a Skill keeps the term-overlap path, untiered, exactly as before.
+
+   Passport scoping, Skill status, version eligibility and certification (`STATUS_NOT_RETRIEVABLE`), directive conflicts
+   (`SKILL_CONFLICT`) and the hash-verified pinned loader are unchanged. They run before the planner, so an ineligible or
+   conflicting Skill is never loaded just to reach six. Skill payloads are still read only for selected Skills, once, and
+   verified. The manifest records `skillSelection: {mode, tiers}` (content-free).
+3. **CP-1 protects knowledge and memory (Founder instruction: Skill loading must not displace canonical truth, core work
+   instructions, knowledge or memory).** The order is now:
+   1. canonical truth;
+   2. TASK_REQUIRED Skills;
+   3. the history and Work context;
+   4. the best knowledge and memory anchors;
+   5. knowledge within its share;
+   6. memory within its share;
+   7. SUPPORTING Skills within theirs;
+   8. recent results;
+   9. the spill.
+
+   Before, SUPPORTING Skills came before knowledge and memory. The six v7 Skills (10,560 bytes + framing = 11,136) fit the
+   SKILL share at 60K (11,897), so in an ordinary context all six load. When required items have already consumed the
+   budget (a very long message, a full history and tool results), the knowledge and memory shares are filled first, and a
+   Skill that no longer fits is recorded `BUDGET_EXCEEDED`.
+4. **Kept unchanged:**
+   - C1: 60,000 for new Founder replies;
+   - C3: DG-1n `~` index rows and the two-tier pool;
+   - G4b: history 11,750;
+   - D-P1-13: the AUTO E2 output allowance;
+   - memory and knowledge access control;
+   - Skill integrity and passport verification.
+
+   Other employees' replies keep the D-P1-14 C1 / CP-1 path with LEXICAL Skills. Academy, Benchmark, Shadow and briefs are
+   untouched (24K, LAYERED).
+
+**Proof (no network, no paid call).**
+- `mind/test/p1-context-intel.test.ts` — a G4-SIMPLE-01 block with the real v7 sizes:
+  - the six fit the share and load in an empty context;
+  - on a full store with an ordinary message, all six load, the knowledge and memory shares are filled, and canonical truth
+    is untouched;
+  - saturated: the knowledge and memory shares are filled and only Skills fall to `BUDGET_EXCEEDED`.
+- `storage/test/p1-context-intel.test.ts`:
+  - DIRECT on the CEO thread: no extra Work Item, the job available at once, `{mode: DIRECT, SUPPORTING: 6}`;
+  - LEXICAL on another Employee's thread;
+  - history 11,750;
+  - AC2: all six plus the history for six messages × 0 / 2 tools;
+  - AC4: SECURITY_HOLD → `STATUS_NOT_RETRIEVABLE`, a conflicting pair → `SKILL_CONFLICT`, another Employee's Skill never a
+    candidate, one verified payload read per selected Skill;
+  - AC5 / C3 unchanged;
+  - AC6: on a populated store, all six, Skills ≤ share, knowledge and memory shares filled.
+- `runtime/test/p1/p1-reason-auto-recovery.test.ts`: a real AUTO reply records `skillSelection: 'DIRECT'` and no
+  `skillNeed`.
+
+**Context measurement (free, real storage path, real v7 payloads; `g4-simple/context-measure.jsonl`).** The seven Founder
+scenarios were run in three worlds: EMPTY, NORMAL (a realistic Company) and FULL (60K saturated). Each world was compared
+with a no-passport control.
+
+| | EMPTY | NORMAL | FULL |
+|---|---|---|---|
+| Skills | 6 / 6 in 7 of 7 | 6 / 6 in 7 of 7 | 6 / 6 in 7 of 7 |
+| used (avg / max) | 17,322 / 17,415 | 32,858 / 39,032 | 54,371 / 58,495 |
+| knowledge, DIRECT vs control | — | 42 vs 42 items, same bytes | 10 vs 18 items (45,020 vs 89,548) |
+| canonical / history | — | all selected | 12 vs 12 / 7 vs 7 |
+
+- In NORMAL, loading the Skills displaced nothing.
+- In FULL, knowledge keeps its full share. The control additionally spilled ≈ 11K of knowledge into the room the Skills now
+  use: this is the cost of loading six Skills in a saturated context, and it is a share-bounded cost.
+- The control has no passport, so it lacks the L1-02 role topics (`ceo`, `founder`, `main`). That is why memory and
+  canonical relevance differ in its small-message rows. This is not a G4 effect.
+
+**Real replies (DEV, paid, Founder-authorized 2026-10-15, cap $0.40; `g4-simple/paid/`).** The seven scenarios were run in NORMAL and FULL, through the real governed
+runtime and real DeepSeek V4.1 Flash (AUTO).
+
+- **Volume.** 14 / 14 replies completed, with 15 calls (one E1 → E2 recovery). Each reply's context held 6 / 6 Skills.
+- **Cost.** 65,863 µUSD in total, 4,705 per reply on average.
+- **Latency.** Median 17.9 s, maximum 25.2 s.
+- **Removed per reply.** The SNA's extra classification call (≈ 1,052 µUSD economic, about +22 % per reply) and its wait (p95
+  2.23 s, worst case the 20 s window). Also gone: the extra Work Item, schema 23 and the reserved slot.
+
+The replies were scored against the rubric pre-registered before any reply existed (`g4-simple/RUBRIC.md`). The scoring was a
+blind independent review, then a reconciliation with the seeded DEV facts (`g4-simple/EVALUATION.md`).
+
+**Verdict: FAIL** by the pre-registered pass rule.
+
+What passed:
+- **Authority:** 14 / 14. S6 declines both acts and routes them to the Founder.
+- **Answered:** 12 / 14.
+- **Knowledge:** correct wherever the fact was in context.
+
+The gates that failed:
+- Knowledge: 11 / 14, and FULL S4 is wrong.
+- Proportion on S7.
+- Style patterns recurring in 3 or more replies:
+  - a decision-request closer;
+  - unrequested add-on analysis on simple turns;
+  - caveat boilerplate;
+  - a garbled word repeated through the thread.
+
+S2, an English message, was answered in Arabic in both worlds.
+
+Causes, with evidence:
+1. **FULL S4 / S5 — the history window, not Skill loading.** The 40,000 EGP / Sara decision existed only as an old Founder
+   turn. In FULL it lies 35,282 bytes back, three times G4b's 11,750-byte window; in NORMAL it fits, and S4 passes. The
+   history item is identical with and without Skills, and it precedes SUPPORTING Skills in CP-1.
+2. **Add-on analysis on simple turns.** It reproduces evidence-and-economics wording on messages that did not ask for it. It
+   is also pushed by the existing CEO guidance, which asks for an original insight or a risk on every turn. The two causes
+   cannot be separated without a no-Skill control run.
+3. **Closers, the S2 language and the garbled word.** None of these is separable from pre-existing behaviour without that
+   control.
+
+**Open (Founder gate).** The task's quality rule stops here: no PR, no push, no corrective task. The change itself is complete
+and green locally:
+- the full local CI ran;
+- the SNA is removed;
+- DIRECT loading works;
+- knowledge and memory keep their shares;
+- the money and the wait of the SNA are gone.
+
+The Founder decides whether the reply-style findings block G4 or go to their own track. G4 trial money: 3,208,768 of
+5,000,000 µUSD.
+
+**Rollback.** Reinstall the previous pin. There is no schema change and no DB restore. A Work Item recorded with
+`skillSelection` keeps its CP-1 order; the previous release ignores the field.

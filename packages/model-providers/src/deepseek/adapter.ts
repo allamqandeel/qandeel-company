@@ -36,8 +36,6 @@ export interface DeepSeekChatBody {
   readonly thinking: { readonly type: 'enabled' | 'disabled' };
   readonly reasoning_effort?: Exclude<DeepSeekThinkingEffort, 'none'>;
   readonly response_format: { readonly type: 'json_object' };
-  /** G4-C2-TEMP-01: present only for the DETERMINISTIC sampling profile, and then always exactly 0. */
-  readonly temperature?: 0;
 }
 
 /**
@@ -50,19 +48,6 @@ export function thinkingFor(reasoningClass: ReasoningClass): Pick<DeepSeekChatBo
   if (reasoningClass === 'E0') throw new ProviderError('INVALID_REQUEST');
   const effort = DEEPSEEK_THINKING_BY_CLASS[reasoningClass];
   return effort === 'none' ? { thinking: { type: 'disabled' } } : { thinking: { type: 'enabled' }, reasoning_effort: effort };
-}
-
-/**
- * G4-C2-TEMP-01: the sampling field of a request. No profile → no `temperature` field at all (the provider default,
- * unchanged for every call but the assessment); DETERMINISTIC → `temperature: 0`, and only without thinking. Any other
- * value, or DETERMINISTIC on a thinking class, is refused as INVALID_REQUEST before anything is sent: no request can carry
- * a temperature other than 0.
- */
-export function samplingFor(request: ProviderRequest, thinking: DeepSeekChatBody['thinking']): Pick<DeepSeekChatBody, 'temperature'> {
-  const sampling: unknown = request.sampling;
-  if (sampling === undefined) return {};
-  if (sampling !== 'DETERMINISTIC' || thinking.type !== 'disabled') throw new ProviderError('INVALID_REQUEST');
-  return { temperature: 0 };
 }
 
 /**
@@ -79,8 +64,7 @@ export function buildChatBody(request: ProviderRequest): DeepSeekChatBody {
     if (typeof m.content !== 'string') throw new ProviderError('INVALID_REQUEST');
     return { role: m.role === 'system' ? ('system' as const) : ('user' as const), content: m.content };
   });
-  const thinking = thinkingFor(request.reasoningClass);
-  const body: DeepSeekChatBody = { model: DEEPSEEK_MODEL_CODE, messages, max_tokens: request.maxOutputTokens, stream: false, ...thinking, response_format: { type: 'json_object' }, ...samplingFor(request, thinking.thinking) };
+  const body: DeepSeekChatBody = { model: DEEPSEEK_MODEL_CODE, messages, max_tokens: request.maxOutputTokens, stream: false, ...thinkingFor(request.reasoningClass), response_format: { type: 'json_object' } };
   for (const k of Object.keys(body)) if (!(DEEPSEEK_REQUEST_FIELDS as readonly string[]).includes(k)) throw new ProviderError('INVALID_REQUEST');
   return body;
 }

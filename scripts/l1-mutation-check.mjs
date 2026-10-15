@@ -15,7 +15,7 @@
 // timeout marked not-sent; a cache hit billed as a miss while claimed actual; off-peak ignored; a reservation cheaper
 // than the worst case; D3 egress; the whole ProviderRequest (or a credential) entering the provider body; a raw error /
 // another model's answer accepted; alias drift ignored (adapter and provisioning); cached > input accepted; the reasoning
-// class dropped from the request; a temperature sent beyond the Skill Need Assessment, dropped from it, or unchecked.
+// class dropped from the request.
 
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -41,8 +41,6 @@ const ACTIVATION_SURFACE = { cwd: 'packages/command-center', tests: ['dist/test/
 const BQM2_STORE = { cwd: 'packages/storage', tests: ['dist/test/l1-02-bqm2.test.js'] };
 // D-L1-24: the answer-only fence on the real employee loop (scripted governed services).
 const ANSWER_ONLY = { cwd: 'packages/runtime', tests: ['dist/test/l1/l1-02-answer-only.test.js'] };
-// G4-C2-SNA-01 / G4-C2-TEMP-01 (D-P1-15): the assessment through the real runtime and adapter over a fake transport.
-const SKILL_NEED_RT = { cwd: 'packages/runtime', tests: ['dist/test/p1/p1-skill-need.test.js'] };
 // D-L1-27: reusable Skill qualification at the store boundary (0019: owner vs reuse binding, fail-closed reuse, install).
 const REUSE_STORE = { cwd: 'packages/storage', tests: ['dist/test/l1-02-skill-reuse.test.js'] };
 
@@ -104,7 +102,7 @@ const MUTATIONS = [
   {
     id: 'l1-request-leaks-provider-request',
     gate: 'the chat body carries exactly the allowlisted fields, never the ProviderRequest (deployment, codes) or anything of the Company',
-    edits: [{ file: `${PROVIDERS}/adapter.js`, search: "const body = { model: DEEPSEEK_MODEL_CODE, messages, max_tokens: request.maxOutputTokens, stream: false, ...thinking, response_format: { type: 'json_object' }, ...samplingFor(request, thinking.thinking) };\n    for (const k of Object.keys(body))", replace: "const body = { ...request, model: DEEPSEEK_MODEL_CODE, messages, max_tokens: request.maxOutputTokens, stream: false, ...thinking, response_format: { type: 'json_object' }, ...samplingFor(request, thinking.thinking) };\n    for (const k of [])", expectedCount: 1 }],
+    edits: [{ file: `${PROVIDERS}/adapter.js`, search: "const body = { model: DEEPSEEK_MODEL_CODE, messages, max_tokens: request.maxOutputTokens, stream: false, ...thinkingFor(request.reasoningClass), response_format: { type: 'json_object' } };\n    for (const k of Object.keys(body))", replace: "const body = { ...request, model: DEEPSEEK_MODEL_CODE, messages, max_tokens: request.maxOutputTokens, stream: false, ...thinkingFor(request.reasoningClass), response_format: { type: 'json_object' } };\n    for (const k of [])", expectedCount: 1 }],
     runs: [ADAPTER, RUNTIME],
   },
   {
@@ -119,25 +117,6 @@ const MUTATIONS = [
     id: 'l1-reasoning-effort-not-allowlisted',
     gate: 'the request field allowlist admits the top-level reasoning_effort (a thinking request is never refused as INVALID_REQUEST)',
     edits: [{ file: `${PROVIDERS}/declaration.js`, search: "'thinking', 'reasoning_effort', 'response_format'", replace: "'thinking', 'response_format'", expectedCount: 1 }],
-    runs: [ADAPTER],
-  },
-  // --- G4-C2-TEMP-01 (D-P1-15): temperature 0 for the Skill Need Assessment only ---------------------------------------
-  {
-    id: 'l1-temperature-any-task-class',
-    gate: 'only the skill.need.assessment task class is sampled deterministically; a Founder reply keeps the provider default',
-    edits: [{ file: `${GOV}/skill-need.js`, search: "return taskClass === SKILL_NEED_TASK_CLASS ? 'DETERMINISTIC' : undefined;", replace: "return 'DETERMINISTIC';", expectedCount: 1 }],
-    runs: [SKILL_NEED_RT],
-  },
-  {
-    id: 'l1-temperature-dropped',
-    gate: "the assessment's sampling profile travels with its ProviderRequest (temperature 0 reaches the wire)",
-    edits: [{ file: `${RT}/model-runtime.js`, search: 'maxOutputTokens: routeReq.maxOutputTokens, ...sampling },', replace: 'maxOutputTokens: routeReq.maxOutputTokens },', expectedCount: 1 }],
-    runs: [SKILL_NEED_RT],
-  },
-  {
-    id: 'l1-temperature-unchecked',
-    gate: 'the adapter refuses any sampling value other than DETERMINISTIC, and DETERMINISTIC with thinking on',
-    edits: [{ file: `${PROVIDERS}/adapter.js`, search: "if (sampling !== 'DETERMINISTIC' || thinking.type !== 'disabled')", replace: 'if (false)', expectedCount: 1 }],
     runs: [ADAPTER],
   },
   {

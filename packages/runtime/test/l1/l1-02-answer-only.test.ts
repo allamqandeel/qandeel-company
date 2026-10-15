@@ -27,7 +27,6 @@ const WRONG: Record<string, Record<string, unknown>> = {
   REVIEW_DECISION: { type: 'REVIEW_DECISION', outcome: 'PASS', reasonCode: 'looks-fine' },
   MESSAGE: { type: 'MESSAGE', purpose: 'RESULT', attentionLevel: 'INFORMATIONAL', body: 'A message to the Founder.', brief: null, contextRefs: [] },
   GOAL_ACTION: { type: 'GOAL_ACTION', action: 'goal.derive', args: {} },
-  SKILL_NEED: { type: 'SKILL_NEED', skills: [{ code: 'ceo.governance-discipline', tier: 'SUPPORTING' }] },
 };
 const ANSWER = { type: 'ANSWER', body: 'Recommendation, evidence and the decision needed.', decision: 'GATHER_EVIDENCE', reversible: true, authority: 'NEEDS_FOUNDER', evidence: 'PARTIAL', confidence: 'LOW', founderDecisionNeeded: true, spendMicros: 0 };
 const parsed = (raw: Record<string, unknown>): ModelProposal => {
@@ -79,14 +78,6 @@ async function drive(outputs: ModelProposal[], opts: { input?: Record<string, un
       t.effects.push('recordAnswer');
       const code = opts.answerCode ?? 'RECORDED';
       return (code === 'RECORDED' ? { outcome: 'RECORDED', code, answerId: 'a' } : { outcome: 'REFUSED', code, answerId: null }) as unknown as ReturnType<GovernedRunServices['recordAnswer']>;
-    },
-    skillNeedState: () => {
-      t.effects.push('skillNeedState');
-      throw new Error('not a Skill Need Assessment');
-    },
-    recordSkillNeed: () => {
-      t.effects.push('recordSkillNeed');
-      throw new Error('not a Skill Need Assessment');
     },
   };
   const ctx: ProcessorContext = {

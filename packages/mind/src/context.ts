@@ -18,10 +18,16 @@
 import { QandeelError, type Timestamp } from '@qandeel-company/domain';
 import { dataRank, utf8TokenUpperBound, type DataClass, type ProviderMessage } from '@qandeel-company/governance';
 
-import type { SkillTier } from './skill-need.js';
 import { firstSentence, overlap, estimateTokens } from './text.js';
 
 export const CONTEXT_LAYERS = ['AUTHORITY', 'WORK', 'SKILL', 'KNOWLEDGE', 'MEMORY', 'RECENT'] as const;
+
+/**
+ * G4-SIMPLE-01 (D-P1-16): a Skill's tier in a CP-1 plan. A Founder reply to the CEO loads every eligible passport Skill
+ * directly: a capability-required one is TASK_REQUIRED, every other one SUPPORTING. No classification decides it.
+ */
+export const SKILL_TIERS = ['TASK_REQUIRED', 'SUPPORTING'] as const;
+export type SkillTier = (typeof SKILL_TIERS)[number];
 export type ContextLayer = (typeof CONTEXT_LAYERS)[number];
 export const layerRank = (l: ContextLayer): number => CONTEXT_LAYERS.indexOf(l) + 1;
 
@@ -70,12 +76,10 @@ export interface ContextCandidate {
   /** Part of an open (unresolved) memory-vs-memory conflict. */
   readonly conflictHeld: boolean;
   /**
-   * P1-CONTEXT-INTEL-01 (D-P1-14): a Skill's tier for this task (need table). TASK_REQUIRED is protected under the CP-1
-   * order, never planner-required (it never fails the assembly). Absent: the legacy path.
+   * P1-CONTEXT-INTEL-01 (D-P1-14): a Skill's tier for this task. TASK_REQUIRED is protected under the CP-1 order, never
+   * planner-required (it never fails the assembly). Absent: the legacy path.
    */
   readonly tier?: SkillTier;
-  /** The need table's declared intra-tier priority of a Skill (0 = first); absent for undeclared Skills. */
-  readonly needRank?: number;
 }
 
 export interface ContextBudgetPolicy {
@@ -178,9 +182,6 @@ const byScore = (a: PlannedItem, b: PlannedItem): number =>
 /** Items whose relevance depends on the task (a zero-overlap knowledge / memory item is not loaded). */
 const RELEVANCE_GATED: readonly ItemKind[] = ['KNOWLEDGE', 'MEMORY', 'SUMMARY', 'CANONICAL'];
 
-/** Intra-tier Skill order: the need table's declared priority, then score. */
-const bySkillNeed = (a: PlannedItem, b: PlannedItem): number => (a.candidate.needRank ?? 99) - (b.candidate.needRank ?? 99) || byScore(a, b);
-
 /**
  * CP-1 knowledge and memory order (G4-FINAL-QUALITY-CORR-01): how many of the task's query terms an item matches, uncapped,
  * then the score. The score's relevance part saturates at four matched terms, so in a full store a specific item tied with
@@ -221,8 +222,11 @@ const RELEVANCE_ORDERED: readonly ContextLayer[] = ['KNOWLEDGE', 'MEMORY'];
  *   4  TASK_REQUIRED Skills (protected: steps 5–7 cannot displace them; never planner-required);
  *   5  the conversation history and other Work context, within the WORK share;
  *   6a the best knowledge item and the best memory item (protected anchors, before SUPPORTING Skills);
- *   6b–7 SUPPORTING (and undeclared) Skills, further knowledge and memory, each within its own layer share, so none
- *      displaces another; then recent results;
+ *   6b further knowledge, then further memory, each within its own share;
+ *   7  SUPPORTING (and undeclared) Skills within the SKILL share, then recent results. G4-SIMPLE-01 (D-P1-16): a reply to
+ *      the CEO loads every eligible Skill as SUPPORTING, so the Skills come after the knowledge and memory shares — the
+ *      required items take budget outside every share, and in a saturated context the pass that runs last is the one
+ *      that loses room: never knowledge or memory to Skills (Founder decision: protect their space);
  *   8  the spill, in layer order (the caller's step 5).
  * Knowledge and memory are ranked by matched query terms, then score (`byRelevanceThenScore`), in 6a, 6b–7 and the spill.
  * Every eligibility, authority and conflict rule ran before; CP-1 only orders eligible candidates.
@@ -277,7 +281,7 @@ function selectCp1(
   layerPass('AUTHORITY');
   // 4. TASK_REQUIRED Skills: protected (beyond the SKILL share, within the item limit and the budget); one that does not
   // fit stays a candidate of the SKILL pass below.
-  for (const p of open((x) => x.candidate.kind === 'SKILL' && x.candidate.tier === 'TASK_REQUIRED', bySkillNeed)) {
+  for (const p of open((x) => x.candidate.kind === 'SKILL' && x.candidate.tier === 'TASK_REQUIRED', byScore)) {
     if (!overridden(p) && count('SKILL') < policy.maxItemsPerLayer && used + p.candidate.estTokens <= budget) take(p);
   }
   // 5. The conversation history and the rest of the Work context.
@@ -291,10 +295,11 @@ function selectCp1(
       break;
     }
   }
-  // 6b–7. SUPPORTING Skills, knowledge, memory and recent results, each within its own share.
-  layerPass('SKILL', bySkillNeed);
+  // 6b. Knowledge, then memory, each within its own share. 7. SUPPORTING Skills within theirs (what does not fit is the
+  // first Skill in the spill), then recent results.
   layerPass('KNOWLEDGE', byRelevance);
   layerPass('MEMORY', byRelevance);
+  layerPass('SKILL');
   layerPass('RECENT');
   return { taken, spill, used };
 }

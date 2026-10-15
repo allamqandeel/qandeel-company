@@ -11,7 +11,7 @@
  * to that manifest (migration 0005 trigger).
  */
 import { QandeelError, hasSecretNamedKey, isQandeelError, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { ANSWER_CONTRACT_TEXT, ANSWER_ONLY_OUTPUT_INSTRUCTION, SKILL_NEED_PREAMBLE, assertDataClass, dataRank, isDataClass, maxDataClass, type DataClass } from '@qandeel-company/governance';
+import { ANSWER_CONTRACT_TEXT, ANSWER_ONLY_OUTPUT_INSTRUCTION, assertDataClass, dataRank, isDataClass, maxDataClass, type DataClass } from '@qandeel-company/governance';
 import {
   ACADEMY_EXECUTION_STAGES,
   COMPACTION_THRESHOLD,
@@ -34,10 +34,6 @@ import {
   queryTerms as unionQueryTerms,
   renderContext,
   SALIENCE_INDEX_PREFIX,
-  SKILL_NEED_CARDS_VERSION,
-  hasSkillNeedCard,
-  renderSkillNeedRequest,
-  skillNeedRank,
   summaryFingerprint,
   terms as termsOf,
   type CapabilityRequirement,
@@ -74,7 +70,6 @@ import {
   getSkillVersionRow,
 } from './mind-core.js';
 import { mapCandidate, mapKnowledge, mapMemory, mapPassport, type MemoryCandidateRecord } from './mind-records.js';
-import { replySkillNeedOf, skillNeedBindingOf, txSkillNeedForReply, type ReplySkillNeed, type SkillNeedBinding } from './skill-need.js';
 
 interface WorkItemCapabilityRow {
   readonly requirements_json: string;
@@ -599,13 +594,25 @@ export const RECENT_RESULT_CHARS = 2_048;
 export const POOL_EXTENSION_PCT = 25;
 const extension = (limit: number): number => Math.floor((limit * POOL_EXTENSION_PCT) / 100);
 
+/**
+ * How a Founder reply selects its Skills (G4-SIMPLE-01, D-P1-16), recorded on the Work Item when it is created: DIRECT (the
+ * CEO's own thread: every eligible passport Skill is a candidate, no classification) or LEXICAL (another Founder thread:
+ * the term-overlap selection). Null for every other Work Item (no Skill selection: the legacy path).
+ */
+export const SKILL_SELECTIONS = ['DIRECT', 'LEXICAL'] as const;
+export type SkillSelection = (typeof SKILL_SELECTIONS)[number];
+function skillSelectionOf(item: WorkItemRecord): SkillSelection | null {
+  const v = (item.processorInput as { skillSelection?: unknown } | null)?.skillSelection;
+  return (SKILL_SELECTIONS as readonly unknown[]).includes(v) ? (v as SkillSelection) : null;
+}
+
 function contextPolicy(item: WorkItemRecord): ContextBudgetPolicy {
   const o = item.processorInput as { contextBudgetTokens?: unknown } | null;
   const t = o && typeof o === 'object' ? o.contextBudgetTokens : undefined;
   const base = typeof t === 'number' && Number.isInteger(t) && t >= 1_024 && t <= 64_000 ? { ...DEFAULT_CONTEXT_POLICY, totalTokens: t } : DEFAULT_CONTEXT_POLICY;
   // A Founder reply created with Skill selection plans in the CP-1 order (Founder decision G3); every other Work Item —
-  // earlier work, Academy, shadow, benchmarks, background tasks, a Skill Need Assessment — keeps the layered order.
-  return replySkillNeedOf(item) !== null ? { ...base, order: 'CP1' } : base;
+  // earlier work, Academy, shadow, benchmarks, background tasks — keeps the layered order.
+  return skillSelectionOf(item) !== null ? { ...base, order: 'CP1' } : base;
 }
 
 /** The submitter-declared ceiling of what the context may contain (default: the declared class — minimization by exclusion). */
@@ -792,11 +799,8 @@ export function txAssembleContext(ctx: StoreContext, fence: Fence, req: Assemble
   // the Founder's own message for a Founder reply (never the reply template), the instructions otherwise.
   const query = { terms: unionQueryTerms(founderMessageBody(ctx, item) ?? instructions, caps.topicTerms, codeTerms), marketRef: caps.marketRef, dataClassCeiling: ceiling, importance } as const;
 
-  // D-P1-15 (G4-C2-SNA-01): a Skill Need Assessment sees only its classifier preamble, the need cards and the message; a
-  // Founder reply plans its Skills with the assessment's decision (sealing the fallback when none exists yet).
-  const assessment = skillNeedBindingOf(item);
-  const need = assessment === null && replySkillNeedOf(item) !== null ? txSkillNeedForReply(ctx, item, e.id) : null;
-  const pool = assessment !== null ? skillNeedAssessmentPool(ctx, item, assessment, at) : buildPool(ctx, fence, e, item, { at, effective, ceiling, caps, mode, instructions, query, legacyTerms, policy, need, step: req.step });
+  const selection = skillSelectionOf(item);
+  const pool = buildPool(ctx, fence, e, item, { at, effective, ceiling, caps, mode, instructions, query, legacyTerms, policy, selection, step: req.step });
 
   let plan: ContextPlan;
   let rendered: ReturnType<typeof renderContext> | null = null;
@@ -868,7 +872,7 @@ export function txAssembleContext(ctx: StoreContext, fence: Fence, req: Assemble
     `INSERT INTO context_manifests (id, run_id, work_item_id, employee_id, inference_seq, step, outcome, policy_json, total_budget, used_tokens, estimated_input_tokens, max_data_class, per_layer_json, selected_count, rejected_count, conflict_count, prefix_sha256, messages_sha256, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     manifestId, fence.runId, item.id, e.id, seq, Math.max(0, Math.trunc(req.step)), outcome,
-    manifestPolicyJson(policy, ceiling, importance, need, pool),
+    manifestPolicyJson(policy, ceiling, importance, selection, pool),
     policy.totalTokens, plan.usedTokens, ok && rendered ? rendered.estimatedTokens : 0, maxClass, JSON.stringify(plan.perLayer),
     selected.length, plan.rejected.length + pool.preRejected.length, plan.conflictClaims.length,
     ok && rendered ? sha256Hex(rendered.prefixText) : null, messagesSha, at,
@@ -907,41 +911,16 @@ export function txAssembleContext(ctx: StoreContext, fence: Fence, req: Assemble
 }
 
 /**
- * The manifest's policy record. P1-CONTEXT-INTEL-01 (D-P1-14): a Founder reply with Skill selection also records the order
- * and the number of Skills per tier. D-P1-15: and how its Skill need was decided (policy, source, outcome, card set,
- * decision record id) — content-free codes (Rule A), within the column's 1,024 characters.
+ * The manifest's policy record. P1-CONTEXT-INTEL-01 (D-P1-14): a Founder reply with Skill selection also records the order,
+ * how its Skills were selected (G4-SIMPLE-01: DIRECT or LEXICAL) and the number of Skill candidates per tier — content-free
+ * codes and counts (Rule A), within the column's 1,024 characters.
  */
-function manifestPolicyJson(policy: ContextBudgetPolicy, ceiling: DataClass, importance: string, need: ReplySkillNeed | null, pool: Pool): string {
+function manifestPolicyJson(policy: ContextBudgetPolicy, ceiling: DataClass, importance: string, selection: SkillSelection | null, pool: Pool): string {
   const base = { totalTokens: policy.totalTokens, frameTokens: policy.frameTokens, maxItemsPerLayer: policy.maxItemsPerLayer, ceiling, importance };
-  if (need === null) return JSON.stringify(base);
-  const tiers = { TASK_REQUIRED: 0, SUPPORTING: 0, NON_RELEVANT: 0 };
+  if (selection === null) return JSON.stringify(base);
+  const tiers = { TASK_REQUIRED: 0, SUPPORTING: 0 };
   for (const c of [...pool.candidates, ...pool.preRejected.map((r) => r.candidate)]) if (c.kind === 'SKILL' && c.tier !== undefined) tiers[c.tier]++;
-  return JSON.stringify({ ...base, order: policy.order ?? 'LAYERED', skillSelection: { policy: need.record?.policy ?? 'SNA-1', source: need.source, outcome: need.outcome, cards: need.record?.cardsVersion ?? SKILL_NEED_CARDS_VERSION, recordId: need.record?.id ?? null, tiers } });
-}
-
-/**
- * D-P1-15 (G4-C2-SNA-01) — the whole context of a Skill Need Assessment: the classifier's governed preamble (L1) and its
- * request (L2: the Company context, the need cards of exactly the offered Skills and the Founder message, verified against
- * the hash the send bound). No Skill payload, knowledge, memory, canonical truth, history or recent result is ever a
- * candidate. A message that no longer matches its hash fails the assembly closed (INTEGRITY_FAILURE).
- */
-function skillNeedAssessmentPool(ctx: StoreContext, item: WorkItemRecord, b: SkillNeedBinding, at: Timestamp): Pool {
-  const declared = declaredClass(item);
-  const candidates: ContextCandidate[] = [];
-  const loaders = new Map<string, () => string | null>();
-  const add = (c: ContextCandidate, load: () => string | null): void => {
-    candidates.push(c);
-    loaders.set(c.key, load);
-  };
-  add(baseCandidate({ key: 'preamble', kind: 'PREAMBLE', layer: 'AUTHORITY', required: true, itemId: 'preamble', sha256: sha256Hex(SKILL_NEED_PREAMBLE), provenanceRef: 'runtime:skill-need-preamble', estTokens: itemEstimate(SKILL_NEED_PREAMBLE), dataClass: declared }, at), () => SKILL_NEED_PREAMBLE);
-  const m = ctx.db.get<{ body: string; body_sha256: string }>('SELECT body, body_sha256 FROM communication_messages WHERE id = ? AND thread_id = ?', b.messageId, b.threadId);
-  const body = m && m.body_sha256 === b.messageSha256 && sha256Hex(m.body) === b.messageSha256 ? m.body : null;
-  const request = body === null ? null : renderSkillNeedRequest(b.offered.map((o) => o.code), body);
-  add(
-    baseCandidate({ key: 'work', kind: 'WORK_INSTRUCTIONS', layer: 'WORK', required: true, itemId: item.id, version: item.version, sha256: request === null ? b.messageSha256 : sha256Hex(request), provenanceRef: `communication_message:${b.messageId}`, estTokens: itemEstimate(request ?? ''), dataClass: declared }, at),
-    () => request,
-  );
-  return { candidates, preRejected: [], loaders, grantUse: new Map(), corruptCanonical: false, requiredSkillConflict: false, scenario: null, heldClaims: [] };
+  return JSON.stringify({ ...base, order: policy.order ?? 'LAYERED', skillSelection: { mode: selection, tiers } });
 }
 
 interface PoolInput {
@@ -956,8 +935,8 @@ interface PoolInput {
   /** Today's query, built exactly as the previous release builds it (tier 1). */
   readonly legacyTerms: readonly string[];
   readonly policy: ContextBudgetPolicy;
-  /** D-P1-15: a Founder reply's Skill need decision (null: no Skill selection — the legacy lexical path). */
-  readonly need: ReplySkillNeed | null;
+  /** G4-SIMPLE-01 (D-P1-16): how a Founder reply selects its Skills (null: no Skill selection — the legacy path). */
+  readonly selection: SkillSelection | null;
   readonly step: number;
 }
 
@@ -1111,9 +1090,10 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // L3 — progressive Skill disclosure: passport metadata → task-relevant pinned versions → payload. Every read here is
   // METADATA (named columns, no instructions); a payload is read only for a selected Skill, by the pinned loader.
   const requiredSkills = new Set(p.caps.requirements.flatMap((r) => (r.kind === 'SKILL' ? [r.skillId] : [])));
-  // D-P1-15 (G4-C2-SNA-01): a Founder reply tiers each Skill with a need card by its Skill Need Assessment decision (or the
-  // conservative fallback); a Skill without a card keeps the legacy lexical path. Metadata only.
-  const need = p.need;
+  // G4-SIMPLE-01 (D-P1-16): a Founder reply to the CEO (DIRECT) takes every passport Skill as task-relevant — the model
+  // decides how to apply them while it answers. Eligibility, certification, integrity and conflicts below still decide which
+  // Skills may load, and the CP-1 shares bound how much space they take. Metadata only until a Skill is selected.
+  const direct = p.selection === 'DIRECT';
   const skillPool: { c: ContextCandidate; directives: Readonly<Record<string, string>>; required: boolean }[] = [];
   for (const pe of ctx.db.all('SELECT * FROM passport_entries WHERE employee_id = ? ORDER BY skill_id', e.id).map(mapPassport)) {
     if (pe.status !== 'ACTIVE' || p.mode === 'SKILL_BENCHMARK') continue;
@@ -1121,17 +1101,11 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
     const skill = ctx.db.get<{ code: string; status: string }>('SELECT code, status FROM skills WHERE id = ?', pe.skillId);
     const code = String(skill?.code ?? '');
     const vTerms = [...new Set([...v.terms, ...termsOf(code.replace(/[.-]/g, ' '))])];
-    // A capability-required Skill is TASK_REQUIRED; a Skill with a need card takes its decided tier; one without a card (null)
-    // keeps the legacy lexical path.
-    const tier: SkillTier | null = need === null ? null : requiredSkills.has(pe.skillId) ? 'TASK_REQUIRED' : hasSkillNeedCard(code) ? need.tierOf(code) : null;
-    const rank = tier === null ? null : skillNeedRank(code);
-    const c = baseCandidate({ key: `skill:${v.id}`, kind: 'SKILL', layer: 'SKILL', itemId: v.id, version: v.version, sha256: v.instructionsSha256, provenanceRef: v.sourceRef, authorityWeight: requiredSkills.has(pe.skillId) ? 20 : tier === 'TASK_REQUIRED' ? 15 : 5, status: 'CURRENT', dataClass: 'D1', terms: requiredSkills.has(pe.skillId) ? [...vTerms, ...p.query.terms.slice(0, 1)] : vTerms, createdAt: v.createdAt, estTokens: v.bytes + itemEstimate(''), ...(tier !== null ? { tier } : {}), ...(rank !== null ? { needRank: rank } : {}) }, at);
-    if (tier === 'NON_RELEVANT') {
-      // Not needed by this task: recorded from metadata (id, version, hash, size); its payload is never read.
-      preRejected.push({ candidate: c, score: 0, reason: 'NOT_RELEVANT' });
-      continue;
-    }
-    const relevant = tier !== null || requiredSkills.has(pe.skillId) || overlap(p.query.terms, vTerms) > 0;
+    // With Skill selection a capability-required Skill is TASK_REQUIRED; under DIRECT every other Skill is SUPPORTING; under
+    // LEXICAL (and without selection) every other Skill keeps the term-overlap path, untiered.
+    const tier: SkillTier | null = p.selection === null ? null : requiredSkills.has(pe.skillId) ? 'TASK_REQUIRED' : direct ? 'SUPPORTING' : null;
+    const c = baseCandidate({ key: `skill:${v.id}`, kind: 'SKILL', layer: 'SKILL', itemId: v.id, version: v.version, sha256: v.instructionsSha256, provenanceRef: v.sourceRef, authorityWeight: requiredSkills.has(pe.skillId) ? 20 : tier === 'TASK_REQUIRED' ? 15 : 5, status: 'CURRENT', dataClass: 'D1', terms: requiredSkills.has(pe.skillId) ? [...vTerms, ...p.query.terms.slice(0, 1)] : vTerms, createdAt: v.createdAt, estTokens: v.bytes + itemEstimate(''), ...(tier !== null ? { tier } : {}) }, at);
+    const relevant = direct || requiredSkills.has(pe.skillId) || overlap(p.query.terms, vTerms) > 0;
     if (!relevant) continue; // Not task-relevant: its payload is never even read.
     const eligible = skill?.status === 'ACTIVE' && versionEligibility(ctx, v).eligible;
     if (!eligible) {

@@ -9,7 +9,6 @@ import { boundedText, sha256Hex, type JsonObject } from '@qandeel-company/domain
 import { isAttentionLevel, isFounderBrief, isMessagePurpose, type AttentionLevel, type FounderBrief, type MessagePurpose } from './founder.js';
 import { isOrgAction, type OrgAction } from './organization.js';
 import { isOutcomeVerdict, isReviewOutcome, type OutcomeJudgment, type ReviewOutcome } from './review.js';
-import { SKILL_NEED_MAX_SKILLS, isSkillNeedTier, type SkillNeedTier } from './skill-need.js';
 
 export type ModelProposal =
   | { readonly type: 'FINAL'; readonly summaryCode: string }
@@ -57,12 +56,6 @@ export type ModelProposal =
    * anything (the model never evaluates itself — evaluators and the rubric do).
    */
   | ({ readonly type: 'ANSWER'; readonly body: string } & AnswerFacets)
-  /**
-   * G4-C2-SNA-01 (D-P1-15): the one deliverable of a Skill Need Assessment Work Item — a tier per offered Skill code, nothing
-   * else (no reasons, no prose). Only data: the runtime binds it to the assessment's own offered Skills through the fence, and
-   * it never grants, loads or makes eligible any Skill. Every other Work Item treats it as an output that failed its contract.
-   */
-  | { readonly type: 'SKILL_NEED'; readonly skills: readonly { readonly code: string; readonly tier: SkillNeedTier }[] }
   | { readonly type: 'INVALID'; readonly code: InvalidOutputCode };
 
 /**
@@ -84,7 +77,7 @@ export type OutputContractCode = (typeof OUTPUT_CONTRACT_CODES)[number];
 /** Every code a run may record for an output that did not satisfy its Work Item (parser or output contract). */
 export type OutputDiagnosticCode = InvalidOutputCode | OutputContractCode;
 /** The proposal types a model can return (the closed set an answer-only diagnosis may name). */
-export const PROPOSAL_TYPES = ['FINAL', 'TOOL_REQUEST', 'MEMORY_CANDIDATE', 'OBSERVATION', 'ORG_ACTION', 'REVIEW_DECISION', 'MESSAGE', 'GOAL_ACTION', 'ANSWER', 'SKILL_NEED'] as const;
+export const PROPOSAL_TYPES = ['FINAL', 'TOOL_REQUEST', 'MEMORY_CANDIDATE', 'OBSERVATION', 'ORG_ACTION', 'REVIEW_DECISION', 'MESSAGE', 'GOAL_ACTION', 'ANSWER'] as const;
 
 /**
  * D-L1-20 — the canonical meaning of the ANSWER facets `decision` and `confidence`, shared by every answer-bearing
@@ -188,7 +181,7 @@ const KEY = { test: (s: string): boolean => s.length <= 96 && CODE_SHAPE.test(s)
 export const MALFORMED_REASONS = [
   'NOT_OBJECT', 'FIELD_SET', 'CODE_FORMAT', 'ARGS_SHAPE', 'CONTENT_BOUNDS', 'CONFIDENCE_RANGE', 'PURPOSE_INVALID', 'ATTENTION_INVALID',
   'BODY_EMPTY', 'BODY_TOO_LONG', 'BRIEF_MISMATCH', 'BRIEF_INVALID', 'REFS_INVALID', 'ACTION_UNKNOWN', 'OUTCOME_INVALID', 'RATIONALE_BOUNDS',
-  'JUDGMENT_INVALID', 'FACETS_INVALID', 'SKILLS_INVALID',
+  'JUDGMENT_INVALID', 'FACETS_INVALID',
 ] as const;
 export type MalformedReason = (typeof MALFORMED_REASONS)[number];
 
@@ -325,22 +318,6 @@ export function parseProposalDetailed(outputText: string): ParsedProposal {
     const facets = answerFacetsOf(o);
     if (facets === null) return malformed('FACETS_INVALID');
     return ok({ type: 'ANSWER', body: o.body, ...facets });
-  }
-  if (o.type === 'SKILL_NEED') {
-    // G4-C2-SNA-01: a closed list of {code, tier}; a duplicate code, an unknown tier or any other field refuses the whole list.
-    if (keys !== 'skills,type') return malformed('FIELD_SET');
-    const list = o.skills;
-    if (!Array.isArray(list) || list.length === 0 || list.length > SKILL_NEED_MAX_SKILLS) return malformed('SKILLS_INVALID');
-    const seen = new Set<string>();
-    const skills: { code: string; tier: SkillNeedTier }[] = [];
-    for (const x of list as unknown[]) {
-      if (typeof x !== 'object' || x === null || Array.isArray(x)) return malformed('SKILLS_INVALID');
-      const e = x as Record<string, unknown>;
-      if (Object.keys(e).sort().join(',') !== 'code,tier' || typeof e.code !== 'string' || !CODE.test(e.code) || seen.has(e.code) || !isSkillNeedTier(e.tier)) return malformed('SKILLS_INVALID');
-      seen.add(e.code);
-      skills.push({ code: e.code, tier: e.tier });
-    }
-    return ok({ type: 'SKILL_NEED', skills });
   }
   return ok({ type: 'INVALID', code: 'UNKNOWN_TYPE' });
 }

@@ -68,7 +68,7 @@ describe('L1 DeepSeek adapter: the request', () => {
     assert.throws(() => assertDeepSeekEndpoint('POST', '/v1/anything'));
     assert.throws(() => assertDeepSeekEndpoint('DELETE', DEEPSEEK_MODELS_PATH));
     const body = buildChatBody(request());
-    assert.deepEqual(Object.keys(body).sort(), [...DEEPSEEK_REQUEST_FIELDS].filter((f) => f !== 'reasoning_effort' && f !== 'temperature').sort(), 'exactly the allowlisted fields; E1 carries no effort field at all, and no sampling profile means no temperature');
+    assert.deepEqual(Object.keys(body).sort(), [...DEEPSEEK_REQUEST_FIELDS].filter((f) => f !== 'reasoning_effort').sort(), 'exactly the allowlisted fields; E1 carries no effort field at all');
     assert.equal(body.model, 'deepseek-flash');
     assert.equal(body.stream, false);
     assert.equal(body.max_tokens, 512);
@@ -80,7 +80,7 @@ describe('L1 DeepSeek adapter: the request', () => {
     // TOP-LEVEL `reasoning_effort`; the effort is never nested inside `thinking` (the provider would ignore it).
     for (const [cls, effort] of [['E2', 'low'], ['E3', 'high'], ['E4', 'max']] as const) {
       const wire = JSON.parse(JSON.stringify(buildChatBody(request({ reasoningClass: cls })))) as Record<string, unknown>;
-      assert.deepEqual(Object.keys(wire).sort(), [...DEEPSEEK_REQUEST_FIELDS].filter((f) => f !== 'temperature').sort(), `${cls}: exactly the allowlisted fields, effort included, no temperature`);
+      assert.deepEqual(Object.keys(wire).sort(), [...DEEPSEEK_REQUEST_FIELDS].sort(), `${cls}: exactly the allowlisted fields, effort included`);
       assert.deepEqual(wire.thinking, { type: 'enabled' }, `${cls}: thinking carries only the switch`);
       assert.equal(wire.reasoning_effort, effort, `${cls}: top-level reasoning_effort = ${effort}`);
     }
@@ -97,32 +97,6 @@ describe('L1 DeepSeek adapter: the request', () => {
     assert.equal(JSON.stringify(t.requests[1]?.body).includes('deployment'), false, 'the ProviderRequest itself never travels');
     assert.deepEqual(out, { outputText: '{"type":"FINAL","summaryCode":"ok"}', usage: { inputTokens: 120, outputTokens: 9, cachedInputTokens: 64 }, finishReason: 'stop' });
     assert.equal(a.calls, 1);
-  });
-
-  test('G4-C2-TEMP-01: DETERMINISTIC sends temperature 0 with thinking off; nothing else can put a temperature on the wire', async () => {
-    const det = JSON.parse(JSON.stringify(buildChatBody(request({ sampling: 'DETERMINISTIC' })))) as Record<string, unknown>;
-    assert.equal(det.temperature, 0, 'the closed DETERMINISTIC code is temperature 0, explicitly');
-    assert.deepEqual(det.thinking, { type: 'disabled' }, 'E1 stays thinking.disabled');
-    assert.equal('reasoning_effort' in det, false);
-    assert.deepEqual(Object.keys(det).sort(), [...DEEPSEEK_REQUEST_FIELDS].filter((f) => f !== 'reasoning_effort').sort(), 'only the allowlisted fields');
-    const plain = buildChatBody(request());
-    assert.deepEqual(Object.fromEntries(Object.entries(det).filter(([k]) => k !== 'temperature')), JSON.parse(JSON.stringify(plain)), 'temperature is the only difference from the same request without the profile');
-    for (const cls of ['E1', 'E2', 'E3', 'E4'] as const) assert.equal('temperature' in buildChatBody(request({ reasoningClass: cls })), false, `${cls} without a profile: no temperature field at all`);
-    // DETERMINISTIC never rides on a thinking class (the provider ignores sampling there): refused before any send.
-    for (const cls of ['E2', 'E3', 'E4'] as const) assert.throws(() => buildChatBody(request({ reasoningClass: cls, sampling: 'DETERMINISTIC' })), (e) => e instanceof ProviderError && e.failure === 'INVALID_REQUEST', `${cls} + DETERMINISTIC is refused`);
-    // No other value can be expressed: an unknown code, a number, or a raw `temperature` smuggled onto the request.
-    for (const bad of ['HOT', 'deterministic', 0, 0.7, null, '__proto__']) assert.throws(() => buildChatBody({ ...request(), sampling: bad } as unknown as ProviderRequest), (e) => e instanceof ProviderError && e.failure === 'INVALID_REQUEST', `sampling ${String(bad)} is refused`);
-    const smuggled = buildChatBody({ ...request(), temperature: 1.3, top_p: 0.2 } as unknown as ProviderRequest);
-    assert.equal('temperature' in smuggled || 'top_p' in smuggled, false, 'a field outside the contract never reaches the body');
-    // Through the adapter, on the wire: exactly temperature 0, nothing else changed.
-    const t = new FakeDeepSeekTransport().answer(models(), fakeChatAnswer('{"type":"FINAL","summaryCode":"ok"}', { prompt: 120, completion: 9 }));
-    await adapter(t).generate(request({ sampling: 'DETERMINISTIC' }), signal());
-    const wire = t.requests[1]?.body as Record<string, unknown>;
-    assert.equal(wire.temperature, 0);
-    assert.equal(t.requests.length, 2);
-    const refused = new FakeDeepSeekTransport().answer(models());
-    await assert.rejects(adapter(refused).generate(request({ reasoningClass: 'E2', sampling: 'DETERMINISTIC' }), signal()), (e) => e instanceof ProviderError && e.failure === 'INVALID_REQUEST');
-    assert.equal(refused.requests.length, 0, 'a refused request sends nothing (not even the identity check)');
   });
 
   test('the HTTPS transport talks to the fixed origin only, never follows a redirect, refuses a path outside the allowlist before any fetch and never surfaces raw text', async () => {

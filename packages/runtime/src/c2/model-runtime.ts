@@ -27,7 +27,6 @@ import {
   reasoningRank,
   resolveAutoClass,
   route,
-  samplingForTaskClass,
   utf8TokenUpperBound,
   withinAutoCap,
   type AttemptKind,
@@ -76,15 +75,6 @@ export const MODEL_CALL_DEADLINE_MARGIN_MS = 10_000;
 export interface RunDeadline {
   /** Milliseconds until the run's timer stops it (may be negative once passed). */
   remainingMs(): number;
-}
-
-/**
- * D-P1-15 (G4-C2-SNA-01): the timeout of one call — the runtime's (scaled by the allowance), or the call's own when it asks
- * for a shorter one (at least one second). A call can never extend its timeout beyond the runtime's.
- */
-export function callTimeoutMs(baseMs: number, maxOutputTokens: number, requestedMs?: number): number {
-  const runtime = modelCallTimeoutMs(baseMs, maxOutputTokens);
-  return requestedMs === undefined || !Number.isFinite(requestedMs) ? runtime : Math.min(runtime, Math.max(1_000, Math.trunc(requestedMs)));
 }
 
 /** Whether a call with this allowance can finish, by its own timeout plus the margin, before the run's deadline. */
@@ -251,10 +241,6 @@ export class GovernedModelRuntime {
     if (selection !== null) recordSelection(store, fence, run, req, selection);
     let attemptKind: AttemptKind = firstKind;
     let retries = 0;
-    // The task class the grant was checked for (the processor's own constant), never anything the model or a message supplies.
-    // G4-C2-REASONING-GATE-01: and of the class it routed at (every attempt below keeps that class): temperature 0 at E1 only.
-    const samplingCode = samplingForTaskClass(req.taskClass, decision.reasoningClass);
-    const sampling = samplingCode === undefined ? {} : { sampling: samplingCode };
     const failed: string[] = [];
     let lastFailure: ProviderFailureClass = 'UNKNOWN';
     const ceiling = policy.maxRetriesPerCall + snapshot.deployments.length + 1;
@@ -300,11 +286,8 @@ export class GovernedModelRuntime {
           // plain values; everything below decides from the snapshot only (R1-09).
           const provided = await this.#call(
             adapter,
-            // D-P1-15: a call that names its own (shorter) timeout keeps it; every other call keeps the runtime's.
-            callTimeoutMs(this.#timeoutMs, routeReq.maxOutputTokens, req.timeoutMs),
             // The route's reasoning class travels with the request (L1-01): the adapter maps it to its bounded profile.
-            // G4-C2-TEMP-01: so does the sampling profile of the call's authorized task class (the assessment only).
-            { providerCode: d.deployment.providerCode, modelCode: d.deployment.modelCode, deploymentCode: d.deployment.code, reasoningClass: d.reasoningClass, messages: context.messages, maxOutputTokens: routeReq.maxOutputTokens, ...sampling },
+            { providerCode: d.deployment.providerCode, modelCode: d.deployment.modelCode, deploymentCode: d.deployment.code, reasoningClass: d.reasoningClass, messages: context.messages, maxOutputTokens: routeReq.maxOutputTokens },
             { inputUpperBound: routeReq.inputTokensUpperBound, maxOutputTokens: routeReq.maxOutputTokens, priceCard: (d.deployment.priceCard as PriceCard | undefined) ?? null },
             signal,
           );
@@ -459,7 +442,7 @@ export class GovernedModelRuntime {
    * One bounded adapter call, returned as the provider-boundary snapshot: any adapter misbehaviour is
    * normalized there, never propagated, and the raw answer / error is not read again.
    */
-  async #call(adapter: ProviderAdapter, timeoutMs: number, request: Parameters<ProviderAdapter['generate']>[0], bounds: SnapshotBounds, runSignal: AbortSignal): Promise<ProviderSnapshot> {
+  async #call(adapter: ProviderAdapter, request: Parameters<ProviderAdapter['generate']>[0], bounds: SnapshotBounds, runSignal: AbortSignal): Promise<ProviderSnapshot> {
     const controller = new AbortController();
     const onAbort = (): void => controller.abort();
     runSignal.addEventListener('abort', onAbort, { once: true });
@@ -468,7 +451,7 @@ export class GovernedModelRuntime {
       // Runtime-control outcomes are private markers no provider value can equal (R1-09 sweep): any
       // value the adapter resolves with — even the string 'TIMEOUT' — goes through the boundary.
       // D-P1-09: a larger allowance gets the time it needs (an E4 call that may think for 16k tokens, or a continuation).
-      const timeout = sleep(timeoutMs, TIMED_OUT, { signal: timer.signal }).catch(() => CANCELLED);
+      const timeout = sleep(modelCallTimeoutMs(this.#timeoutMs, request.maxOutputTokens), TIMED_OUT, { signal: timer.signal }).catch(() => CANCELLED);
       const result: unknown = await Promise.race([adapter.generate(request, controller.signal), timeout]);
       if (result === TIMED_OUT || result === CANCELLED) {
         controller.abort();

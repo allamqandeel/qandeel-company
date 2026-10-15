@@ -141,8 +141,7 @@ const STORAGE_EXPORTS = ['.', './runtime-authority', './testing'];
 // tests (plus the acceptance harness) may import it.
 const TEST_CONDITION = 'qandeel-test';
 // L1-01: the Founder-host live smoke seeds identities through the seam exactly as the acceptances do (never CI, never a product path).
-// D-P1-15: so does the Skill Need Assessment measurement harness (a disposable workspace; never CI, never the Founder's Company).
-const TEST_SEAM_HARNESSES = ['scripts/c2-acceptance.mjs', 'scripts/c3-acceptance.mjs', 'scripts/c4-acceptance.mjs', 'scripts/c5-acceptance.mjs', 'scripts/c5-visual-proof.mjs', 'scripts/c5/seed-company.mjs', 'scripts/c6-acceptance.mjs', 'scripts/l1-deepseek-smoke.mjs', 'scripts/p1-sna-evaluate.mjs'];
+const TEST_SEAM_HARNESSES = ['scripts/c2-acceptance.mjs', 'scripts/c3-acceptance.mjs', 'scripts/c4-acceptance.mjs', 'scripts/c5-acceptance.mjs', 'scripts/c5-visual-proof.mjs', 'scripts/c5/seed-company.mjs', 'scripts/c6-acceptance.mjs', 'scripts/l1-deepseek-smoke.mjs'];
 const FOUNDER_SEAM_FILES = ['packages/storage/src/governance.ts', 'packages/storage/src/testing/founder-seam.ts'];
 const CLI_SOURCE = 'packages/runtime/src/cli.ts';
 const AUTHORITY_SUBPATH = '@qandeel-company/storage/runtime-authority';
@@ -624,7 +623,7 @@ const MUTATION_PINS = {
     script: 'l1:mutation',
     ids: [
       'l1-vault-plaintext', 'l1-vault-secret-on-command-line', 'l1-vault-piped-secret-accepted',
-      'l1-provider-arbitrary-url', 'l1-provider-follows-redirect', 'l1-provider-endpoint-allowlist-removed', 'l1-thinking-e4-not-max', 'l1-request-leaks-provider-request', 'l1-reasoning-effort-nested-in-thinking', 'l1-reasoning-effort-not-allowlisted', 'l1-temperature-any-task-class', 'l1-temperature-dropped', 'l1-temperature-unchecked', 'l1-reasoning-class-dropped', 'l1-recorded-message-does-not-end-run',
+      'l1-provider-arbitrary-url', 'l1-provider-follows-redirect', 'l1-provider-endpoint-allowlist-removed', 'l1-thinking-e4-not-max', 'l1-request-leaks-provider-request', 'l1-reasoning-effort-nested-in-thinking', 'l1-reasoning-effort-not-allowlisted', 'l1-reasoning-class-dropped', 'l1-recorded-message-does-not-end-run',
       'l1-other-model-answer-accepted', 'l1-cache-report-inconsistent-accepted', 'l1-non-string-content-accepted',
       'l1-401-retried', 'l1-402-transient', 'l1-timeout-marked-not-sent',
       'l1-alias-drift-ignored-adapter', 'l1-alias-drift-ignored-provisioning',
@@ -761,9 +760,8 @@ const RUNTIME_SERVICES = 'packages/runtime/src/runtime.ts';
 // Durable Memory / Knowledge / Canonical Truth / Skill / Academy / certification state changes only in
 // the C3 storage modules (never in the runtime, the governance kernel or the ordinary CompanyStore).
 // L1-02: `academy-packages` is the Academy package lifecycle (qualify → benchmark → install), a C3 storage module behind
-// the Founder-authority write path (D-L1-13); it joins the C3 writers. D-P1-15: `skill-need` holds the Skill Need Assessment
-// decisions that tier a Founder reply's Skills (C3 context planning; append-only records, fenced writes) — a C3 writer too.
-const MIND_WRITERS = ['mind-core', 'mind-writes', 'memory', 'skill-registry', 'academy', 'capability', 'academy-packages', 'academy-feedback', 'skill-need'].map((m) => `packages/storage/src/${m}.ts`);
+// the Founder-authority write path (D-L1-13); it joins the C3 writers.
+const MIND_WRITERS = ['mind-core', 'mind-writes', 'memory', 'skill-registry', 'academy', 'capability', 'academy-packages', 'academy-feedback'].map((m) => `packages/storage/src/${m}.ts`);
 const MIND_WRITE = /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO|DELETE\s+FROM|REPLACE\s+INTO)\s+(?:canonical_truth|memory_\w+|lesson\w*|knowledge_\w+|context_\w+|skill\w*|role_blueprint\w*|passport_\w+|academy_\w+|certification\w*|founder_calibrations|probation_\w+|activation_requests|capability_gaps|work_item_capabilities|run_execution_modes)\b/i;
 // Founder / evaluator acts that model output must never reach: the runtime and CLI never call them.
 const MIND_AUTHORITY_CALL = /\.(?:recordCanonicalTruth|correctMemory|recordKnowledge|validateLesson|decidePromotion|advanceSkillVersion|acknowledgePaidDependency|publishBlueprint|openPassportEntry|rolloutUpdate|rollbackUpdate|recordEvaluation|decideProbationReview|decideFounderCalibration|decideActivation|revokeCertification|requireRecertification|cancelGap)\s*\(/;

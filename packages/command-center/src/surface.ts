@@ -8,7 +8,7 @@
  */
 import { CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, CEO_ACADEMY_PACKAGE_V4, CEO_ACADEMY_PACKAGE_V5, CEO_ACADEMY_PACKAGE_V6, CEO_ACADEMY_PACKAGE_V7, CEO_IDENTITY_PROFILE_V1, type AcademyPackage, type EmployeeIdentityProfile } from '@qandeel-company/mind';
 import type { ProviderAdapter, ProviderProvisioningProfile } from '@qandeel-company/governance';
-import { CompanyRuntime, DeterministicFakeProvider, FakeToolDriver, employeeTaskProcessor, skillNeedAssessmentProcessor, type RuntimeOptions } from '@qandeel-company/runtime';
+import { CompanyRuntime, DeterministicFakeProvider, FakeToolDriver, employeeTaskProcessor, type RuntimeOptions } from '@qandeel-company/runtime';
 import { ProductDocsDriver, type GitHubTransport } from '@qandeel-company/tool-drivers';
 
 import { BriefingPolicy } from './briefing.js';
@@ -82,8 +82,7 @@ export class FounderSurface {
     const runtimeOptions: RuntimeOptions = {
       ...extra,
       workspace: options.workspace,
-      // D-P1-15: the Skill Need Assessment runs beside the Employee loop (its own governed processor, model call only).
-      processors: [...(extra.processors ?? []), employeeTaskProcessor, skillNeedAssessmentProcessor],
+      processors: [...(extra.processors ?? []), employeeTaskProcessor],
       governance,
     };
     this.runtime = new CompanyRuntime(runtimeOptions);

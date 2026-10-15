@@ -29,17 +29,7 @@ export interface ProviderRequest {
   readonly messages: readonly ProviderMessage[];
   /** Enforced output ceiling; the reservation was computed from it. */
   readonly maxOutputTokens: number;
-  /**
-   * G4-C2-TEMP-01 (D-P1-15): the sampling profile, a closed code (never a number). Absent = the provider's default sampling,
-   * which every call keeps except a task class listed in `samplingForTaskClass`; the Model Runtime sets it from the call's
-   * authorized task class, never from model output or message content.
-   */
-  readonly sampling?: ProviderSampling;
 }
-
-/** DETERMINISTIC = greedy decoding (temperature 0), sent only where the adapter's profile supports it. */
-export const PROVIDER_SAMPLINGS = ['DETERMINISTIC'] as const;
-export type ProviderSampling = (typeof PROVIDER_SAMPLINGS)[number];
 
 export interface ProviderUsage {
   readonly inputTokens: number;

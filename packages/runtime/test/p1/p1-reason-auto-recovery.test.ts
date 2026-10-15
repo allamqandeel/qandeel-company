@@ -859,13 +859,14 @@ describe('D-P1-14: a Founder reply plans 60,000 — E1 stays eligible and every 
     assert.ok(FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS + 2 * CHAT_REPLY_OUTPUT_TOKENS.E1 <= 65_536, 'E1 continuation margin');
   });
 
-  test('a real AUTO reply records 60,000 and Skill selection (SNA-1); a simple message runs at E1 with 2,048, reserved at the worst case of its rendered input', () =>
+  test('a real AUTO reply to the CEO records 60,000 and DIRECT Skill selection (G4-SIMPLE-01); a simple message runs at E1 with 2,048, reserved at the worst case of its rendered input', () =>
     withWorld('d14-auto-e1', { ceiling: 'E4', reasoningProfile: true }, () => ok('Noted.'), async ({ rt, w, sent }) => {
       const id = ask(rt, w, 'Thanks, got it.');
       assert.equal(await settled(rt, id), 'COMPLETED');
       const input = rt.view.getWorkItem(id).processorInput as Record<string, unknown>;
       assert.equal(input.contextBudgetTokens, 60_000);
-      assert.deepEqual(input.skillNeed, { policy: 'SNA-1' });
+      assert.equal(input.skillSelection, 'DIRECT');
+      assert.equal('skillNeed' in input, false, 'no Skill Need Assessment is planned');
       assert.deepEqual(sent.map((x) => [x.effort ?? 'off', x.maxTokens]), [['off', 2_048]], 'E1, unchanged allowance');
       const r = rt.view.runsForWorkItem(id).flatMap((x) => rt.governance.reservations(x.id)).find((x) => x.purpose === 'MODEL_CALL');
       assert.ok(r && r.tokens - 2_048 <= FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS, 'the input bound never exceeds the policy total');
