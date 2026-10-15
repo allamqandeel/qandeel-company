@@ -281,6 +281,52 @@ describe('R1-12 (final re-review): conflict-held memories can never be crowded o
       assert.equal(assemble(h, held, 0).outcome, 'CONFLICT_HOLD');
     });
   });
+
+  test('a flood of conflicts outside this work\'s market, larger than BOTH pool tiers (D-P1-14), never hides the in-scope conflict', () => {
+    withSeed((h, s) => {
+      let step = 1;
+      // 40 other-market conflicted memories per batch, each outranking the neutral pair (4 matched terms against 2) in both tiers.
+      for (let b = 0; b < Math.ceil(beyondBothTiers(MEMORY_POOL_LIMIT) / 40); b++) {
+        const c = claimFor(h, workItem(h, s, s.employee, {}, { requirements: [], marketRef: 'market:eg' })).claim;
+        for (let i = 0; i < 20; i++) {
+          propose(h, c, step++, { memoryClass: 'PROFESSIONAL', topic: `egypt.launch.f${b}x${i}`, content: `Egypt launch timing schedule flood a${b}x${i}.`, claimKey: `flood.claim.b${b}x${i}`, claimValue: 'yes' });
+          propose(h, c, step++, { memoryClass: 'PROFESSIONAL', topic: `egypt.launch.g${b}x${i}`, content: `Egypt launch timing schedule flood b${b}x${i}.`, claimKey: `flood.claim.b${b}x${i}`, claimValue: 'no' });
+        }
+        complete(h, c);
+      }
+      const c = claimFor(h, workItem(h, s, s.employee)).claim;
+      propose(h, c, 1, { content: 'Egypt launch: before Ramadan.', claimKey: 'egypt.launch.timing', claimValue: 'before-ramadan' });
+      propose(h, c, 2, { content: 'Egypt launch: after Ramadan.', claimKey: 'egypt.launch.timing', claimValue: 'after-ramadan' });
+      complete(h, c);
+      const held = claimFor(h, workItem(h, s, s.employee, { instructions: 'Egypt launch timing schedule memo.' }, { requirements: [], importance: 'IMPORTANT', topics: ['egypt.launch'], marketRef: 'market:sa' })).claim;
+      assert.equal(assemble(h, held, 0).outcome, 'CONFLICT_HOLD');
+    });
+  });
+
+  test('a conflict that cannot hold this work (above its class, or outside its market) never yields a CONFLICT_HOLD on its own', () => {
+    withSeed((h, s) => {
+      const pair = (input: Record<string, unknown>, caps: Parameters<typeof workItem>[4], key: string, label: string): Id[] => {
+        const c = claimFor(h, workItem(h, s, s.employee, input, caps)).claim;
+        const a = propose(h, c, 1, { content: `Egypt launch ${label}: before Ramadan.`, claimKey: key, claimValue: 'before-ramadan' });
+        const b = propose(h, c, 2, { content: `Egypt launch ${label}: after Ramadan.`, claimKey: key, claimValue: 'after-ramadan' });
+        complete(h, c);
+        for (const out of [a, b]) assert.equal(out.decided?.state, 'ACCEPTED', `the ${label} conflict memory is recorded`);
+        return [a.decided?.resultMemoryId as Id, b.decided?.resultMemoryId as Id];
+      };
+      const above = pair({ dataClass: 'D3' }, undefined, 'egypt.launch.timing', 'timing');
+      const elsewhere = pair({}, { requirements: [], marketRef: 'market:eg' }, 'egypt.launch.window', 'window');
+      const important = (input: Record<string, unknown>, marketRef: string): Claim => claimFor(h, workItem(h, s, s.employee, { instructions: 'Egypt launch timing memo.', ...input }, { requirements: [], importance: 'IMPORTANT', topics: ['egypt.launch'], marketRef })).claim;
+      // D1 work outside market:eg: neither conflict can hold it; both stay rejection evidence.
+      const a = assemble(h, important({}, 'market:sa'), 0);
+      assert.equal(a.outcome, 'OK', 'an ineligible conflict alone holds nothing');
+      const entries = MemoryStore.for(h.store).manifestEntries(a.manifestId);
+      for (const id of above) assert.equal(entries.find((e) => e.itemId === id)?.reasonCode, 'DATA_CLASS_ABOVE_CONTEXT');
+      for (const id of elsewhere) assert.equal(entries.find((e) => e.itemId === id)?.reasonCode, 'MARKET_MISMATCH');
+      // Controls: each conflict is real, and holds the work it CAN hold.
+      assert.equal(assemble(h, important({ dataClass: 'D3' }, 'market:sa'), 0).outcome, 'CONFLICT_HOLD', 'the D3 conflict holds D3 work');
+      assert.equal(assemble(h, important({}, 'market:eg'), 0).outcome, 'CONFLICT_HOLD', 'the market:eg conflict holds market:eg work');
+    });
+  });
 });
 
 describe('R1-06 (re-review): a stale PENDING approval from an earlier job never masks this run\'s decision', () => {

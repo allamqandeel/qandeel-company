@@ -7333,7 +7333,13 @@ update path's snapshot and RECOVERY_HOLD apply, as for every migration.
   - stale knowledge;
   - other-market and above-class memories;
   - rejection evidence against an open conflict;
-  - out-of-class conflicts.
+  - out-of-class conflicts;
+  - other-market conflicts.
+
+  A small proof checks that a conflict that cannot hold the work (above its class, or outside its market) never yields
+  a CONFLICT_HOLD on its own and stays rejection evidence. Positive controls show each conflict holds the work it can
+  hold. Every flood item outranks the protected item on matched terms in both tiers, so a mutation is caught by ranking,
+  not by tier-2 chance.
 
   Further tier-2-only proofs cover the case where the eligible item is reachable only through the union query's Arabic
   variants:
@@ -7343,6 +7349,6 @@ update path's snapshot and RECOVERY_HOLD apply, as for every migration.
 
   Each tier-2-only proof asserts that the item shares no tier-1 term with the task.
 - **Result.**
-  - All 14 R1-12 proofs pass on unmodified production code.
-  - Each of the five R1-12 mutations is caught when applied alone.
+  - All 16 R1-12 proofs pass on unmodified production code (about 31 s together).
+  - Each of the five R1-12 mutations is caught when applied alone, by a behavioural assertion.
   - No mutation definition and no production code changed.
