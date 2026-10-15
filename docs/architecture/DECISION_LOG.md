@@ -6593,3 +6593,804 @@ Founder level; submitter never records it.
 
 **Remaining risk.** Whether 8,192 suffices for every AUTO E2 reply is not measured (3 of 19 observed calls exceeded 4,096;
 their full need is unknown). No LIVE probe is part of this decision.
+
+## D-P1-14 — Context & Skill Intelligence for Founder replies: 60K, need-based Skill tiers (TS-1 + SN-1), DG-1n index rows with a two-tier pool, the CP-1 order, history 11,750 (P1-CONTEXT-INTEL-01 G4; Founder decisions G1–G4, executor)
+
+**Context.** The G4 study (read-only, free) proved three causes of the CEO's thin context: a 24,000-byte budget in which the
+governance preamble, the message and the history evicted every Skill (all 80 LIVE Skill rejections were `BUDGET_EXCEEDED`);
+a question-blind ranking (the alphabetical 48-term index and the reply-template query); and no notion of what a task needs.
+Task Contract v3.1 (outside the repository, `p1-context-intel-01/TASK-CONTRACT.md`) specifies the fix; the Founder approved
+G1 (implement), G2 (the need table), G3 (CP-1 instead of a literal FO-1) and G4 (the sealed held-out set HO-1).
+
+**Decision (implemented).**
+1. **C1 — 60,000 for new Founder replies.** `txFounderSend` records `contextBudgetTokens: 60_000`
+   (`FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS`) on a `founder.reply` Work Item through the existing control (1,024–64,000). A CEO
+   brief, Academy, shadow and benchmark work, any other reply task class and every Work Item created before keep 24,000.
+   The input bound of a call is still the rendered context (≤ the policy total), so E1 stays eligible: 60,000 + 2,048 and its
+   continuation 60,000 + 4,096 fit the 65,536 window; every class's call and continuation fit its window, and each call's
+   worst case fits the 500,000 µUSD reply cap. The reservation formula, the reply caps, budgets and model bounds are unchanged.
+2. **C2 — Skill tiers from metadata (TS-1 + SN-1).** The reply also records its **TS-1 task signals** (`taskSignals`,
+   governance, beside RD-1): the RD-1 reasons plus cue families RD-1 lacks (evidence, authority, departments, prioritization,
+   spending, roles, ownership, a market decision, a status question) — closed codes, never text. **RD-1 is byte-identical**:
+   `reasoning-demand.ts` equals `main` outside the inserted TS-1 block, and the demands of the RD-1 expectation set and the
+   development set are pinned by hash. The release-pinned need table `SKILL_NEED_TABLE` (`SN-1`, mind) is the approved G2
+   table; `skillTier(code, signals, taskClass)` gives TASK_REQUIRED / SUPPORTING / NON_RELEVANT, or null for an undeclared
+   Skill (legacy lexical path). Assembly reads Skill **metadata** with named columns (`getSkillVersionMeta`: the stored hash
+   and byte length, never the instructions); a NON_RELEVANT Skill is recorded `NOT_RELEVANT` from metadata and its payload is
+   never read; a selected Skill is loaded once, hash-verified, by `loadPinnedSkillInstructions` (whose eligibility check now
+   also reads metadata only). A capability-required Skill is TASK_REQUIRED. Eligibility, directive conflicts and
+   certifications are unchanged.
+3. **C3 — DG-1n + two-tier pool.** `terms()` and every stored `terms_json` are unchanged (TI-0). A NEW knowledge, canonical,
+   memory or lesson item additionally gets its TI-1 salience terms (`salienceTerms`: frequency then first position, top 48,
+   extra Egyptian / MSA stopwords) that TI-0 lacks as index rows `~` + term, in its creating transaction (no migration: the
+   rows fit `mind_terms`). The previous release's query terms are always `[\p{L}\p{N}]+`, so it never matches a `~` row:
+   after a rollback its pools and decisions are exactly what its own rows give, past the pool limits too. Every pool lookup
+   is two-tier: **tier 1** is today's query construction and SQL verbatim (`termMatches`, today's limits and the knowledge
+   re-rank); **tier 2** adds union-query matches (`queryTerms`: topics ∪ TI-0 ∪ TI-1 of the Founder's message, or of the
+   instructions for other work, with Arabic proclitic variants on the query side only, ∪ Skill codes) that tier 1 did not
+   admit, at most 25% of each limit (`POOL_EXTENSION_PCT`). An item's candidate terms are its `terms_json` plus the `~` terms
+   the query holds (read through the primary key, bounded; exactly the overlap relevance and score use). A summary's terms
+   are the full union of its sources' candidate terms (no alphabetical cut).
+4. **CP-1 (G3).** A Work Item with TS-1 signals plans in the `CP1` order (`ContextBudgetPolicy.order`; every other Work Item
+   keeps `LAYERED`): canonical truth first within the AUTHORITY share (overflow first in the spill); TASK_REQUIRED Skills
+   protected (never planner-required); the history and Work context; the best knowledge and memory items; then SUPPORTING
+   Skills, knowledge, memory and recent results each within its own share; then the spill. Every eligibility, authority,
+   conflict and privacy rule runs before, unchanged. The repository CP-1 equals the study's measured replica (V6) on 3,000
+   random plans, and `LAYERED` equals the previous planner on 3,000 (0 differences each).
+5. **G4b — history 11,750.** A reply whose context budget is ≥ 48,000 sees up to 11,750 bytes of its own thread's earlier
+   turns (same thread scope, turn bound and order); below that it stays 4,800.
+6. **Manifest.** A Work Item with Skill selection records `order` and `skillSelection` (policy, table version, signals,
+   counts per tier) in `policy_json` (content-free, ≤ 1,024 characters); everything else records exactly what it did.
+
+**Proof (no network, no paid call, synthetic text only).**
+- `governance/test/p1-task-signals.test.ts`: RD-1 pinned; TS-1 closed, deterministic and content-free; notes, thanks and
+  transformations raise no need; cue-family behaviours.
+- `mind/test/p1-context-intel.test.ts`: the need table pinned; the development set (247 synthetic EN / MSA / EG messages,
+  `governance/test/fixtures/task-signals-dev-set.json`): recall 0.994, precision 0.836, ≥ 0.95 per language; simple
+  messages ≤ 1 task Skill and < 4 loaded; `terms()` byte-identical to a frozen copy; TI-1 and the union query; CP-1 order,
+  anchors before SUPPORTING, share isolation, protected TASK_REQUIRED Skills and history, canonical overflow, rule items with
+  their exact codes, every critical item classified.
+- `storage/test/p1-context-intel.test.ts`: 60K + signals on a reply and 24K on a brief and on earlier work; the history
+  allowance; AC2 (empty stores, full history, a 4,000-character message, 0 / 2 tools: every TASK_REQUIRED Skill and the
+  history selected, within budget); AC4 (an instrumented connection sees exactly one verified payload read per selected
+  Skill, none for NON_RELEVANT or unrelated Skills, no metadata read fetching a payload); AC5 (new rows: `terms_json`,
+  content and hashes byte-identical, index = TI-0 ∪ `~`TI-1; the previous release's frozen query and SQL give identical
+  pools on the mixed store and on the same store without `~` rows, below and past the limits — 440 canonical, 1,400
+  knowledge, 650 memory matches, more new rows than each limit — and the new release keeps that whole pool plus ≤ 25%);
+  summary terms; AC6 on a populated store. `c3-mind`: the memory pool bound now includes the 25% extension.
+- `runtime/test/p1/p1-reason-auto-recovery.test.ts`, block D-P1-14: bounds per class at 60,000; a real AUTO reply records
+  60,000 and its signals, runs at E1 with 2,048 and is reserved at the worst case of its rendered input.
+- Mutation checks by hand on the change, each caught by the tests above: TI-1 rows written without the `~` prefix; tier 1
+  built from the union query; summary terms cut at 48 again; NON_RELEVANT Skills left as candidates; the history kept at
+  4,800; the payload loader fetching the instructions unverified; SUPPORTING Skills taken before the anchors; TASK_REQUIRED
+  Skills not protected.
+
+**Held-out evaluation (HO-1) — FAILED (one shot, 2026-10-13).** Lexicon frozen at c175d75 (reasoning-demand.ts
+sha256 19fb1d2e…, skill-need.ts 6ae2dade…); evaluator committed first (c665e6e); all seals re-verified; 71 valid items
+(EN 24, MSA 24, EG 23; 18 SIMPLE, 6 LONG, 47 SUBSTANTIVE). Five task-dependent Skills, TASK_REQUIRED vs the reference:
+recall 0.730 (threshold 0.90), precision 0.426 (0.80); per Skill recall governance 0.429, organization 0.583, executive
+0.875, evidence 0.875, cross-functional 0.923; predicted / reference TASK_REQUIRED: executive 36 / 8, evidence 27 / 16,
+cross-functional 22 / 13, governance 11 / 14, organization 12 / 12; per-language recall EN 0.591, MSA 0.762, EG 0.850
+(gap 0.259); SIMPLE: 15 / 18 with at most one task Skill, 4 loading four or more. founder-partnership (table rule):
+69 predicted / 13 reference. Every AC3 check fails. Per the Task Contract the set is not reused: a fix needs a new held-out
+set; the Founder decides between a fix and acceptance. Nothing was tuned on HO-1.
+
+**Limits (stated).**
+- TS-1 is lexical: on fresh synthetic phrasings written before each tuning round, recall of TASK_REQUIRED was 0.70, 0.33,
+  0.60, 0.61, 0.10 and 0.83 (batches 2–7); each round fixed defects by concept, not by item. HO-1 measures it once.
+- Knowledge losses under populated stores are whole-item budget rejections that 60K does not solve (company-knowledge track).
+- Past the pool limits, admission still ranks by matched-term count, not importance (pre-existing; company-knowledge track).
+- Rollback: reinstall the previous pin; no schema change, no DB restore. Re-upgrade reaches rows written meanwhile through tier 1.
+
+## D-P1-15 — Skill Need Assessment (SNA): a governed DeepSeek Flash classification decides a Founder reply's Skill tiers; TS-1 retired; conservative fallback (G4-C2-SNA-01; Founder decision after WP0 G4-C2-ARCH-01, executor; replaces D-P1-14 item 2 and its rollback line)
+
+**Superseded by D-P1-16 (2026-10-15): withdrawn before release; the code is kept on branch `p1/context-intel-01-sna-archive` (`6a5bd69`).** The guideline files and scripts named below live there.
+
+**Context.** HO-1 failed (D-P1-14). G4-C2-CORR-01 WP0 showed that no deterministic design generalizes: a structured
+lexical task model (TU-1) tuned to 0.93 recall on one author fell to 0.63 on an unseen author, a local n-gram classifier
+reached 0.16–0.28, while a blind language-model labeller reading the frozen SN-2 guidelines
+(`docs/P1_SKILL_NEED_GUIDELINES_SN2.md`) agreed with an independent author at 0.957 recall / 0.873 precision.
+G4-C2-ARCH-01 compared A (conservative deterministic), B (a governed model classification) and C (hybrid) and proved from
+the code that no existing call can be reused, that a classification inside the reply Work Item would take one of its three
+calls (`CHAT_REPLY_MAX_MODEL_CALLS`) and inherit the Founder's pinned level, and that the reliable local uncertainty signal
+C needs does not exist (the TU-1 shape gate still sent 78 % of messages to the model and lost 5 of 248 required Skills).
+The Founder approved B with its own task class, A as the fallback only, C rejected, and a bounded paid validation on DEV.
+
+**Decision (implemented).**
+1. **Its own Work Item and task class.** `txFounderSend` (one transaction) opens, for a `founder.reply` whose Employee holds
+   eligible Skills with a need card, one child Work Item `c2.skill-need-assessment` (task class `skill.need.assessment`,
+   input pinned at E1, `maxModelCalls` 1, 256 output, D2, 24,000 context budget, its own cap of 20,000 µUSD / 40,000 tokens
+   from the Employee envelope, priority 70). It is never `founder.reply`: its own grant, route policy and deployment
+   qualification; never one of the reply's calls; never the Founder's per-message level (that pins only the reply).
+   The reply's job is enqueued available after the dependency window (20 s): no worker waits; the assessment's result
+   makes it available at once (`available_at` moves, so the wake generation advances, D-C1-23).
+2. **Provisioning is explicit and Founder-confirmed.** `DEEPSEEK_V41_FLASH_SKILL_NEED_PROFILE` (additive, `extendsProvider`)
+   registers one new E1 deployment `deepseek-flash-e1-skill-need` qualified for that class only (same model identity,
+   pinned revision, price card, D2 egress, LIMITED_PRODUCTION) and the class's route policy (E1..E1, one retry of a provably
+   unsent attempt, two calls per run, no escalation, 20,000 µUSD overhead). The Employee's `model.invoke` for the class is
+   the existing Founder act EMPLOYEE_MODEL_ACCESS. Without the route policy or the grant the send seals the fallback
+   (`NOT_PROVISIONED`) and opens nothing.
+3. **What the classifier reads.** Context Assembly builds, for an assessment, only the governed preamble (SNP-2, see below; governance;
+   derived from SN-2 §1–§2; Employee-neutral; versioned and digested) and the request (mind): SN-2 §4 Company context, the
+   SNC-1 need card (SN-2 §3) of exactly the offered Skills, and the Founder message verified against the hash the send bound.
+   Never a Skill payload, knowledge, memory, canonical truth, history or recent result. Manifest as for any call.
+4. **The call** goes through the unchanged Model Runtime (authorize → route → reserve the worst case → call → settle) with
+   its own timeout (`ModelCallRequest.timeoutMs`, only ever shorter than the runtime's: 15 s). The processor makes one call,
+   never waits on a circuit, never escalates, and can only call its model and record its result (`skillNeedOnly`: no tool,
+   message, memory, organizational, review, goal or answer path).
+5. **The output** is a new proposal type `SKILL_NEED` — a closed list of `{code, tier}` (no reasons); any extra field,
+   duplicate code, unknown tier or oversize list is MALFORMED (`SKILLS_INVALID`); the store binds it to exactly the offered
+   codes (`checkSkillNeed`) and to the run's own OK manifest: an unknown or missing code refuses the whole answer. In any
+   other Work Item a SKILL_NEED is never executed (WRONG_PROPOSAL_TYPE).
+6. **One durable decision per reply — migration 0023 `skill_need_assessments`** (additive, append-only, UNIQUE reply): the
+   message id and hash, the offered Skill versions, card set and prompt digests, source (MODEL / FALLBACK), outcome code,
+   tiers, run and manifest — content-free. First writer wins: the assessment (CLASSIFIED or its fallback cause), the send
+   (NOT_PROVISIONED) or the reply's Context Assembly, which seals WINDOW_EXPIRED / ASSESSMENT_ENDED when none exists; a late
+   or second result is refused (`ALREADY_DECIDED`); every step of a reply plans with the same decision. A classification is
+   applied only to exactly the Skill versions it was given (otherwise STALE_RESULT → fallback). Necessity: no existing table
+   can bind a result to a reply, a message hash and Skill versions with uniqueness and immutability without misusing its
+   meaning (`context_step_results`' closed kinds, `idempotency_records`' 161-character reference).
+7. **The reply** tiers each Skill with a card by the decision; the conservative fallback is every eligible offered Skill
+   SUPPORTING (never NON_RELEVANT, never an ineligible Skill); Skills without a card keep the legacy lexical path. CP-1, 60K,
+   G4b, DG-1n, eligibility, conflicts, certification and the hash-verified loader are unchanged. The manifest records policy,
+   source, outcome, card set, record id and tier counts.
+8. **TS-1 retired.** `reasoning-demand.ts` is byte-identical to D1 (`2be1b68`); RD-1 unchanged; the SN-1 table is replaced
+   by the SNC-1 cards. TU-1 was never released (archived as evidence).
+9. **Failure behaviour.** Invalid output, a timeout, an unavailable or failing provider, an open circuit, a budget refusal,
+   a context refusal or the call bound each record one fallback cause and end the assessment FAILED (never BLOCKED: no
+   reconciliation brief); a possibly billed call keeps its money held for the existing reconciliation; the reply lands.
+
+**Proof (no network, no paid call).** governance `p1-skill-need` (grammar, binding, contract, TS-1 gone); mind
+`p1-context-intel` (cards, request, digest); storage `p1-skill-need` (send, provisioning, assessment context, exactly-once,
+late / window / ended / stale, fallback on a populated store, content-free), `p1-skill-need-migration` (v22 → v23, every row
+kept, append-only, CHECKs), `p1-context-intel` (60K / G4b / AC2 / AC4 / AC6 on SNA tiers); runtime `p1-skill-need` (real
+runtime and DeepSeek adapter behind a fake transport: the assessment first at E1 / 256 under its own Work Item and
+deployment, the reply's own calls and D1's AUTO E2 8,192 unchanged, invalid / prose / failing / timed-out / budget-refused /
+not-provisioned paths, restart ordering, the profile), `p1-skill-need-processor` (outcome mapping, closed services, timeout);
+command-center `p1-desktop-upgrade` now follows the newest migration (N-1 → N). `verify-bootstrap`: `skill-need` joins the
+C3 writers (memory-writes-confined).
+
+**Rollback.** Migration 0023 makes this a schema change: the previous release refuses schema 23 (SCHEMA_FROM_FUTURE), so a
+rollback is the activation's pre-update backup plus the previous pin (D1 activation), never an in-place downgrade.
+
+**Paid validation (DEV only, 2026-10-13/14; `scripts/p1-sna-evaluate.mjs`).** The real governed runtime in a disposable
+workspace (test seam; `model.invoke` for `skill.need.assessment` only; the assessment processor only, so no reply ran) and the
+real DeepSeek V4.1 Flash. A ledger carries the Founder's $5 total: each run's Company cap is what is left of it, each
+assessment is capped at $0.02, and failed, uncertain and held money counts. Spend so far: 1,081,958 µUSD economic
+(144,864 µUSD billed, all off-peak) of 5,000,000, for 1,200 classifications. Metrics are SN-2 TASK_REQUIRED on the five task
+Skills (the scorer of the free simulation); founder-partnership is reported separately.
+
+| Prompt (sha256) | Set | R | P | exec pred/ref | partnership pred/ref | lost in MULTI | invalid |
+|---|---|---|---|---|---|---|---|
+| SNP-1 (a635c010…) | DEVA+DEVB 240 | 0.953 | 0.824 | 34/21 | 38/28 | 0 | 0 |
+| SNP-2 (8367fe1c…) | DEVA+DEVB 240 | 0.932 | 0.844 | 25/21 | 33/28 | 1 | 0 |
+| SNP-3 (dea6f38e…) | DEVA+DEVB 240 | 0.958 | 0.763 | 42/21 | 44/28 | 0 | 0 |
+| SNP-2 repeat | DEVA+DEVB 240 | 0.932 | 0.836 | 25/21 | 29/28 | 1 | 1 (fallback) |
+| **SNP-2 frozen** | **VAL1–4 240, once** | **0.932** | **0.806** | **33/23** | **44/43** | **0** | **0** |
+
+VAL1–4 (SNP-2): per-Skill recall governance 0.913, executive 0.913, evidence 0.981, organization 0.915, cross-functional
+0.917; per language EN 0.955, MSA 0.942, EG 0.899 (gap 0.056); loaded recall 1.0; SIMPLE 48/48 without a task Skill; 0
+fallbacks; provider latency mean 1.23 s, p95 1.45 s; assessment end-to-end p95 1.80 s (240/240 inside the 20 s window); input
+≈2,500 tokens (≈2,300 cached), output ≈132 (max 138 of 256); ≈$0.91 economic / ≈$0.12 billed per 1,000 messages.
+Every numeric gate of the decision (R ≥ 0.90, P ≥ 0.80, per-Skill R ≥ 0.80, per-language R ≥ 0.85, gap ≤ 0.10) passes; the
+Founder's "no over-assignment of executive-judgment" does not (precision 0.636; all 12 false positives are reference
+SUPPORTING, i.e. a tier promotion, never an irrelevant Skill). Run-to-run variance: two identical SNP-2 DEV runs differ on
+12.4% of labels (no sampling temperature is pinned), so differences between prompt versions are partly noise. The three
+allowed prompt versions are spent; SNP-3 was not adopted.
+
+**Open (Founder Decision Gate).** HO-2 is untouched (sealed, unopened). Stopped under the task's quality stop rule: whether
+the VAL over-assignment of executive-judgment is acceptable for the one-shot HO-2 on frozen SNP-2, or the classifier first
+needs a change outside this approval (a fourth prompt version, a pinned sampling temperature for this task class, or an
+executive-judgment card revision under SN-2), is the Founder's decision. No PR, no LIVE change.
+
+**Correction G4-C2-TEMP-01 — temperature 0 for the assessment only (Founder-approved, 2026-10-14).** `ProviderRequest` gains
+an optional closed `sampling` code (`DETERMINISTIC`; no numeric field exists). The Model Runtime sets it from the call's
+authorized task class through `samplingForTaskClass`, which names `skill.need.assessment` only: nothing a model, a message,
+an Employee or a processor option supplies can select it. The DeepSeek adapter maps it to `temperature: 0` (allowlisted as a
+request field; D-L1-03's "no temperature" now holds for every other call) only with `thinking.disabled`, and refuses any other
+value, or DETERMINISTIC on a thinking class, as INVALID_REQUEST before anything is sent. Founder replies at E1–E4 (E1
+included), Academy and every other class carry no `temperature` field, as before. Unchanged: SNP-2 (sha 8367fe1c…), SN-2,
+E1 / thinking.disabled for the assessment, RD-1, E1–E4, AUTO E2, D1, the 60K context, CP-1, DG-1n, history, certifications,
+grants and money. Proofs (fake transport): the adapter, governance and runtime tests; three new L1 mutations
+(`l1-temperature-any-task-class`, `l1-temperature-dropped`, `l1-temperature-unchecked`). The harness counts the wire
+temperature per call (240/240 at 0 in each paid run below) and splits the accounting.
+
+Paid measurement on the same frozen SNP-2 (DEV twice, VAL once as a diagnostic; VAL had already informed decisions, so it
+is not a substitute for the independent HO-2):
+
+| Run | R | P | FP / FN | exec pred/ref (P) | partnership R | lang EN / MSA / EG (gap) | lost in MULTI |
+|---|---|---|---|---|---|---|---|
+| DEV, default sampling (run 1 / 2) | 0.932 / 0.932 | 0.844 / 0.836 | 33/13, 35/13 | 25/21, 25/21 | 0.893 / 0.857 | — | 1 / 1 |
+| DEV, temperature 0 (run 1 / 2) | 0.953 / 0.953 | 0.875 / 0.858 | 26/9, 30/9 | 24/21 (0.750), 26/21 (0.731) | 0.893 / 0.893 | 0.985/0.909/0.966, 0.985/0.894/0.983 | 0 / 0 |
+| VAL, default sampling | 0.932 | 0.806 | 46/14 | 33/23 (0.636) | 0.837 | 0.955/0.942/0.899 (0.056) | 0 |
+| VAL, temperature 0 | 0.937 | 0.835 | 38/13 | 32/23 (0.656) | 0.791 | 0.955/0.957/0.899 (0.058) | 0 |
+
+Stability: two identical DEV runs differ on 1.6% of labels at temperature 0 (23 of 1,440; 21 of 240 messages) against 12.4%
+(179; 125 messages) before — much better, not fully deterministic. Executive-judgment over-assignment is essentially
+unchanged (VAL 11 false positives against 12, every one a reference-SUPPORTING promotion; DEV 6–7 against 7–8), and
+founder-partnership recall on VAL fell from 0.837 to 0.791 (nine reference-TASK_REQUIRED messages labelled SUPPORTING). VAL
+(temperature 0): per-Skill recall governance 0.891, executive 0.913, evidence 1.0, organization 0.915, cross-functional 0.944;
+loaded recall 1.0; SIMPLE 48/48 without a task Skill; 0 fallbacks or failures; provider latency mean 1.19 s, p95 1.41 s;
+end-to-end p95 1.74 s (240/240 inside 20 s); ≈$0.91 economic / ≈$0.11 billed per 1,000 messages. Accounting of the three
+runs: 653,805 µUSD economic, 80,163 µUSD billed, 720 reservations all SETTLED (none held or uncertain); trial total
+1,735,763 µUSD economic (225,027 billed) of 5,000,000 over 1,920 calls.
+
+**Open (Founder Decision Gate, after G4-C2-TEMP-01).** Stopped under the correction's rule ("the over-assignment remains
+material, or quality regressed"): HO-2 stays sealed and unopened; no PR, no LIVE change.
+
+**G4-C2-TIER-01 — bounded review of the TASK_REQUIRED / SUPPORTING errors (2026-10-14; free, no code change).** DEV and VAL
+are diagnostic only here (both informed earlier decisions). Evidence: `corr-01/sna/TIER-01-*`.
+- *Mapping.* No defect: the recorded tier reaches CP-1 unchanged; TASK_REQUIRED is protected at step 4, SUPPORTING competes
+  at step 6b inside the SKILL share, NON_RELEVANT is the only exclusion, and the tier is never rendered to the model (a Skill
+  renders as `(skill id vN)` only). Ahmed's six v7 payloads total 10,560 bytes, inside the 60K reply's SKILL share (11,897).
+- *Content effect (real storage path: send → recorded tiers → assembled context; 480 DEV+VAL messages; an EMPTY world and a
+  FULL one with canonical truth, 40 knowledge items, 30 memories and a full 11,704-byte history, 57.0–59.5K used; a null
+  control repeated each reference send, drift 0).* No reference-TASK_REQUIRED Skill was ever unloaded (0 of 467). Setting
+  only executive-judgment and founder-partnership to the classifier's TASK_REQUIRED ↔ SUPPORTING tiers (43 messages)
+  changed the loaded Skill set 0 times, displaced 0 knowledge and 0 memory items, and changed used tokens by 0; only the
+  Skill order changed (39). All six TASK_REQUIRED against all six SUPPORTING: identical selection. What changes content is
+  the SUPPORTING ↔ NON_RELEVANT boundary (VAL: loaded-set recall 0.960, precision 0.903; FULL world: 47 knowledge and 58
+  memory items displaced over 480 messages by extra or dropped SUPPORTING Skills), which no current gate measures.
+- *Cause of the 29 errors (17 executive promotions, 12 partnership demotions).* 11 are messages the two labellers split on
+  (adjudicated); 12 match a TASK_REQUIRED bullet of two Skills in SN-2 itself (a date against a data-loss risk: §3.3 and
+  §3.6; "challenge my plan": §3.2 and §3.3; decision rights inside an authority question: §3.1 and §3.2), settled only by
+  the general §2.5 precedence or not at all; 6 deviate from explicit text. Removing the overlaps is an SN-2 (SN-3) or prompt
+  change, outside this task; no production change was made.
+
+**Open (Founder Decision Gate, after G4-C2-TIER-01).** The VAL pre-gate is still unmet (executive-judgment over-assigned;
+founder-partnership recall 0.791 < 0.80). HO-2 stays sealed and unused; no PR, no LIVE change.
+
+**G4-HO2-FINAL-01 — the one-shot HO-2 acceptance (Founder-authorized, 2026-10-14): FAILED on one gate.**
+
+*Before HO-2 was read:*
+- The evaluator was extended and committed at `89be8ff`. The product code is unchanged since `d79d18e`.
+  - `scripts/p1-sna-score.mjs` is the pure scorer. Its self-test reproduces the four recorded paid runs exactly.
+  - `scripts/p1-sna-cp1-effect.mjs` measures the content effect on CP-1, free and from tiers held in memory.
+- Freeze: SNP-2 8367fe1c, SN-2 c6be8fc3 (equal to the sealed copy), cards 23ebd24b, temperature 0 on the assessment class
+  only.
+- HO-2 seal:
+  - all 15 hashes match; the blind hash equals the reviewer labels;
+  - 96 items, 0 excluded, 54 disagreements with 54 adjudications.
+- Leak scan: no HO-2 text in the prompt, the repository, the scratch areas or DEV. In VAL, the one known `VAL4-018`
+  collision (a 4-word SIMPLE message with no required Skill, never in the prompt) was judged not material and kept.
+- Pre-registered rule: thresholds as recorded, with per-Skill recall applied to all six Skills; over-assignment is
+  evidence only.
+- Evidence: `corr-01/sna/freeze/`, `corr-01/sna/HO2-FINAL.log`. Aggregates only.
+
+*Result:* 96 messages, all CLASSIFIED (0 fallbacks or invalid outputs); 96 calls at temperature 0.
+
+| Gate | Value | Threshold | Pass |
+|---|---|---|---|
+| Micro recall, five task Skills / six Skills | 0.925 / 0.936 | 0.90 | yes |
+| Micro precision, five / six | 0.861 / 0.869 | 0.80 | yes |
+| Recall per language (EN / MSA / EG), five Skills | 0.905 / 0.955 / 0.917 | 0.85 | yes |
+| Language gap, five / six | 0.050 / 0.042 | 0.10 | yes |
+| Per-Skill recall (all six) | executive-judgment **0.750** (6 of 8) | 0.80 | **no** |
+| SIMPLE (21 messages): at most one task Skill, none loading four | 21 / 21, 0 | rule | yes |
+| MULTI: no required Skill set NON_RELEVANT | 0 | rule | yes |
+| Integrity (frozen prompt and cards, six offered, one deployment, no reply call, no leak) | all held | rule | yes |
+
+- *Per-Skill recall:* governance 1.0, partnership 1.0, evidence 0.947, organization 0.867, cross-functional 1.0. Both
+  executive-judgment misses are TASK_REQUIRED → SUPPORTING: the Skill was still loaded, never excluded.
+- *Over-assignment (evidence only):*
+  - executive-judgment: 9 predicted against 8 in the reference, P 0.667; its 3 false positives are all reference
+    SUPPORTING;
+  - founder-partnership: 12 against 11, P 0.917.
+- *Content:*
+  - Every reference-TASK_REQUIRED Skill was loaded: 78 of 78; none was excluded as NON_RELEVANT.
+  - Loaded-set recall 0.932, precision 0.884.
+  - Priority errors: 5 TASK_REQUIRED → SUPPORTING and 11 the other way. Boundary errors: 29 NON_RELEVANT → SUPPORTING and
+    16 SUPPORTING → NON_RELEVANT.
+- *CP-1, real storage path:*
+  - The null control drifted 0. No required Skill was unloaded in either world (0 of 78 by the reference, 0 of 78 by the
+    classifier).
+  - The 14 messages with priority-only differences changed the loaded set 0 times and displaced 0 knowledge and 0 memory
+    items; only the order changed (7).
+  - Boundary errors changed the loaded set in 33 messages. In the FULL 60K world (57.0–59.4K used) they displaced 9
+    knowledge and 14 memory items.
+- *Cost and latency:*
+  - 87,063 µUSD economic and 22,817 µUSD billed (PEAK); 96 reservations, all SETTLED, 0 held.
+  - Trial total: 1,822,826 µUSD of 5,000,000.
+  - Provider latency mean 1.53 s, p95 1.94 s. Assessment end-to-end mean 4.15 s, p95 7.25 s; all 96 within the 20 s window.
+
+**Open (Founder Decision Gate, after G4-HO2-FINAL-01).** The rule chosen before the run says a gate failing on both scopes is
+a FAIL. Executive-judgment recall rests on 8 reference messages, so one miss is worth 0.125.
+- HO-2 is consumed and is never reused.
+- No prompt, SN-2, threshold or code change; no retry, no PR, no LIVE change.
+
+**G4-FINAL-QUALITY-CORR-01 — root-cause correction (Founder-approved, 2026-10-14). Stopped at a Founder gate: VAL-3 failed
+on precision.** Evidence: `corr-02/` (wp0, wp2, wp3, dev3, val3, sna); ledger as before.
+
+*Root causes (WP0, free).*
+- **Executive-judgment priority was definitional.**
+  - Over 576 doubly labelled messages, the two human labellers agreed on executive TASK_REQUIRED only 83% of the time (the
+    other Skills: 0.89–0.94).
+  - SN-2 §2.5 forced one "core" Skill, while §3.3 listed the same decisions as executive TASK_REQUIRED. Ten of the 18
+    executive splits were settled by §2.5.
+- **SUPPORTING ↔ NON_RELEVANT had no test.** In the FULL world, the Skill tiers never decided whether a critical item
+  arrived.
+- **What lost critical items was ranking.** The score's relevance part saturates at four matched terms, so a specific item
+  tied generic ones and lost to recency.
+- **Latency.**
+  - With the product concurrency of 2, two long runs held both slots: the assessment started after 39.7 s and the reply fell
+    back.
+  - The store stages take < 100 ms. The DPAPI credential host takes ~0.23 s quiet and ~0.3–0.7 s p95 in the paid runs.
+  - HO-2's 7.25 s p95 was not reproducible: quiet p95 2.1 s; with 15 busy CPU threads, 2.3 s.
+
+*Fixed (local commits de8555e..492d0bd).*
+- **SN-3** (`docs/P1_SKILL_NEED_GUIDELINES_SN3.md`, DRAFT for approval):
+  - a necessity test and a named-contribution test;
+  - several Skills may be TASK_REQUIRED together, with no single-core precedence;
+  - an explicit "Not TASK_REQUIRED when" for the general Skills.
+  - Cards SNC-4, prompt SNP-6. Three design reviews, on DEV-3 only.
+- **CP-1:** knowledge and memory are ranked by matched query terms weighted by rarity, then score (CP-1 only).
+- **Runtime:** one reserved slot above the cap, for the Skill Need Assessment only.
+
+*Measured.*
+- **Human agreement on the same 240 DEV texts, both labellers blind (TASK_REQUIRED agreement, SN-2 → SN-3):**
+  executive 0.870 → 0.946, partnership 0.880 → 0.933, cross-functional 0.881 → 0.923.
+- **Agreement on the loaded set:** organization 0.831 → 0.950.
+- **On VAL-3 (new authors):** 0.889–0.959.
+- **FULL-store probe (24 critical items):**
+  - critical knowledge reaching the context rose from 21–22/24, dependent on the tiers, to 23/24 in every tier variant;
+  - large items 7/8 → 8/8;
+  - same-language critical memory 24/24.
+  - The remaining misses are Arabic morphology (Egyptian vs MSA wording) and cross-language memory (16/24): limits of
+    lexical retrieval (the company-knowledge track).
+- **Latency, both slots busy:** assessment p95 41.97 s → 2.23 s. Burst of 12: 11.2 s → 8.2 s. Quiet: unchanged (2.1 s).
+
+*Paid classification (temperature 0, DeepSeek Flash E1):*
+
+| Run | R (5 / 6) | P (5 / 6) | exec pred/ref | xfn pred/ref | Verdict |
+|---|---|---|---|---|---|
+| SNP-4 DEV-3 | 0.982 / 0.961 | 0.767 / 0.769 | 78/47 | 43/30 | FAIL |
+| SNP-5 DEV-3 | 0.960 / 0.957 | 0.824 / 0.795 | 66/47 | 43/30 | AMBIGUOUS |
+| SNP-6 DEV-3 | 0.969 / 0.949 | 0.823 / 0.832 | 66/47 | 42/30 | PASS |
+| **SNP-6 VAL-3, once** | **0.972 / 0.956** | **0.741 / 0.760** | **72/48** | **51/34** | **FAIL** |
+
+VAL-3 (237 items) detail:
+- Per-Skill recall ≥ 0.865 (executive 0.938); gap 0.014; SIMPLE 46/46.
+- One required Skill lost in a MULTI (3 lost in all; required coverage 0.988).
+- CP-1: priority-only differences change no content. Extra or missing Skills displaced 37 knowledge and 26 memory items in
+  the generic FULL world.
+- Cost: this task spent 966,065 µUSD economic. Trial total 2,788,891 of 5,000,000.
+
+**Open (Founder gate).** Under SN-3 the humans agree; the classifier at E1 (no thinking) over-promotes the general Skills
+and does not generalize from DEV to VAL.
+- The next steps are design changes outside this task's approval, for example a thinking class for the assessment, which
+  is incompatible with temperature 0.
+- HO-3 was not built. VAL-3 is consumed for design. No PR, no LIVE change.
+
+### G4-C2-REASONING-GATE-01 — E2 for the Skill Need Assessment: an isolated DEV pilot. Verdict B, E2 NOT QUALIFIED (Founder-approved bounded investigation, executor; stopped at the Founder Decision Gate)
+
+**What changed (code, 6edfc4f; production behaviour unchanged).**
+- **Sampling.** `samplingForTaskClass(taskClass, reasoningClass)`: temperature 0 for the assessment **at E1 only**.
+  - A thinking class ignores sampling, and the adapter refuses temperature together with thinking.
+  - The Model Runtime passes the class the call routed at.
+  - E1 is unchanged on the wire: temperature 0, thinking off, 256.
+- **Processor.** `skillNeedAssessmentProcessorAt({ reasoningClass: 'E1' | 'E2', maxOutputTokens })` pins the call's level.
+  - The production processor is unchanged at E1 / 256.
+  - An E2 pin under the release Skill-need profile (E1 only) makes no call and falls back with PROVIDER_UNAVAILABLE
+    (proven).
+- **Harness.** `scripts/p1-sna-evaluate.mjs --level E2` provisions, in its disposable workspace only, a DEV-only E2 profile:
+  one E2 deployment for the assessment class and the production route policy at E2..E2.
+  - It uses the Company's E2 allowance (4,096) and leaves the 15 s timeout, the 20 s window, the cap, the prompt and the
+    cards unchanged.
+  - Every run is also scored on the tiers the reply would plan with: an assessment recorded after the window counts as the
+    fallback.
+- No release profile, route policy, grant, Employee level, AUTO, RD-1, D1, CP-1, SN-3, SNC-4, SNP-6 or LIVE change.
+
+**WP0 findings.**
+- E2 is not provisioned for the assessment today. Production E2 would need a new deployment and route policy, which is a
+  Founder provisioning act.
+- E2 is thinking `low` on the wire.
+- The 256 allowance cannot hold thinking.
+- Worst-case reservation: E1 ≈ 4.3k µUSD, E2 at 4,096 ≈ 9.0k µUSD, both within the 20k per-assessment cap.
+- E2 cannot be temperature 0 (TEMP-01 conflict).
+- **Protocol finding:** the SN-3 copy used to label DEV-3 / VAL-3 predates design reviews 2–3. The model ran the later SN-3.
+  The changes mostly narrow TASK_REQUIRED, so they do not explain VAL-3.
+
+**Set RGV (new, sealed before any paid run).**
+- Construction:
+  - two independent authors, 120 messages each (EN / MSA / EG, six categories), using the frozen SN-3 dc51ccf5…;
+  - 11 near-duplicates of earlier sets excluded by an independent judge;
+  - one blind reviewer (hash ed03f65a…);
+  - one third-party adjudicator (72 cells: 36 toward the author, 36 toward the reviewer, 0 to a third value);
+  - 229 items scored.
+- Author–reviewer agreement: 0.948 per cell; κ 0.80–0.96 per Skill.
+- Pre-registration: `rg-01/RG-PREREG.md`; seal: `RGV-SEAL.sha256`.
+
+**Results (same items, same prompt, cards, bounds and concurrency).**
+
+| Run | Classified | R (5 / 6) | P (5 / 6) | exec pred/ref | xfn P | Provider P50 / P95 | Verdict |
+|---|---|---|---|---|---|---|---|
+| E1 (production) | 229 / 229 | 0.990 / 0.978 | 0.747 / 0.771 | 67 / 36 | 0.698 | 1.35 s / 1.63 s | FAIL (precision) |
+| E2-A (pilot) | 8 / 229 | — | — | — | — | 14.6 s / 14.7 s | FAIL |
+
+E1 detail:
+- The VAL-3 failure reproduces on new data: executive-judgment P 0.537, all 31 of its false positives in messages the
+  reference marks NON_RELEVANT (25) or SUPPORTING (6).
+- Required Skill loaded 0.996; NON_RELEVANT→SUPPORTING 115.
+- CP-1 FULL: 33 knowledge and 37 memory items displaced by the Skill-set differences.
+
+E2-A detail:
+- 11 of the 19 calls sent ran past the 15 s timeout (PROVIDER_UNCERTAIN, money held for reconciliation).
+- The third timeout opened the deployment's circuit breaker (3 failures, 5 minutes), so 210 assessments fell back at once
+  (CIRCUIT_OPEN): fallback rate 0.965.
+- The 8 completed calls used 258–1,729 output tokens (thinking included) at ≈ 150 tokens/s, taking 2.6–12.1 s.
+- The thinking length, not the load, sets the latency: E1 at the same concurrency answered in 1.3 s.
+- In CP-1 FULL, the fallback loads all six Skills and displaces 261 knowledge and 88 memory items.
+- E2-B (stability) was not run: there was no qualification to test.
+
+**Verdict B — E2 NOT QUALIFIED,** by the pre-registered rule. Within the approved bounds (15 s call, 20 s window) E2 low
+cannot answer most assessments, and a run of timeouts opens the circuit for every reply. E2's classification quality is
+therefore **not established either way** (8 items).
+- Measuring it would need a longer call timeout and window. That changes an approved bound and the reply's latency, so it
+  is a Founder decision.
+
+**Money.**
+- This task: E1 240,960 µUSD economic; E2-A 113,054 µUSD charged to the cap (14,781 economic, plus 98,273 held at the
+  worst case for 11 uncertain calls).
+- Trial total: 3,142,905 of 5,000,000; 1,857,095 left.
+
+**Not done:** no prompt, card or threshold change, no E3, no second classification call, no provider change, no HO-3, no
+PR, no push, no LIVE change.
+
+## D-P1-16 — The CEO's Founder replies load his qualified Skills directly; the Skill Need Assessment is withdrawn before release (G4-SIMPLE-01; Founder decision, executor; supersedes D-P1-15 and D-P1-14 item 2)
+
+**Context.** D-P1-15's governed classification (SNA) never qualified:
+- E1 failed precision on VAL-3 and on RGV.
+- E2 timed out within the approved bounds.
+
+Each reply paid one extra call (≈ 1,052 µUSD economic at E1) and waited up to a 20 s window (p95 2.23 s with the reserved
+slot). The Founder decided to stop pre-classifying: the CEO's (Ahmed's) qualified Skills go straight into his Founder-reply
+context, and DeepSeek decides how to apply them while it answers. Skill ≠ Tool ≠ Authority: which Skills may load stays a
+governed decision, never the model's.
+
+**Decision (implemented).**
+1. **The SNA is withdrawn, never released.** It was on this branch only: migration 0023 never reached `main`, so removing it
+   edits no released migration, and the schema stays 22. Removed:
+   - the `c2.skill-need-assessment` processor, task class, route policy, profile, deployment and grant path;
+   - the `SKILL_NEED` proposal type;
+   - the need cards and their request, and the assessment preamble;
+   - the `skill_need_assessments` table and store;
+   - the reserved runtime slot, the per-call timeout, temperature 0 and the E2 pilot path;
+   - the reply's 20 s dependency window: its job is available at once;
+   - the evaluation scripts and the SN-2 / SN-3 guidelines.
+
+   `governance`, `model-providers`, `runtime` (sources) and `command-center` equal `main`. The full SNA work is kept on
+   branch `p1/context-intel-01-sna-archive` (`6a5bd69`) as evidence.
+2. **DIRECT for the CEO, LEXICAL for everyone else.** `txFounderSend` records `skillSelection` beside the 60K budget on every
+   `founder.reply`:
+   - `DIRECT` when the thread is the Founder ↔ CEO thread (`FOUNDER_CEO`);
+   - `LEXICAL` otherwise.
+
+   Under DIRECT, every ACTIVE passport Skill of the replying Employee is task-relevant and SUPPORTING. A capability-required
+   Skill stays TASK_REQUIRED. Under LEXICAL, a Skill keeps the term-overlap path, untiered, exactly as before.
+
+   Passport scoping, Skill status, version eligibility and certification (`STATUS_NOT_RETRIEVABLE`), directive conflicts
+   (`SKILL_CONFLICT`) and the hash-verified pinned loader are unchanged. They run before the planner, so an ineligible or
+   conflicting Skill is never loaded just to reach six. Skill payloads are still read only for selected Skills, once, and
+   verified. The manifest records `skillSelection: {mode, tiers}` (content-free).
+3. **CP-1 protects knowledge and memory (Founder instruction: Skill loading must not displace canonical truth, core work
+   instructions, knowledge or memory).** The order is now:
+   1. canonical truth;
+   2. TASK_REQUIRED Skills;
+   3. the history and Work context;
+   4. the best knowledge and memory anchors;
+   5. knowledge within its share;
+   6. memory within its share;
+   7. SUPPORTING Skills within theirs;
+   8. recent results;
+   9. the spill.
+
+   Before, SUPPORTING Skills came before knowledge and memory. The six v7 Skills (10,560 bytes + framing = 11,136) fit the
+   SKILL share at 60K (11,897), so in an ordinary context all six load. When required items have already consumed the
+   budget (a very long message, a full history and tool results), the knowledge and memory shares are filled first, and a
+   Skill that no longer fits is recorded `BUDGET_EXCEEDED`.
+4. **Kept unchanged:**
+   - C1: 60,000 for new Founder replies;
+   - C3: DG-1n `~` index rows and the two-tier pool;
+   - G4b: history 11,750;
+   - D-P1-13: the AUTO E2 output allowance;
+   - memory and knowledge access control;
+   - Skill integrity and passport verification.
+
+   Other employees' replies keep the D-P1-14 C1 / CP-1 path with LEXICAL Skills. Academy, Benchmark, Shadow and briefs are
+   untouched (24K, LAYERED).
+
+**Proof (no network, no paid call).**
+- `mind/test/p1-context-intel.test.ts` — a G4-SIMPLE-01 block with the real v7 sizes:
+  - the six fit the share and load in an empty context;
+  - on a full store with an ordinary message, all six load, the knowledge and memory shares are filled, and canonical truth
+    is untouched;
+  - saturated: the knowledge and memory shares are filled and only Skills fall to `BUDGET_EXCEEDED`.
+- `storage/test/p1-context-intel.test.ts`:
+  - DIRECT on the CEO thread: no extra Work Item, the job available at once, `{mode: DIRECT, SUPPORTING: 6}`;
+  - LEXICAL on another Employee's thread;
+  - history 11,750;
+  - AC2: all six plus the history for six messages × 0 / 2 tools;
+  - AC4: SECURITY_HOLD → `STATUS_NOT_RETRIEVABLE`, a conflicting pair → `SKILL_CONFLICT`, another Employee's Skill never a
+    candidate, one verified payload read per selected Skill;
+  - AC5 / C3 unchanged;
+  - AC6: on a populated store, all six, Skills ≤ share, knowledge and memory shares filled.
+- `runtime/test/p1/p1-reason-auto-recovery.test.ts`: a real AUTO reply records `skillSelection: 'DIRECT'` and no
+  `skillNeed`.
+
+**Context measurement (free, real storage path, real v7 payloads; `g4-simple/context-measure.jsonl`).** The seven Founder
+scenarios were run in three worlds: EMPTY, NORMAL (a realistic Company) and FULL (60K saturated). Each world was compared
+with a no-passport control.
+
+| | EMPTY | NORMAL | FULL |
+|---|---|---|---|
+| Skills | 6 / 6 in 7 of 7 | 6 / 6 in 7 of 7 | 6 / 6 in 7 of 7 |
+| used (avg / max) | 17,322 / 17,415 | 32,858 / 39,032 | 54,371 / 58,495 |
+| knowledge, DIRECT vs control | — | 42 vs 42 items, same bytes | 10 vs 18 items (45,020 vs 89,548) |
+| canonical / history | — | all selected | 12 vs 12 / 7 vs 7 |
+
+- In NORMAL, loading the Skills displaced nothing.
+- In FULL, knowledge keeps its full share. The control additionally spilled ≈ 11K of knowledge into the room the Skills now
+  use: this is the cost of loading six Skills in a saturated context, and it is a share-bounded cost.
+- The control has no passport, so it lacks the L1-02 role topics (`ceo`, `founder`, `main`). That is why memory and
+  canonical relevance differ in its small-message rows. This is not a G4 effect.
+
+**Real replies (DEV, paid, Founder-authorized 2026-10-15, cap $0.40; `g4-simple/paid/`).** The seven scenarios were run in NORMAL and FULL, through the real governed
+runtime and real DeepSeek V4.1 Flash (AUTO).
+
+- **Volume.** 14 / 14 replies completed, with 15 calls (one E1 → E2 recovery). Each reply's context held 6 / 6 Skills.
+- **Cost.** 65,863 µUSD in total, 4,705 per reply on average.
+- **Latency.** Median 17.9 s, maximum 25.2 s.
+- **Removed per reply.** The SNA's extra classification call (≈ 1,052 µUSD economic, about +22 % per reply) and its wait (p95
+  2.23 s, worst case the 20 s window). Also gone: the extra Work Item, schema 23 and the reserved slot.
+
+The replies were scored against the rubric pre-registered before any reply existed (`g4-simple/RUBRIC.md`). The scoring was a
+blind independent review, then a reconciliation with the seeded DEV facts (`g4-simple/EVALUATION.md`).
+
+**Verdict: FAIL** by the pre-registered pass rule.
+
+What passed:
+- **Authority:** 14 / 14. S6 declines both acts and routes them to the Founder.
+- **Answered:** 12 / 14.
+- **Knowledge:** correct wherever the fact was in context.
+
+The gates that failed:
+- Knowledge: 11 / 14, and FULL S4 is wrong.
+- Proportion on S7.
+- Style patterns recurring in 3 or more replies:
+  - a decision-request closer;
+  - unrequested add-on analysis on simple turns;
+  - caveat boilerplate;
+  - a garbled word repeated through the thread.
+
+S2, an English message, was answered in Arabic in both worlds.
+
+Causes, with evidence:
+1. **FULL S4 / S5 — the history window, not Skill loading.** The 40,000 EGP / Sara decision existed only as an old Founder
+   turn. In FULL it lies 35,282 bytes back, three times G4b's 11,750-byte window; in NORMAL it fits, and S4 passes. The
+   history item is identical with and without Skills, and it precedes SUPPORTING Skills in CP-1.
+2. **Add-on analysis on simple turns.** It reproduces evidence-and-economics wording on messages that did not ask for it. It
+   is also pushed by the existing CEO guidance, which asks for an original insight or a risk on every turn. The two causes
+   cannot be separated without a no-Skill control run.
+3. **Closers, the S2 language and the garbled word.** None of these is separable from pre-existing behaviour without that
+   control.
+
+**Open (Founder gate).** The task's quality rule stops here: no PR, no push, no corrective task. The change itself is complete
+and green locally:
+- the full local CI ran;
+- the SNA is removed;
+- DIRECT loading works;
+- knowledge and memory keep their shares;
+- the money and the wait of the SNA are gone.
+
+The Founder decides whether the reply-style findings block G4 or go to their own track. G4 trial money: 3,208,768 of
+5,000,000 µUSD.
+
+**Rollback.** Reinstall the previous pin. There is no schema change and no DB restore. A Work Item recorded with
+`skillSelection` keeps its CP-1 order; the previous release ignores the field.
+
+## D-P1-17 — G4 closure: the CEO answers in proportion and in the current message's language; the Founder's recorded decisions stay in force after the conversation moves on (G4-FINAL-CLOSURE-01; Founder decision, executor; completes D-P1-16)
+
+**Context.**
+- D-P1-16's real replies failed on style and on one fact:
+  - add-on analysis on simple turns;
+  - decision closers;
+  - an over-long reply to thanks;
+  - an English message answered in Arabic;
+  - the 40,000 EGP / Sara decision forgotten.
+- The Founder-authorized no-Skill control (G4-SIMPLE-ABLATION-01, DEV, 56,095 µUSD) put the cause outside the Skills: verdict
+  B, the base guidance.
+  - The add-on analysis appeared on the same five turns with and without the six Skills.
+  - S2 was answered in Arabic 4 / 4.
+  - FULL S4 was wrong in both.
+  - With the Skills, judgment was slightly better (8–2 pairwise) and fewer facts were invented.
+- Sources:
+  - the CEO guidance asked for "an original insight, a risk or opportunity" on every turn;
+  - "the Founder's language" was read as the conversation's language;
+  - the Founder's decision existed only as an old turn, outside the 11,750-byte history window, and was never recorded as
+    knowledge or memory.
+
+**Decision (implemented).** The Founder decided:
+- the six Skills load directly (D-P1-16 unchanged), with no classifier and no extra call;
+- the CEO's style and language are corrected at their source;
+- the Founder's explicit decisions are recorded and retrieved after they leave the conversation window;
+- one PR; no merge or install without the Founder.
+
+1. **Style, at the source (`mind-writes.ts`, the CEO's direct conversation only; the approved identity kernel is unchanged
+   and its hash is pinned by the tests).**
+   - `CEO_CONVERSATION_GUIDANCE`: each reply fits the current message.
+     - Thanks or a greeting: one or two natural lines.
+     - A simple or factual question: the answer itself, with no analysis, advice or report around it.
+     - A discussion: the CEO's view and the reasoning that matters.
+     - A real decision: the options, the risks and a recommendation.
+     - A plan or report: only when asked for or truly required.
+     - No recap of earlier turns, no closing offer, and no decision closer unless the decision is real. The kernel's
+       four-part line is scoped here to briefs and real decisions.
+     - Judgment and disagreement stay: a risk, an opportunity or a disagreement is raised when it materially matters, never
+       added by rote.
+   - `CEO_LANGUAGE_GUIDANCE` adds three rules:
+     - use the words professionals actually say, never a coined or literal rendering;
+     - Company facts come only from the context: when the context does not hold the answer, say it is not on record and
+       never fill the gap with a plausible invention;
+     - a recorded Founder decision is the decision in force; a replaced or revoked one is not.
+2. **Language: one rule, no contradiction.**
+   - `EMPLOYEE_COMMUNICATION_STANDARD` (every Employee) and the reply shape (`FOUNDER_REPLY_GUIDANCE`) now say: the language of
+     the Founder's **current** message, or the one the Founder explicitly asks for — never that of earlier turns or of
+     quoted text. They previously said "the Founder's language" / "Arabic when the Founder wrote Arabic".
+   - The CEO's reply also carries one deterministic line naming the current message's language (`messageLanguage`):
+     - quoted text and `>` lines are excluded;
+     - a message counts as Arabic or English when at least 70 % of its letters are of that script;
+     - a mixed message names no language, and the rule decides.
+3. **Founder decision continuity: existing structures only, no parallel memory.**
+   - **The record.** A decision is a Company Knowledge item (`knowledge_items`) of provenance `FOUNDER_DECISION`, topic
+     `founder.decision`. It holds:
+     - its source: the Founder's own message (`provenance_ref = communication_message:<id>`), and only a Founder turn of the
+       Founder ↔ CEO conversation;
+     - the subject and the Founder's words;
+     - the data class, D1 or D2 (default D2);
+     - the audience: the CEO's role (`ROLE` scope, the default) or the Company;
+     - the version (`claim_value v<n>`) and a stable decision key (`claim_key founder-decision.<16 hex>`). The existing unique
+       active-claim index keeps one live version per key.
+   - **Indexing.** A decision is indexed on its own words (subject and statement), never on its framing. Otherwise every
+     reply — whose query carries the topic `founder` — would match every decision.
+   - **Recording.** Only the Founder's confirmed act records a decision: the governed preview → fingerprint → confirm, in one
+     transaction. Two new structured intents carry it: `FOUNDER_DECISION_RECORD` (record, or amend with `supersedesId`) and
+     `FOUNDER_DECISION_REVOKE`.
+     - No text pattern and no model output produces the act. In the conversation, explicit decision wording only highlights
+       "Record as decision"; questions, opinions, hypotheticals, proposals and quotations never do.
+     - The act is idempotent: the same words from the same message are one decision. A second decision on the same subject
+       from the same message is an amendment.
+     - The plan is re-checked inside the confirm. If the target changed or was revoked, the confirmation fails: FAILED, and
+       nothing is written.
+   - **Amendment and revocation.** An amendment uses the existing supersession chain (the old version becomes `SUPERSEDED`,
+     with its link). A revocation is the existing terminal `ARCHIVED`. `knowledge_history` keeps every step.
+   - **Authority.** Founder authority only (`founderAdminWrite` and `founder()`). `verify-bootstrap` forbids the runtime and
+     the CLI to call `recordFounderDecision` or `revokeFounderDecision`. The audit rows hold IDs, codes and versions only
+     (Rule A).
+   - **Reach.** A CEO decision is never a candidate for another Employee. Recording moves no budget, grant, assignment or
+     approval; each still needs its own governed act.
+4. **Retrieval (WP3).**
+   - A relevant decision in force is a knowledge candidate of the reply.
+   - CP-1 gains **step 3b**: the Founder's relevant decisions in force come right after canonical truth — before the history,
+     the knowledge anchors and the Skills — within the KNOWLEDGE share, relevance-gated, so an unrelated decision is never
+     loaded.
+   - A Work Item never sees a decision recorded after it was created (as of its `created_at`).
+   - Academy attempts, shadow work and benchmarks never see one (training isolation).
+   - The history window stays 11,750 bytes.
+   - There is no backfill: an older conversation becomes a decision only if the Founder records it.
+5. **One migration, 0023 (`p1_founder_decisions`).** It recreates `founder_action_previews` with the two intents and keeps
+   every row (the 0009–0022 precedent). No other table changes. The cross-version upgrade proof now follows the newest
+   migration (N-1 → N).
+
+**Kept unchanged:**
+- D-P1-16's DIRECT loading of the six Skills, with their eligibility, integrity and passport;
+- C1 60K, C3 DG-1n, CP-1's other steps and G4b 11,750;
+- D1's AUTO E2 allowance; E1–E4, AUTO E1/E2 and the E3 / E4 manual override;
+- reservations and budgets;
+- the Skills themselves;
+- other Employees' guidance, apart from the one shared language rule.
+
+**Proof (no network, no paid call).**
+- `storage/test/g4-final-closure.test.ts` (13 tests):
+  - recording, idempotency, refusals, authority and session binding;
+  - amend and revoke chains, with history;
+  - a failed confirmation records nothing;
+  - S10: conversation alone records nothing;
+  - S4 / S11: retrieval after the turn left the history window, in NORMAL and FULL (a saturated store with six Skills, 4,000
+    characters and tools), across several phrasings, with no injection for an unrelated message or a thanks;
+  - S8 / S9: the amended version only, then none after the revocation;
+  - S12: never another Employee's, a Company decision reaches its readers, never an Academy attempt;
+  - as-of: a re-assembled turn has no future;
+  - the CEO's current-language line.
+- `storage/test/g4-founder-decisions-migration.test.ts`: v22 → v23.
+- `mind/test/g4-final-closure.test.ts`: `messageLanguage`; CP-1 step 3b's order, relevance gate and share; LAYERED unchanged.
+- `command-center-ui/test/g4-founder-decisions.test.ts`: cues, drafts and requests.
+- `command-center/test/g4-founder-decisions-surface.test.ts`: real loopback HTTP — the preview sentence, CSRF, the list,
+  amend, revoke, and no free-text path.
+- `c3:mutation` gains six mutations, each caught by those proofs:
+  - `g4-decision-any-actor`;
+  - `g4-decision-other-conversation`;
+  - `g4-decision-ceo-scope-widened`;
+  - `g4-decision-duplicated`;
+  - `g4-decision-from-the-future`;
+  - `g4-decision-not-prioritized`.
+
+**Rollback.** Reinstall the previous pin and restore the pre-update backup. The schema-22 release cannot open schema 23; the
+update path's snapshot and RECOVERY_HOLD apply, as for every migration.
+
+**R1-12 proof repair (PR #40 review, Founder-approved; tests only, no production change).**
+- **Finding.** GitHub FULL on `206a97c` found that the R1-12 crowding proofs (`storage/test/r1-review.test.ts`) no longer
+  caught four `r1:mutation` entries:
+  - `r1-12-stale-knowledge-eligible`;
+  - `r1-12-eligibility-after-limit`;
+  - `r1-12-conflict-pool-dropped`;
+  - `r1-12-conflict-pool-unrestricted`.
+- **Cause.** The proofs flooded past a single pool limit: 205 against 200 knowledge, 320 against 300 memories. D-P1-14's
+  two-tier pool (DG-1n: tier 1 plus a `POOL_EXTENSION_PCT` extension over the union query) finds an item crowded out of
+  tier 1 again in tier 2, so a dropped eligibility filter hid behind the extension. The gap has been latent since
+  `fbe6024`, and the mutated lines are unchanged since then.
+- **Repair.** The original tier-1 proofs stay verbatim. New proofs flood past both tiers together; their size is derived
+  from `KNOWLEDGE_POOL_LIMIT`, `MEMORY_POOL_LIMIT` and `POOL_EXTENSION_PCT`, and they cover:
+  - stale knowledge;
+  - other-market and above-class memories;
+  - rejection evidence against an open conflict;
+  - out-of-class conflicts;
+  - other-market conflicts.
+
+  A small proof checks that a conflict that cannot hold the work (above its class, or outside its market) never yields
+  a CONFLICT_HOLD on its own and stays rejection evidence. Positive controls show each conflict holds the work it can
+  hold. Every flood item outranks the protected item on matched terms in both tiers, so a mutation is caught by ranking,
+  not by tier-2 chance.
+
+  Further tier-2-only proofs cover the case where the eligible item is reachable only through the union query's Arabic
+  variants:
+  - stale knowledge;
+  - above-class memories;
+  - an open conflict.
+
+  Each tier-2-only proof asserts that the item shares no tier-1 term with the task.
+- **Result.**
+  - All 16 R1-12 proofs pass on unmodified production code (about 31 s together).
+  - Each of the five R1-12 mutations is caught when applied alone, by a behavioural assertion.
+  - No mutation definition and no production code changed.
+
+**L1 Ubuntu mutation sharding (PR #40 review, Founder-approved; CI structure only).**
+- **Finding.** GitHub FULL run 38754097371 on `0f92110` cancelled `mutation (ubuntu-latest, l1-1of1)` at the 45-minute
+  job ceiling, so the quality gate had no Ubuntu L1 report. The same single shard took 37 minutes on `206a97c` (run
+  38725223033). Every other job passed, including R1-12. Windows already ran L1 in 12 shards (15–27 minutes each).
+- **Repair.** Ubuntu L1 runs in 12 disjoint shards like Windows (`l1:1/12` … `l1:12/12` in `.github/workflows/ci.yml`,
+  `MUTATION_SHARDS[UBUNTU].l1 = 12` in `scripts/ci/impact-map.mjs`). The 45-minute ceiling, the quality gate, proof
+  parity and every mutation are unchanged.
+- **Proof.** The repository audit refuses a map/workflow mismatch, a missing shard and a duplicated shard. On both
+  operating systems, the 124 recorded L1 mutations fall into the 12 shards exactly once (11 or 10 per shard), and the
+  gate's own `parity` accepts the full set and refuses a lost or duplicated shard.
+
+**FULL CI capacity (PR #40 review, Founder-approved; CI structure only).**
+- **Finding.** GitHub FULL run 38773412658 on `c762373` cancelled `tests (windows-latest)` at the 45-minute ceiling:
+  storage alone took 28 minutes, then runtime ran out of time. The quality gate failed only for that reason; every
+  mutation proof passed on both operating systems. Windows durations swing widely between runs (storage 16, 24 and
+  28 minutes). Over the last three FULL runs, several Windows mutation shards also exceeded the 30-minute budget:
+  `c7a-3of4` 42, `l1-8of12` and `l1-10of12` 39, `l1-12of12` 36, `l1-3of12` 32 minutes.
+- **Repair.** One capacity change for every job near the ceiling; the 45-minute ceiling, the gate and every test and
+  mutation are unchanged.
+  - **Workspace tests.** The FULL `tests` job is a matrix on both operating systems: storage in 6 shards, runtime in
+    3, and one job for the nine other workspaces plus the harness. `scripts/run-node-tests.mjs --shard i/n` runs a
+    disjoint slice of a workspace's sorted tracked test files and writes a report. After the one root build, each job
+    calls the runner directly, which is what every workspace's `test` script does.
+  - **Fail-closed coverage.** `scripts/ci/impact-map.mjs` (`TEST_SHARDS`, audited in `classify` before any long job)
+    refuses a test matrix that drops, duplicates or adds a shard, misses a workspace or the harness, repeats a label,
+    raises the ceiling, or runs against a workspace whose `test` script does more than the runner. In FULL mode the
+    quality gate requires every tracked test file of every workspace, plus the harness, covered exactly once per
+    operating system by passing reports (test parity). A missing, failed, duplicated or unknown report fails it.
+  - **Windows mutation shards.** They are sized from measured per-mutation durations (the maximum over three FULL
+    runs) so the worst shard predicts no more than about 25 minutes including setup: c2 2, c3 3, r1 13, c6 6, c7a 9,
+    c7b 4, l1 27. Ubuntu is unchanged (every Ubuntu shard is at most 17 minutes).
+- **Proof (local).**
+  - The audit and gate self-tests reject each tampering case.
+  - On both operating systems, the 126 tracked test files (11 workspaces and the harness) and the 588 recorded
+    mutations fall into the shards exactly once, with no empty shard. The gate's own `parity` and `testParity` accept
+    the full sets and refuse a lost or duplicated shard.
+  - A representative sample ran through the workflow's own step script.
+- **Verifier.** `scripts/verify-bootstrap.mjs` names concrete shard lines in three of its violation scenarios (the
+  Windows c1 line, every Windows c2 line, one r1 shard). They now name the new lines and keep their meaning. Its
+  `tests` check passed only by matching inside `npm run test:harness`; it now requires the sharded runner and the
+  harness explicitly.

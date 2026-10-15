@@ -101,7 +101,8 @@ describe('P1-EMPLOYEE-BASELINE-01 A: one company communication standard for ever
   test('the standard: language follows the Founder, the formal register, no titles, flattery or calques, plain terms, fact vs assumption, own judgment and own voice; bounded', () => {
     const g = EMPLOYEE_COMMUNICATION_STANDARD;
     for (const must of [
-      'answer in the Founder\'s language',
+      // G4-FINAL-CLOSURE-01 (D-P1-17): the CURRENT message decides (an English message after Arabic turns is answered in English).
+      'answer in the language of the Founder\'s current message, or the one the Founder explicitly asks for, never the language of earlier turns or of text the Founder quotes',
       'natural, professional Egyptian Arabic with correct spelling and grammar',
       'when the Founder writes English, write English',
       'professional Modern Standard Arabic for a formal Arabic document',

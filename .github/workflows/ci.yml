@@ -238,13 +238,37 @@ jobs:
           npm run verify
 
   tests:
-    name: tests (${{ matrix.os }})
+    name: tests (${{ matrix.os }}, ${{ matrix.label }})
     needs: classify
     if: needs.classify.outputs.mode == 'full'
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        include:
+          # Disjoint shards of every workspace test suite plus the harness (D-P1-17). scripts/ci/impact-map.mjs
+          # (TEST_SHARDS) audits this list in classify, before any long job; the quality gate proves every tracked test
+          # file of every workspace, and the harness, ran exactly once on EACH operating system (test parity).
+          # Budget: a Windows job targets <= 25m; repeated > 30m is a capacity defect — split it, never raise the 45m ceiling.
+          - { os: windows-latest, label: storage-1of6, suite: 'storage:1/6' }
+          - { os: windows-latest, label: storage-2of6, suite: 'storage:2/6' }
+          - { os: windows-latest, label: storage-3of6, suite: 'storage:3/6' }
+          - { os: windows-latest, label: storage-4of6, suite: 'storage:4/6' }
+          - { os: windows-latest, label: storage-5of6, suite: 'storage:5/6' }
+          - { os: windows-latest, label: storage-6of6, suite: 'storage:6/6' }
+          - { os: windows-latest, label: runtime-1of3, suite: 'runtime:1/3' }
+          - { os: windows-latest, label: runtime-2of3, suite: 'runtime:2/3' }
+          - { os: windows-latest, label: runtime-3of3, suite: 'runtime:3/3' }
+          - { os: windows-latest, label: other-workspaces-harness, suite: 'command-center:1/1 bootstrap-contract:1/1 domain:1/1 governance:1/1 mind:1/1 secret-vault:1/1 model-providers:1/1 tool-drivers:1/1 command-center-ui:1/1 harness:1/1' }
+          - { os: ubuntu-latest, label: storage-1of6, suite: 'storage:1/6' }
+          - { os: ubuntu-latest, label: storage-2of6, suite: 'storage:2/6' }
+          - { os: ubuntu-latest, label: storage-3of6, suite: 'storage:3/6' }
+          - { os: ubuntu-latest, label: storage-4of6, suite: 'storage:4/6' }
+          - { os: ubuntu-latest, label: storage-5of6, suite: 'storage:5/6' }
+          - { os: ubuntu-latest, label: storage-6of6, suite: 'storage:6/6' }
+          - { os: ubuntu-latest, label: runtime-1of3, suite: 'runtime:1/3' }
+          - { os: ubuntu-latest, label: runtime-2of3, suite: 'runtime:2/3' }
+          - { os: ubuntu-latest, label: runtime-3of3, suite: 'runtime:3/3' }
+          - { os: ubuntu-latest, label: other-workspaces-harness, suite: 'command-center:1/1 bootstrap-contract:1/1 domain:1/1 governance:1/1 mind:1/1 secret-vault:1/1 model-providers:1/1 tool-drivers:1/1 command-center-ui:1/1 harness:1/1' }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -256,10 +280,27 @@ jobs:
           node-version-file: .nvmrc
           package-manager-cache: false
       - run: npm ci
-      - name: Every workspace test (unit, real SQLite, multi-process, fault-injection; C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A + C7-B + C7-C + C7-D + L1-01, including the Founder surface, the UI model, the improvement engine, the governed external-evidence intake, the governed control plane, the Pilot instrumentation, the Digital Workshop, the isolated Preview host, the governed promotion adapters, the Windows secret vault and the DeepSeek provider adapter behind a fake transport)
+      - name: Workspace tests (${{ matrix.suite }}; unit, real SQLite, multi-process, fault-injection; C1 + C2 + C3 + R1 + C4 + C5 + C6 + C7-A + C7-B + C7-C + C7-D + L1-01, including the Founder surface, the UI model, the improvement engine, the governed external-evidence intake, the governed control plane, the Pilot instrumentation, the Digital Workshop, the isolated Preview host, the governed promotion adapters, the Windows secret vault and the DeepSeek provider adapter behind a fake transport)
         run: |
           npm run build
-          npm run test
+          mkdir -p test-reports
+          for spec in ${{ matrix.suite }}; do
+            u="${spec%%:*}"; shard="${spec#*:}"; report="test-reports/${{ matrix.os }}__${u}__${shard/\//of}.json"
+            if [ "$u" = harness ]; then
+              npm run test:harness
+              node scripts/ci/impact-map.mjs --harness-report "$report"
+            else
+              (cd "packages/$u" && node ../../scripts/run-node-tests.mjs --shard "$shard" --report "../../$report")
+            fi
+          done
+      - name: Upload the shard's test report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tests-${{ matrix.os }}-${{ matrix.label }}
+          path: test-reports/
+          if-no-files-found: error
+          retention-days: 14
 
   mutation:
     name: mutation (${{ matrix.os }}, ${{ matrix.label }})
@@ -270,48 +311,79 @@ jobs:
       matrix:
         include:
           # Disjoint shards; the quality gate proves each OS ran every recorded mutation exactly once.
-          # Budget: a Windows shard targets <= 30m; repeated > 35m is a capacity defect — split it, never raise the 45m ceiling.
-          - { os: windows-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }
-          - { os: windows-latest, label: c3-1of2, suite: 'c3:1/2' }
-          - { os: windows-latest, label: c3-2of2, suite: 'c3:2/2' }
-          - { os: windows-latest, label: r1-1of8, suite: 'r1:1/8' }
-          - { os: windows-latest, label: r1-2of8, suite: 'r1:2/8' }
-          - { os: windows-latest, label: r1-3of8, suite: 'r1:3/8' }
-          - { os: windows-latest, label: r1-4of8, suite: 'r1:4/8' }
-          - { os: windows-latest, label: r1-5of8, suite: 'r1:5/8' }
-          - { os: windows-latest, label: r1-6of8, suite: 'r1:6/8' }
-          - { os: windows-latest, label: r1-7of8, suite: 'r1:7/8' }
-          - { os: windows-latest, label: r1-8of8, suite: 'r1:8/8' }
+          # Budget: a Windows shard targets <= 25m (sized from measured per-mutation durations, D-P1-17); repeated > 30m is a
+          # capacity defect — split it, never raise the 45m ceiling.
+          - { os: windows-latest, label: c1-c2-1of2, suite: 'c1:1/1 c2:1/2' }
+          - { os: windows-latest, label: c2-2of2, suite: 'c2:2/2' }
+          - { os: windows-latest, label: c3-1of3, suite: 'c3:1/3' }
+          - { os: windows-latest, label: c3-2of3, suite: 'c3:2/3' }
+          - { os: windows-latest, label: c3-3of3, suite: 'c3:3/3' }
+          - { os: windows-latest, label: r1-1of13, suite: 'r1:1/13' }
+          - { os: windows-latest, label: r1-2of13, suite: 'r1:2/13' }
+          - { os: windows-latest, label: r1-3of13, suite: 'r1:3/13' }
+          - { os: windows-latest, label: r1-4of13, suite: 'r1:4/13' }
+          - { os: windows-latest, label: r1-5of13, suite: 'r1:5/13' }
+          - { os: windows-latest, label: r1-6of13, suite: 'r1:6/13' }
+          - { os: windows-latest, label: r1-7of13, suite: 'r1:7/13' }
+          - { os: windows-latest, label: r1-8of13, suite: 'r1:8/13' }
+          - { os: windows-latest, label: r1-9of13, suite: 'r1:9/13' }
+          - { os: windows-latest, label: r1-10of13, suite: 'r1:10/13' }
+          - { os: windows-latest, label: r1-11of13, suite: 'r1:11/13' }
+          - { os: windows-latest, label: r1-12of13, suite: 'r1:12/13' }
+          - { os: windows-latest, label: r1-13of13, suite: 'r1:13/13' }
           - { os: windows-latest, label: c4-1of2, suite: 'c4:1/2' }
           - { os: windows-latest, label: c4-2of2, suite: 'c4:2/2' }
           - { os: windows-latest, label: c5-1of1, suite: 'c5:1/1' }
-          - { os: windows-latest, label: c6-1of4, suite: 'c6:1/4' }
-          - { os: windows-latest, label: c6-2of4, suite: 'c6:2/4' }
-          - { os: windows-latest, label: c6-3of4, suite: 'c6:3/4' }
-          - { os: windows-latest, label: c6-4of4, suite: 'c6:4/4' }
-          - { os: windows-latest, label: c7a-1of4, suite: 'c7a:1/4' }
-          - { os: windows-latest, label: c7a-2of4, suite: 'c7a:2/4' }
-          - { os: windows-latest, label: c7a-3of4, suite: 'c7a:3/4' }
-          - { os: windows-latest, label: c7a-4of4, suite: 'c7a:4/4' }
-          - { os: windows-latest, label: c7b-1of3, suite: 'c7b:1/3' }
-          - { os: windows-latest, label: c7b-2of3, suite: 'c7b:2/3' }
-          - { os: windows-latest, label: c7b-3of3, suite: 'c7b:3/3' }
+          - { os: windows-latest, label: c6-1of6, suite: 'c6:1/6' }
+          - { os: windows-latest, label: c6-2of6, suite: 'c6:2/6' }
+          - { os: windows-latest, label: c6-3of6, suite: 'c6:3/6' }
+          - { os: windows-latest, label: c6-4of6, suite: 'c6:4/6' }
+          - { os: windows-latest, label: c6-5of6, suite: 'c6:5/6' }
+          - { os: windows-latest, label: c6-6of6, suite: 'c6:6/6' }
+          - { os: windows-latest, label: c7a-1of9, suite: 'c7a:1/9' }
+          - { os: windows-latest, label: c7a-2of9, suite: 'c7a:2/9' }
+          - { os: windows-latest, label: c7a-3of9, suite: 'c7a:3/9' }
+          - { os: windows-latest, label: c7a-4of9, suite: 'c7a:4/9' }
+          - { os: windows-latest, label: c7a-5of9, suite: 'c7a:5/9' }
+          - { os: windows-latest, label: c7a-6of9, suite: 'c7a:6/9' }
+          - { os: windows-latest, label: c7a-7of9, suite: 'c7a:7/9' }
+          - { os: windows-latest, label: c7a-8of9, suite: 'c7a:8/9' }
+          - { os: windows-latest, label: c7a-9of9, suite: 'c7a:9/9' }
+          - { os: windows-latest, label: c7b-1of4, suite: 'c7b:1/4' }
+          - { os: windows-latest, label: c7b-2of4, suite: 'c7b:2/4' }
+          - { os: windows-latest, label: c7b-3of4, suite: 'c7b:3/4' }
+          - { os: windows-latest, label: c7b-4of4, suite: 'c7b:4/4' }
           - { os: windows-latest, label: c7c-1of2, suite: 'c7c:1/2' }
           - { os: windows-latest, label: c7c-2of2, suite: 'c7c:2/2' }
           - { os: windows-latest, label: c7d-1of2, suite: 'c7d:1/2' }
           - { os: windows-latest, label: c7d-2of2, suite: 'c7d:2/2' }
-          - { os: windows-latest, label: l1-1of12, suite: 'l1:1/12' }
-          - { os: windows-latest, label: l1-2of12, suite: 'l1:2/12' }
-          - { os: windows-latest, label: l1-3of12, suite: 'l1:3/12' }
-          - { os: windows-latest, label: l1-4of12, suite: 'l1:4/12' }
-          - { os: windows-latest, label: l1-5of12, suite: 'l1:5/12' }
-          - { os: windows-latest, label: l1-6of12, suite: 'l1:6/12' }
-          - { os: windows-latest, label: l1-7of12, suite: 'l1:7/12' }
-          - { os: windows-latest, label: l1-8of12, suite: 'l1:8/12' }
-          - { os: windows-latest, label: l1-9of12, suite: 'l1:9/12' }
-          - { os: windows-latest, label: l1-10of12, suite: 'l1:10/12' }
-          - { os: windows-latest, label: l1-11of12, suite: 'l1:11/12' }
-          - { os: windows-latest, label: l1-12of12, suite: 'l1:12/12' }
+          - { os: windows-latest, label: l1-1of27, suite: 'l1:1/27' }
+          - { os: windows-latest, label: l1-2of27, suite: 'l1:2/27' }
+          - { os: windows-latest, label: l1-3of27, suite: 'l1:3/27' }
+          - { os: windows-latest, label: l1-4of27, suite: 'l1:4/27' }
+          - { os: windows-latest, label: l1-5of27, suite: 'l1:5/27' }
+          - { os: windows-latest, label: l1-6of27, suite: 'l1:6/27' }
+          - { os: windows-latest, label: l1-7of27, suite: 'l1:7/27' }
+          - { os: windows-latest, label: l1-8of27, suite: 'l1:8/27' }
+          - { os: windows-latest, label: l1-9of27, suite: 'l1:9/27' }
+          - { os: windows-latest, label: l1-10of27, suite: 'l1:10/27' }
+          - { os: windows-latest, label: l1-11of27, suite: 'l1:11/27' }
+          - { os: windows-latest, label: l1-12of27, suite: 'l1:12/27' }
+          - { os: windows-latest, label: l1-13of27, suite: 'l1:13/27' }
+          - { os: windows-latest, label: l1-14of27, suite: 'l1:14/27' }
+          - { os: windows-latest, label: l1-15of27, suite: 'l1:15/27' }
+          - { os: windows-latest, label: l1-16of27, suite: 'l1:16/27' }
+          - { os: windows-latest, label: l1-17of27, suite: 'l1:17/27' }
+          - { os: windows-latest, label: l1-18of27, suite: 'l1:18/27' }
+          - { os: windows-latest, label: l1-19of27, suite: 'l1:19/27' }
+          - { os: windows-latest, label: l1-20of27, suite: 'l1:20/27' }
+          - { os: windows-latest, label: l1-21of27, suite: 'l1:21/27' }
+          - { os: windows-latest, label: l1-22of27, suite: 'l1:22/27' }
+          - { os: windows-latest, label: l1-23of27, suite: 'l1:23/27' }
+          - { os: windows-latest, label: l1-24of27, suite: 'l1:24/27' }
+          - { os: windows-latest, label: l1-25of27, suite: 'l1:25/27' }
+          - { os: windows-latest, label: l1-26of27, suite: 'l1:26/27' }
+          - { os: windows-latest, label: l1-27of27, suite: 'l1:27/27' }
           - { os: ubuntu-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }
           - { os: ubuntu-latest, label: c3-1of1, suite: 'c3:1/1' }
           - { os: ubuntu-latest, label: r1-1of2, suite: 'r1:1/2' }
@@ -324,7 +396,18 @@ jobs:
           - { os: ubuntu-latest, label: c7b-2of2, suite: 'c7b:2/2' }
           - { os: ubuntu-latest, label: c7c-1of1, suite: 'c7c:1/1' }
           - { os: ubuntu-latest, label: c7d-1of1, suite: 'c7d:1/1' }
-          - { os: ubuntu-latest, label: l1-1of1, suite: 'l1:1/1' }
+          - { os: ubuntu-latest, label: l1-1of12, suite: 'l1:1/12' }
+          - { os: ubuntu-latest, label: l1-2of12, suite: 'l1:2/12' }
+          - { os: ubuntu-latest, label: l1-3of12, suite: 'l1:3/12' }
+          - { os: ubuntu-latest, label: l1-4of12, suite: 'l1:4/12' }
+          - { os: ubuntu-latest, label: l1-5of12, suite: 'l1:5/12' }
+          - { os: ubuntu-latest, label: l1-6of12, suite: 'l1:6/12' }
+          - { os: ubuntu-latest, label: l1-7of12, suite: 'l1:7/12' }
+          - { os: ubuntu-latest, label: l1-8of12, suite: 'l1:8/12' }
+          - { os: ubuntu-latest, label: l1-9of12, suite: 'l1:9/12' }
+          - { os: ubuntu-latest, label: l1-10of12, suite: 'l1:10/12' }
+          - { os: ubuntu-latest, label: l1-11of12, suite: 'l1:11/12' }
+          - { os: ubuntu-latest, label: l1-12of12, suite: 'l1:12/12' }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -418,6 +501,14 @@ jobs:
           pattern: mutation-*
           path: mutation-reports
           merge-multiple: true
+      - name: Download the workspace test reports
+        if: needs.classify.outputs.mode == 'full'
+        continue-on-error: true # a missing report fails the gate's test parity check (fail closed)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: tests-*
+          path: test-reports
+          merge-multiple: true
       - name: Download the validation plan
         if: needs.classify.outputs.mode == 'affected'
         continue-on-error: true # a missing plan fails the gate (fail closed)
@@ -433,14 +524,14 @@ jobs:
           pattern: affected-proof-*
           path: affected-proofs
           merge-multiple: true
-      - name: Gate — every required job green, the mode's proof complete (FULL parity on both OSes; affected plan re-derived and proven)
+      - name: Gate — every required job green, the mode's proof complete (FULL mutation and test parity on both OSes; affected plan re-derived and proven)
         env:
           NEEDS: ${{ toJSON(needs) }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           printf '%s' "$NEEDS" > needs.json
-          node scripts/ci/quality-gate.mjs --mode "${{ needs.classify.outputs.mode }}" --needs needs.json --reports mutation-reports --plan validation-plan/validation-plan.json --proofs affected-proofs --base "$BASE_SHA" --head "$HEAD_SHA"
+          node scripts/ci/quality-gate.mjs --mode "${{ needs.classify.outputs.mode }}" --needs needs.json --reports mutation-reports --test-reports test-reports --plan validation-plan/validation-plan.json --proofs affected-proofs --base "$BASE_SHA" --head "$HEAD_SHA"
       - name: Record the proven tree and its proof mode (lets the post-merge run take the fast integrity path)
         if: github.event_name == 'pull_request' && (needs.classify.outputs.mode == 'full' || needs.classify.outputs.mode == 'affected')
         run: node scripts/ci/post-merge-mode.mjs --record-tested-tree tested-tree.json --mode "${{ needs.classify.outputs.mode }}"

@@ -28,13 +28,17 @@ import {
   evaluateCapability,
   isStale,
   itemEstimate,
+  messageLanguage,
   neutralizeLayerMarkers,
   overlap,
   planContext,
+  queryTerms as unionQueryTerms,
   renderContext,
+  SALIENCE_INDEX_PREFIX,
   summaryFingerprint,
   terms as termsOf,
   type CapabilityRequirement,
+  type SkillTier,
   type ContextBudgetPolicy,
   type ContextCandidate,
   type ContextPlan,
@@ -50,6 +54,7 @@ import { txGrantedToolGuidance } from './product-knowledge.js';
 import type { EmployeeRecord } from './governance-records.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import {
+  FOUNDER_DECISION_SOURCE,
   SYSTEM_MIND_REF,
   eligibilitySnapshot,
   indexTerms,
@@ -63,6 +68,7 @@ import {
   setMemoryStatus,
   sourceChanged,
   versionEligibility,
+  getSkillVersionMeta,
   getSkillVersionRow,
 } from './mind-core.js';
 import { mapCandidate, mapKnowledge, mapMemory, mapPassport, type MemoryCandidateRecord } from './mind-records.js';
@@ -583,12 +589,32 @@ export const KNOWLEDGE_POOL_LIMIT = 200;
 export const CANONICAL_POOL_LIMIT = 200;
 export const RECENT_RESULTS_MAX = 8;
 export const RECENT_RESULT_CHARS = 2_048;
+/**
+ * P1-CONTEXT-INTEL-01 (D-P1-14, two-tier pool): the extension of each pool past today's lookup, as a share of its limit —
+ * canonical 50, knowledge 200 → 50, memory 75 — for items only the new union query matches.
+ */
+export const POOL_EXTENSION_PCT = 25;
+const extension = (limit: number): number => Math.floor((limit * POOL_EXTENSION_PCT) / 100);
+
+/**
+ * How a Founder reply selects its Skills (G4-SIMPLE-01, D-P1-16), recorded on the Work Item when it is created: DIRECT (the
+ * CEO's own thread: every eligible passport Skill is a candidate, no classification) or LEXICAL (another Founder thread:
+ * the term-overlap selection). Null for every other Work Item (no Skill selection: the legacy path).
+ */
+export const SKILL_SELECTIONS = ['DIRECT', 'LEXICAL'] as const;
+export type SkillSelection = (typeof SKILL_SELECTIONS)[number];
+function skillSelectionOf(item: WorkItemRecord): SkillSelection | null {
+  const v = (item.processorInput as { skillSelection?: unknown } | null)?.skillSelection;
+  return (SKILL_SELECTIONS as readonly unknown[]).includes(v) ? (v as SkillSelection) : null;
+}
 
 function contextPolicy(item: WorkItemRecord): ContextBudgetPolicy {
   const o = item.processorInput as { contextBudgetTokens?: unknown } | null;
   const t = o && typeof o === 'object' ? o.contextBudgetTokens : undefined;
-  if (typeof t === 'number' && Number.isInteger(t) && t >= 1_024 && t <= 64_000) return { ...DEFAULT_CONTEXT_POLICY, totalTokens: t };
-  return DEFAULT_CONTEXT_POLICY;
+  const base = typeof t === 'number' && Number.isInteger(t) && t >= 1_024 && t <= 64_000 ? { ...DEFAULT_CONTEXT_POLICY, totalTokens: t } : DEFAULT_CONTEXT_POLICY;
+  // A Founder reply created with Skill selection plans in the CP-1 order (Founder decision G3); every other Work Item —
+  // earlier work, Academy, shadow, benchmarks, background tasks — keeps the layered order.
+  return skillSelectionOf(item) !== null ? { ...base, order: 'CP1' } : base;
 }
 
 /** The submitter-declared ceiling of what the context may contain (default: the declared class — minimization by exclusion). */
@@ -598,7 +624,7 @@ function contextCeiling(item: WorkItemRecord, effective: DataClass): DataClass {
   return maxDataClass(declared, effective);
 }
 
-function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, mode: string | null, grantedTools: readonly string[] = []): string {
+function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, mode: string | null, grantedTools: readonly string[] = [], currentLanguage: 'ARABIC' | 'ENGLISH' | null = null): string {
   const task = (item.processorInput as { taskClass?: unknown } | null)?.taskClass;
   // D-L1-25: an answer-only benchmark observation (BQM-2) is offered exactly the deliverable its fence accepts.
   const answerOnly = mode === 'SKILL_BENCHMARK' && (item.processorInput as { answerOnly?: unknown } | null)?.answerOnly === true;
@@ -622,6 +648,9 @@ function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, m
     // P1-CEO-CONVERSATION-UX-01: how the CEO talks in the direct Founder conversation, after the kernel it applies. Only that
     // reply carries the marker: a CEO brief, background work, an Academy run and every other Employee keep their context.
     ...(isCeoDirectConversation(item) ? [CEO_CONVERSATION_GUIDANCE, CEO_LANGUAGE_GUIDANCE] : []),
+    // G4-FINAL-CLOSURE-01 (D-P1-17): the language of the message this reply answers, read deterministically (quoted text
+    // excluded; a mixed message names none and the rule decides), so an English message after Arabic turns is answered in English.
+    ...(isCeoDirectConversation(item) && currentLanguage !== null ? [currentLanguageLine(currentLanguage)] : []),
     // P1-PRODUCT-KNOWLEDGE-01 (D-P1-06): only the Tools this Employee was granted, each with its release-pinned guidance.
     // Every other Employee (and every context without such a grant) keeps its exact preamble.
     ...grantedTools,
@@ -636,9 +665,14 @@ const isCeoDirectConversation = (item: WorkItemRecord): boolean => isFounderThre
 /**
  * A natural executive conversation by default, structure when asked or truly needed, the Founder Communication Standard for
  * real decisions and briefs. Shorter is never shallower: independent judgment, disagreement and honest uncertainty stay.
+ * G4-FINAL-CLOSURE-01 (D-P1-17): the reply fits the current message (a thanks, a simple or factual question, a discussion, a
+ * decision, a requested report); an insight, risk or disagreement is offered when it materially matters, never on every
+ * turn; no recap, no closing offer, no decision closer that is not a real decision. The kernel's four-part communication line
+ * is scoped here, in the CEO's own conversation guidance — the approved kernel itself is unchanged. The reply's language is
+ * the shared standard's (the current message), no longer restated here.
  */
 export const CEO_CONVERSATION_GUIDANCE =
-  'This is your direct conversation with the Founder. Talk as a trusted executive partner: naturally, warmly and professionally, in the Founder\'s language and tone. Answer what the Founder is discussing now and follow where the conversation is going, instead of steering it back to earlier topics. When the Founder is on one subject, keep the body short and focused, in plain paragraphs: no opening restatement of what you understood, no section headings, numbered assessments or recap of earlier turns. Shorter never means shallower: bring your own judgment, an original insight, a risk or opportunity the Founder has not raised, or your disagreement and its reason. Never ask again what this conversation or your context already answers; ask a follow-up only when it genuinely moves the discussion forward, and then one question, not a list. Give structured analysis, a detailed plan, a report or decision options when the Founder asks for one or the subject genuinely requires it. The four-part Founder Communication Standard (what is happening, why it matters, your recommendation, the decision needed) is for briefs and real decisions, not for every turn: only when something actually needs the Founder\'s authority, say plainly what you recommend and what the Founder must decide, with purpose DECISION_REQUEST; never manufacture a decision to ask for. State uncertainty honestly. This shapes how you talk; it grants no authority and changes no governance, budget or approval rule.';
+  'This is your direct conversation with the Founder. Talk as a trusted executive partner: naturally, warmly and professionally, in the Founder\'s tone. Fit each reply to what the Founder\'s current message actually asks: thanks or a greeting gets one or two natural lines; a factual or simple question gets the answer itself, briefly, with no analysis, advice or report around it; a discussion gets your view and the reasoning that matters; a real decision gets the options, the risks and a clear recommendation. Give a detailed plan, report or decision options when the Founder asks for one or the subject genuinely requires it. Follow where the conversation is going instead of steering it back to earlier topics: no opening restatement of what you understood, no section headings or numbered assessments on one subject, no recap of earlier turns, no closing offer of more help. Shorter never means shallower: in a discussion or a decision bring your own judgment, and your disagreement and its reason, or a risk or opportunity the Founder has not raised when it materially matters; never add one just to have something to add. Never ask again what this conversation or your context already answers; ask a follow-up only when it genuinely moves the discussion forward, and then one question, not a list. The four-part Founder Communication Standard (what is happening, why it matters, your recommendation, the decision needed) is for briefs and real decisions, not for every turn: only when something actually needs the Founder\'s authority now, say what you recommend and what the Founder must decide, with purpose DECISION_REQUEST; never manufacture a decision to ask for, and never close a reply by asking for one. State uncertainty honestly. This shapes how you talk; it grants no authority and changes no governance, budget or approval rule.';
 
 /**
  * P1-EMPLOYEE-BASELINE-01 (D-P1-10): the company communication standard every Employee follows when writing to the Founder —
@@ -646,24 +680,35 @@ export const CEO_CONVERSATION_GUIDANCE =
  * documents), no habitual titles or flattery, no literal translation, plain terms, facts kept apart from analysis,
  * assumptions and recommendations, and the Employee's own judgment and initiative. It sets the quality of the writing, not the
  * voice: each Employee's identity kernel, role and specialty still decide how it thinks and speaks. The general rules of the
- * CEO's D-P1-09 language guidance moved here; it grants nothing.
+ * CEO's D-P1-09 language guidance moved here; it grants nothing. G4-FINAL-CLOSURE-01 (D-P1-17): "the Founder's language" was
+ * read as the conversation's language (an English message after Arabic turns was answered in Arabic, 4 of 4 replies with and
+ * without Skills): the language is that of the CURRENT message, or the one the Founder explicitly asks for — one rule, the same
+ * in the reply shape below.
  */
 export const EMPLOYEE_COMMUNICATION_STANDARD =
-  'Company communication standard (every Employee, whenever you write to the Founder): answer in the Founder\'s language. When the Founder writes Arabic, write natural, professional Egyptian Arabic with correct spelling and grammar; when the Founder writes English, write English. A report, a document or a formal write-up uses the language and register its task needs (professional Modern Standard Arabic for a formal Arabic document). Write each language as itself, not translated word for word: no calqued phrasing or English sentence order, and the common word rather than an invented or literal-translation term. No repeated titles or honorifics: a title such as «يا فندم» is at most occasional, never a habit or the opening of every reply, and never flattery. Be clear and direct; use a technical term only when the work needs it, and say what it means in plain words the first time. Keep apart, in plain words, what is a verified fact (and its source), your analysis, an assumption still to test, and your recommendation; never present an assumption, an estimate or a projection as an established result. Keep your professional judgment: when you disagree, say so and why; raise what matters even if the Founder has not asked; take the initiative your role allows. This standard sets the quality of your writing, not your voice: your own identity, role, specialty and personality still decide how you think and speak. It grants no authority and changes no governance, budget or approval rule.';
+  'Company communication standard (every Employee, whenever you write to the Founder): answer in the language of the Founder\'s current message, or the one the Founder explicitly asks for, never the language of earlier turns or of text the Founder quotes. When the Founder writes Arabic, write natural, professional Egyptian Arabic with correct spelling and grammar; when the Founder writes English, write English. A report, a document or a formal write-up uses the language and register its task needs (professional Modern Standard Arabic for a formal Arabic document). Write each language as itself, not translated word for word: no calqued phrasing or English sentence order, and the common word rather than an invented or literal-translation term. No repeated titles or honorifics: a title such as «يا فندم» is at most occasional, never a habit or the opening of every reply, and never flattery. Be clear and direct; use a technical term only when the work needs it, and say what it means in plain words the first time. Keep apart, in plain words, what is a verified fact (and its source), your analysis, an assumption still to test, and your recommendation; never present an assumption, an estimate or a projection as an established result. Keep your professional judgment: when you disagree, say so and why; raise what matters even if the Founder has not asked; take the initiative your role allows. This standard sets the quality of your writing, not your voice: your own identity, role, specialty and personality still decide how you think and speak. It grants no authority and changes no governance, budget or approval rule.';
 
 /**
  * P1-CEO-QUALITY-CORR-01 (D-P1-09), narrowed by P1-EMPLOYEE-BASELINE-01: what is the CEO's own in that same conversation, on
  * top of the company communication standard — the executive register, finishing what the evidence allows, and a complete
  * strategic reply within the body. A style rule of the conversation (the D-P1-05 seam), never the identity kernel or the
- * Constitution; it grants nothing.
+ * Constitution; it grants nothing. G4-FINAL-CLOSURE-01 (D-P1-17): the words professionals actually say (never a coined or
+ * literal rendering), Company facts only from the context (no plausible invention when it is not on record), and a recorded
+ * Founder decision is the decision in force (one it replaced or the Founder revoked is not).
  */
 export const CEO_LANGUAGE_GUIDANCE =
-  'How you write as the CEO, on top of the company communication standard: in Arabic, talk the way an experienced Egyptian chief executive talks with the company\'s founder: clear, direct, friendly and confident, addressing the Founder simply and by substance. Caution about what you do not know never replaces what the evidence already allows: finish what can be finished, and name only the real gap and how to close it. A strategic reply is complete when it gives the decision, the reasoning that matters and the next step within the 4000-character body, not every consideration.';
+  'How you write as the CEO, on top of the company communication standard: in Arabic, talk the way an experienced Egyptian chief executive talks with the company\'s founder: clear, direct, friendly and confident, addressing the Founder simply and by substance. Use the words Egyptian professionals actually say, including the usual English term (pilot, backlog, silo) where that is what is said, never a coined or literal rendering. Caution about what you do not know never replaces what the evidence already allows: finish what can be finished, and name only the real gap and how to close it. Company facts come only from your context (canonical truth, the Founder\'s recorded decisions, knowledge, memory and this conversation): when it does not hold what the Founder asks, say plainly that you do not have it on record, never fill the gap with a plausible number, date, rule, timeline or event. A recorded Founder decision in your context is the decision in force; one it replaced or the Founder revoked is not. A strategic reply is complete when it gives the decision, the reasoning that matters and the next step within the 4000-character body, not every consideration.';
 
 const ANSWER_MODES: readonly string[] = ['ACADEMY_ATTEMPT', 'SHADOW_WORK', 'SKILL_BENCHMARK'];
 
 /** D-L1-23: the versioned ANSWER contract (governance), sent verbatim. */
 const ANSWER_GUIDANCE = ANSWER_CONTRACT_TEXT;
+
+/** G4-FINAL-CLOSURE-01 (D-P1-17): the one line naming the current message's language (the standard's rule, made explicit). */
+export const currentLanguageLine = (l: 'ARABIC' | 'ENGLISH'): string =>
+  l === 'ENGLISH'
+    ? 'The Founder message you are answering is written in English: write your reply in English, whatever language earlier turns used, unless the Founder asks for another language.'
+    : 'The Founder message you are answering is written in Arabic: write your reply in Arabic (the company standard decides the register), whatever language earlier turns used, unless the Founder asks for another language.';
 
 /** The approved identity kernel on the Employee's profile (bounded), or null. */
 function identityKernelOf(e: EmployeeRecord): string | null {
@@ -672,13 +717,19 @@ function identityKernelOf(e: EmployeeRecord): string | null {
 }
 
 const FOUNDER_REPLY_GUIDANCE =
-  'This work answers the Founder in a thread. Your reply is one more proposal shape: {"type":"MESSAGE","purpose":"REQUEST|QUESTION|FYI|REVIEW|DECISION_REQUEST|BLOCKER|ESCALATION|RESULT|CORRECTION","attentionLevel":"INFORMATIONAL|NEEDS_ATTENTION|NEEDS_DECISION|URGENT","body":"...","brief":null,"contextRefs":[]}. Write the body in the Founder\'s language (Arabic when the Founder wrote Arabic), at most 4000 characters; it decides, grants and approves nothing. One MESSAGE is the whole answer: the run ends when it is recorded. contextRefs is optional structured metadata, never a citation: at most 8 entries, each kind:id (lowercase kind, then an id of letters, digits, dot, dash, underscore or colon; for example ["memory:abc123"]), only for a reference this context gave you; otherwise []. Never put a file path, URL, GitHub address, commit or prose in contextRefs: cite sources in the body. Output the one JSON object alone: no code fence, no text before or after it.';
+  'This work answers the Founder in a thread. Your reply is one more proposal shape: {"type":"MESSAGE","purpose":"REQUEST|QUESTION|FYI|REVIEW|DECISION_REQUEST|BLOCKER|ESCALATION|RESULT|CORRECTION","attentionLevel":"INFORMATIONAL|NEEDS_ATTENTION|NEEDS_DECISION|URGENT","body":"...","brief":null,"contextRefs":[]}. Write the body in the language of the Founder message you answer (Arabic when it is Arabic, English when it is English) unless the Founder asks for another, at most 4000 characters; it decides, grants and approves nothing. One MESSAGE is the whole answer: the run ends when it is recorded. contextRefs is optional structured metadata, never a citation: at most 8 entries, each kind:id (lowercase kind, then an id of letters, digits, dot, dash, underscore or colon; for example ["memory:abc123"]), only for a reference this context gave you; otherwise []. Never put a file path, URL, GitHub address, commit or prose in contextRefs: cite sources in the body. Output the one JSON object alone: no code fence, no text before or after it.';
 
 const isFounderThreadReply = (item: WorkItemRecord): boolean => typeof (item.processorInput as { founderThreadId?: unknown } | null)?.founderThreadId === 'string';
 
 /** P1-CHAT-INTEL-01: the bounds of the earlier turns a conversation reply sees (bytes are the context's token estimate). */
 export const CONVERSATION_HISTORY_MAX_MESSAGES = 12;
 export const CONVERSATION_HISTORY_MAX_BYTES = 4_800;
+/**
+ * P1-CONTEXT-INTEL-01 (D-P1-14, G4b): the history allowance of a reply whose context budget is at least
+ * `CONVERSATION_HISTORY_LARGE_BUDGET` (a new Founder reply: 60,000). Same thread scope, same turn bound, same order.
+ */
+export const CONVERSATION_HISTORY_LARGE_MAX_BYTES = 11_750;
+export const CONVERSATION_HISTORY_LARGE_BUDGET = 48_000;
 const CONVERSATION_TURN_MAX_CHARS = 1_200;
 
 /**
@@ -686,7 +737,8 @@ const CONVERSATION_TURN_MAX_CHARS = 1_200;
  * never seen early), newest first into the allowance and rendered oldest first. Bodies are company content of the
  * Founder-only thread, already secret-scanned on write; lines that would impersonate a context layer are neutralized.
  */
-function conversationHistory(ctx: StoreContext, item: WorkItemRecord): { threadId: string; count: number; text: string } | null {
+function conversationHistory(ctx: StoreContext, item: WorkItemRecord, budgetTokens: number): { threadId: string; count: number; text: string } | null {
+  const maxBytes = budgetTokens >= CONVERSATION_HISTORY_LARGE_BUDGET ? CONVERSATION_HISTORY_LARGE_MAX_BYTES : CONVERSATION_HISTORY_MAX_BYTES;
   const pi = (item.processorInput ?? {}) as { founderThreadId?: unknown; founderMessageId?: unknown };
   if (typeof pi.founderThreadId !== 'string' || typeof pi.founderMessageId !== 'string') return null;
   const anchor = ctx.db.get<{ seq: number }>('SELECT seq FROM communication_messages WHERE id = ? AND thread_id = ?', pi.founderMessageId, pi.founderThreadId);
@@ -702,7 +754,7 @@ function conversationHistory(ctx: StoreContext, item: WorkItemRecord): { threadI
     const who = r.sender_kind === 'FOUNDER' ? 'Founder' : r.sender_ref === item.ownerRef ? 'You' : 'Employee';
     const line = `- ${r.created_at.slice(0, 16).replace('T', ' ')} UTC, ${who} (${r.purpose.toLowerCase().replace('_', ' ')}): ${neutralizeLayerMarkers(body)}`;
     const size = Buffer.byteLength(line, 'utf8') + 1;
-    if (bytes + size > CONVERSATION_HISTORY_MAX_BYTES) break;
+    if (bytes + size > maxBytes) break;
     lines.push(line);
     bytes += size;
   }
@@ -761,10 +813,15 @@ export function txAssembleContext(ctx: StoreContext, fence: Fence, req: Assemble
   const mode = ctx.db.get<{ mode: string }>('SELECT mode FROM run_execution_modes WHERE run_id = ?', fence.runId)?.mode ?? (benchmarkRunOf(ctx, fence.runId) !== null ? 'SKILL_BENCHMARK' : null);
   const instructions = String((item.processorInput as { instructions?: unknown } | null)?.instructions ?? '');
   const skillCodes = caps.requirements.flatMap((r) => (r.kind === 'SKILL' ? [ctx.db.get<{ code: string }>('SELECT code FROM skills WHERE id = ?', r.skillId)?.code ?? ''] : []));
-  const queryTerms = [...new Set([...caps.topicTerms, ...termsOf(instructions), ...skillCodes.flatMap((c) => termsOf(c.replace(/[.-]/g, ' ')))])].sort().slice(0, 96);
-  const query = { terms: queryTerms, marketRef: caps.marketRef, dataClassCeiling: ceiling, importance } as const;
+  const codeTerms = skillCodes.flatMap((c) => termsOf(c.replace(/[.-]/g, ' ')));
+  // Tier 1 (P1-CONTEXT-INTEL-01, DG-1n): today's query, constructed exactly as the previous release builds it.
+  const legacyTerms = [...new Set([...caps.topicTerms, ...termsOf(instructions), ...codeTerms])].sort().slice(0, 96);
+  // The union query of this task (C3): topics ∪ TI-0 ∪ TI-1 of its text with Arabic proclitic variants ∪ Skill codes. The text is
+  // the Founder's own message for a Founder reply (never the reply template), the instructions otherwise.
+  const query = { terms: unionQueryTerms(founderMessageBody(ctx, item) ?? instructions, caps.topicTerms, codeTerms), marketRef: caps.marketRef, dataClassCeiling: ceiling, importance } as const;
 
-  const pool = buildPool(ctx, fence, e, item, { at, effective, ceiling, caps, mode, instructions, query, step: req.step });
+  const selection = skillSelectionOf(item);
+  const pool = buildPool(ctx, fence, e, item, { at, effective, ceiling, caps, mode, instructions, query, legacyTerms, policy, selection, step: req.step });
 
   let plan: ContextPlan;
   let rendered: ReturnType<typeof renderContext> | null = null;
@@ -836,7 +893,7 @@ export function txAssembleContext(ctx: StoreContext, fence: Fence, req: Assemble
     `INSERT INTO context_manifests (id, run_id, work_item_id, employee_id, inference_seq, step, outcome, policy_json, total_budget, used_tokens, estimated_input_tokens, max_data_class, per_layer_json, selected_count, rejected_count, conflict_count, prefix_sha256, messages_sha256, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     manifestId, fence.runId, item.id, e.id, seq, Math.max(0, Math.trunc(req.step)), outcome,
-    JSON.stringify({ totalTokens: policy.totalTokens, frameTokens: policy.frameTokens, maxItemsPerLayer: policy.maxItemsPerLayer, ceiling, importance }),
+    manifestPolicyJson(policy, ceiling, importance, selection, pool),
     policy.totalTokens, plan.usedTokens, ok && rendered ? rendered.estimatedTokens : 0, maxClass, JSON.stringify(plan.perLayer),
     selected.length, plan.rejected.length + pool.preRejected.length, plan.conflictClaims.length,
     ok && rendered ? sha256Hex(rendered.prefixText) : null, messagesSha, at,
@@ -874,6 +931,19 @@ export function txAssembleContext(ctx: StoreContext, fence: Fence, req: Assemble
   return { outcome: 'OK', manifestId, messages: rendered.messages, estimatedInputTokens: rendered.estimatedTokens, dataClass: maxClass, selected: selected.length, conflicts: plan.conflictClaims.length };
 }
 
+/**
+ * The manifest's policy record. P1-CONTEXT-INTEL-01 (D-P1-14): a Founder reply with Skill selection also records the order,
+ * how its Skills were selected (G4-SIMPLE-01: DIRECT or LEXICAL) and the number of Skill candidates per tier — content-free
+ * codes and counts (Rule A), within the column's 1,024 characters.
+ */
+function manifestPolicyJson(policy: ContextBudgetPolicy, ceiling: DataClass, importance: string, selection: SkillSelection | null, pool: Pool): string {
+  const base = { totalTokens: policy.totalTokens, frameTokens: policy.frameTokens, maxItemsPerLayer: policy.maxItemsPerLayer, ceiling, importance };
+  if (selection === null) return JSON.stringify(base);
+  const tiers = { TASK_REQUIRED: 0, SUPPORTING: 0 };
+  for (const c of [...pool.candidates, ...pool.preRejected.map((r) => r.candidate)]) if (c.kind === 'SKILL' && c.tier !== undefined) tiers[c.tier]++;
+  return JSON.stringify({ ...base, order: policy.order ?? 'LAYERED', skillSelection: { mode: selection, tiers } });
+}
+
 interface PoolInput {
   readonly at: Timestamp;
   readonly effective: DataClass;
@@ -881,8 +951,21 @@ interface PoolInput {
   readonly caps: WorkItemCapabilities;
   readonly mode: string | null;
   readonly instructions: string;
+  /** The union query (tier 2, relevance and score). */
   readonly query: { readonly terms: readonly string[] };
+  /** Today's query, built exactly as the previous release builds it (tier 1). */
+  readonly legacyTerms: readonly string[];
+  readonly policy: ContextBudgetPolicy;
+  /** G4-SIMPLE-01 (D-P1-16): how a Founder reply selects its Skills (null: no Skill selection — the legacy path). */
+  readonly selection: SkillSelection | null;
   readonly step: number;
+}
+
+/** The Founder message a Founder reply answers (its anchor), or null for any other Work Item. */
+function founderMessageBody(ctx: StoreContext, item: WorkItemRecord): string | null {
+  const pi = (item.processorInput ?? {}) as { founderThreadId?: unknown; founderMessageId?: unknown };
+  if (typeof pi.founderThreadId !== 'string' || typeof pi.founderMessageId !== 'string') return null;
+  return ctx.db.get<{ body: string }>('SELECT body FROM communication_messages WHERE id = ? AND thread_id = ?', pi.founderMessageId, pi.founderThreadId)?.body ?? null;
 }
 
 /** Term-matched ids of one kind (bounded, relevance-ordered by matched-term count, then id). */
@@ -908,6 +991,66 @@ function termMatches(
   return new Map(rows.map((r) => [r.id, Number(r.n)]));
 }
 
+/** A union query in both index-row forms: TI-0 rows as written, TI-1 rows as `~` + term (DG-1n). */
+const bothForms = (terms: readonly string[]): string[] => [...terms, ...terms.map((t) => `${SALIENCE_INDEX_PREFIX}${t}`)];
+
+/**
+ * P1-CONTEXT-INTEL-01 (D-P1-14) — tier 2 of a two-tier pool: live items the union query matches (either row form) that
+ * tier 1 did not admit, ranked by total matched rows, then id, and bounded by `limit` (the extension). Tier 1 — today's
+ * query on today's rows, today's ranking and limits — is never displaced by it.
+ */
+function extensionMatches(
+  ctx: StoreContext,
+  kind: 'MEMORY' | 'KNOWLEDGE' | 'CANONICAL',
+  owner: string,
+  terms: readonly string[],
+  limit: number,
+  live: Parameters<typeof termMatches>[5],
+  tier1: Iterable<string>,
+): Map<string, number> {
+  if (terms.length === 0 || limit <= 0) return new Map();
+  const rows = ctx.db.all<{ id: string; n: number }>(
+    `SELECT t.item_id AS id, COUNT(*) AS n FROM mind_terms t JOIN ${live.table} x ON x.id = t.item_id
+      WHERE t.item_kind = ? AND t.owner_key = ? AND t.term IN (SELECT value FROM json_each(?)) AND (${live.where})
+        AND t.item_id NOT IN (SELECT value FROM json_each(?))
+      GROUP BY t.item_id ORDER BY n DESC, t.item_id LIMIT ?`,
+    kind, owner, JSON.stringify(bothForms(terms)), ...live.params, inList(tier1), limit,
+  );
+  return new Map(rows.map((r) => [r.id, Number(r.n)]));
+}
+
+/** Two-tier pool of one lookup: today's pool (tier 1, verbatim) and the bounded extension (tier 2). */
+function pooledMatches(
+  ctx: StoreContext,
+  kind: 'MEMORY' | 'KNOWLEDGE' | 'CANONICAL',
+  owner: string,
+  q: { readonly legacy: readonly string[]; readonly union: readonly string[] },
+  limit: number,
+  live: Parameters<typeof termMatches>[5],
+): Map<string, number> {
+  const tier1 = termMatches(ctx, kind, owner, q.legacy, limit, live);
+  return new Map([...tier1, ...extensionMatches(ctx, kind, owner, q.union, extension(limit), live, tier1.keys())]);
+}
+
+/**
+ * The TI-1 index terms (`~` rows, prefix removed) the union query holds, per item of one pool. Relevance and score only
+ * read an item's overlap with the query, so these — added to its `terms_json` — give exactly the overlap of its full
+ * index terms, through the primary key (kind, owner, term ∈ query): bounded, never a scan of an owner's index.
+ */
+function salienceHits(ctx: StoreContext, kind: 'MEMORY' | 'KNOWLEDGE' | 'CANONICAL', owner: string, union: readonly string[], ids: Iterable<string>): Map<string, string[]> {
+  const list = [...ids];
+  const out = new Map<string, string[]>();
+  if (list.length === 0 || union.length === 0) return out;
+  for (const r of ctx.db.all<{ id: string; t: string }>(
+    'SELECT item_id AS id, term AS t FROM mind_terms WHERE item_kind = ? AND owner_key = ? AND term IN (SELECT value FROM json_each(?)) AND item_id IN (SELECT value FROM json_each(?))',
+    kind, owner, JSON.stringify(union.map((t) => `${SALIENCE_INDEX_PREFIX}${t}`)), JSON.stringify(list),
+  )) out.set(r.id, [...(out.get(r.id) ?? []), r.t.slice(SALIENCE_INDEX_PREFIX.length)]);
+  return out;
+}
+
+/** An item's candidate terms: its stored `terms_json` ∪ the TI-1 index terms the query holds. */
+const candidateTerms = (termsJson: unknown, hits: Map<string, string[]>, id: string): string[] => [...new Set([...(JSON.parse(String(termsJson)) as string[]), ...(hits.get(id) ?? [])])];
+
 const inList = (ids: Iterable<string>): string => JSON.stringify([...ids]);
 
 function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: WorkItemRecord, p: PoolInput): Pool {
@@ -925,7 +1068,8 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // Work Item's declared class — it carries no higher-class content).
   // D-P1-06: the Tools this Employee holds an active grant for (release-pinned guidance), in production work only — an
   // Academy attempt, a benchmark observation and shadow work keep their exact preamble.
-  const preamble = preambleText(e, item, p.ceiling, p.mode, p.mode === null ? txGrantedToolGuidance(ctx, e.id, at) : []);
+  const answering = isCeoDirectConversation(item) ? founderMessageBody(ctx, item) : null;
+  const preamble = preambleText(e, item, p.ceiling, p.mode, p.mode === null ? txGrantedToolGuidance(ctx, e.id, at) : [], answering === null ? null : messageLanguage(answering));
   add(baseCandidate({ key: 'preamble', kind: 'PREAMBLE', layer: 'AUTHORITY', required: true, itemId: 'preamble', sha256: sha256Hex(preamble), provenanceRef: 'runtime:governance-preamble', estTokens: itemEstimate(preamble), dataClass: declared }, at), () => preamble);
 
   // L2 — the Work Item's own instructions (required, intact) and, for an Academy attempt, its scenario.
@@ -933,7 +1077,7 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // P1-CHAT-INTEL-01: a conversation reply sees the earlier turns of its own thread — bounded (newest first into a fixed
   // byte allowance, then shown oldest first), never the whole history, optional (it competes for the WORK share and yields
   // to the budget), and recorded in the manifest by thread, count and hash only (Rule A).
-  const history = conversationHistory(ctx, item);
+  const history = conversationHistory(ctx, item, p.policy.totalTokens);
   if (history !== null) add(baseCandidate({ key: 'conversation', kind: 'WORK_INSTRUCTIONS', layer: 'WORK', itemId: history.threadId, version: history.count, sha256: sha256Hex(history.text), provenanceRef: `communication_thread:${history.threadId}`, authorityWeight: 5, estTokens: itemEstimate(history.text), dataClass: declared }, at), () => history.text);
   let scenario: Pool['scenario'] = null;
   if (p.mode === 'ACADEMY_ATTEMPT') {
@@ -965,21 +1109,29 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
       add(baseCandidate({ key: `skill:${v.id}`, kind: 'SKILL', layer: 'SKILL', required: true, itemId: v.id, version: v.version, sha256: v.instructionsSha256, provenanceRef: v.sourceRef, authorityWeight: 20, dataClass: 'D1', createdAt: v.createdAt, estTokens: Buffer.byteLength(b.text, 'utf8') + itemEstimate('') }, at), () => b.text);
     }
   }
-  // L3 — progressive Skill disclosure: passport metadata → task-relevant pinned versions → payload.
+  // L3 — progressive Skill disclosure: passport metadata → task-relevant pinned versions → payload. Every read here is
+  // METADATA (named columns, no instructions); a payload is read only for a selected Skill, by the pinned loader.
   const requiredSkills = new Set(p.caps.requirements.flatMap((r) => (r.kind === 'SKILL' ? [r.skillId] : [])));
+  // G4-SIMPLE-01 (D-P1-16): a Founder reply to the CEO (DIRECT) takes every passport Skill as task-relevant — the model
+  // decides how to apply them while it answers. Eligibility, certification, integrity and conflicts below still decide which
+  // Skills may load, and the CP-1 shares bound how much space they take. Metadata only until a Skill is selected.
+  const direct = p.selection === 'DIRECT';
   const skillPool: { c: ContextCandidate; directives: Readonly<Record<string, string>>; required: boolean }[] = [];
   for (const pe of ctx.db.all('SELECT * FROM passport_entries WHERE employee_id = ? ORDER BY skill_id', e.id).map(mapPassport)) {
     if (pe.status !== 'ACTIVE' || p.mode === 'SKILL_BENCHMARK') continue;
-    const v = getSkillVersionRow(ctx, pe.skillVersionId);
+    const v = getSkillVersionMeta(ctx, pe.skillVersionId);
     const skill = ctx.db.get<{ code: string; status: string }>('SELECT code, status FROM skills WHERE id = ?', pe.skillId);
-    const vTerms = [...new Set([...(JSON.parse(String(ctx.db.get<{ t: string }>('SELECT terms_json AS t FROM skill_versions WHERE id = ?', v.id)?.t ?? '[]')) as string[]), ...termsOf(String(skill?.code ?? '').replace(/[.-]/g, ' '))])];
-    const relevant = requiredSkills.has(pe.skillId) || overlap(p.query.terms, vTerms) > 0;
+    const code = String(skill?.code ?? '');
+    const vTerms = [...new Set([...v.terms, ...termsOf(code.replace(/[.-]/g, ' '))])];
+    // With Skill selection a capability-required Skill is TASK_REQUIRED; under DIRECT every other Skill is SUPPORTING; under
+    // LEXICAL (and without selection) every other Skill keeps the term-overlap path, untiered.
+    const tier: SkillTier | null = p.selection === null ? null : requiredSkills.has(pe.skillId) ? 'TASK_REQUIRED' : direct ? 'SUPPORTING' : null;
+    const c = baseCandidate({ key: `skill:${v.id}`, kind: 'SKILL', layer: 'SKILL', itemId: v.id, version: v.version, sha256: v.instructionsSha256, provenanceRef: v.sourceRef, authorityWeight: requiredSkills.has(pe.skillId) ? 20 : tier === 'TASK_REQUIRED' ? 15 : 5, status: 'CURRENT', dataClass: 'D1', terms: requiredSkills.has(pe.skillId) ? [...vTerms, ...p.query.terms.slice(0, 1)] : vTerms, createdAt: v.createdAt, estTokens: v.bytes + itemEstimate(''), ...(tier !== null ? { tier } : {}) }, at);
+    const relevant = direct || requiredSkills.has(pe.skillId) || overlap(p.query.terms, vTerms) > 0;
     if (!relevant) continue; // Not task-relevant: its payload is never even read.
     const eligible = skill?.status === 'ACTIVE' && versionEligibility(ctx, v).eligible;
-    const bytes = Number(ctx.db.get<{ b: number }>('SELECT length(CAST(instructions AS BLOB)) AS b FROM skill_versions WHERE id = ?', v.id)?.b ?? 0);
-    const c = baseCandidate({ key: `skill:${v.id}`, kind: 'SKILL', layer: 'SKILL', itemId: v.id, version: v.version, sha256: v.instructionsSha256, provenanceRef: v.sourceRef, authorityWeight: requiredSkills.has(pe.skillId) ? 20 : 5, status: eligible ? 'CURRENT' : `INELIGIBLE`, dataClass: 'D1', terms: requiredSkills.has(pe.skillId) ? [...vTerms, ...p.query.terms.slice(0, 1)] : vTerms, createdAt: v.createdAt, estTokens: bytes + itemEstimate('') }, at);
     if (!eligible) {
-      preRejected.push({ candidate: c, score: 0, reason: 'STATUS_NOT_RETRIEVABLE' });
+      preRejected.push({ candidate: { ...c, status: 'INELIGIBLE' }, score: 0, reason: 'STATUS_NOT_RETRIEVABLE' });
       continue;
     }
     skillPool.push({ c, directives: v.directives, required: requiredSkills.has(pe.skillId) });
@@ -1015,27 +1167,41 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
           OR (x.scope = 'MARKET' AND x.scope_ref = ?)
           OR (x.scope = 'RESTRICTED' AND x.scope_ref IN (SELECT value FROM json_each(?))))`;
   const kScopeParams = [JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes)];
-  const kLive = `x.integrity = 'OK' AND x.status IN ('ACTIVE', 'LOW_CONFIDENCE')`;
+  // G4-FINAL-CLOSURE-01 (D-P1-17): a Founder decision recorded AFTER this Work Item was created is not part of it — a
+  // conversation turn (or any work) re-assembled later never sees a decision from its future. An Academy attempt, shadow work
+  // and a benchmark observation never see one at all (their isolation: training is not the Company's live decisions).
+  const decisionsAsOf = p.mode === null ? item.createdAt : '0000-01-01T00:00:00.000Z';
+  const kAsOf = `NOT (x.provenance_kind = 'FOUNDER_DECISION' AND x.provenance_ref LIKE '${FOUNDER_DECISION_SOURCE}%' AND x.created_at > ?)`;
+  const kLive = `x.integrity = 'OK' AND x.status IN ('ACTIVE', 'LOW_CONFIDENCE') AND ${kAsOf}`;
   // Eligible also means within its review horizon: stale knowledge is rejection evidence (STALE), never
   // an eligible slot (R1 re-review).
   const kEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND (x.review_at IS NULL OR x.review_at > ?)`;
   const kEligibleParams = [p.ceiling, p.caps.marketRef ?? '', at];
-  const kMatch = termMatches(ctx, 'KNOWLEDGE', '', p.query.terms, KNOWLEDGE_POOL_LIMIT * 4, { table: 'knowledge_items', where: `${kLive} AND ${kEligible} AND ${kScope}`, params: [...kEligibleParams, ...kScopeParams] });
-  const kEvidence = termMatches(ctx, 'KNOWLEDGE', '', p.query.terms, KNOWLEDGE_POOL_LIMIT * 4, { table: 'knowledge_items', where: `${kLive} AND NOT (${kEligible}) AND ${kScope}`, params: [...kEligibleParams, ...kScopeParams] });
+  const kEligibleLive = { table: 'knowledge_items', where: `${kLive} AND ${kEligible} AND ${kScope}`, params: [decisionsAsOf, ...kEligibleParams, ...kScopeParams] } as const;
+  const kEvidenceLive = { table: 'knowledge_items', where: `${kLive} AND NOT (${kEligible}) AND ${kScope}`, params: [decisionsAsOf, ...kEligibleParams, ...kScopeParams] } as const;
+  const kMatch = termMatches(ctx, 'KNOWLEDGE', '', p.legacyTerms, KNOWLEDGE_POOL_LIMIT * 4, kEligibleLive);
+  const kEvidence = termMatches(ctx, 'KNOWLEDGE', '', p.legacyTerms, KNOWLEDGE_POOL_LIMIT * 4, kEvidenceLive);
   const knowledgeRows = (ids: Map<string, number>) => ids.size === 0 ? [] : ctx.db.all(
     `SELECT id, scope, scope_ref, topic, claim_key, claim_value, content_sha256, terms_json, data_class, market_ref, provenance_kind, provenance_ref, confidence_pct, status, integrity, review_at, last_validated_at, version, created_at, created_by_ref, fingerprint, length(CAST(content AS BLOB)) AS bytes, '' AS content
        FROM knowledge_items
       WHERE id IN (SELECT value FROM json_each(?)) AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE')
+        AND NOT (provenance_kind = 'FOUNDER_DECISION' AND provenance_ref LIKE '${FOUNDER_DECISION_SOURCE}%' AND created_at > ?)
         AND (scope = 'COMPANY'
           OR (scope = 'DEPARTMENT' AND scope_ref IN (SELECT value FROM json_each(?)))
           OR (scope = 'ROLE' AND scope_ref = ?)
           OR (scope = 'MARKET' AND scope_ref = ?)
           OR (scope = 'RESTRICTED' AND scope_ref IN (SELECT value FROM json_each(?))))`,
-    inList(ids.keys()), JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes),
+    inList(ids.keys()), decisionsAsOf, JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes),
   );
   const rank = (m: Map<string, number>) => (a: Readonly<Record<string, unknown>>, b: Readonly<Record<string, unknown>>): number =>
     (m.get(String(b.id)) ?? 0) - (m.get(String(a.id)) ?? 0) || (String(b.created_at) < String(a.created_at) ? -1 : String(b.created_at) > String(a.created_at) ? 1 : 0) || (String(a.id) < String(b.id) ? -1 : 1);
-  const kRows = [...knowledgeRows(kMatch).sort(rank(kMatch)).slice(0, KNOWLEDGE_POOL_LIMIT), ...knowledgeRows(kEvidence).sort(rank(kEvidence)).slice(0, KNOWLEDGE_POOL_LIMIT)];
+  // Tier 1: today's pool (800 term-matched, re-ranked to 200). Tier 2: the union query's other matches, 200 → 50.
+  const kTier1 = knowledgeRows(kMatch).sort(rank(kMatch)).slice(0, KNOWLEDGE_POOL_LIMIT);
+  const kEvidence1 = knowledgeRows(kEvidence).sort(rank(kEvidence)).slice(0, KNOWLEDGE_POOL_LIMIT);
+  const kMatch2 = extensionMatches(ctx, 'KNOWLEDGE', '', p.query.terms, extension(KNOWLEDGE_POOL_LIMIT * 4), kEligibleLive, kTier1.map((r) => String(r.id)));
+  const kEvidence2 = extensionMatches(ctx, 'KNOWLEDGE', '', p.query.terms, extension(KNOWLEDGE_POOL_LIMIT * 4), kEvidenceLive, kEvidence1.map((r) => String(r.id)));
+  const kRows = [...kTier1, ...knowledgeRows(kMatch2).sort(rank(kMatch2)).slice(0, extension(KNOWLEDGE_POOL_LIMIT)), ...kEvidence1, ...knowledgeRows(kEvidence2).sort(rank(kEvidence2)).slice(0, extension(KNOWLEDGE_POOL_LIMIT))];
+  const kHits = salienceHits(ctx, 'KNOWLEDGE', '', p.query.terms, kRows.map((r) => String(r.id)));
   for (const r of kRows) {
     const k = mapKnowledge(r);
     if (!knowledgeReadable(k, access)) continue; // defence in depth: re-checked in code
@@ -1048,7 +1214,7 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
     }
     const stale = isStale({ reviewAt: k.reviewAt, sourceChanged: false }, at);
     add(
-      baseCandidate({ key: `knowledge:${k.id}`, kind: 'KNOWLEDGE', layer: 'KNOWLEDGE', itemId: k.id, version: k.version, sha256: k.contentSha256, provenanceRef: k.provenanceRef, authorityWeight: KNOWLEDGE_WEIGHT[k.provenanceKind] ?? 5, status: k.status, stale, dataClass: k.dataClass, marketRef: k.marketRef, terms: JSON.parse(String(r.terms_json)) as string[], confidencePct: k.confidencePct, createdAt: k.createdAt, validatedAt: (r.last_validated_at as Timestamp | null) ?? null, estTokens: Number(r.bytes) + itemEstimate(''), claimKey: k.claimKey, claimValue: k.claimValue }, at),
+      baseCandidate({ key: `knowledge:${k.id}`, kind: 'KNOWLEDGE', layer: 'KNOWLEDGE', itemId: k.id, version: k.version, sha256: k.contentSha256, provenanceRef: k.provenanceRef, authorityWeight: KNOWLEDGE_WEIGHT[k.provenanceKind] ?? 5, status: k.status, stale, dataClass: k.dataClass, marketRef: k.marketRef, terms: candidateTerms(r.terms_json, kHits, k.id), confidencePct: k.confidencePct, createdAt: k.createdAt, validatedAt: (r.last_validated_at as Timestamp | null) ?? null, estTokens: Number(r.bytes) + itemEstimate(''), claimKey: k.claimKey, claimValue: k.claimValue, ...(k.provenanceKind === 'FOUNDER_DECISION' && k.provenanceRef.startsWith(FOUNDER_DECISION_SOURCE) ? { founderDecision: true } : {}) }, at),
       () => loadVerified(ctx, 'knowledge_items', k.id),
     );
   }
@@ -1064,14 +1230,15 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // the WAIT-settle hold re-check reads it), never an eligible slot.
   const memEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND NOT EXISTS (SELECT 1 FROM memory_conflicts c WHERE c.state = 'OPEN' AND (c.memory_a_id = x.id OR c.memory_b_id = x.id))`;
   const memCurrent = `(x.review_at IS NULL OR x.review_at > ?)`;
-  const mEligible = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND ${memEligible} AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });
-  const mEvidence = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND NOT (${memEligible}) AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });
+  const q2 = { legacy: p.legacyTerms, union: p.query.terms };
+  const mEligible = pooledMatches(ctx, 'MEMORY', e.id, q2, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND ${memEligible} AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });
+  const mEvidence = pooledMatches(ctx, 'MEMORY', e.id, q2, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND NOT (${memEligible}) AND ${memCurrent}`, params: [e.id, p.ceiling, p.caps.marketRef ?? '', at] });
   // Memories held in an OPEN conflict that CAN hold this work (class within the ceiling, market-eligible —
   // the planner rejects any other kind before it looks at conflicts) get their OWN bounded pool: the
   // IMPORTANT-work CONFLICT_HOLD and the WAIT-settle hold re-check depend on them being candidates, so no
   // amount of other rejection evidence — including ineligible conflicted memories, which stay in the
   // evidence pool — may crowd them out (R1 final re-reviews).
-  const mConflict = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, {
+  const mConflict = pooledMatches(ctx, 'MEMORY', e.id, q2, MEMORY_POOL_LIMIT, {
     table: 'memory_records',
     where: `${memLive} AND ${memCurrent} AND x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND EXISTS (SELECT 1 FROM memory_conflicts c WHERE c.state = 'OPEN' AND (c.memory_a_id = x.id OR c.memory_b_id = x.id))`,
     params: [e.id, at, p.ceiling, p.caps.marketRef ?? ''],
@@ -1081,7 +1248,7 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
             confidence_pct, status, integrity, retention_policy, review_at, last_validated_at, candidate_id, supersedes_id, superseded_by_id, version, created_at, terms_json, fingerprint, length(CAST(content AS BLOB)) AS bytes`;
   // Relevant memories that reached their review horizon take no pool slot: they are marked STALE durably
   // (bounded, decay is not deletion) and recorded as rejected, exactly as before.
-  const dueMatch = termMatches(ctx, 'MEMORY', e.id, p.query.terms, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND x.review_at IS NOT NULL AND x.review_at <= ?`, params: [e.id, at] });
+  const dueMatch = pooledMatches(ctx, 'MEMORY', e.id, q2, MEMORY_POOL_LIMIT, { table: 'memory_records', where: `${memLive} AND x.review_at IS NOT NULL AND x.review_at <= ?`, params: [e.id, at] });
   if (dueMatch.size > 0) {
     for (const r of ctx.db.all(`SELECT ${memCols} FROM memory_records WHERE id IN (SELECT value FROM json_each(?)) AND employee_id = ?`, inList(dueMatch.keys()), e.id)) {
       const m = setMemoryStatus(ctx, mapMemory(r), 'STALE', 'REVIEW_HORIZON_OR_SOURCE_CHANGED', SYSTEM_MIND_REF);
@@ -1089,12 +1256,13 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
     }
   }
   const memRows = mMatch.size === 0 ? [] : ctx.db.all(`SELECT ${memCols} FROM memory_records WHERE id IN (SELECT value FROM json_each(?)) AND employee_id = ? AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE')`, inList(mMatch.keys()), e.id).sort(rank(mMatch));
+  const mHits = salienceHits(ctx, 'MEMORY', e.id, p.query.terms, memRows.map((r) => String(r.id)));
   const memCandidates: { c: ContextCandidate; topic: string; eligible: boolean }[] = [];
   for (const r of memRows) {
     let m = mapMemory(r);
     const stale = isStale({ reviewAt: m.reviewAt, sourceChanged: sourceChanged(ctx, m.provenanceKind, m.provenanceRef, r.source_version === null ? null : Number(r.source_version), (r.source_sha256 as string | null) ?? null) }, at);
     if (stale) m = setMemoryStatus(ctx, m, 'STALE', 'REVIEW_HORIZON_OR_SOURCE_CHANGED', SYSTEM_MIND_REF);
-    const c = baseCandidate({ key: `memory:${m.id}`, kind: 'MEMORY', layer: 'MEMORY', itemId: m.id, version: m.version, sha256: m.contentSha256, provenanceRef: m.provenanceRef, authorityWeight: MEMORY_WEIGHT[m.provenanceKind] ?? 0, status: m.status, stale, dataClass: m.dataClass, marketRef: m.marketRef, terms: JSON.parse(String(r.terms_json)) as string[], confidencePct: m.confidencePct, createdAt: m.createdAt, validatedAt: m.lastValidatedAt, estTokens: Number(r.bytes) + itemEstimate(''), claimKey: m.claimKey, claimValue: m.claimValue, conflictHeld: held.has(m.id) }, at);
+    const c = baseCandidate({ key: `memory:${m.id}`, kind: 'MEMORY', layer: 'MEMORY', itemId: m.id, version: m.version, sha256: m.contentSha256, provenanceRef: m.provenanceRef, authorityWeight: MEMORY_WEIGHT[m.provenanceKind] ?? 0, status: m.status, stale, dataClass: m.dataClass, marketRef: m.marketRef, terms: candidateTerms(r.terms_json, mHits, m.id), confidencePct: m.confidencePct, createdAt: m.createdAt, validatedAt: m.lastValidatedAt, estTokens: Number(r.bytes) + itemEstimate(''), claimKey: m.claimKey, claimValue: m.claimValue, conflictHeld: held.has(m.id) }, at);
     const eligible = !stale && !c.conflictHeld && dataRank(c.dataClass) <= dataRank(p.ceiling) && (c.marketRef === null || c.marketRef === p.caps.marketRef) && overlap(p.query.terms, c.terms) > 0;
     memCandidates.push({ c, topic: m.topic, eligible });
   }
@@ -1103,16 +1271,17 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // candidate asserts (bound whether or not the statement itself is relevant). A corrupt ACTIVE canonical
   // record fails the whole assembly closed.
   const corruptCanonical = ctx.db.get(`SELECT 1 AS x FROM canonical_truth WHERE status = 'ACTIVE' AND integrity = 'CORRUPT' LIMIT 1`) !== undefined;
-  const cMatch = termMatches(ctx, 'CANONICAL', '', p.query.terms, CANONICAL_POOL_LIMIT, { table: 'canonical_truth', where: `x.status = 'ACTIVE' AND x.integrity = 'OK'`, params: [] });
+  const cMatch = pooledMatches(ctx, 'CANONICAL', '', q2, CANONICAL_POOL_LIMIT, { table: 'canonical_truth', where: `x.status = 'ACTIVE' AND x.integrity = 'OK'`, params: [] });
   const claimKeys = [...new Set(candidates.concat(memCandidates.map((x) => x.c)).flatMap((c) => (c.claimKey === null ? [] : [c.claimKey])))];
   const cRows = ctx.db.all<{ id: string; level: string; topic: string; claim_key: string | null; claim_value: string | null; statement_sha256: string; terms_json: string; data_class: string; source_ref: string; version: number; recorded_at: string; bytes: number }>(
     `SELECT id, level, topic, claim_key, claim_value, statement_sha256, terms_json, data_class, source_ref, version, recorded_at, length(CAST(statement AS BLOB)) AS bytes
        FROM canonical_truth WHERE status = 'ACTIVE' AND integrity = 'OK' AND (id IN (SELECT value FROM json_each(?)) OR claim_key IN (SELECT value FROM json_each(?)))`,
     inList(cMatch.keys()), JSON.stringify(claimKeys),
   );
+  const cHits = salienceHits(ctx, 'CANONICAL', '', p.query.terms, cRows.map((r) => r.id));
   for (const r of cRows.sort((a, b) => (CANONICAL_WEIGHT[b.level] ?? 0) - (CANONICAL_WEIGHT[a.level] ?? 0) || rank(cMatch)({ id: a.id, created_at: a.recorded_at }, { id: b.id, created_at: b.recorded_at }))) {
     add(
-      baseCandidate({ key: `canonical:${r.id}`, kind: 'CANONICAL', layer: 'AUTHORITY', itemId: r.id, version: Number(r.version), sha256: r.statement_sha256, provenanceRef: r.source_ref, authorityWeight: CANONICAL_WEIGHT[r.level] ?? 14, dataClass: r.data_class as DataClass, terms: JSON.parse(r.terms_json) as string[], createdAt: r.recorded_at as Timestamp, validatedAt: r.recorded_at as Timestamp, estTokens: Number(r.bytes) + itemEstimate(''), claimKey: r.claim_key, claimValue: r.claim_value }, at),
+      baseCandidate({ key: `canonical:${r.id}`, kind: 'CANONICAL', layer: 'AUTHORITY', itemId: r.id, version: Number(r.version), sha256: r.statement_sha256, provenanceRef: r.source_ref, authorityWeight: CANONICAL_WEIGHT[r.level] ?? 14, dataClass: r.data_class as DataClass, terms: candidateTerms(r.terms_json, cHits, r.id), createdAt: r.recorded_at as Timestamp, validatedAt: r.recorded_at as Timestamp, estTokens: Number(r.bytes) + itemEstimate(''), claimKey: r.claim_key, claimValue: r.claim_value }, at),
       () => loadVerified(ctx, 'canonical_truth', r.id),
     );
   }
@@ -1158,7 +1327,7 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
     const row = ctx.db.get<{ content_sha256: string; bytes: number; created_at: string }>('SELECT content_sha256, created_at, length(CAST(content AS BLOB)) AS bytes FROM context_summaries WHERE id = ?', sid);
     for (const x of src) compacted.add(`memory:${x.id}`);
     add(
-      baseCandidate({ key: `summary:${sid}`, kind: 'SUMMARY', layer: 'MEMORY', itemId: sid, sha256: String(row?.content_sha256), provenanceRef: `context_summary:${sid}`, dataClass: summaryClass, terms: [...new Set(src.flatMap((x) => JSON.parse(x.terms_json) as string[]))].sort().slice(0, 48), confidencePct: Math.min(...src.map((x) => Number(x.confidence_pct))), createdAt: (row?.created_at ?? at) as Timestamp, estTokens: Number(row?.bytes ?? 0) + itemEstimate('') }, at),
+      baseCandidate({ key: `summary:${sid}`, kind: 'SUMMARY', layer: 'MEMORY', itemId: sid, sha256: String(row?.content_sha256), provenanceRef: `context_summary:${sid}`, dataClass: summaryClass, terms: summaryTerms(src, salienceHits(ctx, 'MEMORY', e.id, p.query.terms, src.map((x) => x.id))), confidencePct: Math.min(...src.map((x) => Number(x.confidence_pct))), createdAt: (row?.created_at ?? at) as Timestamp, estTokens: Number(row?.bytes ?? 0) + itemEstimate('') }, at),
       () => loadVerified(ctx, 'context_summaries', sid),
     );
   }
@@ -1208,6 +1377,14 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
     );
   }
   return { candidates, preRejected, loaders, grantUse, corruptCanonical, requiredSkillConflict, scenario, heldClaims: [...new Set(memCandidates.filter((x) => x.c.conflictHeld && x.c.claimKey !== null).map((x) => x.c.claimKey as string))].sort() };
+}
+
+/**
+ * P1-CONTEXT-INTEL-01 (D-P1-14): a summary's terms — the full union of its sources' candidate terms (no alphabetical
+ * cut, which made the summary blind to every term after the first 48). Computed at read time; nothing is stored.
+ */
+function summaryTerms(src: readonly { readonly id: string; readonly terms_json: string }[], hits: Map<string, string[]>): string[] {
+  return [...new Set(src.flatMap((x) => candidateTerms(x.terms_json, hits, x.id)))].sort();
 }
 
 function invalidateSummary(ctx: StoreContext, id: string, employeeId: Id, reason: string): void {

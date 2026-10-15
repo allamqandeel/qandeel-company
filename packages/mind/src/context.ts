@@ -21,6 +21,13 @@ import { dataRank, utf8TokenUpperBound, type DataClass, type ProviderMessage } f
 import { firstSentence, overlap, estimateTokens } from './text.js';
 
 export const CONTEXT_LAYERS = ['AUTHORITY', 'WORK', 'SKILL', 'KNOWLEDGE', 'MEMORY', 'RECENT'] as const;
+
+/**
+ * G4-SIMPLE-01 (D-P1-16): a Skill's tier in a CP-1 plan. A Founder reply to the CEO loads every eligible passport Skill
+ * directly: a capability-required one is TASK_REQUIRED, every other one SUPPORTING. No classification decides it.
+ */
+export const SKILL_TIERS = ['TASK_REQUIRED', 'SUPPORTING'] as const;
+export type SkillTier = (typeof SKILL_TIERS)[number];
 export type ContextLayer = (typeof CONTEXT_LAYERS)[number];
 export const layerRank = (l: ContextLayer): number => CONTEXT_LAYERS.indexOf(l) + 1;
 
@@ -68,6 +75,16 @@ export interface ContextCandidate {
   readonly claimValue: string | null;
   /** Part of an open (unresolved) memory-vs-memory conflict. */
   readonly conflictHeld: boolean;
+  /**
+   * P1-CONTEXT-INTEL-01 (D-P1-14): a Skill's tier for this task. TASK_REQUIRED is protected under the CP-1 order, never
+   * planner-required (it never fails the assembly). Absent: the legacy path.
+   */
+  readonly tier?: SkillTier;
+  /**
+   * G4-FINAL-CLOSURE-01 (D-P1-17): a knowledge item that is a Founder decision recorded (and in force) from the Founder's own
+   * message. Under CP-1 the relevant ones come right after canonical truth (step 3b). Absent: an ordinary item.
+   */
+  readonly founderDecision?: boolean;
 }
 
 export interface ContextBudgetPolicy {
@@ -78,7 +95,15 @@ export interface ContextBudgetPolicy {
   readonly maxItemsPerLayer: number;
   /** Framing reserved up front (message roles, section headers); never available to items. */
   readonly frameTokens: number;
+  /**
+   * The selection order of non-required items. LAYERED (default): each layer in precedence order within its share, then
+   * the spill. CP1 (P1-CONTEXT-INTEL-01, Founder decision G3): see `planContext`.
+   */
+  readonly order?: ContextOrder;
 }
+
+export const CONTEXT_ORDERS = ['LAYERED', 'CP1'] as const;
+export type ContextOrder = (typeof CONTEXT_ORDERS)[number];
 
 /**
  * Default budget policy (engineering calibration, not a Product contract). The total is well below
@@ -105,6 +130,7 @@ export function assertContextPolicy(p: ContextBudgetPolicy): ContextBudgetPolicy
     sum += v;
   }
   if (sum > 100) bad('layer shares must sum to at most 100');
+  if (p.order !== undefined && !(CONTEXT_ORDERS as readonly string[]).includes(p.order)) bad('order must be LAYERED or CP1');
   return p;
 }
 
@@ -160,6 +186,138 @@ const byScore = (a: PlannedItem, b: PlannedItem): number =>
 
 /** Items whose relevance depends on the task (a zero-overlap knowledge / memory item is not loaded). */
 const RELEVANCE_GATED: readonly ItemKind[] = ['KNOWLEDGE', 'MEMORY', 'SUMMARY', 'CANONICAL'];
+
+/**
+ * CP-1 knowledge and memory order (G4-FINAL-QUALITY-CORR-01): how many of the task's query terms an item matches, uncapped,
+ * then the score. The score's relevance part saturates at four matched terms, so in a full store a specific item tied with
+ * generic ones and lost to recency (WP0: 3 of 24 critical items). Every other order and every Work Item without CP-1 keep
+ * `byScore`.
+ */
+const byRelevanceThenScore = (q: ContextQuery, pool: readonly PlannedItem[]): ((a: PlannedItem, b: PlannedItem) => number) => {
+  // Each matched query term weighs by how rare it is among this task's knowledge and memory candidates (inverse document
+  // frequency): a word every item shares ("company", "plan") says little; a specific one ("Fawry", "399") says much.
+  const docs = pool.filter((p) => RELEVANCE_ORDERED.includes(p.candidate.layer));
+  const query = [...new Set(q.terms)];
+  const df = new Map<string, number>();
+  for (const p of docs) {
+    const set = new Set(p.candidate.terms);
+    for (const t of query) if (set.has(t)) df.set(t, (df.get(t) ?? 0) + 1);
+  }
+  const n = Math.max(1, docs.length);
+  const weight = new Map([...df].map(([t, f]) => [t, Math.round(1_000 * Math.log(1 + n / f))]));
+  const rel = new Map<PlannedItem, number>();
+  const r = (p: PlannedItem): number => {
+    let v = rel.get(p);
+    if (v === undefined) {
+      const set = new Set(p.candidate.terms);
+      v = 0;
+      for (const t of query) if (set.has(t)) v += weight.get(t) ?? 0;
+      rel.set(p, v);
+    }
+    return v;
+  };
+  return (a, b) => r(b) - r(a) || byScore(a, b);
+};
+const RELEVANCE_ORDERED: readonly ContextLayer[] = ['KNOWLEDGE', 'MEMORY'];
+
+/**
+ * CP-1 (P1-CONTEXT-INTEL-01, Founder decision G3): the non-required selection of a task with Skill selection. The Founder's
+ * priorities are invariants; each step takes items in score order within the per-layer item limit and the total budget:
+ *   3  Canonical Truth relevant to the task, first, within the AUTHORITY share (overflow is first in the spill);
+ *   3b the Founder's recorded decisions in force relevant to the task (G4-FINAL-CLOSURE-01, D-P1-17), within the
+ *      KNOWLEDGE share;
+ *   4  TASK_REQUIRED Skills (protected: steps 5–7 cannot displace them; never planner-required);
+ *   5  the conversation history and other Work context, within the WORK share;
+ *   6a the best knowledge item and the best memory item (protected anchors, before SUPPORTING Skills);
+ *   6b further knowledge, then further memory, each within its own share;
+ *   7  SUPPORTING (and undeclared) Skills within the SKILL share, then recent results. G4-SIMPLE-01 (D-P1-16): a reply to
+ *      the CEO loads every eligible Skill as SUPPORTING, so the Skills come after the knowledge and memory shares — the
+ *      required items take budget outside every share, and in a saturated context the pass that runs last is the one
+ *      that loses room: never knowledge or memory to Skills (Founder decision: protect their space);
+ *   8  the spill, in layer order (the caller's step 5).
+ * Knowledge and memory are ranked by matched query terms, then score (`byRelevanceThenScore`), in 6a, 6b–7 and the spill.
+ * Every eligibility, authority and conflict rule ran before; CP-1 only orders eligible candidates.
+ */
+function selectCp1(
+  pool: readonly PlannedItem[],
+  required: readonly PlannedItem[],
+  q: ContextQuery,
+  policy: ContextBudgetPolicy,
+  budget: number,
+  usedBefore: number,
+  perLayer: Record<ContextLayer, number>,
+  overridden: (p: PlannedItem) => boolean,
+  assertClaims: (p: PlannedItem) => void,
+  reject: (p: PlannedItem, reason: RejectionReason) => void,
+): { taken: PlannedItem[]; spill: PlannedItem[]; used: number } {
+  const taken: PlannedItem[] = [];
+  const spill: PlannedItem[] = [];
+  const done = new Set<PlannedItem>(required);
+  const layerUsed = Object.fromEntries(CONTEXT_LAYERS.map((l) => [l, 0])) as Record<ContextLayer, number>;
+  let used = usedBefore;
+  const count = (l: ContextLayer): number => required.filter((p) => p.candidate.layer === l).length + taken.filter((p) => p.candidate.layer === l).length;
+  const share = (l: ContextLayer): number => Math.floor((budget * policy.layerSharePct[l]) / 100);
+  const take = (p: PlannedItem): void => {
+    const t = p.candidate.estTokens;
+    taken.push(p);
+    done.add(p);
+    used += t;
+    perLayer[p.candidate.layer] += t;
+    layerUsed[p.candidate.layer] += t;
+    assertClaims(p);
+  };
+  const open = (filter: (p: PlannedItem) => boolean, order: (a: PlannedItem, b: PlannedItem) => number): PlannedItem[] => pool.filter((p) => !done.has(p) && !p.candidate.required && filter(p)).sort(order);
+  // A layer within its share; what does not fit waits in the spill.
+  const layerPass = (layer: ContextLayer, order = byScore): void => {
+    for (const p of open((x) => x.candidate.layer === layer, order)) {
+      done.add(p);
+      if (overridden(p)) {
+        reject(p, 'HIGHER_AUTHORITY_OVERRIDES');
+        continue;
+      }
+      if (count(layer) >= policy.maxItemsPerLayer) {
+        reject(p, 'LAYER_ITEM_LIMIT');
+        continue;
+      }
+      const t = p.candidate.estTokens;
+      if (layerUsed[layer] + t <= share(layer) && used + t <= budget) take(p);
+      else spill.push(p);
+    }
+  };
+  // 3. Canonical Truth (the AUTHORITY layer's own items) within the AUTHORITY share.
+  layerPass('AUTHORITY');
+  const byRelevance = byRelevanceThenScore(q, pool);
+  // 3b. G4-FINAL-CLOSURE-01 (D-P1-17): the Founder's recorded decisions in force that bear on this task, right after
+  // canonical truth — what the Founder decided is never displaced by the history, the Work context or the Skills. They are
+  // knowledge: relevance-gated (an unrelated decision is never loaded), counted in the KNOWLEDGE share and its item limit;
+  // one that does not fit stays a candidate of the passes below.
+  for (const p of open((x) => x.candidate.founderDecision === true, byRelevance)) {
+    const t = p.candidate.estTokens;
+    if (!overridden(p) && count('KNOWLEDGE') < policy.maxItemsPerLayer && layerUsed.KNOWLEDGE + t <= share('KNOWLEDGE') && used + t <= budget) take(p);
+  }
+  // 4. TASK_REQUIRED Skills: protected (beyond the SKILL share, within the item limit and the budget); one that does not
+  // fit stays a candidate of the SKILL pass below.
+  for (const p of open((x) => x.candidate.kind === 'SKILL' && x.candidate.tier === 'TASK_REQUIRED', byScore)) {
+    if (!overridden(p) && count('SKILL') < policy.maxItemsPerLayer && used + p.candidate.estTokens <= budget) take(p);
+  }
+  // 5. The conversation history and the rest of the Work context.
+  layerPass('WORK');
+  // 6a. The best knowledge item and the best memory item, before SUPPORTING Skills.
+  for (const kind of ['KNOWLEDGE', 'MEMORY'] as const) {
+    for (const p of open((x) => x.candidate.kind === kind, byRelevance)) {
+      if (overridden(p) || count(p.candidate.layer) >= policy.maxItemsPerLayer || used + p.candidate.estTokens > budget) continue;
+      take(p);
+      break;
+    }
+  }
+  // 6b. Knowledge, then memory, each within its own share. 7. SUPPORTING Skills within theirs (what does not fit is the
+  // first Skill in the spill), then recent results.
+  layerPass('KNOWLEDGE', byRelevance);
+  layerPass('MEMORY', byRelevance);
+  layerPass('SKILL');
+  layerPass('RECENT');
+  return { taken, spill, used };
+}
 
 /**
  * Plans one inference's context. Required items must fit (else CONTEXT_BUDGET_EXHAUSTED, never a
@@ -232,36 +390,44 @@ export function planContext(candidates: readonly ContextCandidate[], policy: Con
     return held !== undefined && held.value !== c.claimValue && held.layer <= layerRank(c.layer) && !(c.kind === 'CANONICAL' && held.layer === layerRank(c.layer));
   };
   const spill: PlannedItem[] = [];
-  // 4. Non-required items, layer by layer in precedence order, within each layer's share.
-  for (const layer of CONTEXT_LAYERS) {
-    const share = Math.floor((budget * policy.layerSharePct[layer]) / 100);
-    const items = pool.filter((p) => !p.candidate.required && p.candidate.layer === layer).sort(byScore);
-    let layerUsed = 0;
-    let count = selected.filter((p) => p.candidate.layer === layer).length;
-    for (const p of items) {
-      if (overridden(p)) {
-        reject(p, 'HIGHER_AUTHORITY_OVERRIDES');
-        continue;
-      }
-      if (count >= policy.maxItemsPerLayer) {
-        reject(p, 'LAYER_ITEM_LIMIT');
-        continue;
-      }
-      const t = p.candidate.estTokens;
-      if (layerUsed + t <= share && used + t <= budget) {
-        selected.push(p);
-        used += t;
-        layerUsed += t;
-        perLayer[layer] += t;
-        count++;
-        assertClaims(p);
-      } else {
-        spill.push(p);
+  if (policy.order === 'CP1') {
+    const s = selectCp1(pool, required, q, policy, budget, used, perLayer, overridden, assertClaims, reject);
+    selected.push(...s.taken);
+    used = s.used;
+    spill.push(...s.spill);
+  } else {
+    // 4. Non-required items, layer by layer in precedence order, within each layer's share.
+    for (const layer of CONTEXT_LAYERS) {
+      const share = Math.floor((budget * policy.layerSharePct[layer]) / 100);
+      const items = pool.filter((p) => !p.candidate.required && p.candidate.layer === layer).sort(byScore);
+      let layerUsed = 0;
+      let count = selected.filter((p) => p.candidate.layer === layer).length;
+      for (const p of items) {
+        if (overridden(p)) {
+          reject(p, 'HIGHER_AUTHORITY_OVERRIDES');
+          continue;
+        }
+        if (count >= policy.maxItemsPerLayer) {
+          reject(p, 'LAYER_ITEM_LIMIT');
+          continue;
+        }
+        const t = p.candidate.estTokens;
+        if (layerUsed + t <= share && used + t <= budget) {
+          selected.push(p);
+          used += t;
+          layerUsed += t;
+          perLayer[layer] += t;
+          count++;
+          assertClaims(p);
+        } else {
+          spill.push(p);
+        }
       }
     }
   }
   // 5. Spill: leftover budget goes to deferred items strictly in precedence order (higher layers first).
-  spill.sort((a, b) => layerRank(a.candidate.layer) - layerRank(b.candidate.layer) || byScore(a, b));
+  const spillOrder = policy.order === 'CP1' ? byRelevanceThenScore(q, pool) : byScore;
+  spill.sort((a, b) => layerRank(a.candidate.layer) - layerRank(b.candidate.layer) || (RELEVANCE_ORDERED.includes(a.candidate.layer) ? spillOrder(a, b) : byScore(a, b)));
   for (const p of spill) {
     const t = p.candidate.estTokens;
     if (overridden(p)) reject(p, 'HIGHER_AUTHORITY_OVERRIDES');

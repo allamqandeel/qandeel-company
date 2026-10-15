@@ -503,6 +503,8 @@ const MUTATION_PINS = {
       'role-cert-loss-not-at-reservation', 'role-cert-loss-not-at-tool-intent', 'role-reassignment-without-cert-keeps-active', 'calibration-not-required-at-activation', 'calibration-gates-certification', 'extension-evidence-not-required', 'unlicense-auto-clears',
       // R2 (K7): memory promotion conflicts, Academy simulation retest, skill-update rollout set.
       'r2-personal-promotion-skips-conflict', 'r2-simulation-gate-counts-retrained-failure', 'r2-retry-strands-started-retest', 'r2-practice-consumes-assessment-retest', 'r2-rollout-uses-plan-snapshot', 'r2-rollback-misses-rolled-out-passports',
+      // G4-FINAL-CLOSURE-01 (D-P1-17): Founder decision continuity.
+      'g4-decision-any-actor', 'g4-decision-other-conversation', 'g4-decision-ceo-scope-widened', 'g4-decision-duplicated', 'g4-decision-from-the-future', 'g4-decision-not-prioritized',
     ],
   },
   [C4_MUTATION_CHECK]: {
@@ -764,7 +766,8 @@ const RUNTIME_SERVICES = 'packages/runtime/src/runtime.ts';
 const MIND_WRITERS = ['mind-core', 'mind-writes', 'memory', 'skill-registry', 'academy', 'capability', 'academy-packages', 'academy-feedback'].map((m) => `packages/storage/src/${m}.ts`);
 const MIND_WRITE = /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO|DELETE\s+FROM|REPLACE\s+INTO)\s+(?:canonical_truth|memory_\w+|lesson\w*|knowledge_\w+|context_\w+|skill\w*|role_blueprint\w*|passport_\w+|academy_\w+|certification\w*|founder_calibrations|probation_\w+|activation_requests|capability_gaps|work_item_capabilities|run_execution_modes)\b/i;
 // Founder / evaluator acts that model output must never reach: the runtime and CLI never call them.
-const MIND_AUTHORITY_CALL = /\.(?:recordCanonicalTruth|correctMemory|recordKnowledge|validateLesson|decidePromotion|advanceSkillVersion|acknowledgePaidDependency|publishBlueprint|openPassportEntry|rolloutUpdate|rollbackUpdate|recordEvaluation|decideProbationReview|decideFounderCalibration|decideActivation|revokeCertification|requireRecertification|cancelGap)\s*\(/;
+// G4-FINAL-CLOSURE-01 (D-P1-17): recording / revoking a Founder decision is the Founder's confirmed act, never the runtime's.
+const MIND_AUTHORITY_CALL = /\.(?:recordCanonicalTruth|correctMemory|recordKnowledge|recordFounderDecision|revokeFounderDecision|validateLesson|decidePromotion|advanceSkillVersion|acknowledgePaidDependency|publishBlueprint|openPassportEntry|rolloutUpdate|rollbackUpdate|recordEvaluation|decideProbationReview|decideFounderCalibration|decideActivation|revokeCertification|requireRecertification|cancelGap)\s*\(/;
 const SKILL_LOADER = 'packages/storage/src/mind-core.ts';
 const MIND_KERNEL_IMPORT = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)['"](?:node:(?:fs|fs\/promises|sqlite|child_process|net|http|https)|@qandeel-company\/(?:storage|runtime)(?:\/[^'"]*)?)['"]/;
 const CONTENT_IN_TELEMETRY = /\b(?:appendAudit|appendEvent|\.(?:info|warn|error|debug))\s*\([^\n]*[{,]\s*(?:content|instructions|statement|text|messages|claimValue)\s*[,:}]/;
@@ -2483,7 +2486,7 @@ export const RULES = [
       const acceptance = ciJob(wf, 'acceptance') ?? '';
       for (const c of ['c1', 'c2', 'c3', 'c4', 'c5']) if (!new RegExp(`npm run ${c}:acceptance`).test(acceptance)) problems.push(`acceptance does not run ${c}:acceptance`);
       const tests = ciJob(wf, 'tests') ?? '';
-      if (!/npm run test\b/.test(tests)) problems.push('tests must run every workspace test');
+      if (!/run-node-tests\.mjs --shard/.test(tests) || !/npm run test:harness\b/.test(tests)) problems.push('tests must run every workspace test (sharded runner) and the harness');
       const stat = ciJob(wf, 'static') ?? '';
       for (const s of ['build', 'typecheck', 'lint', 'verify']) if (!new RegExp(`npm run ${s}\\b`).test(stat)) problems.push(`static does not run ${s}`);
       // Mutation shards: per OS and script, the shard specs are exactly 1/n … n/n of one n.
@@ -3062,7 +3065,7 @@ const VIOLATIONS = {
     { remove: ['packages/storage/test/product-decisions.test.ts'] },
     { contents: { 'packages/storage/test/backup-finalization.test.ts': '// marker removed\n' } },
     { remove: [MUTATION_CHECK] },
-    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }\n", '') } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: c1-c2-1of2, suite: 'c1:1/1 c2:1/2' }\n", '') } },
   ],
   'c1-proof-tests-present': { remove: ['packages/runtime/test/faults/fault-matrix.test.ts'] },
   'model-calls-confined': [
@@ -3303,7 +3306,7 @@ const VIOLATIONS = {
     { contents: { [C7D_STORE]: "export const HOSTING = 'vercel';\n" } },
     { contents: { 'packages/tool-drivers/src/social/linkedin.ts': "export const VERSION = 'linkedin-202609';\n" } },
   ],
-  'ci-contract': [    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: r1-8of8, suite: 'r1:8/8' }\n", '') } },
+  'ci-contract': [    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: r1-8of13, suite: 'r1:8/13' }\n", '') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace(/- \{ os: ubuntu-latest, label: c4-c5, suite: 'c4:1\/1 c5:1\/1' \}\n/, '') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('desktop]\n    if: always()\n', 'desktop]\n    if: success()\n') } },
     // D1: the Desktop proof dropped from the FULL path, or the reusable workflow weakened.
@@ -3384,7 +3387,7 @@ const VIOLATIONS = {
   'c2-proofs-present': [
     { contents: { 'packages/runtime/test/c2/proofs.test.ts': '// markers removed\n' } },
     { remove: [C2_MUTATION_CHECK] },
-    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }\n", '') } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: c1-c2-1of2, suite: 'c1:1/1 c2:1/2' }\n", '').replace("- { os: windows-latest, label: c2-2of2, suite: 'c2:2/2' }\n", '') } },
   ],
   'c2-not-claimed-closed': [
     { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS') } },

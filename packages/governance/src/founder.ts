@@ -161,7 +161,14 @@ export const ACADEMY_FEEDBACK_INTENTS = ['ACADEMY_FOUNDER_FEEDBACK'] as const;
  */
 export const EMPLOYEE_IDENTITY_INTENTS = ['EMPLOYEE_RENAME'] as const;
 export const PRODUCT_KNOWLEDGE_INTENTS = ['PRODUCT_KNOWLEDGE_ACCESS'] as const;
-export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS, ...EXTERNAL_EVIDENCE_INTENTS, ...PILOT_INTENTS, ...PROVISIONING_INTENTS, ...ACTIVATION_INTENTS, ...REASONING_INTENTS, ...ACADEMY_FEEDBACK_INTENTS, ...EMPLOYEE_IDENTITY_INTENTS, ...PRODUCT_KNOWLEDGE_INTENTS] as const;
+/**
+ * G4-FINAL-CLOSURE-01 (D-P1-17): the Founder records a decision from his own message in the Founder ↔ CEO conversation (or
+ * amends it), and revokes one in force. Structured-only: no text pattern and no model output produces them — a conversation
+ * becomes a recorded decision only by this confirmed act. A recorded decision states what was decided; it moves no budget,
+ * grant, assignment or approval.
+ */
+export const FOUNDER_DECISION_INTENTS = ['FOUNDER_DECISION_RECORD', 'FOUNDER_DECISION_REVOKE'] as const;
+export const MUTATING_INTENTS = ['APPROVAL_DECIDE', 'GOAL_APPROVE', 'GOAL_STATE', 'GOAL_PROPOSE', 'STAFFING_DECIDE', 'CONFLICT_RESOLVE', 'BUDGET_CEILING', 'DELEGATE_WORK', ...EXCEPTION_INTENTS, ...EXTERNAL_EVIDENCE_INTENTS, ...PILOT_INTENTS, ...PROVISIONING_INTENTS, ...ACTIVATION_INTENTS, ...REASONING_INTENTS, ...ACADEMY_FEEDBACK_INTENTS, ...EMPLOYEE_IDENTITY_INTENTS, ...PRODUCT_KNOWLEDGE_INTENTS, ...FOUNDER_DECISION_INTENTS] as const;
 export type ReadIntent = (typeof READ_INTENTS)[number];
 export type MutatingIntent = (typeof MUTATING_INTENTS)[number];
 

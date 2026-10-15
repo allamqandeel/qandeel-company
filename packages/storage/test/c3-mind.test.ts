@@ -15,7 +15,7 @@ import { storeContext } from '../src/store.js';
 import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
 import { COMPACTION_THRESHOLD } from '@qandeel-company/mind';
 import { loadPinnedSkillInstructions } from '../src/mind-core.js';
-import { MEMORY_POOL_LIMIT } from '../src/mind-writes.js';
+import { MEMORY_POOL_LIMIT, POOL_EXTENSION_PCT } from '../src/mind-writes.js';
 import { hire, seed, testManifest, type Seed } from './c2-helpers.js';
 import { academyWorld, answerIn, answerWork, approvedSkill, assemble, attempt, certify, claimFor, complete, propose, scores, stores, workItem } from './c3-helpers.js';
 import { TEST_SUPERVISOR_TTL_MS, harness, type Harness } from './helpers.js';
@@ -334,8 +334,10 @@ describe('C3 context assembly: budgeted, deterministic, manifest-bound', () => {
       const entries = MemoryStore.for(h.store).manifestEntries(a.manifestId).filter((e) => e.itemKind === 'MEMORY' || e.itemKind === 'SUMMARY');
       const mems = entries.filter((e) => e.itemKind === 'MEMORY').length;
       const sums = entries.filter((e) => e.itemKind === 'SUMMARY').length;
-      assert.ok(mems <= MEMORY_POOL_LIMIT, `memory metadata pool is bounded (${mems})`);
-      assert.ok(sums <= Math.floor(MEMORY_POOL_LIMIT / (COMPACTION_THRESHOLD + 1)), `summaries derive from the bounded pool only (${sums})`);
+      // D-P1-14: today's pool (300) plus the two-tier extension (25%) for items only the union query matches.
+      const bound = MEMORY_POOL_LIMIT + Math.floor((MEMORY_POOL_LIMIT * POOL_EXTENSION_PCT) / 100);
+      assert.ok(mems <= bound, `memory metadata pool is bounded (${mems})`);
+      assert.ok(sums <= Math.floor(bound / (COMPACTION_THRESHOLD + 1)), `summaries derive from the bounded pool only (${sums})`);
       assert.ok(man.selectedCount < 40, `selection is small (${man.selectedCount})`);
       assert.ok(man.estimatedInputTokens <= man.totalBudget, 'the rendered context never exceeds the hard budget');
     });

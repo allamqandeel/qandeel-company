@@ -34,7 +34,7 @@ import {
 import { founder, founderAdminWrite } from './governance.js';
 import { txDecideLesson, txPatternShareGate, txRequestLessonJudgment } from './improvement.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
-import { SYSTEM_MIND_REF, assertNotContradictingCanonical, getKnowledgeRow, getMemoryRow, indexItemTerms, indexTerms, insertMemory, setMemoryStatus, wakeEmployeeWaits } from './mind-core.js';
+import { FOUNDER_DECISION_SOURCE, SYSTEM_MIND_REF, assertNotContradictingCanonical, getKnowledgeRow, getMemoryRow, indexItemTerms, indexSalienceTerms, indexTerms, insertMemory, setMemoryStatus, wakeEmployeeWaits } from './mind-core.js';
 import {
   mapCandidate,
   mapCanonical,
@@ -104,6 +104,186 @@ export interface CorrectionInput {
   readonly contextRef?: string;
 }
 
+// --- G4-FINAL-CLOSURE-01 (D-P1-17): Founder decision continuity ----------------------------------------------------------
+//
+// A decision the Founder states in the Founder ↔ CEO conversation becomes durable ONLY when the Founder records it — a
+// structured, confirmed act (never a model's reading of the conversation). It is a Company Knowledge item of provenance
+// FOUNDER_DECISION whose source is the Founder's own message, readable by the CEO's role (or the whole Company when the
+// Founder says so), never by another Employee: the thread is Founder-only, and so is what comes out of it unless widened.
+// An amendment is the existing supersession chain (one live version per decision key), a revocation the existing ARCHIVED
+// status; history stays. A recorded decision states what was decided: it moves no budget, grant or assignment by itself.
+
+export const FOUNDER_DECISION_TOPIC = 'founder.decision';
+export const FOUNDER_DECISION_AUDIENCES = ['CEO', 'COMPANY'] as const;
+export type FounderDecisionAudience = (typeof FOUNDER_DECISION_AUDIENCES)[number];
+export const FOUNDER_DECISION_SUBJECT_MAX = 160;
+export const FOUNDER_DECISION_STATEMENT_MAX = 1_500;
+/** A recorded decision is reviewed after a year (the knowledge review horizon), never silently dropped. */
+const FOUNDER_DECISION_REVIEW_DAYS = 365;
+
+export interface FounderDecisionInput {
+  /** The Founder message the decision is recorded from (a Founder turn of the Founder ↔ CEO conversation). */
+  readonly messageId: unknown;
+  readonly subject: unknown;
+  readonly statement: unknown;
+  readonly audience?: unknown;
+  readonly dataClass?: unknown;
+  /** The live recorded decision this one amends (same decision key, next version). */
+  readonly supersedes?: unknown;
+}
+
+export interface FounderDecisionPlan {
+  readonly messageId: Id;
+  readonly threadId: Id;
+  readonly messageAt: Timestamp;
+  readonly ceoId: Id;
+  readonly subject: string;
+  readonly statement: string;
+  readonly audience: FounderDecisionAudience;
+  readonly dataClass: 'D1' | 'D2';
+  readonly scope: 'ROLE' | 'COMPANY';
+  readonly scopeRef: string | null;
+  /** The stable identity of the decision across its versions (the knowledge claim key). */
+  readonly decisionKey: string;
+  readonly version: number;
+  readonly content: string;
+  readonly contentSha256: string;
+  readonly supersedes: { readonly id: Id; readonly version: number; readonly decisionVersion: number } | null;
+}
+
+export interface FounderDecisionView {
+  readonly id: Id;
+  readonly decisionKey: string;
+  readonly decisionVersion: number;
+  readonly subject: string;
+  readonly statement: string;
+  readonly audience: FounderDecisionAudience;
+  readonly dataClass: DataClass;
+  readonly status: KnowledgeRecord['status'];
+  readonly inForce: boolean;
+  readonly sourceMessageId: Id;
+  readonly supersedesId: Id | null;
+  readonly supersededById: Id | null;
+  readonly recordedAt: Timestamp;
+  readonly version: number;
+}
+
+const DECISION_HEAD = /^Founder decision \(recorded from the Founder message of \d{4}-\d{2}-\d{2}(?:; it replaces an earlier version)?\): /;
+
+const decisionRefuse = (reason: string, message: string, field: string, code: 'VALIDATION_FAILED' | 'INVALID_TRANSITION' | 'NOT_FOUND' = 'VALIDATION_FAILED'): never => {
+  throw new QandeelError(code, message, { reason, field });
+};
+
+/** One plain line (a subject) or bounded text (a statement), secret-scanned; never empty. */
+function decisionText(v: unknown, field: string, max: number, oneLine: boolean): string {
+  if (typeof v !== 'string') return decisionRefuse('TEXT_REQUIRED', `${field} is required`, field);
+  const t = (oneLine ? v.replace(/\s+/g, ' ') : v.replace(/\r\n/g, '\n')).trim();
+  if (t.length < 2 || t.length > max) return decisionRefuse('TEXT_LENGTH', `${field} is 2..${max} characters`, field);
+  if (containsSecretMaterial(t)) return decisionRefuse('SECRET_MATERIAL', `${field} contains secret-shaped material; secrets never enter Company knowledge`, field);
+  return t;
+}
+
+/** A row of `knowledge_items` that is a recorded Founder decision (its source is a Founder message), or a typed refusal. */
+function decisionRow(ctx: StoreContext, id: Id): KnowledgeRecord {
+  const k = getKnowledgeRow(ctx, id);
+  if (k.provenanceKind !== 'FOUNDER_DECISION' || !k.provenanceRef.startsWith(FOUNDER_DECISION_SOURCE) || k.topic !== FOUNDER_DECISION_TOPIC) decisionRefuse('NOT_A_FOUNDER_DECISION', 'this knowledge item is not a recorded Founder decision', 'decisionId', 'NOT_FOUND');
+  return k;
+}
+
+const decisionVersionOf = (k: KnowledgeRecord): number => Number(String(k.claimValue ?? 'v1').slice(1)) || 1;
+
+/** The Founder turn of a Founder ↔ CEO conversation a decision is recorded from, with its thread and the CEO. */
+function decisionSource(ctx: StoreContext, messageId: unknown): { id: Id; threadId: Id; seq: number; at: Timestamp; ceoId: Id } {
+  const id = assertId(messageId, 'messageId');
+  const m = ctx.db.get<{ thread_id: string; seq: number; sender_kind: string; created_at: string; kind: string; employee_id: string }>(
+    'SELECT m.thread_id, m.seq, m.sender_kind, m.created_at, t.kind, t.employee_id FROM communication_messages m JOIN communication_threads t ON t.id = m.thread_id WHERE m.id = ?',
+    id,
+  );
+  if (!m) return decisionRefuse('MESSAGE_NOT_FOUND', 'the source message was not found', 'messageId', 'NOT_FOUND');
+  // Only the Founder's own words in the Founder ↔ CEO conversation: never an Employee's reply, a brief or another thread.
+  if (m.kind !== 'FOUNDER_CEO') decisionRefuse('NOT_CEO_CONVERSATION', 'a Founder decision is recorded from the Founder ↔ CEO conversation', 'messageId');
+  if (m.sender_kind !== 'FOUNDER') decisionRefuse('NOT_FOUNDER_MESSAGE', 'a Founder decision is recorded from a message the Founder wrote', 'messageId');
+  return { id, threadId: m.thread_id as Id, seq: Number(m.seq), at: m.created_at as Timestamp, ceoId: m.employee_id as Id };
+}
+
+/**
+ * Validates one record / amendment against durable state (the preview and the confirm run the same plan). The content is
+ * deterministic from (source message, subject, statement, amendment), so a repeated request is recognised, never duplicated.
+ */
+export function txPlanFounderDecision(ctx: StoreContext, input: FounderDecisionInput): FounderDecisionPlan {
+  const src = decisionSource(ctx, input.messageId);
+  const subject = decisionText(input.subject, 'subject', FOUNDER_DECISION_SUBJECT_MAX, true);
+  const statement = decisionText(input.statement, 'statement', FOUNDER_DECISION_STATEMENT_MAX, false);
+  const audience = input.audience === undefined || input.audience === null ? 'CEO' : input.audience;
+  if (!(FOUNDER_DECISION_AUDIENCES as readonly unknown[]).includes(audience)) decisionRefuse('AUDIENCE', 'the audience is CEO or COMPANY', 'audience');
+  const dataClass = input.dataClass === undefined || input.dataClass === null ? 'D2' : input.dataClass;
+  if (dataClass !== 'D1' && dataClass !== 'D2') decisionRefuse('DATA_CLASS', 'a recorded decision is D1 or D2 (what a Founder conversation reply may hold)', 'dataClass');
+  const ceo = ctx.db.get<{ role_ref: string }>('SELECT role_ref FROM employees WHERE id = ?', src.ceoId);
+  if (!ceo) return decisionRefuse('CEO_NOT_FOUND', 'the conversation has no CEO record', 'messageId', 'NOT_FOUND');
+  let supersedes: FounderDecisionPlan['supersedes'] = null;
+  let decisionKey = `founder-decision.${sha256Hex(`${src.id}\n${subject.normalize('NFKC').toLowerCase()}`).slice(0, 16)}`;
+  if (input.supersedes !== undefined && input.supersedes !== null) {
+    const prior = decisionRow(ctx, assertId(input.supersedes, 'supersedes'));
+    if (!['ACTIVE', 'LOW_CONFIDENCE', 'STALE'].includes(prior.status)) decisionRefuse('NOT_IN_FORCE', 'only a decision in force is amended (a replaced or revoked one is history)', 'supersedes', 'INVALID_TRANSITION');
+    const priorSrc = decisionSource(ctx, prior.provenanceRef.slice(FOUNDER_DECISION_SOURCE.length));
+    if (priorSrc.threadId !== src.threadId) decisionRefuse('OTHER_CONVERSATION', 'an amendment comes from the same conversation', 'supersedes');
+    if (src.seq < priorSrc.seq) decisionRefuse('SOURCE_OLDER', 'an amendment is recorded from a message no older than the decision it replaces', 'messageId');
+    decisionKey = String(prior.claimKey);
+    supersedes = { id: prior.id, version: prior.version, decisionVersion: decisionVersionOf(prior) };
+  }
+  const version = supersedes === null ? 1 : supersedes.decisionVersion + 1;
+  const content = `Founder decision (recorded from the Founder message of ${src.at.slice(0, 10)}${supersedes === null ? '' : '; it replaces an earlier version'}): ${subject}\n${statement}`;
+  const contentSha256 = sha256Hex(content);
+  // Idempotent: the same words from the same message are one decision, whatever the number of requests.
+  const same = ctx.db.get<{ id: string }>(`SELECT id FROM knowledge_items WHERE provenance_ref = ? AND content_sha256 = ? AND status IN ('ACTIVE', 'LOW_CONFIDENCE', 'STALE')`, `${FOUNDER_DECISION_SOURCE}${src.id}`, contentSha256);
+  if (same) throw new QandeelError('INVALID_TRANSITION', 'this decision is already recorded', { reason: 'ALREADY_RECORDED', knowledgeId: same.id });
+  if (supersedes === null) {
+    const live = ctx.db.get<{ id: string }>(`SELECT id FROM knowledge_items WHERE claim_key = ? AND status IN ('ACTIVE', 'LOW_CONFIDENCE', 'STALE')`, decisionKey);
+    if (live) throw new QandeelError('INVALID_TRANSITION', 'this message already holds a decision on that subject; amend it instead', { reason: 'ALREADY_RECORDED', knowledgeId: live.id });
+  }
+  return {
+    messageId: src.id, threadId: src.threadId, messageAt: src.at, ceoId: src.ceoId, subject, statement, audience: audience as FounderDecisionAudience, dataClass: dataClass as 'D1' | 'D2',
+    scope: audience === 'COMPANY' ? 'COMPANY' : 'ROLE', scopeRef: audience === 'COMPANY' ? null : ceo.role_ref, decisionKey, version, content, contentSha256, supersedes,
+  };
+}
+
+/** The decision a revocation targets, in force now. */
+export function txPlanFounderDecisionRevoke(ctx: StoreContext, input: { decisionId: unknown; messageId?: unknown }): { decision: KnowledgeRecord; messageId: Id | null } {
+  const k = decisionRow(ctx, assertId(input.decisionId, 'decisionId'));
+  if (!['ACTIVE', 'LOW_CONFIDENCE', 'STALE'].includes(k.status)) decisionRefuse('NOT_IN_FORCE', 'only a decision in force is revoked (a replaced or revoked one is history)', 'decisionId', 'INVALID_TRANSITION');
+  let messageId: Id | null = null;
+  if (input.messageId !== undefined && input.messageId !== null) {
+    const src = decisionSource(ctx, input.messageId);
+    const priorSrc = decisionSource(ctx, k.provenanceRef.slice(FOUNDER_DECISION_SOURCE.length));
+    if (src.threadId !== priorSrc.threadId) decisionRefuse('OTHER_CONVERSATION', 'a revocation comes from the same conversation', 'messageId');
+    messageId = src.id;
+  }
+  return { decision: k, messageId };
+}
+
+function decisionView(r: Parameters<typeof mapKnowledge>[0]): FounderDecisionView {
+  const k = mapKnowledge(r);
+  const [head = '', ...rest] = String(r.content).split('\n');
+  const opt = (v: unknown): Id | null => (typeof v === 'string' && v.length > 0 ? (v as Id) : null);
+  const inForce = ['ACTIVE', 'LOW_CONFIDENCE', 'STALE'].includes(k.status);
+  return {
+    id: k.id, decisionKey: String(k.claimKey), decisionVersion: decisionVersionOf(k), subject: head.replace(DECISION_HEAD, ''), statement: rest.join('\n'),
+    audience: k.scope === 'COMPANY' ? 'COMPANY' : 'CEO', dataClass: k.dataClass, status: k.status, inForce,
+    sourceMessageId: k.provenanceRef.slice(FOUNDER_DECISION_SOURCE.length) as Id, supersedesId: opt(r.supersedes_id), supersededById: opt(r.superseded_by_id), recordedAt: k.createdAt, version: k.version,
+  };
+}
+
+/** Every decision recorded from one conversation (in force and history), oldest first. Founder-scoped content; a read. */
+export function txFounderDecisionsOfThread(ctx: StoreContext, threadId: Id): FounderDecisionView[] {
+  return ctx.db
+    .all(
+      `SELECT k.* FROM knowledge_items k JOIN communication_messages m ON k.provenance_ref = '${FOUNDER_DECISION_SOURCE}' || m.id
+        WHERE m.thread_id = ? AND k.provenance_kind = 'FOUNDER_DECISION' AND k.topic = ? ORDER BY k.created_at, CAST(substr(k.claim_value, 2) AS INTEGER), k.id`,
+      threadId, FOUNDER_DECISION_TOPIC,
+    )
+    .map((r) => decisionView(r));
+}
+
 export interface MindHealth {
   readonly memories: Record<string, number>;
   readonly memoryIntegrityFailures: number;
@@ -161,12 +341,15 @@ function setKnowledgeStatus(ctx: StoreContext, k: KnowledgeRecord, to: Knowledge
   appendAudit(ctx, 'knowledge.status', 'knowledge', k.id, { actorRef }, 'OK', reasonCode, { from: k.status, to });
 }
 
-function insertKnowledge(ctx: StoreContext, f: { scope: KnowledgeScope; scopeRef: string | null; topic: string; claimKey: string | null; claimValue: string | null; content: string; dataClass: DataClass; marketRef: string | null; provenanceKind: 'VALIDATED_LESSON' | 'FOUNDER_DECISION' | 'CANONICAL'; provenanceRef: string; confidencePct: number; reviewAt: Timestamp | null; supersedesId: Id | null; actorRef: string }): Id {
+function insertKnowledge(ctx: StoreContext, f: { scope: KnowledgeScope; scopeRef: string | null; topic: string; claimKey: string | null; claimValue: string | null; content: string; dataClass: DataClass; marketRef: string | null; provenanceKind: 'VALIDATED_LESSON' | 'FOUNDER_DECISION' | 'CANONICAL'; provenanceRef: string; confidencePct: number; reviewAt: Timestamp | null; supersedesId: Id | null; actorRef: string; indexText?: { topic: string; text: string } }): Id {
   if (f.claimKey !== null) {
     assertNotContradictingCanonical(ctx, f.claimKey, f.claimValue);
     const clash = ctx.db.get<{ id: string }>(`SELECT id FROM knowledge_items WHERE scope = ? AND COALESCE(scope_ref, '') = ? AND claim_key = ? AND status IN ('ACTIVE', 'LOW_CONFIDENCE') AND id IS NOT ?`, f.scope, f.scopeRef ?? '', f.claimKey, f.supersedesId);
     if (clash) throw new QandeelError('VALIDATION_FAILED', 'this scope already holds knowledge for the claim; supersede it explicitly', { reason: 'KNOWLEDGE_CONFLICT', knowledgeId: clash.id });
   }
+  // G4-FINAL-CLOSURE-01 (D-P1-17): a recorded Founder decision is indexed on its own words (subject and statement), never on
+  // its framing ("Founder decision …"), so it is relevant only to a task about its subject.
+  const ix = f.indexText ?? { topic: f.topic, text: f.content };
   const id = newId();
   const at = ts(ctx);
   // The predecessor is superseded first (its successor link is a deferred reference), so the unique
@@ -176,10 +359,11 @@ function insertKnowledge(ctx: StoreContext, f: { scope: KnowledgeScope; scopeRef
   ctx.db.run(
     `INSERT INTO knowledge_items (id, scope, scope_ref, topic, claim_key, claim_value, content, content_sha256, fingerprint, terms_json, data_class, market_ref, provenance_kind, provenance_ref, confidence_pct, status, integrity, review_at, last_validated_at, supersedes_id, version, created_by_ref, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 'OK', ?, ?, ?, 1, ?, ?, ?)`,
-    id, f.scope, f.scopeRef, f.topic, f.claimKey, f.claimValue, f.content, sha256Hex(f.content), contentFingerprint(f.content), JSON.stringify(indexTerms(f.topic, f.content)), f.dataClass, f.marketRef, f.provenanceKind, f.provenanceRef, f.confidencePct, f.reviewAt, at, f.supersedesId, f.actorRef, at, at,
+    id, f.scope, f.scopeRef, f.topic, f.claimKey, f.claimValue, f.content, sha256Hex(f.content), contentFingerprint(f.content), JSON.stringify(indexTerms(ix.topic, ix.text)), f.dataClass, f.marketRef, f.provenanceKind, f.provenanceRef, f.confidencePct, f.reviewAt, at, f.supersedesId, f.actorRef, at, at,
   );
   ctx.db.run('INSERT INTO knowledge_history (knowledge_id, version, from_status, to_status, reason_code, actor_ref, occurred_at) VALUES (?, 1, NULL, ?, ?, ?, ?)', id, 'ACTIVE', 'knowledge.recorded', f.actorRef, at);
-  indexItemTerms(ctx, 'KNOWLEDGE', '', id, indexTerms(f.topic, f.content));
+  indexItemTerms(ctx, 'KNOWLEDGE', '', id, indexTerms(ix.topic, ix.text));
+  indexSalienceTerms(ctx, 'KNOWLEDGE', '', id, ix.topic, ix.text, indexTerms(ix.topic, ix.text));
   appendAudit(ctx, 'knowledge.recorded', 'knowledge', id, { actorRef: f.actorRef }, 'OK', null, { scope: f.scope, dataClass: f.dataClass, provenance: f.provenanceKind });
   return id;
 }
@@ -256,6 +440,7 @@ export class MemoryStore {
         id, input.level, topic, claimKey, claimValue, statement, sha256Hex(statement), JSON.stringify(indexTerms(topic, statement)), assertDataClass(input.dataClass, 'dataClass'), assertOpaqueRef(input.sourceRef, 'sourceRef'), input.sourceSha256 ?? null, supersedes, p.ref, at, at,
       );
       indexItemTerms(ctx, 'CANONICAL', '', id, indexTerms(topic, statement));
+      indexSalienceTerms(ctx, 'CANONICAL', '', id, topic, statement, indexTerms(topic, statement));
       appendAudit(ctx, 'canonical_truth.recorded', 'canonical_truth', id, { actorRef: p.ref }, 'OK', null, { level: input.level, supersedes });
       if (claimKey !== null && claimValue !== null) applyCanonicalClaim(ctx, id, claimKey, claimValue, p.ref);
       return mapCanonical(ctx.db.get('SELECT * FROM canonical_truth WHERE id = ?', id) ?? {});
@@ -377,6 +562,60 @@ export class MemoryStore {
 
   knowledge(id: Id): KnowledgeRecord {
     return this.#read((ctx) => getKnowledgeRow(ctx, id));
+  }
+
+  /**
+   * G4-FINAL-CLOSURE-01 (D-P1-17): records (or amends) a Founder decision from the Founder's own message — the Founder's
+   * act only, inside the governed confirmation. Re-planned here: the content and the amended version must be exactly the
+   * previewed ones, else nothing is written. One knowledge row (+ its history), the supersession of the prior version, and
+   * a content-free audit row commit together. It changes no budget, grant, assignment or approval.
+   */
+  recordFounderDecision(actorRef: string, input: FounderDecisionInput & { readonly expectedContentSha256?: string; readonly expectedSupersedesVersion?: number; readonly reasonCode?: string }): KnowledgeRecord {
+    return founderAdminWrite(this.#store, 'record founder decision', actorRef, (ctx) => {
+      const p = founder(ctx, actorRef, null, 'founder decision');
+      const plan = txPlanFounderDecision(ctx, input);
+      if (input.expectedContentSha256 !== undefined && input.expectedContentSha256 !== plan.contentSha256) throw new QandeelError('INVALID_TRANSITION', 'the decision changed since the preview', { reason: 'PREVIEW_STALE' });
+      if (input.expectedSupersedesVersion !== undefined && input.expectedSupersedesVersion !== (plan.supersedes?.version ?? 0)) throw new QandeelError('VERSION_CONFLICT', 'the amended decision changed since the preview', { reason: 'PREVIEW_STALE' });
+      const at = ts(ctx);
+      const id = insertKnowledge(ctx, {
+        scope: plan.scope,
+        scopeRef: plan.scopeRef,
+        topic: FOUNDER_DECISION_TOPIC,
+        claimKey: plan.decisionKey,
+        claimValue: `v${plan.version}`,
+        content: plan.content,
+        dataClass: plan.dataClass,
+        marketRef: null,
+        provenanceKind: 'FOUNDER_DECISION',
+        provenanceRef: `${FOUNDER_DECISION_SOURCE}${plan.messageId}`,
+        confidencePct: 100,
+        reviewAt: addDays(at, FOUNDER_DECISION_REVIEW_DAYS),
+        supersedesId: plan.supersedes?.id ?? null,
+        actorRef: p.ref,
+        indexText: { topic: '', text: `${plan.subject}\n${plan.statement}` },
+      });
+      // Rule A: IDs, codes and versions only — the decision's words live in the knowledge item alone.
+      appendAudit(ctx, 'founder_decision.recorded', 'knowledge', id, { actorRef: p.ref }, 'OK', assertCode(input.reasonCode ?? 'founder.decision', 'reasonCode'), { messageId: plan.messageId, threadId: plan.threadId, audience: plan.audience, dataClass: plan.dataClass, decisionVersion: plan.version, supersedesId: plan.supersedes?.id ?? null });
+      return getKnowledgeRow(ctx, id);
+    });
+  }
+
+  /** Revokes a Founder decision in force (ARCHIVED, terminal; its history stays). The Founder's act only. */
+  revokeFounderDecision(actorRef: string, decisionId: string, input: { readonly messageId?: unknown; readonly expectedVersion?: number; readonly reasonCode?: string } = {}): KnowledgeRecord {
+    return founderAdminWrite(this.#store, 'revoke founder decision', actorRef, (ctx) => {
+      const p = founder(ctx, actorRef, null, 'founder decision');
+      const plan = txPlanFounderDecisionRevoke(ctx, { decisionId, messageId: input.messageId });
+      const k = plan.decision;
+      if (input.expectedVersion !== undefined && input.expectedVersion !== k.version) throw new QandeelError('VERSION_CONFLICT', 'the decision changed since the preview', { reason: 'PREVIEW_STALE' });
+      setKnowledgeStatus(ctx, k, 'ARCHIVED', 'founder_decision.revoked', p.ref);
+      appendAudit(ctx, 'founder_decision.revoked', 'knowledge', k.id, { actorRef: p.ref }, 'OK', assertCode(input.reasonCode ?? 'founder.decision_revoked', 'reasonCode'), { messageId: plan.messageId });
+      return getKnowledgeRow(ctx, k.id);
+    });
+  }
+
+  /** The decisions recorded from one Founder ↔ CEO conversation, in force and history (Founder-scoped content; a read). */
+  founderDecisions(threadId: Id): FounderDecisionView[] {
+    return this.#read((ctx) => txFounderDecisionsOfThread(ctx, threadId));
   }
 
   // --- Learning validation and promotion (Stage 5 §4, §10) ---------------------------------------------

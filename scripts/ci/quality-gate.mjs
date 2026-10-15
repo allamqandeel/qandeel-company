@@ -19,7 +19,7 @@ import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { MUTATION_FAMILIES, OPERATING_SYSTEMS, planFor, validatePlan } from './impact-map.mjs';
+import { MUTATION_FAMILIES, OPERATING_SYSTEMS, planFor, testUnits, validatePlan } from './impact-map.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const MUTATION_SCRIPTS = MUTATION_FAMILIES;
@@ -58,10 +58,39 @@ export function parity(reports, os, scripts = MUTATION_SCRIPTS, ids = recordedId
 }
 
 /**
+ * Test parity for one OS (D-P1-17): every unit's shard reports passed, and together they covered exactly that unit's
+ * tracked test files, each once. A missing, failed, duplicated or unknown report fails the gate.
+ */
+export function testParity(reports, os, units) {
+  const problems = [];
+  const mine = reports.filter((r) => r.os === os);
+  for (const [unit, want] of Object.entries(units)) {
+    const rs = mine.filter((r) => r.unit === unit);
+    if (rs.length === 0) {
+      problems.push(`${os}: tests of ${unit} never ran (no report)`);
+      continue;
+    }
+    for (const r of rs) if (r.ok !== true || r.schema !== 'qc-tests/1') problems.push(`${os}: tests of ${unit} shard ${r.shard} did not pass`);
+    for (const r of rs) if (r.total !== want.length) problems.push(`${os}: tests of ${unit} shard ${r.shard} saw ${r.total} files, the repository has ${want.length}`);
+    const ran = rs.flatMap((r) => (Array.isArray(r.files) ? r.files : []));
+    const dup = ran.filter((x, i) => ran.indexOf(x) !== i);
+    const missing = want.filter((x) => !ran.includes(x));
+    const unknown = ran.filter((x) => !want.includes(x));
+    if (dup.length) problems.push(`${os}: tests of ${unit} ran ${uniqList(dup).join(',')} more than once`);
+    if (missing.length) problems.push(`${os}: tests of ${unit} never ran ${missing.join(',')}`);
+    if (unknown.length) problems.push(`${os}: tests of ${unit} ran untracked ${unknown.join(',')}`);
+  }
+  const extra = mine.filter((r) => !Object.hasOwn(units, r.unit));
+  if (extra.length) problems.push(`${os}: test reports for unknown units ${uniqList(extra.map((r) => r.unit)).join(', ')}`);
+  return problems;
+}
+const uniqList = (xs) => [...new Set(xs)];
+
+/**
  * The pure gate decision. `diffFiles` (the pull request's own diff, re-derived by the gate) is optional; when
  * present the plan must be the plan for exactly those files.
  */
-export function evaluate({ mode, needs, reports = [], plan, proofs = [], diffFiles, ids = recordedIds }) {
+export function evaluate({ mode, needs, reports = [], testReports = [], units, plan, proofs = [], diffFiles, ids = recordedIds }) {
   const problems = [];
   if (!Object.hasOwn(REQUIRED, mode)) return [`unknown mode ${JSON.stringify(mode)} (fail closed)`];
   if (!needs || typeof needs !== 'object') return ['needs are unreadable (fail closed)'];
@@ -71,6 +100,8 @@ export function evaluate({ mode, needs, reports = [], plan, proofs = [], diffFil
   }
   if (mode === 'full') {
     for (const os of OPERATING_SYSTEMS) problems.push(...parity(reports, os, MUTATION_SCRIPTS, ids));
+    if (!units || typeof units !== 'object' || Object.keys(units).length === 0) problems.push('the FULL test units are unknown (fail closed)');
+    else for (const os of OPERATING_SYSTEMS) problems.push(...testParity(testReports, os, units));
   }
   if (mode === 'affected') {
     if (plan === undefined) return [...problems, 'affected plan is missing (fail closed)'];
@@ -121,18 +152,35 @@ export function selfTest() {
     { os, script: `${s}:mutation`, total: 2, ran: [`${s}-a`] },
     { os, script: `${s}:mutation`, total: 2, ran: [`${s}-b`] },
   ]));
+  // FULL test parity (D-P1-17): two units, one sharded in two.
+  const units = { storage: ['test/a.test.ts', 'test/b.test.ts'], harness: ['scripts/c5/cdp.test.mjs'] };
+  const testReports = OPERATING_SYSTEMS.flatMap((os) => [
+    { os, schema: 'qc-tests/1', unit: 'storage', shard: '1/2', total: 2, files: ['test/a.test.ts'], ok: true },
+    { os, schema: 'qc-tests/1', unit: 'storage', shard: '2/2', total: 2, files: ['test/b.test.ts'], ok: true },
+    { os, schema: 'qc-tests/1', unit: 'harness', shard: '1/1', total: 1, files: ['scripts/c5/cdp.test.mjs'], ok: true },
+  ]);
+  const full = { mode: 'full', needs: fullNeeds, reports: fullReports, testReports, units, ids };
   const expect = (name, problems, pass) => {
     if (pass && problems.length) failures.push(`${name}: expected PASS, got ${problems.join('; ')}`);
     if (!pass && problems.length === 0) failures.push(`${name}: expected FAIL, got PASS`);
   };
   // FULL parity is unchanged.
-  expect('full complete', evaluate({ mode: 'full', needs: fullNeeds, reports: fullReports, ids }), true);
-  expect('full without the Desktop proof (D1)', evaluate({ mode: 'full', needs: { ...fullNeeds, desktop: { result: 'failure' } }, reports: fullReports, ids }), false);
-  expect('full with the Desktop proof skipped', evaluate({ mode: 'full', needs: { ...fullNeeds, desktop: { result: 'skipped' } }, reports: fullReports, ids }), false);
-  expect('full missing one mutation on Windows', evaluate({ mode: 'full', needs: fullNeeds, reports: fullReports.filter((r) => !(r.os === 'windows-latest' && r.script === 'l1:mutation' && r.ran[0] === 'l1-b')), ids }), false);
-  expect('full duplicate shard on Ubuntu', evaluate({ mode: 'full', needs: fullNeeds, reports: [...fullReports, fullReports.at(-1)], ids }), false);
-  expect('full without a family report', evaluate({ mode: 'full', needs: fullNeeds, reports: fullReports.filter((r) => r.script !== 'c3:mutation'), ids }), false);
-  expect('full with a failed job', evaluate({ mode: 'full', needs: { ...fullNeeds, mutation: { result: 'failure' } }, reports: fullReports, ids }), false);
+  expect('full complete', evaluate({ ...full, needs: fullNeeds, reports: fullReports }), true);
+  expect('full without the Desktop proof (D1)', evaluate({ ...full, needs: { ...fullNeeds, desktop: { result: 'failure' } }, reports: fullReports }), false);
+  expect('full with the Desktop proof skipped', evaluate({ ...full, needs: { ...fullNeeds, desktop: { result: 'skipped' } }, reports: fullReports }), false);
+  expect('full missing one mutation on Windows', evaluate({ ...full, needs: fullNeeds, reports: fullReports.filter((r) => !(r.os === 'windows-latest' && r.script === 'l1:mutation' && r.ran[0] === 'l1-b')) }), false);
+  expect('full duplicate shard on Ubuntu', evaluate({ ...full, reports: [...fullReports, fullReports.at(-1)] }), false);
+  expect('full without a family report', evaluate({ ...full, needs: fullNeeds, reports: fullReports.filter((r) => r.script !== 'c3:mutation') }), false);
+  expect('full with a failed job', evaluate({ ...full, needs: { ...fullNeeds, mutation: { result: 'failure' } }, reports: fullReports }), false);
+  expect('full without the test units', evaluate({ ...full, units: undefined }), false);
+  expect('full missing a test shard on Windows', evaluate({ ...full, testReports: testReports.filter((r) => !(r.os === 'windows-latest' && r.shard === '2/2')) }), false);
+  expect('full with a duplicated test shard on Ubuntu', evaluate({ ...full, testReports: [...testReports, testReports.at(-2)] }), false);
+  expect('full with a failed test shard', evaluate({ ...full, testReports: testReports.map((r) => (r.os === 'ubuntu-latest' && r.unit === 'harness' ? { ...r, ok: false } : r)) }), false);
+  expect('full without the harness on Ubuntu', evaluate({ ...full, testReports: testReports.filter((r) => !(r.os === 'ubuntu-latest' && r.unit === 'harness')) }), false);
+  expect('full with a test file the repository lost', evaluate({ ...full, units: { ...units, storage: ['test/a.test.ts'] } }), false);
+  expect('full with a test file nobody ran', evaluate({ ...full, units: { ...units, storage: [...units.storage, 'test/c.test.ts'] } }), false);
+  expect('full with an unknown test unit', evaluate({ ...full, testReports: [...testReports, { os: 'windows-latest', schema: 'qc-tests/1', unit: 'ghost', shard: '1/1', total: 1, files: ['x'], ok: true }] }), false);
+  expect('full with the tests job cancelled', evaluate({ ...full, needs: { ...fullNeeds, tests: { result: 'cancelled' } } }), false);
   expect('unknown mode', evaluate({ mode: 'skip', needs: fullNeeds, ids }), false);
   expect('empty mode', evaluate({ mode: '', needs: fullNeeds, ids }), false);
   expect('unreadable needs', evaluate({ mode: 'docs', needs: undefined, ids }), false);
@@ -179,6 +227,8 @@ function main(argv) {
     needs = undefined;
   }
   let reports = [];
+  let testReports = [];
+  let units;
   let plan;
   let proofs = [];
   let diffFiles;
@@ -186,6 +236,14 @@ function main(argv) {
     if (mode === 'full' || mode === 'affected') reports = readJsonDir(arg('--reports'), (f, x) => ({ ...x, os: f.split('__')[0] }));
   } catch {
     pre.push('mutation reports are unreadable (fail closed)');
+  }
+  if (mode === 'full') {
+    try {
+      testReports = readJsonDir(arg('--test-reports'), (f, x) => ({ ...x, os: f.split('__')[0] }));
+      units = testUnits();
+    } catch {
+      pre.push('test reports or test units are unreadable (fail closed)');
+    }
   }
   if (mode === 'affected') {
     try {
@@ -211,8 +269,9 @@ function main(argv) {
       pre.push('affected mode needs the pull request base/head to re-derive the plan (fail closed)');
     }
   }
-  const problems = [...pre, ...evaluate({ mode, needs, reports, plan, proofs, diffFiles })];
+  const problems = [...pre, ...evaluate({ mode, needs, reports, testReports, units, plan, proofs, diffFiles })];
   const lines = [`## Quality gate — ${mode || 'unknown'}`, '', problems.length ? `**FAIL** (${problems.length})` : '**PASS**', '', ...problems.map((p) => `- ${p}`)];
+  if (mode === 'full') lines.push('', `Test reports: ${testReports.length}; ${Object.entries(units ?? {}).map(([u, fs]) => `${u}=${fs.length}`).join(', ')} test files, each run once on ${OPERATING_SYSTEMS.join(' and ')}.`);
   if (mode === 'full') lines.push('', `Mutation reports: ${reports.length}; ${MUTATION_SCRIPTS.map((s) => `${s}=${recordedIds(s).length}`).join(', ')} recorded, each proven on ${OPERATING_SYSTEMS.join(' and ')}.`);
   if (mode === 'affected' && plan?.mutation) {
     lines.push('', `Affected plan ${String(plan.digest).slice(0, 12)}: boundaries ${plan.boundaries?.join(', ')}; checks on ${plan.os?.join(', ')}; steps ${plan.steps?.map((s) => s.id).join(' → ')}.`);

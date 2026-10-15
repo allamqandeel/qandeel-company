@@ -113,6 +113,7 @@ class App implements PanelHost {
       accentOf: (employeeId) => this.colorOf(`employee:${employeeId}`),
       openEmployee: (id) => this.openEmployee(id),
       runCommand: (text) => this.runCommand(text),
+      previewAction: (intent, payload) => this.previewAction(intent, payload),
       note: (text, kind) => this.note(text, kind),
       closeChat: () => this.closeChat(),
       lock: (code) => this.lock(code),

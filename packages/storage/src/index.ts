@@ -70,7 +70,7 @@ export type {
 // C3 Employee Mind: Memory / Knowledge / Canonical Truth, Skills / Passports, Capability, Academy.
 // Reads are content-free metadata; authority writes fail closed until C5 (D-C2-13); memory is written
 // by the runtime-owned Memory Write Policy through the runtime-authority subpath only.
-export { MemoryStore, type CanonicalInput, type CorrectionInput, type KnowledgeInput, type MindHealth } from './memory.js';
+export { FOUNDER_DECISION_AUDIENCES, FOUNDER_DECISION_STATEMENT_MAX, FOUNDER_DECISION_SUBJECT_MAX, FOUNDER_DECISION_TOPIC, MemoryStore, type CanonicalInput, type CorrectionInput, type FounderDecisionAudience, type FounderDecisionView, type KnowledgeInput, type MindHealth } from './memory.js';
 export { SkillStore, type RegisterSkillVersionInput, type SkillHealth } from './skill-registry.js';
 export { CapabilityStore, type DeclareRequirementsInput } from './capability.js';
 export { AcademyStore, type AcademyHealth } from './academy.js';
@@ -116,7 +116,7 @@ export { ReviewStore, type ReviewHealth } from './review.js';
 export { FounderAuthStore, LAUNCH_TOKEN_TTL_MS, SESSION_IDLE_MS, SESSION_TTL_MS, type FounderSession } from './founder-auth.js';
 export { GoalStore, type ProposeGoalInput } from './goals.js';
 export { PILOT_SCOPE_CAP, PilotStore, type AdvancePilotInput, type BriefingStatus, type CreatePilotInput, type PilotBoard, type PilotHistoryRecord, type PilotPeopleEvidence, type PilotRecord, type PilotScope, type PilotWorkInspection } from './pilots.js';
-export { CHAT_REPLY_AUTO_OUTPUT_TOKENS, CHAT_REPLY_MANUAL_E4_OUTPUT_TOKENS, CHAT_REPLY_MAX_MODEL_CALLS, CHAT_REPLY_MAX_TURNS, CHAT_REPLY_OUTPUT_TOKENS, CommunicationStore, FOUNDER_BRIEF_TASK_CLASS, FOUNDER_REPLY_TASK_CLASS, type FounderSendInput, type OpenThreadInput, type ReplyState, type ReplyStatus } from './communications.js';
+export { CHAT_REPLY_AUTO_OUTPUT_TOKENS, CHAT_REPLY_MANUAL_E4_OUTPUT_TOKENS, CHAT_REPLY_MAX_MODEL_CALLS, CHAT_REPLY_MAX_TURNS, CHAT_REPLY_OUTPUT_TOKENS, CommunicationStore, FOUNDER_BRIEF_TASK_CLASS, FOUNDER_REPLY_CONTEXT_BUDGET_TOKENS, FOUNDER_REPLY_TASK_CLASS, type FounderSendInput, type OpenThreadInput, type ReplyState, type ReplyStatus } from './communications.js';
 export { AttentionStore, ATTENTION_COOLDOWN_MS, type AttentionSyncReport } from './attention.js';
 export { FounderActionStore, PREVIEW_TTL_MS, type ConfirmResult, type FounderActionOptions } from './founder-actions.js';
 export { CANONICAL_DEPARTMENT_ORDER, projectUniverse, type CompanyUniverse, type RelationKind, type UniverseAttention, type UniverseDepartment, type UniverseEmployee, type UniverseGoal, type UniverseRelation, type UniverseSeat, type UniverseWork } from './universe.js';

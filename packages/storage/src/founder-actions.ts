@@ -33,7 +33,7 @@ import { getGoal, GoalStore } from './goals.js';
 import { mapActionPreview, type ActionPreviewRecord } from './founder-records.js';
 import { ImprovementStore } from './improvement.js';
 import { appendAudit, ts, type StoreContext } from './internal.js';
-import { MemoryStore } from './memory.js';
+import { MemoryStore, txPlanFounderDecision, txPlanFounderDecisionRevoke } from './memory.js';
 import { OrganizationStore } from './organization.js';
 import { getStaffingRequest } from './organization.js';
 import { CONTEST_DECISIONS, assertOutcomeClasses, txContestedVerification, type ContestDecision } from './outcome-core.js';
@@ -228,6 +228,28 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
         givenName: plan.next.given, familyName: plan.next.family, displayNameAr: plan.next.ar,
         identityChange: 'NONE', historyChange: 'APPENDED', authorityChange: 'NONE', budgetChange: 'NONE', providerCall: 'NONE',
         reasonCode: assertCode(raw.reasonCode ?? 'founder.rename', 'reasonCode'),
+      };
+    }
+    // --- G4-FINAL-CLOSURE-01 (D-P1-17): a Founder decision recorded from the Founder's own message, amended or revoked ---
+    case 'FOUNDER_DECISION_RECORD': {
+      const plan = txPlanFounderDecision(ctx, { messageId: raw.messageId, subject: raw.subject, statement: raw.statement, audience: raw.audience, dataClass: raw.dataClass, supersedes: raw.supersedesId });
+      return {
+        messageId: plan.messageId, threadId: plan.threadId, messageAt: plan.messageAt, ceoId: plan.ceoId,
+        subject: plan.subject, statement: plan.statement, audience: plan.audience, dataClass: plan.dataClass,
+        decisionKey: plan.decisionKey, decisionVersion: plan.version, supersedesId: plan.supersedes?.id ?? null, supersedesVersion: plan.supersedes?.version ?? 0,
+        contentSha256: plan.contentSha256,
+        reaches: plan.audience === 'COMPANY' ? 'EVERY_EMPLOYEE_CONTEXT_WHERE_RELEVANT' : 'THE_CEO_CONTEXT_WHERE_RELEVANT',
+        budgetChange: 'NONE', grantChange: 'NONE', assignmentChange: 'NONE', approvalChange: 'NONE', providerCall: 'NONE',
+        reasonCode: assertCode(raw.reasonCode ?? 'founder.decision', 'reasonCode'),
+      };
+    }
+    case 'FOUNDER_DECISION_REVOKE': {
+      const plan = txPlanFounderDecisionRevoke(ctx, { decisionId: raw.decisionId, messageId: raw.messageId });
+      const k = plan.decision;
+      return {
+        decisionId: k.id, decisionKey: String(k.claimKey), decisionVersion: Number(String(k.claimValue ?? 'v1').slice(1)) || 1, version: k.version, messageId: plan.messageId,
+        historyChange: 'KEPT', budgetChange: 'NONE', grantChange: 'NONE', assignmentChange: 'NONE', approvalChange: 'NONE', providerCall: 'NONE',
+        reasonCode: assertCode(raw.reasonCode ?? 'founder.decision_revoked', 'reasonCode'),
       };
     }
     case 'PRODUCT_KNOWLEDGE_ACCESS': {
@@ -631,6 +653,15 @@ export class FounderActionStore {
         const plan = txPlanProductKnowledgeAccess(ctx, { employeeId: pl.employeeId, decision: pl.decision, repository: pl.registerSource === true ? pl.source : undefined });
         if (plan.sourceRef !== pl.source || plan.registerTool !== pl.registerTool || plan.grantIds.join(',') !== strings('grantIds').join(',')) throw new QandeelError('INVALID_TRANSITION', 'product knowledge access changed since the preview', { reason: 'PREVIEW_STALE' });
         return executeProductKnowledgeAccess(this.#store, founderRef, plan, str('reasonCode'));
+      }
+      case 'FOUNDER_DECISION_RECORD': {
+        // The store re-plans inside the confirm: the words and the amended version must be exactly the previewed ones.
+        const k = MemoryStore.for(this.#store).recordFounderDecision(founderRef, { messageId: str('messageId'), subject: str('subject'), statement: str('statement'), audience: str('audience'), dataClass: str('dataClass'), supersedes: pl.supersedesId === null ? undefined : str('supersedesId'), expectedContentSha256: str('contentSha256'), expectedSupersedesVersion: Number(pl.supersedesVersion), reasonCode: str('reasonCode') });
+        return `knowledge:${k.id}`;
+      }
+      case 'FOUNDER_DECISION_REVOKE': {
+        const k = MemoryStore.for(this.#store).revokeFounderDecision(founderRef, str('decisionId'), { messageId: pl.messageId === null ? undefined : str('messageId'), expectedVersion: Number(pl.version), reasonCode: str('reasonCode') });
+        return `knowledge:${k.id}`;
       }
       case 'ACADEMY_FOUNDER_FEEDBACK': {
         // The store re-plans inside the confirm: the answer and the note must be exactly the previewed ones.

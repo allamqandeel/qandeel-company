@@ -8,9 +8,11 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { QandeelError, isQandeelError, type Id } from '@qandeel-company/domain';
+import { terms } from '@qandeel-company/mind';
 
 import { AcademyStore, MemoryStore } from '../src/index.js';
 import { beginGovernedRun, claimJob, containProviderFault, holdReservation, interruptClaim, recordStepResult, recordToolIntent, recordToolResult, recoverBudgetWaits, releaseReservation, reserveBudget, settle, settleReservation, type Claim } from '../src/runtime-authority.js';
+import { KNOWLEDGE_POOL_LIMIT, MEMORY_POOL_LIMIT, POOL_EXTENSION_PCT } from '../src/mind-writes.js';
 import { storeContext } from '../src/store.js';
 import { armFounderTestSurface, disarmFounderTestSurface } from '../src/testing/founder-seam.js';
 import { C2_KINDS, GOVERNED_KIND, claimGoverned, governedItem, grantAll, hire, seed, testManifest, type Seed } from './c2-helpers.js';
@@ -32,6 +34,11 @@ function withSeed(fn: (h: Harness, s: Seed) => void): void {
     h.close();
   }
 }
+
+// D-P1-14 made each bounded pool two-tier (tier 1 + a POOL_EXTENSION_PCT extension over the union query): a crowding proof
+// floods past BOTH tiers, or a dropped eligibility filter hides behind the extension.
+const beyondBothTiers = (limit: number): number => limit + Math.floor((limit * POOL_EXTENSION_PCT) / 100) + 10;
+const batchesBeyondBothTiers = (limit: number): number => Math.ceil(beyondBothTiers(limit) / 20);
 
 const jobState = (h: Harness, wi: Id): string => h.store.jobsFor(wi).at(-1)?.state ?? 'NONE';
 const days = (h: Harness, n: number): void => {
@@ -161,6 +168,39 @@ describe('R1-12 (re-review): stale knowledge never crowds an eligible item out, 
       assert.ok(entries.filter((e) => e.reasonCode === 'STALE').length > 0, 'stale knowledge is still recorded as STALE');
     });
   });
+
+  test('more relevant stale knowledge than BOTH pool tiers hold (D-P1-14) does not hide one fresh relevant item', () => {
+    withSeed((h, s) => {
+      const words = ['kiwi', 'mango', 'papaya', 'guava', 'lychee', 'durian', 'quince', 'medlar', 'loquat', 'sapote', 'feijoa', 'jujube', 'rambutan', 'longan', 'salak', 'tamarind', 'soursop', 'cherimoya', 'pawpaw', 'yuzu'];
+      const m = MemoryStore.for(h.store);
+      // Every stale item outranks the fresh one (3 matched terms against 2) in tier 1 AND in the tier-2 extension.
+      for (let i = 0; i < beyondBothTiers(KNOWLEDGE_POOL_LIMIT); i++) m.recordKnowledge(s.founder, { scope: 'COMPANY', topic: `ops.k${i}`, content: `Cairo logistics warehouse rule ${words[i % 20]} ${words[(i * 7) % 20]}${i} code${i}.`, dataClass: 'D1', reviewAfterDays: 1 });
+      days(h, 3);
+      const fresh = m.recordKnowledge(s.founder, { scope: 'COMPANY', topic: 'ops.fresh', content: 'Cairo warehouse opens at dawn now.', dataClass: 'D1' });
+      const a = assemble(h, claimFor(h, workItem(h, s, s.employee, { instructions: 'Cairo logistics warehouse memo.' })).claim, 0);
+      const entries = m.manifestEntries(a.manifestId);
+      assert.ok(entries.some((e) => e.itemId === fresh.id), 'the fresh knowledge item is a candidate');
+      const stale = entries.filter((e) => e.reasonCode === 'STALE').length;
+      assert.ok(stale > KNOWLEDGE_POOL_LIMIT, `stale knowledge is still recorded as STALE, through both evidence tiers (${stale})`);
+    });
+  });
+
+  test('tier 2 alone (an item only the union query reaches): stale knowledge does not hide the fresh item there either', () => {
+    withSeed((h, s) => {
+      const m = MemoryStore.for(h.store);
+      const instructions = 'مذكرة عن التسويق والمخزن والشحن';
+      // Stored without the article: only the union query's Arabic variants reach these items (tier 2), never tier 1.
+      const fresh = 'تسويق مخزن يفتح الفجر';
+      assert.equal(terms(fresh).filter((t) => terms(instructions).includes(t)).length, 0, 'the fresh item shares no tier-1 term with the task');
+      for (let i = 0; i < beyondBothTiers(KNOWLEDGE_POOL_LIMIT); i++) m.recordKnowledge(s.founder, { scope: 'COMPANY', topic: `ops.ar${i}`, content: `تسويق مخزن شحن قاعدة رقم ${i} كود${i}`, dataClass: 'D1', reviewAfterDays: 1 });
+      days(h, 3);
+      const k = m.recordKnowledge(s.founder, { scope: 'COMPANY', topic: 'ops.ar.fresh', content: fresh, dataClass: 'D1' });
+      const a = assemble(h, claimFor(h, workItem(h, s, s.employee, { instructions })).claim, 0);
+      const entries = m.manifestEntries(a.manifestId);
+      assert.ok(entries.some((e) => e.itemId === k.id), 'the fresh knowledge item is a candidate through tier 2');
+      assert.ok(entries.filter((e) => e.reasonCode === 'STALE').length > 0, 'stale knowledge is still recorded as STALE');
+    });
+  });
 });
 
 describe('R1-12 (final re-review): conflict-held memories can never be crowded out of the assembly', () => {
@@ -169,6 +209,25 @@ describe('R1-12 (final re-review): conflict-held memories can never be crowded o
       const words = ['kiwi', 'mango', 'papaya', 'guava', 'lychee', 'durian', 'quince', 'medlar', 'loquat', 'sapote', 'feijoa', 'jujube', 'rambutan', 'longan', 'salak', 'tamarind', 'soursop', 'cherimoya', 'pawpaw', 'yuzu'];
       let step = 1;
       for (let b = 0; b < 16; b++) {
+        const c = claimFor(h, workItem(h, s, s.employee, { dataClass: 'D3' })).claim;
+        for (let i = 0; i < 20; i++) propose(h, c, step++, { memoryClass: 'PROFESSIONAL', topic: `egypt.launch.b${b}`, content: `Egypt launch timing note ${words[i]} ${words[(i + b) % 20]}${b} code${b}x${i}.` });
+        complete(h, c);
+      }
+      const c = claimFor(h, workItem(h, s, s.employee)).claim;
+      propose(h, c, 1, { content: 'Egypt launch: before Ramadan.', claimKey: 'egypt.launch.timing', claimValue: 'before-ramadan' });
+      propose(h, c, 2, { content: 'Egypt launch: after Ramadan.', claimKey: 'egypt.launch.timing', claimValue: 'after-ramadan' });
+      complete(h, c);
+      const held = claimFor(h, workItem(h, s, s.employee, { instructions: 'Egypt launch timing memo.' }, { requirements: [], importance: 'IMPORTANT', topics: ['egypt.launch'] })).claim;
+      assert.equal(assemble(h, held, 0).outcome, 'CONFLICT_HOLD');
+    });
+  });
+
+  test('more relevant rejection-evidence memories than BOTH pool tiers hold never hide an open conflict: IMPORTANT work still gets CONFLICT_HOLD', () => {
+    withSeed((h, s) => {
+      const words = ['kiwi', 'mango', 'papaya', 'guava', 'lychee', 'durian', 'quince', 'medlar', 'loquat', 'sapote', 'feijoa', 'jujube', 'rambutan', 'longan', 'salak', 'tamarind', 'soursop', 'cherimoya', 'pawpaw', 'yuzu'];
+      let step = 1;
+      // Every flood memory outranks the conflicted pair (3 matched terms against 2) in tier 1 AND in the tier-2 extension.
+      for (let b = 0; b < batchesBeyondBothTiers(MEMORY_POOL_LIMIT); b++) {
         const c = claimFor(h, workItem(h, s, s.employee, { dataClass: 'D3' })).claim;
         for (let i = 0; i < 20; i++) propose(h, c, step++, { memoryClass: 'PROFESSIONAL', topic: `egypt.launch.b${b}`, content: `Egypt launch timing note ${words[i]} ${words[(i + b) % 20]}${b} code${b}x${i}.` });
         complete(h, c);
@@ -199,6 +258,73 @@ describe('R1-12 (final re-review): conflict-held memories can never be crowded o
       complete(h, c);
       const held = claimFor(h, workItem(h, s, s.employee, { instructions: 'Egypt launch timing schedule memo.' }, { requirements: [], importance: 'IMPORTANT', topics: ['egypt.launch'] })).claim;
       assert.equal(assemble(h, held, 0).outcome, 'CONFLICT_HOLD');
+    });
+  });
+
+  test('a flood of conflicts that CANNOT hold this work, larger than BOTH pool tiers (D-P1-14), never hides the in-class conflict', () => {
+    withSeed((h, s) => {
+      let step = 1;
+      // 40 conflicted memories per batch, each outranking the in-class pair (4 matched terms against 2) in both tiers.
+      for (let b = 0; b < Math.ceil(beyondBothTiers(MEMORY_POOL_LIMIT) / 40); b++) {
+        const c = claimFor(h, workItem(h, s, s.employee, { dataClass: 'D3' })).claim;
+        for (let i = 0; i < 20; i++) {
+          propose(h, c, step++, { memoryClass: 'PROFESSIONAL', topic: `egypt.launch.f${b}x${i}`, content: `Egypt launch timing schedule flood a${b}x${i}.`, claimKey: `flood.claim.b${b}x${i}`, claimValue: 'yes' });
+          propose(h, c, step++, { memoryClass: 'PROFESSIONAL', topic: `egypt.launch.g${b}x${i}`, content: `Egypt launch timing schedule flood b${b}x${i}.`, claimKey: `flood.claim.b${b}x${i}`, claimValue: 'no' });
+        }
+        complete(h, c);
+      }
+      const c = claimFor(h, workItem(h, s, s.employee)).claim;
+      propose(h, c, 1, { content: 'Egypt launch: before Ramadan.', claimKey: 'egypt.launch.timing', claimValue: 'before-ramadan' });
+      propose(h, c, 2, { content: 'Egypt launch: after Ramadan.', claimKey: 'egypt.launch.timing', claimValue: 'after-ramadan' });
+      complete(h, c);
+      const held = claimFor(h, workItem(h, s, s.employee, { instructions: 'Egypt launch timing schedule memo.' }, { requirements: [], importance: 'IMPORTANT', topics: ['egypt.launch'] })).claim;
+      assert.equal(assemble(h, held, 0).outcome, 'CONFLICT_HOLD');
+    });
+  });
+
+  test('a flood of conflicts outside this work\'s market, larger than BOTH pool tiers (D-P1-14), never hides the in-scope conflict', () => {
+    withSeed((h, s) => {
+      let step = 1;
+      // 40 other-market conflicted memories per batch, each outranking the neutral pair (4 matched terms against 2) in both tiers.
+      for (let b = 0; b < Math.ceil(beyondBothTiers(MEMORY_POOL_LIMIT) / 40); b++) {
+        const c = claimFor(h, workItem(h, s, s.employee, {}, { requirements: [], marketRef: 'market:eg' })).claim;
+        for (let i = 0; i < 20; i++) {
+          propose(h, c, step++, { memoryClass: 'PROFESSIONAL', topic: `egypt.launch.f${b}x${i}`, content: `Egypt launch timing schedule flood a${b}x${i}.`, claimKey: `flood.claim.b${b}x${i}`, claimValue: 'yes' });
+          propose(h, c, step++, { memoryClass: 'PROFESSIONAL', topic: `egypt.launch.g${b}x${i}`, content: `Egypt launch timing schedule flood b${b}x${i}.`, claimKey: `flood.claim.b${b}x${i}`, claimValue: 'no' });
+        }
+        complete(h, c);
+      }
+      const c = claimFor(h, workItem(h, s, s.employee)).claim;
+      propose(h, c, 1, { content: 'Egypt launch: before Ramadan.', claimKey: 'egypt.launch.timing', claimValue: 'before-ramadan' });
+      propose(h, c, 2, { content: 'Egypt launch: after Ramadan.', claimKey: 'egypt.launch.timing', claimValue: 'after-ramadan' });
+      complete(h, c);
+      const held = claimFor(h, workItem(h, s, s.employee, { instructions: 'Egypt launch timing schedule memo.' }, { requirements: [], importance: 'IMPORTANT', topics: ['egypt.launch'], marketRef: 'market:sa' })).claim;
+      assert.equal(assemble(h, held, 0).outcome, 'CONFLICT_HOLD');
+    });
+  });
+
+  test('a conflict that cannot hold this work (above its class, or outside its market) never yields a CONFLICT_HOLD on its own', () => {
+    withSeed((h, s) => {
+      const pair = (input: Record<string, unknown>, caps: Parameters<typeof workItem>[4], key: string, label: string): Id[] => {
+        const c = claimFor(h, workItem(h, s, s.employee, input, caps)).claim;
+        const a = propose(h, c, 1, { content: `Egypt launch ${label}: before Ramadan.`, claimKey: key, claimValue: 'before-ramadan' });
+        const b = propose(h, c, 2, { content: `Egypt launch ${label}: after Ramadan.`, claimKey: key, claimValue: 'after-ramadan' });
+        complete(h, c);
+        for (const out of [a, b]) assert.equal(out.decided?.state, 'ACCEPTED', `the ${label} conflict memory is recorded`);
+        return [a.decided?.resultMemoryId as Id, b.decided?.resultMemoryId as Id];
+      };
+      const above = pair({ dataClass: 'D3' }, undefined, 'egypt.launch.timing', 'timing');
+      const elsewhere = pair({}, { requirements: [], marketRef: 'market:eg' }, 'egypt.launch.window', 'window');
+      const important = (input: Record<string, unknown>, marketRef: string): Claim => claimFor(h, workItem(h, s, s.employee, { instructions: 'Egypt launch timing memo.', ...input }, { requirements: [], importance: 'IMPORTANT', topics: ['egypt.launch'], marketRef })).claim;
+      // D1 work outside market:eg: neither conflict can hold it; both stay rejection evidence.
+      const a = assemble(h, important({}, 'market:sa'), 0);
+      assert.equal(a.outcome, 'OK', 'an ineligible conflict alone holds nothing');
+      const entries = MemoryStore.for(h.store).manifestEntries(a.manifestId);
+      for (const id of above) assert.equal(entries.find((e) => e.itemId === id)?.reasonCode, 'DATA_CLASS_ABOVE_CONTEXT');
+      for (const id of elsewhere) assert.equal(entries.find((e) => e.itemId === id)?.reasonCode, 'MARKET_MISMATCH');
+      // Controls: each conflict is real, and holds the work it CAN hold.
+      assert.equal(assemble(h, important({ dataClass: 'D3' }, 'market:sa'), 0).outcome, 'CONFLICT_HOLD', 'the D3 conflict holds D3 work');
+      assert.equal(assemble(h, important({}, 'market:eg'), 0).outcome, 'CONFLICT_HOLD', 'the market:eg conflict holds market:eg work');
     });
   });
 });
@@ -1102,9 +1228,11 @@ describe('R1-11: Active duty never resumes in a role the Employee is not certifi
 
 describe('R1-12: ineligible memories never crowd an eligible one out of the bounded pool', () => {
   const words = ['kiwi', 'mango', 'papaya', 'guava', 'lychee', 'durian', 'quince', 'medlar', 'loquat', 'sapote', 'feijoa', 'jujube', 'rambutan', 'longan', 'salak', 'tamarind', 'soursop', 'cherimoya', 'pawpaw', 'yuzu'];
-  function flood(h: Harness, s: Seed, input: Record<string, unknown>, caps?: Parameters<typeof workItem>[4]): void {
+  // `batches` of 20 ineligible memories, each outranking the fresh one (3 matched terms against 2): 16 floods tier 1; the
+  // both-tier proofs (D-P1-14) flood past tier 1 and the extension together.
+  function flood(h: Harness, s: Seed, input: Record<string, unknown>, caps?: Parameters<typeof workItem>[4], batches = 16): void {
     let step = 1;
-    for (let b = 0; b < 16; b++) {
+    for (let b = 0; b < batches; b++) {
       const c = claimFor(h, workItem(h, s, s.employee, input, caps)).claim;
       for (let i = 0; i < 20; i++) propose(h, c, step++, { memoryClass: 'PROFESSIONAL', topic: `ops.batch${b}`, content: `Cairo logistics warehouse note ${words[i]} ${words[(i + b) % 20]}${b} code${b}x${i}.` });
       complete(h, c);
@@ -1138,6 +1266,71 @@ describe('R1-12: ineligible memories never crowd an eligible one out of the boun
       const entries = MemoryStore.for(h.store).manifestEntries(a.manifestId);
       assert.ok(entries.some((e) => e.itemId === id), 'the eligible D1 memory is a candidate');
       assert.ok(entries.filter((e) => e.reasonCode === 'DATA_CLASS_ABOVE_CONTEXT').length > 0, 'the D3 memories are recorded as DATA_CLASS_ABOVE_CONTEXT');
+    });
+  });
+
+  test('other-market memories, more than BOTH pool tiers hold (D-P1-14), do not fill the pool', () => {
+    withSeed((h, s) => {
+      flood(h, s, {}, { requirements: [], marketRef: 'market:eg' }, batchesBeyondBothTiers(MEMORY_POOL_LIMIT));
+      const id = fresh(h, s);
+      const a = assemble(h, claimFor(h, workItem(h, s, s.employee, { instructions: 'Cairo logistics warehouse memo.' }, { requirements: [], marketRef: 'market:sa' })).claim, 0);
+      const entries = MemoryStore.for(h.store).manifestEntries(a.manifestId);
+      assert.ok(entries.some((e) => e.itemId === id), 'the eligible neutral memory is a candidate');
+      assert.ok(entries.filter((e) => e.reasonCode === 'MARKET_MISMATCH').length > MEMORY_POOL_LIMIT, 'other-market memories are recorded as MARKET_MISMATCH, through both evidence tiers');
+    });
+  });
+
+  test('memories above the context\'s data class, more than BOTH pool tiers hold (D-P1-14), do not fill the pool', () => {
+    withSeed((h, s) => {
+      flood(h, s, { dataClass: 'D3' }, undefined, batchesBeyondBothTiers(MEMORY_POOL_LIMIT));
+      const id = fresh(h, s);
+      const a = assemble(h, claimFor(h, workItem(h, s, s.employee, { instructions: 'Cairo logistics warehouse memo.' })).claim, 0);
+      const entries = MemoryStore.for(h.store).manifestEntries(a.manifestId);
+      assert.ok(entries.some((e) => e.itemId === id), 'the eligible D1 memory is a candidate');
+      assert.ok(entries.filter((e) => e.reasonCode === 'DATA_CLASS_ABOVE_CONTEXT').length > MEMORY_POOL_LIMIT, 'the D3 memories are recorded as DATA_CLASS_ABOVE_CONTEXT, through both evidence tiers');
+    });
+  });
+
+  test('tier 2 alone (memories only the union query reaches): ineligible ones do not hide the eligible one there either', () => {
+    withSeed((h, s) => {
+      const instructions = 'مذكرة عن التسويق والمخزن والشحن';
+      // Stored without the article: only the union query's Arabic variants reach these memories (tier 2), never tier 1.
+      const content = 'تسويق مخزن يفتح الفجر';
+      assert.equal(terms(content).filter((t) => terms(instructions).includes(t)).length, 0, 'the eligible memory shares no tier-1 term with the task');
+      let step = 1;
+      for (let b = 0; b < batchesBeyondBothTiers(MEMORY_POOL_LIMIT); b++) {
+        const c = claimFor(h, workItem(h, s, s.employee, { dataClass: 'D3' })).claim;
+        for (let i = 0; i < 20; i++) propose(h, c, step++, { memoryClass: 'PROFESSIONAL', topic: `ops.ar${b}`, content: `تسويق مخزن شحن ملاحظة ${b} رقم ${i} كود${b}x${i}` });
+        complete(h, c);
+      }
+      const c = claimFor(h, workItem(h, s, s.employee)).claim;
+      const out = propose(h, c, 1, { memoryClass: 'PROFESSIONAL', topic: 'ops.ar.fresh', content });
+      complete(h, c);
+      assert.equal(out.decided?.state, 'ACCEPTED');
+      const a = assemble(h, claimFor(h, workItem(h, s, s.employee, { instructions })).claim, 0);
+      const entries = MemoryStore.for(h.store).manifestEntries(a.manifestId);
+      assert.ok(entries.some((e) => e.itemId === out.decided?.resultMemoryId), 'the eligible D1 memory is a candidate through tier 2');
+      assert.ok(entries.filter((e) => e.reasonCode === 'DATA_CLASS_ABOVE_CONTEXT').length > 0, 'the D3 memories are recorded as DATA_CLASS_ABOVE_CONTEXT');
+    });
+  });
+
+  test('tier 2 alone: rejection evidence never hides an open conflict only the union query reaches (CONFLICT_HOLD)', () => {
+    withSeed((h, s) => {
+      const instructions = 'مذكرة عن الإطلاق والتسويق والشحن';
+      let step = 1;
+      for (let b = 0; b < batchesBeyondBothTiers(MEMORY_POOL_LIMIT); b++) {
+        const c = claimFor(h, workItem(h, s, s.employee, { dataClass: 'D3' })).claim;
+        for (let i = 0; i < 20; i++) propose(h, c, step++, { memoryClass: 'PROFESSIONAL', topic: `ops.ar${b}`, content: `إطلاق تسويق شحن ملاحظة ${b} رقم ${i} كود${b}x${i}` });
+        complete(h, c);
+      }
+      const c = claimFor(h, workItem(h, s, s.employee)).claim;
+      const before = 'إطلاق قبل رمضان';
+      assert.equal(terms(before).filter((t) => terms(instructions).includes(t)).length, 0, 'the conflicted memories share no tier-1 term with the task');
+      propose(h, c, 1, { content: before, claimKey: 'egypt.launch.timing', claimValue: 'before-ramadan' });
+      propose(h, c, 2, { content: 'إطلاق بعد رمضان', claimKey: 'egypt.launch.timing', claimValue: 'after-ramadan' });
+      complete(h, c);
+      const held = claimFor(h, workItem(h, s, s.employee, { instructions }, { requirements: [], importance: 'IMPORTANT' })).claim;
+      assert.equal(assemble(h, held, 0).outcome, 'CONFLICT_HOLD');
     });
   });
 
