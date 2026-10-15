@@ -120,7 +120,8 @@ describe('G4-FINAL-CLOSURE-01 WP2: the Founder records a decision from his own m
       const ref = w.confirm(p);
       const rows = decisionRows(h);
       assert.equal(rows.length, 1);
-      const k = rows[0]!;
+      const k = rows[0];
+      assert.ok(k);
       assert.equal(ref, `knowledge:${k.id}`);
       assert.deepEqual([k.status, k.scope, k.scope_ref, k.data_class, k.provenance_ref, k.claim_value], ['ACTIVE', 'ROLE', w.ceo.roleRef, 'D2', `communication_message:${m1}`, 'v1']);
       assert.match(k.claim_key, /^founder-decision\.[0-9a-f]{16}$/);

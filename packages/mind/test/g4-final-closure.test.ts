@@ -33,7 +33,7 @@ describe('G4-FINAL-CLOSURE-01: messageLanguage', () => {
 const base = { version: 1, authorityWeight: 0, status: 'ACTIVE', stale: false, dataClass: 'D1', marketRef: null, terms: ['budget'], confidencePct: 100, createdAt: '2026-10-01T00:00:00.000Z', validatedAt: null, claimKey: null, claimValue: null, conflictHeld: false, sha256: 'x', required: false, provenanceRef: 'p' } as const;
 const cand = (o: Partial<ContextCandidate> & Pick<ContextCandidate, 'key' | 'kind' | 'layer' | 'estTokens'>): ContextCandidate => ({ ...base, itemId: o.key, ...o }) as ContextCandidate;
 const Q = { terms: ['budget', 'marketing', 'quarter', 'sara'], marketRef: null, dataClassCeiling: 'D2', importance: 'ORDINARY' } as const;
-const unflag = (c: readonly ContextCandidate[]): ContextCandidate[] => c.map(({ founderDecision: _f, ...x }) => x as ContextCandidate);
+const unflag = (c: readonly ContextCandidate[]): ContextCandidate[] => c.map((x) => Object.fromEntries(Object.entries(x).filter(([k]) => k !== 'founderDecision')) as unknown as ContextCandidate);
 const plan = (c: readonly ContextCandidate[], order: 'CP1' | undefined = 'CP1', total = 60_000): ContextPlan => planContext(c, { ...DEFAULT_CONTEXT_POLICY, totalTokens: total, ...(order ? { order } : {}) }, Q, NOW);
 
 /** A saturated Founder reply: required items, a large history, six Skills, many knowledge items matching more terms, one decision. */
