@@ -7316,3 +7316,33 @@ The Founder decides whether the reply-style findings block G4 or go to their own
 
 **Rollback.** Reinstall the previous pin and restore the pre-update backup. The schema-22 release cannot open schema 23; the
 update path's snapshot and RECOVERY_HOLD apply, as for every migration.
+
+**R1-12 proof repair (PR #40 review, Founder-approved; tests only, no production change).**
+- **Finding.** GitHub FULL on `206a97c` found that the R1-12 crowding proofs (`storage/test/r1-review.test.ts`) no longer
+  caught four `r1:mutation` entries:
+  - `r1-12-stale-knowledge-eligible`;
+  - `r1-12-eligibility-after-limit`;
+  - `r1-12-conflict-pool-dropped`;
+  - `r1-12-conflict-pool-unrestricted`.
+- **Cause.** The proofs flooded past a single pool limit: 205 against 200 knowledge, 320 against 300 memories. D-P1-14's
+  two-tier pool (DG-1n: tier 1 plus a `POOL_EXTENSION_PCT` extension over the union query) finds an item crowded out of
+  tier 1 again in tier 2, so a dropped eligibility filter hid behind the extension. The gap has been latent since
+  `fbe6024`, and the mutated lines are unchanged since then.
+- **Repair.** The original tier-1 proofs stay verbatim. New proofs flood past both tiers together; their size is derived
+  from `KNOWLEDGE_POOL_LIMIT`, `MEMORY_POOL_LIMIT` and `POOL_EXTENSION_PCT`, and they cover:
+  - stale knowledge;
+  - other-market and above-class memories;
+  - rejection evidence against an open conflict;
+  - out-of-class conflicts.
+
+  Further tier-2-only proofs cover the case where the eligible item is reachable only through the union query's Arabic
+  variants:
+  - stale knowledge;
+  - above-class memories;
+  - an open conflict.
+
+  Each tier-2-only proof asserts that the item shares no tier-1 term with the task.
+- **Result.**
+  - All 14 R1-12 proofs pass on unmodified production code.
+  - Each of the five R1-12 mutations is caught when applied alone.
+  - No mutation definition and no production code changed.
