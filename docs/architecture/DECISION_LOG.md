@@ -7352,3 +7352,14 @@ update path's snapshot and RECOVERY_HOLD apply, as for every migration.
   - All 16 R1-12 proofs pass on unmodified production code (about 31 s together).
   - Each of the five R1-12 mutations is caught when applied alone, by a behavioural assertion.
   - No mutation definition and no production code changed.
+
+**L1 Ubuntu mutation sharding (PR #40 review, Founder-approved; CI structure only).**
+- **Finding.** GitHub FULL run 38754097371 on `0f92110` cancelled `mutation (ubuntu-latest, l1-1of1)` at the 45-minute
+  job ceiling, so the quality gate had no Ubuntu L1 report. The same single shard took 37 minutes on `206a97c` (run
+  38725223033). Every other job passed, including R1-12. Windows already ran L1 in 12 shards (15–27 minutes each).
+- **Repair.** Ubuntu L1 runs in 12 disjoint shards like Windows (`l1:1/12` … `l1:12/12` in `.github/workflows/ci.yml`,
+  `MUTATION_SHARDS[UBUNTU].l1 = 12` in `scripts/ci/impact-map.mjs`). The 45-minute ceiling, the quality gate, proof
+  parity and every mutation are unchanged.
+- **Proof.** The repository audit refuses a map/workflow mismatch, a missing shard and a duplicated shard. On both
+  operating systems, the 124 recorded L1 mutations fall into the 12 shards exactly once (11 or 10 per shard), and the
+  gate's own `parity` accepts the full set and refuses a lost or duplicated shard.
