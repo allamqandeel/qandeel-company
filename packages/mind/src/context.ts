@@ -80,6 +80,11 @@ export interface ContextCandidate {
    * planner-required (it never fails the assembly). Absent: the legacy path.
    */
   readonly tier?: SkillTier;
+  /**
+   * G4-FINAL-CLOSURE-01 (D-P1-17): a knowledge item that is a Founder decision recorded (and in force) from the Founder's own
+   * message. Under CP-1 the relevant ones come right after canonical truth (step 3b). Absent: an ordinary item.
+   */
+  readonly founderDecision?: boolean;
 }
 
 export interface ContextBudgetPolicy {
@@ -219,6 +224,8 @@ const RELEVANCE_ORDERED: readonly ContextLayer[] = ['KNOWLEDGE', 'MEMORY'];
  * CP-1 (P1-CONTEXT-INTEL-01, Founder decision G3): the non-required selection of a task with Skill selection. The Founder's
  * priorities are invariants; each step takes items in score order within the per-layer item limit and the total budget:
  *   3  Canonical Truth relevant to the task, first, within the AUTHORITY share (overflow is first in the spill);
+ *   3b the Founder's recorded decisions in force relevant to the task (G4-FINAL-CLOSURE-01, D-P1-17), within the
+ *      KNOWLEDGE share;
  *   4  TASK_REQUIRED Skills (protected: steps 5–7 cannot displace them; never planner-required);
  *   5  the conversation history and other Work context, within the WORK share;
  *   6a the best knowledge item and the best memory item (protected anchors, before SUPPORTING Skills);
@@ -279,6 +286,15 @@ function selectCp1(
   };
   // 3. Canonical Truth (the AUTHORITY layer's own items) within the AUTHORITY share.
   layerPass('AUTHORITY');
+  const byRelevance = byRelevanceThenScore(q, pool);
+  // 3b. G4-FINAL-CLOSURE-01 (D-P1-17): the Founder's recorded decisions in force that bear on this task, right after
+  // canonical truth — what the Founder decided is never displaced by the history, the Work context or the Skills. They are
+  // knowledge: relevance-gated (an unrelated decision is never loaded), counted in the KNOWLEDGE share and its item limit;
+  // one that does not fit stays a candidate of the passes below.
+  for (const p of open((x) => x.candidate.founderDecision === true, byRelevance)) {
+    const t = p.candidate.estTokens;
+    if (!overridden(p) && count('KNOWLEDGE') < policy.maxItemsPerLayer && layerUsed.KNOWLEDGE + t <= share('KNOWLEDGE') && used + t <= budget) take(p);
+  }
   // 4. TASK_REQUIRED Skills: protected (beyond the SKILL share, within the item limit and the budget); one that does not
   // fit stays a candidate of the SKILL pass below.
   for (const p of open((x) => x.candidate.kind === 'SKILL' && x.candidate.tier === 'TASK_REQUIRED', byScore)) {
@@ -286,7 +302,6 @@ function selectCp1(
   }
   // 5. The conversation history and the rest of the Work context.
   layerPass('WORK');
-  const byRelevance = byRelevanceThenScore(q, pool);
   // 6a. The best knowledge item and the best memory item, before SUPPORTING Skills.
   for (const kind of ['KNOWLEDGE', 'MEMORY'] as const) {
     for (const p of open((x) => x.candidate.kind === kind, byRelevance)) {

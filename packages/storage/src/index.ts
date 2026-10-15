@@ -70,7 +70,7 @@ export type {
 // C3 Employee Mind: Memory / Knowledge / Canonical Truth, Skills / Passports, Capability, Academy.
 // Reads are content-free metadata; authority writes fail closed until C5 (D-C2-13); memory is written
 // by the runtime-owned Memory Write Policy through the runtime-authority subpath only.
-export { MemoryStore, type CanonicalInput, type CorrectionInput, type KnowledgeInput, type MindHealth } from './memory.js';
+export { FOUNDER_DECISION_AUDIENCES, FOUNDER_DECISION_STATEMENT_MAX, FOUNDER_DECISION_SUBJECT_MAX, FOUNDER_DECISION_TOPIC, MemoryStore, type CanonicalInput, type CorrectionInput, type FounderDecisionAudience, type FounderDecisionView, type KnowledgeInput, type MindHealth } from './memory.js';
 export { SkillStore, type RegisterSkillVersionInput, type SkillHealth } from './skill-registry.js';
 export { CapabilityStore, type DeclareRequirementsInput } from './capability.js';
 export { AcademyStore, type AcademyHealth } from './academy.js';

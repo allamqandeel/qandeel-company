@@ -503,6 +503,8 @@ const MUTATION_PINS = {
       'role-cert-loss-not-at-reservation', 'role-cert-loss-not-at-tool-intent', 'role-reassignment-without-cert-keeps-active', 'calibration-not-required-at-activation', 'calibration-gates-certification', 'extension-evidence-not-required', 'unlicense-auto-clears',
       // R2 (K7): memory promotion conflicts, Academy simulation retest, skill-update rollout set.
       'r2-personal-promotion-skips-conflict', 'r2-simulation-gate-counts-retrained-failure', 'r2-retry-strands-started-retest', 'r2-practice-consumes-assessment-retest', 'r2-rollout-uses-plan-snapshot', 'r2-rollback-misses-rolled-out-passports',
+      // G4-FINAL-CLOSURE-01 (D-P1-17): Founder decision continuity.
+      'g4-decision-any-actor', 'g4-decision-other-conversation', 'g4-decision-ceo-scope-widened', 'g4-decision-duplicated', 'g4-decision-from-the-future', 'g4-decision-not-prioritized',
     ],
   },
   [C4_MUTATION_CHECK]: {
@@ -764,7 +766,8 @@ const RUNTIME_SERVICES = 'packages/runtime/src/runtime.ts';
 const MIND_WRITERS = ['mind-core', 'mind-writes', 'memory', 'skill-registry', 'academy', 'capability', 'academy-packages', 'academy-feedback'].map((m) => `packages/storage/src/${m}.ts`);
 const MIND_WRITE = /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO|DELETE\s+FROM|REPLACE\s+INTO)\s+(?:canonical_truth|memory_\w+|lesson\w*|knowledge_\w+|context_\w+|skill\w*|role_blueprint\w*|passport_\w+|academy_\w+|certification\w*|founder_calibrations|probation_\w+|activation_requests|capability_gaps|work_item_capabilities|run_execution_modes)\b/i;
 // Founder / evaluator acts that model output must never reach: the runtime and CLI never call them.
-const MIND_AUTHORITY_CALL = /\.(?:recordCanonicalTruth|correctMemory|recordKnowledge|validateLesson|decidePromotion|advanceSkillVersion|acknowledgePaidDependency|publishBlueprint|openPassportEntry|rolloutUpdate|rollbackUpdate|recordEvaluation|decideProbationReview|decideFounderCalibration|decideActivation|revokeCertification|requireRecertification|cancelGap)\s*\(/;
+// G4-FINAL-CLOSURE-01 (D-P1-17): recording / revoking a Founder decision is the Founder's confirmed act, never the runtime's.
+const MIND_AUTHORITY_CALL = /\.(?:recordCanonicalTruth|correctMemory|recordKnowledge|recordFounderDecision|revokeFounderDecision|validateLesson|decidePromotion|advanceSkillVersion|acknowledgePaidDependency|publishBlueprint|openPassportEntry|rolloutUpdate|rollbackUpdate|recordEvaluation|decideProbationReview|decideFounderCalibration|decideActivation|revokeCertification|requireRecertification|cancelGap)\s*\(/;
 const SKILL_LOADER = 'packages/storage/src/mind-core.ts';
 const MIND_KERNEL_IMPORT = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)['"](?:node:(?:fs|fs\/promises|sqlite|child_process|net|http|https)|@qandeel-company\/(?:storage|runtime)(?:\/[^'"]*)?)['"]/;
 const CONTENT_IN_TELEMETRY = /\b(?:appendAudit|appendEvent|\.(?:info|warn|error|debug))\s*\([^\n]*[{,]\s*(?:content|instructions|statement|text|messages|claimValue)\s*[,:}]/;

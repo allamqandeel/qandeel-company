@@ -7187,3 +7187,132 @@ The Founder decides whether the reply-style findings block G4 or go to their own
 
 **Rollback.** Reinstall the previous pin. There is no schema change and no DB restore. A Work Item recorded with
 `skillSelection` keeps its CP-1 order; the previous release ignores the field.
+
+## D-P1-17 — G4 closure: the CEO answers in proportion and in the current message's language; the Founder's recorded decisions stay in force after the conversation moves on (G4-FINAL-CLOSURE-01; Founder decision, executor; completes D-P1-16)
+
+**Context.**
+- D-P1-16's real replies failed on style and on one fact:
+  - add-on analysis on simple turns;
+  - decision closers;
+  - an over-long reply to thanks;
+  - an English message answered in Arabic;
+  - the 40,000 EGP / Sara decision forgotten.
+- The Founder-authorized no-Skill control (G4-SIMPLE-ABLATION-01, DEV, 56,095 µUSD) put the cause outside the Skills: verdict
+  B, the base guidance.
+  - The add-on analysis appeared on the same five turns with and without the six Skills.
+  - S2 was answered in Arabic 4 / 4.
+  - FULL S4 was wrong in both.
+  - With the Skills, judgment was slightly better (8–2 pairwise) and fewer facts were invented.
+- Sources:
+  - the CEO guidance asked for "an original insight, a risk or opportunity" on every turn;
+  - "the Founder's language" was read as the conversation's language;
+  - the Founder's decision existed only as an old turn, outside the 11,750-byte history window, and was never recorded as
+    knowledge or memory.
+
+**Decision (implemented).** The Founder decided:
+- the six Skills load directly (D-P1-16 unchanged), with no classifier and no extra call;
+- the CEO's style and language are corrected at their source;
+- the Founder's explicit decisions are recorded and retrieved after they leave the conversation window;
+- one PR; no merge or install without the Founder.
+
+1. **Style, at the source (`mind-writes.ts`, the CEO's direct conversation only; the approved identity kernel is unchanged
+   and its hash is pinned by the tests).**
+   - `CEO_CONVERSATION_GUIDANCE`: each reply fits the current message.
+     - Thanks or a greeting: one or two natural lines.
+     - A simple or factual question: the answer itself, with no analysis, advice or report around it.
+     - A discussion: the CEO's view and the reasoning that matters.
+     - A real decision: the options, the risks and a recommendation.
+     - A plan or report: only when asked for or truly required.
+     - No recap of earlier turns, no closing offer, and no decision closer unless the decision is real. The kernel's
+       four-part line is scoped here to briefs and real decisions.
+     - Judgment and disagreement stay: a risk, an opportunity or a disagreement is raised when it materially matters, never
+       added by rote.
+   - `CEO_LANGUAGE_GUIDANCE` adds three rules:
+     - use the words professionals actually say, never a coined or literal rendering;
+     - Company facts come only from the context: when the context does not hold the answer, say it is not on record and
+       never fill the gap with a plausible invention;
+     - a recorded Founder decision is the decision in force; a replaced or revoked one is not.
+2. **Language: one rule, no contradiction.**
+   - `EMPLOYEE_COMMUNICATION_STANDARD` (every Employee) and the reply shape (`FOUNDER_REPLY_GUIDANCE`) now say: the language of
+     the Founder's **current** message, or the one the Founder explicitly asks for — never that of earlier turns or of
+     quoted text. They previously said "the Founder's language" / "Arabic when the Founder wrote Arabic".
+   - The CEO's reply also carries one deterministic line naming the current message's language (`messageLanguage`):
+     - quoted text and `>` lines are excluded;
+     - a message counts as Arabic or English when at least 70 % of its letters are of that script;
+     - a mixed message names no language, and the rule decides.
+3. **Founder decision continuity: existing structures only, no parallel memory.**
+   - **The record.** A decision is a Company Knowledge item (`knowledge_items`) of provenance `FOUNDER_DECISION`, topic
+     `founder.decision`. It holds:
+     - its source: the Founder's own message (`provenance_ref = communication_message:<id>`), and only a Founder turn of the
+       Founder ↔ CEO conversation;
+     - the subject and the Founder's words;
+     - the data class, D1 or D2 (default D2);
+     - the audience: the CEO's role (`ROLE` scope, the default) or the Company;
+     - the version (`claim_value v<n>`) and a stable decision key (`claim_key founder-decision.<16 hex>`). The existing unique
+       active-claim index keeps one live version per key.
+   - **Indexing.** A decision is indexed on its own words (subject and statement), never on its framing. Otherwise every
+     reply — whose query carries the topic `founder` — would match every decision.
+   - **Recording.** Only the Founder's confirmed act records a decision: the governed preview → fingerprint → confirm, in one
+     transaction. Two new structured intents carry it: `FOUNDER_DECISION_RECORD` (record, or amend with `supersedesId`) and
+     `FOUNDER_DECISION_REVOKE`.
+     - No text pattern and no model output produces the act. In the conversation, explicit decision wording only highlights
+       "Record as decision"; questions, opinions, hypotheticals, proposals and quotations never do.
+     - The act is idempotent: the same words from the same message are one decision. A second decision on the same subject
+       from the same message is an amendment.
+     - The plan is re-checked inside the confirm. If the target changed or was revoked, the confirmation fails: FAILED, and
+       nothing is written.
+   - **Amendment and revocation.** An amendment uses the existing supersession chain (the old version becomes `SUPERSEDED`,
+     with its link). A revocation is the existing terminal `ARCHIVED`. `knowledge_history` keeps every step.
+   - **Authority.** Founder authority only (`founderAdminWrite` and `founder()`). `verify-bootstrap` forbids the runtime and
+     the CLI to call `recordFounderDecision` or `revokeFounderDecision`. The audit rows hold IDs, codes and versions only
+     (Rule A).
+   - **Reach.** A CEO decision is never a candidate for another Employee. Recording moves no budget, grant, assignment or
+     approval; each still needs its own governed act.
+4. **Retrieval (WP3).**
+   - A relevant decision in force is a knowledge candidate of the reply.
+   - CP-1 gains **step 3b**: the Founder's relevant decisions in force come right after canonical truth — before the history,
+     the knowledge anchors and the Skills — within the KNOWLEDGE share, relevance-gated, so an unrelated decision is never
+     loaded.
+   - A Work Item never sees a decision recorded after it was created (as of its `created_at`).
+   - Academy attempts, shadow work and benchmarks never see one (training isolation).
+   - The history window stays 11,750 bytes.
+   - There is no backfill: an older conversation becomes a decision only if the Founder records it.
+5. **One migration, 0023 (`p1_founder_decisions`).** It recreates `founder_action_previews` with the two intents and keeps
+   every row (the 0009–0022 precedent). No other table changes. The cross-version upgrade proof now follows the newest
+   migration (N-1 → N).
+
+**Kept unchanged:**
+- D-P1-16's DIRECT loading of the six Skills, with their eligibility, integrity and passport;
+- C1 60K, C3 DG-1n, CP-1's other steps and G4b 11,750;
+- D1's AUTO E2 allowance; E1–E4, AUTO E1/E2 and the E3 / E4 manual override;
+- reservations and budgets;
+- the Skills themselves;
+- other Employees' guidance, apart from the one shared language rule.
+
+**Proof (no network, no paid call).**
+- `storage/test/g4-final-closure.test.ts` (13 tests):
+  - recording, idempotency, refusals, authority and session binding;
+  - amend and revoke chains, with history;
+  - a failed confirmation records nothing;
+  - S10: conversation alone records nothing;
+  - S4 / S11: retrieval after the turn left the history window, in NORMAL and FULL (a saturated store with six Skills, 4,000
+    characters and tools), across several phrasings, with no injection for an unrelated message or a thanks;
+  - S8 / S9: the amended version only, then none after the revocation;
+  - S12: never another Employee's, a Company decision reaches its readers, never an Academy attempt;
+  - as-of: a re-assembled turn has no future;
+  - the CEO's current-language line.
+- `storage/test/g4-founder-decisions-migration.test.ts`: v22 → v23.
+- `mind/test/g4-final-closure.test.ts`: `messageLanguage`; CP-1 step 3b's order, relevance gate and share; LAYERED unchanged.
+- `command-center-ui/test/g4-founder-decisions.test.ts`: cues, drafts and requests.
+- `command-center/test/g4-founder-decisions-surface.test.ts`: real loopback HTTP — the preview sentence, CSRF, the list,
+  amend, revoke, and no free-text path.
+- `c3:mutation` gains six mutations, each caught by those proofs:
+  - `g4-decision-any-actor`;
+  - `g4-decision-other-conversation`;
+  - `g4-decision-ceo-scope-widened`;
+  - `g4-decision-duplicated`;
+  - `g4-decision-from-the-future`;
+  - `g4-decision-not-prioritized`.
+
+**Rollback.** Reinstall the previous pin and restore the pre-update backup. The schema-22 release cannot open schema 23; the
+update path's snapshot and RECOVERY_HOLD apply, as for every migration.

@@ -862,7 +862,7 @@ export class CompanyRuntime {
       this.#founderAdmin = Object.freeze({
         auth,
         goals: signalling(GoalStore.for(s), changed, { mutating: ['propose', 'transition', 'linkWork', 'unlinkWork'], reads: ['get', 'list', 'history', 'links', 'stateAt'] }),
-        communications: signalling(CommunicationStore.for(s), changed, { mutating: ['openThread', 'directThread', 'send', 'requestCeoBrief', 'closeThread'], reads: ['thread', 'threads', 'message', 'messages', 'messagesPage', 'replyStates', 'messageMeta', 'pendingReplies', 'health'] }),
+        communications: signalling(CommunicationStore.for(s), changed, { mutating: ['openThread', 'directThread', 'send', 'requestCeoBrief', 'closeThread'], reads: ['thread', 'threads', 'message', 'messages', 'messagesPage', 'replyStates', 'messageMeta', 'pendingReplies', 'founderDecisions', 'health'] }),
         attention: signalling(AttentionStore.for(s), changed, {
           mutating: ['dismiss'],
           reads: ['list', 'openAt', 'health'],

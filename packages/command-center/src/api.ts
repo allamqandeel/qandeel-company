@@ -187,6 +187,8 @@ export function messages(ctx: ApiContext, threadId: string, query: { before?: st
     replies: c.replyStates(id, founderIds),
     // Kept for older views: the Founder messages without a reply yet (durable pending requests, whatever their state).
     pending: before === null ? c.pendingReplies().filter((p) => p.threadId === id) : [],
+    // G4-FINAL-CLOSURE-01 (D-P1-17): the decisions recorded from this conversation (in force and history), newest page only.
+    decisions: before === null && thread.kind === 'FOUNDER_CEO' ? c.founderDecisions(id) : [],
     intelligence: before === null ? (ctx.runtime.governance.employeeIntelligence(thread.employeeId) as unknown as Json) : null,
   };
 }
@@ -675,6 +677,8 @@ function resolveMutatingTarget(ctx: ApiContext, u: CompanyUniverse, command: Ext
     case 'ACADEMY_FOUNDER_FEEDBACK':
     case 'EMPLOYEE_RENAME':
     case 'PRODUCT_KNOWLEDGE_ACCESS':
+    case 'FOUNDER_DECISION_RECORD':
+    case 'FOUNDER_DECISION_REVOKE':
       // Structured only (a form or a rail action posts IDs / codes), never free text (D-C5-07, R2-21, C7-A, C7-C, L1-01, L1-02).
       return null;
   }
@@ -819,6 +823,14 @@ export function structuredSummary(ctx: ApiContext, preview: { intentKind: string
       return p.decision === 'REVOKE'
         ? `Revoke ${s('name')}'s read-only product knowledge access (${Array.isArray(p.grantIds) ? (p.grantIds as string[]).length : 0} grant(s)). Reads stop at once; nothing else changes`
         : `Grant ${s('name')} read-only product knowledge: on request, it reads the QANDEEL App's documentation from ${s('source')} (main, at an exact commit each time) and cites path + commit. ${p.registerSource === true ? 'Registers this repository as the product source. ' : ''}${p.registerTool === true ? 'Registers the read-only product-knowledge Tool (R0, no side effect, no credential). ' : ''}Read-only: no write, commit, merge, branch, local repository, shell or secret. No budget, reasoning level or other authority changes; no provider call now`;
+    // --- G4-FINAL-CLOSURE-01 (D-P1-17): a Founder decision recorded from your own message (it records; it executes nothing) ---
+    case 'FOUNDER_DECISION_RECORD': {
+      const who = p.audience === 'COMPANY' ? 'every Employee whose work it bears on' : 'the CEO, in the conversations it bears on';
+      const amend = p.supersedesId !== null ? ` It replaces version ${Number(p.decisionVersion) - 1} of this decision, which stops being in force (its history is kept).` : '';
+      return `Record as your decision (v${s('decisionVersion')}, ${s('dataClass')}): «${s('subject')}» — ${s('statement')}.${amend} Source: your message of ${s('messageAt').slice(0, 10)}. From now on ${who} retrieves it as your decision, even after the conversation scrolls past it. It records what you decided; it moves no budget, grant, assignment or approval — each of those still needs its own governed act. No provider call`;
+    }
+    case 'FOUNDER_DECISION_REVOKE':
+      return `Revoke your recorded decision (v${s('decisionVersion')}): it stops being in force at once and is no longer retrieved as your decision; its history is kept. It changes no budget, grant, assignment or approval. No provider call`;
     case 'PILOT_ADVANCE': {
       const step: Record<string, string> = {
         BRIEFING: 'Start the pilot briefing with the CEO (a conversation; it decides nothing)',

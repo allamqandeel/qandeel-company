@@ -188,6 +188,8 @@ export const INTENT_LABEL: Readonly<Record<string, string>> = {
   ACADEMY_FOUNDER_FEEDBACK: 'Give feedback on an Academy attempt',
   EMPLOYEE_RENAME: 'Rename an Employee',
   PRODUCT_KNOWLEDGE_ACCESS: 'Product knowledge access (read-only)',
+  FOUNDER_DECISION_RECORD: 'Record your decision',
+  FOUNDER_DECISION_REVOKE: 'Revoke your decision',
 };
 
 /** Decisions and outcomes in a preview, in words. */
@@ -284,6 +286,7 @@ export const RESULT_LABEL: Readonly<Record<string, string>> = {
   probation_review: 'probation review',
   activation_request: 'activation decision',
   work_item: 'shadow work',
+  knowledge: 'recorded decision',
 };
 export const CALENDAR_LABEL: Readonly<Record<string, string>> = { ACTING_ENDS: 'Acting cover ends', DELEGATION_DUE: 'Delegation due', STAFFING_DECISION_DUE: 'Staffing decision due', GOAL_HORIZON: 'Goal horizon', WORK_DUE: 'Work due', APPROVAL_EXPIRES: 'Approval expires', SESSION_EXPIRES: 'Your session ends', PUBLICATION_WINDOW: 'Publication window (exact, approved per post)' };
 

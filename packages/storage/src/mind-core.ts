@@ -448,6 +448,9 @@ export function employeeOf(ctx: StoreContext, id: Id): EmployeeRecord {
 }
 
 /** Terms of a topic code plus text (for retrieval indexing at write time). */
+/** G4-FINAL-CLOSURE-01 (D-P1-17): the provenance prefix of a recorded Founder decision — the Founder message it was recorded from. */
+export const FOUNDER_DECISION_SOURCE = 'communication_message:';
+
 export const indexTerms = (topic: string, text: string): string[] => termsOf(`${topic.replace(/[.-]/g, ' ')} ${text}`);
 
 export const higherClass = (a: DataClass, b: DataClass): DataClass => maxDataClass(a, b);

@@ -27,6 +27,7 @@ import { applyTransition, enqueueJob } from './work-core.js';
 import { txDeclareRequirements } from './capability.js';
 import { txCreateWorkItem } from './work-items.js';
 import { CEO_DIRECT_CONVERSATION } from './mind-writes.js';
+import { txFounderDecisionsOfThread, type FounderDecisionView } from './memory.js';
 
 const EMPLOYEE_TASK = 'c2.employee-task';
 /** Founder communication runs are ordinary governed tasks of this class (routed by the Router Policy). */
@@ -641,6 +642,17 @@ export class CommunicationStore {
     return this.#read((ctx) => {
       getThread(ctx, threadId);
       return txMessagesPage(ctx, threadId, opts);
+    });
+  }
+
+  /**
+   * G4-FINAL-CLOSURE-01 (D-P1-17): the Founder decisions recorded from this conversation, in force and history (Founder-scoped
+   * content, read for the Founder's own surface; nothing here writes).
+   */
+  founderDecisions(threadId: Id): FounderDecisionView[] {
+    return this.#read((ctx) => {
+      getThread(ctx, threadId);
+      return txFounderDecisionsOfThread(ctx, threadId);
     });
   }
 

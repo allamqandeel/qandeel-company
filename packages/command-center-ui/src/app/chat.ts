@@ -13,12 +13,16 @@
  * - The skeleton is built once: a live refresh replaces the transcript and side facts but never the composer, so the
  *   draft, the caret and the reading position survive. Drafts are also kept per conversation for this browser session.
  * - Closing (× or Escape) only hides the screen: the Company keeps running, in-flight replies continue, history stays.
+ * - G4-FINAL-CLOSURE-01 (D-P1-17): in the CEO conversation each of the Founder's messages can be recorded as a decision
+ *   (or amend / revoke one in force) — the Founder reviews the subject and the words, then confirms the governed preview.
+ *   Nothing is recorded from the conversation by itself; explicit decision wording only highlights the action.
  */
 import { dirOf, fmtDate, fmtDateTime, fmtMoneyMicros, fmtTime, hasArabic, humanize, PURPOSE_LABEL, STATE_LABEL, t } from '../model/format.js';
 import type { CompanyUniverse } from '../model/types.js';
 import { beginSend, composerLength, editDraft, pasteNotice, sendState, settleFailed, settleSent, type DraftStore, type SendState, type StoredDraft } from '../model/chat-send.js';
 import { AUTO_EXPLAINED, callDiagnostics, LEVEL_SHORT, LEVEL_THINKING, LEVELS, levelState, modelLabel, reasonText, REPLY_LABEL, selectionSummary, type Level } from '../model/intelligence.js';
 import { briefRows, copyToClipboard, messageCopyText } from '../model/message-copy.js';
+import { DECISION_STATEMENT_MAX, DECISION_SUBJECT_MAX, decisionCue, decisionOfMessage, decisionRequest, draftProblem, newDecisionDraft, type DecisionDraft, type DecisionRecord } from '../model/decisions.js';
 import { api, ApiError } from './api.js';
 import { h } from './panels.js';
 
@@ -35,6 +39,8 @@ export interface ChatHost {
   openEmployee(id: string): void;
   /** Opens the model providers read (where an additive E3 / E4 profile is provisioned, as a governed preview). */
   runCommand(text: string): Promise<void>;
+  /** Opens the governed preview of a structured act (the Founder confirms it in the preview dialog). Null, or why no preview was made. */
+  previewAction(intent: string, payload: Json): Promise<string | null>;
   note(text: string, kind: 'semantic' | 'system'): void;
   /** Called when the Founder closes the chat (× / Escape). */
   closeChat(): void;
@@ -128,6 +134,10 @@ interface Conversation extends SendState {
   loadingOlder: boolean;
   /** The newest refresh started; an older response that lands later never overwrites a newer one. */
   refreshGen: number;
+  /** G4-FINAL-CLOSURE-01: the decisions recorded from this conversation, and the Founder's open draft (one at a time). */
+  decisions: DecisionRecord[];
+  decisionDraft: DecisionDraft | null;
+  decisionNote: string;
 }
 
 export class ChatScreen {
@@ -153,6 +163,8 @@ export class ChatScreen {
   readonly #modes = h('div', { class: 'chat-modes', role: 'radiogroup', 'aria-label': 'Reply' });
   readonly #levelNote = h('p', { class: 'chat-level-note', 'aria-live': 'polite' });
   readonly #error = h('p', { class: 'chat-error', role: 'alert' });
+  /** G4-FINAL-CLOSURE-01: the decision form — outside the transcript, so a live refresh never takes the Founder's typing away. */
+  readonly #decisionBox = h('section', { class: 'chat-decision', 'aria-label': 'Record a decision', 'data-keep': 'chat-decision' });
   readonly #send = h('button', { type: 'submit', class: 'btn btn-primary chat-send', text: 'Send', 'data-keep': 'chat-send' });
   readonly #restriction = h('p', { class: 'chat-restriction' });
   /** The last copy's outcome, by message id: kept across a live refresh until it fades (the text itself is never kept). */
@@ -188,7 +200,8 @@ export class ChatScreen {
       e.preventDefault();
       void this.#submit();
     });
-    const main = h('div', { class: 'chat-main' }, this.#scroller, this.#form);
+    this.#decisionBox.hidden = true;
+    const main = h('div', { class: 'chat-main' }, this.#scroller, this.#decisionBox, this.#form);
     this.#root.replaceChildren(this.#head, h('div', { class: 'chat-body' }, main, this.#side));
     // Escape closes the chat (the app-level handler gives a confirmation or a hall precedence first).
     this.#root.addEventListener('keydown', (e) => {
@@ -214,11 +227,12 @@ export class ChatScreen {
     if (this.#c?.threadId !== threadId) {
       let c = this.#convs.get(threadId);
       if (!c) {
-        c = { ...sendState(threadId, sessionDrafts.get(threadId)), employeeId, messages: new Map(), replies: new Map(), hasOlder: false, intel: null, thread: null, loadingOlder: false, refreshGen: 0 };
+        c = { ...sendState(threadId, sessionDrafts.get(threadId)), employeeId, messages: new Map(), replies: new Map(), hasOlder: false, intel: null, thread: null, loadingOlder: false, refreshGen: 0, decisions: [], decisionDraft: null, decisionNote: '' };
         this.#convs.set(threadId, c);
       }
       this.#c = c;
       this.#text.value = c.draft;
+      this.#renderDecision();
       this.#levelNote.textContent = '';
       if (c.messages.size === 0) {
         this.#list.replaceChildren(h('li', { class: 'chat-empty', text: 'Opening the conversation…' }));
@@ -243,11 +257,12 @@ export class ChatScreen {
     const anchor = atBottom ? null : this.#anchor();
     const gen = ++c.refreshGen;
     try {
-      const d = await api.get<{ thread: Json; messages: Json[]; hasOlder: boolean; replies: Json[]; intelligence: Json | null }>(`/api/threads/${c.threadId}/messages?limit=50`);
+      const d = await api.get<{ thread: Json; messages: Json[]; hasOlder: boolean; replies: Json[]; intelligence: Json | null; decisions?: DecisionRecord[] }>(`/api/threads/${c.threadId}/messages?limit=50`);
       // A newer refresh of this conversation started meanwhile: it carries the newer state.
       if (gen !== c.refreshGen) return;
       c.thread = d.thread;
       c.intel = d.intelligence;
+      c.decisions = Array.isArray(d.decisions) ? d.decisions : [];
       const newest = d.messages.map((m) => Number(m.seq));
       const lowest = newest.length ? Math.min(...newest) : Number.MAX_SAFE_INTEGER;
       // The first load sets "older exists"; later loads keep what older pages already showed.
@@ -369,7 +384,7 @@ export class ChatScreen {
       if (brief) bubble.append(h('div', { class: 'brief' }, ...briefRows(brief).map((r) => h('div', { class: 'brief-row' }, h('h4', { text: r.title }), contentEl('p', r.text, '')))));
       else bubble.append(contentEl('p', String(m.body), 'chat-text'));
       const purpose = String(m.purpose);
-      const meta = h('div', { class: 'chat-meta' }, h('span', { class: 'chat-sender', text: mine ? 'You' : id.name }), purpose !== 'QUESTION' && purpose !== 'RESULT' ? h('span', { class: `chat-purpose purpose-${purpose.toLowerCase()}`, text: t(PURPOSE_LABEL, purpose) }) : null, h('time', { class: 'chat-time', text: fmtTime(at), title: fmtDateTime(at), datetime: at }), this.#copyButton(m));
+      const meta = h('div', { class: 'chat-meta' }, h('span', { class: 'chat-sender', text: mine ? 'You' : id.name }), purpose !== 'QUESTION' && purpose !== 'RESULT' ? h('span', { class: `chat-purpose purpose-${purpose.toLowerCase()}`, text: t(PURPOSE_LABEL, purpose) }) : null, h('time', { class: 'chat-time', text: fmtTime(at), title: fmtDateTime(at), datetime: at }), this.#copyButton(m), mine && c.thread?.kind === 'FOUNDER_CEO' ? this.#decisionAction(m) : null);
       if (!mine) li.append(h('span', { class: 'avatar avatar-sm chat-msg-avatar', text: initials(id.name), style: `--dept:${id.accent}`, 'aria-hidden': 'true' }));
       li.append(h('div', { class: 'chat-stack' }, meta, bubble, mine ? this.#replyLine(m, id) : null));
       items.push(li);
@@ -439,6 +454,156 @@ export class ChatScreen {
     return line;
   }
 
+  // --- G4-FINAL-CLOSURE-01 (D-P1-17): recording a decision from one of the Founder's messages -----------------------------
+
+  /** What a Founder message already holds (a recorded decision) and the action that records one from it. */
+  #decisionAction(m: Json): HTMLElement {
+    const c = this.#c as Conversation;
+    const msgId = String(m.id);
+    const held = decisionOfMessage(c.decisions, msgId);
+    const cue = decisionCue(String(m.body ?? ''));
+    const btn = h('button', { type: 'button', class: `chat-decide${cue !== null && held === null ? ' is-cued' : ''}`, 'data-keep': `chat-decide:${msgId}`, text: held ? 'Change…' : 'Record as decision', title: 'Record what you decided in this message, so it stays in force after the conversation moves on (you confirm a preview first)' });
+    btn.addEventListener('click', () => this.#openDecision(msgId, String(m.body ?? '')));
+    return h('span', { class: 'chat-decision-meta' }, held ? h('span', { class: `chat-decision-badge${held.inForce ? ' is-in-force' : ''}`, text: held.label }) : null, btn);
+  }
+
+  #openDecision(messageId: string, body: string): void {
+    const c = this.#c;
+    if (!c) return;
+    c.decisionDraft = newDecisionDraft(messageId, body, c.decisions.filter((d) => d.inForce));
+    c.decisionNote = '';
+    this.#renderDecision();
+    this.#decisionBox.querySelector<HTMLElement>('input, select, textarea')?.focus({ preventScroll: false });
+  }
+
+  /** The decision form of this conversation's open draft (rendered on open / close / mode change only, never on refresh). */
+  #renderDecision(): void {
+    const c = this.#c;
+    const d = c?.decisionDraft ?? null;
+    this.#decisionBox.hidden = d === null;
+    if (!c || d === null) {
+      this.#decisionBox.replaceChildren();
+      return;
+    }
+    const inForce = c.decisions.filter((x) => x.inForce);
+    const note = h('p', { class: 'chat-decision-note', role: 'status', 'aria-live': 'polite', text: c.decisionNote });
+    const refresh = (): void => {
+      const problem = draftProblem(d);
+      preview.toggleAttribute('disabled', problem !== null);
+      if (problem !== null) note.textContent = problem;
+      else if (note.textContent !== c.decisionNote) note.textContent = c.decisionNote;
+    };
+    const modeSel = h('select', { 'aria-label': 'What to record', 'data-keep': 'chat-decision-mode' }) as HTMLSelectElement;
+    for (const [v, label] of [['RECORD', 'A new decision'], ['AMEND', 'A change to a decision in force'], ['REVOKE', 'Revoke a decision in force']] as const) {
+      const o = h('option', { value: v, text: label }) as HTMLOptionElement;
+      if (v !== 'RECORD' && inForce.length === 0) o.disabled = true;
+      o.selected = d.mode === v;
+      modeSel.append(o);
+    }
+    modeSel.addEventListener('change', () => {
+      d.mode = modeSel.value as DecisionDraft['mode'];
+      d.targetId = d.mode === 'RECORD' ? null : (d.targetId ?? inForce[inForce.length - 1]?.id ?? null);
+      this.#renderDecision();
+    });
+    const rows: HTMLElement[] = [h('label', { class: 'chat-decision-row' }, h('span', { text: 'Record' }), modeSel)];
+    if (d.mode !== 'RECORD') {
+      const target = h('select', { 'aria-label': 'Decision in force', 'data-keep': 'chat-decision-target' }) as HTMLSelectElement;
+      for (const x of inForce) {
+        const o = h('option', { value: x.id, text: `v${x.decisionVersion} · ${x.subject}` }) as HTMLOptionElement;
+        o.selected = d.targetId === x.id;
+        target.append(o);
+      }
+      target.addEventListener('change', () => {
+        d.targetId = target.value;
+        refresh();
+      });
+      rows.push(h('label', { class: 'chat-decision-row' }, h('span', { text: d.mode === 'REVOKE' ? 'Revoke' : 'Changes' }), target));
+    }
+    if (d.mode !== 'REVOKE') {
+      const subject = h('input', { type: 'text', dir: 'auto', 'aria-label': 'Subject of the decision', placeholder: 'Subject (e.g. marketing budget next quarter)', 'data-keep': 'chat-decision-subject' }) as HTMLInputElement;
+      subject.value = d.subject;
+      subject.addEventListener('input', () => {
+        d.subject = subject.value;
+        refresh();
+      });
+      const statement = h('textarea', { rows: 3, dir: 'auto', 'aria-label': 'The decision, in your words', 'data-keep': 'chat-decision-statement' }) as HTMLTextAreaElement;
+      statement.value = d.statement;
+      statement.addEventListener('input', () => {
+        d.statement = statement.value;
+        refresh();
+      });
+      const audience = h('select', { 'aria-label': 'Who retrieves it', 'data-keep': 'chat-decision-audience' }) as HTMLSelectElement;
+      for (const [v, label] of [['CEO', 'The CEO only'], ['COMPANY', 'Every Employee it bears on']] as const) {
+        const o = h('option', { value: v, text: label }) as HTMLOptionElement;
+        o.selected = d.audience === v;
+        audience.append(o);
+      }
+      audience.addEventListener('change', () => {
+        d.audience = audience.value as DecisionDraft['audience'];
+      });
+      const cls = h('select', { 'aria-label': 'Data class', 'data-keep': 'chat-decision-class' }) as HTMLSelectElement;
+      for (const [v, label] of [['D2', 'D2 · internal, confidential'], ['D1', 'D1 · internal']] as const) {
+        const o = h('option', { value: v, text: label }) as HTMLOptionElement;
+        o.selected = d.dataClass === v;
+        cls.append(o);
+      }
+      cls.addEventListener('change', () => {
+        d.dataClass = cls.value as DecisionDraft['dataClass'];
+      });
+      rows.push(
+        h('label', { class: 'chat-decision-row' }, h('span', { text: `Subject (≤ ${DECISION_SUBJECT_MAX})` }), subject),
+        h('label', { class: 'chat-decision-row' }, h('span', { text: `Decision (≤ ${DECISION_STATEMENT_MAX})` }), statement),
+        h('div', { class: 'chat-decision-row chat-decision-pair' }, h('label', {}, h('span', { text: 'Who retrieves it' }), audience), h('label', {}, h('span', { text: 'Data class' }), cls)),
+      );
+    }
+    const preview = h('button', { type: 'button', class: 'btn btn-primary', text: 'Preview', 'data-keep': 'chat-decision-preview' });
+    preview.addEventListener('click', () => void this.#previewDecision());
+    const cancel = h('button', { type: 'button', class: 'btn btn-quiet', text: 'Cancel', 'data-keep': 'chat-decision-cancel' });
+    cancel.addEventListener('click', () => {
+      c.decisionDraft = null;
+      this.#renderDecision();
+    });
+    this.#decisionBox.replaceChildren(
+      h('h3', { class: 'chat-decision-title', text: 'Record as your decision' }),
+      h('p', { class: 'muted small', text: 'Recorded decisions stay in force for the CEO after the conversation moves on, until you change or revoke them. Recording states what you decided: it moves no budget, grant, assignment or approval.' }),
+      ...rows,
+      note,
+      h('div', { class: 'chat-decision-actions' }, cancel, preview),
+    );
+    refresh();
+  }
+
+  async #previewDecision(): Promise<void> {
+    const c = this.#c;
+    const d = c?.decisionDraft ?? null;
+    if (!c || d === null || draftProblem(d) !== null) return;
+    const r = decisionRequest(d);
+    const why = await this.#host.previewAction(r.intent, r.payload);
+    // The preview dialog takes over (confirm or cancel there); a refusal is said here, the draft kept.
+    if (why !== null) {
+      c.decisionNote = why;
+      if (this.#c === c) this.#renderDecision();
+      return;
+    }
+    c.decisionDraft = null;
+    if (this.#c === c) this.#renderDecision();
+  }
+
+  /** The decisions in force in this conversation (side facts), each with its governed revocation. */
+  #decisionsSide(): HTMLElement | null {
+    const c = this.#c as Conversation;
+    if (c.thread?.kind !== 'FOUNDER_CEO') return null;
+    const inForce = c.decisions.filter((d) => d.inForce);
+    const history = c.decisions.length - inForce.length;
+    const list = h('ul', { class: 'chat-decisions' });
+    for (const d of inForce) {
+      const revoke = h('button', { type: 'button', class: 'link', text: 'Revoke…', 'data-keep': `chat-decision-revoke:${d.id}` });
+      revoke.addEventListener('click', () => void this.#host.previewAction('FOUNDER_DECISION_REVOKE', { decisionId: d.id }));
+      list.append(h('li', {}, contentEl('strong', d.subject, ''), h('span', { class: 'muted small', text: ` · v${d.decisionVersion} · ${d.audience === 'COMPANY' ? 'Company' : 'CEO'} · ${d.dataClass} · ${fmtDate(d.recordedAt)} ` }), contentEl('p', d.statement, 'small'), revoke));
+    }
+    return h('div', { class: 'chat-decisions-box' }, h('h3', { class: 'chat-side-title', text: 'Your decisions in force' }), inForce.length === 0 ? h('p', { class: 'muted small', text: 'None yet. Use “Record as decision” on one of your messages.' }) : list, history > 0 ? h('p', { class: 'muted small', text: `${history} earlier version(s) or revoked decision(s) kept as history.` }) : null);
+  }
+
   #renderSide(id: Identity): void {
     const c = this.#c as Conversation;
     const intel = c.intel;
@@ -463,7 +628,8 @@ export class ChatScreen {
     const change = h('button', { type: 'button', class: 'link', text: 'Change default or maximum', 'data-keep': 'chat-intel-profile' });
     change.addEventListener('click', () => this.#host.openEmployee(c.employeeId));
     const auto = intel?.selection === 'AUTO' ? h('p', { class: 'muted small', text: AUTO_EXPLAINED }) : null;
-    this.#side.replaceChildren(...[h('h3', { class: 'chat-side-title', text: 'Employee Intelligence' }), dl, ...(auto ? [auto] : []), h('p', { class: 'muted small', text: `A level chosen in the chat applies to the next message only and is kept exactly (never raised or lowered). ${id.given}’s standing selection, default and maximum change only on the profile, through a preview you confirm.` }), change]);
+    const decisions = this.#decisionsSide();
+    this.#side.replaceChildren(...(decisions ? [decisions] : []), ...[h('h3', { class: 'chat-side-title', text: 'Employee Intelligence' }), dl, ...(auto ? [auto] : []), h('p', { class: 'muted small', text: `A level chosen in the chat applies to the next message only and is kept exactly (never raised or lowered). ${id.given}’s standing selection, default and maximum change only on the profile, through a preview you confirm.` }), change]);
   }
 
   #renderControls(id: Identity): void {

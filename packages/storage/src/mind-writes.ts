@@ -28,6 +28,7 @@ import {
   evaluateCapability,
   isStale,
   itemEstimate,
+  messageLanguage,
   neutralizeLayerMarkers,
   overlap,
   planContext,
@@ -53,6 +54,7 @@ import { txGrantedToolGuidance } from './product-knowledge.js';
 import type { EmployeeRecord } from './governance-records.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
 import {
+  FOUNDER_DECISION_SOURCE,
   SYSTEM_MIND_REF,
   eligibilitySnapshot,
   indexTerms,
@@ -622,7 +624,7 @@ function contextCeiling(item: WorkItemRecord, effective: DataClass): DataClass {
   return maxDataClass(declared, effective);
 }
 
-function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, mode: string | null, grantedTools: readonly string[] = []): string {
+function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, mode: string | null, grantedTools: readonly string[] = [], currentLanguage: 'ARABIC' | 'ENGLISH' | null = null): string {
   const task = (item.processorInput as { taskClass?: unknown } | null)?.taskClass;
   // D-L1-25: an answer-only benchmark observation (BQM-2) is offered exactly the deliverable its fence accepts.
   const answerOnly = mode === 'SKILL_BENCHMARK' && (item.processorInput as { answerOnly?: unknown } | null)?.answerOnly === true;
@@ -646,6 +648,9 @@ function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, m
     // P1-CEO-CONVERSATION-UX-01: how the CEO talks in the direct Founder conversation, after the kernel it applies. Only that
     // reply carries the marker: a CEO brief, background work, an Academy run and every other Employee keep their context.
     ...(isCeoDirectConversation(item) ? [CEO_CONVERSATION_GUIDANCE, CEO_LANGUAGE_GUIDANCE] : []),
+    // G4-FINAL-CLOSURE-01 (D-P1-17): the language of the message this reply answers, read deterministically (quoted text
+    // excluded; a mixed message names none and the rule decides), so an English message after Arabic turns is answered in English.
+    ...(isCeoDirectConversation(item) && currentLanguage !== null ? [currentLanguageLine(currentLanguage)] : []),
     // P1-PRODUCT-KNOWLEDGE-01 (D-P1-06): only the Tools this Employee was granted, each with its release-pinned guidance.
     // Every other Employee (and every context without such a grant) keeps its exact preamble.
     ...grantedTools,
@@ -660,9 +665,14 @@ const isCeoDirectConversation = (item: WorkItemRecord): boolean => isFounderThre
 /**
  * A natural executive conversation by default, structure when asked or truly needed, the Founder Communication Standard for
  * real decisions and briefs. Shorter is never shallower: independent judgment, disagreement and honest uncertainty stay.
+ * G4-FINAL-CLOSURE-01 (D-P1-17): the reply fits the current message (a thanks, a simple or factual question, a discussion, a
+ * decision, a requested report); an insight, risk or disagreement is offered when it materially matters, never on every
+ * turn; no recap, no closing offer, no decision closer that is not a real decision. The kernel's four-part communication line
+ * is scoped here, in the CEO's own conversation guidance — the approved kernel itself is unchanged. The reply's language is
+ * the shared standard's (the current message), no longer restated here.
  */
 export const CEO_CONVERSATION_GUIDANCE =
-  'This is your direct conversation with the Founder. Talk as a trusted executive partner: naturally, warmly and professionally, in the Founder\'s language and tone. Answer what the Founder is discussing now and follow where the conversation is going, instead of steering it back to earlier topics. When the Founder is on one subject, keep the body short and focused, in plain paragraphs: no opening restatement of what you understood, no section headings, numbered assessments or recap of earlier turns. Shorter never means shallower: bring your own judgment, an original insight, a risk or opportunity the Founder has not raised, or your disagreement and its reason. Never ask again what this conversation or your context already answers; ask a follow-up only when it genuinely moves the discussion forward, and then one question, not a list. Give structured analysis, a detailed plan, a report or decision options when the Founder asks for one or the subject genuinely requires it. The four-part Founder Communication Standard (what is happening, why it matters, your recommendation, the decision needed) is for briefs and real decisions, not for every turn: only when something actually needs the Founder\'s authority, say plainly what you recommend and what the Founder must decide, with purpose DECISION_REQUEST; never manufacture a decision to ask for. State uncertainty honestly. This shapes how you talk; it grants no authority and changes no governance, budget or approval rule.';
+  'This is your direct conversation with the Founder. Talk as a trusted executive partner: naturally, warmly and professionally, in the Founder\'s tone. Fit each reply to what the Founder\'s current message actually asks: thanks or a greeting gets one or two natural lines; a factual or simple question gets the answer itself, briefly, with no analysis, advice or report around it; a discussion gets your view and the reasoning that matters; a real decision gets the options, the risks and a clear recommendation. Give a detailed plan, report or decision options when the Founder asks for one or the subject genuinely requires it. Follow where the conversation is going instead of steering it back to earlier topics: no opening restatement of what you understood, no section headings or numbered assessments on one subject, no recap of earlier turns, no closing offer of more help. Shorter never means shallower: in a discussion or a decision bring your own judgment, and your disagreement and its reason, or a risk or opportunity the Founder has not raised when it materially matters; never add one just to have something to add. Never ask again what this conversation or your context already answers; ask a follow-up only when it genuinely moves the discussion forward, and then one question, not a list. The four-part Founder Communication Standard (what is happening, why it matters, your recommendation, the decision needed) is for briefs and real decisions, not for every turn: only when something actually needs the Founder\'s authority now, say what you recommend and what the Founder must decide, with purpose DECISION_REQUEST; never manufacture a decision to ask for, and never close a reply by asking for one. State uncertainty honestly. This shapes how you talk; it grants no authority and changes no governance, budget or approval rule.';
 
 /**
  * P1-EMPLOYEE-BASELINE-01 (D-P1-10): the company communication standard every Employee follows when writing to the Founder —
@@ -670,24 +680,35 @@ export const CEO_CONVERSATION_GUIDANCE =
  * documents), no habitual titles or flattery, no literal translation, plain terms, facts kept apart from analysis,
  * assumptions and recommendations, and the Employee's own judgment and initiative. It sets the quality of the writing, not the
  * voice: each Employee's identity kernel, role and specialty still decide how it thinks and speaks. The general rules of the
- * CEO's D-P1-09 language guidance moved here; it grants nothing.
+ * CEO's D-P1-09 language guidance moved here; it grants nothing. G4-FINAL-CLOSURE-01 (D-P1-17): "the Founder's language" was
+ * read as the conversation's language (an English message after Arabic turns was answered in Arabic, 4 of 4 replies with and
+ * without Skills): the language is that of the CURRENT message, or the one the Founder explicitly asks for — one rule, the same
+ * in the reply shape below.
  */
 export const EMPLOYEE_COMMUNICATION_STANDARD =
-  'Company communication standard (every Employee, whenever you write to the Founder): answer in the Founder\'s language. When the Founder writes Arabic, write natural, professional Egyptian Arabic with correct spelling and grammar; when the Founder writes English, write English. A report, a document or a formal write-up uses the language and register its task needs (professional Modern Standard Arabic for a formal Arabic document). Write each language as itself, not translated word for word: no calqued phrasing or English sentence order, and the common word rather than an invented or literal-translation term. No repeated titles or honorifics: a title such as «يا فندم» is at most occasional, never a habit or the opening of every reply, and never flattery. Be clear and direct; use a technical term only when the work needs it, and say what it means in plain words the first time. Keep apart, in plain words, what is a verified fact (and its source), your analysis, an assumption still to test, and your recommendation; never present an assumption, an estimate or a projection as an established result. Keep your professional judgment: when you disagree, say so and why; raise what matters even if the Founder has not asked; take the initiative your role allows. This standard sets the quality of your writing, not your voice: your own identity, role, specialty and personality still decide how you think and speak. It grants no authority and changes no governance, budget or approval rule.';
+  'Company communication standard (every Employee, whenever you write to the Founder): answer in the language of the Founder\'s current message, or the one the Founder explicitly asks for, never the language of earlier turns or of text the Founder quotes. When the Founder writes Arabic, write natural, professional Egyptian Arabic with correct spelling and grammar; when the Founder writes English, write English. A report, a document or a formal write-up uses the language and register its task needs (professional Modern Standard Arabic for a formal Arabic document). Write each language as itself, not translated word for word: no calqued phrasing or English sentence order, and the common word rather than an invented or literal-translation term. No repeated titles or honorifics: a title such as «يا فندم» is at most occasional, never a habit or the opening of every reply, and never flattery. Be clear and direct; use a technical term only when the work needs it, and say what it means in plain words the first time. Keep apart, in plain words, what is a verified fact (and its source), your analysis, an assumption still to test, and your recommendation; never present an assumption, an estimate or a projection as an established result. Keep your professional judgment: when you disagree, say so and why; raise what matters even if the Founder has not asked; take the initiative your role allows. This standard sets the quality of your writing, not your voice: your own identity, role, specialty and personality still decide how you think and speak. It grants no authority and changes no governance, budget or approval rule.';
 
 /**
  * P1-CEO-QUALITY-CORR-01 (D-P1-09), narrowed by P1-EMPLOYEE-BASELINE-01: what is the CEO's own in that same conversation, on
  * top of the company communication standard — the executive register, finishing what the evidence allows, and a complete
  * strategic reply within the body. A style rule of the conversation (the D-P1-05 seam), never the identity kernel or the
- * Constitution; it grants nothing.
+ * Constitution; it grants nothing. G4-FINAL-CLOSURE-01 (D-P1-17): the words professionals actually say (never a coined or
+ * literal rendering), Company facts only from the context (no plausible invention when it is not on record), and a recorded
+ * Founder decision is the decision in force (one it replaced or the Founder revoked is not).
  */
 export const CEO_LANGUAGE_GUIDANCE =
-  'How you write as the CEO, on top of the company communication standard: in Arabic, talk the way an experienced Egyptian chief executive talks with the company\'s founder: clear, direct, friendly and confident, addressing the Founder simply and by substance. Caution about what you do not know never replaces what the evidence already allows: finish what can be finished, and name only the real gap and how to close it. A strategic reply is complete when it gives the decision, the reasoning that matters and the next step within the 4000-character body, not every consideration.';
+  'How you write as the CEO, on top of the company communication standard: in Arabic, talk the way an experienced Egyptian chief executive talks with the company\'s founder: clear, direct, friendly and confident, addressing the Founder simply and by substance. Use the words Egyptian professionals actually say, including the usual English term (pilot, backlog, silo) where that is what is said, never a coined or literal rendering. Caution about what you do not know never replaces what the evidence already allows: finish what can be finished, and name only the real gap and how to close it. Company facts come only from your context (canonical truth, the Founder\'s recorded decisions, knowledge, memory and this conversation): when it does not hold what the Founder asks, say plainly that you do not have it on record, never fill the gap with a plausible number, date, rule, timeline or event. A recorded Founder decision in your context is the decision in force; one it replaced or the Founder revoked is not. A strategic reply is complete when it gives the decision, the reasoning that matters and the next step within the 4000-character body, not every consideration.';
 
 const ANSWER_MODES: readonly string[] = ['ACADEMY_ATTEMPT', 'SHADOW_WORK', 'SKILL_BENCHMARK'];
 
 /** D-L1-23: the versioned ANSWER contract (governance), sent verbatim. */
 const ANSWER_GUIDANCE = ANSWER_CONTRACT_TEXT;
+
+/** G4-FINAL-CLOSURE-01 (D-P1-17): the one line naming the current message's language (the standard's rule, made explicit). */
+export const currentLanguageLine = (l: 'ARABIC' | 'ENGLISH'): string =>
+  l === 'ENGLISH'
+    ? 'The Founder message you are answering is written in English: write your reply in English, whatever language earlier turns used, unless the Founder asks for another language.'
+    : 'The Founder message you are answering is written in Arabic: write your reply in Arabic (the company standard decides the register), whatever language earlier turns used, unless the Founder asks for another language.';
 
 /** The approved identity kernel on the Employee's profile (bounded), or null. */
 function identityKernelOf(e: EmployeeRecord): string | null {
@@ -696,7 +717,7 @@ function identityKernelOf(e: EmployeeRecord): string | null {
 }
 
 const FOUNDER_REPLY_GUIDANCE =
-  'This work answers the Founder in a thread. Your reply is one more proposal shape: {"type":"MESSAGE","purpose":"REQUEST|QUESTION|FYI|REVIEW|DECISION_REQUEST|BLOCKER|ESCALATION|RESULT|CORRECTION","attentionLevel":"INFORMATIONAL|NEEDS_ATTENTION|NEEDS_DECISION|URGENT","body":"...","brief":null,"contextRefs":[]}. Write the body in the Founder\'s language (Arabic when the Founder wrote Arabic), at most 4000 characters; it decides, grants and approves nothing. One MESSAGE is the whole answer: the run ends when it is recorded. contextRefs is optional structured metadata, never a citation: at most 8 entries, each kind:id (lowercase kind, then an id of letters, digits, dot, dash, underscore or colon; for example ["memory:abc123"]), only for a reference this context gave you; otherwise []. Never put a file path, URL, GitHub address, commit or prose in contextRefs: cite sources in the body. Output the one JSON object alone: no code fence, no text before or after it.';
+  'This work answers the Founder in a thread. Your reply is one more proposal shape: {"type":"MESSAGE","purpose":"REQUEST|QUESTION|FYI|REVIEW|DECISION_REQUEST|BLOCKER|ESCALATION|RESULT|CORRECTION","attentionLevel":"INFORMATIONAL|NEEDS_ATTENTION|NEEDS_DECISION|URGENT","body":"...","brief":null,"contextRefs":[]}. Write the body in the language of the Founder message you answer (Arabic when it is Arabic, English when it is English) unless the Founder asks for another, at most 4000 characters; it decides, grants and approves nothing. One MESSAGE is the whole answer: the run ends when it is recorded. contextRefs is optional structured metadata, never a citation: at most 8 entries, each kind:id (lowercase kind, then an id of letters, digits, dot, dash, underscore or colon; for example ["memory:abc123"]), only for a reference this context gave you; otherwise []. Never put a file path, URL, GitHub address, commit or prose in contextRefs: cite sources in the body. Output the one JSON object alone: no code fence, no text before or after it.';
 
 const isFounderThreadReply = (item: WorkItemRecord): boolean => typeof (item.processorInput as { founderThreadId?: unknown } | null)?.founderThreadId === 'string';
 
@@ -1047,7 +1068,8 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // Work Item's declared class — it carries no higher-class content).
   // D-P1-06: the Tools this Employee holds an active grant for (release-pinned guidance), in production work only — an
   // Academy attempt, a benchmark observation and shadow work keep their exact preamble.
-  const preamble = preambleText(e, item, p.ceiling, p.mode, p.mode === null ? txGrantedToolGuidance(ctx, e.id, at) : []);
+  const answering = isCeoDirectConversation(item) ? founderMessageBody(ctx, item) : null;
+  const preamble = preambleText(e, item, p.ceiling, p.mode, p.mode === null ? txGrantedToolGuidance(ctx, e.id, at) : [], answering === null ? null : messageLanguage(answering));
   add(baseCandidate({ key: 'preamble', kind: 'PREAMBLE', layer: 'AUTHORITY', required: true, itemId: 'preamble', sha256: sha256Hex(preamble), provenanceRef: 'runtime:governance-preamble', estTokens: itemEstimate(preamble), dataClass: declared }, at), () => preamble);
 
   // L2 — the Work Item's own instructions (required, intact) and, for an Academy attempt, its scenario.
@@ -1145,25 +1167,31 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
           OR (x.scope = 'MARKET' AND x.scope_ref = ?)
           OR (x.scope = 'RESTRICTED' AND x.scope_ref IN (SELECT value FROM json_each(?))))`;
   const kScopeParams = [JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes)];
-  const kLive = `x.integrity = 'OK' AND x.status IN ('ACTIVE', 'LOW_CONFIDENCE')`;
+  // G4-FINAL-CLOSURE-01 (D-P1-17): a Founder decision recorded AFTER this Work Item was created is not part of it — a
+  // conversation turn (or any work) re-assembled later never sees a decision from its future. An Academy attempt, shadow work
+  // and a benchmark observation never see one at all (their isolation: training is not the Company's live decisions).
+  const decisionsAsOf = p.mode === null ? item.createdAt : '0000-01-01T00:00:00.000Z';
+  const kAsOf = `NOT (x.provenance_kind = 'FOUNDER_DECISION' AND x.provenance_ref LIKE '${FOUNDER_DECISION_SOURCE}%' AND x.created_at > ?)`;
+  const kLive = `x.integrity = 'OK' AND x.status IN ('ACTIVE', 'LOW_CONFIDENCE') AND ${kAsOf}`;
   // Eligible also means within its review horizon: stale knowledge is rejection evidence (STALE), never
   // an eligible slot (R1 re-review).
   const kEligible = `x.data_class <= ? AND (x.market_ref IS NULL OR x.market_ref = ?) AND (x.review_at IS NULL OR x.review_at > ?)`;
   const kEligibleParams = [p.ceiling, p.caps.marketRef ?? '', at];
-  const kEligibleLive = { table: 'knowledge_items', where: `${kLive} AND ${kEligible} AND ${kScope}`, params: [...kEligibleParams, ...kScopeParams] } as const;
-  const kEvidenceLive = { table: 'knowledge_items', where: `${kLive} AND NOT (${kEligible}) AND ${kScope}`, params: [...kEligibleParams, ...kScopeParams] } as const;
+  const kEligibleLive = { table: 'knowledge_items', where: `${kLive} AND ${kEligible} AND ${kScope}`, params: [decisionsAsOf, ...kEligibleParams, ...kScopeParams] } as const;
+  const kEvidenceLive = { table: 'knowledge_items', where: `${kLive} AND NOT (${kEligible}) AND ${kScope}`, params: [decisionsAsOf, ...kEligibleParams, ...kScopeParams] } as const;
   const kMatch = termMatches(ctx, 'KNOWLEDGE', '', p.legacyTerms, KNOWLEDGE_POOL_LIMIT * 4, kEligibleLive);
   const kEvidence = termMatches(ctx, 'KNOWLEDGE', '', p.legacyTerms, KNOWLEDGE_POOL_LIMIT * 4, kEvidenceLive);
   const knowledgeRows = (ids: Map<string, number>) => ids.size === 0 ? [] : ctx.db.all(
     `SELECT id, scope, scope_ref, topic, claim_key, claim_value, content_sha256, terms_json, data_class, market_ref, provenance_kind, provenance_ref, confidence_pct, status, integrity, review_at, last_validated_at, version, created_at, created_by_ref, fingerprint, length(CAST(content AS BLOB)) AS bytes, '' AS content
        FROM knowledge_items
       WHERE id IN (SELECT value FROM json_each(?)) AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE')
+        AND NOT (provenance_kind = 'FOUNDER_DECISION' AND provenance_ref LIKE '${FOUNDER_DECISION_SOURCE}%' AND created_at > ?)
         AND (scope = 'COMPANY'
           OR (scope = 'DEPARTMENT' AND scope_ref IN (SELECT value FROM json_each(?)))
           OR (scope = 'ROLE' AND scope_ref = ?)
           OR (scope = 'MARKET' AND scope_ref = ?)
           OR (scope = 'RESTRICTED' AND scope_ref IN (SELECT value FROM json_each(?))))`,
-    inList(ids.keys()), JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes),
+    inList(ids.keys()), decisionsAsOf, JSON.stringify(access.departmentScopes), access.roleRef, access.marketRef ?? '', JSON.stringify(access.restrictedScopes),
   );
   const rank = (m: Map<string, number>) => (a: Readonly<Record<string, unknown>>, b: Readonly<Record<string, unknown>>): number =>
     (m.get(String(b.id)) ?? 0) - (m.get(String(a.id)) ?? 0) || (String(b.created_at) < String(a.created_at) ? -1 : String(b.created_at) > String(a.created_at) ? 1 : 0) || (String(a.id) < String(b.id) ? -1 : 1);
@@ -1186,7 +1214,7 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
     }
     const stale = isStale({ reviewAt: k.reviewAt, sourceChanged: false }, at);
     add(
-      baseCandidate({ key: `knowledge:${k.id}`, kind: 'KNOWLEDGE', layer: 'KNOWLEDGE', itemId: k.id, version: k.version, sha256: k.contentSha256, provenanceRef: k.provenanceRef, authorityWeight: KNOWLEDGE_WEIGHT[k.provenanceKind] ?? 5, status: k.status, stale, dataClass: k.dataClass, marketRef: k.marketRef, terms: candidateTerms(r.terms_json, kHits, k.id), confidencePct: k.confidencePct, createdAt: k.createdAt, validatedAt: (r.last_validated_at as Timestamp | null) ?? null, estTokens: Number(r.bytes) + itemEstimate(''), claimKey: k.claimKey, claimValue: k.claimValue }, at),
+      baseCandidate({ key: `knowledge:${k.id}`, kind: 'KNOWLEDGE', layer: 'KNOWLEDGE', itemId: k.id, version: k.version, sha256: k.contentSha256, provenanceRef: k.provenanceRef, authorityWeight: KNOWLEDGE_WEIGHT[k.provenanceKind] ?? 5, status: k.status, stale, dataClass: k.dataClass, marketRef: k.marketRef, terms: candidateTerms(r.terms_json, kHits, k.id), confidencePct: k.confidencePct, createdAt: k.createdAt, validatedAt: (r.last_validated_at as Timestamp | null) ?? null, estTokens: Number(r.bytes) + itemEstimate(''), claimKey: k.claimKey, claimValue: k.claimValue, ...(k.provenanceKind === 'FOUNDER_DECISION' && k.provenanceRef.startsWith(FOUNDER_DECISION_SOURCE) ? { founderDecision: true } : {}) }, at),
       () => loadVerified(ctx, 'knowledge_items', k.id),
     );
   }

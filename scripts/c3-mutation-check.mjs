@@ -26,6 +26,9 @@ const STORAGE_FIXES = { cwd: 'packages/storage', tests: ['dist/test/c3-review-fi
 const FOUNDER = { cwd: 'packages/storage', tests: ['dist/test/c3-founder-decisions.test.js'] };
 const RUNTIME = { cwd: 'packages/runtime', tests: ['dist/test/c3/c3-runtime.test.js'] };
 const CRASH = { cwd: 'packages/runtime', tests: ['dist/test/faults/c3-fault.test.js'] };
+// G4-FINAL-CLOSURE-01 (D-P1-17): Founder decision continuity at the store / context boundary and in the CP-1 kernel.
+const G4_STORE = { cwd: 'packages/storage', tests: ['dist/test/g4-final-closure.test.js'] };
+const G4_KERNEL = { cwd: 'packages/mind', tests: ['dist/test/g4-final-closure.test.js'] };
 
 const MIND = 'packages/mind/dist/src';
 const STORE = 'packages/storage/dist/src';
@@ -102,7 +105,7 @@ const MUTATIONS = [
     id: 'memory-other-employee-visible',
     gate: 'an Employee\'s memory pool is its own (term index owner and row owner)',
     edits: [
-      { file: `${STORE}/mind-writes.js`, search: 'WHERE t.item_kind = ? AND t.owner_key = ? AND t.term IN', replace: 'WHERE t.item_kind = ? AND (t.owner_key = ? OR 1) AND t.term IN' },
+      { file: `${STORE}/mind-writes.js`, search: 'WHERE t.item_kind = ? AND t.owner_key = ? AND t.term IN', replace: 'WHERE t.item_kind = ? AND (t.owner_key = ? OR 1) AND t.term IN', expectedCount: 2 }, // D-P1-14: the tier-1 and tier-2 (union) pools
       { file: `${STORE}/mind-writes.js`, search: "x.employee_id = ? AND x.integrity", replace: "(x.employee_id = ? OR 1) AND x.integrity" },
       { file: `${STORE}/mind-writes.js`, search: "AND employee_id = ? AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE')`", replace: "AND (employee_id = ? OR 1) AND integrity = 'OK' AND status IN ('ACTIVE', 'LOW_CONFIDENCE')`" },
     ],
@@ -211,7 +214,8 @@ const MUTATIONS = [
   {
     id: 'term-limit-before-filter',
     gate: 'the term index filters to live items before its limit',
-    edits: [{ file: `${STORE}/mind-writes.js`, search: 'AND (${live.where})', replace: 'AND (${live.where} OR 1)' }],
+    // D-P1-14: the tier-1 term pool and the tier-2 union extension both filter to live items before their limit.
+    edits: [{ file: `${STORE}/mind-writes.js`, search: 'AND (${live.where})', replace: 'AND (${live.where} OR 1)', expectedCount: 2 }],
     runs: [STORAGE_FIXES],
   },
   {
@@ -331,6 +335,46 @@ const MUTATIONS = [
     gate: 'R2-35: a rollback returns every passport its rollout re-pinned, not only the plan-time snapshot',
     edits: [{ file: `${STORE}/skill-registry.js`, search: '[...new Set([...u.impact.passportEntryIds, ...repinned])]', replace: '[...new Set([...u.impact.passportEntryIds])]' }],
     runs: [STORAGE],
+  },
+  // --- G4-FINAL-CLOSURE-01 (D-P1-17): Founder decision continuity -------------------------------------------------------
+  {
+    id: 'g4-decision-any-actor',
+    gate: 'only the authenticated Founder records or revokes a Founder decision (a store call by anyone else is refused)',
+    edits: [{ file: `${STORE}/memory.js`, search: "            const p = founder(ctx, actorRef, null, 'founder decision');", replace: '            const p = { ref: actorRef }; /* mutation: Founder authority removed */', expectedCount: 2 }],
+    runs: [G4_STORE],
+  },
+  {
+    id: 'g4-decision-other-conversation',
+    gate: 'a decision is recorded only from the Founder ↔ CEO conversation',
+    edits: [{ file: `${STORE}/memory.js`, search: "    if (m.kind !== 'FOUNDER_CEO')", replace: '    if (false) /* mutation: conversation check removed */' }],
+    runs: [G4_STORE],
+  },
+  {
+    id: 'g4-decision-ceo-scope-widened',
+    gate: "a CEO decision is readable by the CEO's role only, never by another Employee",
+    edits: [{ file: `${STORE}/memory.js`, search: "scope: audience === 'COMPANY' ? 'COMPANY' : 'ROLE', scopeRef: audience === 'COMPANY' ? null : ceo.role_ref,", replace: "scope: 'COMPANY', scopeRef: null, /* mutation: audience ignored */" }],
+    runs: [G4_STORE],
+  },
+  {
+    id: 'g4-decision-duplicated',
+    gate: 'the same decision requested twice is one decision (idempotent; an amendment, never a twin)',
+    edits: [
+      { file: `${STORE}/memory.js`, search: '    if (same)\n', replace: '    if (false) /* mutation: idempotency removed */\n' },
+      { file: `${STORE}/memory.js`, search: '        if (live)\n', replace: '        if (false) /* mutation: one live decision per key removed */\n' },
+    ],
+    runs: [G4_STORE],
+  },
+  {
+    id: 'g4-decision-from-the-future',
+    gate: 'a Work Item never sees a decision recorded after it was created, and an Academy attempt never sees one',
+    edits: [{ file: `${STORE}/mind-writes.js`, search: "    const decisionsAsOf = p.mode === null ? item.createdAt : '0000-01-01T00:00:00.000Z';", replace: "    const decisionsAsOf = '9999-12-31T23:59:59.999Z'; /* mutation: as-of and isolation removed */" }],
+    runs: [G4_STORE],
+  },
+  {
+    id: 'g4-decision-not-prioritized',
+    gate: 'CP-1 takes the relevant decisions in force right after canonical truth (before the history and the Skills)',
+    edits: [{ file: `${MIND}/context.js`, search: '    for (const p of open((x) => x.candidate.founderDecision === true, byRelevance)) {', replace: '    for (const p of open((x) => false, byRelevance)) { /* mutation: step 3b removed */' }],
+    runs: [G4_KERNEL],
   },
 ];
 

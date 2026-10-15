@@ -108,6 +108,27 @@ export function queryTerms(text: string, topics: readonly string[] = [], extra: 
 /** The `~` prefix of a TI-1 index row (DG-1n): the previous release's query terms are always `[\p{L}\p{N}]+`, so it never matches one. */
 export const SALIENCE_INDEX_PREFIX = '~';
 
+/**
+ * G4-FINAL-CLOSURE-01 (D-P1-17): the language a Founder message is written in, deterministically, so a reply follows the
+ * CURRENT message and never an earlier turn. Quoted text (« », “ ”, " " and lines starting with ">") does not decide; a
+ * message is ARABIC or ENGLISH only when at least 70 % of its remaining letters (and at least 3) are of that script, and
+ * null (mixed, or too little text) otherwise — the reply rule then decides from the request itself.
+ */
+export function messageLanguage(s: string): 'ARABIC' | 'ENGLISH' | null {
+  const unquoted = s
+    .split(/\r?\n/)
+    .filter((line) => !line.trimStart().startsWith('>'))
+    .join('\n')
+    .replace(/«[^»]*»|“[^”]*”|"[^"\n]*"/g, ' ');
+  const arabic = (unquoted.match(/[ء-ي]/g) ?? []).length;
+  const latin = (unquoted.match(/[A-Za-z]/g) ?? []).length;
+  const total = arabic + latin;
+  if (total < 3) return null;
+  if (arabic / total >= 0.7) return 'ARABIC';
+  if (latin / total >= 0.7) return 'ENGLISH';
+  return null;
+}
+
 /** Integrity fingerprint of text content (exact-duplicate identity after normalization). */
 export function contentFingerprint(s: string): string {
   return sha256Hex(normalizeText(s));
