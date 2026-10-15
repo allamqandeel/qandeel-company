@@ -2486,7 +2486,7 @@ export const RULES = [
       const acceptance = ciJob(wf, 'acceptance') ?? '';
       for (const c of ['c1', 'c2', 'c3', 'c4', 'c5']) if (!new RegExp(`npm run ${c}:acceptance`).test(acceptance)) problems.push(`acceptance does not run ${c}:acceptance`);
       const tests = ciJob(wf, 'tests') ?? '';
-      if (!/npm run test\b/.test(tests)) problems.push('tests must run every workspace test');
+      if (!/run-node-tests\.mjs --shard/.test(tests) || !/npm run test:harness\b/.test(tests)) problems.push('tests must run every workspace test (sharded runner) and the harness');
       const stat = ciJob(wf, 'static') ?? '';
       for (const s of ['build', 'typecheck', 'lint', 'verify']) if (!new RegExp(`npm run ${s}\\b`).test(stat)) problems.push(`static does not run ${s}`);
       // Mutation shards: per OS and script, the shard specs are exactly 1/n … n/n of one n.
@@ -3065,7 +3065,7 @@ const VIOLATIONS = {
     { remove: ['packages/storage/test/product-decisions.test.ts'] },
     { contents: { 'packages/storage/test/backup-finalization.test.ts': '// marker removed\n' } },
     { remove: [MUTATION_CHECK] },
-    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }\n", '') } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: c1-c2-1of2, suite: 'c1:1/1 c2:1/2' }\n", '') } },
   ],
   'c1-proof-tests-present': { remove: ['packages/runtime/test/faults/fault-matrix.test.ts'] },
   'model-calls-confined': [
@@ -3306,7 +3306,7 @@ const VIOLATIONS = {
     { contents: { [C7D_STORE]: "export const HOSTING = 'vercel';\n" } },
     { contents: { 'packages/tool-drivers/src/social/linkedin.ts': "export const VERSION = 'linkedin-202609';\n" } },
   ],
-  'ci-contract': [    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: r1-8of8, suite: 'r1:8/8' }\n", '') } },
+  'ci-contract': [    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: r1-8of13, suite: 'r1:8/13' }\n", '') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace(/- \{ os: ubuntu-latest, label: c4-c5, suite: 'c4:1\/1 c5:1\/1' \}\n/, '') } },
     { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace('desktop]\n    if: always()\n', 'desktop]\n    if: success()\n') } },
     // D1: the Desktop proof dropped from the FULL path, or the reusable workflow weakened.
@@ -3387,7 +3387,7 @@ const VIOLATIONS = {
   'c2-proofs-present': [
     { contents: { 'packages/runtime/test/c2/proofs.test.ts': '// markers removed\n' } },
     { remove: [C2_MUTATION_CHECK] },
-    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: c1-c2, suite: 'c1:1/1 c2:1/1' }\n", '') } },
+    { contents: { [CI_WORKFLOW]: SYNTH_CI[CI_WORKFLOW].replace("- { os: windows-latest, label: c1-c2-1of2, suite: 'c1:1/1 c2:1/2' }\n", '').replace("- { os: windows-latest, label: c2-2of2, suite: 'c2:2/2' }\n", '') } },
   ],
   'c2-not-claimed-closed': [
     { contents: { [IMPLEMENTATION_MAP]: synthMap('CLOSED / PASS', 'CLOSED / PASS', 'CLOSED / PASS') } },

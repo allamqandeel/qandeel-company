@@ -7390,3 +7390,7 @@ update path's snapshot and RECOVERY_HOLD apply, as for every migration.
     mutations fall into the shards exactly once, with no empty shard. The gate's own `parity` and `testParity` accept
     the full sets and refuse a lost or duplicated shard.
   - A representative sample ran through the workflow's own step script.
+- **Verifier.** `scripts/verify-bootstrap.mjs` names concrete shard lines in three of its violation scenarios (the
+  Windows c1 line, every Windows c2 line, one r1 shard). They now name the new lines and keep their meaning. Its
+  `tests` check passed only by matching inside `npm run test:harness`; it now requires the sharded runner and the
+  harness explicitly.
