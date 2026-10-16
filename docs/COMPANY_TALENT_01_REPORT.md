@@ -162,11 +162,7 @@ No code changes.
 - **S-E (Ahmed).** His grant is adopted.
 - **LIVE.** It was not touched: no install, no data change.
 
-## 3. Test results
-
-See §5 (filled from the final `npm ci` / `npm run ci` run on the PR head).
-
-## 4. Review gates and what remains
+## 3. Review gates and what remains
 
 - **Gate 1 — PR review.**
 - **Gate 2 — FULL GitHub gate.** The change has a migration, so it is a FULL-boundary change, run once on the exact final
@@ -175,6 +171,27 @@ See §5 (filled from the final `npm ci` / `npm run ci` run on the PR head).
   The Founder then approves the policies, budgets and identities in the Staff & Training hall.
 - **Pending from the Founder:** `MAJED_EL_KEDWANY_APPROVED_SPEC.md` (criterion 1, as a data step).
 
-## 5. Test results (final run)
+## 4. Test results
 
-_Filled on the final head._
+Local, on Windows (Node 24), on commit `d04a343` (the code is unchanged since; this report was edited afterwards):
+
+- `npm ci`: pass.
+- `npm run ci` (proportional runner, mode **FULL**, 63 changed files): **15 / 15 steps passed**.
+  - build, typecheck, lint and verify;
+  - the impact-map, classify, gate and post-merge self-tests.
+
+| Workspace | Files | Tests | Result |
+|---|---|---|---|
+| command-center | 18 | 84 | 84 passed |
+| command-center-ui | 9 | 58 | 58 passed |
+| governance | 13 | 138 | 138 passed |
+| mind | 9 | 168 | 168 passed |
+| runtime | 27 | 245 | 245 passed |
+| storage | 47 | 626 | 626 passed |
+| tool-drivers | 3 | 32 | 32 passed |
+
+The domain, model-providers, secret-vault and bootstrap-contract suites also passed in a separate full run.
+
+**Still required on GitHub.** The FULL continuity proof runs there: Windows + Ubuntu, every workspace test, every recorded
+mutation family sharded with parity, acceptance and the verifier. It must be green on the exact final head before any
+merge.
