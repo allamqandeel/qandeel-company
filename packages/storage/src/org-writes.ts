@@ -50,7 +50,8 @@ import { recordDecision, reviewerCapacityFreed, txDeclarePlan } from './review-c
 import { applyTransition, enqueueJob } from './work-core.js';
 import { txCreateWorkItem } from './work-items.js';
 import { txBindIdentity, txApprovedIdentity } from './talent-catalog.js';
-import { txManagerEvaluationPropose, txManagerEvaluationReviewAct, txTalentPropose } from './talent-org.js';
+import { txManagerEvaluationPropose, txManagerEvaluationReviewAct } from './academy-manager.js';
+import { txTalentPropose } from './talent-org.js';
 
 const EMPLOYEE_TASK = 'c2.employee-task';
 const OPEN_DELEGATION: readonly string[] = OPEN_HANDOFF_STATES;

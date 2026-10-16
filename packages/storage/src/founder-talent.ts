@@ -18,7 +18,7 @@ import { getPosition } from './org-core.js';
 import { OrganizationStore } from './organization.js';
 import { executeAccessPolicy, executeToolAccess, txPlanAccessPolicy, txPlanToolAccess, type ToolEnvironment } from './talent-access.js';
 import { mapDefinition, txBindIdentity, txCheckDefinition, txDecideDefinition, txDefinition, txLiveIdentityBinding, txSaveDraft } from './talent-catalog.js';
-import { txExecuteEvaluationAssign, txPlanEvaluationAssign, txReviewManagerEvaluation } from './talent-org.js';
+import { txExecuteEvaluationAssign, txPlanEvaluationAssign, txReviewManagerEvaluation } from './academy-manager.js';
 import type { CompanyStore } from './store.js';
 
 export type TalentPayload = Record<string, string | number | boolean | null | readonly string[]>;

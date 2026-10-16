@@ -21,9 +21,9 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { isQandeelError, type Id } from '@qandeel-company/domain';
-import { COMPETENCY_PRESETS, identityKernel } from '@qandeel-company/mind';
+import { COMPETENCY_PRESETS, GRANTED_ORG_ACT_GUIDANCE, identityKernel } from '@qandeel-company/mind';
 
-import { AcademyStore, DigitalStore, FounderActionStore, FounderAuthStore, GovernanceStore, OrganizationStore, TalentCatalogStore, talentOverview, type FounderSession } from '../src/index.js';
+import { AcademyStore, CommunicationStore, DigitalStore, FounderActionStore, FounderAuthStore, GovernanceStore, OrganizationStore, TalentCatalogStore, talentOverview, type FounderSession } from '../src/index.js';
 import { assembleContext, recordOrgAct } from '../src/runtime-authority.js';
 import { storeContext } from '../src/store.js';
 import { seed, type Seed } from './c2-helpers.js';
@@ -243,6 +243,31 @@ describe('COMPANY-TALENT-01 C: manager-led staffing for several identical seats'
       assert.equal(recordOrgAct(w.h.store, c.claim.fence, 1, 'staffing.request.review', { requestId: r3, action: 'CONSOLIDATE', consolidateIntoId: r2 }).outcome, 'DONE');
       assert.throws(() => w.preview('STAFFING_DECIDE', { requestId: r3, decision: 'APPROVE' }), /consolidated/);
       assert.throws(() => w.preview('STAFFING_DECIDE', { requestId: r2, decision: 'APPROVE' }), reason('INVALID_TRANSITION'), 'an ACTIVE CEO now reviews first');
+    });
+  });
+});
+
+describe('COMPANY-TALENT-01 C2: a need agreed in conversation becomes a structured request without re-entry', () => {
+  test('a Director holding the standing proposal right sees the request shape in its reply context and files the request from that same reply run', () => {
+    world((w) => {
+      const director = placed(w.h, w.s, 'director.growth');
+      const comm = CommunicationStore.for(w.h.store);
+      // Before the policy: no proposal right, no request shape in its context.
+      const before = comm.send(w.s.founder, comm.directThread(w.s.founder, director.id).id, { purpose: 'QUESTION', body: 'SYNTHETIC: هل نحتاج متخصص Reddit؟' });
+      const c0 = assembleContext(w.h.store, claimItem(w.h, before.replyWorkItemId as Id, 'w-before').fence, { step: 0 });
+      assert.equal(c0.outcome === 'OK' && c0.messages.some((m) => m.content.includes('staffing.request.create')), false, 'a title alone shows no proposal act');
+      w.act('ACCESS_POLICY_DECIDE', { policyCode: 'leadership.proposals', decision: 'APPROVE' });
+      const sent = comm.send(w.s.founder, comm.directThread(w.s.founder, director.id).id, { purpose: 'REQUEST', body: 'SYNTHETIC: اتفقنا، قدّم طلب التوظيف.' });
+      const claim = claimItem(w.h, sent.replyWorkItemId as Id, 'w-reply');
+      const ctx = assembleContext(w.h.store, claim.fence, { step: 0 });
+      assert.equal(ctx.outcome, 'OK');
+      const sys = ctx.outcome === 'OK' ? ctx.messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n') : '';
+      assert.ok(sys.includes(GRANTED_ORG_ACT_GUIDANCE['org.staffing.request'] as string), 'the granted proposal act, with its exact shape');
+      // The Director files the agreed request from the reply run itself: the evidence is its own, nothing is re-typed.
+      const filed = recordOrgAct(w.h.store, claim.fence, 1, 'staffing.request.create', { ...STAFFING, headcount: 1 });
+      assert.equal(filed.outcome, 'DONE', filed.code);
+      const r = OrganizationStore.for(w.h.store).staffingRequest(refOf(String(filed.resultRef)));
+      assert.deepEqual([r.state, r.requestedByEmployeeId], ['SUBMITTED', director.id]);
     });
   });
 });

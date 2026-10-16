@@ -134,16 +134,17 @@ export function renderTalent(root: HTMLElement, data: Json | null, host: TalentH
     return;
   }
   if (state.editor !== null) {
-    body.append(state.editor.kind === 'IDENTITY_PROFILE' ? identityEditor(host, state, o) : programEditor(host, state, o, data));
+    body.append(state.editor.kind === 'IDENTITY_PROFILE' ? identityEditor(host, state) : programEditor(host, state, data));
     return;
   }
-  const view = { requests, seats, identities, programs, people }[state.tab];
+  const views: Record<TalentTab, (host: TalentHost, state: TalentState, o: Json, data: Json) => HTMLElement> = { requests, seats, identities, programs, people };
+  const view = views[state.tab];
   body.append(view(host, state, o, data));
 }
 
 // --- Requests & decisions -------------------------------------------------------------------------------------------
 
-function requests(host: TalentHost, _state: TalentState, o: Json, _data?: Json): HTMLElement {
+function requests(host: TalentHost, _state: TalentState, o: Json): HTMLElement {
   const box = h('div', { class: 'talent-pane' });
   const staffing = arr(o.staffing);
   const open = staffing.filter((r) => !['APPROVED', 'REJECTED', 'WITHDRAWN', 'CONSOLIDATED'].includes(str(r.state)));
@@ -211,7 +212,7 @@ function requests(host: TalentHost, _state: TalentState, o: Json, _data?: Json):
 
 // --- Seats & hiring ---------------------------------------------------------------------------------------------------
 
-function seats(host: TalentHost, state: TalentState, o: Json, _data?: Json): HTMLElement {
+function seats(host: TalentHost, state: TalentState, o: Json): HTMLElement {
   const box = h('div', { class: 'talent-pane' });
   const company = o.company as Json | null;
   box.append(h('p', { class: 'muted small', text: company ? `Company cap ${money(company.capMoney, company.currency)} · spent ${money(company.spentMoney, company.currency)}` : 'No Company budget yet (provision the provider first).' }));
@@ -301,7 +302,7 @@ function seatCase(host: TalentHost, state: TalentState, o: Json): HTMLElement {
 
 // --- Identity studio --------------------------------------------------------------------------------------------------
 
-function identities(host: TalentHost, state: TalentState, o: Json, _data?: Json): HTMLElement {
+function identities(host: TalentHost, state: TalentState, o: Json): HTMLElement {
   const box = h('div', { class: 'talent-pane' });
   const roles = [...new Set(arr(o.seats).map((s) => str(s.roleRef)))].sort();
   const role = select(roles.map((r) => [r, r] as const), roles[0] ?? '', 'Role');
@@ -376,7 +377,7 @@ function editorFoot(host: TalentHost, state: TalentState): HTMLElement {
   })), h('p', { class: 'muted small', text: 'A draft is Company content: it grants, spends and calls nothing. Approval freezes it by its digest; every use (a hire, a qualification, an enrollment) is its own confirmation.' }));
 }
 
-function identityEditor(host: TalentHost, state: TalentState, _o: Json): HTMLElement {
+function identityEditor(host: TalentHost, state: TalentState): HTMLElement {
   const ed = state.editor as TalentEditor;
   const b = ed.body;
   const box = h('form', { class: 'talent-pane talent-editor' });
@@ -428,7 +429,7 @@ function identityEditor(host: TalentHost, state: TalentState, _o: Json): HTMLEle
 
 // --- Skills & Academy studio ------------------------------------------------------------------------------------------
 
-function programs(host: TalentHost, state: TalentState, o: Json, _data?: Json): HTMLElement {
+function programs(host: TalentHost, state: TalentState, o: Json): HTMLElement {
   const box = h('div', { class: 'talent-pane' });
   const roles = [...new Set(arr(o.seats).map((s) => str(s.roleRef)))].sort();
   const role = select(roles.map((r) => [r, r] as const), roles[0] ?? '', 'Role');
@@ -450,7 +451,7 @@ function programs(host: TalentHost, state: TalentState, o: Json, _data?: Json): 
   return box;
 }
 
-function programEditor(host: TalentHost, state: TalentState, _o: Json, data: Json): HTMLElement {
+function programEditor(host: TalentHost, state: TalentState, data: Json): HTMLElement {
   const ed = state.editor as TalentEditor;
   const b = ed.body;
   const program = (b.program as Json) ?? {};
@@ -618,7 +619,7 @@ function programEditor(host: TalentHost, state: TalentState, _o: Json, data: Jso
 
 // --- People & progress ------------------------------------------------------------------------------------------------
 
-function people(host: TalentHost, state: TalentState, o: Json, _data?: Json): HTMLElement {
+function people(host: TalentHost, state: TalentState, o: Json): HTMLElement {
   const box = h('div', { class: 'talent-pane' });
   const defs = arr(o.definitions);
   const tools = arr(o.tools);

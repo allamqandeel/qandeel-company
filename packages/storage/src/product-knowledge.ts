@@ -23,7 +23,7 @@ import {
   PRODUCT_SOURCE_TARGET_CODE,
   assertProductRepositoryRef,
 } from '@qandeel-company/governance';
-import { GRANTED_TOOL_GUIDANCE } from '@qandeel-company/mind';
+import { GRANTED_ORG_ACT_GUIDANCE, GRANTED_TOOL_GUIDANCE } from '@qandeel-company/mind';
 
 import { DigitalStore } from './digital.js';
 import { getEmployeeRow } from './governance-core.js';
@@ -140,6 +140,10 @@ export function txGrantedToolGuidance(ctx: StoreContext, employeeId: Id, at: Tim
     if (!granted) continue;
     const live = ctx.db.get(`SELECT 1 AS x FROM tool_actions a JOIN tools t ON t.id = a.tool_id WHERE t.code = ? AND a.code = ? AND t.status = 'ACTIVE' AND a.status = 'ACTIVE'`, toolCode, actionCode);
     if (live) out.push(guidance);
+  }
+  // COMPANY-TALENT-01 (D4): the proposal acts a leader holds (only with an ACTIVE grant; a proposal decides nothing).
+  for (const [capability, guidance] of Object.entries(GRANTED_ORG_ACT_GUIDANCE)) {
+    if (ctx.db.get(`SELECT 1 AS x FROM permission_grants WHERE employee_id = ? AND capability = ? AND status = 'ACTIVE' AND (expires_at IS NULL OR expires_at > ?) AND (max_uses IS NULL OR uses < max_uses) LIMIT 1`, employeeId, capability, at)) out.push(guidance);
   }
   return out;
 }

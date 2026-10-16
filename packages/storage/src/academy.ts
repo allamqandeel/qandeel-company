@@ -208,7 +208,10 @@ export class AcademyStore {
       // An assessed scenario always carries a real budget: COST_DISCIPLINE is never passed by default.
       if (input.kind !== 'PRACTICE' && input.budgetMicros === 0) throw new QandeelError('VALIDATION_FAILED', 'an assessment / holdout scenario needs a cost budget', { field: 'budgetMicros' });
       const id = newId();
-      ctx.db.run(`INSERT INTO academy_scenarios (id, program_version_id, code, kind, content, content_sha256, source_ref, budget_micros, status, created_at, tool_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)`, id, assertId(programVersionId, 'programVersionId'), assertKeyCode(input.code, 'code'), input.kind, content, sha256Hex(content), assertOpaqueRef(input.sourceRef, 'sourceRef'), input.budgetMicros, ts(ctx), input.toolCode === undefined || input.toolCode === null ? null : assertKeyCode(input.toolCode, 'toolCode'));
+      // COMPANY-TALENT-01: a Tool scenario names its Tool; a text scenario is written exactly as before (no tool column).
+      const tool = input.toolCode === undefined || input.toolCode === null ? null : assertKeyCode(input.toolCode, 'toolCode');
+      if (tool === null) ctx.db.run(`INSERT INTO academy_scenarios (id, program_version_id, code, kind, content, content_sha256, source_ref, budget_micros, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)`, id, assertId(programVersionId, 'programVersionId'), assertKeyCode(input.code, 'code'), input.kind, content, sha256Hex(content), assertOpaqueRef(input.sourceRef, 'sourceRef'), input.budgetMicros, ts(ctx));
+      else ctx.db.run(`INSERT INTO academy_scenarios (id, program_version_id, code, kind, content, content_sha256, source_ref, budget_micros, status, created_at, tool_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)`, id, assertId(programVersionId, 'programVersionId'), assertKeyCode(input.code, 'code'), input.kind, content, sha256Hex(content), assertOpaqueRef(input.sourceRef, 'sourceRef'), input.budgetMicros, ts(ctx), tool);
       appendAudit(ctx, 'academy.scenario_added', 'academy_scenario', id, { actorRef: SYSTEM_MIND_REF }, 'OK', input.kind, { programVersionId });
       return mapScenario(ctx.db.get('SELECT * FROM academy_scenarios WHERE id = ?', id) ?? {});
     });
@@ -770,7 +773,7 @@ function finalizeAttempt(ctx: StoreContext, attemptId: Id): AttemptRecord {
   // COMPANY-TALENT-01: a program's specialty competencies gate the attempt like critical dimensions (a critical one below
   // its mark fails it whatever the average; every competency must be scored before a pass).
   const rules = def.competencies ?? [];
-  const comp = evaluateCompetencies(rules, ctx.db.all<{ competency_code: string; score_pct: number }>('SELECT competency_code, score_pct FROM academy_competency_results WHERE attempt_id = ?', a.id).map((r) => ({ code: r.competency_code, scorePct: Number(r.score_pct) })));
+  const comp = rules.length === 0 ? { missing: [], failed: [], criticalFailures: [] } : evaluateCompetencies(rules, ctx.db.all<{ competency_code: string; score_pct: number }>('SELECT competency_code, score_pct FROM academy_competency_results WHERE attempt_id = ?', a.id).map((r) => ({ code: r.competency_code, scorePct: Number(r.score_pct) })));
   const ev = dims.outcome === 'FAIL' || comp.criticalFailures.length > 0 ? { ...dims, outcome: 'FAIL' as const } : dims.outcome === 'PASS' && comp.missing.length > 0 ? { ...dims, outcome: 'INCOMPLETE' as const } : dims;
   if (ev.outcome === 'INCOMPLETE') return a;
   const at = ts(ctx);
@@ -985,6 +988,8 @@ export function txRecordCompetencies(ctx: StoreContext, attemptId: Id, kind: 'EV
  * A Skill certificate never claims a Tool capability that was not tested.
  */
 function txRecordToolScopes(ctx: StoreContext, certificationId: Id, e: EnrollmentRecord, at: Timestamp): void {
+  // A Company opened by an older build's schema (a test fixture of a released version) records no Tool scope.
+  if (!ctx.db.get("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'role_tool_requirements'")) return;
   for (const r of ctx.db.all<{ tool_code: string }>(`SELECT tool_code FROM role_tool_requirements WHERE role_ref = ? AND state = 'ACTIVE' ORDER BY tool_code`, e.roleRef)) {
     const pass = ctx.db.get<{ id: string }>(`SELECT a.id FROM academy_attempts a JOIN academy_scenarios s ON s.id = a.scenario_id WHERE a.enrollment_id = ? AND a.kind = 'ASSESSMENT' AND a.state = 'EVALUATED' AND a.outcome = 'PASS' AND s.tool_code = ? ORDER BY a.created_at LIMIT 1`, e.id, r.tool_code);
     const tool = ctx.db.get<{ status: string }>('SELECT status FROM tools WHERE code = ?', r.tool_code);

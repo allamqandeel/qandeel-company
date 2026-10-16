@@ -185,7 +185,8 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
   const ceo = v.ceo as Json | null;
   const seatBox = h('div', { class: 'pilot' }, h('strong', { text: isCeoSeat ? 'CEO seat' : 'Seat' }), ' ', pill(seat ? str(seat.title) : 'missing'));
   if (ceo) seatBox.append(identityCard(ceo));
-  if (seat && !ceo && provider.provisioned) {
+  // COMPANY-TALENT-01: hiring a CANDIDATE needs no provider (it holds no model access); only the CEO path orders provider first.
+  if (seat && !ceo && (provider.provisioned || !isCeoSeat)) {
     const form = h('form', { class: 'pilot-create act-hire' });
     const given = h('input', { type: 'text', placeholder: 'Given name (Latin)', 'aria-label': 'Given name', required: true, maxlength: 40 }) as HTMLInputElement;
     const family = h('input', { type: 'text', placeholder: 'Family name (Latin)', 'aria-label': 'Family name', required: true, maxlength: 40 }) as HTMLInputElement;

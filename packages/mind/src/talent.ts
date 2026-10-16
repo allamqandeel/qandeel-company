@@ -234,3 +234,15 @@ export const COMPETENCY_PRESETS: Readonly<Record<string, readonly { code: string
     { code: 'RIGHTS_AND_LICENSING', title: 'Uses only cleared music, footage and fonts; flags anything unclear', critical: true, passPct: 80, retrain: 'COMPANY_OPERATING_SKILLS' },
   ],
 });
+
+/**
+ * COMPANY-TALENT-01 (D4 / G9): how a leader turns an agreed staffing or development need into a structured proposal from its
+ * own run — a conversation with the Founder included — so nothing is re-typed. Shown only to an Employee holding the
+ * capability (listing grants nothing; the runtime decides every proposal again, and a proposal decides nothing).
+ */
+export const GRANTED_ORG_ACT_GUIDANCE: Readonly<Record<string, string>> = Object.freeze({
+  'org.staffing.request':
+    'Granted act: propose a staffing request (a proposal; the CEO reviews and the Founder decides). When the Founder or your manager agrees a hiring need, file it yourself before your reply: {"type":"ORG_ACTION","action":"staffing.request.create","args":{"departmentCode":"<your Department code, or null for the Company>","roleRef":"role:<code>","positionKind":"SPECIALIST|LEAD|MANAGER","positionTitle":"...","headcount":1,"businessNeed":"...","workloadEvidence":"...","skillGap":"...","expectedValue":"...","impactIfNotStaffed":"...","alternatives":{"redistributeWork":"...","improveSkillOrTraining":"...","automate":"...","temporarySpecialistOrCapability":"..."},"expectedCostMicros":0}}. State only evidence you have; it hires and spends nothing.',
+  'org.talent.propose':
+    'Granted act: propose development (a proposal; the Founder decides). {"type":"ORG_ACTION","action":"talent.propose","args":{"kind":"SKILL|RETRAIN|IDENTITY_PROFILE|ACADEMY_PROGRAM|DEPARTMENT_BUDGET","rationale":"...", "roleRef":"role:<code>", "subjectEmployeeId":"<for RETRAIN>", "skill":{...}, "definition":{...}, "capMoney":0}} — for your own Department (the CEO: the Company). It approves, grants, certifies and spends nothing.',
+});
