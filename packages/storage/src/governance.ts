@@ -149,6 +149,7 @@ import { isOrgManaged } from './org-core.js';
 import { txChangeReasoningProfile, txEmployeeIntelligence, txReasoningControlView, txSetReasoningOverride, type EmployeeIntelligenceView, type ReasoningControlView, type ReasoningOverridePlan } from './reasoning-control.js';
 import { txRenameEmployee } from './employee-identity.js';
 import { storeContext, type CompanyStore } from './store.js';
+import { txReconcileAccess } from './talent-access.js';
 import { applyTransition, dependencyStatus, enqueueJob, reevaluateDependencyBlock } from './work-core.js';
 
 const at = (ctx: StoreContext): Timestamp => ts(ctx);
@@ -650,6 +651,8 @@ export class GovernanceStore {
         ctx.db.run(`UPDATE permission_grants SET status = 'REVOKED', revoked_at = ?, revoked_by_ref = ? WHERE employee_id = ? AND status = 'ACTIVE'`, at(ctx), p.ref, id);
         ctx.db.run(`UPDATE principals SET status = 'RETIRED' WHERE employee_id = ?`, id);
       }
+      // COMPANY-TALENT-01 (D2): SUSPENDED / RETIRED end a leadership policy's eligibility; a reinstatement restores it.
+      txReconcileAccess(ctx, [id as Id]);
       return next;
     });
   }

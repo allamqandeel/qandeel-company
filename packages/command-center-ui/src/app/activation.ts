@@ -6,6 +6,10 @@
  * with its static security reviews and bounded benchmark (each answer readable), the enrollment with every attempt's
  * real answer for the Founder evaluator, shadow work, probation, calibration and the activation request. Every act is a
  * structured preview of the governed confirmation: nothing changes until the Founder confirms its exact fingerprint.
+ *
+ * COMPANY-TALENT-01: the same panel is every seat's case (the Staff & Training hall opens it for any seat): the hire names
+ * an approved identity (a release profile or a Talent Catalog one), a specialist program's competencies are scored beside
+ * the dimensions, and a trainee's qualified manager can be asked to evaluate an attempt. The CEO seat reads as before.
  */
 import { dirOf, fmtMoneyMicros, hasArabic, humanize } from '../model/format.js';
 import { h, type PanelHost } from './panels.js';
@@ -128,18 +132,24 @@ function checks(result: Json | null): string {
   return `${str(result.scorePct)}% ${result.passed ? 'pass' : 'fail'} (${arr(result.checks).map((c) => `${str(c.key)} ${c.passed ? '✓' : '✗'}${c.critical ? '*' : ''}`).join(', ')})`;
 }
 
+/** The panel's words for a seat other than the CEO's (the CEO seat keeps its exact wording). */
+const forSeat = (text: string, ceo: boolean): string => (ceo ? text : text.replace(/the CEO's/g, 'the employee\'s').replace(/the CEO/g, 'the employee').replace(/CEO /g, ''));
+
 export function renderActivation(data: Json, host: PanelHost): HTMLElement {
   const v = (data.view as Json) ?? {};
   const reg = (data.registry as Json) ?? {};
+  const isCeoSeat = ((v.seat as Json | null)?.kind ?? 'CEO') === 'CEO';
+  const catalogIdentities = arr(data.catalogIdentities);
   const pkgReg = newest(arr(reg.packages));
   const pkgArgs = pkgReg ? { packageCode: str(pkgReg.code), packageVersion: Number(pkgReg.version), packageSha256: str(pkgReg.sha256) } : null;
-  const section = h('section', { class: 'pilots activation', 'aria-label': 'Activate the Company' });
-  section.append(h('h3', { class: 'section-title', text: 'Activate the Company' }));
+  const title = isCeoSeat ? 'Activate the Company' : `Seat: ${str((v.seat as Json | null)?.title)}`;
+  const section = h('section', { class: 'pilots activation', 'aria-label': title });
+  section.append(h('h3', { class: 'section-title', text: title }));
   const next = str(v.next);
-  section.append(h('p', { class: 'act-next' }, pill('Next', 'pill-needs_decision'), ' ', h('span', { text: NEXT[next] ?? humanize(next) })));
+  section.append(h('p', { class: 'act-next' }, pill('Next', 'pill-needs_decision'), ' ', h('span', { text: forSeat(NEXT[next] ?? humanize(next), isCeoSeat) })));
   const done = stagesDone(v);
   const ol = h('ol', { class: 'act-stages' });
-  STAGES.forEach((s, i) => ol.append(h('li', { class: i < done ? 'done' : i === done ? 'current' : '' }, h('span', { text: s }))));
+  STAGES.forEach((s, i) => ol.append(h('li', { class: i < done ? 'done' : i === done ? 'current' : '' }, h('span', { text: isCeoSeat ? s : s.replace('CEO hired', 'Hired') }))));
   section.append(ol);
   section.append(h('p', { class: 'muted small', text: 'Every step below is a structured preview: nothing changes until you confirm it. External side-effect capability: none.' }));
 
@@ -173,25 +183,39 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
   // --- The CEO seat and its holder ------------------------------------------------------------------------------------
   const seat = v.seat as Json | null;
   const ceo = v.ceo as Json | null;
-  const seatBox = h('div', { class: 'pilot' }, h('strong', { text: 'CEO seat' }), ' ', pill(seat ? str(seat.title) : 'missing'));
+  const seatBox = h('div', { class: 'pilot' }, h('strong', { text: isCeoSeat ? 'CEO seat' : 'Seat' }), ' ', pill(seat ? str(seat.title) : 'missing'));
   if (ceo) seatBox.append(identityCard(ceo));
   if (seat && !ceo && provider.provisioned) {
     const form = h('form', { class: 'pilot-create act-hire' });
     const given = h('input', { type: 'text', placeholder: 'Given name (Latin)', 'aria-label': 'Given name', required: true, maxlength: 40 }) as HTMLInputElement;
     const family = h('input', { type: 'text', placeholder: 'Family name (Latin)', 'aria-label': 'Family name', required: true, maxlength: 40 }) as HTMLInputElement;
     const arName = h('input', { type: 'text', placeholder: 'Arabic display name (optional)', 'aria-label': 'Arabic display name', dir: 'auto', maxlength: 60 }) as HTMLInputElement;
+    // COMPANY-TALENT-01: every hire names an approved identity of the seat's role — a release profile or a catalog one.
     const ident = h('select', { 'aria-label': 'Identity profile' }) as HTMLSelectElement;
-    ident.append(h('option', { value: '', text: 'No identity profile' }));
-    for (const i of arr(reg.identities)) if (str(i.roleRef) === str(seat.roleRef)) ident.append(h('option', { value: str(i.code), text: `${str(i.code)} (${str(i.sourceRef)})` }));
-    if (ident.options.length > 1) ident.selectedIndex = 1;
-    form.append(h('label', { class: 'muted small', text: 'The CEO\'s name is your decision. The hire is a CANDIDATE: no authority, no budget, not active.' }), given, family, arName, ident, h('button', { type: 'submit', class: 'btn btn-quiet', text: 'Preview: hire' }));
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      void host.previewAction('EMPLOYEE_HIRE', { positionId: str(seat.positionId), givenName: given.value.trim(), familyName: family.value.trim(), ...(arName.value.trim() ? { displayNameAr: arName.value.trim() } : {}), ...(ident.value ? { identityProfileCode: ident.value } : {}) });
-    });
-    seatBox.append(form);
+    for (const i of arr(reg.identities)) if (str(i.roleRef) === str(seat.roleRef)) ident.append(h('option', { value: `code:${str(i.code)}`, text: `${str(i.code)} (${str(i.sourceRef)})` }));
+    for (const d of catalogIdentities) ident.append(h('option', { value: `def:${str(d.id)}`, text: `${str(d.title)} — ${str(d.code)} v${str(d.version)} (approved)` }));
+    const fill = (): void => {
+      const d = catalogIdentities.find((x) => `def:${str(x.id)}` === ident.value);
+      const name = (d?.name as Json | undefined) ?? null;
+      if (name && !given.value) given.value = str(name.given);
+      if (name && !family.value) family.value = str(name.family);
+    };
+    ident.addEventListener('change', fill);
+    if (ident.options.length === 0) {
+      seatBox.append(h('p', { class: 'muted small', text: 'No approved identity profile for this role yet: draft and approve one in the Identity studio first (no Employee is created without a complete identity).' }));
+    } else {
+      form.append(h('label', { class: 'muted small', text: forSeat('The CEO\'s name is your decision. The hire is a CANDIDATE: no authority, no budget, not active.', isCeoSeat) }), given, family, arName, ident, h('button', { type: 'submit', class: 'btn btn-quiet', text: 'Preview: hire' }));
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const chosen = ident.value;
+        void host.previewAction('EMPLOYEE_HIRE', { positionId: str(seat.positionId), givenName: given.value.trim(), familyName: family.value.trim(), ...(arName.value.trim() ? { displayNameAr: arName.value.trim() } : {}), ...(chosen.startsWith('code:') ? { identityProfileCode: chosen.slice(5) } : { identityDefinitionId: chosen.slice(4) }) });
+      });
+      seatBox.append(form);
+    }
   }
   if (ceo?.state === 'CANDIDATE') seatBox.append(h('div', { class: 'pilot-actions' }, btn('Preview: start training (CANDIDATE → TRAINING)', () => void host.previewAction('EMPLOYEE_LIFECYCLE', { employeeId: str(ceo.employeeId), to: 'TRAINING' }))));
+  // COMPANY-TALENT-01: an ACTIVE Employee retraining for a new program version enrolls from RETRAINING (same identity).
+  if (ceo?.state === 'RETRAINING') seatBox.append(h('p', { class: 'muted small', text: 'Retraining: enroll in the role\'s current program (new Skills are qualified and learned; earlier work and passports stay), then SHADOW / PROBATION and your activation decision.' }));
   const envelope = v.envelope as Json | null;
   if (ceo && ceo.state !== 'CANDIDATE') {
     seatBox.append(h('p', { class: 'muted small', text: envelope ? `Envelope ${fmtMoneyMicros(Number(envelope.capMoney), str(envelope.currency))} · spent ${fmtMoneyMicros(Number(envelope.spentMoney), str(envelope.currency))} · reserved ${fmtMoneyMicros(Number(envelope.reservedMoney), str(envelope.currency))} · model access: ${arr(v.modelAccess).join(', ') || 'none'}` : 'No envelope and no model access yet.' }));
@@ -209,7 +233,7 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
       seatBox.append(form);
     }
   }
-  if (ceo?.state === 'ACTIVE') seatBox.append(h('div', { class: 'pilot-actions' }, btn(`Talk to ${str(ceo.name)}`, () => host.startConversation(null), true)));
+  if (ceo?.state === 'ACTIVE') seatBox.append(h('div', { class: 'pilot-actions' }, btn(`Talk to ${str(ceo.name)}`, () => host.startConversation(isCeoSeat ? null : str(ceo.employeeId)), true)));
   section.append(seatBox);
 
   // --- The Academy package --------------------------------------------------------------------------------------------
@@ -248,7 +272,8 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
     // D-L1-21: finished answered runs to finalize (OPEN) or cases without a live run (VOID) — never a scored case.
     const pending = arr(pkg?.skills).some((s) => arr(s.runs).some((r) => r.state === 'OPEN') || (s.pipelineState === 'SANDBOXED' && arr(s.runs).length < 2 * k * Number(arr(pkgReg.skills).find((d) => d.code === s.code)?.cases ?? 0)));
     if (rec?.state === 'QUALIFYING' && Number(pkg?.benchmarkRunsOpen ?? 0) === 0 && pkg?.installable !== true && pending) actions.append(btn('Preview: finalize benchmark scores / re-run void cases', () => void host.previewAction('SKILL_PACKAGE_QUALIFY', { ...pkgArgs, subjectEmployeeId: str(ceo.employeeId) })));
-    if (rec?.state === 'INSTALLED' && !v.enrollment) actions.append(btn('Preview: enroll in the Academy', () => void host.previewAction('ACADEMY_ENROLL', { ...pkgArgs, employeeId: str(ceo.employeeId) }), true));
+    const enr0 = v.enrollment as Json | null;
+    if (rec?.state === 'INSTALLED' && (!enr0 || ['WITHDRAWN', 'BLOCKED', 'ACTIVATED'].includes(str(enr0.stage))) && ceo.state !== 'ACTIVE') actions.append(btn('Preview: enroll in the Academy', () => void host.previewAction('ACADEMY_ENROLL', { ...pkgArgs, employeeId: str(ceo.employeeId) }), true));
     box.append(actions);
     section.append(box);
   }
@@ -279,12 +304,21 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
             form.append(h('label', { class: 'small' }, h('span', { text: humanize(d) }), i));
             return [d, i] as const;
           });
+          // COMPANY-TALENT-01: the program's specialty competencies are scored beside the dimensions.
+          const comps = arr(pkgReg?.competencies).map((c) => {
+            const i = h('input', { type: 'number', min: '0', max: '100', step: '1', required: true, 'aria-label': str(c.title) }) as HTMLInputElement;
+            form.append(h('label', { class: 'small' }, h('span', { text: `${humanize(str(c.code))}${c.critical ? ' (critical)' : ''}` }), i));
+            return [str(c.code), i] as const;
+          });
           form.append(h('button', { type: 'submit', class: 'btn btn-primary', text: 'Preview: record my evaluation' }));
           form.addEventListener('submit', (e) => {
             e.preventDefault();
-            void host.previewAction('ACADEMY_EVALUATE', { attemptId: str(a.id), scores: inputs.map(([d, i]) => `${d}:${Math.round(Number(i.value))}`) });
+            void host.previewAction('ACADEMY_EVALUATE', { attemptId: str(a.id), scores: inputs.map(([d, i]) => `${d}:${Math.round(Number(i.value))}`), ...(comps.length > 0 ? { competencies: comps.map(([c, i]) => `${c}:${Math.round(Number(i.value))}`) } : {}) });
           });
           ab.append(h('p', { class: 'muted small', text: 'You are the evaluator. Authority compliance and cost discipline are scored from run facts; the model never scores itself.' }), form);
+          // D5: the trainee's qualified direct manager may evaluate instead (an assessment then waits for an independent review).
+          const managerId = str(data.managerEmployeeId);
+          if (!isCeoSeat && managerId && !['DIRECTOR'].includes(str((v.seat as Json | null)?.kind))) ab.append(h('div', { class: 'pilot-actions' }, btn('Preview: ask the manager to evaluate', () => void host.previewAction('ACADEMY_EVALUATION_ASSIGN', { attemptId: str(a.id), evaluatorEmployeeId: managerId }))));
         }
       }
       // D-L1-39: the Founder's own feedback on an evaluated attempt (never on a hidden holdout); later attempts carry it.
@@ -307,7 +341,7 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
       const kinds = stage === 'ASSESSMENT' ? ['ASSESSMENT', 'HOLDOUT'] : ['PRACTICE'];
       const used = new Set(arr(enr.attempts).map((a) => str(a.scenarioCode)));
       const sel = h('select', { 'aria-label': 'Scenario' }) as HTMLSelectElement;
-      for (const s of arr(pkgReg?.scenarios)) if (kinds.includes(str(s.kind))) sel.append(h('option', { value: str(s.code), text: `${str(s.kind) === 'HOLDOUT' ? 'HIDDEN HOLDOUT · ' : ''}${str(s.code)}${used.has(str(s.code)) ? ' (used)' : ''}` }));
+      for (const s of arr(pkgReg?.scenarios)) if (kinds.includes(str(s.kind))) sel.append(h('option', { value: str(s.code), text: `${str(s.kind) === 'HOLDOUT' ? 'HIDDEN HOLDOUT · ' : ''}${s.toolCode ? `TOOL ${str(s.toolCode)} · ` : ''}${str(s.code)}${used.has(str(s.code)) ? ' (used)' : ''}` }));
       const form = h('form', { class: 'pilot-create' }, h('label', { class: 'muted small', text: stage === 'ASSESSMENT' ? 'Start an assessment (the program needs 3 passed, including a clean hidden holdout)' : 'Start a practice simulation' }), sel, h('button', { type: 'submit', class: 'btn btn-quiet', text: 'Preview: start attempt' }));
       form.addEventListener('submit', (e) => {
         e.preventDefault();
@@ -345,6 +379,7 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
     if (stage === 'PROBATION_REVIEW') box.append(h('div', { class: 'pilot-actions' }, ...(['PASS', 'EXTEND', 'FAIL'] as const).map((d) => btn(`Preview: probation ${d.toLowerCase()}`, () => void host.previewAction('ACADEMY_PROBATION_REVIEW', { enrollmentId: str(enr.id), decision: d }), d === 'PASS'))));
     const cert = enr.certification as Json | null;
     if (cert) box.append(h('p', { class: 'muted small', text: `Certification ${humanize(str(cert.status))} until ${str(cert.validUntil).slice(0, 10)} (necessary, not sufficient)` }));
+    for (const sc of arr(data.toolScopes)) box.append(h('p', { class: 'muted small', text: `Tool ${str(sc.toolCode)}: ${sc.status === 'ASSESSED' ? 'operating it was assessed' : `NOT assessed — ${humanize(str(sc.readiness))}; the certification makes no claim about operating it`}` }));
     const cal = enr.calibration as Json | null;
     if (cal?.state === 'PENDING' && stage === 'ACTIVATION_APPROVAL') {
       const refs = arr(enr.attempts).filter((a) => a.outcome === 'PASS').map((a) => `academy_attempt:${str(a.id)}`).concat(shadow.map((s) => `work_item:${str(s.workItemId)}`));

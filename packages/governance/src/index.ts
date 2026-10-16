@@ -25,3 +25,4 @@ export * from './review.js';
 export * from './routing.js';
 export * from './run-failures.js';
 export * from './tools.js';
+export * from './talent.js';

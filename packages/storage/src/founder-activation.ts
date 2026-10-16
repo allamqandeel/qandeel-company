@@ -23,12 +23,17 @@ import { getPosition, seatHolder } from './org-core.js';
 import { OrganizationStore } from './organization.js';
 import { ts } from './internal.js';
 import type { CompanyStore } from './store.js';
+import { txToolReadiness, type ToolEnvironment } from './talent-access.js';
+import { txApprovedIdentity, txBindIdentity, txIdentityCarrier } from './talent-catalog.js';
 
 export type ActivationPayload = Record<string, string | number | boolean | null | readonly string[]>;
 
 export interface ActivationEnv {
+  /** The release-pinned packages plus the Founder-approved catalog programs (COMPANY-TALENT-01), resolved per transaction. */
   readonly packages: readonly AcademyPackage[];
   readonly identities: readonly EmployeeIdentityProfile[];
+  /** COMPANY-TALENT-01: what the host knows about Tools (null = unknown here: a Tool scenario then never runs). */
+  readonly tools?: ToolEnvironment | null;
 }
 
 const LATIN_NAME = /^[A-Za-z][A-Za-z' -]{1,39}$/;
@@ -56,7 +61,7 @@ function packageOf(raw: Record<string, unknown>, env: ActivationEnv): { pkg: Aca
   const code = assertCode(raw.packageCode, 'packageCode');
   const version = raw.packageVersion;
   const pkg = env.packages.find((p) => p.code === code && p.version === version);
-  if (!pkg) return refuse('PACKAGE_UNKNOWN', 'unknown Academy package (packages are release-pinned and registered by the host, never typed)', { field: 'packageCode' });
+  if (!pkg) return refuse('PACKAGE_UNKNOWN', 'unknown Academy package (release-pinned, or approved in the Talent Catalog; never typed)', { field: 'packageCode' });
   const sha = academyPackageDigest(pkg);
   if (raw.packageSha256 !== sha) refuse('PACKAGE_DIGEST_MISMATCH', 'the package digest does not match the registered package', { field: 'packageSha256' });
   return { pkg, sha };
@@ -86,12 +91,21 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
       const identity = identityCode === null ? null : env.identities.find((i) => i.code === identityCode);
       if (identityCode !== null && !identity) refuse('IDENTITY_UNKNOWN', 'unknown identity profile (release-pinned, never typed)', { field: 'identityProfileCode' });
       if (identity && identity.roleRef !== pos.roleRef) refuse('IDENTITY_ROLE_MISMATCH', 'the identity profile belongs to another role', { field: 'identityProfileCode' });
+      // COMPANY-TALENT-01: an approved identity profile of the Talent Catalog (data, not code). Every hire names an identity:
+      // a release-pinned profile or an approved catalog one — never none (no permanent Employee with an incomplete identity).
+      const definitionId = raw.identityDefinitionId === undefined || raw.identityDefinitionId === null ? null : assertId(raw.identityDefinitionId, 'identityDefinitionId');
+      if (definitionId !== null && identityCode !== null) refuse('IDENTITY_AMBIGUOUS', 'name one identity profile', { field: 'identityDefinitionId' });
+      if (definitionId === null && identityCode === null) refuse('IDENTITY_REQUIRED', 'a hire names an approved identity profile of the seat\'s role', { field: 'identityDefinitionId' });
+      const catalog = definitionId === null ? null : txApprovedIdentity(ctx, definitionId);
+      if (catalog && catalog.definition.roleRef !== pos.roleRef) refuse('IDENTITY_ROLE_MISMATCH', 'the identity profile belongs to another role', { field: 'identityDefinitionId' });
+      if (catalog && txIdentityCarrier(ctx, catalog.definition.code) !== null) refuse('IDENTITY_CARRIED', 'this identity is already carried by another Employee', { field: 'identityDefinitionId' });
       // P1-EMPLOYEE-BASELINE-01 (D-P1-10): the standard new-hire profile is AUTO from E1 with ceiling E4, unless the Founder
       // states a lower ceiling (or an E2 start). The start stays conservative; the ceiling grants no route, deployment or budget.
       const defaultClass = raw.defaultClass ?? DEFAULT_COGNITIVE_PROFILE.defaultClass;
       const ceilingClass = raw.ceilingClass ?? DEFAULT_COGNITIVE_PROFILE.ceilingClass;
       if (!isReasoningClass(defaultClass) || !isReasoningClass(ceilingClass) || defaultClass === 'E0' || ceilingClass === 'E0' || !HIRE_DEFAULT_CLASSES.includes(defaultClass) || reasoningRank(defaultClass) > reasoningRank(ceilingClass)) refuse('COGNITIVE_PROFILE', 'a new hire starts at E1 or E2, with a ceiling from its start up to E4', { field: 'ceilingClass' });
-      return { positionId: pos.id, positionCode: pos.code, positionTitle: pos.title.slice(0, 120), roleRef: pos.roleRef, givenName: given, familyName: family, displayNameAr: ar, identityProfileCode: identityCode, defaultClass: String(defaultClass), ceilingClass: String(ceilingClass), selection: 'AUTO', costDiscipline: 'BALANCED', startsAs: 'CANDIDATE', portraitAssetRef: null, reasonCode: assertCode(raw.reasonCode ?? 'founder.hired', 'reasonCode') };
+      const request = pos.staffingRequestId === null ? null : ctx.db.get<{ id: string; headcount: number }>('SELECT id, headcount FROM staffing_requests WHERE id = ?', pos.staffingRequestId);
+      return { positionId: pos.id, positionCode: pos.code, positionTitle: pos.title.slice(0, 120), roleRef: pos.roleRef, givenName: given, familyName: family, displayNameAr: ar, identityProfileCode: identityCode, ...(catalog ? { identityDefinitionId: catalog.definition.id, identityCode: catalog.definition.code, identityVersion: catalog.definition.version, identitySha256: String(catalog.definition.sha256) } : {}), staffingRequestId: request?.id ?? null, defaultClass: String(defaultClass), ceilingClass: String(ceilingClass), selection: 'AUTO', costDiscipline: 'BALANCED', startsAs: 'CANDIDATE', portraitAssetRef: null, reasonCode: assertCode(raw.reasonCode ?? 'founder.hired', 'reasonCode') };
     }
     case 'EMPLOYEE_LIFECYCLE': {
       const e = getEmployeeRow(ctx, assertId(raw.employeeId, 'employeeId'));
@@ -114,17 +128,21 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
       if (!company) transition('provision the provider (and its Company cap) first', 'COMPANY_BUDGET_MISSING');
       const existing = budgetFor(ctx, 'EMPLOYEE', e.id);
       const capMoney = raw.capMoney;
-      if (existing === null && (typeof capMoney !== 'number' || !Number.isSafeInteger(capMoney) || capMoney <= 0 || capMoney > (company?.capMoney ?? 0))) refuse('CAP', 'the Employee envelope is a bounded positive amount within the Company cap', { field: 'capMoney' });
+      // COMPANY-TALENT-01: a Department Employee's envelope hangs under its Department budget (never above it, never without it).
+      const dept = e.orgScope === 'DEPARTMENT' && e.departmentId !== null ? budgetFor(ctx, 'DEPARTMENT', e.departmentId) : null;
+      if (existing === null && e.orgScope === 'DEPARTMENT' && dept === null) transition('the Department has no budget yet: set the Department budget first', 'DEPARTMENT_BUDGET_MISSING');
+      const parentCap = dept ? dept.capMoney : (company?.capMoney ?? 0);
+      if (existing === null && (typeof capMoney !== 'number' || !Number.isSafeInteger(capMoney) || capMoney <= 0 || capMoney > parentCap)) refuse('CAP', `the Employee envelope is a bounded positive amount within the ${dept ? 'Department' : 'Company'} cap`, { field: 'capMoney' });
       const granted = new Set(ctx.db.all<{ s: string }>(`SELECT resource_scope AS s FROM permission_grants WHERE employee_id = ? AND capability = 'model.invoke' AND status = 'ACTIVE'`, e.id).map((r) => r.s));
       const missing = classes.filter((c) => !granted.has(c) && !granted.has('*'));
       if (existing !== null && missing.length === 0) transition('this access already exists', 'ACCESS_EXISTS');
-      return { employeeId: e.id, name: `${e.name.given} ${e.name.family}`, currency: company?.currency ?? 'USD', envelopeExists: existing !== null, capMoney: existing?.capMoney ?? Number(capMoney), capTokens: existing?.capTokens ?? Math.max(1_000_000, Number(capMoney) * 2), taskClasses: missing, dataClassCeiling: String(dataClass), riskCeiling: 'R0', reasonCode: assertCode(raw.reasonCode ?? 'founder.model_access', 'reasonCode') };
+      return { employeeId: e.id, name: `${e.name.given} ${e.name.family}`, currency: company?.currency ?? 'USD', parentBudget: dept ? 'DEPARTMENT' : 'COMPANY', parentCapMoney: parentCap, envelopeExists: existing !== null, capMoney: existing?.capMoney ?? Number(capMoney), capTokens: existing?.capTokens ?? Math.max(1_000_000, Number(capMoney) * 2), taskClasses: missing, dataClassCeiling: String(dataClass), riskCeiling: 'R0', reasonCode: assertCode(raw.reasonCode ?? 'founder.model_access', 'reasonCode') };
     }
     case 'SKILL_PACKAGE_QUALIFY': {
       const { pkg, sha } = packageOf(raw, env);
       const subject = getEmployeeRow(ctx, assertId(raw.subjectEmployeeId, 'subjectEmployeeId'));
       if (subject.roleRef !== pkg.roleRef) refuse('ROLE_MISMATCH', 'the benchmark subject holds the package role');
-      if (subject.state !== 'TRAINING') transition('the benchmark subject is a TRAINING Employee', 'SUBJECT_NOT_TRAINING', { state: subject.state });
+      if (subject.state !== 'TRAINING' && subject.state !== 'RETRAINING') transition('the benchmark subject is a TRAINING or RETRAINING Employee', 'SUBJECT_NOT_TRAINING', { state: subject.state });
       const rec = txPackageRecord(ctx, pkg);
       if (rec?.state === 'INSTALLED') transition('this package is already installed', 'PACKAGE_INSTALLED');
       // D-L1-23: a BQM-2 package is previewed only when this build runs exactly the method and ANSWER contract it pins.
@@ -217,8 +235,15 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
       const stages = kind === 'SIMULATION' ? ['SIMULATION', 'RETRY'] : ['ASSESSMENT'];
       if (!stages.includes(en.stage)) transition(`a ${kind} attempt needs stage ${stages.join('/')}`, 'STAGE', { stage: en.stage });
       if (ctx.db.get(`SELECT 1 AS x FROM academy_attempts WHERE enrollment_id = ? AND state = 'OPEN'`, en.id)) transition('one attempt at a time', 'ATTEMPT_OPEN');
+      // COMPANY-TALENT-01: a Tool scenario assesses operating a Tool — only when it is READY and the trainee holds a grant of
+      // it; otherwise the capability stays NOT ASSESSED (never certified, never claimed).
+      if (sc?.toolCode !== undefined) {
+        const r = txToolReadiness(ctx, sc.toolCode, env.tools ?? null);
+        if (r.readiness !== 'READY') transition(`the tool ${sc.toolCode} is ${r.readiness}: this capability is not assessed until it is integrated and connected`, `TOOL_${r.readiness}`);
+        if (!ctx.db.get(`SELECT 1 AS x FROM permission_grants WHERE employee_id = ? AND capability LIKE ? AND status = 'ACTIVE'`, en.employee_id, `tool:${sc.toolCode}.%`)) transition('the trainee holds no grant of this tool', 'TOOL_NOT_GRANTED');
+      }
       if (sc?.kind === 'HOLDOUT' && ctx.db.get(`SELECT 1 AS x FROM academy_scenario_exposures x JOIN academy_scenarios s ON s.id = x.scenario_id WHERE x.employee_id = ? AND s.code = ? AND s.program_version_id = ?`, en.employee_id, code, en.program_version_id)) refuse('HOLDOUT_ALREADY_EXPOSED', 'this holdout was already exposed; use a fresh holdout');
-      return { packageCode: pkg.code, packageVersion: pkg.version, packageSha256: sha, enrollmentId: en.id, scenarioCode: code, scenarioKind: sc?.kind ?? '', attemptKind: kind, taskClass: pkg.taskClasses.attempt, capMicros: pkg.limits.attemptCapMicros, scenarioBudgetMicros: sc?.budgetMicros ?? 0, maxOutputTokens: pkg.limits.attemptMaxOutputTokens, reasonCode: assertCode(raw.reasonCode ?? 'academy.attempt', 'reasonCode') };
+      return { packageCode: pkg.code, packageVersion: pkg.version, packageSha256: sha, enrollmentId: en.id, scenarioCode: code, scenarioKind: sc?.kind ?? '', ...(sc?.toolCode !== undefined ? { toolCode: sc.toolCode } : {}), attemptKind: kind, taskClass: pkg.taskClasses.attempt, capMicros: pkg.limits.attemptCapMicros, scenarioBudgetMicros: sc?.budgetMicros ?? 0, maxOutputTokens: pkg.limits.attemptMaxOutputTokens, reasonCode: assertCode(raw.reasonCode ?? 'academy.attempt', 'reasonCode') };
     }
     case 'ACADEMY_EVALUATE': {
       const attemptId = assertId(raw.attemptId, 'attemptId');
@@ -243,7 +268,18 @@ export function validateActivationPayload(ctx: StoreContext, intent: string, raw
         parsed.set(String(d), pct);
       }
       if (EVALUATOR_DIMENSIONS.some((d) => !parsed.has(d))) refuse('SCORES_INCOMPLETE', 'score every evaluator dimension', { field: 'scores' });
-      return { attemptId, kind: a.kind, answered, answerRef: `work_answer:${answer.id}`, answerSha256: sha256Hex(answer.body), scores: EVALUATOR_DIMENSIONS.map((d) => `${d}:${parsed.get(d)}`), deterministic: 'AUTHORITY_COMPLIANCE, COST_DISCIPLINE from run facts', reasonCode: assertCode(raw.reasonCode ?? 'academy.evaluated', 'reasonCode') };
+      // COMPANY-TALENT-01: and every specialty competency the program assesses (none for the CEO programs).
+      const pv = ctx.db.get<{ d: string }>('SELECT v.definition_json AS d FROM academy_enrollments n JOIN academy_program_versions v ON v.id = n.program_version_id WHERE n.id = ?', a.enrollment_id)?.d;
+      const rules = (pv ? (JSON.parse(pv) as { competencies?: { code: string }[] }).competencies : undefined) ?? [];
+      const comp = new Map<string, number>();
+      for (const s of strList(raw, 'competencies', 12)) {
+        const [c, v] = s.split(':');
+        const pct = Number(v);
+        if (!c || !rules.some((r) => r.code === c) || !Number.isInteger(pct) || pct < 0 || pct > 100) refuse('COMPETENCY_SHAPE', 'competencies are "CODE:0..100" for this program\'s competencies', { field: 'competencies' });
+        comp.set(String(c), pct);
+      }
+      if (rules.some((r) => !comp.has(r.code))) refuse('COMPETENCIES_INCOMPLETE', 'score every competency of this program', { field: 'competencies' });
+      return { attemptId, kind: a.kind, answered, answerRef: `work_answer:${answer.id}`, answerSha256: sha256Hex(answer.body), scores: EVALUATOR_DIMENSIONS.map((d) => `${d}:${parsed.get(d)}`), ...(rules.length > 0 ? { competencies: rules.map((r) => `${r.code}:${comp.get(r.code)}`) } : {}), deterministic: 'AUTHORITY_COMPLIANCE, COST_DISCIPLINE from run facts', reasonCode: assertCode(raw.reasonCode ?? 'academy.evaluated', 'reasonCode') };
     }
     case 'ACADEMY_RETRAIN_COMPLETE': {
       const id = assertId(raw.remediationId, 'remediationId');
@@ -326,13 +362,17 @@ export function executeActivation(store: CompanyStore, ctx: StoreContext, founde
     case 'EMPLOYEE_HIRE': {
       const identity = pl.identityProfileCode === null ? null : env.identities.find((i) => i.code === str('identityProfileCode'));
       if (pl.identityProfileCode !== null && !identity) throw new QandeelError('VALIDATION_FAILED', 'the identity profile changed since the preview', { reason: 'IDENTITY_UNKNOWN' });
+      const catalog = pl.identityDefinitionId === undefined || pl.identityDefinitionId === null ? null : txApprovedIdentity(ctx, str('identityDefinitionId') as Id);
+      if (catalog && catalog.definition.sha256 !== str('identitySha256')) throw new QandeelError('VALIDATION_FAILED', 'the identity profile changed since the preview', { reason: 'IDENTITY_CHANGED' });
       const profile = {
         displayName: { en: `${str('givenName')} ${str('familyName')}`, ...(pl.displayNameAr === null ? {} : { ar: str('displayNameAr') }) },
         portraitAssetRef: null,
         ...(identity ? { identityProfile: identity.code, identityKernel: identity.identityKernel } : {}),
+        ...(catalog ? { identityProfile: `talent:${catalog.definition.code}@v${catalog.definition.version}`, identityKernel: catalog.kernel } : {}),
       };
       if (containsSecretMaterial(JSON.stringify(profile))) throw new QandeelError('VALIDATION_FAILED', 'the profile carries secret material', { reason: 'SECRET_MATERIAL' });
       const e = OrganizationStore.for(store).hire(founderRef, { positionId: str('positionId'), name: { given: str('givenName'), family: str('familyName') }, cognitiveProfile: { defaultClass: pl.defaultClass as 'E1', ceilingClass: pl.ceilingClass as 'E2', costDiscipline: 'BALANCED', selection: 'AUTO' }, profile, reasonCode: str('reasonCode') });
+      if (catalog) txBindIdentity(ctx, founderRef, e.id, catalog.definition.id, 'INITIAL', str('reasonCode'));
       return `employee:${e.id}`;
     }
     case 'EMPLOYEE_LIFECYCLE': {
@@ -381,7 +421,11 @@ export function executeActivation(store: CompanyStore, ctx: StoreContext, founde
           const [d, v] = s.split(':');
           return { dimension: d as AssessmentDimension, scorePct: Number(v), evidenceRefs: [`academy_attempt:${attemptId}`] };
         });
-        a = AcademyStore.for(store).recordEvaluation(founderRef, attemptId, results);
+        const competencies = list('competencies').map((s) => {
+          const [c, v] = s.split(':');
+          return { code: String(c), scorePct: Number(v) };
+        });
+        a = AcademyStore.for(store).recordEvaluation(founderRef, attemptId, results, competencies);
       }
       txAdvance(ctx, a.enrollmentId);
       return `academy_attempt:${attemptId}`;

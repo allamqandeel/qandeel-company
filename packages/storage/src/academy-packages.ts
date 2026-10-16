@@ -536,7 +536,8 @@ export class AcademyPackageStore {
       if (academyPackageDigest(pkg) !== input.expectedSha256) throw new QandeelError('VALIDATION_FAILED', 'the package digest does not match the registered package', { field: 'packageSha256', reason: 'PACKAGE_DIGEST_MISMATCH' });
       const subject = getEmployeeRow(ctx, assertId(input.subjectEmployeeId, 'subjectEmployeeId'));
       if (subject.roleRef !== pkg.roleRef) throw new QandeelError('VALIDATION_FAILED', 'the benchmark subject holds the package role', { reason: 'ROLE_MISMATCH' });
-      if (subject.state !== 'TRAINING') throw new QandeelError('INVALID_TRANSITION', 'the benchmark subject is a TRAINING Employee', { state: subject.state });
+      // COMPANY-TALENT-01: a RETRAINING Employee qualifies the new Skill versions of its role's next program (fenced the same way).
+      if (subject.state !== 'TRAINING' && subject.state !== 'RETRAINING') throw new QandeelError('INVALID_TRANSITION', 'the benchmark subject is a TRAINING or RETRAINING Employee', { state: subject.state });
       const existing = txPackageRecord(ctx, pkg);
       if (existing && existing.state !== 'QUALIFYING') throw new QandeelError('INVALID_TRANSITION', 'this package is already installed', { reason: 'PACKAGE_INSTALLED' });
       // D-L1-23: a BQM-2 package runs only under exactly the method and ANSWER contract it pinned (new or in flight).
@@ -714,7 +715,7 @@ export class AcademyPackageStore {
       const academy = AcademyStore.for(this.#store);
       const program = academy.createProgram(p.ref, { code: pkg.code, roleRef: pkg.roleRef });
       const pv = academy.publishProgramVersion(p.ref, program.id, bindProgram(pkg, idOf));
-      for (const sc of pkg.scenarios) academy.addScenario(p.ref, pv.id, { code: sc.code, kind: sc.kind, content: sc.content, sourceRef: sc.sourceRef, budgetMicros: sc.budgetMicros });
+      for (const sc of pkg.scenarios) academy.addScenario(p.ref, pv.id, { code: sc.code, kind: sc.kind, content: sc.content, sourceRef: sc.sourceRef, budgetMicros: sc.budgetMicros, ...(sc.toolCode === undefined ? {} : { toolCode: sc.toolCode }) });
       ctx.db.run(`UPDATE academy_packages SET state = 'INSTALLED', program_id = ?, program_version_id = ?, blueprint_id = ?, installed_by_ref = ?, installed_at = ? WHERE id = ? AND state = 'QUALIFYING'`, program.id, pv.id, blueprint.id, p.ref, ts(ctx), rec.id);
       appendAudit(ctx, 'academy.package_installed', 'academy_package', rec.id, { actorRef: p.ref }, 'OK', null, { programVersionId: pv.id, blueprintId: blueprint.id, skills: view.skills.length });
       return { packageId: rec.id, programId: program.id, programVersionId: pv.id, blueprintId: blueprint.id };

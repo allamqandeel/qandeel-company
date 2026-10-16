@@ -812,3 +812,25 @@ input[type="range"] { accent-color: var(--gold); }
 .preview-error { margin: 14px 0 0; padding: 9px 12px; border-radius: var(--radius-s); background: rgba(240, 106, 106, 0.12); border: 1px solid rgba(240, 106, 106, 0.3); color: var(--urgent-ink); font-size: 13px; line-height: 1.5; }
 .preview-error:empty { display: none; }
 .company-note.budget-error { color: var(--urgent-ink); }
+
+/* COMPANY-TALENT-01 — the Staff & Training hall (same tokens as the halls; no new colours). */
+.talent-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 14px; }
+.talent-tab.is-current { border-color: var(--gold-line); color: var(--gold-ink); background: var(--gold-soft); }
+.talent-pane { display: flex; flex-direction: column; gap: 10px; }
+.talent-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-s); padding: 10px 12px; margin: 0 0 8px; }
+.talent-card .pilot-actions { margin-top: 8px; }
+.talent-evidence summary { cursor: pointer; color: var(--fg-2); }
+.talent-field { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; min-width: 0; }
+.talent-label { font-size: 0.85rem; color: var(--fg-2); }
+.talent-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+.talent-row > * { flex: 1 1 160px; min-width: 0; }
+.talent-inline span { display: flex; flex-wrap: wrap; gap: 6px; }
+.talent-inline input, .talent-inline select { flex: 1 1 180px; min-width: 0; }
+.talent-item { border: 1px solid var(--line); border-radius: var(--radius-s); padding: 8px 10px; margin: 0 0 10px; }
+.talent-item legend { color: var(--fg-2); padding: 0 6px; font-size: 0.85rem; }
+.talent-editor input[type='text'], .talent-editor input[type='number'], .talent-editor textarea, .talent-editor select { width: 100%; box-sizing: border-box; background: var(--field); color: var(--fg); border: 1px solid var(--line-strong); border-radius: 8px; padding: 6px 8px; font: inherit; }
+.talent-editor textarea.mono, textarea.mono { font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; font-size: 0.82rem; direction: ltr; }
+.talent-gaps li { color: var(--urgent-ink); }
+.talent-foot { position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--line); padding: 10px 0 4px; }
+.talent-advanced summary { cursor: pointer; color: var(--fg-2); }
+@media (max-width: 640px) { .talent-row > * { flex-basis: 100%; } }

@@ -11,6 +11,7 @@ import { api, ApiError, subscribeChanges } from './api.js';
 import { ChatScreen } from './chat.js';
 import { CompanyControl } from './company-control.js';
 import { renderAcademy, renderMeetingRoom } from './halls.js';
+import { renderTalent, type TalentState } from './talent.js';
 import { keepFocus, restoreFocus } from './keep-focus.js';
 import { h, refusalText, renderActivity, renderAttentionRail, renderCalendar, renderEmployeeFocus, renderGoalFocus, renderHealthLine, renderPalette, renderPreview, renderTimeline, type PanelHost } from './panels.js';
 import { departmentColor, TreeView } from './view.js';
@@ -46,7 +47,7 @@ class App implements PanelHost {
   /** The attention item under the Founder's eye (its spotlight outlives the live refreshes of a working company). */
   #spotlight: { itemId: string; el: HTMLElement | null } | null = null;
   /** D2-UX-01: the open hall (Academy / Meeting Room) and the control that opened it (focus returns there). */
-  #hall: 'academy' | 'meeting' | null = null;
+  #hall: 'academy' | 'meeting' | 'talent' | null = null;
   #hallOpener: HTMLElement | null = null;
   #paletteOpener: HTMLElement | null = null;
   /** P1-CHAT-INTEL-01: the dedicated Chat screen (built once; hidden when no conversation is open). */
@@ -93,6 +94,8 @@ class App implements PanelHost {
     // D2-UX-01: the Academy (a company-wide read) and the Meeting Room (an honest notice), each one click from home.
     $('academy-open').addEventListener('click', () => this.openAcademy());
     $('meeting-open').addEventListener('click', () => this.openMeetingRoom());
+    // COMPANY-TALENT-01: Staff & Training — hiring and qualification for every seat (reads; every act is a confirmation).
+    $('talent-open').addEventListener('click', () => this.openTalent());
     // Click outside closes the hall or the command panel — never while a governed confirmation is open.
     document.addEventListener('pointerdown', (e) => this.#outside(e), true);
     $('legend-toggle').addEventListener('click', () => $('legend').toggleAttribute('hidden'));
@@ -196,6 +199,7 @@ class App implements PanelHost {
         this.#paletteInput(false);
       }
       if (this.#hall === 'academy') await this.#loadAcademy();
+      if (this.#hall === 'talent') await this.#loadTalent();
       // P1-UX-BUDGET-DARK-01: an open Company panel shows the envelope as it is now (after a confirmation or a change).
       if (this.#company?.isOpen) await this.#company.refreshBudget();
       if (this.lens.kind === 'EMPLOYEE' || this.lens.kind === 'GOAL') {
@@ -644,13 +648,42 @@ class App implements PanelHost {
     void this.#loadAcademy();
   }
 
+  readonly #talentState: TalentState = { tab: 'requests', seatCase: null, seatCaseData: null, editor: null };
+
+  openTalent(): void {
+    this.#openHall('talent', $('talent-open'));
+    void this.#loadTalent();
+  }
+
+  async #loadTalent(): Promise<void> {
+    const hall = $('hall');
+    const host = { panel: this as PanelHost, closeHall: () => this.closeHall(), deptNameOf: (id: string) => this.deptNameOf(id), note: (text: string, kind: 'semantic' | 'system') => this.note(text, kind), reload: () => void this.#loadTalent() };
+    const render = (data: Json | null, error: string | null): void => {
+      if (this.#hall !== 'talent') return;
+      const kept = keepFocus(hall);
+      const scroll = hall.scrollTop;
+      renderTalent(hall, data, host, this.#talentState, error);
+      restoreFocus(hall, kept, '.hall-close');
+      hall.scrollTop = scroll;
+    };
+    try {
+      const data = await api.get<Json>('/api/talent');
+      const seat = this.#talentState.seatCase;
+      if (seat !== null) this.#talentState.seatCaseData = await api.get<Json>(`/api/activation?positionId=${encodeURIComponent(seat)}`);
+      render(data, null);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) return this.lock(e.code);
+      render(null, e instanceof ApiError ? e.code : 'error');
+    }
+  }
+
   openMeetingRoom(): void {
     // Informational only: nothing is read from or written to the Company.
     this.#openHall('meeting', $('meeting-open'));
     renderMeetingRoom($('hall'), this);
   }
 
-  #openHall(kind: 'academy' | 'meeting', opener: HTMLElement): void {
+  #openHall(kind: 'academy' | 'meeting' | 'talent', opener: HTMLElement): void {
     $('palette').hidden = true;
     const hall = $('hall');
     if (this.#hall === null) this.#hallOpener = opener;
@@ -658,6 +691,7 @@ class App implements PanelHost {
     hall.hidden = false;
     $('academy-open').setAttribute('aria-expanded', kind === 'academy' ? 'true' : 'false');
     $('meeting-open').setAttribute('aria-expanded', kind === 'meeting' ? 'true' : 'false');
+    $('talent-open').setAttribute('aria-expanded', kind === 'talent' ? 'true' : 'false');
     queueMicrotask(() => hall.querySelector<HTMLElement>('.hall-close')?.focus());
   }
 
@@ -689,6 +723,7 @@ class App implements PanelHost {
     hall.replaceChildren();
     $('academy-open').setAttribute('aria-expanded', 'false');
     $('meeting-open').setAttribute('aria-expanded', 'false');
+    $('talent-open').setAttribute('aria-expanded', 'false');
     const back = this.#hallOpener;
     this.#hallOpener = null;
     if (restoreFocus && back && back.isConnected) back.focus();
@@ -699,7 +734,7 @@ class App implements PanelHost {
     if (!$('preview').hidden) return;
     const target = e.target instanceof Node ? e.target : null;
     if (target === null) return;
-    if (this.#hall !== null && !$('hall').contains(target) && !$('academy-open').contains(target) && !$('meeting-open').contains(target)) this.closeHall(false);
+    if (this.#hall !== null && !$('hall').contains(target) && !$('academy-open').contains(target) && !$('meeting-open').contains(target) && !$('talent-open').contains(target)) this.closeHall(false);
     const palette = $('palette');
     if (!palette.hidden && !palette.contains(target) && !$('palette-open').contains(target) && !$('activation-open').contains(target)) {
       palette.hidden = true;

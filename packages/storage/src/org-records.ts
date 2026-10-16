@@ -150,6 +150,8 @@ export interface StaffingRequestRecord {
   readonly decisionDueAt: Timestamp | null;
   readonly version: number;
   readonly createdAt: Timestamp;
+  /** COMPANY-TALENT-01 (D7): identical seats requested (1 for every earlier request). */
+  readonly headcount: number;
 }
 
 export const mapStaffingRequest = (r: Row): StaffingRequestRecord => ({
@@ -173,6 +175,7 @@ export const mapStaffingRequest = (r: Row): StaffingRequestRecord => ({
   decisionDueAt: optStr(r.decision_due_at) as Timestamp | null,
   version: num(r.version),
   createdAt: str(r.created_at) as Timestamp,
+  headcount: r.headcount === undefined || r.headcount === null ? 1 : num(r.headcount),
 });
 
 export interface AuthorityDelegationRecord {

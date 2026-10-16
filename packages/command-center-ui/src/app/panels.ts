@@ -910,7 +910,9 @@ function renderPilots(data: Json, host: PanelHost): HTMLElement {
 /** Payload fields the Founder reads: identifiers are resolved to names or dropped, never shown as codes. */
 const HIDDEN_FIELDS = new Set(['pilotId', 'threadId', 'reasonCode', 'currency', 'approvalId', 'goalId', 'budgetId', 'requestId', 'conflictId', 'employeeId', 'invocationId', 'reservationId', 'jobId', 'findingId', 'attributionId', 'lessonId', 'promotionId', 'workItemId', 'profileSha256', 'identityCheckId',
   // L1-02: identifiers of the activation acts (the summary says what happens; IDs are never shown as codes).
-  'positionId', 'subjectEmployeeId', 'enrollmentId', 'attemptId', 'remediationId', 'certificationId', 'packageSha256']);
+  'positionId', 'subjectEmployeeId', 'enrollmentId', 'attemptId', 'remediationId', 'certificationId', 'packageSha256',
+  // COMPANY-TALENT-01: identifiers and digests of the Staff & Training acts.
+  'definitionId', 'proposalId', 'proposerEmployeeId', 'identityDefinitionId', 'identitySha256', 'staffingRequestId', 'departmentId', 'reportsToPositionId', 'policyId', 'requirementId', 'grantIds', 'evaluationId', 'evaluatorEmployeeId', 'traineeEmployeeId', 'answerSha256', 'answerRef', 'rowVersion', 'sha256', 'version']);
 
 export function renderPreview(root: HTMLElement, preview: Json, host: PanelHost): void {
   root.replaceChildren();

@@ -19,7 +19,7 @@ import { QandeelError, canonicalJson, isOpaqueRef, sha256Hex } from '@qandeel-co
 import { ANSWER_AUTHORITY, ANSWER_CONFIDENCE, ANSWER_DECISIONS, ANSWER_EVIDENCE, assertTaskClass, type AnswerAuthority, type AnswerConfidence, type AnswerDecision, type AnswerEvidence, type AnswerFacets } from '@qandeel-company/governance';
 
 import { assertProgramDefinition, type ProgramDefinition, type ScenarioKind } from './academy.js';
-import { BLUEPRINT_CATEGORIES, PROFICIENCY, SKILL_INSTRUCTIONS_MAX, inspectSkillPayload, type BlueprintCategory, type Proficiency } from './skills.js';
+import { BLUEPRINT_CATEGORIES, CLEAR_FREE_LICENSES, PROFICIENCY, SKILL_INSTRUCTIONS_MAX, inspectSkillPayload, type BlueprintCategory, type Proficiency } from './skills.js';
 
 /** What a case expects of an answer. Every listed constraint is checked; `critical` ones must all hold. */
 export interface AnswerExpectation {
@@ -69,6 +69,12 @@ export interface PackageSkill {
   readonly targetProficiency: Proficiency;
   readonly sourceRefs: readonly string[];
   readonly benchmark: readonly BenchmarkCase[];
+  /**
+   * COMPANY-TALENT-01: where the Skill's knowledge comes from. Absent = QANDEEL-original (every release package). A Skill
+   * adapted from external material is still a QANDEEL-native text (rewritten, owned by QANDEEL), but every source it was
+   * adapted from must carry a clearly free licence (Stage 7 §9–§12): an unclear, review-only or paid source is refused.
+   */
+  readonly provenance?: { readonly origin: 'QANDEEL_ORIGINAL' | 'ADAPTED_FREE_SOURCE'; readonly sources: readonly { readonly ref: string; readonly licenseSpdx: string }[] };
 }
 
 export interface PackageScenario {
@@ -79,6 +85,12 @@ export interface PackageScenario {
   readonly budgetMicros: number;
   /** Advisory facet expectations shown to the Founder evaluator beside the answer (never a score). */
   readonly expect?: AnswerExpectation;
+  /**
+   * COMPANY-TALENT-01: a scenario that assesses operating a Tool (e.g. editing a video with an integrated editor). It runs
+   * only when that Tool is registered, integrated and granted; until then the capability is recorded as NOT ASSESSED and
+   * never certified. Never counted as a text-only assessment.
+   */
+  readonly toolCode?: string;
 }
 
 export interface PackageShadowAssignment {
@@ -150,6 +162,18 @@ function assertExpectation(v: unknown, field: string): AnswerExpectation {
   return o as unknown as AnswerExpectation;
 }
 
+function assertProvenance(v: unknown, field: string): void {
+  const o = v as { origin?: unknown; sources?: unknown };
+  if (typeof o !== 'object' || o === null || (o.origin !== 'QANDEEL_ORIGINAL' && o.origin !== 'ADAPTED_FREE_SOURCE') || !Array.isArray(o.sources) || o.sources.length > 8) bad(field, 'provenance is QANDEEL_ORIGINAL or ADAPTED_FREE_SOURCE with at most 8 sources');
+  const sources = o.sources as { ref?: unknown; licenseSpdx?: unknown }[];
+  if (o.origin === 'ADAPTED_FREE_SOURCE' && sources.length === 0) bad(field, 'an adapted Skill names the sources it was adapted from');
+  for (const x of sources) {
+    if (typeof x?.ref !== 'string' || !REF.test(x.ref)) bad(field, 'a provenance source is a ref');
+    // Only a clearly free licence is accepted: an unclear, review-only, paid or proprietary source is refused outright.
+    if (typeof x.licenseSpdx !== 'string' || !CLEAR_FREE_LICENSES.includes(x.licenseSpdx)) bad(field, `a provenance source carries a clearly free licence (${CLEAR_FREE_LICENSES.join(', ')})`);
+  }
+}
+
 /** Validates a package (shape, bounds, references, the program definition). Returns it unchanged. */
 export function assertAcademyPackage(p: unknown): AcademyPackage {
   if (typeof p !== 'object' || p === null) return bad('package', 'must be an object');
@@ -176,6 +200,7 @@ export function assertAcademyPackage(p: unknown): AcademyPackage {
     if (typeof s.critical !== 'boolean') bad(f, 'critical is a boolean');
     if (!Array.isArray(s.sourceRefs) || s.sourceRefs.length === 0 || s.sourceRefs.some((r) => !REF.test(r))) bad(f, 'skill sourceRefs');
     if (!Array.isArray(s.benchmark) || s.benchmark.length === 0 || s.benchmark.length > 4) bad(f, 'a skill has 1..4 benchmark cases');
+    if (s.provenance !== undefined) assertProvenance(s.provenance, `${f}.provenance`);
     const cases = new Set<string>();
     for (const [j, c] of s.benchmark.entries()) {
       if (typeof c.code !== 'string' || !CODE.test(c.code) || cases.has(c.code)) bad(`${f}.benchmark[${j}]`, 'case codes are distinct key codes');
@@ -196,8 +221,9 @@ export function assertAcademyPackage(p: unknown): AcademyPackage {
     if (!isOpaqueRef(s.sourceRef)) bad(f, 'scenario sourceRef is an opaque <kind>:<id> reference');
     intIn(s.budgetMicros, `${f}.budgetMicros`, s.kind === 'PRACTICE' ? 0 : 1, 1_000_000_000);
     if (s.expect !== undefined) assertExpectation(s.expect, `${f}.expect`);
+    if (s.toolCode !== undefined && (typeof s.toolCode !== 'string' || !CODE.test(s.toolCode) || s.kind === 'PRACTICE')) bad(f, 'a tool scenario names a tool code and is an assessment or holdout');
   }
-  for (const k of ['PRACTICE', 'ASSESSMENT', 'HOLDOUT'] as const) if (!o.scenarios.some((s) => s.kind === k)) bad('scenarios', `the package has at least one ${k} scenario`);
+  for (const k of ['PRACTICE', 'ASSESSMENT', 'HOLDOUT'] as const) if (!o.scenarios.some((s) => s.kind === k && s.toolCode === undefined)) bad('scenarios', `the package has at least one ${k} scenario`);
   if (!Array.isArray(o.shadowAssignments) || o.shadowAssignments.length === 0 || o.shadowAssignments.length > 8) bad('shadowAssignments', '1..8 shadow assignments');
   for (const [i, a] of o.shadowAssignments.entries()) {
     if (typeof a.code !== 'string' || !CODE.test(a.code)) bad(`shadowAssignments[${i}]`, 'code');
