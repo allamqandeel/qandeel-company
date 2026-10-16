@@ -81,6 +81,11 @@ import {
   resolvePromotionExport,
   resolvePromotionTarget,
   resolveProductSource,
+  resolveCompanySource,
+  talentDefinitionDetail,
+  talentOverview,
+  TalentCatalogStore,
+  type ToolEnvironment,
   type PromotionExportResult,
   MemoryStore,
   OrganizationStore,
@@ -198,6 +203,8 @@ export interface RuntimeOptions {
     readonly academyPackages?: readonly AcademyPackage[];
     /** L1-02: release-pinned Employee identity profiles a governed hire may name. */
     readonly identityProfiles?: readonly EmployeeIdentityProfile[];
+    /** COMPANY-TALENT-01: whether the host's vault holds a Tool credential (readiness only; never the value). Absent = none. */
+    readonly toolCredentialPresent?: (ref: string) => boolean;
   };
 }
 
@@ -230,8 +237,14 @@ export interface FounderAdmin {
   /** C7-D: the Digital Workshop read model and Founder-only promotion-target registration. */
   readonly digital: DigitalStore;
   universe(options?: { at?: string }): CompanyUniverse;
-  /** L1-02: the Company activation flow, read from durable state only (silent; never a write). */
-  activation(): ActivationView;
+  /** L1-02: the Company activation flow, read from durable state only (silent; never a write). COMPANY-TALENT-01: any seat. */
+  activation(positionId?: Id | null): ActivationView;
+  /** COMPANY-TALENT-01: the Talent Catalog (Founder drafting; every decision is a governed confirmation). */
+  readonly talent: TalentCatalogStore;
+  /** COMPANY-TALENT-01: the Staff & Training studio view (silent read). */
+  talentOverview(): Record<string, unknown>;
+  /** COMPANY-TALENT-01: one definition in full for the Founder's studio (silent read). */
+  talentDefinition(definitionId: string): Record<string, unknown>;
   /** D2-UX-01: the company-wide Academy overview, or one Employee's slice of it (silent; never a write, never a call). */
   academy(options?: { employeeId?: Id }): AcademyOverview;
   /** L1-02: the candidate's durable answer to one Academy attempt (Founder-scoped content; silent read), or null. */
@@ -869,7 +882,11 @@ export class CompanyRuntime {
           // Reconciliation is idempotent: a stable world reports zero deltas and stays silent.
           conditional: { sync: (report) => { const r = report as AttentionSyncReport; return r.opened + r.signalled + r.resolved > 0; } },
         }),
-        actions: signalling(FounderActionStore.for(s, auth, { profiles: this.#opts.governance?.provisioningProfiles ?? [], academyPackages: this.#opts.governance?.academyPackages ?? [], identityProfiles: this.#opts.governance?.identityProfiles ?? [] }), changed, { mutating: ['preview', 'confirm', 'reject', 'expireStale'], reads: ['get', 'list', 'employeeBudgetId', 'provisioningProfiles', 'activationEnv', 'packageDigest'] }),
+        actions: signalling(FounderActionStore.for(s, auth, { profiles: this.#opts.governance?.provisioningProfiles ?? [], academyPackages: this.#opts.governance?.academyPackages ?? [], identityProfiles: this.#opts.governance?.identityProfiles ?? [], tools: this.toolEnvironment() }), changed, { mutating: ['preview', 'confirm', 'reject', 'expireStale'], reads: ['get', 'list', 'employeeBudgetId', 'provisioningProfiles', 'activationEnv', 'packageDigest'] }),
+        // COMPANY-TALENT-01: Founder drafting announces once (content, never authority); reads are silent.
+        talent: signalling(TalentCatalogStore.for(s, this.#opts.governance?.academyPackages ?? []), changed, { mutating: ['saveDraft', 'submit', 'withdraw'], reads: ['get', 'check', 'list', 'history', 'bindings', 'packages'] }),
+        talentOverview: (): Record<string, unknown> => talentOverview(s, this.#opts.governance?.academyPackages ?? [], this.toolEnvironment()),
+        talentDefinition: (definitionId: string): Record<string, unknown> => talentDefinitionDetail(s, definitionId, this.#opts.governance?.academyPackages ?? []),
         // C6 (D-C6-07): reads are silent; Founder decisions announce once; the system's idempotent derivations
         // (evaluate, assess, report, plan) announce only when they recorded something new.
         improvement: signalling(ImprovementStore.for(s), changed, {
@@ -904,7 +921,7 @@ export class CompanyRuntime {
           if (options.at !== undefined && !isTimestamp(options.at)) throw new QandeelError('VALIDATION_FAILED', 'at must be a canonical UTC timestamp', { field: 'at' });
           return projectUniverse(s, options.at === undefined ? {} : { at: options.at });
         },
-        activation: (): ActivationView => activationView(s, this.#opts.governance?.academyPackages ?? []),
+        activation: (positionId: Id | null = null): ActivationView => activationView(s, TalentCatalogStore.for(s).packages(this.#opts.governance?.academyPackages ?? []), positionId),
         // D2-UX-01: the company-wide Academy overview (a read in one snapshot; nothing acts, nothing is called).
         academy: (options: { employeeId?: Id } = {}): AcademyOverview => academyOverview(s, options),
         attemptAnswer: (attemptId: string): AnswerRecord | null => AcademyStore.for(s).attemptAnswer(attemptId),
@@ -967,6 +984,24 @@ export class CompanyRuntime {
         return resolveProductSource(this.#store);
       },
     });
+  }
+
+  /**
+   * COMPANY-TALENT-01 (D3): the read-only Company documents source resolver the host wires to the second documentation
+   * reader — the one ACTIVE Founder-registered Company source, re-read on every call.
+   */
+  companySource(): { productSource(): ReturnType<typeof resolveCompanySource> } {
+    return Object.freeze({
+      productSource: () => {
+        if (!this.#store || this.#store.isClosed) return { ok: false, code: 'RUNTIME_NOT_READY' } as const;
+        return resolveCompanySource(this.#store);
+      },
+    });
+  }
+
+  /** COMPANY-TALENT-01: what this host knows about Tools — its registered drivers and whether a credential is present. */
+  toolEnvironment(): ToolEnvironment {
+    return Object.freeze({ drivers: () => this.#tools.driverCodes, hasCredential: (ref: string) => this.#opts.governance?.toolCredentialPresent?.(ref) === true });
   }
 
   /** Governed execution diagnostics (content-free). */

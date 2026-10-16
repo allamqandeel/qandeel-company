@@ -763,7 +763,8 @@ const RUNTIME_SERVICES = 'packages/runtime/src/runtime.ts';
 // the C3 storage modules (never in the runtime, the governance kernel or the ordinary CompanyStore).
 // L1-02: `academy-packages` is the Academy package lifecycle (qualify → benchmark → install), a C3 storage module behind
 // the Founder-authority write path (D-L1-13); it joins the C3 writers.
-const MIND_WRITERS = ['mind-core', 'mind-writes', 'memory', 'skill-registry', 'academy', 'capability', 'academy-packages', 'academy-feedback'].map((m) => `packages/storage/src/${m}.ts`);
+// COMPANY-TALENT-01 (D5): `academy-manager` is the Academy's manager-evaluation module (MANAGER rows, independent review).
+const MIND_WRITERS = ['mind-core', 'mind-writes', 'memory', 'skill-registry', 'academy', 'capability', 'academy-packages', 'academy-feedback', 'academy-manager'].map((m) => `packages/storage/src/${m}.ts`);
 const MIND_WRITE = /\b(?:UPDATE|INSERT\s+(?:OR\s+\w+\s+)?INTO|DELETE\s+FROM|REPLACE\s+INTO)\s+(?:canonical_truth|memory_\w+|lesson\w*|knowledge_\w+|context_\w+|skill\w*|role_blueprint\w*|passport_\w+|academy_\w+|certification\w*|founder_calibrations|probation_\w+|activation_requests|capability_gaps|work_item_capabilities|run_execution_modes)\b/i;
 // Founder / evaluator acts that model output must never reach: the runtime and CLI never call them.
 // G4-FINAL-CLOSURE-01 (D-P1-17): recording / revoking a Founder decision is the Founder's confirmed act, never the runtime's.

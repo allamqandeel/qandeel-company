@@ -16,7 +16,7 @@
  * `BEGIN IMMEDIATE` — the check, the effect, CONFIRMED and the audit commit together or not at all.
  */
 import { QandeelError, assertCode, assertId, boundedJson, canonicalJson, isTimestamp, newId, sha256Hex, type Id, type Timestamp } from '@qandeel-company/domain';
-import { ACTIVATION_INTENTS, APP_CONTROL_APPROVAL_ACTION, PRODUCT_DOCS_CAPABILITY, BINDING_ROLES, BINDING_SUBJECTS, PILOT_MODES, SOURCE_DECISIONS, assertGoalTransition, assertMoney, assertSourceRegistration, assertTokens, cachedInputRate, isGoalState, isMutatingIntent, nextSourceState, provisioningProfileDigest, type GoalState, type MutatingIntent, type PilotMode, type PilotState, type ProviderProvisioningProfile, type SourceDecision, type SourceState } from '@qandeel-company/governance';
+import { ACTIVATION_INTENTS, isTalentIntent, APP_CONTROL_APPROVAL_ACTION, PRODUCT_DOCS_CAPABILITY, BINDING_ROLES, BINDING_SUBJECTS, PILOT_MODES, SOURCE_DECISIONS, assertGoalTransition, assertMoney, assertSourceRegistration, assertTokens, cachedInputRate, isGoalState, isMutatingIntent, nextSourceState, provisioningProfileDigest, type GoalState, type MutatingIntent, type PilotMode, type PilotState, type ProviderProvisioningProfile, type SourceDecision, type SourceState } from '@qandeel-company/governance';
 import { academyPackageDigest, assertCauses, containsSecretMaterial, summarizeCauses, type AcademyPackage, type AttributedCause, type EmployeeIdentityProfile } from '@qandeel-company/mind';
 
 import { AcademyStore } from './academy.js';
@@ -24,6 +24,9 @@ import { txPlanFounderFeedback } from './academy-feedback.js';
 import { txControlDecisionView } from './app-controls.js';
 import { txDigitalDecisionView } from './digital.js';
 import { executeActivation, validateActivationPayload, type ActivationEnv } from './founder-activation.js';
+import { executeTalent, validateTalentPayload } from './founder-talent.js';
+import type { ToolEnvironment } from './talent-access.js';
+import { txAllPackages } from './talent-catalog.js';
 import { txAssertExternalEvidence } from './external-core.js';
 import { ExternalEvidenceStore, txAssertBindable } from './external-evidence.js';
 import { getBudgetRow, budgetFor } from './governance-core.js';
@@ -93,14 +96,18 @@ export interface FounderActionOptions {
   readonly academyPackages?: readonly AcademyPackage[];
   /** L1-02: the release-pinned Employee identity profiles the host registered (the only ones a hire may name). */
   readonly identityProfiles?: readonly EmployeeIdentityProfile[];
+  /** COMPANY-TALENT-01: what the host knows about Tools (registered drivers, connected credentials) for readiness. */
+  readonly tools?: ToolEnvironment;
 }
 
 const isActivationIntent = (v: string): boolean => (ACTIVATION_INTENTS as readonly string[]).includes(v);
 
 /** Validates one intent's payload against durable state. Returns the canonical (re-shaped) payload. */
-function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<string, unknown>, profiles: readonly ProviderProvisioningProfile[], env: ActivationEnv): Payload {
+function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<string, unknown>, profiles: readonly ProviderProvisioningProfile[], env: ActivationEnv & { readonly release?: readonly AcademyPackage[] }): Payload {
   // L1-02: the activation intents live in their own module (same boundary, same preview → fingerprint → confirm).
   if (isActivationIntent(intent)) return validateActivationPayload(ctx, intent, raw, env);
+  // COMPANY-TALENT-01: the Talent intents live in their own module (same boundary, same preview → fingerprint → confirm).
+  if (isTalentIntent(intent)) return validateTalentPayload(ctx, intent, raw, { releasePackages: env.release ?? env.packages, tools: env.tools ?? null });
   const s = (k: string, max = 161): string => {
     const v = raw[k];
     if (typeof v !== 'string' || v.trim().length === 0 || v.length > max) throw new QandeelError('VALIDATION_FAILED', `${k} is required`, { field: k });
@@ -158,8 +165,13 @@ function validatePayload(ctx: StoreContext, intent: MutatingIntent, raw: Record<
       const r = getStaffingRequest(ctx, assertId(raw.requestId, 'requestId'));
       const decision = raw.decision;
       if (decision !== 'APPROVE' && decision !== 'REJECT') throw new QandeelError('VALIDATION_FAILED', 'decision is APPROVE or REJECT', { field: 'decision' });
-      if (r.state !== 'RECOMMENDED' && r.state !== 'CONSOLIDATED') throw new QandeelError('INVALID_TRANSITION', 'the Founder decides a recommended request', { requestId: r.id, state: r.state });
-      return { requestId: r.id, decision, reasonCode: assertCode(raw.reasonCode ?? 'founder.decided', 'reasonCode'), positionKind: r.positionKind };
+      // COMPANY-TALENT-01: the Founder decides a RECOMMENDED request; a CONSOLIDATED request is history (its target is decided
+      // instead — the earlier preview offered it and the confirmation refused it). While no ACTIVE CEO holds the CEO seat, a
+      // Director's open request reaches the Founder directly (it would otherwise wait for a review nobody can give).
+      const ceo = ctx.db.get<{ state: string }>(`SELECT e.state FROM position_assignments a JOIN org_positions p ON p.id = a.position_id JOIN employees e ON e.id = a.employee_id WHERE p.kind = 'CEO' AND p.status <> 'RETIRED' AND a.kind = 'PRIMARY' AND a.status = 'ACTIVE' LIMIT 1`);
+      const direct = (ceo === undefined || ceo.state !== 'ACTIVE') && ['SUBMITTED', 'CHALLENGED', 'PRIORITIZED'].includes(r.state);
+      if (r.state !== 'RECOMMENDED' && !direct) throw new QandeelError('INVALID_TRANSITION', r.state === 'CONSOLIDATED' ? 'a consolidated request is decided through the request it was consolidated into' : 'the Founder decides a recommended request', { requestId: r.id, state: r.state });
+      return { requestId: r.id, decision, reasonCode: assertCode(raw.reasonCode ?? 'founder.decided', 'reasonCode'), positionKind: r.positionKind, positionTitle: r.positionTitle.slice(0, 120), roleRef: r.roleRef, headcount: r.headcount, ceoRecommendation: r.ceoRecommendation, decidedWithoutCeoReview: r.state !== 'RECOMMENDED', expectedCostMicros: r.expectedCostMicros };
     }
     case 'CONFLICT_RESOLVE': {
       const id = assertId(raw.conflictId, 'conflictId');
@@ -513,18 +525,25 @@ export class FounderActionStore {
     this.#store = store;
     this.#auth = auth;
     this.#profiles = options.profiles ?? [];
-    this.#activation = { packages: options.academyPackages ?? [], identities: options.identityProfiles ?? [] };
+    this.#activation = { packages: options.academyPackages ?? [], identities: options.identityProfiles ?? [], tools: options.tools ?? null };
   }
 
   /** L1-02: the exact digest of one registered Academy package (what a form posts back; never typed by the Founder). */
   packageDigest(code: string, version: number): string | null {
-    const p = this.#activation.packages.find((x) => x.code === code && x.version === version);
+    const p = this.activationEnv().packages.find((x) => x.code === code && x.version === version);
     return p ? academyPackageDigest(p) : null;
   }
 
-  /** L1-02: the registered Academy packages and identity profiles (read by the activation view; never typed). */
+  /**
+   * L1-02: the registered Academy packages and identity profiles (read by the activation view; never typed). COMPANY-TALENT-01:
+   * the packages are the release-pinned ones plus the Founder-approved Talent Catalog programs, read now.
+   */
   activationEnv(): ActivationEnv {
-    return this.#activation;
+    return this.#read((ctx) => this.#envOf(ctx));
+  }
+
+  #envOf(ctx: StoreContext): ActivationEnv & { readonly release: readonly AcademyPackage[] } {
+    return { ...this.#activation, packages: txAllPackages(ctx, this.#activation.packages), release: this.#activation.packages };
   }
 
   static for(store: CompanyStore, auth: FounderAuthStore, options: FounderActionOptions = {}): FounderActionStore {
@@ -563,7 +582,7 @@ export class FounderActionStore {
     return this.#write('founder action preview', (ctx) => {
       if (!isMutatingIntent(intent)) throw new QandeelError('VALIDATION_FAILED', 'unknown mutating intent', { field: 'intent' });
       if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) throw new QandeelError('VALIDATION_FAILED', 'payload must be an object', { field: 'payload' });
-      const canonical = validatePayload(ctx, intent, payload as Record<string, unknown>, this.#profiles, this.#activation);
+      const canonical = validatePayload(ctx, intent, payload as Record<string, unknown>, this.#profiles, this.#envOf(ctx));
       const id = newId();
       const at = ts(ctx);
       const fingerprint = sha256Hex(canonicalJson({ v: 1, intent, payload: canonical, session: session.id }));
@@ -625,7 +644,8 @@ export class FounderActionStore {
    */
   #execute(ctx: StoreContext, founderRef: string, p: ActionPreviewRecord): string {
     const pl = p.payload;
-    if (isActivationIntent(p.intentKind)) return executeActivation(this.#store, ctx, founderRef, p.intentKind, pl as Record<string, unknown>, this.#activation);
+    if (isActivationIntent(p.intentKind)) return executeActivation(this.#store, ctx, founderRef, p.intentKind, pl as Record<string, unknown>, this.#envOf(ctx));
+    if (isTalentIntent(p.intentKind)) return executeTalent(this.#store, ctx, founderRef, p.intentKind, pl as Record<string, unknown>, { releasePackages: this.#activation.packages, tools: this.#activation.tools ?? null });
     const str = (k: string): string => String(pl[k]);
     const strings = (k: string): string[] => (Array.isArray(pl[k]) ? (pl[k] as readonly string[]).map(String) : []);
     switch (p.intentKind) {

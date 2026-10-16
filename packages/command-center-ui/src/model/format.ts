@@ -125,6 +125,12 @@ export const CAPABILITY_LABEL: Readonly<Record<string, string>> = {
   'tool:publisher.publish': 'Publishing',
   'org.work.delegate': 'Delegating work',
   'tool:product-knowledge.product-docs-read': 'Product knowledge (read-only)',
+  'tool:company-knowledge.company-docs-read': 'Company documents (read-only)',
+  'org.staffing.request': 'Propose staffing',
+  'org.staffing.review': 'Review staffing requests',
+  'org.talent.propose': 'Propose skills, programs, retraining',
+  'org.academy.evaluate': 'Evaluate direct reports (Academy)',
+  'org.academy.review': 'Review Academy evaluations',
 };
 
 /** D-P1-06: the shared, read-only product knowledge capability (the governance constant, as the browser sees it). */
@@ -190,6 +196,18 @@ export const INTENT_LABEL: Readonly<Record<string, string>> = {
   PRODUCT_KNOWLEDGE_ACCESS: 'Product knowledge access (read-only)',
   FOUNDER_DECISION_RECORD: 'Record your decision',
   FOUNDER_DECISION_REVOKE: 'Revoke your decision',
+  // COMPANY-TALENT-01: Staff & Training.
+  TALENT_DEFINITION_DECIDE: 'Decide an identity profile or Academy program',
+  TALENT_PROPOSAL_DECIDE: 'Decide a leader’s proposal',
+  EMPLOYEE_IDENTITY_REVISE: 'Revise an Employee’s identity',
+  POSITION_CREATE: 'Open a seat',
+  DEPARTMENT_BUDGET: 'Create a Department budget',
+  ACCESS_POLICY_DECIDE: 'Decide a leadership access policy',
+  ROLE_TOOL_REQUIREMENT: 'Record a Tool a role needs',
+  TOOL_ACCESS: 'Grant or revoke a Tool',
+  EMPLOYEE_RETRAIN: 'Move an Employee to retraining',
+  ACADEMY_EVALUATION_ASSIGN: 'Ask a manager to evaluate an attempt',
+  ACADEMY_EVALUATION_REVIEW: 'Review a manager’s evaluation',
 };
 
 /** Decisions and outcomes in a preview, in words. */
@@ -287,6 +305,12 @@ export const RESULT_LABEL: Readonly<Record<string, string>> = {
   activation_request: 'activation decision',
   work_item: 'shadow work',
   knowledge: 'recorded decision',
+  talent_definition: 'Talent Catalog definition',
+  talent_proposal: 'leader proposal',
+  position: 'seat',
+  access_policy: 'leadership access policy',
+  role_tool_requirement: 'role Tool need',
+  academy_manager_evaluation: 'manager evaluation',
 };
 export const CALENDAR_LABEL: Readonly<Record<string, string>> = { ACTING_ENDS: 'Acting cover ends', DELEGATION_DUE: 'Delegation due', STAFFING_DECISION_DUE: 'Staffing decision due', GOAL_HORIZON: 'Goal horizon', WORK_DUE: 'Work due', APPROVAL_EXPIRES: 'Approval expires', SESSION_EXPIRES: 'Your session ends', PUBLICATION_WINDOW: 'Publication window (exact, approved per post)' };
 

@@ -27,6 +27,7 @@ import {
   diagnose,
   diagnoseProbation,
   evaluateAttempt,
+  evaluateCompetencies,
   evaluateProbation,
   pinnable,
   proficiencyRank,
@@ -197,7 +198,7 @@ export class AcademyStore {
     });
   }
 
-  addScenario(actorRef: string, programVersionId: string, input: { code: string; kind: ScenarioKind; content: string; sourceRef: string; budgetMicros: number }): ScenarioRecord {
+  addScenario(actorRef: string, programVersionId: string, input: { code: string; kind: ScenarioKind; content: string; sourceRef: string; budgetMicros: number; toolCode?: string | null }): ScenarioRecord {
     return founderAdminWrite(this.#store, 'add scenario', actorRef, (ctx) => {
       founder(ctx, actorRef, null, 'academy scenario');
       const content = boundedText(input.content, 'content', 8_000);
@@ -207,7 +208,10 @@ export class AcademyStore {
       // An assessed scenario always carries a real budget: COST_DISCIPLINE is never passed by default.
       if (input.kind !== 'PRACTICE' && input.budgetMicros === 0) throw new QandeelError('VALIDATION_FAILED', 'an assessment / holdout scenario needs a cost budget', { field: 'budgetMicros' });
       const id = newId();
-      ctx.db.run(`INSERT INTO academy_scenarios (id, program_version_id, code, kind, content, content_sha256, source_ref, budget_micros, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)`, id, assertId(programVersionId, 'programVersionId'), assertKeyCode(input.code, 'code'), input.kind, content, sha256Hex(content), assertOpaqueRef(input.sourceRef, 'sourceRef'), input.budgetMicros, ts(ctx));
+      // COMPANY-TALENT-01: a Tool scenario names its Tool; a text scenario is written exactly as before (no tool column).
+      const tool = input.toolCode === undefined || input.toolCode === null ? null : assertKeyCode(input.toolCode, 'toolCode');
+      if (tool === null) ctx.db.run(`INSERT INTO academy_scenarios (id, program_version_id, code, kind, content, content_sha256, source_ref, budget_micros, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)`, id, assertId(programVersionId, 'programVersionId'), assertKeyCode(input.code, 'code'), input.kind, content, sha256Hex(content), assertOpaqueRef(input.sourceRef, 'sourceRef'), input.budgetMicros, ts(ctx));
+      else ctx.db.run(`INSERT INTO academy_scenarios (id, program_version_id, code, kind, content, content_sha256, source_ref, budget_micros, status, created_at, tool_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)`, id, assertId(programVersionId, 'programVersionId'), assertKeyCode(input.code, 'code'), input.kind, content, sha256Hex(content), assertOpaqueRef(input.sourceRef, 'sourceRef'), input.budgetMicros, ts(ctx), tool);
       appendAudit(ctx, 'academy.scenario_added', 'academy_scenario', id, { actorRef: SYSTEM_MIND_REF }, 'OK', input.kind, { programVersionId });
       return mapScenario(ctx.db.get('SELECT * FROM academy_scenarios WHERE id = ?', id) ?? {});
     });
@@ -295,7 +299,7 @@ export class AcademyStore {
    * (ANSWER_REQUIRED) — and the answer's reference (`work_answer:<id>`) is bound into every result automatically,
    * whatever evidence refs the evaluator supplied.
    */
-  recordEvaluation(actorRef: string, attemptId: string, results: readonly { dimension: AssessmentDimension; scorePct: number; evidenceRefs?: readonly string[] }[]): AttemptRecord {
+  recordEvaluation(actorRef: string, attemptId: string, results: readonly { dimension: AssessmentDimension; scorePct: number; evidenceRefs?: readonly string[] }[], competencies: readonly { code: string; scorePct: number }[] = []): AttemptRecord {
     return founderAdminWrite(this.#store, 'record evaluation', actorRef, (ctx) => {
       const a = getAttempt(ctx, assertId(attemptId, 'attemptId'));
       const e = getEnrollment(ctx, a.enrollmentId);
@@ -315,7 +319,8 @@ export class AcademyStore {
           a.id, r.dimension, r.scorePct, p.ref, JSON.stringify([answerRef, ...(r.evidenceRefs ?? []).map((x) => assertOpaqueRef(x, 'evidenceRefs')).filter((x) => x !== answerRef)]), ts(ctx),
         );
       }
-      appendAudit(ctx, 'academy.evaluated', 'academy_attempt', a.id, { actorRef: p.ref }, 'OK', null, { dimensions: results.length, answerId: answer.id });
+      txRecordCompetencies(ctx, a.id, 'EVALUATOR', p.ref, answerRef, competencies);
+      appendAudit(ctx, 'academy.evaluated', 'academy_attempt', a.id, { actorRef: p.ref }, 'OK', null, { dimensions: results.length, competencies: competencies.length, answerId: answer.id });
       return finalizeAttempt(ctx, a.id);
     });
   }
@@ -764,7 +769,12 @@ function finalizeAttempt(ctx: StoreContext, attemptId: Id): AttemptRecord {
   const e = getEnrollment(ctx, a.enrollmentId);
   const def = programDef(ctx, e.programVersionId);
   const results = ctx.db.all<{ dimension: string; score_pct: number }>('SELECT dimension, score_pct FROM academy_dimension_results WHERE attempt_id = ?', a.id).map((r) => ({ dimension: r.dimension as AssessmentDimension, scorePct: Number(r.score_pct) }));
-  const ev = evaluateAttempt(def, results);
+  const dims = evaluateAttempt(def, results);
+  // COMPANY-TALENT-01: a program's specialty competencies gate the attempt like critical dimensions (a critical one below
+  // its mark fails it whatever the average; every competency must be scored before a pass).
+  const rules = def.competencies ?? [];
+  const comp = rules.length === 0 ? { missing: [], failed: [], criticalFailures: [] } : evaluateCompetencies(rules, ctx.db.all<{ competency_code: string; score_pct: number }>('SELECT competency_code, score_pct FROM academy_competency_results WHERE attempt_id = ?', a.id).map((r) => ({ code: r.competency_code, scorePct: Number(r.score_pct) })));
+  const ev = dims.outcome === 'FAIL' || comp.criticalFailures.length > 0 ? { ...dims, outcome: 'FAIL' as const } : dims.outcome === 'PASS' && comp.missing.length > 0 ? { ...dims, outcome: 'INCOMPLETE' as const } : dims;
   if (ev.outcome === 'INCOMPLETE') return a;
   const at = ts(ctx);
   ctx.db.run(
@@ -773,7 +783,10 @@ function finalizeAttempt(ctx: StoreContext, attemptId: Id): AttemptRecord {
   );
   if (ev.outcome === 'FAIL') {
     // Failure → Diagnosis → Targeted Retraining (Stage 6 §9): kept as history, never overwritten.
-    const d = diagnose(ev.failedDimensions, def.curriculum);
+    const dd = diagnose(ev.failedDimensions, def.curriculum);
+    const extra = rules.filter((r) => comp.failed.includes(r.code)).map((r) => r.retrain);
+    const categories = [...new Set([...dd.categories, ...extra])].sort();
+    const d = { categories, modules: def.curriculum.filter((m) => categories.includes(m.category)).map((m) => m.code) };
     const remId = newId();
     ctx.db.run(
       `INSERT INTO academy_remediations (id, enrollment_id, attempt_id, failed_json, critical_failures_json, categories_json, modules_json, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'DIAGNOSED', ?, ?)`,
@@ -781,7 +794,7 @@ function finalizeAttempt(ctx: StoreContext, attemptId: Id): AttemptRecord {
     );
     ctx.db.run('INSERT INTO academy_remediation_history (remediation_id, from_state, to_state, reason_code, actor_ref, occurred_at) VALUES (?, NULL, ?, ?, ?, ?)', remId, 'DIAGNOSED', 'ATTEMPT_FAILED', SYSTEM_MIND_REF, at);
   }
-  appendAudit(ctx, 'academy.attempt_evaluated', 'academy_attempt', a.id, { actorRef: SYSTEM_MIND_REF }, 'OK', ev.outcome, { averagePct: ev.averagePct, criticalFailures: ev.criticalFailures.length });
+  appendAudit(ctx, 'academy.attempt_evaluated', 'academy_attempt', a.id, { actorRef: SYSTEM_MIND_REF }, 'OK', ev.outcome, { averagePct: ev.averagePct, criticalFailures: ev.criticalFailures.length, competencyCriticalFailures: comp.criticalFailures.length });
   return getAttempt(ctx, a.id);
 }
 
@@ -831,6 +844,7 @@ function issueCertification(ctx: StoreContext, e: EnrollmentRecord): void {
       ctx.db.run('INSERT INTO passport_history (passport_entry_id, version, skill_version_id, proficiency, status, reason_code, actor_ref, occurred_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?)', pid, pin.skillVersionId, pin.proficiency, 'ACTIVE', 'CERTIFIED', SYSTEM_MIND_REF, at);
     }
   }
+  txRecordToolScopes(ctx, id as Id, e, at);
   appendAudit(ctx, 'certification.issued', 'certification', id, { actorRef: SYSTEM_MIND_REF }, 'OK', null, { employeeId: e.employeeId, skills: pins.length });
   // Work parked on a capability gap of this Employee is re-evaluated (targeted wake, no polling).
   wakeCapabilityGaps(ctx, e.employeeId, 'certification.issued');
@@ -953,3 +967,65 @@ function notFound(what: string, id: string): never {
 }
 
 export type { Timestamp };
+
+// --- COMPANY-TALENT-01: competencies, tool scopes, manager evaluations ---------------------------------------------
+
+/** Records an evaluator's competency scores on the candidate's answer (append-only; unknown competencies refused). */
+export function txRecordCompetencies(ctx: StoreContext, attemptId: Id, kind: 'EVALUATOR' | 'MANAGER', evaluatorRef: string, answerRef: string, scores: readonly { code: string; scorePct: number }[]): void {
+  if (scores.length === 0) return;
+  const a = getAttempt(ctx, attemptId);
+  const rules = programDef(ctx, getEnrollment(ctx, a.enrollmentId).programVersionId).competencies ?? [];
+  for (const s of scores) {
+    if (!rules.some((r) => r.code === s.code)) throw new QandeelError('VALIDATION_FAILED', 'this program does not assess that competency', { reason: 'COMPETENCY_UNKNOWN', field: 'competencies' });
+    if (!Number.isInteger(s.scorePct) || s.scorePct < 0 || s.scorePct > 100) throw new QandeelError('VALIDATION_FAILED', 'scorePct is 0..100', { field: 'competencies' });
+    ctx.db.run('INSERT INTO academy_competency_results (attempt_id, competency_code, score_pct, evaluator_kind, evaluator_ref, evidence_refs_json, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)', a.id, s.code, s.scorePct, kind, evaluatorRef, JSON.stringify([answerRef]), ts(ctx));
+  }
+}
+
+/**
+ * For every Tool the role needs, whether this certification ASSESSED operating it: ASSESSED only with a PASSED
+ * assessment on a scenario of that Tool in this enrollment; otherwise NOT_ASSESSED, with what is known of the Tool now.
+ * A Skill certificate never claims a Tool capability that was not tested.
+ */
+function txRecordToolScopes(ctx: StoreContext, certificationId: Id, e: EnrollmentRecord, at: Timestamp): void {
+  // A Company opened by an older build's schema (a test fixture of a released version) records no Tool scope.
+  if (!ctx.db.get("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'role_tool_requirements'")) return;
+  for (const r of ctx.db.all<{ tool_code: string }>(`SELECT tool_code FROM role_tool_requirements WHERE role_ref = ? AND state = 'ACTIVE' ORDER BY tool_code`, e.roleRef)) {
+    const pass = ctx.db.get<{ id: string }>(`SELECT a.id FROM academy_attempts a JOIN academy_scenarios s ON s.id = a.scenario_id WHERE a.enrollment_id = ? AND a.kind = 'ASSESSMENT' AND a.state = 'EVALUATED' AND a.outcome = 'PASS' AND s.tool_code = ? ORDER BY a.created_at LIMIT 1`, e.id, r.tool_code);
+    const tool = ctx.db.get<{ status: string }>('SELECT status FROM tools WHERE code = ?', r.tool_code);
+    const readiness = pass ? 'READY' : !tool ? 'NOT_REGISTERED' : tool.status !== 'ACTIVE' ? 'ON_HOLD' : 'UNKNOWN';
+    ctx.db.run('INSERT INTO certification_tool_scopes (certification_id, tool_code, status, readiness, evidence_ref, recorded_at) VALUES (?, ?, ?, ?, ?, ?)', certificationId, r.tool_code, pass ? 'ASSESSED' : 'NOT_ASSESSED', readiness, pass ? `academy_attempt:${pass.id}` : null, at);
+  }
+}
+
+/**
+ * D5 — applies a manager's evaluation (system, inside the act that makes it applicable: the manager's own proposal for a
+ * practice attempt, or the independent review of an assessment). The datastore admits these MANAGER results only for an
+ * APPLIED evaluation of this attempt by this manager, never the trainee's own.
+ */
+export function txApplyManagerEvaluation(ctx: StoreContext, evaluationId: Id): AttemptRecord {
+  const m = ctx.db.get<{ id: string; attempt_id: string; evaluator_employee_id: string; answer_id: string; answer_sha256: string; scores_json: string; state: string }>('SELECT id, attempt_id, evaluator_employee_id, answer_id, answer_sha256, scores_json, state FROM academy_manager_evaluations WHERE id = ?', evaluationId);
+  if (!m || m.state !== 'APPLIED') throw new QandeelError('STORAGE_INVARIANT', 'only an applied manager evaluation is recorded', { evaluationId });
+  const a = getAttempt(ctx, m.attempt_id as Id);
+  if (a.state !== 'OPEN') throw new QandeelError('INVALID_TRANSITION', 'this attempt already has its outcome', { reason: 'ATTEMPT_DECIDED' });
+  const answer = txAnswerOf(ctx, a.workItemId);
+  if (!answer || answer.id !== m.answer_id || sha256Hex(answer.body) !== m.answer_sha256) throw new QandeelError('INVALID_TRANSITION', 'the evaluated answer is not the recorded one', { reason: 'ANSWER_CHANGED' });
+  // The deterministic rubric always scores first (run facts), exactly as on the Founder's path.
+  // A critical run-fact failure already decides the attempt: the manager's scores then decide nothing.
+  if (txEvaluateDeterministic(ctx, a.id).state !== 'OPEN') {
+    txAdvance(ctx, a.enrollmentId);
+    return getAttempt(ctx, a.id);
+  }
+  const scores = JSON.parse(m.scores_json) as { dimensions: Record<string, number>; competencies: Record<string, number> };
+  const ref = `employee:${m.evaluator_employee_id}`;
+  const answerRef = `work_answer:${answer.id}`;
+  for (const [d, v] of Object.entries(scores.dimensions)) {
+    if (!(ASSESSMENT_DIMENSIONS as readonly string[]).includes(d) || DETERMINISTIC_DIMENSIONS.includes(d as AssessmentDimension)) throw new QandeelError('VALIDATION_FAILED', 'a manager scores the evaluator dimensions only', { reason: 'DIMENSION' });
+    ctx.db.run(`INSERT INTO academy_dimension_results (attempt_id, dimension, score_pct, evaluator_kind, evaluator_ref, evidence_refs_json, recorded_at) VALUES (?, ?, ?, 'MANAGER', ?, ?, ?)`, a.id, d, v, ref, JSON.stringify([answerRef, `academy_manager_evaluation:${m.id}`]), ts(ctx));
+  }
+  txRecordCompetencies(ctx, a.id, 'MANAGER', ref, answerRef, Object.entries(scores.competencies).map(([code, scorePct]) => ({ code, scorePct })));
+  appendAudit(ctx, 'academy.evaluated', 'academy_attempt', a.id, { actorRef: ref }, 'OK', 'MANAGER', { dimensions: Object.keys(scores.dimensions).length, evaluationId: m.id });
+  const out = finalizeAttempt(ctx, a.id);
+  txAdvance(ctx, out.enrollmentId);
+  return getAttempt(ctx, a.id);
+}

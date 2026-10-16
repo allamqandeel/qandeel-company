@@ -78,6 +78,10 @@ export { AcademyStore, type AcademyHealth } from './academy.js';
 export { AcademyPackageStore, type BenchmarkRunView, type PackageRecord, type PackageSkillView, type PackageView, type SkillQualification } from './academy-packages.js';
 export { activationView, type ActivationView, type AttemptView, type EmployeeIdentityView } from './activation-view.js';
 export { academyOverview, type AcademyAttemptSummary, type AcademyEmployeeView, type AcademyOverview } from './academy-overview.js';
+// COMPANY-TALENT-01: the universal Staff & Training studio (Talent Catalog, access policies, Tool readiness, views).
+export { TalentCatalogStore, txAllPackages, type DefinitionCheck, type DefinitionKind, type DefinitionRecord, type DefinitionState, type IdentityBindingRecord } from './talent-catalog.js';
+export { resolveCompanySource, type AccessPolicyRecord, type RoleToolRequirementRecord, type ToolEnvironment, type ToolReadinessView } from './talent-access.js';
+export { talentDefinitionDetail, talentOverview } from './talent-view.js';
 export type { AnswerRecord } from './answers.js';
 export type { ActivationEnv } from './founder-activation.js';
 export type {

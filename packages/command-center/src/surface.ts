@@ -9,7 +9,7 @@
 import { CEO_ACADEMY_PACKAGE_V1, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V3, CEO_ACADEMY_PACKAGE_V4, CEO_ACADEMY_PACKAGE_V5, CEO_ACADEMY_PACKAGE_V6, CEO_ACADEMY_PACKAGE_V7, CEO_IDENTITY_PROFILE_V1, type AcademyPackage, type EmployeeIdentityProfile } from '@qandeel-company/mind';
 import type { ProviderAdapter, ProviderProvisioningProfile } from '@qandeel-company/governance';
 import { CompanyRuntime, DeterministicFakeProvider, FakeToolDriver, employeeTaskProcessor, type RuntimeOptions } from '@qandeel-company/runtime';
-import { ProductDocsDriver, type GitHubTransport } from '@qandeel-company/tool-drivers';
+import { COMPANY_DOCS_PROFILE, ProductDocsDriver, type GitHubTransport } from '@qandeel-company/tool-drivers';
 
 import { BriefingPolicy } from './briefing.js';
 import { HostIdentity, consumeStopRequest, hostPaths, removeDescriptorIfOwned, writeJsonAtomic, type HostPaths } from './host/descriptor.js';
@@ -38,7 +38,8 @@ export interface FounderSurfaceOptions {
   readonly productDocsTransport?: GitHubTransport;
   /**
    * L1-02: the release-pinned Academy packages and Employee identity profiles the Founder may install / name through the
-   * governed confirmation (default: the first CEO package and identity profile). Content, never authority.
+   * governed confirmation (default: the first CEO package and identity profile). Content, never authority. COMPANY-TALENT-01:
+   * every later role's identity and program is Company data approved in the Talent Catalog, never a new release entry.
    */
   readonly academyPackages?: readonly AcademyPackage[];
   readonly identityProfiles?: readonly EmployeeIdentityProfile[];
@@ -74,7 +75,9 @@ export class FounderSurface {
     const governance = {
       ...(extra.governance ?? {}),
       providers: [...providers, ...(options.providers ?? []), ...(extra.governance?.providers ?? [])],
-      toolDrivers: [...drivers, ...(options.productDocsTransport ? [new ProductDocsDriver({ transport: options.productDocsTransport, source: { productSource: () => this.runtime.productSource().productSource() } })] : []), ...(extra.governance?.toolDrivers ?? [])],
+      // COMPANY-TALENT-01 (D3): the same approved fixed-host reader also serves the Company's organizational documents — a
+      // second driver code, Tool, source and grant; it reads nothing until the Founder approves the policy that registers them.
+      toolDrivers: [...drivers, ...(options.productDocsTransport ? [new ProductDocsDriver({ transport: options.productDocsTransport, source: { productSource: () => this.runtime.productSource().productSource() } }), new ProductDocsDriver({ transport: options.productDocsTransport, source: { productSource: () => this.runtime.companySource().productSource() }, profile: COMPANY_DOCS_PROFILE })] : []), ...(extra.governance?.toolDrivers ?? [])],
       provisioningProfiles: [...(options.provisioningProfiles ?? []), ...(extra.governance?.provisioningProfiles ?? [])],
       academyPackages: [...(options.academyPackages ?? [CEO_ACADEMY_PACKAGE_V7, CEO_ACADEMY_PACKAGE_V6, CEO_ACADEMY_PACKAGE_V5, CEO_ACADEMY_PACKAGE_V4, CEO_ACADEMY_PACKAGE_V3, CEO_ACADEMY_PACKAGE_V2, CEO_ACADEMY_PACKAGE_V1]), ...(extra.governance?.academyPackages ?? [])],
       identityProfiles: [...(options.identityProfiles ?? [CEO_IDENTITY_PROFILE_V1]), ...(extra.governance?.identityProfiles ?? [])],

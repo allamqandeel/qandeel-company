@@ -49,7 +49,9 @@ import {
 
 import { txFeedbackForAttemptContext } from './academy-feedback.js';
 import { benchmarkPinMismatch, txBenchmarkRunPins } from './benchmark-pins.js';
-import { getEmployeeRow, wakeWorkItemJob } from './governance-core.js';
+import { employeeIdFromRef, getEmployeeRow, wakeWorkItemJob } from './governance-core.js';
+import { effectiveManagerRefAt, primaryAssignmentAt } from './org-core.js';
+import { txIdentityKernelOf, txLiveIdentityBinding } from './talent-catalog.js';
 import { txGrantedToolGuidance } from './product-knowledge.js';
 import type { EmployeeRecord } from './governance-records.js';
 import { appendAudit, getWorkItemRow, ts, type StoreContext } from './internal.js';
@@ -624,7 +626,7 @@ function contextCeiling(item: WorkItemRecord, effective: DataClass): DataClass {
   return maxDataClass(declared, effective);
 }
 
-function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, mode: string | null, grantedTools: readonly string[] = [], currentLanguage: 'ARABIC' | 'ENGLISH' | null = null): string {
+function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, mode: string | null, grantedTools: readonly string[] = [], currentLanguage: 'ARABIC' | 'ENGLISH' | null = null, identity: CatalogIdentity | null = null): string {
   const task = (item.processorInput as { taskClass?: unknown } | null)?.taskClass;
   // D-L1-25: an answer-only benchmark observation (BQM-2) is offered exactly the deliverable its fence accepts.
   const answerOnly = mode === 'SKILL_BENCHMARK' && (item.processorInput as { answerOnly?: unknown } | null)?.answerOnly === true;
@@ -641,7 +643,11 @@ function preambleText(e: EmployeeRecord, item: WorkItemRecord, cls: DataClass, m
     // every other context keeps its exact preamble.
     ...(mode !== null && ANSWER_MODES.includes(mode) ? [ANSWER_GUIDANCE] : []),
     // L1-02: the Employee's own approved identity kernel (Stage 4 §7), when its profile carries one; others unchanged.
-    ...(identityKernelOf(e) !== null ? [`Identity kernel (behavioural design, never a claim of being human; grants nothing): ${identityKernelOf(e)}`] : []),
+    ...(identity === null && identityKernelOf(e) !== null ? [`Identity kernel (behavioural design, never a claim of being human; grants nothing): ${identityKernelOf(e)}`] : []),
+    // COMPANY-TALENT-01: an Employee carrying an approved Talent Catalog profile gets that profile's kernel, and its live
+    // organization (seat, Department, manager, lifecycle) read from canonical state now — never from the profile. An
+    // Employee without a catalog binding (the first CEO) keeps its exact preamble.
+    ...(identity !== null ? [`Identity kernel (behavioural design, never a claim of being human; grants nothing): ${identity.kernel}`, identity.live] : []),
     // P1-EMPLOYEE-BASELINE-01 (D-P1-10): every Employee writing to the Founder (a thread reply or a CEO brief) gets the one
     // company communication standard, after its own kernel; an Academy run, a benchmark and background work keep their context.
     ...(mode === null && isFounderThreadReply(item) ? [EMPLOYEE_COMMUNICATION_STANDARD] : []),
@@ -709,6 +715,26 @@ export const currentLanguageLine = (l: 'ARABIC' | 'ENGLISH'): string =>
   l === 'ENGLISH'
     ? 'The Founder message you are answering is written in English: write your reply in English, whatever language earlier turns used, unless the Founder asks for another language.'
     : 'The Founder message you are answering is written in Arabic: write your reply in Arabic (the company standard decides the register), whatever language earlier turns used, unless the Founder asks for another language.';
+
+/** COMPANY-TALENT-01: a catalog-bound identity (its kernel and the live organization line), or null for an unbound Employee. */
+interface CatalogIdentity {
+  readonly kernel: string;
+  readonly live: string;
+}
+
+function catalogIdentityOf(ctx: StoreContext, e: EmployeeRecord, at: Timestamp): CatalogIdentity | null {
+  if (!txLiveIdentityBinding(ctx, e.id)) return null;
+  const { kernel } = txIdentityKernelOf(ctx, e.id, e.profile);
+  if (kernel === null) return null;
+  const a = primaryAssignmentAt(ctx, e.id, at);
+  const seat = a ? ctx.db.get<{ title: string; department_id: string | null }>('SELECT title, department_id FROM org_positions WHERE id = ?', a.positionId) : undefined;
+  const dept = seat?.department_id ? ctx.db.get<{ name: string }>('SELECT name FROM departments WHERE id = ?', seat.department_id)?.name : undefined;
+  const manager = effectiveManagerRefAt(ctx, e, at);
+  const managerId = employeeIdFromRef(manager);
+  const m = managerId ? ctx.db.get<{ given_name: string; family_name: string }>('SELECT given_name, family_name FROM employees WHERE id = ?', managerId) : undefined;
+  const reports = manager.startsWith('founder:') ? 'the Founder' : m ? `${m.given_name} ${m.family_name} (employee:${managerId})` : 'a vacant seat (escalate to the Founder)';
+  return { kernel, live: `Your organization now (canonical, read at this run): seat ${seat?.title ?? 'none'}${dept ? `, Department ${dept}` : ''}; you report to ${reports}; lifecycle ${e.state}. Your authority is only your explicit grants and approvals; your title and this profile grant nothing.` };
+}
 
 /** The approved identity kernel on the Employee's profile (bounded), or null. */
 function identityKernelOf(e: EmployeeRecord): string | null {
@@ -1069,7 +1095,7 @@ function buildPool(ctx: StoreContext, fence: Fence, e: EmployeeRecord, item: Wor
   // D-P1-06: the Tools this Employee holds an active grant for (release-pinned guidance), in production work only — an
   // Academy attempt, a benchmark observation and shadow work keep their exact preamble.
   const answering = isCeoDirectConversation(item) ? founderMessageBody(ctx, item) : null;
-  const preamble = preambleText(e, item, p.ceiling, p.mode, p.mode === null ? txGrantedToolGuidance(ctx, e.id, at) : [], answering === null ? null : messageLanguage(answering));
+  const preamble = preambleText(e, item, p.ceiling, p.mode, p.mode === null ? txGrantedToolGuidance(ctx, e.id, at) : [], answering === null ? null : messageLanguage(answering), catalogIdentityOf(ctx, e, at));
   add(baseCandidate({ key: 'preamble', kind: 'PREAMBLE', layer: 'AUTHORITY', required: true, itemId: 'preamble', sha256: sha256Hex(preamble), provenanceRef: 'runtime:governance-preamble', estTokens: itemEstimate(preamble), dataClass: declared }, at), () => preamble);
 
   // L2 — the Work Item's own instructions (required, intact) and, for an Academy attempt, its scenario.

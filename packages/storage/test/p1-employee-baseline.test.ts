@@ -6,7 +6,7 @@
  *       attempt and background work keep their exact contexts; the CEO's approved kernel is unchanged.
  *   B — a Founder hire without stated classes is AUTO from E1 with ceiling E4 (BALANCED), still a CANDIDATE with no budget,
  *       grant or run; a lower ceiling the Founder states is kept; an out-of-range start is refused; no existing Employee or
- *       certification changes.
+ *       certification changes. COMPANY-TALENT-01: every hire names an approved identity profile (a hire without one is refused).
  */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -24,6 +24,7 @@ import { seed, type Seed } from './c2-helpers.js';
 import { academyWorld, assemble, claimFor, workItem } from './c3-helpers.js';
 import { claimItem, placed, seat } from './c4-helpers.js';
 import { harness, type Harness } from './helpers.js';
+import { approveIdentity, sampleIdentity } from './talent-helpers.js';
 
 const BODY = 'SYNTHETIC: إيه رأيك في خطة الربع الجاي؟';
 
@@ -123,7 +124,7 @@ describe('P1-EMPLOYEE-BASELINE-01 A: one company communication standard for ever
 });
 
 describe('P1-EMPLOYEE-BASELINE-01 B: a new hire is AUTO from E1 with ceiling E4, and stays a CANDIDATE', () => {
-  function withFounder(fn: (h: Harness, s: Seed, act: (intent: string, payload: Record<string, unknown>) => { payload: Record<string, unknown>; ref: string }, preview: (payload: Record<string, unknown>) => unknown) => void): void {
+  function withFounder(fn: (h: Harness, s: Seed, act: (intent: string, payload: Record<string, unknown>) => { payload: Record<string, unknown>; ref: string }, preview: (payload: Record<string, unknown>) => unknown, identity: (roleRef: string, code: string) => string) => void): void {
     withSeed((h, s) => {
       const auth = FounderAuthStore.for(h.store);
       const { session } = auth.redeemLaunchToken(auth.mintLaunchToken().token);
@@ -131,18 +132,19 @@ describe('P1-EMPLOYEE-BASELINE-01 B: a new hire is AUTO from E1 with ceiling E4,
       fn(h, s, (intent, payload) => {
         const p = actions.preview(session, intent, payload);
         return { payload: p.payload, ref: actions.confirm(session, p.id, p.fingerprint).resultRef };
-      }, (payload) => actions.preview(session, 'EMPLOYEE_HIRE', payload));
+      }, (payload) => actions.preview(session, 'EMPLOYEE_HIRE', payload), (roleRef, code) => approveIdentity(h, s.founder, actions, session, code, sampleIdentity(roleRef, 'SYNTHETIC Director')));
     });
   }
 
   test('the standard profile: the default hire is AUTO/E1/E4 BALANCED, a CANDIDATE with no budget or work; nobody else changes', () => {
-    withFounder((h, s, act) => {
+    withFounder((h, s, act, _preview, identity) => {
       assert.deepEqual(DEFAULT_COGNITIVE_PROFILE, { defaultClass: 'E1', ceilingClass: 'E4', costDiscipline: 'BALANCED', selection: 'AUTO' });
       const ceo = placed(h, s, 'company.ceo');
       const db = storeContext(h.store).db;
       const before = { ceo: db.get<{ p: string; v: number }>('SELECT cognitive_profile_json AS p, version AS v FROM employees WHERE id = ?', ceo.id), certs: db.all('SELECT id, status FROM certifications ORDER BY id') };
-      const seatId = seat(h, 'director.product').id;
-      const { payload, ref } = act('EMPLOYEE_HIRE', { positionId: seatId, givenName: 'Karim', familyName: 'Adel' });
+      const productSeat = seat(h, 'director.product');
+      const seatId = productSeat.id;
+      const { payload, ref } = act('EMPLOYEE_HIRE', { positionId: seatId, givenName: 'Karim', familyName: 'Adel', identityDefinitionId: identity(productSeat.roleRef, 'karim-adel') });
       assert.deepEqual([payload.defaultClass, payload.ceilingClass, payload.selection, payload.costDiscipline, payload.startsAs], ['E1', 'E4', 'AUTO', 'BALANCED', 'CANDIDATE']);
       const hired = s.gov.getEmployee(ref.split(':')[1] as Id);
       assert.equal(hired.state, 'CANDIDATE', 'hiring never activates: the Academy alone does');
@@ -155,15 +157,20 @@ describe('P1-EMPLOYEE-BASELINE-01 B: a new hire is AUTO from E1 with ceiling E4,
   });
 
   test('the Founder may state a lower ceiling or an E2 start; an out-of-range profile is refused', () => {
-    withFounder((h, s, act, preview) => {
-      const lower = act('EMPLOYEE_HIRE', { positionId: seat(h, 'director.product').id, givenName: 'Mona', familyName: 'Fawzy', ceilingClass: 'E2' });
+    withFounder((h, s, act, preview, identity) => {
+      const product = seat(h, 'director.product');
+      const lower = act('EMPLOYEE_HIRE', { positionId: product.id, givenName: 'Mona', familyName: 'Fawzy', ceilingClass: 'E2', identityDefinitionId: identity(product.roleRef, 'mona-fawzy') });
       assert.deepEqual(s.gov.getEmployee(lower.ref.split(':')[1] as Id).cognitiveProfile, { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED', selection: 'AUTO' });
-      const seatId = seat(h, 'director.growth').id;
+      const growth = seat(h, 'director.growth');
+      const seatId = growth.id;
+      const hany = identity(growth.roleRef, 'hany-saad');
       const refused = (e: unknown): boolean => isQandeelError(e) && e.details.reason === 'COGNITIVE_PROFILE';
       for (const bad of [{ defaultClass: 'E3' }, { defaultClass: 'E0' }, { ceilingClass: 'E0' }, { defaultClass: 'E2', ceilingClass: 'E1' }, { ceilingClass: 'E5' }]) {
-        assert.throws(() => preview({ positionId: seatId, givenName: 'Hany', familyName: 'Saad', ...bad }), refused, JSON.stringify(bad));
+        assert.throws(() => preview({ positionId: seatId, givenName: 'Hany', familyName: 'Saad', identityDefinitionId: hany, ...bad }), refused, JSON.stringify(bad));
       }
-      const e2 = act('EMPLOYEE_HIRE', { positionId: seatId, givenName: 'Hany', familyName: 'Saad', defaultClass: 'E2' });
+      // COMPANY-TALENT-01: no permanent Employee with an incomplete identity — a hire without an approved profile is refused.
+      assert.throws(() => preview({ positionId: seatId, givenName: 'Hany', familyName: 'Saad' }), (e: unknown) => isQandeelError(e) && e.details.reason === 'IDENTITY_REQUIRED');
+      const e2 = act('EMPLOYEE_HIRE', { positionId: seatId, givenName: 'Hany', familyName: 'Saad', defaultClass: 'E2', identityDefinitionId: hany });
       assert.deepEqual(s.gov.getEmployee(e2.ref.split(':')[1] as Id).cognitiveProfile, { defaultClass: 'E2', ceilingClass: 'E4', costDiscipline: 'BALANCED', selection: 'AUTO' });
     });
   });

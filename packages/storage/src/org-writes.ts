@@ -49,6 +49,9 @@ import type { Fence } from './records.js';
 import { recordDecision, reviewerCapacityFreed, txDeclarePlan } from './review-core.js';
 import { applyTransition, enqueueJob } from './work-core.js';
 import { txCreateWorkItem } from './work-items.js';
+import { txBindIdentity, txApprovedIdentity } from './talent-catalog.js';
+import { txManagerEvaluationPropose, txManagerEvaluationReviewAct } from './academy-manager.js';
+import { txTalentPropose } from './talent-org.js';
 
 const EMPLOYEE_TASK = 'c2.employee-task';
 const OPEN_DELEGATION: readonly string[] = OPEN_HANDOFF_STATES;
@@ -243,13 +246,13 @@ function perform(ctx: StoreContext, fence: Fence, step: number, e: { id: Id; ref
       if (!seat) refuse('SEAT_NOT_HELD');
       const rid = newOrgId();
       ctx.db.run(
-        `INSERT INTO staffing_requests (id, scope, department_id, requested_by_employee_id, requested_by_position_id, requested_run_id, role_ref, position_kind, position_title, business_need, workload_evidence, skill_gap, expected_value, impact_if_not_staffed, alternatives_json, expected_cost_micros, priority, state, version, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'SUBMITTED', 1, ?, ?)`,
+        `INSERT INTO staffing_requests (id, scope, department_id, requested_by_employee_id, requested_by_position_id, requested_run_id, role_ref, position_kind, position_title, business_need, workload_evidence, skill_gap, expected_value, impact_if_not_staffed, alternatives_json, expected_cost_micros, priority, state, version, created_at, updated_at, headcount)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'SUBMITTED', 1, ?, ?, ?)`,
         rid, dept === null ? 'COMPANY' : 'DEPARTMENT', dept, e.id, (seat as { id: Id }).id, runId, req.roleRef, req.positionKind, req.positionTitle, req.businessNeed, req.workloadEvidence, req.skillGap, req.expectedValue, req.impactIfNotStaffed,
-        canonicalJson(req.alternatives), req.expectedCostMicros, at, at,
+        canonicalJson(req.alternatives), req.expectedCostMicros, at, at, req.headcount,
       );
       staffingHistory(ctx, rid, 1, null, 'SUBMITTED', 'staffing.submitted', e.ref);
-      appendAudit(ctx, 'org.staffing_submitted', 'staffing_request', rid, { actorRef: e.ref }, 'OK', null, { departmentId: dept, positionKind: req.positionKind });
+      appendAudit(ctx, 'org.staffing_submitted', 'staffing_request', rid, { actorRef: e.ref }, 'OK', null, { departmentId: dept, positionKind: req.positionKind, headcount: req.headcount });
       return `staffing_request:${rid}`;
     }
     case 'staffing.request.review': {
@@ -303,13 +306,24 @@ function perform(ctx: StoreContext, fence: Fence, step: number, e: { id: Id; ref
       return `staffing_request:${r.id}`;
     }
     case 'staffing.hire': {
-      const a = plain(args, ['requestId', 'name', 'cognitiveProfile']);
+      const a = plain(args, ['requestId', 'name', 'cognitiveProfile', 'identityDefinitionId']);
       if (!holdsSeat(ctx, e.id, 'CEO', null, at, action)) refuse('SEAT_NOT_HELD');
       const r = getStaffingRequest(ctx, id(own(a, 'requestId')));
       if (r.state !== 'APPROVED' || r.hiredEmployeeId !== null) refuse('STAFFING_NOT_HIRABLE');
       const delegationId = withinLimits(ctx, grantId as Id, r);
+      // COMPANY-TALENT-01: no Employee is created with an incomplete identity — the hire names an approved profile of the role.
+      let identity: ReturnType<typeof txApprovedIdentity>;
       try {
-        const { employee } = txHireForRequest(ctx, r, { name: own(a, 'name') as { given: string; family: string }, cognitiveProfile: own(a, 'cognitiveProfile') as never }, e.ref, `authority_delegation:${delegationId}`, 'staffing.hired.delegated');
+        identity = txApprovedIdentity(ctx, id(own(a, 'identityDefinitionId')));
+      } catch {
+        return refuse('IDENTITY_REQUIRED');
+      }
+      if (identity.definition.roleRef !== r.roleRef) refuse('IDENTITY_ROLE_MISMATCH');
+      try {
+        const profile = { displayName: { en: `${String((own(a, 'name') as { given?: unknown })?.given ?? '')} ${String((own(a, 'name') as { family?: unknown })?.family ?? '')}`.trim() }, portraitAssetRef: null, identityProfile: `talent:${identity.definition.code}@v${identity.definition.version}`, identityKernel: identity.kernel };
+        const { employee } = txHireForRequest(ctx, r, { name: own(a, 'name') as { given: string; family: string }, cognitiveProfile: own(a, 'cognitiveProfile') as never, profile }, e.ref, `authority_delegation:${delegationId}`, 'staffing.hired.delegated');
+        // The binding is recorded under the Founder who approved the profile (a binding is never by an Employee).
+        txBindIdentity(ctx, String(identity.definition.decidedByRef), employee.id, identity.definition.id, 'INITIAL', 'staffing.hired.delegated');
         return `employee:${employee.id}`;
       } catch (error) {
         if (isQandeelError(error, 'VALIDATION_FAILED')) refuse('INVALID_ARGS');
@@ -406,6 +420,21 @@ function perform(ctx: StoreContext, fence: Fence, step: number, e: { id: Id; ref
         if (isQandeelError(error, 'INVALID_TRANSITION') || isQandeelError(error, 'TERMINAL_STATE')) refuse('REVIEW_PLAN_AFTER_EXECUTION');
         throw error;
       }
+    }
+    case 'talent.propose': {
+      const out = txTalentPropose(ctx, fence, { id: e.id, ref: e.ref }, args);
+      if ('refused' in out) return refuse(out.refused);
+      return out.ref;
+    }
+    case 'academy.evaluation.propose': {
+      const out = txManagerEvaluationPropose(ctx, fence, { id: e.id, ref: e.ref }, item.id, args);
+      if ('refused' in out) return refuse(out.refused);
+      return out.ref;
+    }
+    case 'academy.evaluation.review': {
+      const out = txManagerEvaluationReviewAct(ctx, { id: e.id, ref: e.ref }, args);
+      if ('refused' in out) return refuse(out.refused);
+      return out.ref;
     }
     case 'control.propose': {
       // C7-B: only a proposal — its independent review and the Founder's approval come next; nothing is issued here.

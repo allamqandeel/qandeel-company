@@ -67,10 +67,15 @@ interface Route {
   readonly name: string;
   readonly handler: Handler;
   readonly stateChange: boolean;
+  /** The largest body this route reads (default MAX_BODY_BYTES). */
+  readonly maxBody: number;
 }
 
+/** COMPANY-TALENT-01: a program definition (16 Skills, 64 scenarios) is larger than an ordinary act. */
+const TALENT_DRAFT_MAX_BYTES = 2 * 1024 * 1024;
+
 const ID = '([0-9a-f-]{36})';
-const route = (method: Route['method'], path: string, name: string, handler: Handler, stateChange = method === 'POST'): Route => ({ method, name, handler, stateChange, pattern: new RegExp(`^${path.replace(/:id/g, ID)}$`) });
+const route = (method: Route['method'], path: string, name: string, handler: Handler, stateChange = method === 'POST', maxBody = MAX_BODY_BYTES): Route => ({ method, name, handler, stateChange, maxBody, pattern: new RegExp(`^${path.replace(/:id/g, ID)}$`) });
 
 const ROUTES: readonly Route[] = [
   route('GET', '/api/session', 'session', (ctx) => ({ founderRef: ctx.session.founderRef, expiresAt: ctx.session.expiresAt, sessionId: ctx.session.id })),
@@ -104,7 +109,14 @@ const ROUTES: readonly Route[] = [
   route('GET', '/api/pilots/:id', 'pilot', (ctx, p) => api.pilotBoard(ctx, p[0] as string)),
   route('GET', '/api/pilots/:id/inspect', 'pilotInspect', (ctx, p, _b, q) => api.pilotInspect(ctx, p[0] as string, { workItemId: q.get('workItemId') ?? undefined })),
   // L1-01 model providers: a read (profiles, identity checks, what is provisioned); provisioning goes through /api/previews.
-  route('GET', '/api/activation', 'activation', (ctx) => api.activation(ctx)),
+  route('GET', '/api/activation', 'activation', (ctx, _p, _b, q) => api.activation(ctx, { positionId: q.get('positionId') ?? undefined })),
+  // COMPANY-TALENT-01: the Staff & Training studio (reads; Founder drafting is content; decisions are governed previews).
+  route('GET', '/api/talent', 'talent', (ctx) => api.talent(ctx)),
+  route('GET', '/api/talent/template', 'talentTemplate', (ctx, _p, _b, q) => api.talentTemplate(ctx, { kind: q.get('kind') ?? undefined, roleRef: q.get('roleRef') ?? undefined, code: q.get('code') ?? undefined, title: q.get('title') ?? undefined })),
+  route('GET', '/api/talent/definitions/:id', 'talentDefinition', (ctx, p) => api.talentDefinition(ctx, p[0] as string)),
+  route('POST', '/api/talent/drafts', 'talentDraft', (ctx, _p, b) => api.saveTalentDraft(ctx, b), true, TALENT_DRAFT_MAX_BYTES),
+  route('POST', '/api/talent/drafts/:id/submit', 'talentSubmit', (ctx, p) => api.submitTalentDraft(ctx, p[0] as string)),
+  route('POST', '/api/talent/drafts/:id/withdraw', 'talentWithdraw', (ctx, p) => api.withdrawTalentDraft(ctx, p[0] as string)),
   // P1-UX-BUDGET-DARK-01: the Company envelope (a read; its ceiling changes only through /api/previews BUDGET_CEILING).
   route('GET', '/api/company/budget', 'companyBudget', (ctx) => api.companyBudget(ctx)),
   // L1-02: one attempt's durable answer (an explicit Founder read; the session gate below applies like every /api route).
@@ -237,7 +249,7 @@ export class FounderListener {
     if (!match || !match.m) return this.#json(res, 404, { ok: false, code: 'NOT_FOUND' }, method, 'unknown');
     let body: Json = {};
     if (method === 'POST') {
-      const raw = await readBody(req);
+      const raw = await readBody(req, match.r.maxBody);
       if (raw === null) return this.#json(res, 413, { ok: false, code: 'BODY_TOO_LARGE' }, method, match.r.name);
       try {
         const parsed: unknown = raw.length === 0 ? {} : JSON.parse(raw);
@@ -350,13 +362,13 @@ export class FounderListener {
   }
 }
 
-async function readBody(req: IncomingMessage): Promise<string | null> {
+async function readBody(req: IncomingMessage, max = MAX_BODY_BYTES): Promise<string | null> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     const b = chunk as Buffer;
     size += b.length;
-    if (size > MAX_BODY_BYTES) return null;
+    if (size > max) return null;
     chunks.push(b);
   }
   return Buffer.concat(chunks).toString('utf8');

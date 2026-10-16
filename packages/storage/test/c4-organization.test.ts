@@ -15,6 +15,7 @@ import { disarmFounderTestSurface } from '../src/testing/founder-seam.js';
 import { C2_KINDS, hire, seed, testManifest, type Seed } from './c2-helpers.js';
 import { activeReviewer, budgetDepartment, decideAssignment, departmentId, newSeat, placed, reviewPlan, runFor, seat } from './c4-helpers.js';
 import { backoff, harness, type Harness } from './helpers.js';
+import { approveIdentityAsFounder, sampleIdentity } from './talent-helpers.js';
 
 const code = (c: string) => (e: unknown): boolean => isQandeelError(e) && e.code === c;
 const CANONICAL = ['strategic-market-intelligence', 'growth', 'brand-creative', 'product', 'engineering'];
@@ -198,12 +199,15 @@ describe('C4 Title ≠ Authority: organizational acts need a seat AND an explici
       const newSeatRec = org.position(approved.approvedPositionId as Id);
       assert.deepEqual([newSeatRec.code, newSeatRec.reportsToPositionId, newSeatRec.source], ['growth.seo-1', seat(h, 'director.growth').id, 'STAFFING_REQUEST']);
       org.delegateAuthority(s.founder, { employeeId: ceo.id, capability: 'org.staffing.hire', expiresAt: inAYear(h), purposeCode: 'staffing', limits: { maxCostMicros: 2_000_000 }, reasonCode: 'delegated' });
-      const hired = recordOrgAct(h.store, c.claim.fence, 5, 'staffing.hire', { requestId, name: { given: 'Rania', family: 'Fouad' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' } });
+      // COMPANY-TALENT-01: no Employee is created with an incomplete identity — the delegated hire names an approved profile.
+      assert.equal(recordOrgAct(h.store, c.claim.fence, 5, 'staffing.hire', { requestId, name: { given: 'Rania', family: 'Fouad' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' } }).code, 'IDENTITY_REQUIRED');
+      const identityDefinitionId = approveIdentityAsFounder(h, s.founder, 'rania-fouad', sampleIdentity('role:growth.seo-specialist', 'SYNTHETIC SEO specialist'));
+      const hired = recordOrgAct(h.store, c.claim.fence, 7, 'staffing.hire', { requestId, name: { given: 'Rania', family: 'Fouad' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' }, identityDefinitionId });
       assert.equal(hired.outcome, 'DONE');
       const newcomer = s.gov.getEmployee(String(hired.resultRef).split(':')[1] as Id);
       assert.deepEqual([newcomer.state, newcomer.departmentId, newcomer.roleRef], ['CANDIDATE', departmentId(s, 'growth'), 'role:growth.seo-specialist'], 'a hire is a CANDIDATE: the Academy still decides activation');
       assert.equal(org.seatHolder(newSeatRec.id).holder?.employeeId, newcomer.id);
-      assert.equal(recordOrgAct(h.store, c.claim.fence, 6, 'staffing.hire', { requestId, name: { given: 'Sara', family: 'Fouad' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' } }).code, 'STAFFING_NOT_HIRABLE', 'one hire per request');
+      assert.equal(recordOrgAct(h.store, c.claim.fence, 8, 'staffing.hire', { requestId, name: { given: 'Sara', family: 'Fouad' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' } }).code, 'STAFFING_NOT_HIRABLE', 'one hire per request');
       // Rule A: business evidence never reaches audit or events.
       const telemetry = JSON.stringify([...h.store.audit(d.claim.fence.runId), ...h.store.audit(requestId), ...h.store.pendingEvents(5_000)]);
       assert.ok(!telemetry.includes('Organic acquisition') && !telemetry.includes('Twelve open SEO items'));

@@ -640,7 +640,9 @@ describe('C7-A integration into the existing C6 engine', () => {
       assert.ok(x.m.profile(x.s.employee.id).dimensions.find((d) => d.dimension === 'OUTCOME')?.evidenceRefs.includes(`evaluation:${e.id}`), 'the existing profile reads it');
       const tables = db(x).all<{ name: string }>(`SELECT name FROM sqlite_schema WHERE type = 'table'`).map((t) => t.name);
       assert.deepEqual(tables.filter((t) => /^(external|c7)/.test(t)).sort(), ['external_binding_history', 'external_contract_catalog', 'external_contract_families', 'external_contract_fields', 'external_contract_scopes', 'external_contract_types', 'external_evidence_bindings', 'external_intake_refusal_windows', 'external_record_conflicts', 'external_records', 'external_source_contracts', 'external_source_history', 'external_sources']); // C7-B adds only the bounded refusal counters (R-C7A-04)
-      assert.deepEqual(tables.filter((t) => /evaluat|lesson|learning|attribution|performance|score|report/.test(t) && !['evaluation_results', 'eval_definitions', 'eval_definition_history', 'eval_calibration_runs', 'lessons', 'lesson_promotions', 'learning_signals', 'learning_interventions', 'learning_intervention_history', 'causal_attributions', 'causal_attribution_history', 'report_snapshots', 'lesson_history', 'run_attributions'].includes(t)), [], 'only the pre-existing C2–C6 stores');
+      assert.deepEqual(tables.filter((t) => /evaluat|lesson|learning|attribution|performance|score|report/.test(t) && !['evaluation_results', 'eval_definitions', 'eval_definition_history', 'eval_calibration_runs', 'lessons', 'lesson_promotions', 'learning_signals', 'learning_interventions', 'learning_intervention_history', 'causal_attributions', 'causal_attribution_history', 'report_snapshots', 'lesson_history', 'run_attributions',
+        // COMPANY-TALENT-01 (D5): a manager's scoring of one Academy attempt (Stage 6), applied into the existing academy_dimension_results — not a C6 work-outcome evaluation store.
+        'academy_manager_evaluations'].includes(t)), [], 'only the pre-existing C2–C6 stores');
     });
   });
 });
@@ -965,7 +967,7 @@ describe('C7-A durability', () => {
       const v12 = openStoreForTests(root, { clock: new ManualClock(), liveSchemaUpdate: true });
       try {
         // C7-B appended 0013 after 0012: the upgrade applies every pending release, in order.
-        assert.deepEqual(v12.migration.applied, [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]);
+        assert.deepEqual(v12.migration.applied, [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]);
         const d = storeContext(v12).db;
         assert.deepEqual({ events: Number(d.get<{ n: number }>('SELECT COUNT(*) AS n FROM events')?.n), maxSeq: Number(d.get<{ n: number }>('SELECT MAX(seq) AS n FROM events')?.n) }, counts11, 'the outbox keeps every event and its order');
         assert.equal(v12.getWorkItem(workItem.id).state, 'READY');

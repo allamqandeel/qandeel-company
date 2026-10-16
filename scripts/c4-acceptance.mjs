@@ -232,6 +232,29 @@ const submit = (owner, instructions, plan) => {
   runtime.transitionWorkItem(workItem.id, { to: 'READY', reasonCode: 'release' });
   return workItem.id;
 };
+/** COMPANY-TALENT-01: the Founder drafts a complete identity profile and approves it (preview → fingerprint → confirm). */
+const approveIdentity = (roleRef, code, title) => {
+  const { auth, talent, actions } = runtime.founder;
+  const { session } = auth.redeemLaunchToken(auth.mintLaunchToken().token);
+  const body = {
+    roleRef, name: null, title,
+    roleSummary: `SYNTHETIC: ${title} for QANDEEL COMPANY, accountable for evidence-based work in this role.`,
+    personality: ['analytical', 'calm', 'direct'],
+    professionalStyle: 'SYNTHETIC: structured, evidence first, states assumptions and confidence explicitly.',
+    communicationStyle: 'SYNTHETIC: short, clear, separates facts from analysis and recommendations.',
+    specialties: ['SYNTHETIC specialty one', 'SYNTHETIC specialty two'],
+    marketExpertise: ['SYNTHETIC: Egypt and the Gulf'],
+    workBehaviour: 'SYNTHETIC: plans small, verifies sources, escalates what exceeds its authority to its manager.',
+    qualityStandards: ['SYNTHETIC: every claim cites its source', 'SYNTHETIC: uncertainty is stated, never hidden'],
+    boundaries: ['SYNTHETIC: never spends or publishes without approval', 'SYNTHETIC: never claims unpublished platform internals'],
+    designedBackground: null,
+    sourceRef: 'doc:docs/talent/synthetic.md',
+  };
+  const definitionId = auth.withSession(session, (f) => talent.saveDraft(f, { kind: 'IDENTITY_PROFILE', code, body }).definition.id);
+  const p = actions.preview(session, 'TALENT_DEFINITION_DECIDE', { definitionId, decision: 'APPROVE' });
+  actions.confirm(session, p.id, p.fingerprint);
+  return definitionId;
+};
 
 try {
   await runtime.start();
@@ -300,10 +323,13 @@ try {
     check(request?.state === 'SUBMITTED', 'a Staffing Request is evidence and a proposal, never hiring authority');
     for (const capability of ['org.staffing.review', 'org.staffing.hire']) org.delegateAuthority(world.founder, { employeeId: world.ceo.id, capability, expiresAt: inAYear(), purposeCode: 'staffing', limits: capability === 'org.staffing.hire' ? { maxCostMicros: 2_000_000 } : undefined, reasonCode: 'delegated' });
     org.delegateAuthority(world.founder, { employeeId: world.ceo.id, capability: 'org.staffing.decide', expiresAt: inAYear(), purposeCode: 'staffing', limits: { maxCostMicros: 2_000_000, departmentCodes: ['growth'] }, reasonCode: 'delegated' });
+    // COMPANY-TALENT-01 (D-TALENT-03): no Employee without an approved identity, on either path. The Founder approves the
+    // role's identity profile through the governed confirmation; the delegated hire names it.
+    const identityDefinitionId = approveIdentity('role:growth.seo-specialist', 'rania-fouad', 'SYNTHETIC SEO Specialist');
     const ceoRun = submit(world.ceo, script(
       { type: 'ORG_ACTION', action: 'staffing.request.review', args: { requestId: request.id, action: 'RECOMMEND_APPROVE', priority: 5 } },
       { type: 'ORG_ACTION', action: 'staffing.request.decide', args: { requestId: request.id, decision: 'APPROVE', positionCode: 'growth.seo-1' } },
-      { type: 'ORG_ACTION', action: 'staffing.hire', args: { requestId: request.id, name: { given: 'Rania', family: 'Fouad' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' } } },
+      { type: 'ORG_ACTION', action: 'staffing.hire', args: { requestId: request.id, name: { given: 'Rania', family: 'Fouad' }, cognitiveProfile: { defaultClass: 'E1', ceilingClass: 'E2', costDiscipline: 'BALANCED' }, identityDefinitionId } },
       FINAL('staffed'),
     ));
     await until(() => stateOf(ceoRun) === 'COMPLETED', 'the CEO synthesizes and decides within its delegation');
@@ -311,7 +337,9 @@ try {
     check(decided.state === 'APPROVED' && String(decided.decisionAuthorityRef).startsWith('authority_delegation:'), 'decided within an explicit, capped delegation');
     const hire = runtime.governance.getEmployee(decided.hiredEmployeeId);
     check(hire.state === 'CANDIDATE', 'a hire is a CANDIDATE: the Academy still decides activation');
-    return { staffing: 'SUBMITTED→RECOMMENDED→APPROVED', hire: hire.state };
+    const [binding] = runtime.founder.talent.bindings(hire.id);
+    check(binding?.definitionId === identityDefinitionId && binding.classification === 'INITIAL', 'the hire is bound to the approved identity');
+    return { staffing: 'SUBMITTED→RECOMMENDED→APPROVED', hire: hire.state, identity: binding.classification };
   });
   await step('work-delegation-parks-the-delegator', async () => {
     org.delegateAuthority(world.founder, { employeeId: world.director.id, capability: 'org.work.delegate', expiresAt: inAYear(), purposeCode: 'work', reasonCode: 'delegated' });

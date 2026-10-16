@@ -19,7 +19,7 @@ import { budgetFor, getEmployeeRow } from './governance-core.js';
 import { ts, type StoreContext } from './internal.js';
 import { getSkillVersionRow, skillVersionView } from './mind-core.js';
 import { mapActivation, mapAttempt, mapCertification, mapEnrollment, mapRemediation } from './mind-records.js';
-import { ceoSeat, seatHolder } from './org-core.js';
+import { ceoSeat, getPosition, seatHolder } from './org-core.js';
 import { storeContext, type CompanyStore } from './store.js';
 
 export interface EmployeeIdentityView {
@@ -73,7 +73,7 @@ export interface ActivationReadiness {
 
 export interface ActivationView {
   readonly at: string;
-  readonly seat: { readonly positionId: Id; readonly code: string; readonly title: string; readonly roleRef: string } | null;
+  readonly seat: { readonly positionId: Id; readonly code: string; readonly title: string; readonly roleRef: string; readonly kind: string; readonly departmentId: Id | null } | null;
   readonly ceo: EmployeeIdentityView | null;
   readonly provider: { readonly provisioned: boolean; readonly status: string | null; readonly routedTaskClasses: readonly string[] };
   readonly envelope: { readonly capMoney: number; readonly spentMoney: number; readonly reservedMoney: number; readonly currency: string } | null;
@@ -114,12 +114,13 @@ function identityOf(ctx: StoreContext, employeeId: Id, jobTitle: string | null):
 }
 
 /** The view in one snapshot. `packages` are the host-registered ones (codes, digests and contents are release-pinned). */
-export function activationView(store: CompanyStore, packages: readonly AcademyPackage[]): ActivationView {
+export function activationView(store: CompanyStore, packages: readonly AcademyPackage[], positionId: Id | null = null): ActivationView {
   const ctx = storeContext(store);
   return ctx.db.snapshot(() => {
     const at = ts(ctx);
-    const seatRec = ceoSeat(ctx);
-    const seat = seatRec ? { positionId: seatRec.id, code: seatRec.code, title: seatRec.title, roleRef: seatRec.roleRef } : null;
+    // COMPANY-TALENT-01: the same durable path for ANY seat (the CEO seat by default — its view is unchanged).
+    const seatRec = positionId === null ? ceoSeat(ctx) : getPosition(ctx, positionId);
+    const seat = seatRec ? { positionId: seatRec.id, code: seatRec.code, title: seatRec.title, roleRef: seatRec.roleRef, kind: seatRec.kind, departmentId: seatRec.departmentId } : null;
     const holder = seatRec ? seatHolder(ctx, seatRec.id, at).ofRecord : null;
     const ceo = holder ? identityOf(ctx, holder.employeeId, seatRec?.title ?? null) : null;
     const provider = ctx.db.get<{ status: string }>(`SELECT status FROM model_providers ORDER BY created_at LIMIT 1`);
@@ -127,8 +128,10 @@ export function activationView(store: CompanyStore, packages: readonly AcademyPa
     const money = (b: ReturnType<typeof budgetFor>): ActivationView['envelope'] => (b ? { capMoney: b.capMoney, spentMoney: b.spentMoney, reservedMoney: b.reservedMoney, currency: b.currency } : null);
     const envelope = ceo ? money(budgetFor(ctx, 'EMPLOYEE', ceo.employeeId)) : null;
     const modelAccess = ceo ? ctx.db.all<{ s: string }>(`SELECT resource_scope AS s FROM permission_grants WHERE employee_id = ? AND capability = 'model.invoke' AND status = 'ACTIVE' ORDER BY resource_scope`, ceo.employeeId).map((r) => r.s) : [];
-    const views = packages.filter((p) => seat === null || p.roleRef === seat.roleRef).map((p) => txPackageView(ctx, p, packages));
-    const pkg = packages.find((p) => txPackageRecord(ctx, p)?.state === 'INSTALLED') ?? null;
+    // Newest version first (the release list already is; catalog programs are ordered the same way).
+    const forRole = packages.filter((p) => seat === null || p.roleRef === seat.roleRef).sort((a, b) => (a.roleRef === b.roleRef && a.code === b.code ? b.version - a.version : 0));
+    const views = forRole.map((p) => txPackageView(ctx, p, packages));
+    const pkg = forRole.find((p) => txPackageRecord(ctx, p)?.state === 'INSTALLED') ?? null;
     let enrollment: ActivationView['enrollment'] = null;
     if (ceo) {
       const row = ctx.db.get(`SELECT * FROM academy_enrollments WHERE employee_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`, ceo.employeeId);

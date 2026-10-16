@@ -59,6 +59,7 @@ export const RELEASED_MIGRATIONS: readonly MigrationPin[] = Object.freeze([
   { version: 21, name: 'l1_02_academy_founder_feedback', file: '0021_l1_02_academy_founder_feedback.sql', sha256: '443afaedc43886a34e1a5278b22d91bd9415b2e75d3696135f92cb40aebe8aef' },
   { version: 22, name: 'p1_product_knowledge', file: '0022_p1_product_knowledge.sql', sha256: '3fd93c0c4a408f5dd59db6b284c23a8abf2bfa9ac5e6e2f16d59e82f0acf0927' },
   { version: 23, name: 'p1_founder_decisions', file: '0023_p1_founder_decisions.sql', sha256: '5fd331c2c9c6be6b2d5ba9d40af2424080e4b2054d9684ec9d34b113d92bc4f8' },
+  { version: 24, name: 'talent_studio', file: '0024_talent_studio.sql', sha256: '13ba94dcb37293b1a19da87bcf7e83703f62120056eabe7bc1bd8afd568fdd55' },
 ]);
 
 export const CURRENT_SCHEMA_VERSION = RELEASED_MIGRATIONS.length;

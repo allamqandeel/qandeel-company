@@ -7,6 +7,7 @@
  */
 import { QandeelError, isTimestamp, type Id } from '@qandeel-company/domain';
 import { classifyFounderIntent, type FounderIntent, type MutatingIntent } from '@qandeel-company/governance';
+import { COMPETENCY_PRESETS, identityTemplate, programTemplate } from '@qandeel-company/mind';
 import type { CompanyUniverse, FounderSession, UniverseEmployee } from '@qandeel-company/storage';
 import type { CompanyRuntime } from '@qandeel-company/runtime';
 
@@ -359,12 +360,22 @@ export function providers(ctx: ApiContext): Json {
  * (package codes / versions / digests, scenario and assignment codes, identity profile codes, provider profiles). IDs,
  * codes and the Founder's own Company content only; never a key or a reference value.
  */
-function activationPayload(ctx: ApiContext): Json {
+function activationPayload(ctx: ApiContext, positionId: string | null = null): Json {
   const env = ctx.runtime.founder.actions.activationEnv();
+  const view = ctx.runtime.founder.activation(positionId === null ? null : (str(positionId, 'positionId', 36) as Id));
+  const roleRef = view.seat?.roleRef ?? null;
+  // COMPANY-TALENT-01: the holder's manager (who may evaluate it) and its certification's Tool scope, for any seat.
+  const holderId = view.ceo?.employeeId ?? null;
+  const holder = holderId === null ? null : ctx.runtime.founder.universe().employees.find((e) => e.id === holderId);
+  const overview = holderId === null ? null : ctx.runtime.founder.talentOverview();
+  const person = ((overview?.people ?? []) as { employeeId: string; certification: { toolScopes?: { tool_code: string; status: string; readiness: string }[] } | null }[]).find((p) => p.employeeId === holderId);
   return {
-    view: ctx.runtime.founder.activation(),
+    managerEmployeeId: holder?.chain[1]?.employeeId ?? null,
+    toolScopes: (person?.certification?.toolScopes ?? []).map((s) => ({ toolCode: s.tool_code, status: s.status, readiness: s.readiness })),
+    view,
     registry: {
-      packages: env.packages.map((p) => ({
+      // COMPANY-TALENT-01: the release-pinned packages and the approved Talent Catalog programs of this seat's role.
+      packages: env.packages.filter((p) => roleRef === null || p.roleRef === roleRef).map((p) => ({
         code: p.code,
         version: p.version,
         sha256: ctx.runtime.founder.actions.packageDigest(p.code, p.version),
@@ -372,7 +383,8 @@ function activationPayload(ctx: ApiContext): Json {
         roleRef: p.roleRef,
         skills: p.skills.map((s) => ({ code: s.code, name: s.name, bytes: s.instructions.length, cases: s.benchmark.length, sourceRefs: s.sourceRefs })),
         curriculum: p.program.curriculum.map((m) => ({ code: m.code, category: m.category })),
-        scenarios: p.scenarios.map((s) => ({ code: s.code, kind: s.kind, content: s.kind === 'HOLDOUT' ? null : s.content })),
+        scenarios: p.scenarios.map((s) => ({ code: s.code, kind: s.kind, content: s.kind === 'HOLDOUT' ? null : s.content, toolCode: s.toolCode ?? null })),
+        competencies: (p.program.competencies ?? []).map((c) => ({ code: c.code, title: c.title, critical: c.critical, passPct: c.passPct })),
         shadowAssignments: p.shadowAssignments.map((a) => ({ code: a.code, objective: a.objective })),
         taskClasses: p.taskClasses,
         limits: p.limits,
@@ -386,8 +398,51 @@ function activationPayload(ctx: ApiContext): Json {
   };
 }
 
-export function activation(ctx: ApiContext): Json {
-  return activationPayload(ctx);
+export function activation(ctx: ApiContext, query: { positionId?: string | undefined } = {}): Json {
+  return activationPayload(ctx, query.positionId ?? null);
+}
+
+// --- COMPANY-TALENT-01: the Staff & Training studio (reads, Founder drafting; every decision is a governed preview) ---
+
+/** The studio: seats, staffing (with evidence), the Talent Catalog, proposals, policies, Tool readiness, people and costs. */
+export function talent(ctx: ApiContext): Json {
+  return { overview: ctx.runtime.founder.talentOverview(), presets: COMPETENCY_PRESETS, identities: ctx.runtime.founder.actions.activationEnv().identities.map((i) => ({ code: i.code, roleRef: i.roleRef, sourceRef: i.sourceRef })) };
+}
+
+export function talentDefinition(ctx: ApiContext, definitionId: string): Json {
+  return ctx.runtime.founder.talentDefinition(str(definitionId, 'definitionId', 36));
+}
+
+/** A starter template (an empty identity, or a program skeleton with this build's BQM-2 pins). Nothing is written. */
+export function talentTemplate(ctx: ApiContext, query: { kind?: string | undefined; roleRef?: string | undefined; code?: string | undefined; title?: string | undefined }): Json {
+  const roleRef = str(query.roleRef, 'roleRef', 66);
+  if (!/^role:[a-z][a-z0-9.-]{1,60}$/.test(roleRef)) throw new QandeelError('VALIDATION_FAILED', 'roleRef is role:<code>', { field: 'roleRef' });
+  if (query.kind === 'IDENTITY_PROFILE') return { body: identityTemplate(roleRef) };
+  const seats = (ctx.runtime.founder.talentOverview().seats ?? []) as { roleRef: string; kind: string }[];
+  const leader = seats.some((s) => s.roleRef === roleRef && (s.kind === 'CEO' || s.kind === 'DIRECTOR'));
+  return { body: programTemplate({ roleRef, code: query.code && query.code.length > 0 ? query.code : roleRef.slice(5), title: query.title && query.title.length > 0 ? query.title : `${roleRef.slice(5)} — Academy program`, leader }) };
+}
+
+/** The Founder drafts (or edits a draft): Company content, never authority — no preview, nothing granted, spent or called. */
+export function saveTalentDraft(ctx: ApiContext, body: Json): Json {
+  return ctx.runtime.founder.auth.withSession(ctx.session, (founderRef) => {
+    const out = ctx.runtime.founder.talent.saveDraft(founderRef, { kind: body.kind as 'IDENTITY_PROFILE', body: body.body, ...(body.code === undefined ? {} : { code: body.code }), ...(body.definitionId === undefined ? {} : { definitionId: body.definitionId }), ...(body.expectedRowVersion === undefined ? {} : { expectedRowVersion: body.expectedRowVersion }) });
+    return { definition: { id: out.definition.id, kind: out.definition.kind, code: out.definition.code, version: out.definition.version, state: out.definition.state, rowVersion: out.definition.rowVersion }, check: out.check };
+  });
+}
+
+export function submitTalentDraft(ctx: ApiContext, definitionId: string): Json {
+  return ctx.runtime.founder.auth.withSession(ctx.session, (founderRef) => {
+    const d = ctx.runtime.founder.talent.submit(founderRef, str(definitionId, 'definitionId', 36));
+    return { definition: { id: d.id, state: d.state, sha256: d.sha256, rowVersion: d.rowVersion } };
+  });
+}
+
+export function withdrawTalentDraft(ctx: ApiContext, definitionId: string): Json {
+  return ctx.runtime.founder.auth.withSession(ctx.session, (founderRef) => {
+    const d = ctx.runtime.founder.talent.withdraw(founderRef, str(definitionId, 'definitionId', 36));
+    return { definition: { id: d.id, state: d.state } };
+  });
 }
 
 /**
@@ -679,6 +734,17 @@ function resolveMutatingTarget(ctx: ApiContext, u: CompanyUniverse, command: Ext
     case 'PRODUCT_KNOWLEDGE_ACCESS':
     case 'FOUNDER_DECISION_RECORD':
     case 'FOUNDER_DECISION_REVOKE':
+    case 'TALENT_DEFINITION_DECIDE':
+    case 'TALENT_PROPOSAL_DECIDE':
+    case 'EMPLOYEE_IDENTITY_REVISE':
+    case 'POSITION_CREATE':
+    case 'DEPARTMENT_BUDGET':
+    case 'ACCESS_POLICY_DECIDE':
+    case 'ROLE_TOOL_REQUIREMENT':
+    case 'TOOL_ACCESS':
+    case 'EMPLOYEE_RETRAIN':
+    case 'ACADEMY_EVALUATION_ASSIGN':
+    case 'ACADEMY_EVALUATION_REVIEW':
       // Structured only (a form or a rail action posts IDs / codes), never free text (D-C5-07, R2-21, C7-A, C7-C, L1-01, L1-02).
       return null;
   }
@@ -707,8 +773,12 @@ export function structuredSummary(ctx: ApiContext, preview: { intentKind: string
       return `${GOAL_STATE_VERB[s('to')] ?? 'Change the goal'}: ${s('title')}`;
     case 'GOAL_PROPOSE':
       return `Propose the ${p.kind === 'DEPARTMENT' ? 'department' : 'company'} goal: ${s('title')}`;
-    case 'STAFFING_DECIDE':
-      return `${p.decision === 'REJECT' ? 'Reject' : 'Approve'} the staffing request`;
+    case 'STAFFING_DECIDE': {
+      // COMPANY-TALENT-01: the exact request decided — role, seats, CEO recommendation — and what approval does and does not do.
+      const seats = Number(p.headcount ?? 1);
+      if (p.decision === 'REJECT') return `Reject the staffing request${p.positionTitle ? `: ${s('positionTitle')}` : ''}. No seat or Employee is created; the request and its evidence stay as history`;
+      return `Approve the staffing request${p.positionTitle ? `: ${s('positionTitle')} (${s('roleRef')}, ${s('positionKind')})` : ''} — opens ${seats} identical seat${seats === 1 ? '' : 's'}${p.decidedWithoutCeoReview === true ? ', decided without a CEO review because no ACTIVE CEO holds the CEO seat' : p.ceoRecommendation ? `, CEO recommendation ${s('ceoRecommendation')}` : ''}. Nobody is hired or activated: each seat is filled by its own hire with its own approved identity, never beyond the approved number, and no budget is spent`;
+    }
     case 'CONFLICT_RESOLVE':
       return `Resolve the review conflict ${p.resolution === 'REWORK' ? 'with rework' : 'as passed'}`;
     case 'BUDGET_CEILING': {
@@ -773,11 +843,11 @@ export function structuredSummary(ctx: ApiContext, preview: { intentKind: string
     }
     // --- L1-02: the activation acts, stated as exactly what the canonical store will do (nothing more) ---
     case 'EMPLOYEE_HIRE':
-      return `Hire ${s('givenName')} ${s('familyName')}${p.displayNameAr ? ` (${s('displayNameAr')})` : ''} into the seat ${s('positionTitle')} (${s('roleRef')}) as a CANDIDATE — not active, no authority, no budget; reasoning ${p.selection === 'AUTO' ? `AUTO from ${s('defaultClass')}` : s('defaultClass')}, ceiling ${s('ceilingClass')} (${p.selection === 'AUTO' ? 'AUTO never goes above E2 by itself; E3 / E4 run only when you choose them for a task, and only where' : 'a level above E2 runs only where'} the task's route policy, a provisioned deployment and the budget allow it), cost discipline BALANCED; portrait pending. The Academy alone decides activation`;
+      return `Hire ${s('givenName')} ${s('familyName')}${p.displayNameAr ? ` (${s('displayNameAr')})` : ''} into the seat ${s('positionTitle')} (${s('roleRef')})${p.identityDefinitionId ? ` with the approved identity ${s('identityCode')} v${s('identityVersion')} (digest ${s('identitySha256').slice(0, 12)}…)` : p.identityProfileCode ? ` with the identity profile ${s('identityProfileCode')}` : ''}${p.staffingRequestId ? ' under its approved staffing request' : ''} as a CANDIDATE — not active, no authority, no budget; reasoning ${p.selection === 'AUTO' ? `AUTO from ${s('defaultClass')}` : s('defaultClass')}, ceiling ${s('ceilingClass')} (${p.selection === 'AUTO' ? 'AUTO never goes above E2 by itself; E3 / E4 run only when you choose them for a task, and only where' : 'a level above E2 runs only where'} the task's route policy, a provisioned deployment and the budget allow it), cost discipline BALANCED; portrait pending. The Academy alone decides activation`;
     case 'EMPLOYEE_LIFECYCLE':
       return `Move ${s('name')} from ${s('from')} to ${s('to')} (a trainee step; ACTIVE comes only from the Academy's activation decision)`;
     case 'EMPLOYEE_MODEL_ACCESS':
-      return `${p.envelopeExists === true ? 'Keep' : 'Open'} ${s('name')}'s hard envelope of ${s('capMoney')} micro-${s('currency')} and grant model access (R0, up to ${s('dataClassCeiling')}) for: ${Array.isArray(p.taskClasses) ? (p.taskClasses as string[]).join(', ') : ''}. No tools, no external effect`;
+      return `${p.envelopeExists === true ? 'Keep' : 'Open'} ${s('name')}'s hard envelope of ${s('capMoney')} micro-${s('currency')}${p.parentBudget === 'DEPARTMENT' ? ' under its Department budget' : ''} and grant model access (R0, up to ${s('dataClassCeiling')}) for: ${Array.isArray(p.taskClasses) ? (p.taskClasses as string[]).join(', ') : ''}. No tools, no external effect`;
     case 'SKILL_PACKAGE_QUALIFY':
       // D-L1-23: a BQM-2 qualification states its method, its fixed class, its observation count and its enforced bounds.
       if (p.benchmarkMethod === 'BQM-2' && p.qualification !== 'FINALIZE_SCORES') return `${p.qualification === 'QUALIFY' ? 'Register and qualify' : `Finalize ${s('scoresToFinalize')} finished benchmark observations (deterministic, never re-run) and re-run the void observations of`} the Academy package ${s('packageCode')} v${s('packageVersion')} (digest ${s('packageSha256').slice(0, 12)}…) under benchmark method BQM-2 (declaration ${s('methodSha256').slice(0, 12)}…, rubric ${s('rubricVersion')}, ANSWER contract ${s('answerContractVersion')} ${s('answerContractSha256').slice(0, 12)}…): inspection, licence check, the deterministic static security review, then ${s('benchmarkRuns')} bounded benchmark observations — ${s('observationsPerArm')} per case and arm, every one at the fixed reasoning class ${s('reasoningClass')} (each delivers only one ANSWER: any other proposal is never executed and counts as an invalid output; one same-class retry after an invalid output; two invalid outputs fail the observation) — each capped at ${s('perRunCapMicros')} micro-units and at a hard maximum of ${s('maxModelCallsPerObservation')} model calls; the enforced cap bound on the total is ${s('totalCapBoundMicros')} micro-units and the hard stop is the Employee envelope (${s('envelopeRemainingMicros')} micro-units remaining): exhausting it leaves the package incomplete, never overspent, and no budget is raised. Nothing is approved here${Array.isArray(p.reusedSkills) && p.reusedSkills.length > 0 ? `. Reused qualified Skill Versions (no new version, no review, no benchmark — their own evidence, bound by fingerprint): ${(p.reusedSkills as string[]).join('; ')}; only ${Array.isArray(p.newlyQualifiedSkills) ? (p.newlyQualifiedSkills as string[]).join(', ') : ''} qualify new versions` : ''}`;
@@ -831,6 +901,46 @@ export function structuredSummary(ctx: ApiContext, preview: { intentKind: string
     }
     case 'FOUNDER_DECISION_REVOKE':
       return `Revoke your recorded decision (v${s('decisionVersion')}): it stops being in force at once and is no longer retrieved as your decision; its history is kept. It changes no budget, grant, assignment or approval. No provider call`;
+    // --- COMPANY-TALENT-01: the Staff & Training decisions, each stated as exactly what the confirmation does ---
+    case 'TALENT_DEFINITION_DECIDE': {
+      const what = p.kind === 'IDENTITY_PROFILE' ? 'identity profile' : 'Academy program';
+      if (p.decision === 'REJECT') return `Reject the submitted ${what} ${s('code')} v${s('version')} (digest ${s('sha256').slice(0, 12)}…). It stays as history; nothing else changes`;
+      const program = p.kind === 'ACADEMY_PROGRAM' ? ` — ${s('skills')} Skill(s) (${s('benchmarkCasesNew')} new benchmark case(s); BQM-2 runs each 5 times with and without the Skill, capped at ${s('benchmarkCapMicros')} micro-units per run, only when you later confirm its qualification), ${s('scenarios')} scenario(s) including ${s('holdouts')} hidden holdout(s)${Number(p.toolScenarios) > 0 ? ` and ${s('toolScenarios')} Tool scenario(s) (assessed only once the Tool is integrated)` : ''}, ${s('competencies')} specialty competenc(ies), Founder Calibration ${p.founderCalibrationRequired === true ? 'required' : 'not required'}` : '';
+      return `Approve the ${what} ${s('code')} v${s('version')} for ${s('roleRef')} (digest ${s('sha256').slice(0, 12)}…, ${p.authorRef === 'EMPLOYEE_PROPOSAL' ? 'proposed by a leader' : 'yours'})${program}. Its content is frozen; ${Number(p.supersedesVersion) > 0 ? `v${s('supersedesVersion')} is superseded (kept for programs in flight); ` : ''}it becomes available to the hire / Academy acts, each of which you still confirm. Nothing is hired, installed, granted or spent now`;
+    }
+    case 'TALENT_PROPOSAL_DECIDE': {
+      if (p.decision === 'DECLINE') return `Decline ${s('proposer')}'s ${s('kind').toLowerCase().replace('_', ' ')} proposal (kept as history; nothing changes)`;
+      const effect: Record<string, string> = {
+        DRAFT_KEPT_FOR_REVIEW: 'its draft stays in the Talent Catalog for you to edit, submit and approve (nothing is approved now)',
+        ADDED_TO_DRAFT: `the Skill ${s('skillCode')} is added to the draft program ${s('targetCode')} (approval, qualification and install stay separate acts)`,
+        NEW_DRAFT_VERSION: `a new draft version of ${s('targetCode')} is started with the Skill ${s('skillCode')} (approval, qualification and install stay separate acts)`,
+        ACTIVE_TO_RETRAINING: `${s('subject')} moves from ACTIVE to RETRAINING (same identity and history; returns through the Academy, SHADOW / PROBATION and your activation decision)`,
+        DEPARTMENT_BUDGET_CREATED: `the Department budget is created with a hard cap of ${s('capMoney')} micro-${s('currency')} under the Company cap (no spend)`,
+        DEPARTMENT_CAP_CHANGED: `the Department cap changes from ${s('previousCapMoney')} to ${s('capMoney')} micro-${s('currency')} (no spend)`,
+      };
+      return `Accept ${s('proposer')}'s ${s('kind').toLowerCase().replace('_', ' ')} proposal: ${effect[s('effect')] ?? s('effect')}`;
+    }
+    case 'EMPLOYEE_IDENTITY_REVISE':
+      return `Revise ${s('name')}'s identity to ${s('code')} v${s('version')} (${s('classification')}; previous v${s('previousVersion')}). The same Employee: ID, seat, grants, budget, memory and history stay; the identity history records the change${p.classification === 'MATERIAL' ? `; a material revision makes ${s('certificationsReviewDue')} valid certification(s) REVIEW_DUE` : ''}. No authority or budget change`;
+    case 'POSITION_CREATE':
+      return `Open a ${s('kind')} seat "${s('title')}" (${s('roleRef')}) in ${s('departmentName')}, reporting to ${s('reportsToTitle')}. A vacant seat only: nobody is hired and no budget is created`;
+    case 'DEPARTMENT_BUDGET':
+      return `Create ${s('departmentName')}'s Department budget: a hard cap of ${s('capMoney')} micro-${s('currency')} under the Company cap (${s('companyCapMoney')}). Employee envelopes of this Department hang under it; nothing is spent and there is no automatic top-up`;
+    case 'ACCESS_POLICY_DECIDE': {
+      const list = (k: string): string => (Array.isArray(p[k]) ? (p[k] as string[]).join('; ') : '');
+      if (p.decision === 'REVOKE') return `Revoke the leadership policy "${s('title')}": its grants are revoked now (${list('revoke') || 'none active'}); individual grants it adopted stay as they were`;
+      return `Approve the leadership policy "${s('title')}" (${s('authority')}). From now on every PRIMARY CEO / Director seat holder holds one individual, auditable, revocable grant of it — issued at the hire (as a CANDIDATE, usable only within the rest of their controls) and revoked on leaving the seat, SUSPENDED or RETIRED. Now: issue ${list('issue') || 'none'}${list('adopt') ? `; adopt as they are: ${list('adopt')}` : ''}${p.registerSource ? `; registers the Company documents source ${s('registerSource')}` : ''}${p.registerTool === true ? '; registers the read-only company-knowledge Tool (R0, no credential)' : ''}. A title alone grants nothing; no write or code access; no budget change`;
+    }
+    case 'ROLE_TOOL_REQUIREMENT':
+      return p.decision === 'REMOVE' ? `Remove the tool ${s('toolCode')} from what ${s('roleRef')} needs` : `Record that ${s('roleRef')} needs the tool ${s('toolCode')} (${s('purpose')})${p.registered === true ? '' : ' — not registered yet: it shows as NOT_REGISTERED and is never assessed or claimed until an adapter is built and connected'}. Metadata only: no tool, grant or integration is created`;
+    case 'TOOL_ACCESS':
+      return p.decision === 'REVOKE' ? `Revoke ${s('name')}'s grant of ${s('capability')}` : `Grant ${s('name')} the integrated tool action ${s('capability')} (${s('risk')}, up to ${s('dataClass')}${Number(p.costPerCallMicros) > 0 ? `, ${s('costPerCallMicros')} micro-units per call from its envelope` : ''}). One individual grant; actions with an external effect still need your approval per act`;
+    case 'EMPLOYEE_RETRAIN':
+      return `Move ${s('name')} from ACTIVE to RETRAINING: the same Employee (identity, history, certifications kept as history); ordinary work pauses; the return is the Academy, then SHADOW / PROBATION and your activation decision`;
+    case 'ACADEMY_EVALUATION_ASSIGN':
+      return `Ask ${s('evaluator')}, ${s('trainee')}'s direct manager, to evaluate the ${s('attemptKind').toLowerCase()} attempt on ${s('scenarioCode')}: one bounded evaluation run (cap ${s('capMicros')} micro-units from the manager's envelope, ${s('taskClass')}). ${p.reviewRequired === true ? 'An assessment: the manager\'s scores count only after an independent review (you, or the manager\'s own qualified manager)' : 'Practice: the manager\'s scores apply when recorded'}. Never self-evaluation; run facts still score authority and cost`;
+    case 'ACADEMY_EVALUATION_REVIEW':
+      return `${p.decision === 'CONFIRM' ? 'Confirm' : 'Reject'} ${s('evaluator')}'s evaluation of ${s('trainee')} (${Array.isArray(p.scores) ? (p.scores as string[]).join(', ') : ''})${p.decision === 'CONFIRM' ? ': the scores are recorded and the attempt is decided by the program\'s rules' : ': the attempt stays open for another evaluation'}`;
     case 'PILOT_ADVANCE': {
       const step: Record<string, string> = {
         BRIEFING: 'Start the pilot briefing with the CEO (a conversation; it decides nothing)',

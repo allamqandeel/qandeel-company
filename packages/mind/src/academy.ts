@@ -88,6 +88,8 @@ export interface ProgramDefinition {
   readonly probation: ProbationCriteria;
   /** Skills a passed certification qualifies, with the proficiency it establishes. */
   readonly skillTargets: readonly { readonly skillId: string; readonly proficiency: Proficiency }[];
+  /** COMPANY-TALENT-01: specialty competencies assessed beside the ten dimensions (absent = none; the CEO programs). */
+  readonly competencies?: readonly CompetencyRule[];
 }
 
 const MODULE_CODE = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+){0,7}$/;
@@ -145,6 +147,7 @@ export function assertProgramDefinition(v: unknown): ProgramDefinition {
     certificationValidityDays: int(p.certificationValidityDays, 'certificationValidityDays', 1, 3650),
     probation,
     skillTargets,
+    ...(p.competencies === undefined ? {} : { competencies: assertCompetencies(p.competencies) }),
   };
 }
 
@@ -307,3 +310,52 @@ export function scenarioAllowed(attempt: AttemptKind, scenario: ScenarioKind): b
 
 /** Stages at which a non-ACTIVE Employee may run constrained Academy work (Stage 6 §11: shadow on real work under constrained authority). */
 export const ACADEMY_EXECUTION_STAGES: readonly LearningStage[] = ['SIMULATION', 'FEEDBACK', 'RETRY', 'ASSESSMENT', 'SHADOW_WORK', 'PROBATION_REVIEW'];
+
+// --- Specialty competencies (COMPANY-TALENT-01 C) -------------------------------------------------------------------
+
+/**
+ * A competency a specialist program assesses in addition to the ten Academy dimensions (Stage 6 §5 "including"):
+ * e.g. platform research, hypothesis quality, experiment design, metric interpretation, source verification. The
+ * evaluator scores each competency on the candidate's actual answer; a critical competency below its mark fails the
+ * attempt whatever the average (the same structural rule as a critical dimension).
+ */
+export interface CompetencyRule {
+  readonly code: string;
+  readonly title: string;
+  readonly critical: boolean;
+  readonly passPct: number;
+  /** The curriculum category a failure retrains. */
+  readonly retrain: CurriculumCategory;
+}
+
+const COMPETENCY_CODE = /^[A-Z][A-Z0-9_]{2,47}$/;
+
+export function assertCompetencies(v: unknown, field = 'competencies'): readonly CompetencyRule[] {
+  if (!Array.isArray(v) || v.length > 12) throw new QandeelError('VALIDATION_FAILED', `program ${field} is a list of at most 12 competencies`, { field });
+  const seen = new Set<string>();
+  return v.map((c, i) => {
+    const o = c as Record<string, unknown>;
+    const f = `${field}[${i}]`;
+    if (typeof o !== 'object' || o === null || typeof o.code !== 'string' || !COMPETENCY_CODE.test(o.code) || seen.has(o.code)) throw new QandeelError('VALIDATION_FAILED', `program ${f}.code is a distinct UPPER_CASE code`, { field: f });
+    seen.add(o.code);
+    if (!(typeof o.title === 'string' && o.title.trim().length > 0 && o.title.length <= 160)) throw new QandeelError('VALIDATION_FAILED', `program ${f}.title is 1..160 characters`, { field: f });
+    if (typeof o.critical !== 'boolean' || !Number.isInteger(o.passPct) || (o.passPct as number) < 1 || (o.passPct as number) > 100) throw new QandeelError('VALIDATION_FAILED', `program ${f} needs critical and passPct 1..100`, { field: f });
+    if (!(CURRICULUM_CATEGORIES as readonly unknown[]).includes(o.retrain)) throw new QandeelError('VALIDATION_FAILED', `program ${f}.retrain is a curriculum category`, { field: f });
+    return { code: o.code, title: (o.title as string).trim(), critical: o.critical, passPct: o.passPct as number, retrain: o.retrain as CurriculumCategory };
+  });
+}
+
+/** The competency outcome of one attempt (missing = INCOMPLETE; a critical failure is final). */
+export function evaluateCompetencies(rules: readonly CompetencyRule[], results: readonly { readonly code: string; readonly scorePct: number }[]): { readonly missing: readonly string[]; readonly failed: readonly string[]; readonly criticalFailures: readonly string[] } {
+  const missing = rules.filter((r) => !results.some((x) => x.code === r.code)).map((r) => r.code);
+  const failed: string[] = [];
+  const criticalFailures: string[] = [];
+  for (const r of rules) {
+    const x = results.find((y) => y.code === r.code);
+    if (x && x.scorePct < r.passPct) {
+      failed.push(r.code);
+      if (r.critical) criticalFailures.push(r.code);
+    }
+  }
+  return { missing, failed, criticalFailures };
+}

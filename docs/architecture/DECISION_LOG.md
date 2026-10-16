@@ -7394,3 +7394,254 @@ update path's snapshot and RECOVERY_HOLD apply, as for every migration.
   Windows c1 line, every Windows c2 line, one r1 shard). They now name the new lines and keep their meaning. Its
   `tests` check passed only by matching inside `npm run test:harness`; it now requires the sharded runner and the
   harness explicitly.
+
+## D-TALENT-01 — COMPANY-TALENT-01: universal Staffing, Identity, Skills & Academy studio — the Founder's WP0 approval and decisions D1–D7 (Founder decision, executor)
+
+**Record.** The Founder approved WP0 (`E:\QANDEEL_D2\evidence\company-talent-01-wp0\WP0.md`, research on `main` @ `2979201`)
+with changes on 2026-10-16 and authorized one coherent implementation: hiring, identities, skills and Academy
+qualification for every seat, run from the Company's own surface with no code per Employee. Recorded decisions:
+
+- **D1 — APPROVED.** Facebook, X/Twitter, Reddit and TikTok specialists belong to Growth; Video Editors and Short-form
+  Production to Brand & Creative. The two Departments collaborate without merging or moving their boundaries.
+- **D2 — APPROVED WITH CONDITIONS.** Every PRIMARY CEO / Director seat holder holds an individual, explicit, audited R0
+  read grant of the QANDEEL App documentation under a Founder-approved policy: issuable from the hire (CANDIDATE), usable
+  only within the Employee's other controls, revoked when the seat, eligibility or state (SUSPENDED / RETIRED) ends; no
+  write or code access; Ahmed's existing grant kept without interruption or duplication.
+- **D3 — APPROVED.** A separate source and grant for the QANDEEL COMPANY organizational documents (R0, the allowed
+  documents only, no secrets, no writes).
+- **D4 — APPROVED.** The CEO and Directors may propose staffing, skills, retraining and development at any time from the
+  Company surface; a proposal never approves, hires or spends.
+- **D5 — MODIFIED / APPROVED.** Academy evaluation scales: a qualified manager evaluates its direct reports within clear
+  rights; critical evaluations get an appropriate independent review; never self-evaluation or self-certification;
+  strategic leaders keep Founder Calibration; engines, rubrics and gates are kept. A frozen governance contract is
+  changed only through the controlled amendment path (D-TALENT-07).
+- **D6 — APPROVED.** Founder Calibration is mandatory for the CEO and every Director, separate from skill evaluation.
+- **D7 — APPROVED WITH CONDITIONS.** A staffing request may ask for several identical seats; approval is for a stated
+  number with its need and cost; every seat and Employee keeps its own identity and record; approval creates and runs no
+  Employee; the approved number and budget are never exceeded.
+- **A** Department budgets on the existing budget system; **B** identities, Skill Versions, blueprints and programs as data
+  with versioning, immutability, provenance, security / licence review, BQM-2, hidden scenarios, the Skill / Tool /
+  Authority separation, the training record and retraining of ACTIVE Employees; **C** specialized competence (platform
+  strategy, opportunity discovery, metric and hypothesis quality, tool-based work only with an integrated Tool, never a
+  certified capability that was not tested); **D** manager-led staffing; **E** one unified Founder UI; **F** Majed El
+  Kedwany as the first full acceptance of the general system (his Founder-approved specification stored under
+  `docs/talent/`; not created in LIVE).
+
+**Out of scope (Founder):** merging, installing on LIVE, changing LIVE data, budgets or permissions, hiring Majed, social
+platform or editing adapters, bypassing a frozen contract, re-running closed systems, paid tests.
+
+## D-TALENT-02 — The Talent Catalog: identity profiles and Academy programs are versioned, digest-frozen Company data (executor)
+
+**Decision.** `talent_definitions` (migration 0024) holds an identity profile or an Academy program as JSON with a state:
+DRAFT (editable, version-safe) → SUBMITTED (content frozen by its digest) → APPROVED by the Founder | REJECTED; an
+APPROVED version is SUPERSEDED by its successor and stays resolvable for programs in flight. Datastore triggers freeze a
+submitted definition and move its lifecycle forward only; one APPROVED version per code.
+- **Same validators as the release.** A program passes `assertAcademyPackage` (six curriculum categories, ten dimensions,
+  the four critical ones, holdouts, shadow work, bounds) and must pin BQM-2 exactly as this build runs it (no new BQM-1
+  program); its code is never a release package's code; a program for a CEO / Director seat role must require Founder
+  Calibration (D6). An identity passes the Stage 4 §7 completeness gate (D-TALENT-03).
+- **One package source.** The activation intents resolve a package from the release-pinned list plus the approved catalog
+  programs, read per transaction and re-verified against their digest (`txAllPackages`). The CEO packages v1–v7 and their
+  pinned digests are unchanged; qualification, install, enrollment, attempts, shadow work, probation, certification and
+  activation are the existing engines, unchanged.
+- **Drafting is content, approval is governed.** A Founder draft is written with the Founder session (CSRF, audited, IDs
+  only), like composing a message: it grants, spends and calls nothing. Approval is `TALENT_DEFINITION_DECIDE`, a
+  structured preview pinning the definition's digest and row version; the confirm re-validates. A draft route accepts up to
+  2 MiB (a 16-Skill, 64-scenario program); every other route keeps the 64 KiB bound.
+- **Leaders propose drafts.** `talent.propose` (D4) creates a DRAFT authored by `employee:<id>` with its proposal; only the
+  Founder approves it.
+- **Skills as data.** A catalog Skill is QANDEEL-native text (the existing static security review applies unchanged). Its
+  optional provenance is QANDEEL_ORIGINAL or ADAPTED_FREE_SOURCE, and every adapted source must carry a clearly free SPDX
+  licence (`CLEAR_FREE_LICENSES`); a review-only, unclear or paid source is refused outright (no paid Skill Packs). A Tool
+  is never a Skill dependency: a role's Tool needs are separate metadata (D-TALENT-08).
+
+## D-TALENT-03 — Identity without code per Employee: approved profiles, bindings, the live organization, and no hire without an identity (executor; amends the L1-02 / D-P1-10 hire rule)
+
+**Decision.**
+- **Profile.** Stage 4 §2 / §5 / §7: title and role summary (identity), personality (2–8 traits), professional style,
+  communication style, specialties, market expertise, work behaviour, quality standards, what it never does, an optional
+  designed pre-QANDEEL background shown as designed (Stage 4 §3), and the source of the approved specification. The
+  completeness gate refuses any missing field, secret material, executable content or an authority claim, and a kernel
+  over the 2,400-character context cap (condensed, never cut). The kernel is derived deterministically and always carries
+  the constructed-knowledge rule (never human, never a real past employer or achievement, the title grants nothing).
+- **Binding.** `employee_identity_bindings`: the hire binds an approved profile of the seat's role (INITIAL) in the same
+  confirm; `EMPLOYEE_IDENTITY_REVISE` ends the live binding and starts the next (MINOR, or MATERIAL — VALID certifications
+  become REVIEW_DUE, like a reasoning-profile change); the Employee, its id, seat, grants, budget, memory and history stay;
+  one PROFILE history row per revision. One identity is one person (a profile code is carried by at most one live
+  Employee). A datastore trigger binds only an APPROVED profile of the Employee's own role.
+- **Context.** A bound Employee's preamble carries the approved kernel and its organization read live at every run: seat,
+  Department, the accountable manager (the holder of its seat's reports-to seat, or the Founder), lifecycle state, and the
+  rule that authority is only explicit grants (closes the Stage 4 §7 manager / authority-reference gap). An unbound
+  Employee — the first CEO — keeps its exact preamble (proved identical across the upgrade).
+- **Amendment.** A hire without an identity is refused (`IDENTITY_REQUIRED`) on both paths: `EMPLOYEE_HIRE` names a
+  release profile or an approved catalog profile, and the delegated `staffing.hire` names an approved catalog profile (its
+  binding is recorded under the Founder who approved the profile). This amends the L1-02 / D-P1-10 rule that the identity
+  was optional; the D-P1-10 baseline tests now name one.
+
+## D-TALENT-04 — Manager-led staffing for N identical seats; the Founder decides without a missing CEO; a conversation becomes a request without re-entry (executor)
+
+**Decision.**
+- **Headcount (D7).** `staffing_requests.headcount` (1..10, immutable evidence, 1 for every earlier request). An approval
+  opens that many identical seats under the requesting seat, each linked to the request; no Employee is created; every
+  seat is filled by its own hire with its own identity, never beyond the approved number (one PRIMARY per seat).
+- **Decisions.** The Founder decides a RECOMMENDED request; a CONSOLIDATED one is history and is never offered (its preview
+  passed and its confirm failed before); while no ACTIVE CEO holds the CEO seat, a Director's open request reaches the
+  Founder directly (it would otherwise wait for a review nobody can give). The preview names role, seats, the CEO's
+  recommendation and that approval hires, activates and spends nothing; the studio shows the request's full evidence.
+- **Without re-entry (G9).** An Employee holding `org.staffing.request` / `org.talent.propose` sees the exact proposal
+  shape in its context (`GRANTED_ORG_ACT_GUIDANCE`, like the granted Tool guidance); a need agreed with the Founder in a
+  conversation is filed from that reply run as an ORG_ACTION — the existing org-act path, its grant check and its
+  idempotency. Without the grant nothing is shown.
+- **Seats by the Founder.** `POSITION_CREATE` opens a MANAGER / LEAD / SPECIALIST seat in an existing, active Department
+  under its Director seat (Director seats stay the canonical map's). No Department is created, merged or moved.
+
+## D-TALENT-05 — Department budgets on the existing budget engine (executor)
+
+**Decision.** `DEPARTMENT_BUDGET` creates a Department's hard cap under the Company cap (a changed ceiling is the existing
+`BUDGET_CEILING`); the CEO proposes one through `talent.propose` (DEPARTMENT_BUDGET), which the Founder accepts or declines
+(`TALENT_PROPOSAL_DECIDE`). A Department Employee's envelope requires its Department budget and stays within it
+(`EMPLOYEE_MODEL_ACCESS` refuses `DEPARTMENT_BUDGET_MISSING` / a cap above the Department's). Nothing is spent or raised
+automatically. This closes WP0 gap G5 (no Department Employee could train).
+
+## D-TALENT-06 — Leadership access policies: one individual grant per eligible seat holder, issued and revoked with the seat (executor; D2 / D3 / D4 / D5)
+
+**Decision.** Four Founder-approvable templates (`ACCESS_POLICY_TEMPLATES`): App documentation (R0), Company documents (R0,
+D3), proposal rights (`org.staffing.request` for CEO and Directors, `org.staffing.review` for the CEO,
+`org.talent.propose`), and Academy evaluation (`org.academy.evaluate` / `org.academy.review`). `ACCESS_POLICY_DECIDE`
+approves or revokes one; the upgrade creates none.
+- **Grants.** While a policy is ACTIVE the datastore keeps one ordinary `permission_grants` row per eligible holder and
+  capability, granted by the Founder who approved the policy (`granted_by_ref founder:*`, reason `policy.<code>`), linked in
+  `policy_grant_links`. Eligibility: a PRIMARY assignment on a live CEO / Director seat, the Employee not SUSPENDED or
+  RETIRED. A title alone grants nothing; a specialist seat receives nothing.
+- **Reconciliation.** In the transaction that changes eligibility — an assignment inserted or ended, a lifecycle
+  transition, the policy's approval — never by polling or a worker. Revocation is by `system:access-policy`.
+- **Adoption.** An individual grant the Employee already held (Ahmed's product knowledge) is adopted as it is — never
+  revoked and re-issued — and a revoked policy leaves adopted grants standing.
+- **D3 source.** The same fixed-host, anonymous, GET-only documentation reader serves a second profile
+  (`COMPANY_DOCS_PROFILE`: driver `github.company-docs`, Tool `company-knowledge`, action `company-docs-read`), reading only
+  the repository README and `docs/authority/**`; the source and Tool are registered by the policy's approval. Product
+  Knowledge is unchanged and never copied per manager.
+
+## D-TALENT-07 — D5 scalable Academy evaluation: the controlled amendment of D-C3-10 and D-C3-22 (7.1) (Founder amendment, executor)
+
+**Amendment.** D-C3-10 made the Founder the only evaluator in Strong v1 and D-C3-22 (7.1) recorded that widening it needs a
+migration. Under the Founder's D5 decision, migration 0024 recreates `academy_dimension_results` with every row kept (the
+0021–0023 rebuild pattern) and widens it only for a manager: evaluator kind MANAGER is the only kind whose ref is
+`employee:*`, and a trigger admits a MANAGER row only for an APPLIED manager evaluation of that attempt by that Employee,
+never the trainee. The deterministic dimensions stay the rubric's alone (a CHECK). No released migration is edited.
+
+**Rules.**
+- **Who.** The Founder assigns (`ACADEMY_EVALUATION_ASSIGN`) one finished, answered, undecided attempt to the trainee's
+  direct manager (the holder of its seat's reports-to seat), who must be qualified: ACTIVE, a live VALID certification for
+  its own role, the `org.academy.evaluate` grant (policy) and model access for the evaluation's task class. CEO and
+  Director trainees are evaluated by the Founder only.
+- **How.** The manager's bounded evaluation Work Item (capped from its envelope) carries the scenario and the candidate's
+  answer; the manager proposes `academy.evaluation.propose` with every evaluator dimension and competency.
+- **Independent review.** Practice applies at once; an assessment or holdout (it counts toward certification) waits for an
+  independent review — the Founder (`ACADEMY_EVALUATION_REVIEW`) or the evaluator's own qualified manager
+  (`academy.evaluation.review`); the reviewer is never the evaluator or the trainee (CHECKs).
+- **Unchanged.** The run-fact rubric always scores first; the attempt is decided by the program's rules; certification,
+  probation, Founder Calibration and the activation gate are untouched. A storage module of its own
+  (`academy-manager.ts`) joins the verifier's Academy writers.
+
+## D-TALENT-08 — Specialized competence, Tool scenarios, honest Tool readiness and certification Tool scopes (executor)
+
+**Decision.**
+- **Competencies.** A program may state specialty competencies beside the ten dimensions (`competencies`: code, title,
+  critical, pass mark, the curriculum category a failure retrains). The evaluator scores each on the candidate's answer; a
+  critical one below its mark fails the attempt whatever the average; an incomplete set is incomplete; failures are
+  diagnosed into targeted retraining. Presets (data): platform growth (research from citable sources, source
+  verification, opportunity discovery, metric interpretation, hypothesis quality, experiment design, update discipline —
+  never claimed unpublished algorithm internals) and video production.
+- **Tool scenarios.** A scenario may name a Tool (`academy_scenarios.tool_code`); it runs only when that Tool is READY and
+  the trainee holds a grant of it, otherwise it is refused (`TOOL_<readiness>`) and stays unassessed.
+- **Readiness.** `role_tool_requirements` records what a role needs (metadata, no grant). Readiness is derived:
+  NOT_REGISTERED (no adapter), NOT_INTEGRATED (registered, no driver on this host), AWAITING_CONNECTION (credential
+  absent), ON_HOLD, READY. `TOOL_ACCESS` grants a READY R0 / R1 action to any number of Employees (one individual grant
+  each); an external effect stays approved per act.
+- **Certification scope.** At issuance, `certification_tool_scopes` records, for every Tool the role needs, ASSESSED (a
+  passed Tool scenario, with its evidence) or NOT_ASSESSED with what is known of the Tool. A Skill certificate never claims
+  operating a Tool. No social or editing adapter is built here.
+
+## D-TALENT-09 — Developing ACTIVE Employees without re-creating them (executor)
+
+**Decision.** `EMPLOYEE_RETRAIN` moves an ACTIVE Employee to RETRAINING (the transition existed; the act did not), and a
+leader may propose it (`talent.propose` RETRAIN). A new program version (more Skills) is approved in the catalog; a
+RETRAINING Employee may be its BQM-2 subject (the fenced benchmark mode already admits trainees); enrollment opens
+passports only for Skills it does not hold, so earlier work and passports are not redone; the return is SHADOW /
+PROBATION and the Founder's activation decision. Identity, history and certifications stay.
+
+## D-TALENT-10 — The Staff & Training hall and the seat case (executor)
+
+**Decision.** A third hall beside the Academy and the Meeting Room: Requests & decisions (staffing requests with evidence,
+leaders' proposals, manager evaluations awaiting review, the policies), Seats & hiring (Departments, budgets, seats, Tool
+needs and readiness, opening a seat), the Identity studio, the Skills & Academy studio (a template with this build's BQM-2
+pins, Skills with provenance and benchmark cases, scenarios with hidden holdouts and Tool scenarios, competency presets,
+shadow work, the full definition), and People & progress (lifecycle, identity, envelope and Academy spend, certification
+and its Tool scope, policy grants, retraining, identity revision, Tool grants). A seat opens its own case: the activation
+view generalized to any seat (`activationView(…, positionId)`); the CEO's "Activate the Company" view is unchanged. Every
+decision is the existing preview → confirmation dialog; hiring a CANDIDATE needs no provider outside the CEO path.
+
+## D-TALENT-11 — Migration 0024 and compatibility (executor)
+
+**Decision.** One additive migration: the widened intent CHECK (0023 pattern), the catalog and its history, identity
+bindings, `staffing_requests.headcount` and `academy_scenarios.tool_code` (additive columns, immutable by trigger), access
+policies and their grant links, role Tool requirements, talent proposals, manager evaluations, competency results,
+certification Tool scopes, and the recreated `academy_dimension_results` (D-TALENT-07). A LIVE-shaped v23 Company upgrades
+with every existing row, grant, budget, certification and history unchanged, every new table empty, and the CEO context
+identical (`talent-migration.test.ts`). Code that may run against an older schema in released-version test fixtures reads
+the new tables only when they exist; a text scenario is still written without the tool column.
+
+## D-TALENT-12 — Founder review corrections: C4 acceptance, studio form fields (executor)
+
+**Decision.** Three corrections from the Founder's independent review of PR #41, in the same PR:
+- **C4 acceptance** (`scripts/c4-acceptance.mjs`, step `staffing-request-synthesis-delegated-decision-hire`). The step
+  predates D-TALENT-03 and asked the CEO's delegated `staffing.hire` to create an Employee with no identity. The hire was
+  correctly refused (`IDENTITY_REQUIRED`), so the run completed with no `hiredEmployeeId` and the step's read failed with
+  `NOT_FOUND`. The acceptance now meets the rule: the Founder approves the role's identity profile through the governed
+  confirmation (`TALENT_DEFINITION_DECIDE`), the delegated hire names it, and the step checks the INITIAL binding. The
+  hiring rule, the org-act contract and the delegation limits are unchanged.
+- **`c3-fault` on Windows** (`SUPERVISOR_NOT_AUTHORITATIVE` in the recovering child, then a harness timeout). No code on its
+  path changed in this PR (start, recovery, runtime authority, queue, the host fixture and the harness are identical to
+  `main`), and it passed 8 of 8 local Windows reruns. Treated as a runner-timing event on a 1.5 s supervisor lease; it is
+  re-proved by the FULL gate on the final head. Not widened without new evidence.
+- **Benchmark cases and competencies as ordinary fields** (D-TALENT-10). The Skills & Academy studio edited both as JSON
+  text. They are now fields: per case, its text and what a good answer shows (accepted decisions, authority, evidence and
+  confidence by ticking; reversibility and Founder decision; a spend ceiling; Arabic; a minimum length; forbidden
+  phrases), each stated constraint markable critical; per competency, a code typed in words, a description, a pass mark,
+  critical, and the curriculum category it retrains. JSON stays under "Advanced". The pure model
+  (`command-center-ui/src/model/talent-forms.ts`) keeps the contract's shape. Its closed lists are proved identical to the
+  governance and mind contracts, and field-made cases and competencies pass `assertAcademyPackage`
+  (`command-center/test/talent-forms-parity.test.ts`). The governed check on save and approval stays the authority.
+
+## D-TALENT-13 — Majed El Kedwany: the approved specification as the first full acceptance (executor)
+
+**Decision.** The Founder's `MAJED_EL_KEDWANY_APPROVED_SPEC.md` is stored verbatim in `docs/talent/`. Its SHA-256 is
+`ccdc184aa568bc06dc1f7ac739a5b973dc5a932275902abf647e12fc04ebbc55`, and the acceptance test checks it. It is not authority
+(condition F).
+- **Derived data.** The identity profile and the Academy program derived from it are data in
+  `docs/talent/MAJED_EL_KEDWANY.talent.json`. This is what the Founder enters in the general Staff & Training studio. No
+  product code reads it, and there is no Majed-specific code, package or release entry.
+- **Acceptance test 1** (`packages/runtime/test/talent/company-talent.test.ts`) replaces the placeholder with the derived
+  data and checks:
+  - the six capability groups (§4);
+  - the five practical tests (§5), the fifth hidden;
+  - `assessmentTrials` 5;
+  - Founder Calibration;
+  - the three 90-day phases (§6) as internal shadow briefs.
+
+  It runs the full governed path to ACTIVE in an isolated test Company: a critical competency fails test 1, followed by
+  targeted retraining, then all five tests, the three briefs, probation, certification, Calibration and activation.
+- **Real-UI proof.** The profile is typed into the Identity studio's fields, and the saved profile equals the derived
+  one. The program is started from the template, completed with the derived sections, and approved through the governed
+  preview.
+- **Executor derivation choices** (`docs/talent/README.md`; the Founder may change any of them in the studio before
+  approval):
+  - the kernel-length condensation;
+  - all six competencies critical (Evidence-Based Decisions at 75, the others at 70);
+  - the retrain categories;
+  - test 5 as the holdout;
+  - the 90 days rehearsed as shadow briefs, with the real post-activation objectives left to the Goal path after
+    activation.
+
+LIVE is unchanged: Majed is not created, and Ahmed Zaki's data and grants are untouched.

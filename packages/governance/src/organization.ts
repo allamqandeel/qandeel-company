@@ -11,6 +11,7 @@ import { QandeelError, boundedText, type RiskLevel, type Timestamp } from '@qand
 import { APP_CONTROL_CAPABILITY, APP_CONTROL_RISK, controlGrantResource } from './app-controls.js';
 import { assertCatalogCode } from './classes.js';
 import { assertMoney, assertTokens } from './economics.js';
+import { assertHeadcount } from './talent.js';
 
 export const POSITION_SCOPES = ['COMPANY', 'DEPARTMENT'] as const;
 export type PositionScope = (typeof POSITION_SCOPES)[number];
@@ -120,6 +121,8 @@ export interface StaffingRequestInput {
   readonly impactIfNotStaffed: string;
   readonly alternatives: Readonly<Record<(typeof STAFFING_ALTERNATIVES)[number], string>>;
   readonly expectedCostMicros: number | null;
+  /** COMPANY-TALENT-01 (D7): identical seats requested (1 when absent); each seat and Employee keeps its own record. */
+  readonly headcount: number;
 }
 
 const ownString = (o: Record<string, unknown>, key: string): unknown => (Object.hasOwn(o, key) ? o[key] : undefined);
@@ -136,7 +139,7 @@ function onlyKeys(o: Record<string, unknown>, allowed: readonly string[], field:
 /** Parses a Staffing Request by own fields only; incomplete Stage 10 evidence is refused. */
 export function parseStaffingRequest(input: unknown): StaffingRequestInput {
   const o = plainObject(input, 'staffingRequest');
-  onlyKeys(o, ['departmentCode', 'roleRef', 'positionKind', 'positionTitle', 'businessNeed', 'workloadEvidence', 'skillGap', 'expectedValue', 'impactIfNotStaffed', 'alternatives', 'expectedCostMicros'], 'staffingRequest');
+  onlyKeys(o, ['departmentCode', 'roleRef', 'positionKind', 'positionTitle', 'businessNeed', 'workloadEvidence', 'skillGap', 'expectedValue', 'impactIfNotStaffed', 'alternatives', 'expectedCostMicros', 'headcount'], 'staffingRequest');
   const dept = ownString(o, 'departmentCode');
   const kind = ownString(o, 'positionKind');
   if (!isStaffableKind(kind)) throw new QandeelError('VALIDATION_FAILED', 'a staffing request asks for a MANAGER, LEAD or SPECIALIST seat', { field: 'positionKind' });
@@ -162,6 +165,7 @@ export function parseStaffingRequest(input: unknown): StaffingRequestInput {
     impactIfNotStaffed: boundedText(ownString(o, 'impactIfNotStaffed'), 'impactIfNotStaffed', 2000),
     alternatives: alt,
     expectedCostMicros: cost === undefined || cost === null ? null : assertMoney(cost, 'expectedCostMicros'),
+    headcount: assertHeadcount(ownString(o, 'headcount')),
   };
 }
 
@@ -218,6 +222,11 @@ export const ORG_ACTIONS = [
   'review.plan.declare',
   // C7-B: a Company → App control revision (R3 — see `orgActRequest`); proposed only, never issued by the act itself.
   'control.propose',
+  // COMPANY-TALENT-01: a leader's proposal (identity, program, skill, retraining, Department budget) — decided by the Founder.
+  'talent.propose',
+  // COMPANY-TALENT-01 (D5): a qualified manager's evaluation of a direct report's Academy attempt, and its independent review.
+  'academy.evaluation.propose',
+  'academy.evaluation.review',
 ] as const;
 export type OrgAction = (typeof ORG_ACTIONS)[number];
 export const isOrgAction = (v: unknown): v is OrgAction => isMember(ORG_ACTIONS, v);
@@ -236,6 +245,9 @@ const ORG_ACTION_CAPABILITY: Readonly<Record<OrgAction, string | null>> = Object
   'handoff.escalate': null,
   'review.plan.declare': 'org.review.plan',
   'control.propose': APP_CONTROL_CAPABILITY,
+  'talent.propose': 'org.talent.propose',
+  'academy.evaluation.propose': 'org.academy.evaluate',
+  'academy.evaluation.review': 'org.academy.review',
 });
 
 /** The grant an act needs (`null`: the act only answers one's own handoff). Unknown acts have none. */
@@ -273,7 +285,7 @@ export function goalActCapability(action: string): string | null {
 }
 
 /** Organization capabilities the Founder may delegate as explicit grants (never R4, never approval). */
-export const ORG_CAPABILITIES = ['org.staffing.request', 'org.staffing.review', 'org.staffing.decide', 'org.staffing.hire', 'org.work.delegate', 'org.work.support', 'org.work.reprioritize', 'org.review.plan', 'org.goal.derive', 'org.goal.link'] as const;
+export const ORG_CAPABILITIES = ['org.staffing.request', 'org.staffing.review', 'org.staffing.decide', 'org.staffing.hire', 'org.work.delegate', 'org.work.support', 'org.work.reprioritize', 'org.review.plan', 'org.goal.derive', 'org.goal.link', 'org.talent.propose', 'org.academy.evaluate', 'org.academy.review'] as const;
 export const isOrgCapability = (v: unknown): boolean => isMember(ORG_CAPABILITIES, v);
 
 // --- Work delegation bounds (Stage 8 §24–§26, §29) --------------------------------------------------

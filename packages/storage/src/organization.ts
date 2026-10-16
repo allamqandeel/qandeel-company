@@ -68,6 +68,7 @@ import {
   type WorkDelegationRecord,
 } from './org-records.js';
 import { storeContext, type CompanyStore } from './store.js';
+import { txReconcileAccess } from './talent-access.js';
 
 // --- Placement (shared by the Founder store and delegated organizational acts) --------------------------
 
@@ -100,6 +101,8 @@ export function txInsertAssignment(ctx: StoreContext, a: AssignmentInput): Assig
   }
   assignmentHistory(ctx, id as Id, 1, null, 'ACTIVE', a.reasonCode, a.decidedByRef);
   appendAudit(ctx, 'org.assigned', 'assignment', id, { actorRef: a.decidedByRef }, 'OK', a.reasonCode, { positionId: a.positionId, employeeId: a.employeeId, kind: a.kind });
+  // COMPANY-TALENT-01: a seat change may make the Employee eligible for a Founder-approved leadership policy (same transaction).
+  txReconcileAccess(ctx, [a.employeeId]);
   return getAssignment(ctx, id as Id);
 }
 
@@ -112,6 +115,8 @@ export function txEndAssignment(ctx: StoreContext, a: AssignmentRecord, reasonCo
   assignmentHistory(ctx, a.id, a.version + 1, 'ACTIVE', 'ENDED', reasonCode, actorRef);
   appendAudit(ctx, 'org.assignment_ended', 'assignment', a.id, { actorRef }, 'OK', reasonCode, { positionId: a.positionId, employeeId: a.employeeId, kind: a.kind });
   if (a.kind === 'ACTING') revokeActingDelegations(ctx, a.id, reasonCode, actorRef);
+  // COMPANY-TALENT-01: leaving the seat ends a leadership policy's eligibility (same transaction).
+  txReconcileAccess(ctx, [a.employeeId]);
 }
 
 /**
@@ -200,6 +205,9 @@ export function txDecideStaffing(ctx: StoreContext, r: StaffingRequestRecord, de
   assertStaffingDecidable(r.state);
   const at = ts(ctx);
   const seat = decision === 'APPROVE' ? txSeatForRequest(ctx, r, opts.positionCode, opts.positionTitle, actorRef) : null;
+  // COMPANY-TALENT-01 (D7): an approved headcount opens that many identical seats, each its own record (never Employees:
+  // every seat is still filled by its own hire, with its own identity, and never beyond the approved number).
+  if (seat !== null) for (let n = 2; n <= r.headcount; n++) txSeatForRequest(ctx, r, opts.positionCode === null ? null : `${opts.positionCode}-${n}`, opts.positionTitle, actorRef);
   const to = decision === 'APPROVE' ? 'APPROVED' : 'REJECTED';
   ctx.db.run(
     `UPDATE staffing_requests SET state = ?, decided_by_ref = ?, decision_authority_ref = ?, approved_position_id = ?, decided_at = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`,
