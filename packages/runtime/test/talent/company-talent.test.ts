@@ -10,6 +10,9 @@
  *       under BQM-2, installed, learned; a critical specialty competency fails an assessment (no certification, no
  *       activation) → targeted retraining → retest → holdout → shadow → probation → certification → Founder Calibration (a
  *       leader) → ACTIVE. Its context carries the approved kernel and its live organization.
+ *   2 — a Reddit Growth Specialist under the Growth Director seat: the platform-growth competency preset (research,
+ *       verification, opportunity discovery, metrics, hypotheses, experiments, update discipline) scored beside the
+ *       dimensions; a specialist needs no Founder Calibration.
  *   4 / 5 — a Video Editor in another Department, another specialty, the same build: its editing Tool is NOT_REGISTERED; a
  *       Tool scenario is refused (never assessed); the certification records the Tool as NOT ASSESSED, honestly.
  */
@@ -18,7 +21,7 @@ import { describe, test } from 'node:test';
 
 import type { Id } from '@qandeel-company/domain';
 import { provisioningProfileDigest } from '@qandeel-company/governance';
-import { CEO_IDENTITY_PROFILE_V1, programTemplate, type AcademyPackage, type AnswerExpectation, type IdentitySpec } from '@qandeel-company/mind';
+import { CEO_IDENTITY_PROFILE_V1, COMPETENCY_PRESETS, programTemplate, type AcademyPackage, type AnswerExpectation, type IdentitySpec } from '@qandeel-company/mind';
 import { DEEPSEEK_MODELS_PATH, DEEPSEEK_MODEL_CODE, DEEPSEEK_V41_FLASH_ACADEMY_PROFILE, DeepSeekProviderAdapter, FakeDeepSeekTransport, fakeChatAnswer, fakeModelsAnswer, type DeepSeekRequest, type DeepSeekResponse } from '@qandeel-company/model-providers';
 import { InMemorySecretVault } from '@qandeel-company/secret-vault';
 import type { FounderSession } from '@qandeel-company/storage';
@@ -51,7 +54,7 @@ function identity(roleRef: string, title: string, name: { given: string; family:
 const expect0: AnswerExpectation = { evidence: ['INSUFFICIENT', 'PARTIAL'], critical: ['evidence'] };
 
 /** A complete catalog program (two Skills, practice / two assessments / a holdout, shadow work, competencies). */
-function program(roleRef: string, code: string, title: string, leader: boolean, extra: { toolCode?: string } = {}): AcademyPackage {
+function program(roleRef: string, code: string, title: string, leader: boolean, extra: { toolCode?: string; competencies?: AcademyPackage['program']['competencies'] } = {}): AcademyPackage {
   const base = programTemplate({ roleRef, code, title, leader }) as unknown as AcademyPackage;
   const skill = (c: string, name: string): AcademyPackage['skills'][number] => ({
     code: `${code}.${c}`, name, versionLabel: '1.0.0', blueprintCategory: 'REQUIRED', critical: true, minProficiency: 'QUALIFIED', targetProficiency: 'QUALIFIED', sourceRefs: ['authority:stage-7'],
@@ -62,7 +65,7 @@ function program(roleRef: string, code: string, title: string, leader: boolean, 
   return {
     ...base,
     skills,
-    program: { ...base.program, skillTargets: skills.map((s) => ({ skillCode: s.code, proficiency: 'QUALIFIED' as const })), competencies: [{ code: 'SOURCE_VERIFICATION', title: 'Separates verified facts from rumours', critical: true, passPct: 75, retrain: 'COMPANY_OPERATING_SKILLS' }, { code: 'HYPOTHESIS_QUALITY', title: 'Testable hypotheses with a metric and a stop rule', critical: false, passPct: 60, retrain: 'REAL_CASE_STUDIES' }] },
+    program: { ...base.program, skillTargets: skills.map((s) => ({ skillCode: s.code, proficiency: 'QUALIFIED' as const })), competencies: extra.competencies ?? [{ code: 'SOURCE_VERIFICATION', title: 'Separates verified facts from rumours', critical: true, passPct: 75, retrain: 'COMPANY_OPERATING_SKILLS' }, { code: 'HYPOTHESIS_QUALITY', title: 'Testable hypotheses with a metric and a stop rule', critical: false, passPct: 60, retrain: 'REAL_CASE_STUDIES' }] },
     scenarios: [
       { code: `${code}.practice-1`, kind: 'PRACTICE', sourceRef: 'scenario:studio', budgetMicros: 40_000, content: `SYNTHETIC practice for ${code}: plan a first two-week test with a clear success metric.`, expect: expect0 },
       { code: `${code}.assess-1`, kind: 'ASSESSMENT', sourceRef: 'scenario:studio', budgetMicros: 40_000, content: `SYNTHETIC assessment one for ${code}: a rumour claims the platform changed its ranking. What do you do?`, expect: expect0 },
@@ -147,7 +150,9 @@ async function academy(x: Ctx, pkg: AcademyPackage, employeeId: Id, seatId: Id, 
   const enrollmentId = refOf(act(x, 'ACADEMY_ENROLL', { ...args, employeeId }));
   act(x, 'ACADEMY_MODULES_COMPLETE', { enrollmentId, moduleCodes: pkg.program.curriculum.filter((m) => m.category !== 'REAL_CASE_STUDIES').map((m) => m.code) });
   act(x, 'ACADEMY_MODULES_COMPLETE', { enrollmentId, moduleCodes: pkg.program.curriculum.filter((m) => m.category === 'REAL_CASE_STUDIES').map((m) => m.code) });
-  const run = async (scenarioCode: string, competencies: string[]): Promise<Id> => {
+  const scored = (overrides: Readonly<Record<string, number>>): string[] => (pkg.program.competencies ?? []).map((c) => `${c.code}:${overrides[c.code] ?? 90}`);
+  const run = async (scenarioCode: string, overrides: Readonly<Record<string, number>> = {}): Promise<Id> => {
+    const competencies = scored(overrides);
     const attemptId = refOf(act(x, 'ACADEMY_ATTEMPT_START', { ...args, enrollmentId, scenarioCode }));
     const w = x.rt.founder.activation(seatId).enrollment?.attempts.find((a) => a.id === attemptId)?.workItemId;
     assert.ok(w);
@@ -157,12 +162,12 @@ async function academy(x: Ctx, pkg: AcademyPackage, employeeId: Id, seatId: Id, 
     act(x, 'ACADEMY_EVALUATE', { attemptId, scores: EVAL_DIMS.map((d) => `${d}:90`), competencies });
     return attemptId;
   };
-  await run(`${pkg.code}.practice-1`, ['SOURCE_VERIFICATION:90', 'HYPOTHESIS_QUALITY:85']);
+  await run(`${pkg.code}.practice-1`);
   assert.equal(x.rt.founder.activation(seatId).enrollment?.stage, 'ASSESSMENT');
   opts.atAssessment?.(enrollmentId, args);
   if (opts.failFirstAssessment) {
     // A critical specialty competency below its mark fails the assessment whatever the average: no certification, no activation.
-    const failed = await run(`${pkg.code}.assess-1`, ['SOURCE_VERIFICATION:40', 'HYPOTHESIS_QUALITY:95']);
+    const failed = await run(`${pkg.code}.assess-1`, { SOURCE_VERIFICATION: 40 });
     const v = x.rt.founder.activation(seatId).enrollment;
     assert.equal(v?.attempts.find((a) => a.id === failed)?.outcome, 'FAIL');
     assert.equal(v?.stage, 'RETRY');
@@ -170,9 +175,9 @@ async function academy(x: Ctx, pkg: AcademyPackage, employeeId: Id, seatId: Id, 
     const rem = v?.remediations.find((r) => r.state === 'DIAGNOSED');
     assert.ok(rem?.categories.includes('COMPANY_OPERATING_SKILLS'), 'the failed competency is retrained (targeted, the passed work is not redone)');
     act(x, 'ACADEMY_RETRAIN_COMPLETE', { remediationId: rem?.id });
-    await run(`${pkg.code}.assess-2`, ['SOURCE_VERIFICATION:90', 'HYPOTHESIS_QUALITY:80']);
-  } else await run(`${pkg.code}.assess-1`, ['SOURCE_VERIFICATION:90', 'HYPOTHESIS_QUALITY:80']);
-  await run(`${pkg.code}.holdout-1`, ['SOURCE_VERIFICATION:85', 'HYPOTHESIS_QUALITY:80']);
+    await run(`${pkg.code}.assess-2`);
+  } else await run(`${pkg.code}.assess-1`);
+  await run(`${pkg.code}.holdout-1`);
   assert.equal(x.rt.founder.activation(seatId).enrollment?.stage, 'SHADOW_WORK');
   act(x, 'EMPLOYEE_LIFECYCLE', { employeeId, to: 'PROBATION' });
   const shadow = refOf(act(x, 'ACADEMY_SHADOW_ASSIGN', { ...args, enrollmentId, assignmentCode: pkg.shadowAssignments[0]?.code }));
@@ -228,6 +233,34 @@ describe('COMPANY-TALENT-01: any role, from the Company\'s own surface, through 
       const row = overview.people.find((p) => p.employeeId === majed);
       assert.equal(row?.certification?.status, 'VALID');
       assert.ok(row?.identity, 'its catalog identity is visible');
+    });
+  });
+
+  test('2 — a Reddit Growth Specialist from the same build: platform-growth competencies, no code, no Founder Calibration for a specialist', async () => {
+    const pkg = program('role:growth.reddit-specialist', 'growth.reddit', 'Reddit Growth Specialist — Academy program', false, { competencies: (COMPETENCY_PRESETS['platform-growth'] ?? []) as AcademyPackage['program']['competencies'] });
+    await withCompany('talent-reddit', () => [pkg], async (x) => {
+      provision(x);
+      const org = x.rt.org.organization;
+      const growth = x.rt.governance.departmentByCode('growth');
+      assert.ok(growth);
+      const seatId = refOf(act(x, 'POSITION_CREATE', { departmentId: growth.id, roleRef: 'role:growth.reddit-specialist', title: 'Reddit Growth Specialist', kind: 'SPECIALIST', code: 'growth.reddit-1' }));
+      assert.equal(org.position(seatId).reportsToPositionId, org.positionByCode('director.growth')?.id, 'D1: platform specialists sit under Growth');
+      const identityId = draft(x, { kind: 'IDENTITY_PROFILE', code: 'ola-samir', body: identity('role:growth.reddit-specialist', 'SYNTHETIC Reddit Growth Specialist', { given: 'Ola', family: 'Samir', ar: 'علا سمير' }) });
+      act(x, 'TALENT_DEFINITION_DECIDE', { definitionId: identityId, decision: 'APPROVE' });
+      const programId = draft(x, { kind: 'ACADEMY_PROGRAM', body: pkg });
+      act(x, 'TALENT_DEFINITION_DECIDE', { definitionId: programId, decision: 'APPROVE' });
+      const specialist = refOf(act(x, 'EMPLOYEE_HIRE', { positionId: seatId, givenName: 'Ola', familyName: 'Samir', identityDefinitionId: identityId }));
+      assert.deepEqual(x.rt.governance.grants(specialist).filter((g) => g.status === 'ACTIVE'), [], 'a specialist receives no leadership policy grant; a title grants nothing');
+      act(x, 'DEPARTMENT_BUDGET', { departmentId: growth.id, capMoney: 2_000_000 });
+      act(x, 'EMPLOYEE_LIFECYCLE', { employeeId: specialist, to: 'TRAINING' });
+      act(x, 'EMPLOYEE_MODEL_ACCESS', { employeeId: specialist, capMoney: 1_500_000, taskClasses: CLASSES, dataClassCeiling: 'D2' });
+      await academy(x, pkg, specialist, seatId, { failFirstAssessment: true });
+      const v = x.rt.founder.activation(seatId);
+      assert.equal(v.next, 'DECIDE_ACTIVATION', 'a specialist program needs no Founder Calibration');
+      act(x, 'ACTIVATION_DECIDE', { requestId: v.enrollment?.activationRequest?.id, decision: 'APPROVE' });
+      assert.equal(x.rt.governance.getEmployee(specialist).state, 'ACTIVE');
+      const attempts = x.seen.filter((s) => s.kind === 'SCENARIO');
+      assert.ok(attempts.length > 0 && attempts.every((s) => s.text.includes('You are SYNTHETIC Reddit Growth Specialist.')), 'its approved kernel is in every attempt context');
     });
   });
 

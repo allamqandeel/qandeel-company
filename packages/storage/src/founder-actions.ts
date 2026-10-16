@@ -542,11 +542,6 @@ export class FounderActionStore {
     return this.#read((ctx) => this.#envOf(ctx));
   }
 
-  /** The release-pinned packages only (what the Talent Catalog never reuses a code of). */
-  releasePackages(): readonly AcademyPackage[] {
-    return this.#activation.packages;
-  }
-
   #envOf(ctx: StoreContext): ActivationEnv & { readonly release: readonly AcademyPackage[] } {
     return { ...this.#activation, packages: txAllPackages(ctx, this.#activation.packages), release: this.#activation.packages };
   }

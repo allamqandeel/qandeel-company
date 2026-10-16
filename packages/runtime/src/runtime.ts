@@ -882,7 +882,7 @@ export class CompanyRuntime {
           // Reconciliation is idempotent: a stable world reports zero deltas and stays silent.
           conditional: { sync: (report) => { const r = report as AttentionSyncReport; return r.opened + r.signalled + r.resolved > 0; } },
         }),
-        actions: signalling(FounderActionStore.for(s, auth, { profiles: this.#opts.governance?.provisioningProfiles ?? [], academyPackages: this.#opts.governance?.academyPackages ?? [], identityProfiles: this.#opts.governance?.identityProfiles ?? [], tools: this.toolEnvironment() }), changed, { mutating: ['preview', 'confirm', 'reject', 'expireStale'], reads: ['get', 'list', 'employeeBudgetId', 'provisioningProfiles', 'activationEnv', 'packageDigest', 'releasePackages'] }),
+        actions: signalling(FounderActionStore.for(s, auth, { profiles: this.#opts.governance?.provisioningProfiles ?? [], academyPackages: this.#opts.governance?.academyPackages ?? [], identityProfiles: this.#opts.governance?.identityProfiles ?? [], tools: this.toolEnvironment() }), changed, { mutating: ['preview', 'confirm', 'reject', 'expireStale'], reads: ['get', 'list', 'employeeBudgetId', 'provisioningProfiles', 'activationEnv', 'packageDigest'] }),
         // COMPANY-TALENT-01: Founder drafting announces once (content, never authority); reads are silent.
         talent: signalling(TalentCatalogStore.for(s, this.#opts.governance?.academyPackages ?? []), changed, { mutating: ['saveDraft', 'submit', 'withdraw'], reads: ['get', 'check', 'list', 'history', 'bindings', 'packages'] }),
         talentOverview: (): Record<string, unknown> => talentOverview(s, this.#opts.governance?.academyPackages ?? [], this.toolEnvironment()),
