@@ -833,4 +833,7 @@ input[type="range"] { accent-color: var(--gold); }
 .talent-gaps li { color: var(--urgent-ink); }
 .talent-foot { position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--line); padding: 10px 0 4px; }
 .talent-advanced summary { cursor: pointer; color: var(--fg-2); }
+.talent-check { display: inline-flex; align-items: center; gap: 4px; font-size: 0.85rem; color: var(--fg); cursor: pointer; }
+.talent-checks > .talent-check { flex: 0 1 auto; }
+.talent-check:has(input:disabled) { opacity: 0.55; cursor: default; }
 @media (max-width: 640px) { .talent-row > * { flex-basis: 100%; } }

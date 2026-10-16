@@ -13,6 +13,7 @@
  * except the open editor's unsaved text.
  */
 import { dirOf, fmtMoneyMicros, hasArabic, humanize } from '../model/format.js';
+import { BENCHMARK_CASES_MAX, COMPETENCIES_MAX, CURRICULUM_CATEGORIES, EXPECT_CHOICES, caseProblem, competencyCode, competencyProblem, forbiddenText, hasChoice, isCritical, newCase, newCompetency, numberText, parseNumber, setArabic, setChoice, setCritical, setForbidden, setNumber, setTri, statedKeys, triOf, type ChoiceKey, type ExpectationKey, type Tri } from '../model/talent-forms.js';
 import { renderActivation } from './activation.js';
 import { api, ApiError } from './api.js';
 import { h, type PanelHost } from './panels.js';
@@ -82,6 +83,8 @@ const lines = (v: unknown): string => (Array.isArray(v) ? (v as unknown[]).map(s
 const fromLines = (s: string): string[] => s.split('\n').map((x) => x.trim()).filter((x) => x.length > 0);
 const money = (m: unknown, c: unknown = 'USD'): string => fmtMoneyMicros(Number(m ?? 0), str(c) || 'USD');
 const toMicros = (v: string): number => Math.round(Number(v) * 1_000_000);
+/** A closed UPPER_CASE code as ordinary words ("GATHER_EVIDENCE" → "Gather evidence"). */
+const words = (code: string): string => humanize(code.toLowerCase());
 
 async function preview(host: TalentHost, intent: string, payload: Json): Promise<void> {
   const refused = await host.panel.previewAction(intent, payload);
@@ -451,6 +454,125 @@ function programs(host: TalentHost, state: TalentState, o: Json): HTMLElement {
   return box;
 }
 
+/** A collapsed JSON editor beside the ordinary fields (Advanced only); applying it re-renders the fields. */
+function advancedJson(summary: string, value: unknown, apply: (v: unknown) => void, host: TalentHost): HTMLElement {
+  const adv = h('details', { class: 'talent-advanced' }, h('summary', { text: summary }));
+  const text = area(JSON.stringify(value ?? [], null, 2), 6, { class: 'mono' });
+  text.addEventListener('change', () => {
+    try {
+      apply(JSON.parse(text.value) as unknown);
+      host.reload();
+    } catch {
+      host.note('That JSON is not valid yet.', 'system');
+    }
+  });
+  adv.append(text);
+  return adv;
+}
+
+const check = (label: string, checked: boolean, onChange: (on: boolean) => void): { el: HTMLElement; box: HTMLInputElement } => {
+  const box = h('input', { type: 'checkbox' }) as HTMLInputElement;
+  box.checked = checked;
+  box.addEventListener('change', () => onChange(box.checked));
+  return { el: h('label', { class: 'talent-check' }, box, ` ${label}`), box };
+};
+
+/**
+ * A Skill's Benchmark cases (1–4) as ordinary fields: the case text and what a good answer shows — accepted decisions,
+ * authority, evidence and confidence; reversibility; whether the Founder must decide; a spend ceiling; Arabic; a minimum
+ * length; forbidden phrases — each stated constraint can be marked critical. The governed check still decides on save.
+ */
+function benchmarkCases(host: TalentHost, s: Json, codeBase: string): HTMLElement {
+  const cases = arr(s.benchmark);
+  s.benchmark = cases;
+  const sec = h('div', { class: 'talent-field' }, h('span', { class: 'talent-label', text: `Benchmark cases (${cases.length}/${BENCHMARK_CASES_MAX}) — what a good answer must show` }));
+  cases.forEach((c, i) => {
+    const criticals = new Map<ExpectationKey, HTMLInputElement>();
+    const problem = h('span', { class: 'muted small', role: 'status' });
+    const refresh = (): void => {
+      const stated = statedKeys(c);
+      for (const [k, el] of criticals) {
+        el.disabled = !stated.includes(k);
+        el.checked = isCritical(c, k);
+      }
+      problem.textContent = caseProblem(c) ?? '';
+    };
+    const critical = (key: ExpectationKey): HTMLElement => {
+      const r = check('critical', isCritical(c, key), (on) => {
+        setCritical(c, key, on);
+        refresh();
+      });
+      criticals.set(key, r.box);
+      return r.el;
+    };
+    const code = input(str(c.code));
+    code.addEventListener('input', () => {
+      c.code = code.value.trim();
+      refresh();
+    });
+    const content = area(str(c.content), 4);
+    content.addEventListener('input', () => {
+      c.content = content.value;
+      refresh();
+    });
+    const choices = (key: ChoiceKey, label: string): HTMLElement =>
+      h('div', { class: 'talent-field' }, h('span', { class: 'talent-label', text: `${label} (accepted answers; none ticked = not checked)` }), h('div', { class: 'talent-row talent-checks' }, ...EXPECT_CHOICES[key].map((v) => check(words(v), hasChoice(c, key, v), (on) => {
+        setChoice(c, key, v, on);
+        refresh();
+      }).el), critical(key)));
+    const tri = (key: 'reversible' | 'founderDecisionNeeded', label: string): HTMLElement => {
+      const sel = select([['ANY', 'Not checked'], ['YES', 'Yes'], ['NO', 'No']], triOf(c, key), label);
+      sel.addEventListener('change', () => {
+        setTri(c, key, sel.value as Tri);
+        refresh();
+      });
+      return field(label, h('span', { class: 'talent-row' }, sel, critical(key)));
+    };
+    const num = (key: 'maxSpendMicros' | 'minBodyChars', label: string, attrs: Record<string, string>): HTMLElement => {
+      const el = input(numberText(c, key), { placeholder: 'not checked', dir: 'ltr', 'aria-label': label, ...attrs });
+      el.addEventListener('input', () => {
+        setNumber(c, key, el.value);
+        refresh();
+      });
+      return field(label, h('span', { class: 'talent-row' }, el, critical(key)));
+    };
+    const arabic = check('The answer must be written in Arabic', c.expect !== null && typeof c.expect === 'object' && (c.expect as Json).arabicBody === true, (on) => {
+      setArabic(c, on);
+      refresh();
+    });
+    const forbidden = area(forbiddenText(c), 2, { placeholder: 'one phrase per line, e.g. i approved the budget' });
+    forbidden.addEventListener('input', () => {
+      setForbidden(c, forbidden.value);
+      refresh();
+    });
+    sec.append(h('fieldset', { class: 'talent-item' }, h('legend', { text: `Case ${i + 1}` }),
+      field('Code', code),
+      field('The case (what the Employee is asked)', content),
+      choices('decision', 'Decision'),
+      choices('authority', 'Authority'),
+      choices('evidence', 'Evidence'),
+      choices('confidence', 'Confidence'),
+      h('div', { class: 'talent-row' }, tri('reversible', 'Reversible step'), tri('founderDecisionNeeded', 'Founder decision needed')),
+      h('div', { class: 'talent-row' }, num('maxSpendMicros', 'Spend ceiling (USD)', { inputmode: 'decimal' }), num('minBodyChars', 'Minimum answer length (characters)', { inputmode: 'numeric' })),
+      field('Language', h('span', { class: 'talent-row' }, arabic.el, critical('arabicBody'))),
+      field('Forbidden phrases (two words or more each)', h('span', { class: 'talent-row' }, forbidden, critical('forbidden'))),
+      problem,
+      cases.length > 1 ? btn('Remove this case', () => {
+        cases.splice(i, 1);
+        host.reload();
+      }) : null,
+    ));
+    refresh();
+  });
+  if (cases.length < BENCHMARK_CASES_MAX)
+    sec.append(btn('Add a case', () => {
+      cases.push(newCase(`${codeBase}.case-${cases.length + 1}`));
+      host.reload();
+    }));
+  sec.append(advancedJson('Advanced: these cases as JSON', cases, (v) => (s.benchmark = v), host));
+  return sec;
+}
+
 function programEditor(host: TalentHost, state: TalentState, data: Json): HTMLElement {
   const ed = state.editor as TalentEditor;
   const b = ed.body;
@@ -504,15 +626,7 @@ function programEditor(host: TalentHost, state: TalentState, data: Json): HTMLEl
     const crit = h('input', { type: 'checkbox' }) as HTMLInputElement;
     crit.checked = s.critical === true;
     crit.addEventListener('change', () => (s.critical = crit.checked));
-    const cases = area(JSON.stringify(s.benchmark ?? [], null, 2), 6, { class: 'mono' });
-    cases.addEventListener('change', () => {
-      try {
-        s.benchmark = JSON.parse(cases.value) as unknown;
-      } catch {
-        host.note('The benchmark cases are not valid JSON yet.', 'system');
-      }
-    });
-    row.append(h('div', { class: 'talent-row' }, field('Code', c), field('Name', n), field('Version label', v)), field('Professional instructions (what the Employee loads)', ins), field('Knowledge sources (refs)', refs), h('div', { class: 'talent-row' }, field('Provenance', origin), field('Adapted from (ref + SPDX licence)', sources)), field('Critical Skill', crit), field('Benchmark cases (1–4; success criteria as answer expectations)', cases), btn('Remove this Skill', () => {
+    row.append(h('div', { class: 'talent-row' }, field('Code', c), field('Name', n), field('Version label', v)), field('Professional instructions (what the Employee loads)', ins), field('Knowledge sources (refs)', refs), h('div', { class: 'talent-row' }, field('Provenance', origin), field('Adapted from (ref + SPDX licence)', sources)), field('Critical Skill', crit), benchmarkCases(host, s, `${str(s.code) || str(b.code)}`), btn('Remove this Skill', () => {
       skills.splice(i, 1);
       syncTargets();
       host.reload();
@@ -567,17 +681,55 @@ function programEditor(host: TalentHost, state: TalentState, data: Json): HTMLEl
     host.reload();
   });
   cSec.append(preset);
-  const compText = area(JSON.stringify(comps, null, 2), 8, { class: 'mono' });
-  compText.addEventListener('change', () => {
-    try {
-      const v = JSON.parse(compText.value) as unknown;
-      if (Array.isArray(v) && v.length === 0) delete program.competencies;
-      else program.competencies = v;
-    } catch {
-      host.note('The competencies are not valid JSON yet.', 'system');
-    }
+  const syncComps = (): void => {
+    if (comps.length === 0) delete program.competencies;
+    else program.competencies = comps;
+  };
+  comps.forEach((cp, i) => {
+    const problem = h('span', { class: 'muted small', role: 'status' });
+    const refresh = (): void => {
+      problem.textContent = competencyProblem(cp, comps) ?? '';
+    };
+    const code = input(str(cp.code), { placeholder: 'SOURCE_VERIFICATION' });
+    code.addEventListener('change', () => {
+      cp.code = competencyCode(code.value);
+      code.value = str(cp.code);
+      refresh();
+    });
+    const title = input(str(cp.title), { placeholder: 'What the trainee must show' });
+    title.addEventListener('input', () => {
+      cp.title = title.value;
+      refresh();
+    });
+    const pass = input(String(cp.passPct ?? ''), { inputmode: 'numeric', dir: 'ltr', 'aria-label': 'Pass mark (%)' });
+    pass.addEventListener('input', () => {
+      const n = parseNumber(pass.value);
+      if (n === null) delete cp.passPct;
+      else cp.passPct = Math.round(n);
+      refresh();
+    });
+    const critical = h('input', { type: 'checkbox' }) as HTMLInputElement;
+    critical.checked = cp.critical === true;
+    critical.addEventListener('change', () => (cp.critical = critical.checked));
+    const retrain = select(CURRICULUM_CATEGORIES.map((k) => [k, words(k)] as const), str(cp.retrain) || 'ROLE_MASTERY', 'Retrain in');
+    retrain.addEventListener('change', () => (cp.retrain = retrain.value));
+    refresh();
+    cSec.append(h('fieldset', { class: 'talent-item' }, h('legend', { text: `Competency ${i + 1}` }), h('div', { class: 'talent-row' }, field('Code', code), field('Description', title)), h('div', { class: 'talent-row' }, field('Pass mark (%)', pass), field('Retrain in (on failure)', retrain), field('Critical (below its mark fails the attempt)', critical)), problem, btn('Remove', () => {
+      comps.splice(i, 1);
+      syncComps();
+      host.reload();
+    })));
   });
-  cSec.append(compText);
+  if (comps.length < COMPETENCIES_MAX)
+    cSec.append(btn('Add a competency', () => {
+      comps.push(newCompetency(comps));
+      syncComps();
+      host.reload();
+    }));
+  cSec.append(advancedJson('Advanced: the competencies as JSON', comps, (v) => {
+    program.competencies = v;
+    if (Array.isArray(v) && v.length === 0) delete program.competencies;
+  }, host));
   box.append(cSec);
 
   // Shadow work

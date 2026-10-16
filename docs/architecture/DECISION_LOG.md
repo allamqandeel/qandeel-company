@@ -7591,3 +7591,57 @@ certification Tool scopes, and the recreated `academy_dimension_results` (D-TALE
 with every existing row, grant, budget, certification and history unchanged, every new table empty, and the CEO context
 identical (`talent-migration.test.ts`). Code that may run against an older schema in released-version test fixtures reads
 the new tables only when they exist; a text scenario is still written without the tool column.
+
+## D-TALENT-12 — Founder review corrections: C4 acceptance, studio form fields (executor)
+
+**Decision.** Three corrections from the Founder's independent review of PR #41, in the same PR:
+- **C4 acceptance** (`scripts/c4-acceptance.mjs`, step `staffing-request-synthesis-delegated-decision-hire`). The step
+  predates D-TALENT-03 and asked the CEO's delegated `staffing.hire` to create an Employee with no identity. The hire was
+  correctly refused (`IDENTITY_REQUIRED`), so the run completed with no `hiredEmployeeId` and the step's read failed with
+  `NOT_FOUND`. The acceptance now meets the rule: the Founder approves the role's identity profile through the governed
+  confirmation (`TALENT_DEFINITION_DECIDE`), the delegated hire names it, and the step checks the INITIAL binding. The
+  hiring rule, the org-act contract and the delegation limits are unchanged.
+- **`c3-fault` on Windows** (`SUPERVISOR_NOT_AUTHORITATIVE` in the recovering child, then a harness timeout). No code on its
+  path changed in this PR (start, recovery, runtime authority, queue, the host fixture and the harness are identical to
+  `main`), and it passed 8 of 8 local Windows reruns. Treated as a runner-timing event on a 1.5 s supervisor lease; it is
+  re-proved by the FULL gate on the final head. Not widened without new evidence.
+- **Benchmark cases and competencies as ordinary fields** (D-TALENT-10). The Skills & Academy studio edited both as JSON
+  text. They are now fields: per case, its text and what a good answer shows (accepted decisions, authority, evidence and
+  confidence by ticking; reversibility and Founder decision; a spend ceiling; Arabic; a minimum length; forbidden
+  phrases), each stated constraint markable critical; per competency, a code typed in words, a description, a pass mark,
+  critical, and the curriculum category it retrains. JSON stays under "Advanced". The pure model
+  (`command-center-ui/src/model/talent-forms.ts`) keeps the contract's shape. Its closed lists are proved identical to the
+  governance and mind contracts, and field-made cases and competencies pass `assertAcademyPackage`
+  (`command-center/test/talent-forms-parity.test.ts`). The governed check on save and approval stays the authority.
+
+## D-TALENT-13 — Majed El Kedwany: the approved specification as the first full acceptance (executor)
+
+**Decision.** The Founder's `MAJED_EL_KEDWANY_APPROVED_SPEC.md` is stored verbatim in `docs/talent/`. Its SHA-256 is
+`ccdc184aa568bc06dc1f7ac739a5b973dc5a932275902abf647e12fc04ebbc55`, and the acceptance test checks it. It is not authority
+(condition F).
+- **Derived data.** The identity profile and the Academy program derived from it are data in
+  `docs/talent/MAJED_EL_KEDWANY.talent.json`. This is what the Founder enters in the general Staff & Training studio. No
+  product code reads it, and there is no Majed-specific code, package or release entry.
+- **Acceptance test 1** (`packages/runtime/test/talent/company-talent.test.ts`) replaces the placeholder with the derived
+  data and checks:
+  - the six capability groups (§4);
+  - the five practical tests (§5), the fifth hidden;
+  - `assessmentTrials` 5;
+  - Founder Calibration;
+  - the three 90-day phases (§6) as internal shadow briefs.
+
+  It runs the full governed path to ACTIVE in an isolated test Company: a critical competency fails test 1, followed by
+  targeted retraining, then all five tests, the three briefs, probation, certification, Calibration and activation.
+- **Real-UI proof.** The profile is typed into the Identity studio's fields, and the saved profile equals the derived
+  one. The program is started from the template, completed with the derived sections, and approved through the governed
+  preview.
+- **Executor derivation choices** (`docs/talent/README.md`; the Founder may change any of them in the studio before
+  approval):
+  - the kernel-length condensation;
+  - all six competencies critical (Evidence-Based Decisions at 75, the others at 70);
+  - the retrain categories;
+  - test 5 as the holdout;
+  - the 90 days rehearsed as shadow briefs, with the real post-activation objectives left to the Goal path after
+    activation.
+
+LIVE is unchanged: Majed is not created, and Ahmed Zaki's data and grants are untouched.

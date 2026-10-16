@@ -1,7 +1,7 @@
 # COMPANY-TALENT-01 — Universal Staffing, Identity, Skills & Academy Studio
 
 **Status:** implementation candidate on branch `talent/company-talent-01`, from `main` @ `2979201`. It is not merged and
-not installed. LIVE is unchanged and Majed El Kedwany is not created. Decision records: D-TALENT-01 … D-TALENT-11 in
+not installed. LIVE is unchanged and Majed El Kedwany is not created. Decision records: D-TALENT-01 … D-TALENT-13 in
 `docs/architecture/DECISION_LOG.md`. Research: `E:\QANDEEL_D2\evidence\company-talent-01-wp0\WP0.md` (Founder-approved
 with changes on 2026-10-16).
 
@@ -40,7 +40,7 @@ Every decision runs through the existing governed confirmation.
 | D5 manager evaluation | `academy_manager_evaluations`; qualified direct manager; independent review for assessments; never self-evaluation; leaders by the Founder only | D-TALENT-07 (controlled amendment of D-C3-10 / D-C3-22 7.1) |
 | Specialized competence and Tools | Program competencies (critical → FAIL, targeted retraining); Tool scenarios; honest readiness; certification Tool scopes | D-TALENT-08 |
 | Developing ACTIVE Employees | `EMPLOYEE_RETRAIN`; new program versions; passports not redone | D-TALENT-09 |
-| Unified Founder UI | The Staff & Training hall (five tabs) and a generalized seat case | D-TALENT-10 |
+| Unified Founder UI | The Staff & Training hall (five tabs) and a generalized seat case; Benchmark cases and competencies edited as ordinary fields (JSON only under Advanced) | D-TALENT-10, D-TALENT-12 |
 | Migration | `0024_talent_studio.sql`, additive; v23 → v24 preservation proved | D-TALENT-11 |
 
 **What is unchanged:**
@@ -63,30 +63,46 @@ Test files:
   transport, an in-memory vault; no network, no paid call)
 - U = `packages/command-center/test/talent-studio-surface.test.ts` (the Founder surface over loopback HTTP)
 - K = `packages/mind/test/talent.test.ts` and `packages/governance/test/talent.test.ts` (pure contracts)
-- V = the real-UI proof in headless Edge: `E:\QANDEEL_D2\evidence\company-talent-01\proof\01..11 *.png` with
-  `manifest.json`, all 11 steps PASS (isolated data directory, no provider call)
+- V = the real-UI proof in headless Edge: `E:\QANDEEL_D2\evidence\company-talent-01\proof\*.png` (15 screenshots)
+  with `manifest.json`, all 11 steps PASS (isolated data directory, no provider call). An earlier revision of this
+  report said "11 steps"; that counted the 11 screenshots of 9 steps.
 
 ### 1. Majed: approved identity and a specialized Academy program through the general UI
 
-**Status: proved with a placeholder text.** The Founder-approved `MAJED_EL_KEDWANY_APPROVED_SPEC.md` has not been
-provided yet. `docs/talent/README.md` holds his entry as pending.
+**Status: proved with the Founder's original specification, not substitute data** (D-TALENT-13).
+- `docs/talent/MAJED_EL_KEDWANY_APPROVED_SPEC.md` is the Founder's file, stored verbatim. Its SHA-256,
+  `ccdc184a…ebbc55`, is checked by R test 1.
+- `docs/talent/MAJED_EL_KEDWANY.talent.json` holds the profile and program derived from it, as data. It names the file
+  and its digest. The section-by-section mapping is in `docs/talent/README.md`.
 
 **Evidence:**
-- **R test 1.** The Strategic Market Intelligence Director goes from the catalog to ACTIVE:
-  identity drafted and approved → hired as CANDIDATE (policy grants issued) → Department budget → model access → the
-  catalog program qualified under BQM-2 and installed → a critical competency fails an assessment (no certification) →
-  targeted retraining → retest → holdout → shadow → probation → VALID certification → Founder Calibration (required for a
-  leader, enforced) → ACTIVE. Every attempt context carries the approved kernel and "you report to <CEO>".
-- **V steps 03–05 and 08–10.** The same path in the real UI: the Identity studio, the governed approval preview, the
-  hire naming the identity, the program from the template (BQM-2 pins, Calibration), the policy preview, and People &
-  progress.
+- **R test 1.** First it checks the derived data against the specification:
+  - the six capability groups (§4) as six Skills and six critical competencies, in one program;
+  - the five practical tests (§5) as four assessments and a hidden holdout, with `assessmentTrials` 5;
+  - Founder Calibration required;
+  - the first 90 days (§6) as three internal shadow briefs.
 
-**When the specification arrives:**
-1. Copy it verbatim to `docs/talent/`.
-2. Derive the fixture profile from it.
-3. Re-run R test 1 and V.
+  Then it runs the governed path to ACTIVE in an isolated test Company whose CEO is "Ahmed Zaki":
+  1. The profile is drafted and approved.
+  2. Majed is hired as a CANDIDATE, and the policy grants are issued.
+  3. Department budget, then model access.
+  4. The program is qualified under BQM-2 and installed.
+  5. Test 1 fails on the critical Evidence-Based Decisions competency, with no certification.
+  6. Targeted retraining, then test 1 is retaken, then tests 2–4 and the hidden test 5.
+  7. The three 90-day shadow briefs, then probation and a VALID certification.
+  8. Founder Calibration (enforced), then ACTIVE.
 
-No code changes.
+  Every attempt context carries the approved kernel ("You are Strategic Market Intelligence Director.", the six
+  specialties) and "you report to Ahmed Zaki".
+- **V step 03.** The derived profile is typed into the Identity studio's ordinary fields. The saved profile equals the
+  derived one exactly, with 0 gaps.
+- **V steps 04–05.** The governed approval, then the hire naming `majed-el-kedwany v1`.
+- **V steps 08d–08e.** Majed's program in the general Skills & Academy studio. It starts from the template with its BQM-2
+  pins, curriculum and dimensions, and the derived sections are added. It is saved complete and approved through the
+  governed preview, with 6 Skills, 6 scenarios including 1 hidden, 6 competencies and Calibration required.
+
+No Majed-specific code, package or release entry exists. LIVE was not touched, Majed is not created there, and Ahmed
+Zaki's data and grants are unchanged.
 
 ### 2. A Reddit employee with Skills, without code
 
@@ -110,6 +126,17 @@ No code changes.
 - **S-G.** Readiness is NOT_REGISTERED, then NOT_INTEGRATED for a registered Tool without a driver; the scope is
   NOT_ASSESSED.
 - **K.** A Tool scenario is never practice and never replaces the text assessment.
+
+### Studio usability: Benchmark cases and competencies without JSON (Founder review)
+
+**Evidence:**
+- **V step 08b.** In the real UI, one Skill's case and one competency are set with ticks, selects and text only. The
+  draft is saved, read back from the Founder surface, and its cases and competencies pass `assertAcademyPackage`
+  (`08b-benchmark-case-fields.png`, `08c-competency-fields.png`).
+- **`command-center-ui/test/talent-forms.test.ts`.** An unset constraint is absent and `critical` names only stated
+  constraints. Spend is entered in USD. Forbidden phrases are lower-cased. Arabic-Indic digits are read.
+- **`command-center/test/talent-forms-parity.test.ts`.** The closed lists equal the governance and mind contracts, and
+  field-made cases and competencies pass the real package check.
 
 ### 4. Repeatable hiring and training for different roles
 
@@ -169,7 +196,16 @@ No code changes.
   head.
 - **Gate 3 — Founder's own install (separate approval).** On install, the upgrade creates no policy, grant or Employee.
   The Founder then approves the policies, budgets and identities in the Staff & Training hall.
-- **Pending from the Founder:** `MAJED_EL_KEDWANY_APPROVED_SPEC.md` (criterion 1, as a data step).
+- **Majed's specification:** received on 2026-10-16 and used (criterion 1, D-TALENT-13). It was a data step, with no
+  product code.
+
+### Review round 1 (Founder, 2026-10-16) — causes and corrections (D-TALENT-12)
+
+| Finding | Cause | Correction |
+|---|---|---|
+| C4 acceptance FAIL on Windows and Ubuntu (`NOT_FOUND: employee not found`) | The step predates D-TALENT-03. Its delegated hire named no identity and was correctly refused (`IDENTITY_REQUIRED`), so no Employee existed to read | The acceptance approves the role's identity through the governed confirmation, and the hire names it. The step checks the INITIAL binding. The rule and contracts are unchanged |
+| `c3-fault` FAIL on Windows (`SUPERVISOR_NOT_AUTHORITATIVE`, harness timeout) | Not caused by this PR: no code on its path changed. It passed 8/8 local reruns. Runner timing on a 1.5 s lease | None. Re-proved by the FULL gate on the final head |
+| Benchmark cases and competencies typed as JSON | The studio had no fields for them | Ordinary fields with JSON under Advanced, plus parity tests |
 
 ## 4. Test results
 
