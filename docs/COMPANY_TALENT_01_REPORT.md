@@ -209,24 +209,30 @@ Zaki's data and grants are unchanged.
 
 ## 4. Test results
 
-Local, on Windows (Node 24), on commit `d04a343` (the code is unchanged since; this report was edited afterwards):
+Local, on Windows (Node 24), on the tree of commit `1359010` (review round 1). Only this report and the PR description
+changed after it.
 
 - `npm ci`: pass.
-- `npm run ci` (proportional runner, mode **FULL**, 63 changed files): **15 / 15 steps passed**.
+- `npm run ci` (proportional runner, mode **FULL**, 70 changed files): **15 / 15 steps passed**.
   - build, typecheck, lint and verify;
   - the impact-map, classify, gate and post-merge self-tests.
 
 | Workspace | Files | Tests | Result |
 |---|---|---|---|
-| command-center | 18 | 84 | 84 passed |
-| command-center-ui | 9 | 58 | 58 passed |
+| command-center | 19 | 86 | 86 passed |
+| command-center-ui | 10 | 65 | 65 passed |
 | governance | 13 | 138 | 138 passed |
 | mind | 9 | 168 | 168 passed |
 | runtime | 27 | 245 | 245 passed |
 | storage | 47 | 626 | 626 passed |
 | tool-drivers | 3 | 32 | 32 passed |
 
-The domain, model-providers, secret-vault and bootstrap-contract suites also passed in a separate full run.
+Also passed on that tree:
+- the C4, C5 and C6 local acceptance scripts;
+- V, 11 / 11 steps.
+
+The domain, model-providers, secret-vault and bootstrap-contract suites passed in a separate full run on `d04a343`.
+Review round 1 did not change them.
 
 **Still required on GitHub.** The FULL continuity proof runs there: Windows + Ubuntu, every workspace test, every recorded
 mutation family sharded with parity, acceptance and the verifier. It must be green on the exact final head before any
