@@ -7645,3 +7645,20 @@ the new tables only when they exist; a text scenario is still written without th
     activation.
 
 LIVE is unchanged: Majed is not created, and Ahmed Zaki's data and grants are untouched.
+
+## D-TALENT-14 — The seat case offers every shadow assignment and states the program's own pass count (executor)
+
+COMPANY-MAJED-ACADEMY-01, UI only. Approved by the Founder as a bounded correction inside Majed's qualification.
+
+- **Defect.** The seat case offered the shadow-assignment buttons only while the enrollment had no shadow work
+  (`shadow.length === 0`). A program needing several shadow cases (Majed: probation `minCases` 3, three distinct
+  assignments) could not reach probation review from the UI, although the backend accepts each assignment. The assessment
+  prompt always said "the program needs 3 passed" (the CEO number); Majed's program enforces `assessmentTrials` 5.
+- **Correction** (`command-center-ui/src/model/academy-ui.ts`, pure):
+  - `assignableShadow` offers every assignment without a live assignment of the same objective. One in progress or
+    finished is never offered twice. A FAILED, CANCELLED or SUPERSEDED one may be assigned again. This mirrors the
+    backend's duplicate rule (`SHADOW_ALREADY_ASSIGNED`), and a test pins the two together.
+  - `assessmentPrompt` states the registry's `assessmentTrials` (already projected by the activation API), and never
+    invents a number.
+- **Unchanged.** Academy, evaluation, probation and budget rules, the API, storage, migrations, the approved program and
+  identity, employee states and LIVE. The "Next" hint during shadow work is still derived by storage (out of scope).
