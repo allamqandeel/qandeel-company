@@ -7,4 +7,5 @@ export { RANK_ORDER, layoutUniverse, stableHash } from './model/layout.js';
 export { applyLens, attentionSpotlight, chainNodeIds, showsRelations } from './model/lenses.js';
 export * from './model/format.js';
 export * as talentForms from './model/talent-forms.js';
+export * as academyUi from './model/academy-ui.js';
 export type { Emphasis, Layout, LayoutColumn, LayoutEdge, LayoutNode, Lens, NodeKind, ReportEdge } from './model/types.js';

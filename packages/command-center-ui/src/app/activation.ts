@@ -11,6 +11,7 @@
  * an approved identity (a release profile or a Talent Catalog one), a specialist program's competencies are scored beside
  * the dimensions, and a trainee's qualified manager can be asked to evaluate an attempt. The CEO seat reads as before.
  */
+import { assessmentPrompt, assignableShadow } from '../model/academy-ui.js';
 import { dirOf, fmtMoneyMicros, hasArabic, humanize } from '../model/format.js';
 import { h, type PanelHost } from './panels.js';
 
@@ -343,7 +344,7 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
       const used = new Set(arr(enr.attempts).map((a) => str(a.scenarioCode)));
       const sel = h('select', { 'aria-label': 'Scenario' }) as HTMLSelectElement;
       for (const s of arr(pkgReg?.scenarios)) if (kinds.includes(str(s.kind))) sel.append(h('option', { value: str(s.code), text: `${str(s.kind) === 'HOLDOUT' ? 'HIDDEN HOLDOUT · ' : ''}${s.toolCode ? `TOOL ${str(s.toolCode)} · ` : ''}${str(s.code)}${used.has(str(s.code)) ? ' (used)' : ''}` }));
-      const form = h('form', { class: 'pilot-create' }, h('label', { class: 'muted small', text: stage === 'ASSESSMENT' ? 'Start an assessment (the program needs 3 passed, including a clean hidden holdout)' : 'Start a practice simulation' }), sel, h('button', { type: 'submit', class: 'btn btn-quiet', text: 'Preview: start attempt' }));
+      const form = h('form', { class: 'pilot-create' }, h('label', { class: 'muted small', text: stage === 'ASSESSMENT' ? assessmentPrompt(pkgReg?.assessmentTrials) : 'Start a practice simulation' }), sel, h('button', { type: 'submit', class: 'btn btn-quiet', text: 'Preview: start attempt' }));
       form.addEventListener('submit', (e) => {
         e.preventDefault();
         void host.previewAction('ACADEMY_ATTEMPT_START', { ...pkgArgs, enrollmentId: str(enr.id), scenarioCode: sel.value });
@@ -353,7 +354,7 @@ export function renderActivation(data: Json, host: PanelHost): HTMLElement {
     // Shadow work and probation.
     if (offersProbationMove(stage, str(ceo.state))) box.append(h('div', { class: 'pilot-actions' }, btn('Preview: move the trainee to PROBATION', () => void host.previewAction('EMPLOYEE_LIFECYCLE', { employeeId: str(ceo.employeeId), to: 'PROBATION' }))));
     const shadow = arr(enr.shadow);
-    if (stage === 'SHADOW_WORK' && shadow.length === 0) for (const a of arr(pkgReg?.shadowAssignments)) box.append(h('div', { class: 'pilot-actions' }, btn(`Preview: assign shadow work — ${str(a.objective)}`, () => void host.previewAction('ACADEMY_SHADOW_ASSIGN', { ...pkgArgs, enrollmentId: str(enr.id), assignmentCode: str(a.code) }))));
+    if (stage === 'SHADOW_WORK') for (const a of assignableShadow(arr(pkgReg?.shadowAssignments), shadow)) box.append(h('div', { class: 'pilot-actions' }, btn(`Preview: assign shadow work — ${str(a.objective)}`, () => void host.previewAction('ACADEMY_SHADOW_ASSIGN', { ...pkgArgs, enrollmentId: str(enr.id), assignmentCode: str(a.code) }))));
     for (const s of shadow) {
       const sb = h('div', { class: 'act-shadow' }, h('strong', { text: `Shadow work: ${str(s.objective)}` }), ' ', pill(humanize(str(s.state))));
       sb.append(answerBlock((s.answer as Json | null) ?? null, 'Read the brief'));
